@@ -1,0 +1,101 @@
+PROHOME = ../../..
+
+REGION = $(notdir $(CURDIR))
+ACCOUNT = $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
+
+export AWS_PROFILE = $(ACCOUNT)
+
+.PHONY: all
+all: k8s-runner-scaler 
+
+.PHONY: venv
+venv: $(PROHOME)/venv/bin/pip
+
+$(PROHOME)/venv/bin/pip:
+	cd $(PROHOME)/ && virtualenv venv
+	$(PROHOME)/venv/bin/pip install -r $(PROHOME)/requirements.txt
+
+$(PROHOME)/tf-modules/VERSIONS: $(PROHOME)/venv/bin/pip $(PROHOME)/Terrafile
+	$(PROHOME)/venv/bin/python $(PROHOME)/scripts/terrafile_lambdas.py -t $(PROHOME)/Terrafile -m $(PROHOME)/tf-modules
+
+.PHONY: terrafile
+terrafile: $(PROHOME)/tf-modules/VERSIONS
+
+.terraform/modules/modules.json: $(PROHOME)/tf-modules/VERSIONS backend.tf
+	terraform init
+
+.PHONY: init
+init: .terraform/modules/modules.json
+
+.PHONY: clean
+clean:
+	$(RM) -r .terraform
+	$(RM) .terraform.lock.hcl
+	$(RM) backend-state.tf
+	$(RM) backend.plan
+	$(RM) backend.tf
+	$(RM) terraform.tfstate
+	cd $(PROHOME)/ && make clean
+
+.PHONY: backend-state
+backend-state: backend.tf
+
+backend.tf: backend-state.tf
+	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend.tf >backend.tf
+	$(RM) terraform.tfstate
+
+backend-state.tf: .account-checked
+	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
+	terraform get -update
+	terraform init -backend=false
+	terraform plan -out=backend.plan -target=module.backend-state
+	terraform apply backend.plan
+
+.account-checked:
+	aws configure list-profiles | grep $(ACCOUNT) || (echo "Account $(ACCOUNT) not configured in ~/.aws/config", see https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html; exit 1)
+	echo OK >.account-checked
+
+.PHONY: plan
+plan: .terraform/modules/modules.json
+	terraform plan
+
+.PHONY: apply
+apply: .terraform/modules/modules.json
+	terraform apply
+
+.PHONY: destroy
+destroy: .terraform/modules/modules.json
+	terraform destroy
+
+.PHONY: update-kubectl
+update-kubectl: apply
+	aws eks update-kubeconfig --region $(REGION) --name ghci-arc-runners-eks-I
+
+.PHONY: apply-cert-manager
+apply-cert-manager: update-kubectl
+	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.2/cert-manager.yaml
+
+.PHONY: add-helm-repository
+add-helm-repository:
+	helm repo add actions-runner-controller https://actions-runner-controller.github.io/actions-runner-controller
+
+.PHONY: install-arc
+install-arc: update-kubectl apply-cert-manager add-helm-repository
+	[ "$$GHA_PRIVATE_KEY" != "" ] || (echo "GHA_PRIVATE_KEY not set"; exit 1)
+	helm upgrade --install --namespace actions-runner-system --create-namespace --set=replicaCount=2 --set=authSecret.create=true --set=authSecret.github_app_id="343735" --set=authSecret.github_app_installation_id="38323217" --set=authSecret.github_app_private_key="$$GHA_PRIVATE_KEY" --wait actions-runner-controller actions-runner-controller/actions-runner-controller
+
+.PHONY: k8s-runner-scaler
+k8s-runner-scaler: install-arc
+	kubectl apply -f $(PROHOME)/rundeployment/storageclass.yaml --namespace=actions-runner-system
+	kubectl apply -f $(PROHOME)/rundeployment/claim-medium.yaml --namespace=actions-runner-system
+	kubectl apply -f $(PROHOME)/rundeployment/claim-large.yaml --namespace=actions-runner-system
+	kubectl apply -f $(PROHOME)/rundeployment/runnerdeployment.yaml --namespace=actions-runner-system
+	kubectl apply -f $(PROHOME)/rundeployment/horizontalautoscaler.yaml --namespace=actions-runner-system
+
+.PHONY: delete
+delete:
+	kubectl delete -f $(PROHOME)/rundeployment/storageclass.yaml --namespace=actions-runner-system --force || true
+	kubectl delete -f $(PROHOME)/rundeployment/claim-medium.yaml --namespace=actions-runner-system --force || true
+	kubectl delete -f $(PROHOME)/rundeployment/claim-large.yaml --namespace=actions-runner-system --force || true
+	kubectl delete -f $(PROHOME)/rundeployment/runnerdeployment.yaml --namespace=actions-runner-system --force || true
+	kubectl delete -f $(PROHOME)/rundeployment/horizontalautoscaler.yaml --namespace=actions-runner-system --force || true

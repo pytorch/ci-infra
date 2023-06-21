@@ -1,0 +1,67 @@
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: RunnerDeployment
+metadata:
+  name: linux.c7g.4xlarge
+spec:
+  replicas: 1
+  template:
+    spec:
+      ephemeral: true
+
+      organization: "pytorch"
+
+      labels:
+        - linux.c7g.4xlarge
+
+      env:
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              runner-deployment-name: linux.c7g.4xlarge
+
+      imagePullPolicy: Always
+      resources:
+        limits:
+          cpu: "4.0"
+          memory: "8Gi"
+        requests:
+          cpu: "4.0"
+          memory: "8Gi"
+
+      dockerVolumeMounts:
+      - mountPath: /var/lib/docker
+        name: docker
+        subPathExpr: $(POD_NAME)-docker
+
+      volumeMounts:
+      - mountPath: /runner/_work
+        name: work
+        subPathExpr: $(POD_NAME)-work
+      - mountPath: /tmp
+        name: tmp
+        subPathExpr: $(POD_NAME)-tmp
+
+      dockerEnv:
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+
+      volumes:
+      - name: docker
+        emptyDir:
+          sizeLimit: 20Gi
+      - name: work
+        emptyDir:
+          sizeLimit: 150Gi
+      - name: tmp
+        emptyDir:
+          sizeLimit: 50Gi
