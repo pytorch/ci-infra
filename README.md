@@ -17,7 +17,7 @@ It creates a VPC and a EKS cluster. On that it then setups the Github first part
 
 ## Deploy
 
-In order to deploy, first make sure your environment is set up so you have your AWS CLI set up with a profile named with the account where the target will be deployed (currently `391835788720`) and all the permissions and keys are set up; 
+In order to deploy, first make sure your environment is set up so you have your [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (currently `391835788720`) and all the permissions and keys are set up; 
 
 Next, you'll need to setup as an environment variable the Github API private key:
 
