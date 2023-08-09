@@ -1,3 +1,4 @@
+SHELL=/bin/bash -o pipefail
 PROHOME = ../../..
 
 REGION = $(notdir $(CURDIR))
@@ -34,17 +35,25 @@ clean:
 	$(RM) backend-state.tf
 	$(RM) backend.plan
 	$(RM) backend.tf
+	$(RM) dyn_locals.tf
+	$(RM) external_k8s_cidr_ipv4.tf
 	$(RM) terraform.tfstate
 	cd $(PROHOME)/ && make clean
 
 .PHONY: backend-state
 backend-state: backend.tf
 
+external_k8s_cidr_ipv4.tf: .account-checked $(PROHOME)/venv/bin/pip $(PROHOME)/scripts/simplify_cidr_blocks.py
+	$(PROHOME)/venv/bin/python $(PROHOME)/scripts/simplify_cidr_blocks.py --rules-per-sg 50 --output-file external_k8s_cidr_ipv4.tf
+
+dyn_locals.tf: .account-checked
+	echo -e "locals {\n  aws_region = \"$(REGION)\"\n  aws_account_id = \"$(ACCOUNT)\"\n}\n" >dyn_locals.tf
+
 backend.tf: backend-state.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend.tf >backend.tf
 	$(RM) terraform.tfstate
 
-backend-state.tf: .account-checked
+backend-state.tf: .account-checked dyn_locals.tf external_k8s_cidr_ipv4.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
 	terraform get -update
 	terraform init -backend=false
@@ -80,7 +89,7 @@ add-helm-repository:
 	helm repo add actions-runner-controller https://actions-runner-controller.github.io/actions-runner-controller
 
 .PHONY: install-arc
-install-arc: update-kubectl apply-cert-manager add-helm-repository
+install-arc: apply-cert-manager add-helm-repository
 	[ "$$GHA_PRIVATE_KEY" != "" ] || (echo "GHA_PRIVATE_KEY not set"; exit 1)
 	helm upgrade --install --namespace actions-runner-system --create-namespace --set=replicaCount=2 --set=authSecret.create=true --set=authSecret.github_app_id="343735" --set=authSecret.github_app_installation_id="38323217" --set=authSecret.github_app_private_key="$$GHA_PRIVATE_KEY" --wait actions-runner-controller actions-runner-controller/actions-runner-controller
 

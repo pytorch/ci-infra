@@ -12,7 +12,9 @@ __pycache__/
 **/.venv/
 **/tf-modules/
 **/venv/
+aws/391835788720/us-east-1/backend.tf
 backend.plan
 crash.log
+dyn_locals.tf
+external_k8s_cidr_ipv4.tf
 terraform.rc
-aws/391835788720/us-east-1/backend.tf
