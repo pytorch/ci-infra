@@ -22,3 +22,13 @@ variable "aws_vpc_suffix" {
   description = "suffixes to define aws vpcs per AZ per location"
   type        = string
 }
+
+variable "aws_account_id" {
+  description = "AWS account ID"
+  type        = string
+}
+
+variable "eks_cidr_blocks" {
+  description = "CIDR blocks to allow access to the EKS cluster"
+  type        = list(string)
+}
