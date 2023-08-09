@@ -205,6 +205,10 @@ module "eks" {
   manage_aws_auth_configmap = true
   create_aws_auth_configmap = false
 
+  kms_key_owners = [
+    "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root",
+  ]
+
   tags = {
     Project     = "runners-eks"
     Environment = var.environment
