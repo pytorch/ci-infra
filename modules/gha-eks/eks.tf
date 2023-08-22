@@ -2,6 +2,12 @@ locals {
   kms_users = [
     "arn:aws:iam::${var.aws_account_id}:root",
   ]
+  eks_users = [
+    ["arn:aws:iam::391835788720:user/eliuriegas@meta.com", "eliuriegas"],
+    ["arn:aws:iam::391835788720:user/jschmidt@meta.com", "jschmidt"],
+    ["arn:aws:iam::391835788720:user/lhyde@linuxfoundation.org", "lhyde"],
+    ["arn:aws:iam::391835788720:user/lokravi@amazon.com", "lokravi"],
+  ]
 }
 
 module "eks" {
@@ -85,6 +91,15 @@ module "eks" {
 
   kms_key_owners         = local.kms_users
   kms_key_administrators = local.kms_users
+
+  aws_auth_users = [
+    for eksusr in local.eks_users :
+    {
+      groups   = ["system:masters", "cluster-admin"]
+      userarn  = eksusr[0]
+      username = eksusr[1]
+    }
+  ]
 
   tags = {
     Project     = "runners-eks"
