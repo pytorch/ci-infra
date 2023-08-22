@@ -1,3 +1,9 @@
+locals {
+  kms_users = [
+    "arn:aws:iam::${var.aws_account_id}:root",
+  ]
+}
+
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 19.0"
@@ -77,9 +83,8 @@ module "eks" {
   manage_aws_auth_configmap = true
   create_aws_auth_configmap = false
 
-  kms_key_owners = [
-    "arn:aws:iam::${var.aws_account_id}:root",
-  ]
+  kms_key_owners         = local.kms_users
+  kms_key_administrators = local.kms_users
 
   tags = {
     Project     = "runners-eks"
