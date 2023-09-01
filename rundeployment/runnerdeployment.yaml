@@ -1,9 +1,8 @@
 apiVersion: actions.summerwind.dev/v1alpha1
 kind: RunnerDeployment
 metadata:
-  name: linux.c7g.4xlarge
+  name: $NAME
 spec:
-  replicas: 1
   template:
     spec:
       ephemeral: true
@@ -11,7 +10,7 @@ spec:
       organization: "pytorch"
 
       labels:
-        - linux.c7g.4xlarge
+        - $NAME
 
       env:
       - name: POD_NAME
@@ -25,7 +24,7 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              runner-deployment-name: linux.c7g.4xlarge
+              runner-deployment-name: $NAME
 
       imagePullPolicy: Always
       resources:

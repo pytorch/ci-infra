@@ -32,3 +32,23 @@ variable "eks_cidr_blocks" {
   description = "CIDR blocks to allow access to the EKS cluster"
   type        = list(string)
 }
+
+variable "instance_type" {
+  description = "Instance type for EKS cluster"
+  type        = string
+}
+
+variable "ami_type" {
+  description = "AMI type for instances in EKS cluster"
+  type        = string
+}
+
+variable "cluster_name" {
+  description = "Unique name of EKS cluster"
+  type        = string
+}
+
+variable "capacity_type" {
+  description = "Capacity type of EKS cluster"
+  type        = string
+}

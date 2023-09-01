@@ -1,4 +1,4 @@
-# ARC runners config for Pytorch
+ARC runners config for Pytorch
 
 ## Dependencies
 

@@ -1,12 +1,12 @@
 apiVersion: actions.summerwind.dev/v1alpha1
 kind: HorizontalRunnerAutoscaler
 metadata:
-  name: linux.c7g.4xlarge
+  name: $NAME
 spec:
   scaleDownDelaySecondsAfterScaleOut: 300
   scaleTargetRef:
     kind: RunnerDeployment
-    name: linux.c7g.4xlarge
+    name: $NAME
   minReplicas: 1
   maxReplicas: 35
   metrics:

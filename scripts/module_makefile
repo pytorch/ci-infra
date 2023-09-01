@@ -4,6 +4,8 @@ PROHOME = ../../..
 REGION = $(notdir $(CURDIR))
 ACCOUNT = $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
 
+export RAW_GHA_PRIVATE_KEY = $(shell aws secretsmanager get-secret-value --secret-id github/ci-infra/app-private-key --query SecretString | jq -r | jq '."private-key"' | jq -r)
+export GHA_PRIVATE_KEY = $(shell echo -e $RAW_GHA_PRIVATE_KEY)
 export AWS_PROFILE = $(ACCOUNT)
 
 .PHONY: all
@@ -78,10 +80,14 @@ destroy: .terraform/modules/modules.json
 
 .PHONY: update-kubectl
 update-kubectl: apply
-	aws eks update-kubeconfig --region $(REGION) --name ghci-arc-runners-eks-I
+	aws eks update-kubeconfig --region $(REGION) --name ghci-runners-c7g-4xl
+	aws eks update-kubeconfig --region $(REGION) --name ghci-runners-g4dn-4xl
 
 .PHONY: apply-cert-manager
 apply-cert-manager: update-kubectl
+	kubectl config use-context arn:aws:eks:$(REGION):$(ACCOUNT):cluster/ghci-runners-c7g-4xl
+	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.2/cert-manager.yaml
+	kubectl config use-context arn:aws:eks:$(REGION):$(ACCOUNT):cluster/ghci-runners-g4dn-4xl
 	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.2/cert-manager.yaml
 
 .PHONY: add-helm-repository
@@ -91,15 +97,26 @@ add-helm-repository:
 .PHONY: install-arc
 install-arc: apply-cert-manager add-helm-repository
 	[ "$$GHA_PRIVATE_KEY" != "" ] || (echo "GHA_PRIVATE_KEY not set"; exit 1)
+	kubectl config use-context arn:aws:eks:$(REGION):$(ACCOUNT):cluster/ghci-runners-c7g-4xl
+	helm upgrade --install --namespace actions-runner-system --create-namespace --set=replicaCount=2 --set=authSecret.create=true --set=authSecret.github_app_id="343735" --set=authSecret.github_app_installation_id="38323217" --set=authSecret.github_app_private_key="$$GHA_PRIVATE_KEY" --wait actions-runner-controller actions-runner-controller/actions-runner-controller
+	kubectl config use-context arn:aws:eks:$(REGION):$(ACCOUNT):cluster/ghci-runners-g4dn-4xl
 	helm upgrade --install --namespace actions-runner-system --create-namespace --set=replicaCount=2 --set=authSecret.create=true --set=authSecret.github_app_id="343735" --set=authSecret.github_app_installation_id="38323217" --set=authSecret.github_app_private_key="$$GHA_PRIVATE_KEY" --wait actions-runner-controller actions-runner-controller/actions-runner-controller
 
 .PHONY: k8s-runner-scaler
 k8s-runner-scaler: install-arc
+	kubectl config use-context arn:aws:eks:$(REGION):$(ACCOUNT):cluster/ghci-runners-c7g-4xl
 	kubectl apply -f $(PROHOME)/rundeployment/storageclass.yaml --namespace=actions-runner-system
 	kubectl apply -f $(PROHOME)/rundeployment/claim-medium.yaml --namespace=actions-runner-system
 	kubectl apply -f $(PROHOME)/rundeployment/claim-large.yaml --namespace=actions-runner-system
-	kubectl apply -f $(PROHOME)/rundeployment/runnerdeployment.yaml --namespace=actions-runner-system
-	kubectl apply -f $(PROHOME)/rundeployment/horizontalautoscaler.yaml --namespace=actions-runner-system
+	NAME='linux.c7g.4xlarge' envsubst < $(PROHOME)/rundeployment/runnerdeployment.yaml | kubectl apply --namespace=actions-runner-system -f-
+	NAME='linux.c7g.4xlarge' envsubst < $(PROHOME)/rundeployment/horizontalautoscaler.yaml | kubectl apply --namespace=actions-runner-system -f-
+	kubectl config use-context arn:aws:eks:$(REGION):$(ACCOUNT):cluster/ghci-runners-g4dn-4xl
+	kubectl apply -f $(PROHOME)/rundeployment/storageclass.yaml --namespace=actions-runner-system
+	kubectl apply -f $(PROHOME)/rundeployment/claim-medium.yaml --namespace=actions-runner-system
+	kubectl apply -f $(PROHOME)/rundeployment/claim-large.yaml --namespace=actions-runner-system
+	NAME='linux.g4dn.4xlarge' envsubst < $(PROHOME)/rundeployment/runnerdeployment.yaml | kubectl apply --namespace=actions-runner-system -f-
+	NAME='linux.g4dn.4xlarge' envsubst < $(PROHOME)/rundeployment/horizontalautoscaler.yaml | kubectl apply --namespace=actions-runner-system -f-
+
 
 .PHONY: delete
 delete:

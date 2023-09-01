@@ -30,7 +30,7 @@ variable "availability_zones" {
 }
 
 variable "availability_zones_canary" {
-  description = "List to specify the availability zones for which subnes on canary environment will be created."
+  description = "List to specify the availability zones for which subnets on canary environment will be created."
   type        = list
   default     = [
     "us-east-1b",

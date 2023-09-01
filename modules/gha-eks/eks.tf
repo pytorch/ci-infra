@@ -1,8 +1,20 @@
+locals {
+  kms_users = [
+    "arn:aws:iam::${var.aws_account_id}:root",
+  ]
+  eks_users = [
+    ["arn:aws:iam::391835788720:user/eliuriegas@meta.com", "eliuriegas"],
+    ["arn:aws:iam::391835788720:user/jschmidt@meta.com", "jschmidt"],
+    ["arn:aws:iam::391835788720:user/lhyde@linuxfoundation.org", "lhyde"],
+    ["arn:aws:iam::391835788720:user/lokravi@amazon.com", "lokravi"],
+  ]
+}
+
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 19.0"
+  version = "~> 19.16"
 
-  cluster_name    = "${var.environment}-runners-eks-${var.aws_vpc_suffix}"
+  cluster_name    = var.cluster_name
   cluster_version = "1.27"
 
   cluster_endpoint_public_access  = true
@@ -40,8 +52,8 @@ module "eks" {
   subnet_ids               = var.subnet_ids
 
   eks_managed_node_group_defaults = {
-    instance_types = ["c7g.4xlarge"]
-    ami_type       = "AL2_ARM_64"
+    instance_types = ["${var.instance_type}arge"]
+    ami_type       = var.ami_type
   }
 
   eks_managed_node_groups = {
@@ -50,12 +62,12 @@ module "eks" {
       max_size     = 20
       desired_size = 1
 
-      instance_types = ["c7g.4xlarge"]
-      ami_type       = "AL2_ARM_64"
-      capacity_type  = "SPOT"
+      instance_types = ["${var.instance_type}arge"]
+      ami_type       = var.ami_type
+      capacity_type  = var.capacity_type
       labels = {
         Project     = var.environment
-        Environment = "${var.environment}-runners-eks-${var.aws_vpc_suffix}"
+        Environment = var.cluster_name
       }
 
       update_config = {
@@ -69,7 +81,7 @@ module "eks" {
       tags = {
         Project     = "runners-eks"
         Environment = var.environment
-        Context     = "${var.environment}-runners-eks-${var.aws_vpc_suffix}"
+        Context     = var.cluster_name
       }
     }
   }
@@ -77,13 +89,21 @@ module "eks" {
   manage_aws_auth_configmap = true
   create_aws_auth_configmap = false
 
-  kms_key_owners = [
-    "arn:aws:iam::${var.aws_account_id}:root",
+  kms_key_owners         = local.kms_users
+  kms_key_administrators = local.kms_users
+
+  aws_auth_users = [
+    for eksusr in local.eks_users :
+    {
+      groups   = ["system:masters", "cluster-admin"]
+      userarn  = eksusr[0]
+      username = eksusr[1]
+    }
   ]
 
   tags = {
     Project     = "runners-eks"
     Environment = var.environment
-    Context     = "${var.environment}-runners-eks-${var.aws_vpc_suffix}"
+    Context     = var.cluster_name
   }
 }
