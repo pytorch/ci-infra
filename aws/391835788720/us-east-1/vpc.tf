@@ -5,7 +5,7 @@ module "runners_vpc" {
     element(var.aws_vpc_suffixes, i) => element(var.aws_vpc_suffixes, i)
   }
 
-  availability_zones                    = var.availability_zones
+  availability_zones                    = local.availability_zones
   aws_region                            = local.aws_region
   create_private_hosted_zone            = false
   environment                           = "${var.prod_environment}-${each.value}"
@@ -20,7 +20,7 @@ module "runners_canary_vpc" {
     element(var.aws_vpc_suffixes, i) => element(var.aws_vpc_suffixes, i)
   }
 
-  availability_zones                    = var.availability_zones
+  availability_zones                    = local.availability_zones_canary
   aws_region                            = local.aws_region
   create_private_hosted_zone            = false
   environment                           = "${var.prod_environment}-${each.value}"

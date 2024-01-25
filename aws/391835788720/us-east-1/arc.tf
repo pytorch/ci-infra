@@ -1,8 +1,8 @@
 module "arc_canary" {
     source = "../../../modules/arc"
     for_each = {
-        for i in range(0, length(var.aws_vpc_suffixes)):
-        element(aws_vpc_suffixes, i) => module.runners_canary_vpc_ng[i]
+        for env in var.aws_vpc_suffixes:
+        env => module.runners_canary_vpc[env]
     }
 
     environment = var.canary_environment
@@ -15,8 +15,8 @@ module "arc_canary" {
 module "arc_vanguard" {
     source = "../../../modules/arc"
     for_each = {
-        for i in range(0, length(var.aws_vpc_suffixes)):
-        element(aws_vpc_suffixes, i) => module.runners_vpc_ng[i]
+        for env in var.aws_vpc_suffixes:
+        env => module.runners_canary_vpc[env]
     }
 
     environment = var.vanguard_environment
@@ -29,8 +29,8 @@ module "arc_vanguard" {
 module "arc_prod" {
     source = "../../../modules/arc"
     for_each = {
-        for i in range(0, length(var.aws_vpc_suffixes)):
-        element(aws_vpc_suffixes, i) => module.runners_vpc_ng[i]
+        for env in var.aws_vpc_suffixes:
+        env => module.runners_canary_vpc[env]
     }
 
     environment = var.prod_environment
