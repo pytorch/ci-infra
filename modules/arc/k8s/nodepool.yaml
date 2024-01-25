@@ -1,0 +1,29 @@
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: nodepool-$(NODETYPE)
+spec:
+  template:
+    spec:
+      nodeClassRef:
+        name: nodeclass-$(NODETYPE)
+      taints:
+        - key: "arcRunnerNodeType-$(NODETYPE)"
+          effect: NoSchedule
+          value: "true"
+      requirements: $(REQUIREMENTS)
+      kubelet:
+        systemReserved:
+          cpu: 500m
+          memory: 900Mi
+          ephemeral-storage: 1Gi
+        kubeReserved:
+          cpu: 500m
+          memory: 900Mi
+          ephemeral-storage: 3Gi
+        cpuCFSQuota: true
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+    expireAfter: 720h
+  weight: 10

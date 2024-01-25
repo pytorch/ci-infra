@@ -1,0 +1,646 @@
+name: Runners On PR (Release)
+
+on:
+  workflow_call:
+    secrets:
+      RELEASE_APP_ID:
+        required: true
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+      RELEASE_APP_INSTALLATION_ID:
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-to-canary:
+    if: ${{ github.event.label.name == 'deploy-to-canary' }}
+    name: Deploy to Canary
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.7
+        terraform_wrapper: false
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Install AWS CLI
+      uses: unfor19/install-aws-cli-action@v1
+      with:
+        arch: amd64
+
+    - name: Install Kubectl
+      uses: azure/setup-kubectl@v1
+      with:
+        version: latest
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        version: latest
+
+    - name: configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        role-to-assume: arn:aws:iam::308535385114:role/ossci_gha_terraform
+        aws-region: us-east-1
+
+    - name: Notify job started
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Starting to deploy to canary, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Terraform Apply / ARC canary (apply-arc-canary arc-canary)
+      working-directory: runners
+      shell: bash
+      run: make apply-arc-canary arc-canary
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
+        GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        NO_EKSCTL: 'true'
+        ROCKSET_API_KEY: ${{ secrets.ROCKSET_API_KEY }}
+        ROCKSET_API_SERVER: ${{ secrets.ROCKSET_API_SERVER }}
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
+
+    - name: Notify job success
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Successfully deployed to canary, add a comment with PROCEED_TO_VANGUARD in order to proceed deploying to vanguard, or close this PR in order to abort" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  deploy-to-canary-failed:
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    name: Deploy to Canary Failed
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-to-canary
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Notify deploy-to-canary job Failure
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Something went wrong when deploying to canary, either re-run the job or close this PR to abort the deployment process" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  deploy-to-vanguard:
+    if: ${{ github.event.label.name == 'deploy-to-vanguard' }}
+    name: Deploy to Vangard
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.7
+        terraform_wrapper: false
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Install AWS CLI
+      uses: unfor19/install-aws-cli-action@v1
+      with:
+        arch: amd64
+
+    - name: Install Kubectl
+      uses: azure/setup-kubectl@v1
+      with:
+        version: latest
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        version: latest
+
+    - name: configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        role-to-assume: arn:aws:iam::308535385114:role/ossci_gha_terraform
+        aws-region: us-east-1
+
+    - name: Notify job started
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Starting to deploy to vanguard, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Double-check comment added
+      working-directory: runners
+      shell: bash
+      run: make WAIT_COMMENT="PROCEED_TO_VANGUARD" wait-check-user-comment
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Double-check bot comment added
+      working-directory: runners
+      shell: bash
+      run: make WAIT_COMMENT="Successfully deployed to canary" wait-check-bot-comment
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Check PR approval
+      working-directory: runners
+      shell: bash
+      run: make wait-check-pr-approved
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Terraform Apply / ARC vanguard (apply-arc-vanguard arc-vanguard)
+      working-directory: runners
+      shell: bash
+      run: make apply-arc-vanguard arc-vanguard
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
+        GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        NO_EKSCTL: 'true'
+        ROCKSET_API_KEY: ${{ secrets.ROCKSET_API_KEY }}
+        ROCKSET_API_SERVER: ${{ secrets.ROCKSET_API_SERVER }}
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
+
+    - name: Notify job success
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Successfully deployed to vanguard. In order to proceed find someone to approve this PR and then add a comment with PROCEED_TO_PRODUCTION in order to proceed deploying to production environment or ABORT_DEPLOYMENT_SHUTDOWN_VANGUARD in order to stop vanguard and close this PR" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  deploy-to-vanguard-failed:
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    name: Deploy to Vanguard Failed
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-to-vanguard
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Notify deploy-to-vanguard job Failure
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Something went wrong when deploying to vanguard, either re-run the job or comment ABORT_DEPLOYMENT_SHUTDOWN_VANGUARD to revert vanguard to old state, abort the deployment proces and close the PR" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  deploy-to-prod:
+    if: ${{ github.event.label.name == 'deploy-to-prod' }}
+    name: Deploy to Prod
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.7
+        terraform_wrapper: false
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Install AWS CLI
+      uses: unfor19/install-aws-cli-action@v1
+      with:
+        arch: amd64
+
+    - name: Install Kubectl
+      uses: azure/setup-kubectl@v1
+      with:
+        version: latest
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        version: latest
+
+    - name: configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        role-to-assume: arn:aws:iam::308535385114:role/ossci_gha_terraform
+        aws-region: us-east-1
+
+    - name: Notify job started
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Starting to deploy to prod, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Double-check comment added
+      working-directory: runners
+      shell: bash
+      run: make WAIT_COMMENT="PROCEED_TO_PRODUCTION" wait-check-user-comment
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Double-check bot comment added
+      working-directory: runners
+      shell: bash
+      run: make WAIT_COMMENT="Successfully deployed to vanguard" wait-check-bot-comment
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Terraform Apply / ARC prod (arc-prod)
+      working-directory: runners
+      shell: bash
+      run: make arc-prod
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
+        GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        NO_EKSCTL: 'true'
+        ROCKSET_API_KEY: ${{ secrets.ROCKSET_API_KEY }}
+        ROCKSET_API_SERVER: ${{ secrets.ROCKSET_API_SERVER }}
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
+
+    - name: Notify job success
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Successfully deployed to production, add a comment with CLEANUP_DEPLOYMENT in order to merge this PR and stop vanguard" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  deploy-to-prod-failed:
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    name: Deploy to Vanguard Failed
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-to-prod
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Notify deploy-to-prod job Failure
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Something went wrong when deploying to production, re-run the job given job. If it does not work, manual action is required" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  abort-vanguard:
+    if: ${{ github.event.label.name == 'abort-vanguard' }}
+    name: Abort Vangard
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+      with:
+        ref: prod_live
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.7
+        terraform_wrapper: false
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Install AWS CLI
+      uses: unfor19/install-aws-cli-action@v1
+      with:
+        arch: amd64
+
+    - name: Install Kubectl
+      uses: azure/setup-kubectl@v1
+      with:
+        version: latest
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        version: latest
+
+    - name: configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        role-to-assume: arn:aws:iam::308535385114:role/ossci_gha_terraform
+        aws-region: us-east-1
+
+    - name: Notify job started
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Starting to revert vanguard to old state and shut it down, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Double-check comment added
+      working-directory: runners
+      shell: bash
+      run: make WAIT_COMMENT="ABORT_DEPLOYMENT_SHUTDOWN_VANGUARD" wait-check-user-comment
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Terraform Apply / ARC vanguard OFF (apply-arc-vanguard arc-vanguard-off)
+      working-directory: runners
+      shell: bash
+      run: make apply-arc-vanguard arc-vanguard-off
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
+        GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        NO_EKSCTL: 'true'
+        ROCKSET_API_KEY: ${{ secrets.ROCKSET_API_KEY }}
+        ROCKSET_API_SERVER: ${{ secrets.ROCKSET_API_SERVER }}
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
+
+    - name: Notify job success
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Successfully reverted vanguard to current prod_live branch state and disabled it" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
+        GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Close PR
+      working-directory: runners
+      shell: bash
+      run: make close-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  abort-vanguard-failed:
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    name: Deploy to Vanguard Failed
+    runs-on: ubuntu-latest
+    needs:
+      - abort-vanguard
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Notify abort-vanguard job Failure
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Something went wrong when restoring vanguard state, THIS IS A MAJOR ISSUE, firefight starts **NOW**" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  cleanup-deployment:
+    if: ${{ github.event.label.name == 'cleanup-deployment' }}
+    name: Stop Vangard
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.7
+        terraform_wrapper: false
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Install AWS CLI
+      uses: unfor19/install-aws-cli-action@v1
+      with:
+        arch: amd64
+
+    - name: Install Kubectl
+      uses: azure/setup-kubectl@v1
+      with:
+        version: latest
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        version: latest
+
+    - name: configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        role-to-assume: arn:aws:iam::308535385114:role/ossci_gha_terraform
+        aws-region: us-east-1
+
+    - name: Notify job started
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Finishing deployment, by shutting down vanguard and merging this PR" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Double-check comment added
+      working-directory: runners
+      shell: bash
+      run: make WAIT_COMMENT="CLEANUP_DEPLOYMENT" wait-check-user-comment
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Double-check bot comment added
+      working-directory: runners
+      shell: bash
+      run: make WAIT_COMMENT="Successfully deployed to production" wait-check-bot-comment
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Terraform Apply / ARC vanguard OFF (arc-vanguard-off)
+      working-directory: runners
+      shell: bash
+      run: make arc-vanguard-off
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
+        GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        NO_EKSCTL: 'true'
+        ROCKSET_API_KEY: ${{ secrets.ROCKSET_API_KEY }}
+        ROCKSET_API_SERVER: ${{ secrets.ROCKSET_API_SERVER }}
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
+
+    - name: Notify job success
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Successfully stopped vanguard" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Merge PR
+      working-directory: runners
+      shell: bash
+      run: make merge-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+
+  cleanup-deployment-failed:
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    name: Cleanup Deployment Failed
+    runs-on: ubuntu-latest
+    needs:
+      - cleanup-deployment
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Notify cleanup-deployment job Failure
+      working-directory: runners
+      shell: bash
+      run: make COMMENT_TO_ADD="Something went wrong when stopping vanguard and merging the PR, pleae take manual actions from now on to stabelize the status of the system" add-comment-to-pr
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}

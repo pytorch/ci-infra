@@ -1,0 +1,37 @@
+name: Runners On Release PR Comment
+
+on:
+  workflow_call:
+    secrets:
+      RELEASE_APP_ID:
+        required: true
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+      RELEASE_APP_INSTALLATION_ID:
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  pr_commented:
+    if: ${{ github.event.issue.pull_request && contains(github.event.issue.labels.*.name, 'prod-release') && github.event.comment.user.type != 'bot' }}
+    name: React to PR comment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+      - name: Install virtualenv
+        run: pip install virtualenv
+      - name: React to PR comment
+        run: |
+          make COMMENTS="PROCEED_TO_VANGUARD,ABORT_DEPLOYMENT_SHUTDOWN_VANGUARD,PROCEED_TO_PRODUCTION,CLEANUP_DEPLOYMENT" LABELS="deploy-to-vanguard,abort-vanguard,deploy-to-prod,cleanup-deployment" CHECK_REMOVE_LABELS="deploy-to-canary,,deploy-to-vanguard,deploy-to-prod" CHECK_COMMENTS="Successfully deployed to canary##Successfully deployed to vanguard#Successfully deployed to production" react-pr-comment
+        working-directory: runners
+        shell: bash
+        env:
+          GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+          GITHUB_REPOSITORY: ${{ github.repository }}

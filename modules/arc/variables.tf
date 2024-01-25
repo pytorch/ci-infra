@@ -3,11 +3,6 @@ variable "environment" {
   type        = string
 }
 
-variable "aws_region" {
-  description = "The AWS region for lambdas and main infra"
-  type        = string
-}
-
 variable "vpc_id" {
   description = "The VPC ID to create the cluster in"
   type        = string
@@ -23,12 +18,19 @@ variable "aws_vpc_suffix" {
   type        = string
 }
 
-variable "aws_account_id" {
-  description = "AWS account ID"
-  type        = string
-}
-
 variable "eks_cidr_blocks" {
   description = "CIDR blocks to allow access to the EKS cluster"
   type        = list(string)
+}
+
+variable "aws_account_id" {
+  description = "AWS account ID"
+  type        = string
+  default     = "308535385114"
+}
+
+variable "basic_instance_type" {
+  description = "The instance type used to run basic cluster services, such as karpenter and arc coordinator"
+  type        = string
+  default     = "m5n.4xlarge"
 }

@@ -7,7 +7,7 @@ ACCOUNT = $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
 export AWS_PROFILE = $(ACCOUNT)
 
 .PHONY: all
-all: k8s-runner-scaler 
+all: k8s-runner-scaler
 
 .PHONY: venv
 venv: $(PROHOME)/venv/bin/pip
@@ -76,35 +76,206 @@ apply: .terraform/modules/modules.json
 destroy: .terraform/modules/modules.json
 	terraform destroy
 
-.PHONY: update-kubectl
-update-kubectl: apply
-	aws eks update-kubeconfig --region $(REGION) --name ghci-arc-runners-eks-I
 
-.PHONY: apply-cert-manager
-apply-cert-manager: update-kubectl
-	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.2/cert-manager.yaml
+##################### INVENTORY ###########################
+inventory/eks/canary_cluster_name: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json canary_eks_cluster_name | jq -r '.[] | [.] | @csv' | sed 's/"\(.*\)"/\1/' >inventory/eks/canary_cluster_name
 
-.PHONY: add-helm-repository
-add-helm-repository:
-	helm repo add actions-runner-controller https://actions-runner-controller.github.io/actions-runner-controller
+inventory/eks/canary_cluster_config: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json canary_eks_config | jq . >inventory/eks/canary_cluster_config
 
-.PHONY: install-arc
-install-arc: apply-cert-manager add-helm-repository
-	[ "$$GHA_PRIVATE_KEY" != "" ] || (echo "GHA_PRIVATE_KEY not set"; exit 1)
-	helm upgrade --install --namespace actions-runner-system --create-namespace --set=replicaCount=2 --set=authSecret.create=true --set=authSecret.github_app_id="343735" --set=authSecret.github_app_installation_id="38323217" --set=authSecret.github_app_private_key="$$GHA_PRIVATE_KEY" --wait actions-runner-controller actions-runner-controller/actions-runner-controller
+inventory/eks/vanguard_cluster_name: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json vanguard_eks_cluster_name | jq -r '.[] | [.] | @csv' | sed 's/"\(.*\)"/\1/' >inventory/eks/vanguard_cluster_name
 
-.PHONY: k8s-runner-scaler
-k8s-runner-scaler: install-arc
-	kubectl apply -f $(PROHOME)/rundeployment/storageclass.yaml --namespace=actions-runner-system
-	kubectl apply -f $(PROHOME)/rundeployment/claim-medium.yaml --namespace=actions-runner-system
-	kubectl apply -f $(PROHOME)/rundeployment/claim-large.yaml --namespace=actions-runner-system
-	kubectl apply -f $(PROHOME)/rundeployment/runnerdeployment.yaml --namespace=actions-runner-system
-	kubectl apply -f $(PROHOME)/rundeployment/horizontalautoscaler.yaml --namespace=actions-runner-system
+inventory/eks/vanguard_cluster_config: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json vanguard_eks_config | jq . >inventory/eks/vanguard_cluster_config
 
-.PHONY: delete
-delete:
-	kubectl delete -f $(PROHOME)/rundeployment/storageclass.yaml --namespace=actions-runner-system --force || true
-	kubectl delete -f $(PROHOME)/rundeployment/claim-medium.yaml --namespace=actions-runner-system --force || true
-	kubectl delete -f $(PROHOME)/rundeployment/claim-large.yaml --namespace=actions-runner-system --force || true
-	kubectl delete -f $(PROHOME)/rundeployment/runnerdeployment.yaml --namespace=actions-runner-system --force || true
-	kubectl delete -f $(PROHOME)/rundeployment/horizontalautoscaler.yaml --namespace=actions-runner-system --force || true
+inventory/eks/prod_cluster_name: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json prod_eks_cluster_name | jq -r '.[] | [.] | @csv' | sed 's/"\(.*\)"/\1/' >inventory/eks/prod_cluster_name
+
+inventory/eks/prod_cluster_config: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json prod_eks_config | jq . >inventory/eks/prod_cluster_config
+
+
+####################### ARC #############################
+ARC_NODE_CONFIG.yaml:
+	if [ ! -z "$${GITHUB_TOKEN}" ] ; then \
+		curl -o $@ -H "Authorization: Bearer $${GITHUB_TOKEN}" https://raw.githubusercontent.com/pytorch/test-infra/main/.github/arc-node-config.yaml ; \
+	else \
+		curl -o $@ https://raw.githubusercontent.com/pytorch/test-infra/main/.github/arc-node-config.yaml ; \
+	fi
+
+ARC_RUNNER_CONFIG.yaml:
+	if [ ! -z "$${GITHUB_TOKEN}" ] ; then \
+		curl -o $@ -H "Authorization: Bearer $${GITHUB_TOKEN}" https://raw.githubusercontent.com/pytorch/test-infra/main/.github/arc-runner-config.yaml ; \
+	else \
+		curl -o $@ https://raw.githubusercontent.com/pytorch/test-infra/main/.github/arc-runner-config.yaml ; \
+	fi
+
+# Canary
+.PHONY: arc-canary
+arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd arc ; \
+		cat ../inventory/eks/canary_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				GHA_ID=138192 \
+				GHA_INST_ID=19480215 \
+				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
+				EKS_ENVIRONMENT=canary \
+				PROJECTTAG=gi-ci-canary \
+				CLUSTER_CONFIG_FILE=inventory/eks/canary_cluster_config \
+				RUNNERSCOPE=pytorch-canary \
+				clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+		done
+
+.PHONY: karpenter-autoscaler-canary
+karpenter-autoscaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd arc ; \
+		cat ../inventory/eks/canary_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler delete-stale-rds" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				EKS_ENVIRONMENT=canary \
+				PROJECTTAG=gi-ci-canary \
+				CLUSTER_CONFIG_FILE=inventory/eks/canary_cluster_config \
+				RUNNERSCOPE=pytorch-canary \
+				clean-k8s-rds-state setup-karpenter-autoscaler delete-stale-rds || exit 1 ; \
+		done
+
+.PHONY: k8s-runner-scaler-canary
+k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd arc ; \
+		cat ../inventory/eks/canary_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: clean-k8s-rds-state k8s-runner-scaler delete-stale-rds" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				GHA_ID=138192 \
+				GHA_INST_ID=19480215 \
+				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
+				EKS_ENVIRONMENT=canary \
+				PROJECTTAG=gi-ci-canary \
+				CLUSTER_CONFIG_FILE=inventory/eks/canary_cluster_config \
+				RUNNERSCOPE=pytorch-canary \
+				clean-k8s-rds-state k8s-runner-scaler delete-stale-rds  || exit 1 ; \
+		done
+
+# Vanguard
+.PHONY: arc-vanguard
+arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd arc ; \
+		cat ../inventory/eks/vanguard_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				GHA_ID=95403 \
+				GHA_INST_ID=13954108 \
+				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
+				EKS_ENVIRONMENT=vanguard \
+				PROJECTTAG=gi-ci-vanguard \
+				CLUSTER_CONFIG_FILE=inventory/eks/vanguard_cluster_config \
+				RUNNERSCOPE=pytorch-org \
+				MINRUNNERS=30 \
+				MAXRUNNERS=30 \
+				clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+		done
+
+.PHONY: arc-vanguard-off
+arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd arc ; \
+		cat ../inventory/eks/vanguard_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				GHA_ID=95403 \
+				GHA_INST_ID=13954108 \
+				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
+				EKS_ENVIRONMENT=vanguard \
+				PROJECTTAG=gi-ci-vanguard \
+				CLUSTER_CONFIG_FILE=inventory/eks/vanguard_cluster_config \
+				RUNNERSCOPE=pytorch-org \
+				MINRUNNERS=0 \
+				MAXRUNNERS=0 \
+				clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+		done
+
+# Prod
+.PHONY: arc-prod
+arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd arc ; \
+		cat ../inventory/eks/prod_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				GHA_ID=95403 \
+				GHA_INST_ID=13954108 \
+				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
+				EKS_ENVIRONMENT=prod \
+				PROJECTTAG=gi-ci-prod \
+				CLUSTER_CONFIG_FILE=inventory/eks/prod_cluster_config \
+				RUNNERSCOPE=pytorch-org \
+				clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+		done
+
+.PHONY: eks-use-cluster
+eks-use-cluster:
+	cd arc ; $(MAKE) EKS_CLUSTER_NAME=$(CLUSTER) update-kubectl
+
+# Deployment
+.PHONY: open-rel-pr
+open-rel-pr: venv/bin/pip
+	venv/bin/python ./scripts/deployment.py --debug open-rel-pr
+
+.PHONY: wait-check-deployment
+wait-check-deployment: venv/bin/pip
+	[ "$(RELEASE_ACTION_NAME)" != "" ] || (echo "RELEASE_ACTION_NAME not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug wait-check-deployment --release-action-name "$(RELEASE_ACTION_NAME)" --comment-to-add "$(COMMENT_TO_ADD)" --ignore-if-label "$(IGNORE_IF_LABEL)"
+
+.PHONY: wait-check-user-comment
+wait-check-user-comment: venv/bin/pip
+	[ "$(WAIT_COMMENT)" != "" ] || (echo "WAIT_COMMENT not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug wait-check-user-comment --comment "$(WAIT_COMMENT)"
+
+.PHONY: wait-check-bot-comment
+wait-check-bot-comment: venv/bin/pip
+	[ "$(WAIT_COMMENT)" != "" ] || (echo "WAIT_COMMENT not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug wait-check-bot-comment --comment "$(WAIT_COMMENT)"
+
+.PHONY: react-pr-comment
+react-pr-comment: venv/bin/pip
+	[ "$(COMMENTS)" != "" ] || (echo "COMMENTS not set"; exit 1)
+	[ "$(LABELS)" != "" ] || (echo "LABELS not set"; exit 1)
+	[ "$(CHECK_REMOVE_LABELS)" != "" ] || (echo "CHECK_REMOVE_LABELS not set"; exit 1)
+	[ "$(CHECK_COMMENTS)" != "" ] || (echo "CHECK_COMMENTS not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug react-pr-comment --comments "$(COMMENTS)" --labels "$(LABELS)" --check-remove-labels "$(CHECK_REMOVE_LABELS)" --check-comments "$(CHECK_COMMENTS)"
+
+.PHONY: add-comment-to-pr
+add-comment-to-pr: venv/bin/pip
+	[ "$(COMMENT_TO_ADD)" != "" ] || (echo "COMMENT_TO_ADD not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug add-comment-to-pr --comment "$(COMMENT_TO_ADD)"
+
+.PHONY: wait-check-pr-approved
+wait-check-pr-approved: venv/bin/pip
+	venv/bin/python ./scripts/deployment.py --debug wait-check-pr-approved
+
+.PHONY: close-pr
+close-pr: venv/bin/pip
+	venv/bin/python ./scripts/deployment.py --debug close-pr
+
+.PHONY: merge-pr
+merge-pr: venv/bin/pip
+	venv/bin/python ./scripts/deployment.py --debug merge-pr
+

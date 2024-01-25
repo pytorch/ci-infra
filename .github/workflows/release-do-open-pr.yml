@@ -1,0 +1,37 @@
+name: Runners Open Release PR
+
+on:
+  workflow_call:
+    secrets:
+      RELEASE_APP_ID:
+        required: true
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+      RELEASE_APP_INSTALLATION_ID:
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  open_releae_pr:
+    name: Open Release PR
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Open PR
+      working-directory: runners
+      shell: bash
+      run: make open-rel-pr
+      env:
+        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+        GITHUB_REPOSITORY: ${{ github.repository }}

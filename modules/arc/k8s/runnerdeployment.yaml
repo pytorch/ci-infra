@@ -1,17 +1,20 @@
 apiVersion: actions.summerwind.dev/v1alpha1
 kind: RunnerDeployment
 metadata:
-  name: linux.c7g.4xlarge
+  name: "rd-$(RUNNERLABEL)"
 spec:
-  replicas: 1
   template:
     spec:
-      ephemeral: true
-
-      organization: "pytorch"
+      ephemeral: $(ISEPHEMERAL)
 
       labels:
-        - linux.c7g.4xlarge
+        - "$(ENVRUNNERLABEL)"
+        - "arch:$(RUNNERARCH)"
+        - "os:$(RUNNEROS)"
+
+      $(RUNNERSCOPE)
+
+      $(RUNNERGROUP)
 
       env:
       - name: POD_NAME
@@ -19,22 +22,19 @@ spec:
           fieldRef:
             fieldPath: metadata.name
 
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector:
-            matchLabels:
-              runner-deployment-name: linux.c7g.4xlarge
+      tolerations:
+        - key: "arcRunnerNodeType-$(NODETYPE)"
+          operator: Exists
+          effect: NoSchedule
 
       imagePullPolicy: Always
       resources:
         limits:
-          cpu: "4.0"
-          memory: "8Gi"
+          cpu: "$(CPU)"
+          memory: "$(MEMORY)"
         requests:
-          cpu: "4.0"
-          memory: "8Gi"
+          cpu: "$(CPU)"
+          memory: "$(MEMORY)"
 
       dockerVolumeMounts:
       - mountPath: /var/lib/docker
@@ -58,10 +58,10 @@ spec:
       volumes:
       - name: docker
         emptyDir:
-          sizeLimit: 20Gi
+          sizeLimit: $(PARTDOCKER)
       - name: work
         emptyDir:
-          sizeLimit: 150Gi
+          sizeLimit: $(PARTWORK)
       - name: tmp
         emptyDir:
-          sizeLimit: 50Gi
+          sizeLimit: $(PARTTMP)
