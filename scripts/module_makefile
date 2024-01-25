@@ -75,7 +75,8 @@ apply: .terraform/modules/modules.json
 
 .PHONY: destroy
 destroy: .terraform/modules/modules.json
-	terraform destroy
+	echo "To make sure you want to run this, go to the Makefile and comment out the destroy target" ; exit 1
+	# terraform destroy
 
 .PHONY: tflint
 tflint: .terraform/modules/modules.json
