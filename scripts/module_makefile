@@ -47,7 +47,8 @@ external_k8s_cidr_ipv4.tf: .account-checked $(PROHOME)/venv/bin/pip $(PROHOME)/s
 	$(PROHOME)/venv/bin/python $(PROHOME)/scripts/simplify_cidr_blocks.py --rules-per-sg 50 --output-file external_k8s_cidr_ipv4.tf
 
 dyn_locals.tf: .account-checked
-	echo -e "locals {\n  aws_region = \"$(REGION)\"\n  aws_account_id = \"$(ACCOUNT)\"\n}\n" >dyn_locals.tf
+	# echo -e "locals {\n  aws_region = \"$(REGION)\"\n  aws_account_id = \"$(ACCOUNT)\"\n}\n" >dyn_locals.tf
+	echo -e "locals {\n  aws_region = \"$(REGION)\"\n}\n" >dyn_locals.tf
 
 backend.tf: backend-state.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend.tf >backend.tf
@@ -75,6 +76,11 @@ apply: .terraform/modules/modules.json
 .PHONY: destroy
 destroy: .terraform/modules/modules.json
 	terraform destroy
+
+.PHONY: tflint
+tflint: .terraform/modules/modules.json
+	tflint --init
+	tflint --module --color
 
 
 ##################### INVENTORY ###########################
