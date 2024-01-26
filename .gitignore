@@ -12,6 +12,8 @@ __pycache__/
 **/.venv/
 **/tf-modules/
 **/venv/
+ARC_NODE_CONFIG.yaml
+ARC_RUNNER_CONFIG.yaml
 aws/391835788720/us-east-1/backend.tf
 backend.plan
 crash.log

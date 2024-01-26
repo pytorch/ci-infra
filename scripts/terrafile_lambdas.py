@@ -7,6 +7,7 @@ $ pip install requests pyyaml
 import argparse
 import hashlib
 import subprocess
+import time
 import urllib.request
 import yaml
 
@@ -44,15 +45,16 @@ def main():
             subprocess.run([
                 'git', 'clone', f'https://github.com/{source}', f'{args.modules}/TMP',
             ])
+            time.sleep(0.5)
             if 'rev' in mod_spec and mod_spec['rev']:
                 subprocess.run(
                     ['git', 'checkout', mod_spec['rev'], ],
-                    cwd=f'./{args.modules}/TMP'
+                    cwd=f'{args.modules}/TMP'
                 )
 
         proc = subprocess.Popen(
             ['git', 'rev-parse', 'HEAD', ],
-            cwd=f'./{args.modules}/TMP',
+            cwd=f'{args.modules}/TMP',
             stdout=subprocess.PIPE,
             universal_newlines=True
         )

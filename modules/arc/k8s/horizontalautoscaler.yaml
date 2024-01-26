@@ -1,0 +1,17 @@
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: HorizontalRunnerAutoscaler
+metadata:
+  name: 'hra-$(RUNNERLABEL)'
+spec:
+  scaleDownDelaySecondsAfterScaleOut: 900
+  scaleTargetRef:
+    kind: RunnerDeployment
+    name: 'rd-$(RUNNERLABEL)'
+  minReplicas: $(MINRUNNERS)
+  maxReplicas: $(MAXRUNNERS)
+  metrics:
+  - type: PercentageRunnersBusy
+    scaleUpThreshold: '$(SCALEUPTHRESHOLD)'
+    scaleDownThreshold: '$(SCALEDOWNTHRESHOLD)'
+    scaleUpFactor: '$(SCALEUPFACTOR)'
+    scaleDownFactor: '$(SCALEDOWNFACTOR)'
