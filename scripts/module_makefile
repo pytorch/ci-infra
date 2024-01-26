@@ -58,8 +58,16 @@ backend-state.tf: .account-checked dyn_locals.tf external_k8s_cidr_ipv4.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
 	terraform get -update
 	terraform init -backend=false
-	terraform plan -out=backend.plan -target=module.backend-state
-	terraform apply backend.plan
+	terraform plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state ; \
+		ext_code = $$? ; \
+		if [ $$ext_code -eq 2 ] ; then \
+			terraform apply backend.plan ; \
+		elif [ $$ext_code -eq 0 ] ; then \
+			echo "Backend state already exists" ; \
+		else \
+			echo "Unexpected exit code $$ext_code" ; \
+			exit 1 ; \
+		fi
 
 .account-checked:
 	aws configure list-profiles | grep $(ACCOUNT) || (echo "Account $(ACCOUNT) not configured in ~/.aws/config", see https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html; exit 1)
@@ -73,6 +81,18 @@ plan: .terraform/modules/modules.json
 apply: .terraform/modules/modules.json
 	terraform apply
 
+.PHONY: apply-arc-canary
+apply: .terraform/modules/modules.json
+	terraform apply --target=module.arc_canary
+
+.PHONY: apply-arc-vanguard
+apply: .terraform/modules/modules.json
+	terraform apply --target=module.arc_vanguard
+
+.PHONY: apply-arc-vanguard
+apply: .terraform/modules/modules.json
+	terraform apply --target=module.arc_vanguard
+
 .PHONY: destroy
 destroy: .terraform/modules/modules.json
 	echo "To make sure you want to run this, go to the Makefile and comment out the destroy target" ; exit 1
@@ -81,7 +101,7 @@ destroy: .terraform/modules/modules.json
 .PHONY: tflint
 tflint: .terraform/modules/modules.json
 	tflint --init
-	tflint --module --color
+	tflint --module --color --minimum-failure-severity=warning --recursive
 
 
 ##################### INVENTORY ###########################

@@ -34,3 +34,15 @@ variable "basic_instance_type" {
   type        = string
   default     = "m5n.4xlarge"
 }
+
+variable "additional_kms_users" {
+  description = "Additional users to add to the KMS key policy"
+  type        = list(string)
+  default     = []
+}
+
+variable "additional_eks_users" {
+  description = "Additional users to add to the EKS cluster"
+  type        = list(string)
+  default     = []
+}

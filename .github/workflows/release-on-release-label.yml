@@ -332,7 +332,7 @@ jobs:
     - name: Terraform Apply / ARC prod (arc-prod)
       working-directory: runners
       shell: bash
-      run: make arc-prod
+      run: make apply-arc-prod arc-prod
       env:
         AWS_DEFAULT_REGION: us-east-1
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
