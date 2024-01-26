@@ -58,10 +58,10 @@ backend-state.tf: .account-checked dyn_locals.tf external_k8s_cidr_ipv4.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
 	terraform get -update
 	terraform init -backend=false
-	terraform plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state ; \
+	terraform plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state ${TERRAFORM_EXTRAS} ; \
 		ext_code = $$? ; \
 		if [ $$ext_code -eq 2 ] ; then \
-			terraform apply backend.plan ; \
+			terraform apply backend.plan ${TERRAFORM_EXTRAS} ; \
 		elif [ $$ext_code -eq 0 ] ; then \
 			echo "Backend state already exists" ; \
 		else \
@@ -75,28 +75,28 @@ backend-state.tf: .account-checked dyn_locals.tf external_k8s_cidr_ipv4.tf
 
 .PHONY: plan
 plan: .terraform/modules/modules.json
-	terraform plan
+	terraform plan $(TERRAFORM_EXTRAS)
 
 .PHONY: apply
 apply: .terraform/modules/modules.json
-	terraform apply
+	terraform apply ${TERRAFORM_EXTRAS}
 
 .PHONY: apply-arc-canary
 apply: .terraform/modules/modules.json
-	terraform apply --target=module.arc_canary
+	terraform apply --target=module.arc_canary ${TERRAFORM_EXTRAS}
 
 .PHONY: apply-arc-vanguard
 apply: .terraform/modules/modules.json
-	terraform apply --target=module.arc_vanguard
+	terraform apply --target=module.arc_vanguard ${TERRAFORM_EXTRAS}
 
 .PHONY: apply-arc-vanguard
 apply: .terraform/modules/modules.json
-	terraform apply --target=module.arc_vanguard
+	terraform apply --target=module.arc_vanguard ${TERRAFORM_EXTRAS}
 
 .PHONY: destroy
 destroy: .terraform/modules/modules.json
 	echo "To make sure you want to run this, go to the Makefile and comment out the destroy target" ; exit 1
-	# terraform destroy
+	# terraform destroy ${TERRAFORM_EXTRAS}
 
 .PHONY: tflint
 tflint: .terraform/modules/modules.json
@@ -154,8 +154,8 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
-				GHA_ID=138192 \
-				GHA_INST_ID=19480215 \
+				GHA_ID=808166 \
+				GHA_INST_ID=46578864 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
 				EKS_ENVIRONMENT=canary \
 				PROJECTTAG=gi-ci-canary \
@@ -187,8 +187,8 @@ k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state k8s-runner-scaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
-				GHA_ID=138192 \
-				GHA_INST_ID=19480215 \
+				GHA_ID=808166 \
+				GHA_INST_ID=46578864 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
 				EKS_ENVIRONMENT=canary \
 				PROJECTTAG=gi-ci-canary \
@@ -206,8 +206,8 @@ arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
-				GHA_ID=95403 \
-				GHA_INST_ID=13954108 \
+				GHA_ID=343735 \
+				GHA_INST_ID=38323217 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
 				EKS_ENVIRONMENT=vanguard \
 				PROJECTTAG=gi-ci-vanguard \
@@ -226,8 +226,8 @@ arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_clu
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
-				GHA_ID=95403 \
-				GHA_INST_ID=13954108 \
+				GHA_ID=343735 \
+				GHA_INST_ID=38323217 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
 				EKS_ENVIRONMENT=vanguard \
 				PROJECTTAG=gi-ci-vanguard \
@@ -247,8 +247,8 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config venv
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
-				GHA_ID=95403 \
-				GHA_INST_ID=13954108 \
+				GHA_ID=343735 \
+				GHA_INST_ID=38323217 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
 				EKS_ENVIRONMENT=prod \
 				PROJECTTAG=gi-ci-prod \

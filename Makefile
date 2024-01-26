@@ -21,3 +21,16 @@ tflint:
 		done ; \
 		popd ; \
 	done
+
+.PHONY: plan
+plan:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make plan: aws/$$account/$$region ============================================" ; \
+			$(MAKE) plan || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done

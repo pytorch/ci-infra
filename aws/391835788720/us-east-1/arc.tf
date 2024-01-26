@@ -5,8 +5,8 @@ module "arc_canary" {
         env => module.runners_canary_vpc[env]
     }
 
-    additional_eks_users = [ aws_iam_user.ossci.arn ]
-    additional_kms_users = [ aws_iam_user.ossci.arn ]
+    additional_eks_users = [ aws_iam_user.ossci.arn, data.aws_iam_user.jschmidt.arn, data.aws_iam_user.lhyde.arn ]
+    additional_kms_users = [ aws_iam_user.ossci.arn, data.aws_iam_user.jschmidt.arn, data.aws_iam_user.lhyde.arn ]
     aws_vpc_suffix = each.key
     eks_cidr_blocks = local.external_k8s_cidr_ipv4
     environment = var.canary_environment
@@ -21,8 +21,8 @@ module "arc_vanguard" {
         env => module.runners_vpc[env]
     }
 
-    additional_eks_users = [ aws_iam_user.ossci.arn ]
-    additional_kms_users = [ aws_iam_user.ossci.arn ]
+    additional_eks_users = [ aws_iam_user.ossci.arn, data.aws_iam_user.jschmidt.arn, data.aws_iam_user.lhyde.arn ]
+    additional_kms_users = [ aws_iam_user.ossci.arn, data.aws_iam_user.jschmidt.arn, data.aws_iam_user.lhyde.arn ]
     aws_vpc_suffix = each.key
     eks_cidr_blocks = local.external_k8s_cidr_ipv4
     environment = var.vanguard_environment
@@ -37,8 +37,8 @@ module "arc_prod" {
         env => module.runners_vpc[env]
     }
 
-    additional_eks_users = [ aws_iam_user.ossci.arn ]
-    additional_kms_users = [ aws_iam_user.ossci.arn ]
+    additional_eks_users = [ aws_iam_user.ossci.arn, data.aws_iam_user.jschmidt.arn, data.aws_iam_user.lhyde.arn ]
+    additional_kms_users = [ aws_iam_user.ossci.arn, data.aws_iam_user.jschmidt.arn, data.aws_iam_user.lhyde.arn ]
     aws_vpc_suffix = each.key
     eks_cidr_blocks = local.external_k8s_cidr_ipv4
     environment = var.prod_environment

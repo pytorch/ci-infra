@@ -1,14 +1,12 @@
 name: Runners Open Release PR
 
 on:
-  workflow_call:
-    secrets:
-      RELEASE_APP_ID:
+  workflow_dispatch:
+    inputs:
+      fast_release_firefight:
+        description: 'Skip terraform plan validation and old instance removal (cattle spa) [Use for firefighting]'
         required: true
-      RELEASE_APP_PRIVATE_KEY:
-        required: true
-      RELEASE_APP_INSTALLATION_ID:
-        required: true
+        default: 'false'
 
 concurrency:
   group: ${{ github.workflow }}

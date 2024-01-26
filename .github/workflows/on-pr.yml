@@ -1,0 +1,65 @@
+name: On PR
+on:
+  pull_request: {}
+  push:
+    branches:
+      - main
+
+jobs:
+  tflint-plan:
+    name: tflint + terraform plan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.7
+        terraform_wrapper: false
+
+    - uses: terraform-linters/setup-tflint@v2
+      name: Setup TFLint
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Install AWS CLI
+      uses: unfor19/install-aws-cli-action@v1
+      with:
+        arch: amd64
+
+    - name: Install Kubectl
+      uses: azure/setup-kubectl@v1
+      with:
+        version: latest
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        version: latest
+
+    - name: configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        role-to-assume: arn:aws:iam::308535385114:role/ossci_gha_terraform
+        aws-region: us-east-1
+
+    - name: "Run TFLint runners"
+      shell: bash
+      run: make tflint
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+
+    - name: Make plan
+      shell: bash
+      run: make plan
+      env:
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        TERRAFORM_EXTRAS: -lock-timeout=15m
+

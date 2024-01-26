@@ -1,18 +1,19 @@
-name: Runners On PR (Release)
+name: Runners On PR Release Labeling
 
 on:
-  workflow_call:
-    secrets:
-      RELEASE_APP_ID:
-        required: true
-      RELEASE_APP_PRIVATE_KEY:
-        required: true
-      RELEASE_APP_INSTALLATION_ID:
-        required: true
+  pull_request:
+    branches:
+      - prod_live
+    types:
+      - labeled
 
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   deploy-to-canary:

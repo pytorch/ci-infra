@@ -2,13 +2,8 @@ name: Runners On Release PR Comment
 
 on:
   workflow_call:
-    secrets:
-      RELEASE_APP_ID:
-        required: true
-      RELEASE_APP_PRIVATE_KEY:
-        required: true
-      RELEASE_APP_INSTALLATION_ID:
-        required: true
+  issue_comment:
+    types: [created]
 
 concurrency:
   group: ${{ github.workflow }}
