@@ -9,18 +9,18 @@ ifneq ($(strip $(MAXRUNNERS)),)
   ADDITIONAL_VALUES := $(ADDITIONAL_VALUES) maxRunners=$(MAXRUNNERS)
 endif
 
-KARPENTERCONTROLERROLEARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_controler_role_arn"]' <"../${CLUSTER_CONFIG_FILE}")
-KARPENTERNODEROLEARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_role_arn"]' <"../${CLUSTER_CONFIG_FILE}")
-KARPENTERNODEROLE := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_role_name"]' <"../${CLUSTER_CONFIG_FILE}")
-KARPENTERSGIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["security_group_ids"][] | {"id": .}]' <"../${CLUSTER_CONFIG_FILE}")
-KARPENTERSUBNETIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["subnet_ids"][] | {"id": .}]' <"../${CLUSTER_CONFIG_FILE}")
+KARPENTERCONTROLERROLEARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_controler_role_arn"]' <"${CLUSTER_CONFIG_FILE}")
+KARPENTERNODEROLEARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_role_arn"]' <"${CLUSTER_CONFIG_FILE}")
+KARPENTERNODEROLE := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_role_name"]' <"${CLUSTER_CONFIG_FILE}")
+KARPENTERSGIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["security_group_ids"][] | {"id": .}]' <"${CLUSTER_CONFIG_FILE}")
+KARPENTERSUBNETIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["subnet_ids"][] | {"id": .}]' <"${CLUSTER_CONFIG_FILE}")
 
 .PHONY: clean-k8s-rds-state
 clean-k8s-rds-state:
 	rm -f $(K8S_RDS_STATE_FILE)
 
 delete-stale-rds:
-	../venv/bin/python3 ../scripts/kubectl_delete_rds_resources.py \
+	../../venv/bin/python3 ../scripts/kubectl_delete_rds_resources.py \
 		--rds-state-file $(K8S_RDS_STATE_FILE)
 
 .PHONY: update-kubectl
@@ -28,7 +28,7 @@ update-kubectl:
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	aws eks update-kubeconfig --region "us-east-1" --name "$(EKS_CLUSTER_NAME)"
 	if [ "$${NO_EKSCTL}" != "true" ] ; then \
-		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn 'arn:aws:iam::308535385114:role/ossci_gha_terraform' --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
+		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn 'arn:aws:iam::391835788720:user/ossci' --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
 	fi
 
 .PHONY: add-helm-repository
@@ -94,7 +94,7 @@ setup-karpenter-autoscaler: install-karpenter
 	[ '$(KARPENTERSUBNETIDS)' != "" ] || (echo "KARPENTERSUBNETIDS not set"; exit 1)
 	[ "$(PROJECTTAG)" != "" ] || (echo "PROJECTTAG not set"; exit 1)
 	[ "$(RUNNERSCOPE)" != "" ] || (echo "RUNNERSCOPE not set"; exit 1)
-	../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
+	../../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/nodeclass.yaml \
 		--namespace karpenter \
 		--arc-runner-config-files ../ARC_NODE_CONFIG.yaml \
@@ -110,7 +110,7 @@ setup-karpenter-autoscaler: install-karpenter
 			projecttag=$(PROJECTTAG) \
 		--root-classes nodeConfig \
 		--label-property nodeType
-	../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
+	../../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/nodepool.yaml \
 		--namespace karpenter \
 		--arc-runner-config-files ../ARC_NODE_CONFIG.yaml \
@@ -140,7 +140,7 @@ k8s-runner-scaler: install-arc
 	kubectl apply -f ./k8s/storageclass.yaml --namespace=actions-runner-system
 	kubectl apply -f ./k8s/claim-medium.yaml --namespace=actions-runner-system
 	kubectl apply -f ./k8s/claim-large.yaml --namespace=actions-runner-system
-	../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
+	../../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/runnerdeployment.yaml \
 		--arc-runner-config-files ../ARC_NODE_CONFIG.yaml ../ARC_RUNNER_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \
@@ -156,7 +156,7 @@ k8s-runner-scaler: install-arc
 			$(ADDITIONAL_VALUES) \
 		--root-classes nodeConfig runnerConfig \
 		--label-property runnerLabel
-	../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
+	../../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/horizontalautoscaler.yaml \
 		--arc-runner-config-files ../ARC_NODE_CONFIG.yaml ../ARC_RUNNER_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \

@@ -1,5 +1,5 @@
 SHELL=/bin/bash -o pipefail
-PROHOME = ../../..
+PROHOME = $(realpath ../../..)
 
 REGION = $(notdir $(CURDIR))
 ACCOUNT = $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
@@ -59,7 +59,7 @@ backend-state.tf: .account-checked dyn_locals.tf external_k8s_cidr_ipv4.tf
 	terraform get -update
 	terraform init -backend=false
 	terraform plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state ${TERRAFORM_EXTRAS} ; \
-		ext_code = $$? ; \
+		ext_code=$$? ; \
 		if [ $$ext_code -eq 2 ] ; then \
 			terraform apply backend.plan ${TERRAFORM_EXTRAS} ; \
 		elif [ $$ext_code -eq 0 ] ; then \
@@ -82,16 +82,16 @@ apply: .terraform/modules/modules.json
 	terraform apply ${TERRAFORM_EXTRAS}
 
 .PHONY: apply-arc-canary
-apply: .terraform/modules/modules.json
+apply-arc-canary: .terraform/modules/modules.json
 	terraform apply --target=module.arc_canary ${TERRAFORM_EXTRAS}
 
 .PHONY: apply-arc-vanguard
-apply: .terraform/modules/modules.json
+apply-arc-vanguard: .terraform/modules/modules.json
 	terraform apply --target=module.arc_vanguard ${TERRAFORM_EXTRAS}
 
-.PHONY: apply-arc-vanguard
-apply: .terraform/modules/modules.json
-	terraform apply --target=module.arc_vanguard ${TERRAFORM_EXTRAS}
+.PHONY: apply-arc-prod
+apply-arc-prod: .terraform/modules/modules.json
+	terraform apply --target=module.arc_prod ${TERRAFORM_EXTRAS}
 
 .PHONY: destroy
 destroy: .terraform/modules/modules.json
@@ -147,9 +147,9 @@ ARC_RUNNER_CONFIG.yaml:
 
 # Canary
 .PHONY: arc-canary
-arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
-	cd arc ; \
-		cat ../inventory/eks/canary_cluster_name | \
+arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
@@ -159,30 +159,30 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
 				EKS_ENVIRONMENT=canary \
 				PROJECTTAG=gi-ci-canary \
-				CLUSTER_CONFIG_FILE=inventory/eks/canary_cluster_config \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
 				RUNNERSCOPE=pytorch-canary \
-				clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
 		done
 
 .PHONY: karpenter-autoscaler-canary
-karpenter-autoscaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
-	cd arc ; \
-		cat ../inventory/eks/canary_cluster_name | \
+karpenter-autoscaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				EKS_ENVIRONMENT=canary \
 				PROJECTTAG=gi-ci-canary \
-				CLUSTER_CONFIG_FILE=inventory/eks/canary_cluster_config \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
 				RUNNERSCOPE=pytorch-canary \
-				clean-k8s-rds-state setup-karpenter-autoscaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc setup-karpenter-autoscaler delete-stale-rds || exit 1 ; \
 		done
 
 .PHONY: k8s-runner-scaler-canary
-k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
-	cd arc ; \
-		cat ../inventory/eks/canary_cluster_name | \
+k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state k8s-runner-scaler delete-stale-rds" ; \
@@ -192,16 +192,16 @@ k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
 				EKS_ENVIRONMENT=canary \
 				PROJECTTAG=gi-ci-canary \
-				CLUSTER_CONFIG_FILE=inventory/eks/canary_cluster_config \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
 				RUNNERSCOPE=pytorch-canary \
-				clean-k8s-rds-state k8s-runner-scaler delete-stale-rds  || exit 1 ; \
+				clean-k8s-rds-state install-arc k8s-runner-scaler delete-stale-rds  || exit 1 ; \
 		done
 
 # Vanguard
 .PHONY: arc-vanguard
-arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
-	cd arc ; \
-		cat ../inventory/eks/vanguard_cluster_name | \
+arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
@@ -211,17 +211,17 @@ arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
 				EKS_ENVIRONMENT=vanguard \
 				PROJECTTAG=gi-ci-vanguard \
-				CLUSTER_CONFIG_FILE=inventory/eks/vanguard_cluster_config \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_config \
 				RUNNERSCOPE=pytorch-org \
 				MINRUNNERS=30 \
 				MAXRUNNERS=30 \
-				clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
 		done
 
 .PHONY: arc-vanguard-off
-arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
-	cd arc ; \
-		cat ../inventory/eks/vanguard_cluster_name | \
+arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
@@ -231,18 +231,18 @@ arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_clu
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
 				EKS_ENVIRONMENT=vanguard \
 				PROJECTTAG=gi-ci-vanguard \
-				CLUSTER_CONFIG_FILE=inventory/eks/vanguard_cluster_config \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_config \
 				RUNNERSCOPE=pytorch-org \
 				MINRUNNERS=0 \
 				MAXRUNNERS=0 \
-				clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
 		done
 
 # Prod
 .PHONY: arc-prod
-arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
-	cd arc ; \
-		cat ../inventory/eks/prod_cluster_name | \
+arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
@@ -252,57 +252,57 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config venv
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
 				EKS_ENVIRONMENT=prod \
 				PROJECTTAG=gi-ci-prod \
-				CLUSTER_CONFIG_FILE=inventory/eks/prod_cluster_config \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_config \
 				RUNNERSCOPE=pytorch-org \
-				clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
 		done
 
 .PHONY: eks-use-cluster
 eks-use-cluster:
-	cd arc ; $(MAKE) EKS_CLUSTER_NAME=$(CLUSTER) update-kubectl
+	cd $(PROHOME)/modules/arc ; $(MAKE) EKS_CLUSTER_NAME=$(CLUSTER) update-kubectl
 
 # Deployment
 .PHONY: open-rel-pr
-open-rel-pr: venv/bin/pip
-	venv/bin/python ./scripts/deployment.py --debug open-rel-pr
+open-rel-pr: $(PROHOME)/venv/bin/pip
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug open-rel-pr
 
 .PHONY: wait-check-deployment
-wait-check-deployment: venv/bin/pip
+wait-check-deployment: $(PROHOME)/venv/bin/pip
 	[ "$(RELEASE_ACTION_NAME)" != "" ] || (echo "RELEASE_ACTION_NAME not set"; exit 1)
-	venv/bin/python ./scripts/deployment.py --debug wait-check-deployment --release-action-name "$(RELEASE_ACTION_NAME)" --comment-to-add "$(COMMENT_TO_ADD)" --ignore-if-label "$(IGNORE_IF_LABEL)"
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug wait-check-deployment --release-action-name "$(RELEASE_ACTION_NAME)" --comment-to-add "$(COMMENT_TO_ADD)" --ignore-if-label "$(IGNORE_IF_LABEL)"
 
 .PHONY: wait-check-user-comment
-wait-check-user-comment: venv/bin/pip
+wait-check-user-comment: $(PROHOME)/venv/bin/pip
 	[ "$(WAIT_COMMENT)" != "" ] || (echo "WAIT_COMMENT not set"; exit 1)
-	venv/bin/python ./scripts/deployment.py --debug wait-check-user-comment --comment "$(WAIT_COMMENT)"
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug wait-check-user-comment --comment "$(WAIT_COMMENT)"
 
 .PHONY: wait-check-bot-comment
-wait-check-bot-comment: venv/bin/pip
+wait-check-bot-comment: $(PROHOME)/venv/bin/pip
 	[ "$(WAIT_COMMENT)" != "" ] || (echo "WAIT_COMMENT not set"; exit 1)
-	venv/bin/python ./scripts/deployment.py --debug wait-check-bot-comment --comment "$(WAIT_COMMENT)"
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug wait-check-bot-comment --comment "$(WAIT_COMMENT)"
 
 .PHONY: react-pr-comment
-react-pr-comment: venv/bin/pip
+react-pr-comment: $(PROHOME)/venv/bin/pip
 	[ "$(COMMENTS)" != "" ] || (echo "COMMENTS not set"; exit 1)
 	[ "$(LABELS)" != "" ] || (echo "LABELS not set"; exit 1)
 	[ "$(CHECK_REMOVE_LABELS)" != "" ] || (echo "CHECK_REMOVE_LABELS not set"; exit 1)
 	[ "$(CHECK_COMMENTS)" != "" ] || (echo "CHECK_COMMENTS not set"; exit 1)
-	venv/bin/python ./scripts/deployment.py --debug react-pr-comment --comments "$(COMMENTS)" --labels "$(LABELS)" --check-remove-labels "$(CHECK_REMOVE_LABELS)" --check-comments "$(CHECK_COMMENTS)"
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug react-pr-comment --comments "$(COMMENTS)" --labels "$(LABELS)" --check-remove-labels "$(CHECK_REMOVE_LABELS)" --check-comments "$(CHECK_COMMENTS)"
 
 .PHONY: add-comment-to-pr
-add-comment-to-pr: venv/bin/pip
+add-comment-to-pr: $(PROHOME)/venv/bin/pip
 	[ "$(COMMENT_TO_ADD)" != "" ] || (echo "COMMENT_TO_ADD not set"; exit 1)
-	venv/bin/python ./scripts/deployment.py --debug add-comment-to-pr --comment "$(COMMENT_TO_ADD)"
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug add-comment-to-pr --comment "$(COMMENT_TO_ADD)"
 
 .PHONY: wait-check-pr-approved
-wait-check-pr-approved: venv/bin/pip
-	venv/bin/python ./scripts/deployment.py --debug wait-check-pr-approved
+wait-check-pr-approved: $(PROHOME)/venv/bin/pip
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug wait-check-pr-approved
 
 .PHONY: close-pr
-close-pr: venv/bin/pip
-	venv/bin/python ./scripts/deployment.py --debug close-pr
+close-pr: $(PROHOME)/venv/bin/pip
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug close-pr
 
 .PHONY: merge-pr
-merge-pr: venv/bin/pip
-	venv/bin/python ./scripts/deployment.py --debug merge-pr
+merge-pr: $(PROHOME)/venv/bin/pip
+	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug merge-pr
 
