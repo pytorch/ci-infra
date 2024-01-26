@@ -20,7 +20,7 @@ clean-k8s-rds-state:
 	rm -f $(K8S_RDS_STATE_FILE)
 
 delete-stale-rds:
-	../../venv/bin/python3 ../scripts/kubectl_delete_rds_resources.py \
+	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py \
 		--rds-state-file $(K8S_RDS_STATE_FILE)
 
 .PHONY: update-kubectl
@@ -94,10 +94,10 @@ setup-karpenter-autoscaler: install-karpenter
 	[ '$(KARPENTERSUBNETIDS)' != "" ] || (echo "KARPENTERSUBNETIDS not set"; exit 1)
 	[ "$(PROJECTTAG)" != "" ] || (echo "PROJECTTAG not set"; exit 1)
 	[ "$(RUNNERSCOPE)" != "" ] || (echo "RUNNERSCOPE not set"; exit 1)
-	../../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
+	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/nodeclass.yaml \
 		--namespace karpenter \
-		--arc-runner-config-files ../ARC_NODE_CONFIG.yaml \
+		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \
 		--runner-scope $(RUNNERSCOPE) \
 		--additional-values \
@@ -110,10 +110,10 @@ setup-karpenter-autoscaler: install-karpenter
 			projecttag=$(PROJECTTAG) \
 		--root-classes nodeConfig \
 		--label-property nodeType
-	../../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
+	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/nodepool.yaml \
 		--namespace karpenter \
-		--arc-runner-config-files ../ARC_NODE_CONFIG.yaml \
+		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \
 		--runner-scope $(RUNNERSCOPE) \
 		--additional-values \
@@ -140,9 +140,9 @@ k8s-runner-scaler: install-arc
 	kubectl apply -f ./k8s/storageclass.yaml --namespace=actions-runner-system
 	kubectl apply -f ./k8s/claim-medium.yaml --namespace=actions-runner-system
 	kubectl apply -f ./k8s/claim-large.yaml --namespace=actions-runner-system
-	../../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
+	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/runnerdeployment.yaml \
-		--arc-runner-config-files ../ARC_NODE_CONFIG.yaml ../ARC_RUNNER_CONFIG.yaml \
+		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \
 		--runner-scope $(RUNNERSCOPE) \
 		--additional-values \
@@ -156,9 +156,9 @@ k8s-runner-scaler: install-arc
 			$(ADDITIONAL_VALUES) \
 		--root-classes nodeConfig runnerConfig \
 		--label-property runnerLabel
-	../../venv/bin/python3 ../scripts/kubectl_apply_runner_templates.py \
+	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/horizontalautoscaler.yaml \
-		--arc-runner-config-files ../ARC_NODE_CONFIG.yaml ../ARC_RUNNER_CONFIG.yaml \
+		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \
 		--runner-scope $(RUNNERSCOPE) \
 		--additional-values \

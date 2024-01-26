@@ -47,8 +47,7 @@ external_k8s_cidr_ipv4.tf: .account-checked $(PROHOME)/venv/bin/pip $(PROHOME)/s
 	$(PROHOME)/venv/bin/python $(PROHOME)/scripts/simplify_cidr_blocks.py --rules-per-sg 50 --output-file external_k8s_cidr_ipv4.tf
 
 dyn_locals.tf: .account-checked
-	# echo -e "locals {\n  aws_region = \"$(REGION)\"\n  aws_account_id = \"$(ACCOUNT)\"\n}\n" >dyn_locals.tf
-	echo -e "locals {\n  aws_region = \"$(REGION)\"\n}\n" >dyn_locals.tf
+	echo -e "locals {\n  aws_region = \"$(REGION)\"\n  aws_account_id = \"$(ACCOUNT)\"\n}\n" >dyn_locals.tf
 
 backend.tf: backend-state.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend.tf >backend.tf
@@ -160,6 +159,7 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				EKS_ENVIRONMENT=canary \
 				PROJECTTAG=gi-ci-canary \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				clean-k8s-rds-state install-arc setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
 		done
@@ -175,6 +175,7 @@ karpenter-autoscaler-canary: inventory/eks/canary_cluster_name inventory/eks/can
 				EKS_ENVIRONMENT=canary \
 				PROJECTTAG=gi-ci-canary \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				clean-k8s-rds-state install-arc setup-karpenter-autoscaler delete-stale-rds || exit 1 ; \
 		done
@@ -193,6 +194,7 @@ k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary
 				EKS_ENVIRONMENT=canary \
 				PROJECTTAG=gi-ci-canary \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				clean-k8s-rds-state install-arc k8s-runner-scaler delete-stale-rds  || exit 1 ; \
 		done
@@ -212,6 +214,7 @@ arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster
 				EKS_ENVIRONMENT=vanguard \
 				PROJECTTAG=gi-ci-vanguard \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_config \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-org \
 				MINRUNNERS=30 \
 				MAXRUNNERS=30 \
@@ -232,6 +235,7 @@ arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_clu
 				EKS_ENVIRONMENT=vanguard \
 				PROJECTTAG=gi-ci-vanguard \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_config \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-org \
 				MINRUNNERS=0 \
 				MAXRUNNERS=0 \
@@ -253,6 +257,7 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 				EKS_ENVIRONMENT=prod \
 				PROJECTTAG=gi-ci-prod \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_config \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-org \
 				clean-k8s-rds-state install-arc setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
 		done

@@ -50,7 +50,7 @@ resource "aws_iam_role" "karpenter_controler_role" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = "arn:aws:iam::308535385114:oidc-provider/${module.eks.oidc_provider}"
+          Federated = "arn:aws:iam::${var.aws_account_id}:oidc-provider/${module.eks.oidc_provider}"
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
