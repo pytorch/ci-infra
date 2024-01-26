@@ -58,6 +58,8 @@ jobs:
       shell: bash
       run: make plan
       env:
-        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
+        GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
+        KUBECONFIG: ${{ runner.temp }}/kubeconfig
         TERRAFORM_EXTRAS: -lock-timeout=15m
 

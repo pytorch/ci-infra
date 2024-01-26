@@ -62,7 +62,6 @@ jobs:
       run: make COMMENT_TO_ADD="Starting to deploy to canary, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
         GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
@@ -76,8 +75,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
-        ROCKSET_API_KEY: ${{ secrets.ROCKSET_API_KEY }}
-        ROCKSET_API_SERVER: ${{ secrets.ROCKSET_API_SERVER }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
