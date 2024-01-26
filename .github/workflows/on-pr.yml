@@ -53,8 +53,6 @@ jobs:
     - name: "Run TFLint runners"
       shell: bash
       run: make tflint
-      env:
-        AWS_DEFAULT_REGION: us-east-1
 
     - name: Make plan
       shell: bash
