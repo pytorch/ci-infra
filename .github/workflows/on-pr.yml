@@ -1,9 +1,14 @@
 name: On PR
+
 on:
   pull_request: {}
   push:
     branches:
       - main
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   tflint-plan:
