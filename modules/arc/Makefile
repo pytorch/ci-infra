@@ -140,6 +140,8 @@ k8s-runner-scaler: install-arc
 	kubectl apply -f ./k8s/storageclass.yaml --namespace=actions-runner-system
 	kubectl apply -f ./k8s/claim-medium.yaml --namespace=actions-runner-system
 	kubectl apply -f ./k8s/claim-large.yaml --namespace=actions-runner-system
+	kubectl apply -f ./k8s/runner-role.yaml --namespace=actions-runner-system
+	kubectl apply -f ./k8s/runner-role-binding.yaml --namespace=actions-runner-system
 	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/runnerdeployment.yaml \
 		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \

@@ -4,3 +4,12 @@ metadata:
   name: ebs-sc
 provisioner: ebs.csi.aws.com
 volumeBindingMode: WaitForFirstConsumer
+
+---
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: runner-docker-storage
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer

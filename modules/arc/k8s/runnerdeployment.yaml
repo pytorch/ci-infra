@@ -17,6 +17,15 @@ spec:
 
       $(RUNNERGROUP)
 
+#      containerMode: kubernetes
+#      workVolumeClaimTemplate:
+#        storageClassName: runner-docker-storage
+#        accessModes:
+#          - ReadWriteOnce
+#        resources:
+#          requests:
+#            storage: 10Gi
+
       env:
       - name: POD_NAME
         valueFrom:
@@ -43,9 +52,9 @@ spec:
         subPathExpr: $(POD_NAME)-docker
 
       volumeMounts:
-      - mountPath: /runner/_work
-        name: work
-        subPathExpr: $(POD_NAME)-work
+#      - mountPath: /runner/_work
+#        name: work
+#        subPathExpr: $(POD_NAME)-work
       - mountPath: /tmp
         name: tmp
         subPathExpr: $(POD_NAME)-tmp
@@ -60,9 +69,9 @@ spec:
       - name: docker
         emptyDir:
           sizeLimit: $(PARTDOCKER)
-      - name: work
-        emptyDir:
-          sizeLimit: $(PARTWORK)
+#      - name: work
+#        emptyDir:
+#          sizeLimit: $(PARTWORK)
       - name: tmp
         emptyDir:
           sizeLimit: $(PARTTMP)
