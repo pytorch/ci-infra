@@ -42,17 +42,17 @@ clean:
 .PHONY: backend-state
 backend-state: backend.tf
 
-external_k8s_cidr_ipv4.tf: .account-checked $(PROHOME)/venv/bin/pip $(PROHOME)/scripts/simplify_cidr_blocks.py
+external_k8s_cidr_ipv4.tf: $(PROHOME)/venv/bin/pip $(PROHOME)/scripts/simplify_cidr_blocks.py
 	$(PROHOME)/venv/bin/python $(PROHOME)/scripts/simplify_cidr_blocks.py --rules-per-sg 50 --output-file external_k8s_cidr_ipv4.tf
 
-dyn_locals.tf: .account-checked
+dyn_locals.tf:
 	echo -e "locals {\n  aws_region = \"$(REGION)\"\n  aws_account_id = \"$(ACCOUNT)\"\n}\n" >dyn_locals.tf
 
 backend.tf: backend-state.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend.tf >backend.tf
 	$(RM) terraform.tfstate
 
-backend-state.tf: .account-checked dyn_locals.tf external_k8s_cidr_ipv4.tf
+backend-state.tf: dyn_locals.tf external_k8s_cidr_ipv4.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
 	terraform get -update
 	terraform init -backend=false
@@ -66,10 +66,6 @@ backend-state.tf: .account-checked dyn_locals.tf external_k8s_cidr_ipv4.tf
 			echo "Unexpected exit code $$ext_code" ; \
 			exit 1 ; \
 		fi
-
-.account-checked:
-	aws configure list-profiles | grep $(ACCOUNT) || (echo "Account $(ACCOUNT) not configured in ~/.aws/config", see https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html; exit 1)
-	echo OK >.account-checked
 
 .PHONY: plan
 plan: .terraform/modules/modules.json
