@@ -1,4 +1,4 @@
-SHELL := /bin/bash
+SHELL := /bin/bash -o pipefail
 ARC_SYS_TAINT = "CriticalAddonsOnly"
 K8S_RDS_STATE_FILE = ".k8s-rds-state"
 

@@ -25,7 +25,6 @@ jobs:
       run: pip install virtualenv
 
     - name: Open PR
-      working-directory: runners
       shell: bash
       run: make open-rel-pr
       env:

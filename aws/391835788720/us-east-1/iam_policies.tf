@@ -10,14 +10,14 @@ resource "aws_iam_role" "ossci_gha_terraform" {
   name = "ossci_gha_terraform"
 
   max_session_duration = 18000
-  description = "used by pytorch-labs/pytorch-gha-infra workflows to deploy terraform configs"
+  description = "used by pytorch/ci-infra workflows to deploy terraform configs"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
         Effect = "Allow"
         Principal = {
-          Federated = "arn:aws:iam::${local.aws_region}:oidc-provider/token.actions.githubusercontent.com"
+          Federated = "arn:aws:iam::${local.aws_account_id}:oidc-provider/token.actions.githubusercontent.com"
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
