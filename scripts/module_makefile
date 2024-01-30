@@ -13,7 +13,7 @@ all: k8s-runner-scaler
 venv: $(PROHOME)/venv/bin/pip
 
 $(PROHOME)/venv/bin/pip:
-	cd $(PROHOME)/ make venv/bin/pip
+	cd $(PROHOME)/ && make venv/bin/pip
 
 $(PROHOME)/tf-modules/VERSIONS: $(PROHOME)/venv/bin/pip $(PROHOME)/Terrafile
 	cd $(PROHOME)/ && make tf-modules/VERSIONS
