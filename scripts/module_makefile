@@ -4,7 +4,9 @@ PROHOME = $(realpath ../../..)
 REGION = $(notdir $(CURDIR))
 ACCOUNT = $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
 
+ifneq ($(GITHUB_ACTIONS),true)
 export AWS_PROFILE = $(ACCOUNT)
+endif
 
 .PHONY: all
 all: k8s-runner-scaler
