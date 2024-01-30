@@ -13,11 +13,10 @@ all: k8s-runner-scaler
 venv: $(PROHOME)/venv/bin/pip
 
 $(PROHOME)/venv/bin/pip:
-	cd $(PROHOME)/ && virtualenv venv
-	$(PROHOME)/venv/bin/pip install -r $(PROHOME)/requirements.txt
+	cd $(PROHOME)/ make venv/bin/pip
 
 $(PROHOME)/tf-modules/VERSIONS: $(PROHOME)/venv/bin/pip $(PROHOME)/Terrafile
-	$(PROHOME)/venv/bin/python $(PROHOME)/scripts/terrafile_lambdas.py -t $(PROHOME)/Terrafile -m $(PROHOME)/tf-modules
+	cd $(PROHOME)/ && make tf-modules/VERSIONS
 
 .PHONY: terrafile
 terrafile: $(PROHOME)/tf-modules/VERSIONS
@@ -265,49 +264,3 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 .PHONY: eks-use-cluster
 eks-use-cluster:
 	cd $(PROHOME)/modules/arc ; $(MAKE) EKS_CLUSTER_NAME=$(CLUSTER) update-kubectl
-
-# Deployment
-.PHONY: open-rel-pr
-open-rel-pr: $(PROHOME)/venv/bin/pip
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug open-rel-pr
-
-.PHONY: wait-check-deployment
-wait-check-deployment: $(PROHOME)/venv/bin/pip
-	[ "$(RELEASE_ACTION_NAME)" != "" ] || (echo "RELEASE_ACTION_NAME not set"; exit 1)
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug wait-check-deployment --release-action-name "$(RELEASE_ACTION_NAME)" --comment-to-add "$(COMMENT_TO_ADD)" --ignore-if-label "$(IGNORE_IF_LABEL)"
-
-.PHONY: wait-check-user-comment
-wait-check-user-comment: $(PROHOME)/venv/bin/pip
-	[ "$(WAIT_COMMENT)" != "" ] || (echo "WAIT_COMMENT not set"; exit 1)
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug wait-check-user-comment --comment "$(WAIT_COMMENT)"
-
-.PHONY: wait-check-bot-comment
-wait-check-bot-comment: $(PROHOME)/venv/bin/pip
-	[ "$(WAIT_COMMENT)" != "" ] || (echo "WAIT_COMMENT not set"; exit 1)
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug wait-check-bot-comment --comment "$(WAIT_COMMENT)"
-
-.PHONY: react-pr-comment
-react-pr-comment: $(PROHOME)/venv/bin/pip
-	[ "$(COMMENTS)" != "" ] || (echo "COMMENTS not set"; exit 1)
-	[ "$(LABELS)" != "" ] || (echo "LABELS not set"; exit 1)
-	[ "$(CHECK_REMOVE_LABELS)" != "" ] || (echo "CHECK_REMOVE_LABELS not set"; exit 1)
-	[ "$(CHECK_COMMENTS)" != "" ] || (echo "CHECK_COMMENTS not set"; exit 1)
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug react-pr-comment --comments "$(COMMENTS)" --labels "$(LABELS)" --check-remove-labels "$(CHECK_REMOVE_LABELS)" --check-comments "$(CHECK_COMMENTS)"
-
-.PHONY: add-comment-to-pr
-add-comment-to-pr: $(PROHOME)/venv/bin/pip
-	[ "$(COMMENT_TO_ADD)" != "" ] || (echo "COMMENT_TO_ADD not set"; exit 1)
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug add-comment-to-pr --comment "$(COMMENT_TO_ADD)"
-
-.PHONY: wait-check-pr-approved
-wait-check-pr-approved: $(PROHOME)/venv/bin/pip
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug wait-check-pr-approved
-
-.PHONY: close-pr
-close-pr: $(PROHOME)/venv/bin/pip
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug close-pr
-
-.PHONY: merge-pr
-merge-pr: $(PROHOME)/venv/bin/pip
-	$(PROHOME)/venv/bin/python ./scripts/deployment.py --debug merge-pr
-

@@ -34,3 +34,163 @@ plan:
 		done ; \
 		popd ; \
 	done
+
+.PHONY: apply
+apply:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make apply: aws/$$account/$$region ============================================" ; \
+			$(MAKE) apply || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: apply-arc-canary
+apply-arc-canary:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make apply-arc-canary: aws/$$account/$$region ============================================" ; \
+			$(MAKE) apply-arc-canary || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: apply-arc-vanguard
+apply-arc-vanguard:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make apply-arc-vanguard: aws/$$account/$$region ============================================" ; \
+			$(MAKE) apply-arc-vanguard || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: apply-arc-prod
+apply-arc-prod:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make apply-arc-prod: aws/$$account/$$region ============================================" ; \
+			$(MAKE) apply-arc-prod || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: arc-canary
+arc-canary:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make arc-canary: aws/$$account/$$region ============================================" ; \
+			$(MAKE) arc-canary || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: arc-vanguard
+arc-vanguard:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make arc-vanguard: aws/$$account/$$region ============================================" ; \
+			$(MAKE) arc-vanguard || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: arc-vanguard-off
+arc-vanguard-off:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make arc-vanguard-off: aws/$$account/$$region ============================================" ; \
+			$(MAKE) arc-vanguard-off || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: arc-prod
+arc-prod:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== make arc-prod: aws/$$account/$$region ============================================" ; \
+			$(MAKE) arc-prod || exit 1 ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+venv/bin/pip:
+	virtualenv venv
+	venv/bin/pip install -r requirements.txt
+
+tf-modules/VERSIONS: venv/bin/pip Terrafile
+	venv/bin/python scripts/terrafile_lambdas.py -t Terrafile -m tf-modules
+
+.PHONY: terrafile
+terrafile: tf-modules/VERSIONS
+
+# Deployment
+.PHONY: open-rel-pr
+open-rel-pr: venv/bin/pip
+	venv/bin/python ./scripts/deployment.py --debug open-rel-pr
+
+.PHONY: wait-check-deployment
+wait-check-deployment: venv/bin/pip
+	[ "$(RELEASE_ACTION_NAME)" != "" ] || (echo "RELEASE_ACTION_NAME not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug wait-check-deployment --release-action-name "$(RELEASE_ACTION_NAME)" --comment-to-add "$(COMMENT_TO_ADD)" --ignore-if-label "$(IGNORE_IF_LABEL)"
+
+.PHONY: wait-check-user-comment
+wait-check-user-comment: venv/bin/pip
+	[ "$(WAIT_COMMENT)" != "" ] || (echo "WAIT_COMMENT not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug wait-check-user-comment --comment "$(WAIT_COMMENT)"
+
+.PHONY: wait-check-bot-comment
+wait-check-bot-comment: venv/bin/pip
+	[ "$(WAIT_COMMENT)" != "" ] || (echo "WAIT_COMMENT not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug wait-check-bot-comment --comment "$(WAIT_COMMENT)"
+
+.PHONY: react-pr-comment
+react-pr-comment: venv/bin/pip
+	[ "$(COMMENTS)" != "" ] || (echo "COMMENTS not set"; exit 1)
+	[ "$(LABELS)" != "" ] || (echo "LABELS not set"; exit 1)
+	[ "$(CHECK_REMOVE_LABELS)" != "" ] || (echo "CHECK_REMOVE_LABELS not set"; exit 1)
+	[ "$(CHECK_COMMENTS)" != "" ] || (echo "CHECK_COMMENTS not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug react-pr-comment --comments "$(COMMENTS)" --labels "$(LABELS)" --check-remove-labels "$(CHECK_REMOVE_LABELS)" --check-comments "$(CHECK_COMMENTS)"
+
+.PHONY: add-comment-to-pr
+add-comment-to-pr: venv/bin/pip
+	[ "$(COMMENT_TO_ADD)" != "" ] || (echo "COMMENT_TO_ADD not set"; exit 1)
+	venv/bin/python ./scripts/deployment.py --debug add-comment-to-pr --comment "$(COMMENT_TO_ADD)"
+
+.PHONY: wait-check-pr-approved
+wait-check-pr-approved: venv/bin/pip
+	venv/bin/python ./scripts/deployment.py --debug wait-check-pr-approved
+
+.PHONY: close-pr
+close-pr: venv/bin/pip
+	venv/bin/python ./scripts/deployment.py --debug close-pr
+
+.PHONY: merge-pr
+merge-pr: venv/bin/pip
+	venv/bin/python ./scripts/deployment.py --debug merge-pr
+
