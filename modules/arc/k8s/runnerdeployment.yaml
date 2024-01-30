@@ -11,6 +11,7 @@ spec:
         - "$(ENVRUNNERLABEL)"
         - "arch:$(RUNNERARCH)"
         - "os:$(RUNNEROS)"
+        - "arc-lf"
 
       $(RUNNERSCOPE)
 
