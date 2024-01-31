@@ -1,6 +1,7 @@
 name: Runners Open Release PR
 
 on:
+  pull_request: {}
   workflow_dispatch:
     inputs:
       fast_release_firefight:
@@ -32,3 +33,4 @@ jobs:
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
         GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
         GITHUB_REPOSITORY: ${{ github.repository }}
+        # FAST_RELEASE_FIREFIGHT: ${{ github.event.inputs.fast_release_firefight }}
