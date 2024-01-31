@@ -58,10 +58,16 @@ backend-state.tf: dyn_locals.tf external_k8s_cidr_ipv4.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
 	terraform get -update
 	terraform init -backend=false
-	terraform plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state ${TERRAFORM_EXTRAS} ; \
+	terraform plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state -lock-timeout=15m ; \
 		ext_code=$$? ; \
 		if [ $$ext_code -eq 2 ] ; then \
-			terraform apply ${TERRAFORM_EXTRAS} backend.plan ; \
+			if [ "$$GITHUB_ACTIONS" != "true" ] ; then \
+				echo "Backend state does not exist, creating" ; \
+				terraform apply ${TERRAFORM_EXTRAS} backend.plan ; \
+			else \
+				echo "Backend state does not exist, should not do it on a github action!" ; \
+				exit 1 ; \
+			fi ; \
 		elif [ $$ext_code -eq 0 ] ; then \
 			echo "Backend state already exists" ; \
 		else \
