@@ -28,9 +28,9 @@ ROLLBACK_PRODUCTION_COMMENT = 'TBD'
 
 
 def nice_bool_option(s: str) -> bool:
-    if s.lower() in ['true', '1', 't', 'y', 'yes']:
+    if s.lower().strip() in ['true', '1', 't', 'y', 'yes']:
         return True
-    elif s.lower() in ['false', '0', 'f', 'n', 'no']:
+    elif s.lower().strip() in ['false', '0', 'f', 'n', 'no', '']:
         return False
     else:
         raise ValueError(f'Invalid boolean option: {s}')
@@ -400,35 +400,35 @@ def parse_args() -> argparse.Namespace:
     opts.add_argument(
         '--github-token',
         help='Github token to use for the deployment',
-        default=os.environ.get('GITHUB_TOKEN').strip(),
+        default=os.environ.get('GITHUB_TOKEN', '').strip() or None,
         type=str,
         required=False
     )
     opts.add_argument(
         '--github-app-id',
         help='Github app id to use for the deployment',
-        default=os.environ.get('GITHUB_APP_ID').strip(),
+        default=os.environ.get('GITHUB_APP_ID', '').strip() or None,
         type=str,
         required=False
     )
     opts.add_argument(
         '--github-app-key',
         help='Github app key to use for the deployment',
-        default=os.environ.get('GHA_PRIVATE_KEY_DEPLOY').strip(),
+        default=os.environ.get('GHA_PRIVATE_KEY_DEPLOY', '').strip() or None,
         type=str,
         required=False
     )
     opts.add_argument(
         '--github-app-installation-id',
         help='Github app installation id to use for the deployment',
-        default=os.environ.get('GITHUB_APP_INSTALLATION_ID').strip(),
+        default=os.environ.get('GITHUB_APP_INSTALLATION_ID', '').strip() or None,
         type=int,
         required=False
     )
     opts.add_argument(
         '--repo',
         help='Github repo to use for the deployment',
-        default=os.environ.get('GITHUB_REPOSITORY', 'pytorch-labs/pytorch-gha-infra').strip(),
+        default=os.environ.get('GITHUB_REPOSITORY', 'pytorch-labs/pytorch-gha-infra').strip() or None,
         type=str,
         required=False
     )
@@ -440,7 +440,7 @@ def parse_args() -> argparse.Namespace:
     opts.add_argument(
         '--github-actor-id',
         help='Github actor id to use for the deployment',
-        default=os.environ.get('GITHUB_ACTOR_ID').strip(),
+        default=os.environ.get('GITHUB_ACTOR_ID', '').strip() or None,
         type=int,
         required=False
     )
@@ -454,7 +454,7 @@ def parse_args() -> argparse.Namespace:
     opts.add_argument(
         '--bot-name',
         help='Name of the bot to use for the deployment',
-        default='pytorch-arc-deployment',
+        default='pytorch-arc-pr-deployment-bot',
         type=str,
         required=False
     )

@@ -61,7 +61,7 @@ backend-state.tf: dyn_locals.tf external_k8s_cidr_ipv4.tf
 	terraform plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state ${TERRAFORM_EXTRAS} ; \
 		ext_code=$$? ; \
 		if [ $$ext_code -eq 2 ] ; then \
-			terraform apply backend.plan ${TERRAFORM_EXTRAS} ; \
+			terraform apply ${TERRAFORM_EXTRAS} backend.plan ; \
 		elif [ $$ext_code -eq 0 ] ; then \
 			echo "Backend state already exists" ; \
 		else \
