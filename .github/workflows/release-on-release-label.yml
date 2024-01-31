@@ -58,7 +58,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
-      run: make COMMENT_TO_ADD="Starting to deploy to canary, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
+      run: make COMMENT_TO_ADD="Starting to deploy to canary, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
@@ -152,7 +152,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
-      run: make COMMENT_TO_ADD="Starting to deploy to vanguard, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
+      run: make COMMENT_TO_ADD="Starting to deploy to vanguard, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
@@ -273,7 +273,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
-      run: make COMMENT_TO_ADD="Starting to deploy to prod, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
+      run: make COMMENT_TO_ADD="Starting to deploy to prod, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
@@ -387,7 +387,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
-      run: make COMMENT_TO_ADD="Starting to revert vanguard to old state and shut it down, wait for its conclusion and I'll guide you to next steps" add-comment-to-pr
+      run: make COMMENT_TO_ADD="Starting to revert vanguard to old state and shut it down, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
@@ -498,7 +498,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
-      run: make COMMENT_TO_ADD="Finishing deployment, by shutting down vanguard and merging this PR" add-comment-to-pr
+      run: make COMMENT_TO_ADD="Finishing deployment, shutting down vanguard and merging this PR. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
