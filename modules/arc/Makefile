@@ -30,6 +30,7 @@ update-kubectl:
 	if [ "$${NO_EKSCTL}" != "true" ] ; then \
 		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn 'arn:aws:iam::391835788720:user/ossci' --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
 		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn 'arn:aws:iam::391835788720:role/ossci_gha_terraform' --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
+		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn `aws sts get-caller-identity | jq '.Arn' | sed 's/"//g'` --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
 	fi
 
 .PHONY: add-helm-repository
