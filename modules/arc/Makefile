@@ -23,15 +23,23 @@ delete-stale-rds:
 	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py \
 		--rds-state-file $(K8S_RDS_STATE_FILE)
 
-.PHONY: update-kubectl
-update-kubectl:
+.PHONY: add-eksctl-identity-mappings
+add-eksctl-identity-mappings:
+	[ "$(EKS_USERS_PATH)" != "" ] || (echo "EKS_USERS_PATH not set"; exit 1)
+	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
+	if [ "$${NO_EKSCTL}" != "true" ] ; then \
+		cat "$$EKS_USERS_PATH" | while read line ; do \
+			eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn $$line --group 'system:masters' --no-duplicate-arns --username 'admin-user1' || exit 1 ; \
+		done ; \
+	fi
+
+.PHONY: do-update-kubectl
+do-update-kubectl:
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	aws eks update-kubeconfig --region "us-east-1" --name "$(EKS_CLUSTER_NAME)"
-	if [ "$${NO_EKSCTL}" != "true" ] ; then \
-		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn 'arn:aws:iam::391835788720:user/ossci' --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
-		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn 'arn:aws:iam::391835788720:role/ossci_gha_terraform' --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
-		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn `aws sts get-caller-identity | jq '.Arn' | sed 's/"//g'` --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
-	fi
+
+.PHONY: update-kubectl
+update-kubectl: do-update-kubectl add-eksctl-identity-mappings
 
 .PHONY: add-helm-repository
 add-helm-repository: update-kubectl
