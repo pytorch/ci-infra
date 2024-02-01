@@ -1,0 +1,5 @@
+arn:aws:iam::391835788720:user/ossci
+arn:aws:iam::391835788720:role/ossci_gha_terraform
+arn:aws:iam::391835788720:user/tha@linuxfoundation.org
+arn:aws:iam::391835788720:user/jschmidt@meta.com
+arn:aws:iam::391835788720:user/baibak@meta.com

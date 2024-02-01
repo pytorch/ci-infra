@@ -160,6 +160,7 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				GHA_INST_ID=46578864 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
 				EKS_ENVIRONMENT=canary \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				PROJECTTAG=gi-ci-canary \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
@@ -176,6 +177,7 @@ karpenter-autoscaler-canary: inventory/eks/canary_cluster_name inventory/eks/can
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				EKS_ENVIRONMENT=canary \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				PROJECTTAG=gi-ci-canary \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
@@ -195,6 +197,7 @@ k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary
 				GHA_INST_ID=46578864 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
 				EKS_ENVIRONMENT=canary \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				PROJECTTAG=gi-ci-canary \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
@@ -215,6 +218,7 @@ arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster
 				GHA_INST_ID=38323217 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
 				EKS_ENVIRONMENT=vanguard \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				PROJECTTAG=gi-ci-vanguard \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_config \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
@@ -232,16 +236,17 @@ arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_clu
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_config \
+				EKS_ENVIRONMENT=vanguard \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				GHA_ID=343735 \
 				GHA_INST_ID=38323217 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
-				EKS_ENVIRONMENT=vanguard \
-				PROJECTTAG=gi-ci-vanguard \
-				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_config \
-				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
-				RUNNERSCOPE=pytorch-org \
-				MINRUNNERS=0 \
 				MAXRUNNERS=0 \
+				MINRUNNERS=0 \
+				PROJECTTAG=gi-ci-vanguard \
+				RUNNERSCOPE=pytorch-org \
 				clean-k8s-rds-state install-arc setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
 		done
 
@@ -258,6 +263,7 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 				GHA_INST_ID=38323217 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
 				EKS_ENVIRONMENT=prod \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				PROJECTTAG=gi-ci-prod \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_config \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
@@ -267,4 +273,4 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 
 .PHONY: eks-use-cluster
 eks-use-cluster:
-	cd $(PROHOME)/modules/arc ; $(MAKE) EKS_CLUSTER_NAME=$(CLUSTER) update-kubectl
+	cd $(PROHOME)/modules/arc ; $(MAKE) EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users EKS_CLUSTER_NAME=$(CLUSTER) update-kubectl
