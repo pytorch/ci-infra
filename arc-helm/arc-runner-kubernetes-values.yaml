@@ -1,0 +1,41 @@
+## githubConfigUrl is the GitHub url for where you want to configure runners
+## ex: https://github.com/myorg/myrepo or https://github.com/myorg
+githubConfigUrl: "https://github.com/pytorch/test-infra"
+
+## githubConfigSecret is the k8s secrets to use when auth with GitHub API.
+## You can choose to use GitHub App or a PAT token
+githubConfigSecret:
+  ### GitHub Apps Configuration
+  ## NOTE: IDs MUST be strings, use quotes
+  github_app_id: "ID"
+  github_app_installation_id: "INSTALL_ID"
+  github_app_private_key: "PRIVATE_KEY"
+
+## maxRunners is the max number of runners the autoscaling runner set will scale up to.
+maxRunners: 2
+
+## minRunners is the min number of idle runners. The target number of runners created will be
+## calculated as a sum of minRunners and the number of jobs assigned to the scale set.
+minRunners: 1
+
+containerMode:
+  type: "kubernetes"  ## type can be set to dind or kubernetes
+  kubernetesModeWorkVolumeClaim:
+    accessModes: ["ReadWriteOnce"]
+    # For local testing, use https://github.com/openebs/dynamic-localpv-provisioner/blob/develop/docs/quickstart.md to provide dynamic provision volume with storageClassName: openebs-hostpath
+    storageClassName: "dynamic-blob-storage"
+    resources:
+      requests:
+        storage: 1Gi
+  kubernetesModeServiceAccount:
+    annotations:
+
+template:
+  spec:
+    containers:
+    - name: runner
+      image: ghcr.io/actions/actions-runner:latest
+      command: ["/home/runner/run.sh"]
+      env:
+      - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+        value: "false"
