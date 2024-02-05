@@ -1,4 +1,4 @@
-SHELL := /bin/bash
+SHELL := /bin/bash -o pipefail
 ARC_SYS_TAINT = "CriticalAddonsOnly"
 K8S_RDS_STATE_FILE = ".k8s-rds-state"
 
@@ -23,13 +23,23 @@ delete-stale-rds:
 	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py \
 		--rds-state-file $(K8S_RDS_STATE_FILE)
 
-.PHONY: update-kubectl
-update-kubectl:
+.PHONY: add-eksctl-identity-mappings
+add-eksctl-identity-mappings:
+	[ "$(EKS_USERS_PATH)" != "" ] || (echo "EKS_USERS_PATH not set"; exit 1)
+	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
+	if [ "$${NO_EKSCTL}" != "true" ] ; then \
+		cat "$$EKS_USERS_PATH" | while read line ; do \
+			eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn $$line --group 'system:masters' --no-duplicate-arns --username 'admin-user1' || exit 1 ; \
+		done ; \
+	fi
+
+.PHONY: do-update-kubectl
+do-update-kubectl:
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	aws eks update-kubeconfig --region "us-east-1" --name "$(EKS_CLUSTER_NAME)"
-	if [ "$${NO_EKSCTL}" != "true" ] ; then \
-		eksctl create iamidentitymapping --cluster '$(EKS_CLUSTER_NAME)' --arn 'arn:aws:iam::391835788720:user/ossci' --group 'system:masters' --no-duplicate-arns --username 'admin-user1' ; \
-	fi
+
+.PHONY: update-kubectl
+update-kubectl: do-update-kubectl add-eksctl-identity-mappings
 
 .PHONY: add-helm-repository
 add-helm-repository: update-kubectl
@@ -65,6 +75,10 @@ install-arc: install-cert-manager
 		--set=authSecret.github_app_private_key="$$$(GHA_PRIVATE_KEY_VAR)" \
 		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule \
 		--wait
+	# If the changes are not impacting the controller pod config, it won't restart, so we need to do it manually
+	for pod in `kubectl get pod --namespace=actions-runner-system | grep actions-runner-controller | cut -f 1 -d ' '` ; do \
+		kubectl delete pod $$pod --namespace=actions-runner-system ; \
+	done
 
 .PHONY: install-karpenter
 install-karpenter: add-helm-repository

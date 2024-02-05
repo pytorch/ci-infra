@@ -25,7 +25,6 @@ jobs:
       run: pip install virtualenv
 
     - name: Open PR
-      working-directory: runners
       shell: bash
       run: make open-rel-pr
       env:
@@ -33,3 +32,4 @@ jobs:
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
         GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
         GITHUB_REPOSITORY: ${{ github.repository }}
+        FAST_RELEASE_FIREFIGHT: ${{ github.event.inputs.fast_release_firefight }}
