@@ -27,3 +27,23 @@ variable "aws_canary_vpc_suffixes" {
   type        = list
   default     = ["I"]
 }
+
+variable "GITHUB_APP_ID" {
+  description = "Passed in via TF_VAR_GITHUB_APP_ID"
+  type        = string
+}
+
+variable "GITHUB_APP_INSTALLATION_ID" {
+  description = "Passed in via TF_VAR_GITHUB_APP_INSTALLATION_ID"
+  type        = string
+}
+
+variable "GITHUB_APP_PRIVATE_KEY" {
+  description = "Passed in via TF_VAR_GITHUB_APP_PRIVATE_KEY"
+  type        = string
+}
+
+variable "GITHUB_APP_PRIVATE_KEY_CANARY" {
+  description = "Passed in via TF_VAR_GITHUB_APP_PRIVATE_KEY"
+  type        = string
+}

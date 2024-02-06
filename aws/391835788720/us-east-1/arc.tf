@@ -13,6 +13,10 @@ module "arc_canary" {
     environment = var.canary_environment
     subnet_ids = each.value.public_subnets
     vpc_id = each.value.vpc_id
+
+    github_app_id = var.GITHUB_APP_ID
+    github_app_installation_id = var.GITHUB_APP_INSTALLATION_ID
+    github_app_private_key = var.GITHUB_APP_PRIVATE_KEY_CANARY
 }
 
 module "arc_vanguard" {
@@ -30,6 +34,10 @@ module "arc_vanguard" {
     environment = var.vanguard_environment
     subnet_ids = each.value.public_subnets
     vpc_id = each.value.vpc_id
+
+    github_app_id = var.GITHUB_APP_ID
+    github_app_installation_id = var.GITHUB_APP_INSTALLATION_ID
+    github_app_private_key = var.GITHUB_APP_PRIVATE_KEY
 }
 
 module "arc_prod" {
@@ -47,4 +55,8 @@ module "arc_prod" {
     environment = var.prod_environment
     subnet_ids = each.value.public_subnets
     vpc_id = each.value.vpc_id
+
+    github_app_id = var.GITHUB_APP_ID
+    github_app_installation_id = var.GITHUB_APP_INSTALLATION_ID
+    github_app_private_key = var.GITHUB_APP_PRIVATE_KEY
 }
