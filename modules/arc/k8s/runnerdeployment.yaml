@@ -1,5 +1,5 @@
-apiVersion: actions.summerwind.dev/v1alpha1
-kind: RunnerDeployment
+apiVersion: actions.github.com/v1alpha1
+kind: AutoscalingRunnerSet
 metadata:
   name: "rd-$(RUNNERLABEL)"
 spec:

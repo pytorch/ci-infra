@@ -23,8 +23,14 @@ $(PROHOME)/tf-modules/VERSIONS: $(PROHOME)/venv/bin/pip $(PROHOME)/Terrafile
 .PHONY: terrafile
 terrafile: $(PROHOME)/tf-modules/VERSIONS
 
-.terraform/modules/modules.json: $(PROHOME)/tf-modules/VERSIONS backend.tf
+.terraform/modules/modules.json: $(PROHOME)/tf-modules/VERSIONS backend.tf ../eks_users
 	terraform init
+
+../eks_users:
+	if [ -z "$${EKS_USERS}" ] ; then \
+		echo "EKS_USERS is not set" ; exit 1 ; \
+	fi
+	echo "$${EKS_USERS}" | base64 -d | sed 's/ACCOUNT_ID/$(ACCOUNT)/g' >../eks_users
 
 .PHONY: init
 init: .terraform/modules/modules.json
