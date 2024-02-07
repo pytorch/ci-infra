@@ -145,6 +145,7 @@ k8s-runner-scaler: install-arc
 	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
+	[ "$(GITHUB_CONFIG_SECRET)" != "" ] || (echo "GITHUB_CONFIG_SECRET not set"; exit 1)
 	[ "$(KARPENTERNODEROLE)" != "" ] || (echo "KARPENTERNODEROLE not set"; exit 1)
 	[ '$(KARPENTERSGIDS)' != "" ] || (echo "KARPENTERSGIDS not set"; exit 1)
 	[ '$(KARPENTERSUBNETIDS)' != "" ] || (echo "KARPENTERSUBNETIDS not set"; exit 1)
@@ -158,6 +159,7 @@ k8s-runner-scaler: install-arc
 		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \
 		--runner-scope $(RUNNERSCOPE) \
+		--github-config-secret $(GITHUB_CONFIG_SECRET) \
 		--additional-values \
 			eksclustername=$(EKS_CLUSTER_NAME) \
 			environment=$(EKS_ENVIRONMENT) \

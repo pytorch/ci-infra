@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
         "--namespace",
         help="namespace to apply the config to",
         type=str,
-        default="actions-runner-system",
+        default="actions-runners",
     )
     parser.add_argument(
         "--template-name",
@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         "--delete",
         help="delete instead of creating",
         action="store_true",
+    )
+    parser.add_argument(
+        "--github-config-secret",
+        help="Name of K8s secret for githubConfigSecret.",
+        type=str,
+        required=True,
     )
     parser.add_argument(
         "--additional-values",
@@ -120,8 +126,8 @@ def get_template(template_path: str, values: Dict[str, str]) -> str:
 def add_to_rds_state(rds_state_file: str, compiled_teplate: str, namespace: str) -> None:
     data = yaml.safe_load(compiled_teplate)
 
-    resource = data['kind']
-    name = data['metadata']['name']
+    resource = "ARCRunner"
+    name = data['runnerScaleSetName']
 
     with open(rds_state_file, 'a') as file:
         file.write(f"{namespace},{resource},{name}\n")
@@ -134,10 +140,12 @@ def main() -> None:
         for value in options.additional_values or []
     }
 
+    additional_values['GITHUB_CONFIG_SECRET'] = options.github_config_secret
+
     additional_values['RUNNERSCOPE'] = {
-        'pytorch-org': 'organization: pytorch',
-        'pytorch-canary': 'repository: pytorch/pytorch-canary',
-        'pytorch-repo': 'repository: pytorch/pytorch',
+        'pytorch-org': 'githubConfigUrl: https://github.com/pytorch',
+        'pytorch-canary': 'githubConfigUrl: https://github.com/pytorch/pytorch-canary',
+        'pytorch-repo': 'githubConfigUrl: https://github.com/pytorch/pytorch',
         # 'enterprise': 'enterprise: meta',
     }[options.runner_scope]
 
@@ -171,19 +179,20 @@ def main() -> None:
         add_to_rds_state(options.rds_state_file, to_apply, options.namespace)
 
         if options.delete:
-            cmd = ['kubectl', 'delete', f'--namespace={options.namespace}', '-f', '-', '--force']
-            print(f"Kubectl delete for {label}: {' '.join(cmd)}")
+            cmd = ['helm', 'delete', f'--namespace={options.namespace}', label]
+            print(f"helm delete for {label}: {' '.join(cmd)}")
         else:
-            cmd = ['kubectl', 'apply', f'--namespace={options.namespace}', '-f', '-']
-            print(f"Kubectl apply for {label}: {' '.join(cmd)}")
+            cmd = ['helm', 'upgrade', '--install', f'--namespace={options.namespace}', label]
+            print(f"helm upgrade for {label}: {' '.join(cmd)}")
 
         if options.dry_run:
             print("------------------------------------- compiled template -------------------------------------")
             print(to_apply)
-        if subprocess.run(cmd, input=to_apply, capture_output=False, text=True).returncode != 0:
-            print("------------------------------------- compiled template -------------------------------------")
-            print(to_apply)
-            raise Exception(f"Kubectl failed for {label}")
+        else:
+            if subprocess.run(cmd, input=to_apply, capture_output=False, text=True).returncode != 0:
+                print("------------------------------------- compiled template -------------------------------------")
+                print(to_apply)
+                raise Exception(f"Kubectl failed for {label}")
 
 
 if __name__ == "__main__":
