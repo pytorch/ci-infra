@@ -43,7 +43,6 @@ update-kubectl: do-update-kubectl add-eksctl-identity-mappings
 
 .PHONY: add-helm-repository
 add-helm-repository: update-kubectl
-	helm repo add actions-runner-controller https://actions-runner-controller.github.io/actions-runner-controller
 	helm repo add jetstack https://charts.jetstack.io
 	helm repo update
 
@@ -65,18 +64,18 @@ install-arc: install-cert-manager
 	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
 	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
 	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
-	helm upgrade --install actions-runner-controller actions-runner-controller/actions-runner-controller \
+	helm upgrade --install arc oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
 		--namespace actions-runner-system \
 		--create-namespace \
-		--set=replicaCount=2 \
-		--set=authSecret.create=true \
-		--set=authSecret.github_app_id="$(GHA_ID)" \
-		--set=authSecret.github_app_installation_id="$(GHA_INST_ID)" \
-		--set=authSecret.github_app_private_key="$$$(GHA_PRIVATE_KEY_VAR)" \
+		--set=replicaCount=3 \
+		--set githubConfigSecret.create=true \
+		--set githubConfigSecret.github_app_id="$(GHA_ID)" \
+		--set githubConfigSecret.github_app_installation_id="$(GHA_INST_ID)" \
+		--set githubConfigSecret.github_app_private_key="$$$(GHA_PRIVATE_KEY_VAR)" \
 		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule \
 		--wait
 	# If the changes are not impacting the controller pod config, it won't restart, so we need to do it manually
-	for pod in `kubectl get pod --namespace=actions-runner-system | grep actions-runner-controller | cut -f 1 -d ' '` ; do \
+	for pod in `kubectl get pod --namespace=actions-runner-system | grep 'arc-gha-rs-controller-' | cut -f 1 -d ' '` ; do \
 		kubectl delete pod $$pod --namespace=actions-runner-system ; \
 	done
 
