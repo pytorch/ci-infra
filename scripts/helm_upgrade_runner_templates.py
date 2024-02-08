@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
         "--namespace",
         help="namespace to apply the config to",
         type=str,
-        default="actions-runner-system",
+        default="actions-runner",
     )
     parser.add_argument(
         "--template-name",
@@ -238,8 +238,10 @@ def main() -> None:
 
     additional_values['RUNNERSCOPE'] = {
         'pytorch-org': 'https://github.com/pytorch',
-        'pytorch-canary': 'https://github.com/pytorch/pytorch-canary',
-        'pytorch-repo': 'https://github.com/pytorch/pytorch',
+        'pytorch-canary': 'https://github.com/pytorch',
+        # 'pytorch-canary': 'https://github.com/pytorch/pytorch-canary',
+        'pytorch-repo': 'https://github.com/pytorch',
+        # 'pytorch-repo': 'https://github.com/pytorch/pytorch',
     }[options.runner_scope]
 
     if len(options.root_classes) != len(options.arc_runner_config_files):

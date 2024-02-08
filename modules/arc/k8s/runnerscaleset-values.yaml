@@ -1,20 +1,31 @@
 githubConfigUrl: "$(RUNNERSCOPE)"
+
 githubConfigSecret: "gha-arc-secret"
+
 maxRunners: $(MAXRUNNERS)
+
 minRunners: $(MINRUNNERS)
+
 runnerGroup: "$(RUNNERGROUP)"
-runnerScaleSetName: "rssn-$(RUNNERLABEL)"
+
+runnerScaleSetName: "$(RUNNERLABEL)"
+
 containerMode:
   type: "dind"
-template:
+
+listenerTemplate:
   spec:
     containers:
-      - name: runner
-        image: ghcr.io/actions/actions-runner:latest
-        command: ["/home/runner/run.sh"]
-        env:
-          - name: RUNNER_LABEL
-            value: "arc-lf,arch:$(RUNNERARCH),os:$(RUNNEROS),$(ENVRUNNERLABEL)"
+      - name: listener
+        securityContext:
+          runAsUser: 1000
+    tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: Exists
+        effect: NoSchedule
+
+template:
+  spec:
     tolerations:
       - key: "arcRunnerNodeType-$(NODETYPE)"
         operator: Exists
