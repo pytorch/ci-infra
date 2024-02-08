@@ -58,6 +58,8 @@ jobs:
     - name: "Run TFLint runners"
       shell: bash
       run: make tflint
+      env:
+        EKS_USERS: ${{ secrets.EKS_USERS }}
 
     - name: Make plan
       shell: bash
