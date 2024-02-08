@@ -4,6 +4,8 @@ maxRunners: $(MAXRUNNERS)
 minRunners: $(MINRUNNERS)
 runnerGroup: "arc-lf-$(RUNNERLABEL)"
 runnerScaleSetName: "rssn-$(RUNNERLABEL)"
+containerMode:
+  type: "dind"
 template:
   spec:
     containers:
