@@ -180,10 +180,11 @@ def main() -> None:
         if options.dry_run:
             print("------------------------------------- compiled template -------------------------------------")
             print(to_apply)
-        if subprocess.run(cmd, input=to_apply, capture_output=False, text=True).returncode != 0:
-            print("------------------------------------- compiled template -------------------------------------")
-            print(to_apply)
-            raise Exception(f"Kubectl failed for {label}")
+        else:
+            if subprocess.run(cmd, input=to_apply, capture_output=False, text=True).returncode != 0:
+                print("------------------------------------- compiled template -------------------------------------")
+                print(to_apply)
+                raise Exception(f"Kubectl failed for {label}")
 
 
 if __name__ == "__main__":

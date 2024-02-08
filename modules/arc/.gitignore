@@ -1,3 +1,4 @@
+.helm-pkg-state
 .k8s-rds-state
 .terraform.lock.hcl
 .terraform/

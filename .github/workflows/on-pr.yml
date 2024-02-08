@@ -63,6 +63,7 @@ jobs:
       shell: bash
       run: make plan
       env:
+        EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig

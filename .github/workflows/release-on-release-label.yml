@@ -69,6 +69,7 @@ jobs:
       shell: bash
       run: make apply-arc-canary arc-canary
       env:
+        EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
@@ -190,6 +191,7 @@ jobs:
       shell: bash
       run: make apply-arc-vanguard arc-vanguard
       env:
+        EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
@@ -302,6 +304,7 @@ jobs:
       shell: bash
       run: make apply arc-prod
       env:
+        EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
@@ -407,6 +410,7 @@ jobs:
       shell: bash
       run: make apply-arc-vanguard arc-vanguard-off
       env:
+        EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
@@ -527,6 +531,7 @@ jobs:
       shell: bash
       run: make arc-vanguard-off
       env:
+        EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
