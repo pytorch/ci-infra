@@ -158,7 +158,7 @@ k8s-runner-scaler: #install-arc
 		--github-app-id $(GHA_ID) \
 		--github-app-installation-id $(GHA_INST_ID) \
 		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
-		--template-name k8s/runnerscaleset-values.yaml \
+		--template-name k8s/runnerscaleset-dind-values.yaml \
 		--namespace $(RUNNERS_NAMESPACE) \
 		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
 		--helm-pkg-state-file $(HELM_PKG_STATE_FILE) \
@@ -173,4 +173,47 @@ k8s-runner-scaler: #install-arc
 			projecttag=$(PROJECTTAG) \
 			$(ADDITIONAL_VALUES) \
 		--root-classes nodeConfig runnerConfig \
-		--label-property runnerLabel
+		--label-property runnerLabel \
+		--container-mode dind
+	../../venv/bin/python ../../scripts/helm_upgrade_runner_templates.py \
+		--github-app-id $(GHA_ID) \
+		--github-app-installation-id $(GHA_INST_ID) \
+		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
+		--template-name k8s/runnerscaleset-dind-rootless-values.yaml \
+		--namespace $(RUNNERS_NAMESPACE) \
+		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
+		--helm-pkg-state-file $(HELM_PKG_STATE_FILE) \
+		--runner-scope $(RUNNERSCOPE) \
+		--additional-values \
+			eksclustername=$(EKS_CLUSTER_NAME) \
+			environment=$(EKS_ENVIRONMENT) \
+			karpenternoderole=$(KARPENTERNODEROLE) \
+			karpentersgids='$(KARPENTERSGIDS)' \
+			karpentersubnetids='$(KARPENTERSUBNETIDS)' \
+			project=gh-ci-$(EKS_ENVIRONMENT)-arc \
+			projecttag=$(PROJECTTAG) \
+			$(ADDITIONAL_VALUES) \
+		--root-classes nodeConfig runnerConfig \
+		--label-property runnerLabel \
+		--container-mode dind-rootless
+	../../venv/bin/python ../../scripts/helm_upgrade_runner_templates.py \
+		--github-app-id $(GHA_ID) \
+		--github-app-installation-id $(GHA_INST_ID) \
+		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
+		--template-name k8s/runnerscaleset-kubernetes-values.yaml \
+		--namespace $(RUNNERS_NAMESPACE) \
+		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
+		--helm-pkg-state-file $(HELM_PKG_STATE_FILE) \
+		--runner-scope $(RUNNERSCOPE) \
+		--additional-values \
+			eksclustername=$(EKS_CLUSTER_NAME) \
+			environment=$(EKS_ENVIRONMENT) \
+			karpenternoderole=$(KARPENTERNODEROLE) \
+			karpentersgids='$(KARPENTERSGIDS)' \
+			karpentersubnetids='$(KARPENTERSUBNETIDS)' \
+			project=gh-ci-$(EKS_ENVIRONMENT)-arc \
+			projecttag=$(PROJECTTAG) \
+			$(ADDITIONAL_VALUES) \
+		--root-classes nodeConfig runnerConfig \
+		--label-property runnerLabel \
+		--container-mode kubernetes

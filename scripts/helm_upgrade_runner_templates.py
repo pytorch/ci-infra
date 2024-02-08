@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
         required=True,
     )
     parser.add_argument(
+        "--container-mode",
+        help="Set the ARC Runner container mode: dind, dind-rootless, kubernetes",
+        type=str,
+        required=True,
+    )
+    parser.add_argument(
         "--root-classes",
         help="root classes to use for the template",
         type=str,
@@ -230,6 +236,7 @@ def main() -> None:
     gh = get_gh_client(options)
     pytorch_org = gh.get_organization('pytorch')
     runner_groups = {rg.name: rg for rg in gh_get_runner_groups(pytorch_org)}
+    container_mode = options.container_mode
 
     additional_values = {
         value.split('=')[0].upper(): value.split('=')[1]
@@ -249,6 +256,10 @@ def main() -> None:
 
     for runner_config in get_merged_arc_runner_config(options.arc_runner_config_files, options.root_classes):
         label = runner_config[options.label_property]
+
+        # Adjust label for multiple container mode runner scale set deployments
+        label = f'{label}-{container_mode}'
+        runner_config[options.label_property] = label
 
         additional_values['RUNNERARCH'] = [
             l['values'][0]
