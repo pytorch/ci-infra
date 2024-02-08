@@ -54,7 +54,7 @@ create-runner-namespace:
 	kubectl create namespace $(RUNNERS_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 
 .PHONY: create-gha-arc-secret
-create-gha-arc-secret:
+create-gha-arc-secret: create-runner-namespace
 	kubectl create secret generic gha-arc-secret \
 		--namespace=$(RUNNERS_NAMESPACE) \
 		--from-literal=github_app_id="$(GHA_ID)" \
@@ -63,7 +63,7 @@ create-gha-arc-secret:
 		--dry-run=client -o yaml | kubectl apply -f -
 
 .PHONY: install-arc
-install-arc: helm-repo-update create-gha-arc-secret create-runner-namespace
+install-arc: helm-repo-update create-gha-arc-secret
 	[ "$(GHA_ID)" != "" ] || (echo "GHA_ID not set"; exit 1)
 	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
 	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
