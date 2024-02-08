@@ -2,7 +2,7 @@ githubConfigUrl: "$(RUNNERSCOPE)"
 githubConfigSecret: "gha-arc-secret"
 maxRunners: $(MAXRUNNERS)
 minRunners: $(MINRUNNERS)
-runnerGroup: "arc-lf-$(RUNNERLABEL)"
+runnerGroup: "$(RUNNERGROUP)"
 runnerScaleSetName: "rssn-$(RUNNERLABEL)"
 containerMode:
   type: "dind"

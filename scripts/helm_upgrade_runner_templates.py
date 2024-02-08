@@ -1,9 +1,14 @@
-from collections import ChainMap, defaultdict
+from collections import defaultdict
+from typing import Any
 from itertools import chain
 from typing import List, Dict
 import argparse
 import subprocess
 import yaml
+import os
+
+from github import Github, Auth, PaginatedList, Organization
+from github.GithubObject import CompletableGithubObject, NotSet, Attribute
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,6 +67,27 @@ def parse_args() -> argparse.Namespace:
         nargs='*',
     )
     parser.add_argument(
+        '--github-app-id',
+        help='Github app id to use for the deployment',
+        default=os.environ.get('GITHUB_APP_ID'),
+        type=str,
+        required=False
+    )
+    parser.add_argument(
+        '--github-app-key',
+        help='Github app key to use for the deployment',
+        default=os.environ.get('GHA_PRIVATE_KEY'),
+        type=str,
+        required=False
+    )
+    parser.add_argument(
+        '--github-app-installation-id',
+        help='Github app installation id to use for the deployment',
+        default=os.environ.get('GITHUB_APP_INSTALLATION_ID'),
+        type=int,
+        required=False
+    )
+    parser.add_argument(
         "--dry-run",
         help="dry run",
         action="store_true",
@@ -117,8 +143,94 @@ def add_to_helm_pkg_state(helm_pkg_state_file: str, install_name: str, namespace
         file.write(f"{namespace},{install_name}\n")
 
 
+def get_gh_client(opts: argparse.Namespace) -> Github:
+    auth = Auth.AppAuth(opts.github_app_id, opts.github_app_key).get_installation_auth(opts.github_app_installation_id)
+    gh = Github(auth=auth)
+    # this is to share the credentials with child processes (e.g. git)
+    os.environ['GITHUB_TOKEN'] = auth.token
+    os.environ['GIT_PASS'] = auth.token
+    return gh
+
+
+class RunnerGroup(CompletableGithubObject):
+    """
+    This class represents check runs.
+    The reference can be found here https://docs.github.com/en/enterprise-cloud@latest/rest/actions/self-hosted-runner-groups?apiVersion=2022-11-28#list-self-hosted-runner-groups-for-an-organization
+    """
+
+    def _initAttributes(self) -> None:
+        self._id: Attribute[int] = NotSet
+        self._name: Attribute[str] = NotSet
+        self._visibility: Attribute[str] = NotSet
+        self._url: Attribute[str] = NotSet
+
+    @property
+    def id(self) -> int:
+        self._completeIfNotSet(self._id)
+        return self._id.value
+
+    @property
+    def name(self) -> str:
+        self._completeIfNotSet(self._name)
+        return self._name.value
+
+    @property
+    def visibility(self) -> str:
+        self._completeIfNotSet(self._visibility)
+        return self._visibility.value
+
+    @property
+    def url(self) -> str:
+        self._completeIfNotSet(self._url)
+        return self._url.value
+
+    def _useAttributes(self, attributes: dict[str, Any]) -> None:
+        attributes["url"] = "https://api.github.com/orgs/pytorch/actions/runner-groups/" + str(attributes["id"])
+        if "id" in attributes:
+            self._id = self._makeIntAttribute(attributes["id"])
+        if "name" in attributes:
+            self._name = self._makeStringAttribute(attributes["name"])
+        if "visibility" in attributes:
+            self._visibility = self._makeStringAttribute(attributes["visibility"])
+        if "url" in attributes:
+            self._url = self._makeStringAttribute(attributes["url"])
+
+
+def gh_get_runner_groups(org: Organization.Organization) -> PaginatedList.PaginatedList[RunnerGroup]:
+    return PaginatedList.PaginatedList(
+        RunnerGroup,
+        org._requester,
+        f'{org.url}/actions/runner-groups',
+        {
+            'status': 'completed',
+        },
+        list_item='runner_groups',
+    )
+
+
+def gh_create_runner_group(org: Organization.Organization, name: str, visibility: str, selected_repository_ids: List[int] = []) -> RunnerGroup:
+    input = {
+        'name': name,
+        'visibility': visibility,
+        'allows_public_repositories': bool(visibility == 'all' or 65600975 in selected_repository_ids),
+    }
+    if selected_repository_ids:
+        input['selected_repository_ids'] = selected_repository_ids
+
+    return org._requester.requestJsonAndCheck(
+        "POST",
+        f'{org.url}/actions/runner-groups',
+        input=input,
+    )
+
+
 def main() -> None:
     options = parse_args()
+
+    gh = get_gh_client(options)
+    pytorch_org = gh.get_organization('pytorch')
+    runner_groups = {rg.name: rg for rg in gh_get_runner_groups(pytorch_org)}
+
     additional_values = {
         value.split('=')[0].upper(): value.split('=')[1]
         for value in options.additional_values or []
@@ -148,6 +260,8 @@ def main() -> None:
         additional_values['ENVRUNNERLABEL'] = label
         if additional_values['ENVIRONMENT'] == 'canary':
             additional_values['ENVRUNNERLABEL'] += '.canary'
+        l = additional_values['ENVRUNNERLABEL']
+        additional_values['RUNNERGROUP'] = f'arc-lf-{l}'
 
         install_name = f'rssi-{label}'
         to_apply = get_template(options.template_name, runner_config | additional_values)
@@ -165,10 +279,23 @@ def main() -> None:
         if options.dry_run:
             print("------------------------------------- compiled template -------------------------------------")
             print(to_apply)
-        if subprocess.run(cmd, input=to_apply, capture_output=False, text=True).returncode != 0:
-            print("------------------------------------- compiled template -------------------------------------")
-            print(to_apply)
-            raise Exception(f"Kubectl failed for {label}")
+        else:
+            runner_scope = {
+                'pytorch-org': 'all',
+                'pytorch-canary': 'selected',
+                'pytorch-repo': 'selected',
+            }[options.runner_scope]
+            selected_repository_ids = {
+                'pytorch-org': [],
+                'pytorch-canary': [398371105],
+                'pytorch-repo': [65600975],
+            }[options.runner_scope]
+            if additional_values['RUNNERGROUP'] not in runner_groups:
+                gh_create_runner_group(pytorch_org, additional_values['RUNNERGROUP'], runner_scope, selected_repository_ids)
+            if subprocess.run(cmd, input=to_apply, capture_output=False, text=True).returncode != 0:
+                print("------------------------------------- compiled template -------------------------------------")
+                print(to_apply)
+                raise Exception(f"Kubectl failed for {label}")
 
 
 if __name__ == "__main__":
