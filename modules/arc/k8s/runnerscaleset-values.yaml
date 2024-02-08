@@ -1,0 +1,19 @@
+githubConfigUrl: "$(RUNNERSCOPE)"
+githubConfigSecret: "gha-arc-secret"
+maxRunners: $(MAXRUNNERS)
+minRunners: $(MINRUNNERS)
+runnerGroup: "arc-lf-$(RUNNERLABEL)"
+runnerScaleSetName: "rssn-$(RUNNERLABEL)"
+template:
+  spec:
+    containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: RUNNER_LABEL
+            value: "arc-lf,arch:$(RUNNERARCH),os:$(RUNNEROS),$(ENVRUNNERLABEL)"
+    tolerations:
+      - key: "arcRunnerNodeType-$(NODETYPE)"
+        operator: Exists
+        effect: NoSchedule

@@ -1,6 +1,7 @@
 SHELL := /bin/bash -o pipefail
 ARC_SYS_TAINT = "CriticalAddonsOnly"
 K8S_RDS_STATE_FILE = ".k8s-rds-state"
+HELM_PKG_STATE_FILE = ".helm-pkg-state"
 
 ifneq ($(strip $(MINRUNNERS)),)
   ADDITIONAL_VALUES := minRunners=$(MINRUNNERS)
@@ -15,13 +16,16 @@ KARPENTERNODEROLE := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_role_n
 KARPENTERSGIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["security_group_ids"][] | {"id": .}]' <"${CLUSTER_CONFIG_FILE}")
 KARPENTERSUBNETIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["subnet_ids"][] | {"id": .}]' <"${CLUSTER_CONFIG_FILE}")
 
+RUNNERS_NAMESPACE = actions-runners
+
 .PHONY: clean-k8s-rds-state
 clean-k8s-rds-state:
 	rm -f $(K8S_RDS_STATE_FILE)
+	rm -rf $(HELM_PKG_STATE_FILE)
 
 delete-stale-rds:
-	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py \
-		--rds-state-file $(K8S_RDS_STATE_FILE)
+	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py --rds-state-file $(K8S_RDS_STATE_FILE)
+	../../venv/bin/python3 ../../scripts/helm_uninstall_runner_templates.py --helm-pkg-state-file $(HELM_PKG_STATE_FILE)
 
 .PHONY: add-eksctl-identity-mappings
 add-eksctl-identity-mappings:
@@ -41,25 +45,25 @@ do-update-kubectl:
 .PHONY: update-kubectl
 update-kubectl: do-update-kubectl add-eksctl-identity-mappings
 
-.PHONY: add-helm-repository
-add-helm-repository: update-kubectl
-	helm repo add jetstack https://charts.jetstack.io
+.PHONY: helm-repo-update
+helm-repo-update: update-kubectl
 	helm repo update
 
-.PHONY: install-cert-manager
-install-cert-manager: add-helm-repository
-	helm upgrade --install cert-manager jetstack/cert-manager \
-		--namespace cert-manager \
-		--create-namespace \
-		--version 1.13.2 \
-		--set installCRDs=true \
-		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule \
-		--set webhook.tolerations[0].key=$(ARC_SYS_TAINT),webhook.tolerations[0].operator="Exists",webhook.tolerations[0].effect=NoSchedule \
-		--set cainjector.tolerations[0].key=$(ARC_SYS_TAINT),cainjector.tolerations[0].operator="Exists",cainjector.tolerations[0].effect=NoSchedule \
-		--set startupapicheck.tolerations[0].key=$(ARC_SYS_TAINT),startupapicheck.tolerations[0].operator="Exists",startupapicheck.tolerations[0].effect=NoSchedule
+.PHONY: create-runner-namespace
+create-runner-namespace:
+	kubectl create namespace $(RUNNERS_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+
+.PHONY: create-gha-arc-secret
+create-gha-arc-secret:
+	kubectl create secret generic gha-arc-secret \
+		--namespace=$(RUNNERS_NAMESPACE) \
+		--from-literal=github_app_id="$(GHA_ID)" \
+		--from-literal=github_app_installation_id="$(GHA_INST_ID)" \
+		--from-literal=github_app_private_key="$$$(GHA_PRIVATE_KEY_VAR)" \
+		--dry-run=client -o yaml | kubectl apply -f -
 
 .PHONY: install-arc
-install-arc: install-cert-manager
+install-arc: helm-repo-update create-gha-arc-secret create-runner-namespace
 	[ "$(GHA_ID)" != "" ] || (echo "GHA_ID not set"; exit 1)
 	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
 	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
@@ -80,7 +84,7 @@ install-arc: install-cert-manager
 	done
 
 .PHONY: install-karpenter
-install-karpenter: add-helm-repository
+install-karpenter: helm-repo-update
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(KARPENTERCONTROLERROLEARN)" != "" ] || (echo "KARPENTERCONTROLERROLEARN not set"; exit 1)
 	[ "$(KARPENTERNODEROLEARN)" != "" ] || (echo "KARPENTERNODEROLEARN not set"; exit 1)
@@ -150,29 +154,11 @@ k8s-runner-scaler: install-arc
 	[ '$(KARPENTERSUBNETIDS)' != "" ] || (echo "KARPENTERSUBNETIDS not set"; exit 1)
 	[ "$(PROJECTTAG)" != "" ] || (echo "PROJECTTAG not set"; exit 1)
 	[ "$(RUNNERSCOPE)" != "" ] || (echo "RUNNERSCOPE not set"; exit 1)
-	kubectl apply -f ./k8s/storageclass.yaml --namespace=actions-runner-system
-	kubectl apply -f ./k8s/claim-medium.yaml --namespace=actions-runner-system
-	kubectl apply -f ./k8s/claim-large.yaml --namespace=actions-runner-system
-	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
-		--template-name k8s/runnerdeployment.yaml \
+	../../venv/bin/python ../../scripts/helm_upgrade_runner_templates.py \
+		--template-name k8s/runnerscaleset-values.yaml \
+		--namespace $(RUNNERS_NAMESPACE) \
 		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
-		--rds-state-file $(K8S_RDS_STATE_FILE) \
-		--runner-scope $(RUNNERSCOPE) \
-		--additional-values \
-			eksclustername=$(EKS_CLUSTER_NAME) \
-			environment=$(EKS_ENVIRONMENT) \
-			karpenternoderole=$(KARPENTERNODEROLE) \
-			karpentersgids='$(KARPENTERSGIDS)' \
-			karpentersubnetids='$(KARPENTERSUBNETIDS)' \
-			project=gh-ci-$(EKS_ENVIRONMENT)-arc \
-			projecttag=$(PROJECTTAG) \
-			$(ADDITIONAL_VALUES) \
-		--root-classes nodeConfig runnerConfig \
-		--label-property runnerLabel
-	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
-		--template-name k8s/horizontalautoscaler.yaml \
-		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
-		--rds-state-file $(K8S_RDS_STATE_FILE) \
+		--helm-pkg-state-file $(HELM_PKG_STATE_FILE) \
 		--runner-scope $(RUNNERSCOPE) \
 		--additional-values \
 			eksclustername=$(EKS_CLUSTER_NAME) \
