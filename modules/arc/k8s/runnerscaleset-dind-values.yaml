@@ -1,0 +1,9 @@
+containerMode:
+  type: "dind"
+
+template:
+  spec:
+    tolerations:
+      - key: "arcRunnerNodeType-$(NODETYPE)"
+        operator: Exists
+        effect: NoSchedule

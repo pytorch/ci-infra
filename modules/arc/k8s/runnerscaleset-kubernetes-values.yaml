@@ -1,0 +1,24 @@
+containerMode:
+  type: "kubernetes"
+  kubernetesModeWorkVolumeClaim:
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: "gp2"
+    resources:
+      requests:
+        storage: 1Gi
+  kubernetesModeServiceAccount:
+    annotations:
+
+template:
+  spec:
+    tolerations:
+      - key: "arcRunnerNodeType-$(NODETYPE)"
+        operator: Exists
+        effect: NoSchedule
+    containers:
+    - name: runner
+      image: ghcr.io/actions/actions-runner:latest
+      command: ["/home/runner/run.sh"]
+      env:
+      - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+        value: "false"

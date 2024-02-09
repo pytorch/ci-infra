@@ -41,6 +41,16 @@ def parse_args() -> argparse.Namespace:
         required=True,
     )
     parser.add_argument(
+        "--docker-mode-template-rel",
+        help="template to use for docker mode",
+        type=str,
+        default=",".join([
+            "dind", "k8s/runnerscaleset-dind-values.yaml",
+            "dind-rootless", "k8s/runnerscaleset-dind-rootless-values.yaml",
+            "k8s", "k8s/runnerscaleset-kubernetes-values.yaml",
+        ]),
+    )
+    parser.add_argument(
         "--root-classes",
         help="root classes to use for the template",
         type=str,
@@ -239,9 +249,7 @@ def main() -> None:
     additional_values['RUNNERSCOPE'] = {
         'pytorch-org': 'https://github.com/pytorch',
         'pytorch-canary': 'https://github.com/pytorch',
-        # 'pytorch-canary': 'https://github.com/pytorch/pytorch-canary',
         'pytorch-repo': 'https://github.com/pytorch',
-        # 'pytorch-repo': 'https://github.com/pytorch/pytorch',
     }[options.runner_scope]
 
     if len(options.root_classes) != len(options.arc_runner_config_files):
@@ -263,9 +271,24 @@ def main() -> None:
         if additional_values['ENVIRONMENT'] == 'canary':
             additional_values['ENVRUNNERLABEL'] += '.canary'
         l = additional_values['ENVRUNNERLABEL']
+
+        # Please note that the prefix for RUNNERGROUP is very important as it is used
+        # as the refenence for witch runner groups to clean up when there is no matching
+        # configs
         additional_values['RUNNERGROUP'] = f'arc-lf-{l}'
 
+        # Please note that the prefix for install_name is very important as it is used
+        # as the refenence for witch installations to clean up when there is no matching
+        # configs
         install_name = f'rssi-{label}'
+
+        template_mode_rel_it = iter(options.docker_mode_template_rel.split(','))
+        template_mode_rel_dict = dict(zip(template_mode_rel_it, template_mode_rel_it))
+
+        additional_values['DOCKERMODETEMPLATE'] = get_template(
+            template_mode_rel_dict[runner_config['containerMode']],
+            runner_config | additional_values
+        )
         to_apply = get_template(options.template_name, runner_config | additional_values)
         add_to_helm_pkg_state(options.helm_pkg_state_file, install_name, options.namespace)
 
@@ -276,7 +299,7 @@ def main() -> None:
             '--values',
             '-',
         ]
-        print(f"helm upgrade for rssi-{label}: {' '.join(cmd)}")
+        print(f"helm upgrade for {install_name}: {' '.join(cmd)}")
 
         if options.dry_run:
             print("------------------------------------- compiled template -------------------------------------")
@@ -292,12 +315,13 @@ def main() -> None:
                 'pytorch-canary': [398371105],
                 'pytorch-repo': [65600975],
             }[options.runner_scope]
-            if additional_values['RUNNERGROUP'] not in runner_groups:
-                gh_create_runner_group(pytorch_org, additional_values['RUNNERGROUP'], runner_scope, selected_repository_ids)
             if subprocess.run(cmd, input=to_apply, capture_output=False, text=True).returncode != 0:
                 print("------------------------------------- compiled template -------------------------------------")
                 print(to_apply)
                 raise Exception(f"Kubectl failed for {label}")
+            if additional_values['RUNNERGROUP'] not in runner_groups:
+                print(f"Creating runner group {additional_values['RUNNERGROUP']}")
+                gh_create_runner_group(pytorch_org, additional_values['RUNNERGROUP'], runner_scope, selected_repository_ids)
 
 
 if __name__ == "__main__":

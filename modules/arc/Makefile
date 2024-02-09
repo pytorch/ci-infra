@@ -145,7 +145,7 @@ setup-karpenter-autoscaler: install-karpenter
 		--label-property nodeType
 
 .PHONY: k8s-runner-scaler
-k8s-runner-scaler: #install-arc
+k8s-runner-scaler: install-arc
 	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
@@ -173,4 +173,4 @@ k8s-runner-scaler: #install-arc
 			projecttag=$(PROJECTTAG) \
 			$(ADDITIONAL_VALUES) \
 		--root-classes nodeConfig runnerConfig \
-		--label-property runnerLabel
+		--label-property runnerLabel \
