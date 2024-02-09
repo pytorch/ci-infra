@@ -1,7 +1,6 @@
 from collections import defaultdict
-from typing import Any
 from itertools import chain
-from typing import List, Dict
+from typing import List, Dict, Any
 import argparse
 import subprocess
 import yaml
@@ -267,6 +266,9 @@ def main() -> None:
             for l in runner_config['requirements'] if l['key'] == 'kubernetes.io/os'
         ][0]
 
+        # Please note that the suffix for ENVRUNNERLABEL is very important as it is used
+        # as the refenence for witch runner groups to clean up when there is no matching
+        # configs
         additional_values['ENVRUNNERLABEL'] = label
         if additional_values['ENVIRONMENT'] == 'canary':
             additional_values['ENVRUNNERLABEL'] += '.canary'

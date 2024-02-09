@@ -24,8 +24,14 @@ clean-k8s-rds-state:
 	rm -rf $(HELM_PKG_STATE_FILE)
 
 delete-stale-rds:
+	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
 	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py --rds-state-file $(K8S_RDS_STATE_FILE)
-	../../venv/bin/python3 ../../scripts/helm_uninstall_runner_templates.py --helm-pkg-state-file $(HELM_PKG_STATE_FILE)
+	../../venv/bin/python3 ../../scripts/helm_uninstall_runner_templates.py \
+		--github-app-id $(GHA_ID) \
+		--github-app-installation-id $(GHA_INST_ID) \
+		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
+		--eks-environment $(EKS_ENVIRONMENT) \
+		--helm-pkg-state-file $(HELM_PKG_STATE_FILE)
 
 .PHONY: add-eksctl-identity-mappings
 add-eksctl-identity-mappings:
