@@ -39,6 +39,8 @@ init: .terraform/modules/modules.json
 clean:
 	$(RM) -r .terraform
 	$(RM) .terraform.lock.hcl
+	$(RM) ARC_NODE_CONFIG.yaml
+	$(RM) ARC_RUNNER_CONFIG.yaml
 	$(RM) backend-state.tf
 	$(RM) backend.plan
 	$(RM) backend.tf

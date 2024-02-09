@@ -1,28 +1,5 @@
-githubConfigUrl: "$(RUNNERSCOPE)"
-
-githubConfigSecret: "gha-arc-secret"
-
-maxRunners: $(MAXRUNNERS)
-
-minRunners: $(MINRUNNERS)
-
-runnerGroup: "$(RUNNERGROUP)"
-
-runnerScaleSetName: "$(RUNNERLABEL)"
-
 containerMode:
   type: "dind"
-
-listenerTemplate:
-  spec:
-    containers:
-      - name: listener
-        securityContext:
-          runAsUser: 1000
-    tolerations:
-      - key: "CriticalAddonsOnly"
-        operator: Exists
-        effect: NoSchedule
 
 template:
   spec:
