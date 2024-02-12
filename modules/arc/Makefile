@@ -154,6 +154,7 @@ k8s-runner-scaler: install-arc
 	[ '$(KARPENTERSUBNETIDS)' != "" ] || (echo "KARPENTERSUBNETIDS not set"; exit 1)
 	[ "$(PROJECTTAG)" != "" ] || (echo "PROJECTTAG not set"; exit 1)
 	[ "$(RUNNERSCOPE)" != "" ] || (echo "RUNNERSCOPE not set"; exit 1)
+	kubectl apply -f ./k8s/claim-large.yaml --namespace=$(RUNNERS_NAMESPACE)
 	../../venv/bin/python ../../scripts/helm_upgrade_runner_templates.py \
 		--github-app-id $(GHA_ID) \
 		--github-app-installation-id $(GHA_INST_ID) \

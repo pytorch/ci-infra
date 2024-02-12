@@ -7,3 +7,14 @@ template:
       - key: "arcRunnerNodeType-$(NODETYPE)"
         operator: Exists
         effect: NoSchedule
+  volumes:
+    - name: runner-volume
+      persistentVolumeClaim:
+        claimName: ebs-claim-large
+  containers:
+    - name: runner
+      securityContext:
+        runAsUser: 1000
+      volumeMounts:
+        - mountPath: "/var/run/docker"
+          name: runner-volume
