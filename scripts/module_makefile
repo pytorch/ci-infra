@@ -184,6 +184,9 @@ karpenter-autoscaler-canary: inventory/eks/canary_cluster_name inventory/eks/can
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				GHA_ID=808166 \
+				GHA_INST_ID=46578864 \
+				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
 				EKS_ENVIRONMENT=canary \
 				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				PROJECTTAG=gi-ci-canary \

@@ -8,3 +8,9 @@ spec:
   securityGroupSelectorTerms: $(KARPENTERSGIDS)
   role: "$(KARPENTERNODEROLE)"
   detailedMonitoring: true
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 500Gi
+        volumeType: gp3
+        deleteOnTermination: true
