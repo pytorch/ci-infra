@@ -5,7 +5,7 @@ containerMode:
     storageClassName: "gp2"
     resources:
       requests:
-        storage: 1Gi
+        storage: 40Gi
   kubernetesModeServiceAccount:
     annotations:
 
@@ -15,6 +15,8 @@ template:
       - key: "arcRunnerNodeType-$(NODETYPE)"
         operator: Exists
         effect: NoSchedule
+    securityContext:
+      fsGroup: 123
     containers:
     - name: runner
       image: ghcr.io/actions/actions-runner:latest
