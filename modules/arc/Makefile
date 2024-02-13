@@ -15,8 +15,13 @@ KARPENTERNODEROLEARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_rol
 KARPENTERNODEROLE := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_role_name"]' <"${CLUSTER_CONFIG_FILE}")
 KARPENTERSGIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["security_group_ids"][] | {"id": .}]' <"${CLUSTER_CONFIG_FILE}")
 KARPENTERSUBNETIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["subnet_ids"][] | {"id": .}]' <"${CLUSTER_CONFIG_FILE}")
+DOCKERREGISTRYBUCKET := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_bucket"]' <"${CLUSTER_CONFIG_FILE}")
+
 
 RUNNERS_NAMESPACE = actions-runners
+RUNNERS_SYSTEM_NAMESPACE = actions-runner-system
+KARPENTER_NAMESPACE = karpenter
+DOCKER_REGISTRY_NAMESPACE = docker-registry
 
 .PHONY: clean-k8s-rds-state
 clean-k8s-rds-state:
@@ -53,6 +58,8 @@ update-kubectl: do-update-kubectl add-eksctl-identity-mappings
 
 .PHONY: helm-repo-update
 helm-repo-update: update-kubectl
+	helm repo add docker-registry-mirror https://t83714.github.io/docker-registry-mirror
+	helm repo add twuni https://helm.twun.io
 	helm repo update
 
 .PHONY: create-runner-namespace
@@ -68,6 +75,36 @@ create-gha-arc-secret: create-runner-namespace
 		--from-literal=github_app_private_key="$$$(GHA_PRIVATE_KEY_VAR)" \
 		--dry-run=client -o yaml | kubectl apply -f -
 
+.PHONY: install-docker-registry
+install-docker-registry: helm-repo-update
+	helm upgrade --install docker-registry-mirror-docker-io docker-registry-mirror/docker-registry-mirror \
+		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
+		--create-namespace \
+		--set service.type=ClusterIP \
+		--set service.port=5000 \
+		--set replicaCount=3 \
+		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
+	helm upgrade --install docker-registry-mirror-ghcr-io docker-registry-mirror/docker-registry-mirror \
+		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
+		--create-namespace \
+		--set proxy.remoteurl=https://ghcr.io \
+		--set proxy.username=pytorch \
+		--set proxy.password=`../../venv/bin/python ../../scripts/gh_app_get_github_token.py -i $(GHA_ID) -l $(GHA_INST_ID) -k "$$$(GHA_PRIVATE_KEY_VAR)"` \
+		--set service.type=ClusterIP \
+		--set service.port=5000 \
+		--set replicaCount=3 \
+		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
+	helm upgrade --install docker-registry-internal twuni/docker-registry \
+		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
+		--create-namespace \
+		--set service.type=ClusterIP \
+		--set service.port=5000 \
+		--set s3.bucket=$(DOCKERREGISTRYBUCKET) \
+		--set secrets.s3.accessKey=`jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_user_access_key"]' <"${CLUSTER_CONFIG_FILE}"` \
+		--set secrets.s3.secretKey=`jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_user_secret"]' <"${CLUSTER_CONFIG_FILE}"` \
+		--set replicaCount=2 \
+		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
+
 .PHONY: install-arc
 install-arc: helm-repo-update create-gha-arc-secret
 	[ "$(GHA_ID)" != "" ] || (echo "GHA_ID not set"; exit 1)
@@ -75,7 +112,7 @@ install-arc: helm-repo-update create-gha-arc-secret
 	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
 	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
 	helm upgrade --install arc oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
-		--namespace actions-runner-system \
+		--namespace $(RUNNERS_SYSTEM_NAMESPACE) \
 		--create-namespace \
 		--set=replicaCount=3 \
 		--set githubConfigSecret.create=true \
@@ -85,8 +122,8 @@ install-arc: helm-repo-update create-gha-arc-secret
 		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule \
 		--wait
 	# If the changes are not impacting the controller pod config, it won't restart, so we need to do it manually
-	for pod in `kubectl get pod --namespace=actions-runner-system | grep 'arc-gha-rs-controller-' | cut -f 1 -d ' '` ; do \
-		kubectl delete pod $$pod --namespace=actions-runner-system ; \
+	for pod in `kubectl get pod --namespace=$(RUNNERS_SYSTEM_NAMESPACE) | grep 'arc-gha-rs-controller-' | cut -f 1 -d ' '` ; do \
+		kubectl delete pod $$pod --namespace=$(RUNNERS_SYSTEM_NAMESPACE) ; \
 	done
 
 .PHONY: install-karpenter
@@ -95,7 +132,7 @@ install-karpenter: helm-repo-update
 	[ "$(KARPENTERCONTROLERROLEARN)" != "" ] || (echo "KARPENTERCONTROLERROLEARN not set"; exit 1)
 	[ "$(KARPENTERNODEROLEARN)" != "" ] || (echo "KARPENTERNODEROLEARN not set"; exit 1)
 	helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
-		--namespace karpenter \
+		--namespace $(KARPENTER_NAMESPACE) \
 		--create-namespace \
 		--version v0.32.1 \
 		--set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$(KARPENTERCONTROLERROLEARN) \
@@ -119,7 +156,7 @@ setup-karpenter-autoscaler: install-karpenter
 	[ "$(RUNNERSCOPE)" != "" ] || (echo "RUNNERSCOPE not set"; exit 1)
 	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/nodeclass.yaml \
-		--namespace karpenter \
+		--namespace $(KARPENTER_NAMESPACE) \
 		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \
 		--runner-scope $(RUNNERSCOPE) \
@@ -135,7 +172,7 @@ setup-karpenter-autoscaler: install-karpenter
 		--label-property nodeType
 	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
 		--template-name k8s/nodepool.yaml \
-		--namespace karpenter \
+		--namespace $(KARPENTER_NAMESPACE) \
 		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml \
 		--rds-state-file $(K8S_RDS_STATE_FILE) \
 		--runner-scope $(RUNNERSCOPE) \
