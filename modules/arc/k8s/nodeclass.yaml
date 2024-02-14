@@ -12,6 +12,7 @@ spec:
 
     [host."http://$(DOCKERREGISTRYMIRROR):5000"]
       capabilities = ["pull", "resolve"]
+      skip_verify = true
     EOF
 
     mkdir -p /etc/containerd/certs.d/gcr.io/
@@ -20,6 +21,16 @@ spec:
 
     [host."http://$(GITHUBREGISTRYMIRROR):5000"]
       capabilities = ["pull", "resolve"]
+      skip_verify = true
+    EOF
+
+    mkdir -p /etc/containerd/certs.d/docker-registry-pytorch-internal.docker-registry.svc.cluster.local
+    cat <<EOF >>/etc/containerd/certs.d/docker-registry-pytorch-internal.docker-registry.svc.cluster.local/hosts.toml
+    server = "https://docker-registry-pytorch-internal.docker-registry.svc.cluster.local"
+
+    [host."https://$(PYTORCHREGISTRYMIRROR)"]
+      capabilities = ["pull", "resolve", "push"]
+      skip_verify = true
     EOF
 
     service containerd restart

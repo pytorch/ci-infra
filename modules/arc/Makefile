@@ -75,34 +75,55 @@ create-gha-arc-secret: create-runner-namespace
 		--from-literal=github_app_private_key="$$$(GHA_PRIVATE_KEY_VAR)" \
 		--dry-run=client -o yaml | kubectl apply -f -
 
+.PHONY: create-docker-registry-tls-secret
+create-docker-registry-tls-secret:
+	openssl req -new -newkey rsa:4096 -x509 -sha256 -days 365 -nodes -out tls/tls.crt -keyout tls/tls.key -subj "/C=US/ST=California/L=San Francisco/O=PyTorch/OU=PyTorch/CN=docker-registry-pytorch-internal"
+	kubectl create secret tls docker-registry-pytorch-internal-tls \
+		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
+		--cert=tls/tls.crt \
+		--key=tls/tls.key \
+		--dry-run=client -o yaml | kubectl apply -f -
+
 .PHONY: install-docker-registry
-install-docker-registry: helm-repo-update
+install-docker-registry: helm-repo-update create-docker-registry-tls-secret
+	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
+	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
+	[ "$$DOCKER_REGISTRY_HTPASSWD" != "" ] || (echo "DOCKER_REGISTRY_HTPASSWD not set"; exit 1)
 	helm upgrade --install docker-registry-mirror-docker-io docker-registry-mirror/docker-registry-mirror \
 		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
 		--create-namespace \
+		--wait \
 		--set service.type=ClusterIP \
 		--set service.port=5000 \
+		--set service.clusterIP=172.20.56.113 \
 		--set replicaCount=3 \
 		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
 	helm upgrade --install docker-registry-mirror-ghcr-io docker-registry-mirror/docker-registry-mirror \
 		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
 		--create-namespace \
+		--wait \
 		--set proxy.remoteurl=https://ghcr.io \
 		--set proxy.username=pytorch \
 		--set proxy.password=`../../venv/bin/python ../../scripts/gh_app_get_github_token.py -i $(GHA_ID) -l $(GHA_INST_ID) -k "$$$(GHA_PRIVATE_KEY_VAR)"` \
 		--set service.type=ClusterIP \
 		--set service.port=5000 \
+		--set service.clusterIP=172.20.56.114 \
 		--set replicaCount=3 \
 		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
-	helm upgrade --install docker-registry-internal twuni/docker-registry \
+	helm upgrade --install docker-registry-pytorch-internal twuni/docker-registry \
 		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
 		--create-namespace \
+		--wait \
 		--set service.type=ClusterIP \
-		--set service.port=5000 \
+		--set service.port=443 \
+		--set service.clusterIP=172.20.56.115 \
+		--set tlsSecretName=docker-registry-pytorch-internal-tls \
 		--set s3.bucket=$(DOCKERREGISTRYBUCKET) \
 		--set secrets.s3.accessKey=`jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_user_access_key"]' <"${CLUSTER_CONFIG_FILE}"` \
 		--set secrets.s3.secretKey=`jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_user_secret"]' <"${CLUSTER_CONFIG_FILE}"` \
 		--set replicaCount=2 \
+		--set garbageCollect.enabled=true \
+		--set secrets.htpasswd="$$DOCKER_REGISTRY_HTPASSWD" \
 		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
 
 .PHONY: install-arc
@@ -170,6 +191,7 @@ setup-karpenter-autoscaler: install-karpenter install-docker-registry
 			projecttag=$(PROJECTTAG) \
 			dockerregistrymirror=`kubectl get svc --namespace=docker-registry docker-registry-mirror-docker-io -o json | jq ".spec.clusterIP" | sed 's/"//g'` \
 			githubregistrymirror=`kubectl get svc --namespace=docker-registry docker-registry-mirror-ghcr-io -o json | jq ".spec.clusterIP" | sed 's/"//g'` \
+			pytorchregistrymirror=`kubectl get svc --namespace=docker-registry docker-registry-pytorch-internal -o json | jq ".spec.clusterIP" | sed 's/"//g'` \
 		--root-classes nodeConfig \
 		--label-property nodeType
 	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
