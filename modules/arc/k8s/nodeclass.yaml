@@ -3,6 +3,26 @@ kind: EC2NodeClass
 metadata:
   name: nodeclass-$(NODETYPE)
 spec:
+  userData: |
+    #!/bin/bash
+
+    mkdir -p /etc/containerd/certs.d/docker.io/
+    cat <<EOF >>/etc/containerd/certs.d/docker.io/hosts.toml
+    server = "https://docker.io"
+
+    [host."http://$(DOCKERREGISTRYMIRROR):5000"]
+      capabilities = ["pull", "resolve"]
+    EOF
+
+    mkdir -p /etc/containerd/certs.d/gcr.io/
+    cat <<EOF >>/etc/containerd/certs.d/gcr.io/hosts.toml
+    server = "https://gcr.io"
+
+    [host."http://$(GITHUBREGISTRYMIRROR):5000"]
+      capabilities = ["pull", "resolve"]
+    EOF
+
+    service containerd restart
   amiFamily: AL2
   subnetSelectorTerms: $(KARPENTERSUBNETIDS)
   securityGroupSelectorTerms: $(KARPENTERSGIDS)
@@ -11,6 +31,6 @@ spec:
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:
-        volumeSize: 1Tb
+        volumeSize: 1Ti
         volumeType: gp3
         deleteOnTermination: true

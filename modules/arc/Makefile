@@ -145,7 +145,7 @@ install-karpenter: helm-repo-update
 	fi
 
 .PHONY: setup-karpenter-autoscaler
-setup-karpenter-autoscaler: install-karpenter
+setup-karpenter-autoscaler: install-karpenter install-docker-registry
 	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
@@ -168,6 +168,8 @@ setup-karpenter-autoscaler: install-karpenter
 			karpentersubnetids='$(KARPENTERSUBNETIDS)' \
 			project=gh-ci-$(EKS_ENVIRONMENT)-arc \
 			projecttag=$(PROJECTTAG) \
+			dockerregistrymirror=`kubectl get svc --namespace=docker-registry docker-registry-mirror-docker-io -o json | jq ".spec.clusterIP" | sed 's/"//g'` \
+			githubregistrymirror=`kubectl get svc --namespace=docker-registry docker-registry-mirror-ghcr-io -o json | jq ".spec.clusterIP" | sed 's/"//g'` \
 		--root-classes nodeConfig \
 		--label-property nodeType
 	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
