@@ -320,7 +320,7 @@ def main() -> None:
             if subprocess.run(cmd, input=to_apply, capture_output=False, text=True).returncode != 0:
                 print("------------------------------------- compiled template -------------------------------------")
                 print(to_apply)
-                raise Exception(f"Kubectl failed for {label}")
+                raise Exception(f"helm upgrade failed for {label}")
             if additional_values['RUNNERGROUP'] not in runner_groups:
                 print(f"Creating runner group {additional_values['RUNNERGROUP']}")
                 gh_create_runner_group(pytorch_org, additional_values['RUNNERGROUP'], runner_scope, selected_repository_ids)
