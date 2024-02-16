@@ -99,7 +99,7 @@ create-docker-registry-tls-secret:
 	fi
 
 .PHONY: install-docker-registry
-install-docker-registry: #helm-repo-update create-docker-registry-tls-secret
+install-docker-registry: helm-repo-update create-docker-registry-tls-secret
 	[ "$(REGION)" != "" ] || (echo "REGION not set"; exit 1)
 	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
