@@ -53,3 +53,7 @@ output "docker_registry_user_access_key" {
 output "docker_registry_user_secret" {
   value = aws_iam_access_key.internal_docker_registry_usr_key.secret
 }
+
+output "internal_registry_secret_arn" {
+  value = resource.aws_secretsmanager_secret.pytorch_internal_docker_registry_auth.arn
+}

@@ -1,0 +1,39 @@
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 5000
+  clusterIP: 172.20.56.115
+
+storage: s3
+
+garbageCollect:
+  enabled: true
+  deleteUntagged: true
+
+metrics:
+  enabled: true
+
+configData:
+  version: 0.1
+  log:
+    fields:
+      service: registry
+  storage:
+    cache:
+      blobdescriptor: inmemory
+  http:
+    addr: :5000
+    host: https://pytorch-internal.docker-registry.svc.cluster.local:5000
+    headers:
+      X-Content-Type-Options: [nosniff]
+    debug:
+      addr: :5001
+      prometheus:
+        enabled: true
+        path: /metrics
+  health:
+    storagedriver:
+      enabled: true
+      interval: 10s
+      threshold: 3

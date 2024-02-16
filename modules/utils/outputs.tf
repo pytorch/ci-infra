@@ -14,6 +14,7 @@ output "canary_eks_config" {
       docker_registry_user_access_key = mod.docker_registry_user_access_key
       docker_registry_user_arn        = mod.docker_registry_user_arn
       docker_registry_user_secret     = mod.docker_registry_user_secret
+      internal_registry_secret_arn    = mod.internal_registry_secret_arn
       karpenter_controler_role_arn    = mod.karpenter_controler_role_arn
       karpenter_controler_role_name   = mod.karpenter_controler_role_name
       karpenter_node_role_arn         = mod.karpenter_node_role_arn
@@ -41,6 +42,7 @@ output "vanguard_eks_config" {
       docker_registry_user_access_key = mod.docker_registry_user_access_key
       docker_registry_user_arn        = mod.docker_registry_user_arn
       docker_registry_user_secret     = mod.docker_registry_user_secret
+      internal_registry_secret_arn    = mod.internal_registry_secret_arn
       karpenter_controler_role_arn    = mod.karpenter_controler_role_arn
       karpenter_controler_role_name   = mod.karpenter_controler_role_name
       karpenter_node_role_arn         = mod.karpenter_node_role_arn
@@ -67,6 +69,7 @@ output "prod_eks_config" {
       docker_registry_user_access_key = mod.docker_registry_user_access_key
       docker_registry_user_arn        = mod.docker_registry_user_arn
       docker_registry_user_secret     = mod.docker_registry_user_secret
+      internal_registry_secret_arn    = mod.internal_registry_secret_arn
       karpenter_controler_role_arn    = mod.karpenter_controler_role_arn
       karpenter_controler_role_name   = mod.karpenter_controler_role_name
       karpenter_node_role_arn         = mod.karpenter_node_role_arn

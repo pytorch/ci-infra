@@ -14,6 +14,35 @@ resource "aws_iam_role" "karpenter_node_role" {
     ]
   })
 
+  inline_policy {
+    name = "KarpenterNodeRole-${local.cluster_name}-inline-policy"
+    policy = jsonencode({
+      Version = "2012-10-17"
+      Statement = [
+        {
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetResourcePolicy",
+            "secretsmanager:GetSecretValue",
+            "secretsmanager:DescribeSecret",
+            "secretsmanager:ListSecretVersionIds"
+          ]
+          Resource = [
+            resource.aws_secretsmanager_secret.pytorch_internal_docker_registry_auth.arn
+          ]
+        },
+        {
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:BatchGetSecretValue",
+            "secretsmanager:ListSecrets"
+          ]
+          Resource = "*"
+        }
+      ]
+    })
+  }
+
   tags = {
     Project     = "runners-eks"
     Environment = var.environment

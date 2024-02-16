@@ -6,6 +6,19 @@ spec:
   userData: |
     #!/bin/bash
 
+    yum install docker -y
+
+    DOCKER_SECRET=`aws secretsmanager get-secret-value --secret-id $(DOCKERREGISTRYINTERNALSECRETARN) | jq ".SecretString" | sed 's/"//g'`
+    DOCKER_USER=`echo $DOCKER_SECRET | cut -d',' -f1`
+    DOCKER_PASS=`echo $DOCKER_SECRET | cut -d',' -f2`
+
+    mkdir -p /etc/containerd/
+    cat <<EOF >>/etc/containerd/config.toml
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."$(PYTORCHREGISTRYMIRROR):5000".auth]
+      username = "$DOCKER_USER"
+      password = "$DOCKER_PASS"
+    EOF
+
     mkdir -p /etc/containerd/certs.d/docker.io/
     cat <<EOF >>/etc/containerd/certs.d/docker.io/hosts.toml
     server = "https://docker.io"
@@ -13,6 +26,9 @@ spec:
     [host."http://$(DOCKERREGISTRYMIRROR):5000"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
+
+    [host."https://docker.io"]
+      capabilities = ["push"]
     EOF
 
     mkdir -p /etc/containerd/certs.d/gcr.io/
@@ -22,18 +38,47 @@ spec:
     [host."http://$(GITHUBREGISTRYMIRROR):5000"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
+
+    [host."https://gcr.io"]
+      capabilities = ["push"]
     EOF
 
-    mkdir -p /etc/containerd/certs.d/docker-registry-pytorch-internal.docker-registry.svc.cluster.local
-    cat <<EOF >>/etc/containerd/certs.d/docker-registry-pytorch-internal.docker-registry.svc.cluster.local/hosts.toml
-    server = "https://docker-registry-pytorch-internal.docker-registry.svc.cluster.local"
+    mkdir -p /etc/containerd/certs.d/pytorch-internal.docker-registry.svc.cluster.local
+    cat <<EOF >>/etc/containerd/certs.d/pytorch-internal.docker-registry.svc.cluster.local/hosts.toml
+    server = "https://pytorch-internal.docker-registry.svc.cluster.local"
 
-    [host."https://$(PYTORCHREGISTRYMIRROR)"]
+    [host."https://$(PYTORCHREGISTRYMIRROR):5000"]
       capabilities = ["pull", "resolve", "push"]
       skip_verify = true
     EOF
 
+    mkdir -p /etc/docker
+    cat <<EOF >>/etc/docker/daemon.json
+    {
+      "insecure-registries": [
+        "$(DOCKERREGISTRYMIRROR)",
+        "$(DOCKERREGISTRYMIRROR):443",
+        "$(DOCKERREGISTRYMIRROR):5000",
+        "$(GITHUBREGISTRYMIRROR)",
+        "$(GITHUBREGISTRYMIRROR):443",
+        "$(GITHUBREGISTRYMIRROR):5000",
+        "$(PYTORCHREGISTRYMIRROR)",
+        "$(PYTORCHREGISTRYMIRROR):443",
+        "$(PYTORCHREGISTRYMIRROR):5000",
+        "pytorch-internal.docker-registry.svc.cluster.local",
+        "pytorch-internal.docker-registry.svc.cluster.local:443",
+        "pytorch-internal.docker-registry.svc.cluster.local:5000"
+      ]
+    }
+    EOF
+
+    echo "172.20.56.115 pytorch-internal.docker-registry.svc.cluster.local" >> /etc/hosts
+
     service containerd restart
+    systemctl restart docker
+
+    docker login -u $DOCKER_USER -p $DOCKER_PASS pytorch-internal.docker-registry.svc.cluster.local:5000
+    docker login -u $DOCKER_USER -p $DOCKER_PASS pytorch-internal.docker-registry.svc.cluster.local
   amiFamily: AL2
   subnetSelectorTerms: $(KARPENTERSUBNETIDS)
   securityGroupSelectorTerms: $(KARPENTERSGIDS)
