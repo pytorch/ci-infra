@@ -11,7 +11,7 @@ ifneq ($(strip $(MAXRUNNERS)),)
 endif
 
 DOCKERREGISTRYBUCKET := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_bucket"]' <"${CLUSTER_CONFIG_FILE}")
-DOCKERREGISTRYUSERSECRET := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["internal_registry_secret_arn"]' <"${CLUSTER_CONFIG_FILE}")
+DOCKERREGISTRYINTERNALSECRETARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["internal_registry_secret_arn"]' <"${CLUSTER_CONFIG_FILE}")
 KARPENTERCONTROLERROLEARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_controler_role_arn"]' <"${CLUSTER_CONFIG_FILE}")
 KARPENTERNODEROLE := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_role_name"]' <"${CLUSTER_CONFIG_FILE}")
 KARPENTERNODEROLEARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_role_arn"]' <"${CLUSTER_CONFIG_FILE}")
@@ -104,40 +104,40 @@ install-docker-registry: #helm-repo-update create-docker-registry-tls-secret
 	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$$DOCKER_REGISTRY_HTPASSWD" != "" ] || (echo "DOCKER_REGISTRY_HTPASSWD not set"; exit 1)
-	# helm upgrade --install docker-registry-mirror-docker-io docker-registry-mirror/docker-registry-mirror \
-	# 	--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
-	# 	--create-namespace \
-	# 	--wait \
-	# 	--set service.type=ClusterIP \
-	# 	--set service.port=5000 \
-	# 	--set service.clusterIP=172.20.56.113 \
-	# 	--set replicaCount=3 \
-	# 	--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
-	# helm upgrade --install docker-registry-mirror-ghcr-io docker-registry-mirror/docker-registry-mirror \
-	# 	--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
-	# 	--create-namespace \
-	# 	--wait \
-	# 	--set proxy.remoteurl=https://ghcr.io \
-	# 	--set proxy.username=pytorch \
-	# 	--set proxy.password=`../../venv/bin/python ../../scripts/gh_app_get_github_token.py -i $(GHA_ID) -l $(GHA_INST_ID) -k "$$$(GHA_PRIVATE_KEY_VAR)"` \
-	# 	--set service.type=ClusterIP \
-	# 	--set service.port=5000 \
-	# 	--set service.clusterIP=172.20.56.114 \
-	# 	--set replicaCount=3 \
-	# 	--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
-	# helm upgrade --install $(DOCKER_REGISTRY_INTERNAL_NAME) twuni/docker-registry \
-	# 	--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
-	# 	--create-namespace \
-	# 	--wait \
-	# 	--set tlsSecretName=$(DOCKER_REGISTRY_TLS_SECRET_NAME) \
-	# 	--set s3.region=$(REGION) \
-	# 	--set s3.bucket=$(DOCKERREGISTRYBUCKET) \
-	# 	--set secrets.s3.accessKey=`jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_user_access_key"]' <"${CLUSTER_CONFIG_FILE}"` \
-	# 	--set secrets.s3.secretKey=`jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_user_secret"]' <"${CLUSTER_CONFIG_FILE}"` \
-	# 	--set secrets.htpasswd="$$DOCKER_REGISTRY_HTPASSWD" \
-	# 	--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule \
-	# 	--set fullnameOverride=$(DOCKER_REGISTRY_INTERNAL_NAME) \
-	# 	--values k8s/internal-docker-registry.yaml
+	helm upgrade --install docker-registry-mirror-docker-io docker-registry-mirror/docker-registry-mirror \
+		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
+		--create-namespace \
+		--wait \
+		--set service.type=ClusterIP \
+		--set service.port=5000 \
+		--set service.clusterIP=172.20.56.113 \
+		--set replicaCount=3 \
+		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
+	helm upgrade --install docker-registry-mirror-ghcr-io docker-registry-mirror/docker-registry-mirror \
+		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
+		--create-namespace \
+		--wait \
+		--set proxy.remoteurl=https://ghcr.io \
+		--set proxy.username=pytorch \
+		--set proxy.password=`../../venv/bin/python ../../scripts/gh_app_get_github_token.py -i $(GHA_ID) -l $(GHA_INST_ID) -k "$$$(GHA_PRIVATE_KEY_VAR)"` \
+		--set service.type=ClusterIP \
+		--set service.port=5000 \
+		--set service.clusterIP=172.20.56.114 \
+		--set replicaCount=3 \
+		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule
+	helm upgrade --install $(DOCKER_REGISTRY_INTERNAL_NAME) twuni/docker-registry \
+		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
+		--create-namespace \
+		--wait \
+		--set tlsSecretName=$(DOCKER_REGISTRY_TLS_SECRET_NAME) \
+		--set s3.region=$(REGION) \
+		--set s3.bucket=$(DOCKERREGISTRYBUCKET) \
+		--set secrets.s3.accessKey=`jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_user_access_key"]' <"${CLUSTER_CONFIG_FILE}"` \
+		--set secrets.s3.secretKey=`jq '.["$(EKS_CLUSTER_NAME)"]["docker_registry_user_secret"]' <"${CLUSTER_CONFIG_FILE}"` \
+		--set secrets.htpasswd="$$DOCKER_REGISTRY_HTPASSWD" \
+		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule \
+		--set fullnameOverride=$(DOCKER_REGISTRY_INTERNAL_NAME) \
+		--values k8s/internal-docker-registry.yaml
 	kubectl patch svc $(DOCKER_REGISTRY_INTERNAL_NAME) --namespace=$(DOCKER_REGISTRY_NAMESPACE) --patch-file k8s/pytorch-internal-svc-patch.yaml
 
 .PHONY: install-arc
@@ -206,7 +206,7 @@ setup-karpenter-autoscaler: install-karpenter install-docker-registry
 			dockerregistrymirror=`kubectl get svc --namespace=docker-registry docker-registry-mirror-docker-io -o json | jq ".spec.clusterIP" | sed 's/"//g'` \
 			githubregistrymirror=`kubectl get svc --namespace=docker-registry docker-registry-mirror-ghcr-io -o json | jq ".spec.clusterIP" | sed 's/"//g'` \
 			pytorchregistrymirror=`kubectl get svc --namespace=docker-registry $(DOCKER_REGISTRY_INTERNAL_NAME) -o json | jq ".spec.clusterIP" | sed 's/"//g'` \
-			DOCKERREGISTRYUSERSECRET=$(DOCKERREGISTRYUSERSECRET) \
+			DOCKERREGISTRYINTERNALSECRETARN=$(DOCKERREGISTRYINTERNALSECRETARN) \
 		--root-classes nodeConfig \
 		--label-property nodeType
 	../../venv/bin/python3 ../../scripts/kubectl_apply_runner_templates.py \
@@ -223,7 +223,7 @@ setup-karpenter-autoscaler: install-karpenter install-docker-registry
 			karpentersubnetids='$(KARPENTERSUBNETIDS)' \
 			project=gh-ci-$(EKS_ENVIRONMENT)-arc \
 			projecttag=$(PROJECTTAG) \
-			DOCKERREGISTRYUSERSECRET=$(DOCKERREGISTRYUSERSECRET) \
+			DOCKERREGISTRYINTERNALSECRETARN=$(DOCKERREGISTRYINTERNALSECRETARN) \
 		--root-classes nodeConfig \
 		--label-property nodeType
 

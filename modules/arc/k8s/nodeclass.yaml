@@ -6,17 +6,24 @@ spec:
   userData: |
     #!/bin/bash
 
+    mv /etc/eks/bootstrap.sh /etc/eks/bootstrap.sh.bak
+
+    cat <<BEOF >/etc/eks/bootstrap.sh
+    #!/bin/bash
+
+    /etc/eks/bootstrap.sh.bak "\$@"
+
     yum install docker -y
 
-    DOCKER_SECRET=`aws secretsmanager get-secret-value --secret-id $(DOCKERREGISTRYINTERNALSECRETARN) | jq ".SecretString" | sed 's/"//g'`
-    DOCKER_USER=`echo $DOCKER_SECRET | cut -d',' -f1`
-    DOCKER_PASS=`echo $DOCKER_SECRET | cut -d',' -f2`
+    DOCKER_SECRET=\$(aws secretsmanager get-secret-value --secret-id $(DOCKERREGISTRYINTERNALSECRETARN) | jq ".SecretString" | sed 's/"//g')
+    DOCKER_USER=\$(echo \$DOCKER_SECRET | cut -d',' -f1)
+    DOCKER_PASS=\$(echo \$DOCKER_SECRET | cut -d',' -f2)
 
     mkdir -p /etc/containerd/
     cat <<EOF >>/etc/containerd/config.toml
     [plugins."io.containerd.grpc.v1.cri".registry.configs."$(PYTORCHREGISTRYMIRROR):5000".auth]
-      username = "$DOCKER_USER"
-      password = "$DOCKER_PASS"
+      username = "\$DOCKER_USER"
+      password = "\$DOCKER_PASS"
     EOF
 
     mkdir -p /etc/containerd/certs.d/docker.io/
@@ -77,8 +84,11 @@ spec:
     service containerd restart
     systemctl restart docker
 
-    docker login -u $DOCKER_USER -p $DOCKER_PASS pytorch-internal.docker-registry.svc.cluster.local:5000
-    docker login -u $DOCKER_USER -p $DOCKER_PASS pytorch-internal.docker-registry.svc.cluster.local
+    docker login -u "\$DOCKER_USER" -p "\$DOCKER_PASS" pytorch-internal.docker-registry.svc.cluster.local:5000
+    docker login -u "\$DOCKER_USER" -p "\$DOCKER_PASS" pytorch-internal.docker-registry.svc.cluster.local
+    BEOF
+
+    chmod +x /etc/eks/bootstrap.sh
   amiFamily: AL2
   subnetSelectorTerms: $(KARPENTERSUBNETIDS)
   securityGroupSelectorTerms: $(KARPENTERSGIDS)
