@@ -118,6 +118,14 @@ def create_git_tag(opts: argparse.Namespace, git_repo: Repo, tag_name: str) -> N
     logging.info(f'Created tag {tag_name} with ref {git_repo.head.commit.hexsha} and pushed to origin')
 
 
+def get_pr_user(pull: PullRequest) -> str:
+    user_name_lst = re.findall(r'\(([a-zA-Z0-9_]+) [0-9]+\)', pull.body)
+    if len(user_name_lst) != 1:
+        logging.error(f'Found more than or less than one user in the PR body: {pull.html_url}')
+        raise RuntimeError('Found more than or less than one user in the PR body')
+    return user_name_lst[0]
+
+
 # Commands
 def open_release_pr(gh: Github, opts: argparse.Namespace) -> None:
     'open-rel-pr'
@@ -346,13 +354,8 @@ def check_pr_approved(gh: Github, opts: argparse.Namespace) -> None:
     repo = gh.get_repo(opts.repo)
     pull = get_pr(repo, opts.release_branch)
 
-    user_name_lst = re.findall(r'\(([a-zA-Z0-9_]+) [0-9]+\)', pull.body)
-    if len(user_name_lst) != 1:
-        logging.error(f'Found more than or less than one user in the PR body: {pull.html_url}')
-        raise RuntimeError('Found more than or less than one user in the PR body')
-    user_name = user_name_lst[0]
-
     reviews = list(pull.get_reviews())
+    user_name = get_pr_user(pull)
 
     for review in reviews:
         if review.user.login != user_name and review.state == 'APPROVED':
@@ -376,7 +379,13 @@ def merge_pr(gh: Github, opts: argparse.Namespace) -> None:
     repo = gh.get_repo(opts.repo)
     pull = get_pr(repo, opts.release_branch)
 
-    pull.merge(merge_method='rebase')
+    user_name = get_pr_user(pull)
+
+    pull.merge(
+        merge_method='merge',
+        commit_title=f'Release {opts.release_branch}',
+        commit_message=f'Merge for release {opts.release_branch}\nPR: {pull.html_url}\nBy: {user_name}'
+    )
     logging.info(f'Merged pull request for {opts.release_branch}: {pull.html_url}')
 
 
