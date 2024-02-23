@@ -70,6 +70,7 @@ jobs:
       run: make apply-arc-canary arc-canary
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
+        DOCKER_REGISTRY_PASSWORDS: ${{ secrets.DOCKER_REGISTRY_PASSWORDS }}
         EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
@@ -193,6 +194,7 @@ jobs:
       run: make apply-arc-vanguard arc-vanguard
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
+        DOCKER_REGISTRY_PASSWORDS: ${{ secrets.DOCKER_REGISTRY_PASSWORDS }}
         EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
@@ -307,6 +309,7 @@ jobs:
       run: make apply arc-prod
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
+        DOCKER_REGISTRY_PASSWORDS: ${{ secrets.DOCKER_REGISTRY_PASSWORDS }}
         EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
@@ -414,6 +417,7 @@ jobs:
       run: make apply-arc-vanguard arc-vanguard-off
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
+        DOCKER_REGISTRY_PASSWORDS: ${{ secrets.DOCKER_REGISTRY_PASSWORDS }}
         EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
@@ -536,6 +540,7 @@ jobs:
       run: make arc-vanguard-off
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
+        DOCKER_REGISTRY_PASSWORDS: ${{ secrets.DOCKER_REGISTRY_PASSWORDS }}
         EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
