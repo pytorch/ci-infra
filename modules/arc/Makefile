@@ -92,7 +92,7 @@ create-docker-registry-tls-secret:
 			-keyout tls/tls.key \
 			-addext "subjectAltName = DNS:$(DOCKER_REGISTRY_INTERNAL_NAME).$(DOCKER_REGISTRY_NAMESPACE).svc.cluster.local" \
 			-subj "/CN=$(DOCKER_REGISTRY_INTERNAL_NAME).$(DOCKER_REGISTRY_NAMESPACE).svc.cluster.local" ; \
-		kubectl create namespace $(DOCKER_REGISTRY_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f - \
+		kubectl create namespace $(DOCKER_REGISTRY_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f - ; \
 		kubectl create secret tls $(DOCKER_REGISTRY_TLS_SECRET_NAME) \
 			--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
 			--cert=tls/tls.crt \
