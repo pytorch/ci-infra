@@ -10,6 +10,7 @@ This project depends on:
     * kubectl cli
     * heml cli
     * CMake
+    * [1Password CLI](https://developer.1password.com/docs/cli/)
 
 ## Design
 
@@ -19,17 +20,18 @@ It creates a VPC and a EKS cluster. On that it then setups the Github first part
 
 In order to deploy, first make sure your environment is set up so you have your [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (currently `391835788720`) and all the permissions and keys are set up; 
 
-Next, you'll need to setup as an environment variable the Github API private key:
+Next, you'll need to setup [1Password CLI](https://developer.1password.com/docs/cli/)
+in order to fetch environment secrets and pass them to `make`.
+
+Once 1Password CLI is setup you can run make as follows:
+
 
 ```
-export GHA_PRIVATE_KEY='the private key here'
-```
+op run --env-file make.env -- make
 
-You should be ready to deploy:
-
-```
+# If doing it from a specific folder
 cd aws/391835788720/us-east-1
-make
+op run --env-file ../../../make.env -- make
 ```
 
 ## Debug/develop
