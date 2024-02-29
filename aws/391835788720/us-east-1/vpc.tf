@@ -16,7 +16,7 @@ module "runners_vpc" {
 module "runners_canary_vpc" {
   source = "../../../tf-modules/terraform-aws-vpc"
   for_each = {
-    for suffix in var.aws_canary_vpc_suffixes:
+    for suffix in [var.aws_canary_vpc_suffixes[0]]:
     suffix => suffix
   }
 

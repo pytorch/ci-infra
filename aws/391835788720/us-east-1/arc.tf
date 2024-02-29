@@ -2,7 +2,7 @@ module "arc_canary" {
     source = "../../../modules/arc"
     for_each = {
         for env in var.aws_canary_vpc_suffixes:
-        env => module.runners_canary_vpc[env]
+        env => module.runners_canary_vpc["I"]
     }
 
     additional_eks_users = [ aws_iam_user.ossci.arn ]
