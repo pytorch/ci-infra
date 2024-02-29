@@ -7,6 +7,8 @@ module "runners_vpc" {
 
   availability_zones                    = local.availability_zones
   aws_region                            = local.aws_region
+  cidr_block                            = "10.0.0.0/16"
+  cidr_subnet_bits                      = 4
   create_private_hosted_zone            = false
   environment                           = "${var.prod_environment}-${each.value}"
   project                               = var.prod_environment
@@ -22,6 +24,8 @@ module "runners_canary_vpc" {
 
   availability_zones                    = local.availability_zones_canary
   aws_region                            = local.aws_region
+  cidr_block                            = "10.0.0.0/16"
+  cidr_subnet_bits                      = 4
   create_private_hosted_zone            = false
   environment                           = "${var.canary_environment}-${each.value}"
   project                               = var.canary_environment
