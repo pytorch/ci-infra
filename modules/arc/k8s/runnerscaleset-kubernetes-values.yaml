@@ -19,7 +19,7 @@ template:
       fsGroup: 123
     containers:
     - name: runner
-      image: ghcr.io/actions/actions-runner:latest
+      image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTDINDROOTLESS)
       command: ["/home/runner/run.sh"]
       env:
       - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER

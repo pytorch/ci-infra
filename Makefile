@@ -194,3 +194,6 @@ close-pr: venv/bin/pip
 merge-pr: venv/bin/pip
 	venv/bin/python ./scripts/deployment.py --debug merge-pr
 
+.PHONY: build-runner-images
+build-runner-images: venv/bin/pip
+	cd docker/arc-runner && $(MAKE) all

@@ -65,6 +65,12 @@ jobs:
         GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
+    - name: Build Runner Images
+      run: make build-runner-images
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
+
     - name: Terraform Apply / ARC canary (apply-arc-canary arc-canary)
       shell: bash
       run: make apply-arc-canary arc-canary
@@ -77,6 +83,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
@@ -201,6 +208,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
@@ -316,6 +324,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
@@ -424,6 +433,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
@@ -547,6 +557,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success

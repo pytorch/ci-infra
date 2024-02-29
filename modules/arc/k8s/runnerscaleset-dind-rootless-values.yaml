@@ -6,7 +6,7 @@ template:
         effect: NoSchedule
     initContainers:
     - name: init-dind-externals
-      image: ghcr.io/actions/actions-runner:latest
+      image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTDINDROOTLESS)
       command: ["cp", "-r", "-v", "/home/runner/externals/.", "/home/runner/tmpDir/"]
       volumeMounts:
         - name: dind-externals
@@ -35,7 +35,7 @@ template:
           name: dind-home
     containers:
     - name: runner
-      image: ghcr.io/actions/actions-runner:latest
+      image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTDINDROOTLESS)
       command: ["/home/runner/run.sh"]
       env:
         - name: DOCKER_HOST
