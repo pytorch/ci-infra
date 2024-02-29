@@ -6,13 +6,13 @@ template:
         effect: NoSchedule
     initContainers:
     - name: init-dind-externals
-      image: ghcr.io/actions/actions-runner:latest
+      image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTDINDROOTLESS)
       command: ["cp", "-r", "-v", "/home/runner/externals/.", "/home/runner/tmpDir/"]
       volumeMounts:
         - name: dind-externals
           mountPath: /home/runner/tmpDir
     - name: init-dind-rootless
-      image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTDINDROOTLESS)
+      image: docker:dind-rootless
       command:
         - sh
         - -c
@@ -35,7 +35,7 @@ template:
           name: dind-home
     containers:
     - name: runner
-      image: ghcr.io/actions/actions-runner:latest
+      image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTDINDROOTLESS)
       command: ["/home/runner/run.sh"]
       env:
         - name: DOCKER_HOST
@@ -47,7 +47,7 @@ template:
           mountPath: /run/docker
           readOnly: true
     - name: dind
-      image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTDINDROOTLESS)
+      image: docker:dind-rootless
       args:
         - dockerd
         - --host=unix:///run/docker/docker.sock
