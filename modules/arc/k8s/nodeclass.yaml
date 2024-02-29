@@ -38,15 +38,15 @@ spec:
       capabilities = ["push"]
     EOF
 
-    mkdir -p /etc/containerd/certs.d/gcr.io/
-    cat <<EOF >>/etc/containerd/certs.d/gcr.io/hosts.toml
-    server = "https://gcr.io"
+    mkdir -p /etc/containerd/certs.d/ghcr.io/
+    cat <<EOF >>/etc/containerd/certs.d/ghcr.io/hosts.toml
+    server = "https://ghcr.io"
 
     [host."http://$(GITHUBREGISTRYMIRROR):5000"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
 
-    [host."https://gcr.io"]
+    [host."https://ghcr.io"]
       capabilities = ["push"]
     EOF
 

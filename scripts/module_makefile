@@ -37,7 +37,8 @@ init: .terraform/modules/modules.json
 
 .PHONY: clean
 clean:
-	$(RM) -r .terraform
+	$(RM) -rf .terraform
+	$(RM) -rf inventory
 	$(RM) .terraform.lock.hcl
 	$(RM) ARC_NODE_CONFIG.yaml
 	$(RM) ARC_RUNNER_CONFIG.yaml
