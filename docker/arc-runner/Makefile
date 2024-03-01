@@ -16,7 +16,7 @@ dind-rootless:
 	# ../../venv/bin/python ../../scripts/gh_app_get_github_token.py -i $(GHA_ID) -l $(GHA_INST_ID) -k "$$$(GHA_PRIVATE_KEY_VAR)" | docker login ghcr.io -u pytorch --password-stdin
 	echo $$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN | docker login ghcr.io -u pytorch --password-stdin
 	@echo "Building $(REPO_NAMESPACE_IMAGE):v$(RIGHT_NOW)"
-	docker build -t $(REPO_NAMESPACE_IMAGE):v$(RIGHT_NOW) -f dind-rootless.dockerfile .
+	docker build -t $(REPO_NAMESPACE_IMAGE):v$(RIGHT_NOW) -f arc-runner.dockerfile .
 	@echo "Pushing $(REPO_NAMESPACE_IMAGE):v$(RIGHT_NOW) and $(REPO_NAMESPACE_IMAGE):latest"
 	docker tag $(REPO_NAMESPACE_IMAGE):v$(RIGHT_NOW) $(REPO_NAMESPACE_IMAGE):latest
 	docker push $(REPO_NAMESPACE_IMAGE):v$(RIGHT_NOW)
