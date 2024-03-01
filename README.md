@@ -3,14 +3,15 @@
 ## Dependencies
 
 This project depends on:
-    * python 3.10
-    * virtualenv
-    * aws cli
-    * terraform
-    * kubectl cli
-    * heml cli
-    * CMake
-    * [1Password CLI](https://developer.1password.com/docs/cli/)
+    
+  * python 3.10
+  * virtualenv
+  * aws cli
+  * terraform
+  * kubectl cli
+  * heml cli
+  * CMake
+  * [1Password CLI](https://developer.1password.com/docs/cli/)
 
 ## Design
 
