@@ -45,7 +45,7 @@ clean-k8s-rds-state:
 .PHONY: delete-stale-resources
 delete-stale-resources: delete-stale-rds delete-stale-helm-pkgs
 
-.PHONY: delete-stale-rds:
+.PHONY: delete-stale-rds
 delete-stale-rds:
 	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py --rds-state-file $(K8S_RDS_STATE_FILE)
 
