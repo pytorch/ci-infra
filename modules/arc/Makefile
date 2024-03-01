@@ -42,16 +42,25 @@ clean-k8s-rds-state:
 	rm -f $(K8S_RDS_STATE_FILE)
 	rm -rf $(HELM_PKG_STATE_FILE)
 
-.PHONY: delete-stale-rds
+.PHONY: delete-stale-resources
+delete-stale-resources: delete-stale-rds delete-stale-helm-pkgs
+
+.PHONY: delete-stale-rds:
 delete-stale-rds:
+	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py --rds-state-file $(K8S_RDS_STATE_FILE)
+
+.PHONY: delete-stale-helm-pkgs
+delete-stale-helm-pkgs:
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
 	[ "$(GHA_ID)" != "" ] || (echo "GHA_ID not set"; exit 1)
-	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py --rds-state-file $(K8S_RDS_STATE_FILE)
+	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
+	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
+	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
 	../../venv/bin/python3 ../../scripts/helm_uninstall_runner_templates.py \
+		--eks-environment $(EKS_ENVIRONMENT) \
 		--github-app-id $(GHA_ID) \
 		--github-app-installation-id $(GHA_INST_ID) \
 		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
-		--eks-environment $(EKS_ENVIRONMENT) \
 		--helm-pkg-state-file $(HELM_PKG_STATE_FILE)
 
 .PHONY: add-eksctl-identity-mappings
@@ -206,7 +215,7 @@ install-karpenter: helm-repo-update
 	fi
 
 .PHONY: setup-karpenter-autoscaler
-setup-karpenter-autoscaler: install-karpenter install-docker-registry
+setup-karpenter-autoscaler: do-update-kubectl
 	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
@@ -254,7 +263,7 @@ setup-karpenter-autoscaler: install-karpenter install-docker-registry
 		--label-property nodeType
 
 .PHONY: k8s-runner-scaler
-k8s-runner-scaler: install-arc .latest-arc-runner-pytorch
+k8s-runner-scaler: .latest-arc-runner-pytorch
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
 	[ "$(KARPENTERNODEROLE)" != "" ] || (echo "KARPENTERNODEROLE not set"; exit 1)
@@ -266,7 +275,7 @@ k8s-runner-scaler: install-arc .latest-arc-runner-pytorch
 	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
 	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
 	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
-	../../venv/bin/python ../../scripts/helm_upgrade_runner_templates.py \
+	../../venv/bin/python3 ../../scripts/helm_upgrade_runner_templates.py \
 		--github-app-id $(GHA_ID) \
 		--github-app-installation-id $(GHA_INST_ID) \
 		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
@@ -286,4 +295,4 @@ k8s-runner-scaler: install-arc .latest-arc-runner-pytorch
 			latestrunnerimg=`cat .latest-arc-runner-pytorch` \
 			$(ADDITIONAL_VALUES) \
 		--root-classes nodeConfig runnerConfig \
-		--label-property runnerLabel \
+		--label-property runnerLabel

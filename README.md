@@ -3,7 +3,7 @@
 ## Dependencies
 
 This project depends on:
-    
+
   * python 3.10
   * virtualenv
   * aws cli
@@ -19,7 +19,7 @@ It creates a VPC and a EKS cluster. On that it then setups the Github first part
 
 ## Deploy
 
-In order to deploy, first make sure your environment is set up so you have your [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (currently `391835788720`) and all the permissions and keys are set up;
+In order to deploy, first make sure your environment is set up so you have your [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (based on the path for each account module on `aws/<acc-id>/<region>/`) and all the permissions and keys are set up locally;
 
 Next, you'll need to setup [1Password CLI](https://developer.1password.com/docs/cli/)
 in order to fetch environment secrets and pass them to `make`.
@@ -31,7 +31,7 @@ Once 1Password CLI is setup you can run make as follows:
 $ op run --env-file make.env -- make
 
 # If doing it from a specific folder
-$ cd aws/391835788720/us-east-1
+$ cd aws/<acc-id>/<region>
 $ op run --env-file ../../../make.env -- make
 ```
 
@@ -44,7 +44,7 @@ It can be the case that kubectl/helm fail to detect changes in some situations, 
 There are canary environments to help develop, to update terraform in all canary environments:
 
 ```
-$ cd aws/391835788720/us-east-1
+$ cd aws/<acc-id>/<region>
 $ op run --env-file ../../../make.env -- make apply-arc-canary
 ```
 
@@ -52,19 +52,19 @@ There are 2 canary environments and they can be deployed in steps, the variable 
 
 ```
 # installs/update docker registry and mirrors
-$ cd aws/391835788720/us-east-1
+$ cd aws/<acc-id>/<region>
 $ CLUSTER_TARGET="ghci-arc-c-runners-eks-I" op run --env-file ../../../make.env -- make install-docker-registry-canary
 
 # installs/update karpenter and node config
-$ cd aws/391835788720/us-east-1
+$ cd aws/<acc-id>/<region>
 $ CLUSTER_TARGET="ghci-arc-c-runners-eks-I" op run --env-file ../../../make.env -- make karpenter-autoscaler-canary
 
 # installs/update ARC and runner config
-$ cd aws/391835788720/us-east-1
+$ cd aws/<acc-id>/<region>
 $ CLUSTER_TARGET="ghci-arc-c-runners-eks-I" op run --env-file ../../../make.env -- make k8s-runner-scaler-canary
 
 # do it all inside K8s
-$ cd aws/391835788720/us-east-1
+$ cd aws/<acc-id>/<region>
 $ CLUSTER_TARGET="ghci-arc-c-runners-eks-I" op run --env-file ../../../make.env -- make arc-canary
 ```
 
@@ -76,3 +76,8 @@ To upgrade EKS clusters to a new version:
 2. For the Cluster(s) you wish to upgrade delete the node groups associated with them
 3. Delete the Cluster
 4. Run `make apply`  # more specifically apply-canary apply-vanguard apply-prod
+
+
+## Project organization decision
+
+On the path starting with `aws/` everything that is considered critical and secret should be placed. The idea is that all the other paths could be OpenSourced and any config that is only specific for the cluster being deployed or the account being managed for the responsible team should be placed there. Eventually those configs should be broken into different repositories. Enabling collaborators to reuse the project in a modular approach.
