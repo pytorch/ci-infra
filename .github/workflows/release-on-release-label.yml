@@ -53,7 +53,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -157,7 +157,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -282,7 +282,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -400,7 +400,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -515,7 +515,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
