@@ -4,6 +4,9 @@ containerMode:
 template:
   spec:
     tolerations:
+      - name: runner
+        image: ghcr.io/danilbaibak/ci-infra-actions-runner:latest
+        command: [ "/actions-runner/run.sh" ]
       - key: "arcRunnerNodeType-$(NODETYPE)"
         operator: Exists
         effect: NoSchedule
