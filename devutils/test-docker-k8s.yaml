@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: alpine
+  namespace: default
+spec:
+  containers:
+    - image: pytorch-internal.docker-registry.svc.cluster.local/alpine
+      name: alpine
+  tolerations:
+    - key: "arcRunnerNodeType-compute-amd64"
+      operator: Exists
+      effect: NoSchedule
