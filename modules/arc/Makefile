@@ -283,7 +283,7 @@ k8s-runner-scaler: install-arc .latest-arc-runner-pytorch
 			karpentersubnetids='$(KARPENTERSUBNETIDS)' \
 			project=gh-ci-$(EKS_ENVIRONMENT)-arc \
 			projecttag=$(PROJECTTAG) \
-			latestdindrootless=`cat .latest-arc-runner-pytorch` \
+			latestrunnerimg=`cat .latest-arc-runner-pytorch` \
 			$(ADDITIONAL_VALUES) \
 		--root-classes nodeConfig runnerConfig \
 		--label-property runnerLabel \
