@@ -166,7 +166,7 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				echo "Skipping $$p - as CLUSTER_TARGET is defined as '$$CLUSTER_TARGET'" ; continue ; \
 			fi ; \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: clean-k8s-rds-state install-arc install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
+			echo "OPS: clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				GHA_ID=808166 \
 				GHA_INST_ID=46578864 \
@@ -178,7 +178,7 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				REGION=$(REGION) \
-				clean-k8s-rds-state install-arc install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
 .PHONY: install-docker-registry-canary
@@ -214,7 +214,7 @@ karpenter-autoscaler-canary: inventory/eks/canary_cluster_name inventory/eks/can
 				echo "Skipping $$p - as CLUSTER_TARGET is defined as '$$CLUSTER_TARGET'" ; continue ; \
 			fi ; \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: setup-karpenter-autoscaler" ; \
+			echo "OPS: clean-k8s-rds-state setup-karpenter-autoscaler delete-stale-rds" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				GHA_ID=808166 \
 				GHA_INST_ID=46578864 \
@@ -226,7 +226,7 @@ karpenter-autoscaler-canary: inventory/eks/canary_cluster_name inventory/eks/can
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				REGION=$(REGION) \
-				setup-karpenter-autoscaler || exit 1 ; \
+				clean-k8s-rds-state setup-karpenter-autoscaler delete-stale-rds || exit 1 ; \
 		done
 
 .PHONY: k8s-runner-scaler-canary
@@ -238,7 +238,7 @@ k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary
 				echo "Skipping $$p - as CLUSTER_TARGET is defined as '$$CLUSTER_TARGET'" ; continue ; \
 			fi ; \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: k8s-runner-scaler" ; \
+			echo "OPS: clean-k8s-rds-state k8s-runner-scaler delete-stale-helm-pkgs" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				GHA_ID=808166 \
 				GHA_INST_ID=46578864 \
@@ -250,7 +250,7 @@ k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				REGION=$(REGION) \
-				k8s-runner-scaler  || exit 1 ; \
+				clean-k8s-rds-state k8s-runner-scaler delete-stale-helm-pkgs || exit 1 ; \
 		done
 
 # Vanguard
@@ -263,7 +263,7 @@ arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster
 				echo "Skipping $$p - as CLUSTER_TARGET is defined as '$$CLUSTER_TARGET'" ; continue ; \
 			fi ; \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: clean-k8s-rds-state install-arc install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
+			echo "OPS: clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				GHA_ID=343735 \
 				GHA_INST_ID=38323217 \
@@ -277,7 +277,7 @@ arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster
 				MINRUNNERS=30 \
 				MAXRUNNERS=30 \
 				REGION=$(REGION) \
-				clean-k8s-rds-state install-arc install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
 .PHONY: arc-vanguard-off
@@ -289,7 +289,7 @@ arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_clu
 				echo "Skipping $$p - as CLUSTER_TARGET is defined as '$$CLUSTER_TARGET'" ; continue ; \
 			fi ; \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: clean-k8s-rds-state install-arc install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
+			echo "OPS: clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_config \
@@ -303,7 +303,7 @@ arc-vanguard-off: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_clu
 				PROJECTTAG=gi-ci-vanguard \
 				RUNNERSCOPE=pytorch-org \
 				REGION=$(REGION) \
-				clean-k8s-rds-state install-arc install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
 # Prod
@@ -313,7 +313,7 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: clean-k8s-rds-state install-arc install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds" ; \
+			echo "OPS: clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				GHA_ID=343735 \
 				GHA_INST_ID=38323217 \
@@ -325,7 +325,7 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-org \
 				REGION=$(REGION) \
-				clean-k8s-rds-state install-arc install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-rds || exit 1 ; \
+				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
 .PHONY: eks-use-cluster
