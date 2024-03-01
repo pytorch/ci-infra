@@ -4,6 +4,9 @@ containerMode:
 template:
   spec:
     tolerations:
+      - name: runner
+        image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTRUNNERIMG)
+        command: [ "/actions-runner/run.sh" ]
       - key: "arcRunnerNodeType-$(NODETYPE)"
         operator: Exists
         effect: NoSchedule
