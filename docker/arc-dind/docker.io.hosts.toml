@@ -1,0 +1,8 @@
+server = "https://docker.io"
+
+[host."http://172.20.56.113:5000"]
+    capabilities = ["pull", "resolve"]
+    skip_verify = true
+
+[host."https://docker.io"]
+    capabilities = ["push"]
