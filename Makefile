@@ -207,3 +207,4 @@ merge-pr: venv/bin/pip
 .PHONY: build-runner-images
 build-runner-images: venv/bin/pip
 	cd docker/arc-runner && $(MAKE) all
+	cd docker/arc-dind && $(MAKE) all

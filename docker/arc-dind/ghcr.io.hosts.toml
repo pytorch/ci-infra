@@ -1,0 +1,8 @@
+server = "https://ghcr.io"
+
+[host."http://172.20.56.114:5000"]
+    capabilities = ["pull", "resolve"]
+    skip_verify = true
+
+[host."https://ghcr.io"]
+    capabilities = ["push"]
