@@ -2,6 +2,11 @@ apiVersion: karpenter.k8s.aws/v1beta1
 kind: EC2NodeClass
 metadata:
   name: nodeclass-$(NODETYPE)
+  labels:
+    environment: "$(ENVIRONMENT)"
+    project: "$(PROJECT)"
+    projecttag: "$(PROJECTTAG)"
+    solution: "arc"
 spec:
   userData: |
     #!/bin/bash
@@ -94,6 +99,11 @@ spec:
   securityGroupSelectorTerms: $(KARPENTERSGIDS)
   role: "$(KARPENTERNODEROLE)"
   detailedMonitoring: true
+  tags:
+    environment: "$(ENVIRONMENT)"
+    project: "$(PROJECT)"
+    projecttag: "$(PROJECTTAG)"
+    solution: "arc"
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:
