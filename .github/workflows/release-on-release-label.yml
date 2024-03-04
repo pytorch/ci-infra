@@ -56,14 +56,14 @@ jobs:
         role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
-    - name: Notify job started
-      shell: bash
-      run: make COMMENT_TO_ADD="Starting to deploy to canary, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
-      env:
-        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
+    # - name: Notify job started
+    #   shell: bash
+    #   run: make COMMENT_TO_ADD="Starting to deploy to canary, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
+    #   env:
+    #     GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+    #     GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+    #     GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
+    #     GITHUB_REPOSITORY: ${{ github.repository }}
 
     - name: Build Runner Images
       run: make build-runner-images
