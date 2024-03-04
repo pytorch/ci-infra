@@ -12,7 +12,7 @@ template:
         - name: dind-externals
           mountPath: /home/runner/tmpDir
     - name: init-dind-rootless
-      image: docker:dind-rootless
+      image: ghcr.io/pytorch/arc-dind-pytorch:$(LATESTDINDIMG)
       command:
         - sh
         - -c
@@ -47,7 +47,7 @@ template:
           mountPath: /run/docker
           readOnly: true
     - name: dind
-      image: docker:dind-rootless
+      image: ghcr.io/pytorch/arc-dind-pytorch:$(LATESTDINDIMG)
       args:
         - dockerd
         - --host=unix:///run/docker/docker.sock

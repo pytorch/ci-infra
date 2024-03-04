@@ -14,7 +14,7 @@ minRunners: $(MINRUNNERS)
 
 runnerGroup: "$(RUNNERGROUP)"
 
-runnerScaleSetName: "$(RUNNERLABEL)"
+runnerScaleSetName: "$(SCALESETNAME)"
 
 listenerTemplate:
   metadata:
