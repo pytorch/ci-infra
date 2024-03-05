@@ -46,6 +46,9 @@ There are canary environments to help develop, to update terraform in all canary
 ```
 $ cd aws/<acc-id>/<region>
 $ op run --env-file ../../../make.env -- make apply-arc-canary
+
+# To target a specific canary EKS environment / module
+$ TERRAFORM_EXTRAS='-target module.arc_canary[\"I\"]' op run --env-file ../../../make.env -- make apply
 ```
 
 There are 2 canary environments and they can be deployed in steps, the variable `CLUSTER_TARGET` is optional and used to specify one of the environments:
