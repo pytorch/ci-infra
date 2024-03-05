@@ -19,13 +19,13 @@ template:
         - |
           set -x
           cp -a /etc/. /dind-etc/
-          echo 'runner:x:1001:1001:runner:/home/runner:/bin/ash' >> /dind-etc/passwd
-          echo 'runner:x:1001:' >> /dind-etc/group
+          echo 'runner:x:1000:1000:runner:/home/runner:/bin/ash' >> /dind-etc/passwd
+          echo 'runner:x:1000:' >> /dind-etc/group
           echo 'runner:100000:65536' >> /dind-etc/subgid
           echo 'runner:100000:65536' >>  /dind-etc/subuid
           chmod 755 /dind-etc;
           chmod u=rwx,g=rx+s,o=rx /dind-home
-          chown 1001:1001 /dind-home
+          chown 1000:1000 /dind-home
       securityContext:
         runAsUser: 0
       volumeMounts:
@@ -53,8 +53,8 @@ template:
         - --host=unix:///run/docker/docker.sock
       securityContext:
         privileged: true
-        runAsUser: 1001
-        runAsGroup: 1001
+        runAsUser: 1000
+        runAsGroup: 1000
       volumeMounts:
         - name: work
           mountPath: /home/runner/_work
