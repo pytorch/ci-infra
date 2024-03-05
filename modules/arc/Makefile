@@ -21,6 +21,7 @@ KARPENTERSUBNETIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["subnet_ids"][] |
 RUNNERS_NAMESPACE = actions-runners
 RUNNERS_SYSTEM_NAMESPACE = actions-runner-system
 KARPENTER_NAMESPACE = karpenter
+KARPENTER_VERSION = v0.32.1
 DOCKER_REGISTRY_NAMESPACE = docker-registry
 DOCKER_REGISTRY_INTERNAL_NAME = pytorch-internal
 DOCKER_REGISTRY_TLS_SECRET_NAME = $(DOCKER_REGISTRY_INTERNAL_NAME)-tls
@@ -222,7 +223,7 @@ install-karpenter: helm-repo-update
 	helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
 		--namespace $(KARPENTER_NAMESPACE) \
 		--create-namespace \
-		--version v0.32.1 \
+		--version $(KARPENTER_VERSION) \
 		--set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$(KARPENTERCONTROLERROLEARN) \
 		--set settings.clusterName="$(EKS_CLUSTER_NAME)" \
 		--set settings.interruptionQueue="$(EKS_CLUSTER_NAME)" \
