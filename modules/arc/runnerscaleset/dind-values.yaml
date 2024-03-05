@@ -10,4 +10,4 @@ template:
     containers:
       - name: runner
         image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTRUNNERIMG)
-        command: [ "/actions-runner/run.sh" ]
+        command: [ "/home/runner/run.sh" ]
