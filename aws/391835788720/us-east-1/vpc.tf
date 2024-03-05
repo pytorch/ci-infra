@@ -12,7 +12,7 @@ module "runners_vpc" {
   create_private_hosted_zone            = false
   environment                           = "${var.prod_environment}-${each.value}"
   project                               = var.prod_environment
-  public_subnet_map_public_ip_on_launch = true
+  public_subnet_map_public_ip_on_launch = false
 }
 
 module "runners_canary_vpc" {
@@ -29,5 +29,5 @@ module "runners_canary_vpc" {
   create_private_hosted_zone            = false
   environment                           = "${var.canary_environment}-${each.value}"
   project                               = var.canary_environment
-  public_subnet_map_public_ip_on_launch = true
+  public_subnet_map_public_ip_on_launch = false
 }
