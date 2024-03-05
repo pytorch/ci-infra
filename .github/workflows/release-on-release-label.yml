@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   deploy-to-canary:
-    # if: ${{ github.event.label.name == 'deploy-to-canary' }}
+    if: ${{ github.event.label.name == 'deploy-to-canary' }}
     name: Deploy to Canary
     runs-on: ubuntu-latest
 
