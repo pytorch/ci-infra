@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dockercontainer
+  namespace: default
+spec:
+  containers:
+    - image: docker:24.0.0-rc.1-dind
+      name: dockercontainer
+      securityContext:
+        privileged: true
+  tolerations:
+    - key: "arcRunnerNodeType-compute-amd64"
+      operator: Exists
+      effect: NoSchedule

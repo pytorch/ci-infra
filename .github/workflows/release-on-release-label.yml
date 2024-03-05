@@ -53,7 +53,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -64,6 +64,12 @@ jobs:
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
         GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
         GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Build Runner Images
+      run: make build-runner-images
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
 
     - name: Terraform Apply / ARC canary (apply-arc-canary arc-canary)
       shell: bash
@@ -77,6 +83,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
@@ -150,7 +157,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -201,6 +208,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
@@ -274,7 +282,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -316,6 +324,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
@@ -391,7 +400,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -424,6 +433,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success
@@ -505,7 +515,7 @@ jobs:
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
-        role-to-assume: arn:aws:iam::391835788720:role/ossci_gha_terraform
+        role-to-assume: arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
         aws-region: us-east-1
 
     - name: Notify job started
@@ -547,6 +557,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
     - name: Notify job success

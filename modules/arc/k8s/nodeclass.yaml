@@ -2,6 +2,11 @@ apiVersion: karpenter.k8s.aws/v1beta1
 kind: EC2NodeClass
 metadata:
   name: nodeclass-$(NODETYPE)
+  labels:
+    environment: "$(ENVIRONMENT)"
+    project: "$(PROJECT)"
+    projecttag: "$(PROJECTTAG)"
+    solution: "arc"
 spec:
   userData: |
     #!/bin/bash
@@ -38,15 +43,15 @@ spec:
       capabilities = ["push"]
     EOF
 
-    mkdir -p /etc/containerd/certs.d/gcr.io/
-    cat <<EOF >>/etc/containerd/certs.d/gcr.io/hosts.toml
-    server = "https://gcr.io"
+    mkdir -p /etc/containerd/certs.d/ghcr.io/
+    cat <<EOF >>/etc/containerd/certs.d/ghcr.io/hosts.toml
+    server = "https://ghcr.io"
 
     [host."http://$(GITHUBREGISTRYMIRROR):5000"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
 
-    [host."https://gcr.io"]
+    [host."https://ghcr.io"]
       capabilities = ["push"]
     EOF
 
@@ -94,6 +99,11 @@ spec:
   securityGroupSelectorTerms: $(KARPENTERSGIDS)
   role: "$(KARPENTERNODEROLE)"
   detailedMonitoring: true
+  tags:
+    environment: "$(ENVIRONMENT)"
+    project: "$(PROJECT)"
+    projecttag: "$(PROJECTTAG)"
+    solution: "arc"
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:

@@ -25,5 +25,5 @@ variable "aws_vpc_suffixes" {
 variable "aws_canary_vpc_suffixes" {
   description = "suffixes to define aws vpcs per AZ per location for canary"
   type        = list
-  default     = ["I"]
+  default     = ["I", "II", "III"]
 }

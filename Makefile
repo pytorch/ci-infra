@@ -15,8 +15,9 @@ tflint:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== TFLINT: aws/$$account/$$region ============================================" ; \
+			echo "==== START TFLINT: aws/$$account/$$region ============================================" ; \
 			$(MAKE) tflint || exit 1 ; \
+			echo "==== END TFLINT: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -28,8 +29,9 @@ plan:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make plan: aws/$$account/$$region ============================================" ; \
+			echo "==== START make plan: aws/$$account/$$region ============================================" ; \
 			$(MAKE) plan || exit 1 ; \
+			echo "==== END make plan: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -41,8 +43,9 @@ apply:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make apply: aws/$$account/$$region ============================================" ; \
+			echo "==== START make apply: aws/$$account/$$region ============================================" ; \
 			$(MAKE) apply || exit 1 ; \
+			echo "==== END make apply: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -54,8 +57,9 @@ apply-arc-canary:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make apply-arc-canary: aws/$$account/$$region ============================================" ; \
+			echo "==== START make apply-arc-canary: aws/$$account/$$region ============================================" ; \
 			$(MAKE) apply-arc-canary || exit 1 ; \
+			echo "==== END make apply-arc-canary: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -67,8 +71,9 @@ apply-arc-vanguard:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make apply-arc-vanguard: aws/$$account/$$region ============================================" ; \
+			echo "==== START make apply-arc-vanguard: aws/$$account/$$region ============================================" ; \
 			$(MAKE) apply-arc-vanguard || exit 1 ; \
+			echo "==== END make apply-arc-vanguard: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -80,8 +85,9 @@ apply-arc-prod:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make apply-arc-prod: aws/$$account/$$region ============================================" ; \
+			echo "==== START make apply-arc-prod: aws/$$account/$$region ============================================" ; \
 			$(MAKE) apply-arc-prod || exit 1 ; \
+			echo "==== END make apply-arc-prod: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -93,8 +99,9 @@ arc-canary:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make arc-canary: aws/$$account/$$region ============================================" ; \
+			echo "==== START make arc-canary: aws/$$account/$$region ============================================" ; \
 			$(MAKE) arc-canary || exit 1 ; \
+			echo "==== END make arc-canary: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -106,8 +113,9 @@ arc-vanguard:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make arc-vanguard: aws/$$account/$$region ============================================" ; \
+			echo "==== START make arc-vanguard: aws/$$account/$$region ============================================" ; \
 			$(MAKE) arc-vanguard || exit 1 ; \
+			echo "==== END make arc-vanguard: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -119,8 +127,9 @@ arc-vanguard-off:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make arc-vanguard-off: aws/$$account/$$region ============================================" ; \
+			echo "==== START make arc-vanguard-off: aws/$$account/$$region ============================================" ; \
 			$(MAKE) arc-vanguard-off || exit 1 ; \
+			echo "==== END make arc-vanguard-off: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -132,8 +141,9 @@ arc-prod:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== make arc-prod: aws/$$account/$$region ============================================" ; \
+			echo "==== START make arc-prod: aws/$$account/$$region ============================================" ; \
 			$(MAKE) arc-prod || exit 1 ; \
+			echo "==== END make arc-prod: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
@@ -194,3 +204,7 @@ close-pr: venv/bin/pip
 merge-pr: venv/bin/pip
 	venv/bin/python ./scripts/deployment.py --debug merge-pr
 
+.PHONY: build-runner-images
+build-runner-images: venv/bin/pip
+	cd docker/arc-runner && $(MAKE) all
+	cd docker/arc-dind && $(MAKE) all

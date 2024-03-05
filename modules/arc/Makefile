@@ -25,19 +25,60 @@ DOCKER_REGISTRY_NAMESPACE = docker-registry
 DOCKER_REGISTRY_INTERNAL_NAME = pytorch-internal
 DOCKER_REGISTRY_TLS_SECRET_NAME = $(DOCKER_REGISTRY_INTERNAL_NAME)-tls
 
+.latest-arc-runner-pytorch:
+	[ "$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" != "" ] || (echo "PUSH_PACKAGE_DOCKER_GITHUB_TOKEN not set"; exit 1)
+	curl -L \
+		-H "Accept: application/vnd.github+json" \
+		-H "Authorization: Bearer $$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" \
+		-H "X-GitHub-Api-Version: 2022-11-28" \
+		https://api.github.com/orgs/pytorch/packages/container/arc-runner-pytorch/versions | \
+		jq -r '.[0].metadata.container.tags[]' | \
+		grep -v "latest" | \
+		sort -r | \
+		head -n 1 > .latest-arc-runner-pytorch
+
+.latest-arc-dind-pytorch:
+	[ "$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" != "" ] || (echo "PUSH_PACKAGE_DOCKER_GITHUB_TOKEN not set"; exit 1)
+	curl -L \
+		-H "Accept: application/vnd.github+json" \
+		-H "Authorization: Bearer $$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" \
+		-H "X-GitHub-Api-Version: 2022-11-28" \
+		https://api.github.com/orgs/pytorch/packages/container/arc-dind-pytorch/versions | \
+		jq -r '.[0].metadata.container.tags[]' | \
+		grep -v "latest" | \
+		sort -r | \
+		head -n 1 > .latest-arc-dind-pytorch
+
 .PHONY: clean-k8s-rds-state
 clean-k8s-rds-state:
 	rm -f $(K8S_RDS_STATE_FILE)
 	rm -rf $(HELM_PKG_STATE_FILE)
 
+.PHONY: clean
+clean: clean-k8s-rds-state
+	$(RM) .latest-arc-runner-pytorch
+	$(RM) .latest-arc-dind-pytorch
+	$(RM) -r ./tls
+
+.PHONY: delete-stale-resources
+delete-stale-resources: delete-stale-rds delete-stale-helm-pkgs
+
+.PHONY: delete-stale-rds
 delete-stale-rds:
-	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
 	../../venv/bin/python3 ../../scripts/kubectl_delete_rds_resources.py --rds-state-file $(K8S_RDS_STATE_FILE)
+
+.PHONY: delete-stale-helm-pkgs
+delete-stale-helm-pkgs:
+	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
+	[ "$(GHA_ID)" != "" ] || (echo "GHA_ID not set"; exit 1)
+	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
+	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
+	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
 	../../venv/bin/python3 ../../scripts/helm_uninstall_runner_templates.py \
+		--eks-environment $(EKS_ENVIRONMENT) \
 		--github-app-id $(GHA_ID) \
 		--github-app-installation-id $(GHA_INST_ID) \
 		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
-		--eks-environment $(EKS_ENVIRONMENT) \
 		--helm-pkg-state-file $(HELM_PKG_STATE_FILE)
 
 .PHONY: add-eksctl-identity-mappings
@@ -70,6 +111,11 @@ create-runner-namespace:
 
 .PHONY: create-gha-arc-secret
 create-gha-arc-secret: create-runner-namespace
+	[ "$(GHA_ID)" != "" ] || (echo "GHA_ID not set"; exit 1)
+	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
+	[ "$(RUNNERS_NAMESPACE)" != "" ] || (echo "RUNNERS_NAMESPACE not set"; exit 1)
+	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
+	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
 	kubectl create secret generic gha-arc-secret \
 		--namespace=$(RUNNERS_NAMESPACE) \
 		--from-literal=github_app_id="$(GHA_ID)" \
@@ -79,7 +125,7 @@ create-gha-arc-secret: create-runner-namespace
 
 .PHONY: create-docker-registry-tls-secret
 create-docker-registry-tls-secret:
-	echo "Checking if secret $(DOCKER_REGISTRY_TLS_SECRET_NAME) exists, if not creating it"
+	@echo "Checking if secret $(DOCKER_REGISTRY_TLS_SECRET_NAME) exists, if not creating it"
 	if kubectl get secret --namespace=$(DOCKER_REGISTRY_NAMESPACE) $(DOCKER_REGISTRY_TLS_SECRET_NAME) ; then \
 		echo "Secret $(DOCKER_REGISTRY_TLS_SECRET_NAME) found, not changing it" ; \
 	else \
@@ -102,10 +148,15 @@ create-docker-registry-tls-secret:
 
 .PHONY: install-docker-registry
 install-docker-registry: helm-repo-update create-docker-registry-tls-secret
+	[ "$(GHA_ID)" != "" ] || (echo "GHA_ID not set"; exit 1)
+	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
+	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
+	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
 	[ "$(REGION)" != "" ] || (echo "REGION not set"; exit 1)
 	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$$DOCKER_REGISTRY_HTPASSWD" != "" ] || (echo "DOCKER_REGISTRY_HTPASSWD not set"; exit 1)
+	[ "$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" != "" ] || (echo "PUSH_PACKAGE_DOCKER_GITHUB_TOKEN not set"; exit 1)
 	helm upgrade --install docker-registry-mirror-docker-io docker-registry-mirror/docker-registry-mirror \
 		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
 		--create-namespace \
@@ -121,7 +172,7 @@ install-docker-registry: helm-repo-update create-docker-registry-tls-secret
 		--wait \
 		--set proxy.remoteurl=https://ghcr.io \
 		--set proxy.username=pytorch \
-		--set proxy.password=`../../venv/bin/python ../../scripts/gh_app_get_github_token.py -i $(GHA_ID) -l $(GHA_INST_ID) -k "$$$(GHA_PRIVATE_KEY_VAR)"` \
+		--set proxy.password="$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" \
 		--set service.type=ClusterIP \
 		--set service.port=5000 \
 		--set service.clusterIP=172.20.56.114 \
@@ -182,7 +233,7 @@ install-karpenter: helm-repo-update
 	fi
 
 .PHONY: setup-karpenter-autoscaler
-setup-karpenter-autoscaler: install-karpenter install-docker-registry
+setup-karpenter-autoscaler: do-update-kubectl
 	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
@@ -230,8 +281,7 @@ setup-karpenter-autoscaler: install-karpenter install-docker-registry
 		--label-property nodeType
 
 .PHONY: k8s-runner-scaler
-k8s-runner-scaler: install-arc
-	[ "$(CLUSTER_CONFIG_FILE)" != "" ] || (echo "CLUSTER_CONFIG_FILE not set"; exit 1)
+k8s-runner-scaler: .latest-arc-runner-pytorch .latest-arc-dind-pytorch
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
 	[ "$(KARPENTERNODEROLE)" != "" ] || (echo "KARPENTERNODEROLE not set"; exit 1)
@@ -239,7 +289,11 @@ k8s-runner-scaler: install-arc
 	[ '$(KARPENTERSUBNETIDS)' != "" ] || (echo "KARPENTERSUBNETIDS not set"; exit 1)
 	[ "$(PROJECTTAG)" != "" ] || (echo "PROJECTTAG not set"; exit 1)
 	[ "$(RUNNERSCOPE)" != "" ] || (echo "RUNNERSCOPE not set"; exit 1)
-	../../venv/bin/python ../../scripts/helm_upgrade_runner_templates.py \
+	[ "$(GHA_ID)" != "" ] || (echo "GHA_ID not set"; exit 1)
+	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
+	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
+	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
+	../../venv/bin/python3 ../../scripts/helm_upgrade_runner_templates.py \
 		--github-app-id $(GHA_ID) \
 		--github-app-installation-id $(GHA_INST_ID) \
 		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
@@ -256,6 +310,8 @@ k8s-runner-scaler: install-arc
 			karpentersubnetids='$(KARPENTERSUBNETIDS)' \
 			project=gh-ci-$(EKS_ENVIRONMENT)-arc \
 			projecttag=$(PROJECTTAG) \
+			latestrunnerimg=`cat .latest-arc-runner-pytorch` \
+			latestdindimg=`cat .latest-arc-dind-pytorch` \
 			$(ADDITIONAL_VALUES) \
 		--root-classes nodeConfig runnerConfig \
-		--label-property runnerLabel \
+		--label-property runnerLabel

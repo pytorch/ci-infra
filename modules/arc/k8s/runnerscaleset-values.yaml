@@ -1,5 +1,11 @@
 githubConfigUrl: "$(RUNNERSCOPE)"
 
+labels:
+  environment: "$(ENVIRONMENT)"
+  project: "$(PROJECT)"
+  projecttag: "$(PROJECTTAG)"
+  solution: "arc"
+
 githubConfigSecret: "gha-arc-secret"
 
 maxRunners: $(MAXRUNNERS)
@@ -8,9 +14,15 @@ minRunners: $(MINRUNNERS)
 
 runnerGroup: "$(RUNNERGROUP)"
 
-runnerScaleSetName: "$(RUNNERLABEL)"
+runnerScaleSetName: "$(SCALESETNAME)"
 
 listenerTemplate:
+  metadata:
+    labels:
+      environment: "$(ENVIRONMENT)"
+      project: "$(PROJECT)"
+      projecttag: "$(PROJECTTAG)"
+      solution: "arc"
   spec:
     containers:
       - name: listener
