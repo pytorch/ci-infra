@@ -26,29 +26,29 @@ DOCKER_REGISTRY_NAMESPACE = docker-registry
 DOCKER_REGISTRY_INTERNAL_NAME = pytorch-internal
 DOCKER_REGISTRY_TLS_SECRET_NAME = $(DOCKER_REGISTRY_INTERNAL_NAME)-tls
 
-.latest-arc-runner-pytorch:
-	[ "$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" != "" ] || (echo "PUSH_PACKAGE_DOCKER_GITHUB_TOKEN not set"; exit 1)
-	curl -L \
-		-H "Accept: application/vnd.github+json" \
-		-H "Authorization: Bearer $$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" \
-		-H "X-GitHub-Api-Version: 2022-11-28" \
-		https://api.github.com/orgs/pytorch/packages/container/arc-runner-pytorch/versions | \
-		jq -r '.[0].metadata.container.tags[]' | \
-		grep -v "latest" | \
-		sort -r | \
-		head -n 1 > .latest-arc-runner-pytorch
+#.latest-arc-runner-pytorch:
+#	[ "$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" != "" ] || (echo "PUSH_PACKAGE_DOCKER_GITHUB_TOKEN not set"; exit 1)
+#	curl -L \
+#		-H "Accept: application/vnd.github+json" \
+#		-H "Authorization: Bearer $$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" \
+#		-H "X-GitHub-Api-Version: 2022-11-28" \
+#		https://api.github.com/orgs/pytorch/packages/container/arc-runner-pytorch/versions | \
+#		jq -r '.[0].metadata.container.tags[]' | \
+#		grep -v "latest" | \
+#		sort -r | \
+#		head -n 1 > .latest-arc-runner-pytorch
 
-.latest-arc-dind-pytorch:
-	[ "$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" != "" ] || (echo "PUSH_PACKAGE_DOCKER_GITHUB_TOKEN not set"; exit 1)
-	curl -L \
-		-H "Accept: application/vnd.github+json" \
-		-H "Authorization: Bearer $$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" \
-		-H "X-GitHub-Api-Version: 2022-11-28" \
-		https://api.github.com/orgs/pytorch/packages/container/arc-dind-pytorch/versions | \
-		jq -r '.[0].metadata.container.tags[]' | \
-		grep -v "latest" | \
-		sort -r | \
-		head -n 1 > .latest-arc-dind-pytorch
+#.latest-arc-dind-pytorch:
+#	[ "$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" != "" ] || (echo "PUSH_PACKAGE_DOCKER_GITHUB_TOKEN not set"; exit 1)
+#	curl -L \
+#		-H "Accept: application/vnd.github+json" \
+#		-H "Authorization: Bearer $$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" \
+#		-H "X-GitHub-Api-Version: 2022-11-28" \
+#		https://api.github.com/orgs/pytorch/packages/container/arc-dind-pytorch/versions | \
+#		jq -r '.[0].metadata.container.tags[]' | \
+#		grep -v "latest" | \
+#		sort -r | \
+#		head -n 1 > .latest-arc-dind-pytorch
 
 .PHONY: clean-k8s-rds-state
 clean-k8s-rds-state:
@@ -57,8 +57,8 @@ clean-k8s-rds-state:
 
 .PHONY: clean
 clean: clean-k8s-rds-state
-	$(RM) .latest-arc-runner-pytorch
-	$(RM) .latest-arc-dind-pytorch
+	#$(RM) .latest-arc-runner-pytorch
+	#$(RM) .latest-arc-dind-pytorch
 	$(RM) -r ./tls
 
 .PHONY: delete-stale-resources
@@ -282,7 +282,8 @@ setup-karpenter-autoscaler: do-update-kubectl
 		--label-property nodeType
 
 .PHONY: k8s-runner-scaler
-k8s-runner-scaler: .latest-arc-runner-pytorch .latest-arc-dind-pytorch
+#k8s-runner-scaler: .latest-arc-runner-pytorch .latest-arc-dind-pytorch
+k8s-runner-scaler:
 	[ "$(EKS_CLUSTER_NAME)" != "" ] || (echo "EKS_CLUSTER_NAME not set"; exit 1)
 	[ "$(EKS_ENVIRONMENT)" != "" ] || (echo "EKS_ENVIRONMENT not set"; exit 1)
 	[ "$(KARPENTERNODEROLE)" != "" ] || (echo "KARPENTERNODEROLE not set"; exit 1)

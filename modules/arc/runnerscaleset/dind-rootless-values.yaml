@@ -48,8 +48,6 @@ template:
         - name: DOCKER_HOST
           value: unix:///run/docker/docker.sock
       volumeMounts:
-        - name: work
-          mountPath: /home/runner/_work
         - name: dind-sock
           mountPath: /run/docker
           readOnly: true
@@ -63,8 +61,6 @@ template:
         runAsUser: 1001
         runAsGroup: 1001
       volumeMounts:
-        - name: work
-          mountPath: /home/runner/_work
         - name: dind-sock
           mountPath: /run/docker
         - name: dind-externals
@@ -74,13 +70,15 @@ template:
         - name: dind-home
           mountPath: /home/runner
     volumes:
-    - name: work
-      emptyDir: {}
     - name: dind-externals
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: 5Gi
     - name: dind-sock
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: 10Gi
     - name: dind-etc
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: 10Gi
     - name: dind-home
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: $(PARTDOCKER)
