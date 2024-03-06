@@ -4,6 +4,7 @@ __pycache__/
 .idea/
 .terraform.lock.hcl
 .terraformrc
+*.bkp
 *.tfstate
 *.tfstate.*
 *.tfvars
