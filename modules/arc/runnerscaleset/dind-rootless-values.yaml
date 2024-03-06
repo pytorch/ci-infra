@@ -23,8 +23,7 @@ template:
           cat /etc/group
           cp -a /home/runner/externals/. /home/runner/tmpDir/
       securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
+        runAsUser: 0
       volumeMounts:
         - name: dind-externals
           mountPath: /home/runner/tmpDir
