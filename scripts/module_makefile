@@ -152,9 +152,9 @@ ARC_NODE_CONFIG.yaml:
 
 ARC_RUNNER_CONFIG.yaml:
 	if [ ! -z "$${GITHUB_TOKEN}" ] ; then \
-		curl -o $@ -H "Authorization: Bearer $${GITHUB_TOKEN}" https://raw.githubusercontent.com/pytorch/test-infra/DanilBaibak/Cleanup-Runner-Config/.github/arc-runner-config.yaml ; \
+		curl -o $@ -H "Authorization: Bearer $${GITHUB_TOKEN}" https://raw.githubusercontent.com/pytorch/test-infra/main/.github/arc-runner-config.yaml ; \
 	else \
-		curl -o $@ https://raw.githubusercontent.com/pytorch/test-infra/DanilBaibak/Cleanup-Runner-Config/.github/arc-runner-config.yaml ; \
+		curl -o $@ https://raw.githubusercontent.com/pytorch/test-infra/main/.github/arc-runner-config.yaml ; \
 	fi
 
 # Canary

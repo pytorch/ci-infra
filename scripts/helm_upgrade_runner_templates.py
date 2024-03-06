@@ -255,9 +255,6 @@ def main() -> None:
         raise Exception("number of root classes and arc runner config files must match")
 
     for runner_config in get_merged_arc_runner_config(options.arc_runner_config_files, options.root_classes):
-        # print('### runner_config:')
-        # print(runner_config)
-
         label = runner_config[options.label_property]
 
         additional_values['RUNNERARCH'] = [
@@ -301,8 +298,6 @@ def main() -> None:
             runner_config | additional_values
         )
         to_apply = get_template(options.template_name, runner_config | additional_values)
-        print('### config to apply:')
-        print(to_apply)
         add_to_helm_pkg_state(options.helm_pkg_state_file, install_name, options.namespace)
 
         cmd = [
