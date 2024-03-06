@@ -7,7 +7,24 @@ template:
     initContainers:
     - name: init-dind-externals
       image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTRUNNERIMG)
-      command: ["cp", "-r", "-v", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+      # command: ["cp", "-r", "-v", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+      command:
+        - bash
+        - -c
+        - |
+          set -x
+          ls -la /home/runner/externals
+          ls -la /home/runner/tmpDir
+          ls -la /home/runner
+          ls -la /home
+          whoami
+          id
+          cat /etc/passwd
+          cat /etc/group
+          cp -a /home/runner/externals/. /home/runner/tmpDir/
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
       volumeMounts:
         - name: dind-externals
           mountPath: /home/runner/tmpDir
@@ -40,6 +57,9 @@ template:
       env:
         - name: DOCKER_HOST
           value: unix:///run/docker/docker.sock
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
       volumeMounts:
         - name: work
           mountPath: /home/runner/_work
