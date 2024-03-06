@@ -272,7 +272,7 @@ def main() -> None:
         cluster_idx = additional_values['EKSCLUSTERNAME'].split('-')[-1].lower()
         additional_values['ENVRUNNERLABEL'] = label
         if additional_values['ENVIRONMENT'] == 'canary':
-            additional_values['ENVRUNNERLABEL'] += '.canary.danylo'
+            additional_values['ENVRUNNERLABEL'] += '.canary'
             additional_values['SCALESETNAME'] = f'{label}.c.{cluster_idx}'
         elif additional_values['ENVIRONMENT'] == 'vanguard':
             additional_values['SCALESETNAME'] = f'{label}.v.{cluster_idx}'
