@@ -45,6 +45,15 @@ resource "aws_s3_bucket_website_configuration" "pytorch_ci_artifacts_website" {
   }
 }
 
+resource "aws_ecr_repository" "pytorch-ci-repo" {
+  name = "pytorch"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
 resource "aws_iam_policy" "pytorch_ci_artifacts_access" {
   name = "pytorch-ci-artifacts-access"
   policy = <<EOF
