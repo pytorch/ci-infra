@@ -39,6 +39,13 @@ template:
     - name: runner
       image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTRUNNERIMG)
       command: ["/home/runner/run.sh"]
+      resources:
+        limits:
+          cpu: $(CPU)
+          memory: $(MEMORY)
+        requests:
+          cpu: $(CPU)
+          memory: $(MEMORY)
       env:
         - name: DOCKER_HOST
           value: unix:///run/docker/docker.sock
@@ -46,8 +53,6 @@ template:
         runAsUser: 1000
         runAsGroup: 1000
       volumeMounts:
-        - name: work
-          mountPath: /home/runner/_work
         - name: dind-sock
           mountPath: /run/docker
           readOnly: true
@@ -61,8 +66,6 @@ template:
         runAsUser: 1000
         runAsGroup: 1000
       volumeMounts:
-        - name: work
-          mountPath: /home/runner/_work
         - name: dind-sock
           mountPath: /run/docker
         - name: dind-externals
@@ -72,13 +75,15 @@ template:
         - name: dind-home
           mountPath: /home/runner
     volumes:
-    - name: work
-      emptyDir: {}
     - name: dind-externals
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: 5Gi
     - name: dind-sock
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: 50Gi
     - name: dind-etc
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: 10Gi
     - name: dind-home
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: $(WORKINGDISKSPACE)
