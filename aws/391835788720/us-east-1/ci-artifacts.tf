@@ -54,12 +54,14 @@ resource "aws_iam_policy" "pytorch_ci_artifacts_access" {
     {
       "Action": [
         "s3:ListBucket",
-        "s3:ListObjects",
         "s3:GetObject",
         "s3:PutObject"
       ],
       "Effect": "Allow",
-      "Resource": ["arn:aws:s3:::pytorch-ci-artifacts/*"]
+      "Resource": [
+        "arn:aws:s3:::pytorch-ci-artifacts/*",
+        "arn:aws:s3:::pytorch-ci-artifacts"
+      ]
     }
   ]
 }
