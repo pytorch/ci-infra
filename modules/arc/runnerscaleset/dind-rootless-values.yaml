@@ -75,7 +75,7 @@ template:
         sizeLimit: 5Gi
     - name: dind-sock
       emptyDir:
-        sizeLimit: 10Gi
+        sizeLimit: 50Gi
     - name: dind-etc
       emptyDir:
         sizeLimit: 10Gi
