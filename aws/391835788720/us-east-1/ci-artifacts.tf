@@ -59,6 +59,19 @@ resource "aws_iam_policy" "pytorch_ci_artifacts_access" {
       ],
       "Effect": "Allow",
       "Resource": ["arn:aws:s3:::pytorch-ci-artifacts/*"]
+    },
+    {
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:GetRepositoryPolicy",
+        "ecr:DescribeRepositories",
+        "ecr:ListImages",
+        "ecr:DescribeImages",
+        "ecr:BatchGetImage"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:ecr:us-east-1:***:repository/pytorch/*"
     }
   ]
 }
