@@ -81,4 +81,4 @@ template:
         sizeLimit: 10Gi
     - name: dind-home
       emptyDir:
-        sizeLimit: $(PARTDOCKER)
+        sizeLimit: $(WORKINGDISKSPACE)
