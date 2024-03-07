@@ -47,7 +47,7 @@ resource "aws_s3_bucket_website_configuration" "pytorch_ci_artifacts_website" {
 
 resource "aws_ecr_repository" "pytorch-ci-repo" {
   name = "pytorch"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
