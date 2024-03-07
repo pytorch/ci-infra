@@ -50,7 +50,7 @@ resource "aws_ecr_repository" "pytorch-ci-repo" {
   image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
-    scan_on_push = true
+    scan_on_push = false
   }
 }
 
@@ -80,7 +80,7 @@ resource "aws_iam_policy" "pytorch_ci_artifacts_access" {
         "ecr:BatchGetImage"
       ],
       "Effect": "Allow",
-      "Resource": "arn:aws:ecr:us-east-1:***:repository/pytorch/*"
+      "Resource": "arn:aws:ecr:us-east-1:***:repository/${aws_ecr_repository.pytorch-ci-repo.name}/*"
     }
   ]
 }
