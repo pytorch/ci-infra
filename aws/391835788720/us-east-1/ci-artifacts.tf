@@ -59,9 +59,16 @@ resource "aws_iam_policy" "pytorch_ci_artifacts_access" {
       ],
       "Effect": "Allow",
       "Resource": [
-        "arn:aws:s3:::pytorch-ci-artifacts/*",
-        "arn:aws:s3:::pytorch-ci-artifacts"
+        "${aws_s3_bucket.pytorch_ci_artifacts.arn}/*",
+        "${aws_s3_bucket.pytorch_ci_artifacts.arn}"
       ]
+    },
+    {
+        "Action": [
+            "ecr:GetAuthorizationToken"
+        ],
+        "Effect": "Allow",
+        "Resource": "*"
     }
   ]
 }
