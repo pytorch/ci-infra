@@ -80,7 +80,7 @@ template:
         sizeLimit: 5Gi
     - name: dind-sock
       emptyDir:
-        sizeLimit: 50Gi
+        sizeLimit: 500Mi
     - name: dind-etc
       emptyDir:
         sizeLimit: 10Gi
