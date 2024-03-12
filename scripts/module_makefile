@@ -1,11 +1,13 @@
 SHELL=/bin/bash -o pipefail
-PROHOME = $(realpath ../../..)
+PROHOME := $(realpath ../../..)
 
-REGION = $(notdir $(CURDIR))
-ACCOUNT = $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
+REGION := $(notdir $(CURDIR))
+ACCOUNT := $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
+
+CANARY_MIN_RUNNERS ?= 0
 
 ifneq ($(GITHUB_ACTIONS),true)
-export AWS_PROFILE = $(ACCOUNT)
+export AWS_PROFILE := $(ACCOUNT)
 endif
 
 .PHONY: all
@@ -169,16 +171,17 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
+				EKS_ENVIRONMENT=canary \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				GHA_ID=808166 \
 				GHA_INST_ID=46578864 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
-				EKS_ENVIRONMENT=canary \
-				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
+				MINRUNNERS=$(CANARY_MIN_RUNNERS) \
 				PROJECTTAG=gi-ci-canary \
-				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
-				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
-				RUNNERSCOPE=pytorch-canary \
 				REGION=$(REGION) \
+				RUNNERSCOPE=pytorch-canary \
 				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
@@ -241,16 +244,17 @@ k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: clean-k8s-rds-state k8s-runner-scaler delete-stale-helm-pkgs" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
+				EKS_ENVIRONMENT=canary \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				GHA_ID=808166 \
 				GHA_INST_ID=46578864 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
-				EKS_ENVIRONMENT=canary \
-				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
+				MINRUNNERS=$(CANARY_MIN_RUNNERS) \
 				PROJECTTAG=gi-ci-canary \
-				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
-				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
-				RUNNERSCOPE=pytorch-canary \
 				REGION=$(REGION) \
+				RUNNERSCOPE=pytorch-canary \
 				clean-k8s-rds-state k8s-runner-scaler delete-stale-helm-pkgs || exit 1 ; \
 		done
 
