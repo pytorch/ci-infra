@@ -58,7 +58,34 @@ resource "aws_iam_policy" "pytorch_ci_artifacts_access" {
         "s3:PutObject"
       ],
       "Effect": "Allow",
-      "Resource": ["arn:aws:s3:::pytorch-ci-artifacts/*"]
+      "Resource": [
+        "${aws_s3_bucket.pytorch_ci_artifacts.arn}/*",
+        "${aws_s3_bucket.pytorch_ci_artifacts.arn}"
+      ]
+    },
+    {
+        "Action": [
+            "ecr:GetAuthorizationToken"
+        ],
+        "Effect": "Allow",
+        "Resource": "*"
+    },
+    {
+        "Action": [
+            "ecr:BatchCheckLayerAvailability",
+            "ecr:BatchGetImage",
+            "ecr:CompleteLayerUpload",
+            "ecr:DescribeImages",
+            "ecr:DescribeRepositories",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:InitiateLayerUpload",
+            "ecr:ListImages",
+            "ecr:PutImage",
+            "ecr:UploadLayerPart",
+            "ecr:GetAuthorizationToken"
+        ],
+        "Effect": "Allow",
+        "Resource": ["arn:aws:ecr:us-east-1:308535385114:repository/*"]
     }
   ]
 }

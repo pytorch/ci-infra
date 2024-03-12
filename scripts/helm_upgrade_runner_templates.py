@@ -44,9 +44,9 @@ def parse_args() -> argparse.Namespace:
         help="template to use for docker mode",
         type=str,
         default=",".join([
-            "dind", "k8s/runnerscaleset-dind-values.yaml",
-            "dind-rootless", "k8s/runnerscaleset-dind-rootless-values.yaml",
-            "k8s", "k8s/runnerscaleset-kubernetes-values.yaml",
+            "dind", "runnerscaleset/dind-values.yaml",
+            "dind-rootless", "runnerscaleset/dind-rootless-values.yaml",
+            "k8s", "runnerscaleset/kubernetes-values.yaml",
         ]),
     )
     parser.add_argument(
