@@ -1,6 +1,6 @@
 FROM --platform=linux/amd64 docker:dind-rootless
 
-SHELL ["/bin/bash", "-c"]
+SHELL ["/bin/sh", "-c"]
 
 USER root
 
