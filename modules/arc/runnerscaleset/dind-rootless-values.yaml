@@ -35,6 +35,18 @@ template:
           name: dind-etc
         - mountPath: /dind-home
           name: dind-home
+    - name: init-runner
+      image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTRUNNERIMG)
+      command: ["cp", "-r", "-v", "/home/runner/.", "/tmpDir/"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      volumeMounts:
+        - name: dind-sock
+          mountPath: /run/docker
+          readOnly: true
+        - name: dind-home
+          mountPath: /tmpDir
     containers:
     - name: runner
       image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTRUNNERIMG)
@@ -56,6 +68,8 @@ template:
         - name: dind-sock
           mountPath: /run/docker
           readOnly: true
+        - name: dind-home
+          mountPath: /home/runner
     - name: dind
       image: ghcr.io/pytorch/arc-dind-pytorch:$(LATESTDINDIMG)
       args:
