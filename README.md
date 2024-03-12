@@ -48,7 +48,7 @@ $ cd aws/<acc-id>/<region>
 $ op run --env-file ../../../make.env -- make apply-arc-canary
 ```
 
-There are 2 canary environments and they can be deployed in steps, the variable `CLUSTER_TARGET` is optional and used to specify one of the environments:
+There are 3 canary environments and they can be deployed in steps, the variable `CLUSTER_TARGET` is optional and used to specify one of the environments:
 
 ```
 # installs/update docker registry and mirrors
@@ -66,6 +66,12 @@ $ CLUSTER_TARGET="ghci-arc-c-runners-eks-I" op run --env-file ../../../make.env 
 # do it all inside K8s
 $ cd aws/<acc-id>/<region>
 $ CLUSTER_TARGET="ghci-arc-c-runners-eks-I" op run --env-file ../../../make.env -- make arc-canary
+```
+
+In order to save resources, by default in the canary cluster the minimum number of runners are set to 0 for all runner types. But if other values are needed in order to conduct testing, it is possible to set this number to any other value by setting the variable `CANARY_MIN_RUNNERS`:
+
+```
+$ CANARY_MIN_RUNNERS=1 CLUSTER_TARGET="ghci-arc-c-runners-eks-I" op run --env-file ../../../make.env -- make k8s-runner-scaler-canary
 ```
 
 ## Upgrading EKS clusters
