@@ -25,6 +25,7 @@ KARPENTER_VERSION = v0.32.1
 DOCKER_REGISTRY_NAMESPACE = docker-registry
 DOCKER_REGISTRY_INTERNAL_NAME = pytorch-internal
 DOCKER_REGISTRY_TLS_SECRET_NAME := $(DOCKER_REGISTRY_INTERNAL_NAME)-tls
+NVIDIA_NAMESPACE = nvidia-device-plugin
 
 .latest-arc-runner-pytorch:
 	[ "$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" != "" ] || (echo "PUSH_PACKAGE_DOCKER_GITHUB_TOKEN not set"; exit 1)
@@ -103,6 +104,7 @@ update-kubectl: do-update-kubectl add-eksctl-identity-mappings
 .PHONY: helm-repo-update
 helm-repo-update: update-kubectl
 	helm repo add docker-registry-mirror https://t83714.github.io/docker-registry-mirror
+	helm repo add nvdp https://nvidia.github.io/k8s-device-plugin
 	helm repo add twuni https://helm.twun.io
 	helm repo update
 
@@ -312,3 +314,11 @@ k8s-runner-scaler: .latest-arc-runner-pytorch .latest-arc-dind-pytorch
 			$(ADDITIONAL_VALUES) \
 		--root-classes nodeConfig runnerConfig \
 		--label-property runnerLabel
+
+.PHONY: setup-nvidia-device-plugin
+setup-nvidia-device-plugin: helm-repo-update
+	helm upgrade --install nvdp nvdp/nvidia-device-plugin \
+		--namespace $(NVIDIA_NAMESPACE) \
+		--create-namespace \
+		--values runnerscaleset/nvidia-device-plugin-values.yaml
+		--wait

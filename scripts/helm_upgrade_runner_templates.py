@@ -257,6 +257,10 @@ def main() -> None:
     for runner_config in get_merged_arc_runner_config(options.arc_runner_config_files, options.root_classes):
         label = runner_config[options.label_property]
 
+        additional_values['NVIDIA_GPU'] = ''  # Unset if no GPU configuration in runner config
+        if 'nvidiaGpus' in runner_config:
+            additional_values['NVIDIA_GPU'] = f'nvidia.com/gpu: {runner_config["nvidiaGpus"]}'
+
         additional_values['RUNNERARCH'] = [
             l['values'][0]
             for l in runner_config['requirements'] if l['key'] == 'kubernetes.io/arch'

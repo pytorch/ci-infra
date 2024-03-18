@@ -182,7 +182,7 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				PROJECTTAG=gi-ci-canary \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
-				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources || exit 1 ; \
+				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
 .PHONY: install-docker-registry-canary
@@ -255,7 +255,7 @@ k8s-runner-scaler-canary: inventory/eks/canary_cluster_name inventory/eks/canary
 				PROJECTTAG=gi-ci-canary \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
-				clean-k8s-rds-state k8s-runner-scaler delete-stale-helm-pkgs || exit 1 ; \
+				clean-k8s-rds-state setup-nvidia-device-plugin k8s-runner-scaler delete-stale-helm-pkgs || exit 1 ; \
 		done
 
 # Vanguard
@@ -282,7 +282,7 @@ arc-vanguard: inventory/eks/vanguard_cluster_name inventory/eks/vanguard_cluster
 				MINRUNNERS=30 \
 				MAXRUNNERS=30 \
 				REGION=$(REGION) \
-				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources || exit 1 ; \
+				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
 .PHONY: arc-vanguard-off
@@ -330,7 +330,7 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				RUNNERSCOPE=pytorch-org \
 				REGION=$(REGION) \
-				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources || exit 1 ; \
+				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
 .PHONY: eks-use-cluster
