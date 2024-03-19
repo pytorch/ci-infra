@@ -58,7 +58,7 @@ resource "aws_iam_role" "karpenter_node_role" {
 }
 
 resource "aws_iam_policy" "karpenter_node_role_access_other_accounts_resouces_policy" {
-  name        = "KarpenterControllerRole-${local.cluster_name}"
+  name        = "KarpenterControllerRole-other-acc-res-${local.cluster_name}"
   path        = "/"
   description = "Policy for Karpenter Controller"
 
