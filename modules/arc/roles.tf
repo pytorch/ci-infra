@@ -62,6 +62,38 @@ resource "aws_iam_role" "karpenter_node_role" {
             ],
             "Effect": "Allow",
             "Resource": ["arn:aws:ecr:us-east-1:308535385114:repository/pytorch/*"]
+        },
+        {
+          "Action": [
+              "s3:*"
+          ],
+          "Effect": "Allow",
+          "Resource": [
+              "arn:aws:s3:::doc-previews",
+              "arn:aws:s3:::doc-previews/*",
+              "arn:aws:s3:::gha-artifacts",
+              "arn:aws:s3:::gha-artifacts/*",
+              "arn:aws:s3:::ossci-compiler-cache-circleci-v2",
+              "arn:aws:s3:::ossci-compiler-cache-circleci-v2/*",
+              "arn:aws:s3:::ossci-compiler-cache",
+              "arn:aws:s3:::ossci-compiler-cache/*",
+              "arn:aws:s3:::ossci-compiler-clang-cache-circleci-xla",
+              "arn:aws:s3:::ossci-compiler-clang-cache-circleci-xla/*",
+              "arn:aws:s3:::ossci-linux-build",
+              "arn:aws:s3:::ossci-linux-build/*",
+              "arn:aws:s3:::ossci-metrics",
+              "arn:aws:s3:::ossci-metrics/*",
+              "arn:aws:s3:::ossci-raw-job-status",
+              "arn:aws:s3:::ossci-raw-job-status/*",
+              "arn:aws:s3:::pytorch-tutorial-build-pull-request",
+              "arn:aws:s3:::pytorch-tutorial-build-pull-request/*",
+              "arn:aws:s3:::torchci-aggregated-stats",
+              "arn:aws:s3:::torchci-aggregated-stats/*",
+              "arn:aws:s3:::torchci-alerts",
+              "arn:aws:s3:::torchci-alerts/*",
+              "arn:aws:s3:::torchci-contribution-data",
+              "arn:aws:s3:::torchci-contribution-data/*"
+          ]
         }
       ]
     })
