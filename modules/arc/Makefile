@@ -212,10 +212,6 @@ install-arc: helm-repo-update create-gha-arc-secret
 		--set githubConfigSecret.github_app_private_key="$$$(GHA_PRIVATE_KEY_VAR)" \
 		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule \
 		--wait
-	# If the changes are not impacting the controller pod config, it won't restart, so we need to do it manually
-	for pod in `kubectl get pod --namespace=$(RUNNERS_SYSTEM_NAMESPACE) | grep 'arc-gha-rs-controller-' | cut -f 1 -d ' '` ; do \
-		kubectl delete pod $$pod --namespace=$(RUNNERS_SYSTEM_NAMESPACE) ; \
-	done
 
 .PHONY: install-karpenter
 install-karpenter: helm-repo-update
