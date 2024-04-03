@@ -9,7 +9,7 @@ This project depends on:
   * aws cli
   * terraform
   * kubectl cli
-  * helm cli
+  * heml cli
   * CMake
   * [1Password CLI](https://developer.1password.com/docs/cli/)
 
