@@ -45,23 +45,6 @@ resource "aws_iam_role" "karpenter_node_role" {
             ],
             "Effect": "Allow",
             "Resource": "*"
-        },
-        {
-            "Action": [
-                "ecr:BatchCheckLayerAvailability",
-                "ecr:BatchGetImage",
-                "ecr:CompleteLayerUpload",
-                "ecr:DescribeImages",
-                "ecr:DescribeRepositories",
-                "ecr:GetDownloadUrlForLayer",
-                "ecr:InitiateLayerUpload",
-                "ecr:ListImages",
-                "ecr:PutImage",
-                "ecr:UploadLayerPart",
-                "ecr:GetAuthorizationToken"
-            ],
-            "Effect": "Allow",
-            "Resource": ["arn:aws:ecr:us-east-1:308535385114:repository/pytorch/*"]
         }
       ]
     })
@@ -72,6 +55,225 @@ resource "aws_iam_role" "karpenter_node_role" {
     Environment = var.environment
     Context     = "${var.environment}-runners-eks-${var.aws_vpc_suffix}"
   }
+}
+
+resource "aws_iam_policy" "karpenter_node_role_access_other_accounts_resouces_policy" {
+  name        = "KarpenterControllerRole-other-acc-res-${local.cluster_name}"
+  path        = "/"
+  description = "Policy for Karpenter Controller"
+
+  # policy copied from the other account :)
+  policy = <<EOT
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+        "Sid": "githubActionDist",
+        "Effect": "Allow",
+        "Action": [
+            "s3:GetObject",
+            "s3:GetObjectAcl"
+        ],
+        "Resource": [
+            "arn:aws:s3:::gh-ci-dist-4qifyecn3hpj4fxctb1tsjmo/*"
+        ]
+    },
+    {
+        "Effect": "Allow",
+        "Action": [
+            "s3:ListBucket",
+            "s3:GetBucketLocation"
+        ],
+        "Resource": "arn:aws:s3:::gh-ci-dist-4qifyecn3hpj4fxctb1tsjmo"
+    },
+    {
+        "Action": [
+            "ecr:BatchCheckLayerAvailability",
+            "ecr:BatchGetImage",
+            "ecr:CompleteLayerUpload",
+            "ecr:DescribeImages",
+            "ecr:DescribeRepositories",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:InitiateLayerUpload",
+            "ecr:ListImages",
+            "ecr:PutImage",
+            "ecr:UploadLayerPart",
+            "ecr:GetAuthorizationToken"
+        ],
+        "Effect": "Allow",
+        "Resource": ["arn:aws:ecr:us-east-1:308535385114:repository/pytorch/*"]
+    },
+    {
+        "Action": [
+            "s3:ListBucket"
+        ],
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-compiler-clang-cache-circleci-xla"
+        ],
+        "Sid": "ListObjectsInBucketLinuxXLA"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-compiler-clang-cache-circleci-xla/*"
+        ],
+        "Sid": "AllObjectActionsLinuxXLA"
+    },
+    {
+        "Action": [
+            "s3:ListBucket"
+        ],
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-compiler-cache-circleci-v2"
+        ],
+        "Sid": "ListObjectsInBucketLinux"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-compiler-cache-circleci-v2/*"
+        ],
+        "Sid": "AllObjectActionsLinux"
+    },
+    {
+        "Action": [
+            "s3:ListBucket"
+        ],
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-compiler-cache"
+        ],
+        "Sid": "ListObjectsInBucketWindows"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-compiler-cache/*"
+        ],
+        "Sid": "AllObjectActionsWindows"
+    },
+    {
+        "Action": [
+            "s3:ListBucket"
+        ],
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-linux-build"
+        ],
+        "Sid": "ListObjectsInBucketECRBackup"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-linux-build/*"
+        ],
+        "Sid": "AllObjectActionsECRBackup"
+    },
+    {
+        "Action": [
+            "s3:ListBucket"
+        ],
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::gha-artifacts"
+        ],
+        "Sid": "ListObjectsInBucketGHAArtifacts"
+    },
+    {
+        "Action": "s3:*",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::gha-artifacts/*"
+        ],
+        "Sid": "AllObjectActionsGHAArtifacts"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-metrics/*"
+        ],
+        "Sid": "AllObjectActionsOssciMetrics"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::ossci-raw-job-status/*"
+        ],
+        "Sid": "AllObjectActionsOssciRawJobStatus"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::torchci-aggregated-stats/*"
+        ],
+        "Sid": "AllObjectActionsTorchciAggregatedStats"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::torchci-contribution-data/*"
+        ],
+        "Sid": "AllObjectActionsContributionData"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::torchci-alerts/*"
+        ],
+        "Sid": "AllObjectActionsAlerts"
+    },
+    {
+        "Action": [
+            "s3:ListBucket"
+        ],
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::doc-previews"
+        ],
+        "Sid": "ListObjectsInBucketDocPreviews"
+    },
+    {
+        "Action": "s3:*Object",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::doc-previews/*"
+        ],
+        "Sid": "AllObjectActionsDocPreviews"
+    },
+    {
+        "Action": "s3:*Object*",
+        "Effect": "Allow",
+        "Resource": [
+            "arn:aws:s3:::pytorch-tutorial-build-pull-request/*"
+        ],
+        "Sid": "AllObjectActionsTutorialsPR"
+    },
+    {
+        "Effect": "Allow",
+        "Action": [
+            "ec2:CreateTags"
+        ],
+        "Resource": "*"
+    }
+  ]
+}
+EOT
+}
+
+resource "aws_iam_role_policy_attachment" "karpenter_node_role_anothers_accounts_resources" {
+  role       = aws_iam_role.karpenter_node_role.name
+  policy_arn = aws_iam_policy.karpenter_node_role_access_other_accounts_resouces_policy.arn
 }
 
 resource "aws_iam_role_policy_attachment" "karpenter_node_role_AmazonEKSWorkerNodePolicy" {
