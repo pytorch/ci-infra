@@ -65,9 +65,14 @@ jobs:
       shell: bash
       run: make plan
       env:
+        DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
+        DOCKER_REGISTRY_PASSWORDS: ${{ secrets.DOCKER_REGISTRY_PASSWORDS }}
         EKS_USERS: ${{ secrets.EKS_USERS }}
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
         GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
-        TERRAFORM_EXTRAS: -lock-timeout=15m
+        NO_EKSCTL: 'true'
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
