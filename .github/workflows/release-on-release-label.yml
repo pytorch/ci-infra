@@ -83,7 +83,7 @@ jobs:
     - name: Notify make plan changes
       shell: bash
       run: |
-        export COMMENT_TO_ADD=$(echo "This is the Terraform plan for review:" ; echo "```" ; make plan ; echo "```" )
+        export COMMENT_TO_ADD=$(echo 'This is the Terraform plan for review:' ; echo '```' ; make plan ; echo '```' )
         make add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
