@@ -55,11 +55,9 @@ template:
         limits:
           cpu: $(CPU)
           memory: $(MEMORY)
-          $(NVIDIA_GPU)
         requests:
           cpu: $(CPU)
           memory: $(MEMORY)
-          $(NVIDIA_GPU)
       env:
         - name: DOCKER_HOST
           value: unix:///run/docker/docker.sock
