@@ -74,5 +74,4 @@ jobs:
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
         NO_EKSCTL: 'true'
         PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
-        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
-
+        TERRAFORM_EXTRAS: -lock-timeout=15m
