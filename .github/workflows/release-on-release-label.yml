@@ -80,17 +80,6 @@ jobs:
         PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
 
-    - name: Notify make plan changes
-      shell: bash
-      run: |
-        export COMMENT_TO_ADD=$(echo 'This is the Terraform plan for review:' ; echo '```' ; make plan ; echo '```' )
-        make add-comment-to-pr
-      env:
-        GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-        GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-        GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-
     - name: Notify job success
       shell: bash
       run: make COMMENT_TO_ADD="Successfully deployed to canary, add a comment with PROCEED_TO_VANGUARD in order to proceed deploying to vanguard, or close this PR in order to abort" add-comment-to-pr
