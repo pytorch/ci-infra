@@ -28,7 +28,8 @@ In order to deploy, you'll need to setup the AWS CLI and 1Password CLI
 5. In your terminal, run `aws configure --profile {account}` to setup your login (currently `{account}` is always `391835788720`). It'll ask you for the AWS access key id and secret access key from the previous step.  For default region name say `us-east-1`. For default output format say `json`.
     1. This will setup your `.aws` folder and create `config` and `credentials` files in there.
     2. Here we have [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (based on the path for each account module on `aws/<acc-id>/<region>/`) with all the permissions and keys set up locally.
-6. Run `aws ec2 describe-instances` to verify that you're properly authenticated
+6. To use the above config as your default setup, you can run `aws configure` a second time, but without the `--profile` param.
+6. Run `aws ec2 describe-instances` to verify that you're properly authenticated.
 
 ### 1Password setup
 You need 1Password to fetch environment secrets and pass them to `make`.
