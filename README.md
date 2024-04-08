@@ -17,15 +17,27 @@ This project depends on:
 
 It creates a VPC and a EKS cluster. On that it then setups the Github first party ARC solution for GHA runners using helm
 
+## Setup
+In order to deploy, you'll need to setup the AWS CLI and 1Password CLI
+
+### AWS CLI Setup
+1. Get an AWS account. You may need to contact someone with admin access to send you an invite
+2. Ensure 2FA is setup on your AWS account
+3. Install the AWS CLI
+4. To Auth into the AWS CLI, get a new AWS Access Key ID and Secret Access Key. On the AWS console go to IAM->Users->Your user->Security credentials->Create access key.
+5. In your terminal, run `aws configure --profile {account}` to setup your login (currently `{account}` is always `391835788720`). It'll ask you for the AWS access key id and secret access key from the previous step.  For default region name say `us-east-1`. For default output format say `json`.
+    1. This will setup your `.aws` folder and create `config` and `credentials` files in there.
+    2. Here we have [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (based on the path for each account module on `aws/<acc-id>/<region>/`) with all the permissions and keys set up locally.
+6. Run `aws ec2 describe-instances` to verify that you're properly authenticated
+
+### 1Password setup
+You need 1Password to fetch environment secrets and pass them to `make`.
+
+1. Create a 1Password account. Linux Foundation owns 1Password. Ask teammember from there to invite you to create a 1Password account
+2. Install and setup the [1Password CLI](https://developer.1password.com/docs/cli/) as per their docs.
+
 ## Deploy
-
-In order to deploy, first make sure your environment is set up so you have your [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (based on the path for each account module on `aws/<acc-id>/<region>/`) and all the permissions and keys are set up locally;
-
-Next, you'll need to setup [1Password CLI](https://developer.1password.com/docs/cli/)
-in order to fetch environment secrets and pass them to `make`.
-
-Once 1Password CLI is setup you can run make as follows:
-
+Once the above setup steps are complete you can run make as follows:
 
 ```
 $ op run --env-file make.env -- make
