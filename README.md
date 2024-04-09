@@ -77,7 +77,7 @@ $ op run --env-file make.env -- make
 
 Or if invoking mack from a different folder, pass a path to the `make.env` file:
 ```
-# From aws/<acc-id>/<region>
+# If invoking from aws/<acc-id>/<region>
 $ op run --env-file ../../../make.env -- make
 ```
 
