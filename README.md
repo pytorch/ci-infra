@@ -37,6 +37,15 @@ You need 1Password to fetch environment secrets and pass them to `make`.
 1. Create a 1Password account. Linux Foundation owns 1Password. Ask teammember from there to invite you to create a 1Password account
 2. Install and setup the [1Password CLI](https://developer.1password.com/docs/cli/) as per their docs.
 
+### Python setup
+Ensure you have python 3.10 installed.
+
+### Terraform Lint setup
+Optional, but this lets you run terraform lint locally via `make tflint`
+
+1. Install Terraform. Instructions: https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli
+2. Install tflint Instructions: https://github.com/terraform-linters/tflint
+
 ## Deploy
 Once the above setup steps are complete you can run make as follows:
 
