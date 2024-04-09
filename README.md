@@ -41,6 +41,7 @@ The root folder's `make.env` contains paths to various secrets defined in 1Passw
 
 You can see what your combined your environment contains by running `op run --env-file make.env -- env`
 
+#### Making invokng 1Password easier
 You can add the following function to your `.bashrc` or `.zshrc` file to simplify adding the op prefix. It'll traverse up the tree to find the first file named `make.env` and pass the path to that into `op`.
 
 ```
