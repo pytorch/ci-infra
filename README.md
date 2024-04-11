@@ -75,7 +75,7 @@ Once the above setup steps are complete you can run make as follows:
 $ op run --env-file make.env -- make
 ```
 
-Or if invoking mack from a different folder, pass a path to the `make.env` file:
+Or if invoking make from a different folder, pass a path to the `make.env` file:
 ```
 # If invoking from aws/<acc-id>/<region>
 $ op run --env-file ../../../make.env -- make
