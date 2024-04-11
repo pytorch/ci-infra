@@ -45,6 +45,10 @@ Optional, but this lets you run terraform lint locally via `make tflint`
 
 1. Install Terraform. Instructions: https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli
 2. Install tflint Instructions: https://github.com/terraform-linters/tflint
+3. Install pre-commit. Instructions: https://pre-commit.com/index.html#install
+
+   Then run `pre-commit --install` in repo to install the git hooks to
+   automatically run when `git commit` is called.
 
 ## Deploy
 Once the above setup steps are complete you can run make as follows:

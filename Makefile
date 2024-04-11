@@ -10,7 +10,7 @@ clean:
 
 .PHONY: tflint
 tflint:
-	cd modules/arc && terraform init && tflint --init && tflint --module --color --minimum-failure-severity=warning --recursive
+	cd modules/arc && terraform init && tflint --init && pre-commit run --all-files
 	cd aws ; for account in ./*/ ; do \
 		pushd $$account ; \
 		for region in ./*/ ; do \
