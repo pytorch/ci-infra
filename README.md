@@ -37,23 +37,47 @@ You need 1Password to fetch environment secrets and pass them to `make`.
 1. Create a 1Password account. Linux Foundation owns 1Password. Ask teammember from there to invite you to create a 1Password account
 2. Install and setup the [1Password CLI](https://developer.1password.com/docs/cli/) as per their docs.
 
+The root folder's `make.env` contains paths to various secrets defined in 1Password. To actually use those secrets, you'll want to prefix any command you run with `op run --env-file make.env -- [YOUR_COMMAND]`. This is particularly important for the `make` commands.
+
+You can see what your combined your environment contains by running `op run --env-file make.env -- env`
+
+#### Invoke 1Password more easily
+You can add the following function to your `.bashrc` or `.zshrc` file to simplify adding the op prefix. It'll traverse up the tree to find the first file named `make.env` and pass the path to that into `op`.
+
+```
+# Alias the 1Password cli. This is for the ci-tools repo. See https://support.1password.com/command-line-getting-started/
+# It makes calling "op make" equivalent to "op run --env-file PATH_TO_make.env -- make"
+op() {
+    command op run --env-file $(file="make.env"; pushd . > /dev/null 2>&1; while [[ "$PWD" != "/" && ! -e "$file" ]]; do cd ..; done; if [[ -e "$file" ]]; then echo "$PWD/$file"; fi; popd > /dev/null 2>&1) -- "$@"
+}
+```
+
 ### Python setup
 Ensure you have python 3.10 installed.
 
 ### Terraform Lint setup
 Optional, but this lets you run terraform lint locally via `make tflint`
 
-1. Install Terraform. Instructions: https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli
-2. Install tflint Instructions: https://github.com/terraform-linters/tflint
+#### Setup Terraform
+1. Install Terraform: https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli
+2. Enable tab completion on bash/zsh: `terraform -install-autocomplete` (optional)
+
+#### Instal TFLint
+Instructions: https://github.com/terraform-linters/tflint
+
+Run tflint using the `op` prefix: `op run --env-file make.env -- make tflint`
+- Or if you setup the shortcut function, you can run `op make tflint`
 
 ## Deploy
 Once the above setup steps are complete you can run make as follows:
 
 ```
 $ op run --env-file make.env -- make
+```
 
-# If doing it from a specific folder
-$ cd aws/<acc-id>/<region>
+Or if invoking make from a different folder, pass a path to the `make.env` file:
+```
+# If invoking from aws/<acc-id>/<region>
 $ op run --env-file ../../../make.env -- make
 ```
 
