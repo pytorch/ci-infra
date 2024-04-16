@@ -278,7 +278,7 @@ resource "aws_iam_policy" "karpenter_node_role_access_other_accounts_resouces_po
         "dynamodb:CreateTable",
         "dynamodb:ListTables"
       ],
-      "Resource": "arn:aws:dynamodb:*:308535385114:table/torchci-metrics"
+      "Resource": "arn:aws:dynamodb:*:308535385114:table/torchci-metrics",
       "Sid": "AllowUploadingTorchciMetrics"
     }
   ]
