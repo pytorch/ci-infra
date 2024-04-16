@@ -129,6 +129,14 @@ To upgrade EKS clusters to a new version:
 3. Delete the Cluster
 4. Run `make apply`  # more specifically apply-canary apply-vanguard apply-prod
 
+## Release to Prod
+
+To release the latest `main` branch to prod do the following:
+1. Trigger the ["Runners Open Release PR" workflow](https://github.com/pytorch/ci-infra/actions/workflows/release-do-open-pr.yml) to create a release PR. This PR will be used to manage the deployment
+2. Once that PR is ready, get it approved by teammates
+3. On that PR, comment `PROCEED_TO_VANGUARD` to deploy the bits to Vanguard (our staging environment)
+4. Once vanguard has ben successfully deployed, comment `PROCEED_TO_PRODUCTION` to deploy to prod
+5. Once that's done, finally comment `CLEANUP_DEPLOYMENT` to finish up the deployment
 
 ## Project organization decision
 
