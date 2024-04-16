@@ -17,21 +17,67 @@ This project depends on:
 
 It creates a VPC and a EKS cluster. On that it then setups the Github first party ARC solution for GHA runners using helm
 
+## Setup
+In order to deploy, you'll need to setup the AWS CLI and 1Password CLI
+
+### AWS CLI Setup
+1. Get an AWS account. You may need to contact someone with admin access to send you an invite
+2. Ensure 2FA is setup on your AWS account
+3. Install the AWS CLI
+4. To Auth into the AWS CLI, get a new AWS Access Key ID and Secret Access Key. On the AWS console go to IAM->Users->Your user->Security credentials->Create access key.
+5. In your terminal, run `aws configure --profile {account}` to setup your login (currently `{account}` is always `391835788720`). It'll ask you for the AWS access key id and secret access key from the previous step.  For default region name say `us-east-1`. For default output format say `json`.
+    1. This will setup your `.aws` folder and create `config` and `credentials` files in there.
+    2. Here we have [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (based on the path for each account module on `aws/<acc-id>/<region>/`) with all the permissions and keys set up locally.
+6. To use the above config as your default setup, you can run `aws configure` a second time, but without the `--profile` param.
+7. Run `aws ec2 describe-instances` to verify that you're properly authenticated.
+
+### 1Password setup
+You need 1Password to fetch environment secrets and pass them to `make`.
+
+1. Create a 1Password account. Linux Foundation owns 1Password. Ask teammember from there to invite you to create a 1Password account
+2. Install and setup the [1Password CLI](https://developer.1password.com/docs/cli/) as per their docs.
+
+The root folder's `make.env` contains paths to various secrets defined in 1Password. To actually use those secrets, you'll want to prefix any command you run with `op run --env-file make.env -- [YOUR_COMMAND]`. This is particularly important for the `make` commands.
+
+You can see what your combined your environment contains by running `op run --env-file make.env -- env`
+
+#### Invoke 1Password more easily
+You can add the following function to your `.bashrc` or `.zshrc` file to simplify adding the op prefix. It'll traverse up the tree to find the first file named `make.env` and pass the path to that into `op`.
+
+```
+# Alias the 1Password cli. This is for the ci-tools repo. See https://support.1password.com/command-line-getting-started/
+# It makes calling "op make" equivalent to "op run --env-file PATH_TO_make.env -- make"
+op() {
+    command op run --env-file $(file="make.env"; pushd . > /dev/null 2>&1; while [[ "$PWD" != "/" && ! -e "$file" ]]; do cd ..; done; if [[ -e "$file" ]]; then echo "$PWD/$file"; fi; popd > /dev/null 2>&1) -- "$@"
+}
+```
+
+### Python setup
+Ensure you have python 3.10 installed.
+
+### Terraform Lint setup
+Optional, but this lets you run terraform lint locally via `make tflint`
+
+#### Setup Terraform
+1. Install Terraform: https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli
+2. Enable tab completion on bash/zsh: `terraform -install-autocomplete` (optional)
+
+#### Instal TFLint
+Instructions: https://github.com/terraform-linters/tflint
+
+Run tflint using the `op` prefix: `op run --env-file make.env -- make tflint`
+- Or if you setup the shortcut function, you can run `op make tflint`
+
 ## Deploy
-
-In order to deploy, first make sure your environment is set up so you have your [AWS CLI set up with a profile](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) named with the account where the target will be deployed (based on the path for each account module on `aws/<acc-id>/<region>/`) and all the permissions and keys are set up locally;
-
-Next, you'll need to setup [1Password CLI](https://developer.1password.com/docs/cli/)
-in order to fetch environment secrets and pass them to `make`.
-
-Once 1Password CLI is setup you can run make as follows:
-
+Once the above setup steps are complete you can run make as follows:
 
 ```
 $ op run --env-file make.env -- make
+```
 
-# If doing it from a specific folder
-$ cd aws/<acc-id>/<region>
+Or if invoking make from a different folder, pass a path to the `make.env` file:
+```
+# If invoking from aws/<acc-id>/<region>
 $ op run --env-file ../../../make.env -- make
 ```
 
