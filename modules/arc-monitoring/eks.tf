@@ -62,7 +62,7 @@ module "eks" {
 
       instance_types = [var.basic_instance_type]
       ami_type       = "AL2_x86_64"
-      capacity_type  = "SPOT"
+      capacity_type  = "ON_DEMAND"
       labels = {
         Project     = var.environment
         Environment = local.cluster_name
