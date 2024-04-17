@@ -99,12 +99,20 @@ apply: .terraform/modules/modules.json
 apply-arc-canary: .terraform/modules/modules.json
 	terraform apply --target=module.arc_canary ${TERRAFORM_EXTRAS}
 
+.PHONY: apply-arc-canary-monitoring
+apply-arc-canary-monitoring: .terraform/modules/modules.json
+	terraform apply --target=module.arc_canary_monitoring ${TERRAFORM_EXTRAS}
+
 .PHONY: apply-arc-vanguard
 apply-arc-vanguard: .terraform/modules/modules.json
 	terraform apply --target=module.arc_vanguard ${TERRAFORM_EXTRAS}
 
+.PHONY: apply-arc-prod-monitoring
+apply-arc-prod-monitoring: .terraform/modules/modules.json
+	terraform apply --target=module.arc_prod_monitoring ${TERRAFORM_EXTRAS}
+
 .PHONY: apply-arc-prod
-apply-arc-prod: .terraform/modules/modules.json
+apply-arc-prod: .terraform/modules/modules.json apply-arc-prod-monitoring
 	terraform apply --target=module.arc_prod ${TERRAFORM_EXTRAS}
 
 .PHONY: destroy
@@ -119,6 +127,14 @@ tflint: .terraform/modules/modules.json
 
 
 ##################### INVENTORY ###########################
+inventory/eks/canary_monitoring_cluster_name: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json canary_monitoring_eks_cluster_name | sed 's/"\(.*\)"/\1/' >inventory/eks/canary_monitoring_cluster_name
+
+inventory/eks/canary_monitoring_cluster_config: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json canary_monitoring_eks_config | jq . >inventory/eks/canary_monitoring_cluster_config
+
 inventory/eks/canary_cluster_name: .terraform/modules/modules.json
 	mkdir -p inventory/eks
 	terraform output -json canary_eks_cluster_name | jq -r '.[] | [.] | @csv' | sed 's/"\(.*\)"/\1/' >inventory/eks/canary_cluster_name
@@ -134,6 +150,14 @@ inventory/eks/vanguard_cluster_name: .terraform/modules/modules.json
 inventory/eks/vanguard_cluster_config: .terraform/modules/modules.json
 	mkdir -p inventory/eks
 	terraform output -json vanguard_eks_config | jq . >inventory/eks/vanguard_cluster_config
+
+inventory/eks/prod_monitoring_cluster_name: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json prod_monitoring_eks_cluster_name | sed 's/"\(.*\)"/\1/' >inventory/eks/prod_monitoring_cluster_name
+
+inventory/eks/prod_monitoring_cluster_config: .terraform/modules/modules.json
+	mkdir -p inventory/eks
+	terraform output -json prod_monitoring_eks_config | jq . >inventory/eks/prod_monitoring_cluster_config
 
 inventory/eks/prod_cluster_name: .terraform/modules/modules.json
 	mkdir -p inventory/eks
@@ -160,6 +184,28 @@ ARC_RUNNER_CONFIG.yaml:
 	fi
 
 # Canary
+.PHONY: arc-canary-monitoring
+arc-canary: inventory/eks/canary_monitoring_cluster_name inventory/eks/canary_monitoring_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd $(PROHOME)/modules/arc-monitoring ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: WTFTBD" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_config \
+				EKS_ENVIRONMENT=canary \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
+				GHA_ID=808166 \
+				GHA_INST_ID=46578864 \
+				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
+				MINRUNNERS=$(CANARY_MIN_RUNNERS) \
+				PROJECTTAG=gi-ci-canary \
+				REGION=$(REGION) \
+				RUNNERSCOPE=pytorch-canary \
+				WTFTBD || exit 1 ; \
+		done
+
 .PHONY: arc-canary
 arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
 	cd $(PROHOME)/modules/arc ; \
@@ -169,7 +215,7 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				echo "Skipping $$p - as CLUSTER_TARGET is defined as '$$CLUSTER_TARGET'" ; continue ; \
 			fi ; \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler k8s-runner-scaler delete-stale-resources" ; \
+			echo "OPS: clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \

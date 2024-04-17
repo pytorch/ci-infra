@@ -1,0 +1,14 @@
+cluster:
+  name: my-cluster
+
+externalServices:
+  prometheus:
+    host: https://prometheus.example.com
+    basicAuth:
+      username: "12345"
+      password: "It's a secret to everyone"
+  loki:
+    host: https://loki.example.com
+    basicAuth:
+      username: "67890"
+      password: "It's a secret to everyone"

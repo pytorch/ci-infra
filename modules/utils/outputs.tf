@@ -1,3 +1,16 @@
+output "canary_monitoring_eks_cluster_name" {
+  value = module.arc_canary_monitoring.cluster_name
+}
+
+output "canary_monitoring_eks_config" {
+  value = {
+    cluster_arn        = module.arc_canary_monitoring.cluster_arn
+    cluster_name       = module.arc_canary_monitoring.cluster_name
+    security_group_ids = module.arc_canary_monitoring.security_group_ids
+    subnet_ids         = module.arc_canary_monitoring.subnet_ids
+  }
+}
+
 output "canary_eks_cluster_name" {
   value = [for mod in module.arc_canary: mod.cluster_name]
 }
@@ -78,4 +91,17 @@ output "prod_eks_config" {
       subnet_ids                      = mod.subnet_ids    }
   }
   sensitive = true
+}
+
+output "prod_monitoring_eks_cluster_name" {
+  value = module.arc_canary_monitoring.cluster_name
+}
+
+output "prod_monitoring_eks_config" {
+  value = {
+    cluster_arn        = module.arc_canary_monitoring.cluster_arn
+    cluster_name       = module.arc_canary_monitoring.cluster_name
+    security_group_ids = module.arc_canary_monitoring.security_group_ids
+    subnet_ids         = module.arc_canary_monitoring.subnet_ids
+  }
 }
