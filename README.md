@@ -68,6 +68,10 @@ Instructions: https://github.com/terraform-linters/tflint
 Run tflint using the `op` prefix: `op run --env-file make.env -- make tflint`
 - Or if you setup the shortcut function, you can run `op make tflint`
 
+
+### Install eksctl
+Instructions: https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/setting-up-eksctl.html
+
 ## Deploy
 Once the above setup steps are complete you can run make as follows:
 
