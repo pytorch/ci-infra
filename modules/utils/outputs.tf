@@ -94,14 +94,14 @@ output "prod_eks_config" {
 }
 
 output "prod_monitoring_eks_cluster_name" {
-  value = module.arc_canary_monitoring.cluster_name
+  value = module.arc_prod_monitoring.cluster_name
 }
 
 output "prod_monitoring_eks_config" {
   value = {
-    cluster_arn        = module.arc_canary_monitoring.cluster_arn
-    cluster_name       = module.arc_canary_monitoring.cluster_name
-    security_group_ids = module.arc_canary_monitoring.security_group_ids
-    subnet_ids         = module.arc_canary_monitoring.subnet_ids
+    cluster_arn        = module.arc_prod_monitoring.cluster_arn
+    cluster_name       = module.arc_prod_monitoring.cluster_name
+    security_group_ids = module.arc_prod_monitoring.security_group_ids
+    subnet_ids         = module.arc_prod_monitoring.subnet_ids
   }
 }
