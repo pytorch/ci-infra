@@ -20,6 +20,15 @@ update-kubectl: do-update-kubectl add-eksctl-identity-mappings
 
 .PHONY: helm-repo-update
 helm-repo-update: update-kubectl
-	helm repo add grafana https://grafana.github.io/helm-charts
+	# helm repo add grafana https://grafana.github.io/helm-charts
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 	helm repo update
+
+.PHONY: install-prometheus
+install-prometheus: helm-repo-update
+	helm install prometheus \
+		prometheus-community/prometheus \
+		--namespace prometheus \
+		--create-namespace \
+		--set alertmanager.persistentVolume.storageClass="gp2",server.persistentVolume.storageClass="gp2"
 

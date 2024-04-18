@@ -185,12 +185,12 @@ ARC_RUNNER_CONFIG.yaml:
 
 # Canary
 .PHONY: arc-canary-monitoring
-arc-canary: inventory/eks/canary_monitoring_cluster_name inventory/eks/canary_monitoring_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+arc-canary-monitoring: inventory/eks/canary_monitoring_cluster_name inventory/eks/canary_monitoring_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
 	cd $(PROHOME)/modules/arc-monitoring ; \
 		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: WTFTBD" ; \
+			echo "OPS: install-prometheus" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_config \
@@ -203,7 +203,7 @@ arc-canary: inventory/eks/canary_monitoring_cluster_name inventory/eks/canary_mo
 				PROJECTTAG=gi-ci-canary \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
-				WTFTBD || exit 1 ; \
+				install-prometheus || exit 1 ; \
 		done
 
 .PHONY: arc-canary
