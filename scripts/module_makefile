@@ -335,6 +335,9 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 		done
 
 .PHONY: eks-use-cluster
-CLUSTER_TARGET?=$(CLUSTER) # For a little while, preserve the legacy behavior of accepting the CLUSTER variable as the target cluster
 eks-use-cluster:
+	@if [ -z "$(CLUSTER_TARGET)" ]; then \
+		echo "CLUSTER_TARGET must be set when using eks-use-cluster"; \
+		exit 1; \
+	fi
 	cd $(PROHOME)/modules/arc ; $(MAKE) EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users EKS_CLUSTER_NAME=$(CLUSTER_TARGET) update-kubectl
