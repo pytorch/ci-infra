@@ -72,6 +72,19 @@ Run tflint using the `op` prefix: `op run --env-file make.env -- make tflint`
 ### Install eksctl
 Instructions: https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/setting-up-eksctl.html
 
+### Authenticate to the Canary clusters
+To get authenticated to the kubernetes cluster, you need to be added to the list of authorized users: the EKS list. It's a somewhat complicated process:
+
+1. Get the current EKS_USERS list from 1Password. It's stored as a base64 string.
+2. Use `base64` to decode it. (e.g. `echo "the_string" | base64 --decode > users.txt`).
+3. Add a line for yourself to the resulting users list
+4. Encode the new list back to base64: `base64 -i user.txt`
+5. Replace the old EKS_USERS value in 1Password with this new value
+6. Go to the Github secrets for this repo. Replace the EKS_USERS secret with this base64 encoded value
+7. Get someone who already has access to the clusters to run `CLUSTER_TARGET=[cluster-you-want] make clean apply-arc-canary` to actually propate your name to the relevant clusters
+
+Now you can deploy bits to the cluster
+
 ## Deploy
 Once the above setup steps are complete you can run make as follows:
 
