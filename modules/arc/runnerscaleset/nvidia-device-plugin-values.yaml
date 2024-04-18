@@ -69,6 +69,12 @@ tolerations:
   - key: nvidia.com/gpu
     operator: Exists
     effect: NoSchedule
+  - key: "arcRunnerNodeType-compute-amd64-nvidia-a100"
+    operator: "Exists"
+  - key: "arcRunnerNodeType-compute-amd64-nvidia-a10g"
+    operator: "Exists"
+  - key: "arcRunnerNodeType-compute-amd64-nvidia-m60"
+    operator: "Exists"
   - key: "arcRunnerNodeType-compute-amd64-nvidia-v100"
     operator: "Exists"
 
@@ -103,6 +109,12 @@ nfd:
       operator: "Equal"
       value: "present"
       effect: "NoSchedule"
+    - key: "arcRunnerNodeType-compute-amd64-nvidia-a100"
+      operator: "Exists"
+    - key: "arcRunnerNodeType-compute-amd64-nvidia-a10g"
+      operator: "Exists"
+    - key: "arcRunnerNodeType-compute-amd64-nvidia-m60"
+      operator: "Exists"
     - key: "arcRunnerNodeType-compute-amd64-nvidia-v100"
       operator: "Exists"
     config:
