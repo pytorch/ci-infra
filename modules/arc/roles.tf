@@ -68,7 +68,7 @@ resource "aws_iam_policy" "karpenter_node_role_access_other_accounts_resouces_po
   description = "Policy for Karpenter Controller"
 
   # policy copied from the other account :)
-  policy = <<EOT
+  policy = jsonencode(
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -270,10 +270,22 @@ resource "aws_iam_policy" "karpenter_node_role_access_other_accounts_resouces_po
             "ec2:CreateTags"
         ],
         "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Scan",
+        "dynamodb:Query"
+      ],
+      "Resource": "arn:aws:dynamodb:*:308535385114:table/torchci-metrics",
+      "Sid": "AllowUploadingTorchciMetrics"
     }
   ]
-}
-EOT
+})
 }
 
 resource "aws_iam_role_policy_attachment" "karpenter_node_role_anothers_accounts_resources" {
