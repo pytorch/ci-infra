@@ -45,6 +45,11 @@ resource "aws_iam_role" "karpenter_node_role" {
             ],
             "Effect": "Allow",
             "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": "arn:aws:iam::308535385114:role/gh-ci-github-action-runners-runner-role"
         }
       ]
     })
@@ -63,7 +68,7 @@ resource "aws_iam_policy" "karpenter_node_role_access_other_accounts_resouces_po
   description = "Policy for Karpenter Controller"
 
   # policy copied from the other account :)
-  policy = <<EOT
+  policy = jsonencode(
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -274,16 +279,13 @@ resource "aws_iam_policy" "karpenter_node_role_access_other_accounts_resouces_po
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
         "dynamodb:Scan",
-        "dynamodb:Query",
-        "dynamodb:CreateTable",
-        "dynamodb:ListTables"
+        "dynamodb:Query"
       ],
       "Resource": "arn:aws:dynamodb:*:308535385114:table/torchci-metrics",
       "Sid": "AllowUploadingTorchciMetrics"
     }
   ]
-}
-EOT
+})
 }
 
 resource "aws_iam_role_policy_attachment" "karpenter_node_role_anothers_accounts_resources" {

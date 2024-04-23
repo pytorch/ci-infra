@@ -271,7 +271,7 @@ def main() -> None:
         ][0]
 
         # Please note that the suffix for ENVRUNNERLABEL is very important as it is used
-        # as the refenence for witch runner groups to clean up when there is no matching
+        # as the refenence for which runner groups to clean up when there is no matching
         # configs
         cluster_idx = additional_values['EKSCLUSTERNAME'].split('-')[-1].lower()
         additional_values['ENVRUNNERLABEL'] = label
@@ -284,13 +284,13 @@ def main() -> None:
             additional_values['SCALESETNAME'] = f'{label}.p.{cluster_idx}'
 
         # Please note that the prefix for RUNNERGROUP is very important as it is used
-        # as the refenence for witch runner groups to clean up when there is no matching
+        # as the refenence for which runner groups to clean up when there is no matching
         # configs
         l = additional_values['ENVRUNNERLABEL']
         additional_values['RUNNERGROUP'] = f'arc-lf-{l}'
 
         # Please note that the prefix for install_name is very important as it is used
-        # as the refenence for witch installations to clean up when there is no matching
+        # as the refenence for which installations to clean up when there is no matching
         # configs
         install_name = f'rssi-{label}'
 
