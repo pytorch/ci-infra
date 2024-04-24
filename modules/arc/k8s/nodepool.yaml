@@ -29,6 +29,5 @@ spec:
         cpuCFSQuota: true
   disruption:
     consolidationPolicy: WhenUnderutilized
-    consolidateAfter: 30m
     expireAfter: 12h
   weight: 10
