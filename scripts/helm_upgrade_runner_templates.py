@@ -97,6 +97,13 @@ def parse_args() -> argparse.Namespace:
         required=False
     )
     parser.add_argument(
+        '--arc-version',
+        help='The version of GitHub ARC to use.',
+        default=os.environ.get('ARC_VERSION'),
+        type=str,
+        required=False,
+    )
+    parser.add_argument(
         "--dry-run",
         help="dry run",
         action="store_true",
@@ -307,7 +314,9 @@ def main() -> None:
         cmd = [
             'helm', 'upgrade', '--install', install_name, '--wait',
             '--namespace', options.namespace, '--create-namespace',
-            'oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set', '--create-namespace',
+            'oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set',
+            '--create-namespace',
+            '--version', options.arc_version,
             '--values',
             '-',
         ]
