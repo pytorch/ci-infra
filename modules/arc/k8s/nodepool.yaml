@@ -31,7 +31,4 @@ spec:
     consolidationPolicy: WhenUnderutilized
     consolidateAfter: 30m
     expireAfter: 12h
-    budgets:
-    - nodes: "20%"
-    - nodes: "10"
   weight: 10
