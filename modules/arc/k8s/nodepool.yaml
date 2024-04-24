@@ -33,5 +33,5 @@ spec:
     expireAfter: 12h
     budgets:
     - nodes: "20%"
-    - nodes: 10
+    - nodes: "10"
   weight: 10
