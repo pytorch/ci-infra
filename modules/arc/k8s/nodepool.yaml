@@ -29,6 +29,7 @@ spec:
         cpuCFSQuota: true
   disruption:
     consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 30m
     expireAfter: 12h
     budgets:
     - nodes: "20%"
