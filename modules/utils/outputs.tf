@@ -79,3 +79,19 @@ output "prod_eks_config" {
   }
   sensitive = true
 }
+
+output "prometheus_production_endpoint" {
+  value = aws_prometheus_workspace.monitoring_production.prometheus_endpoint
+}
+
+output "prometheus_canary_endpoint" {
+  value = aws_prometheus_workspace.monitoring_canary.prometheus_endpoint
+}
+
+output "grafana_production_endpoint" {
+  value = aws_grafana_workspace.monitoring_production.endpoint
+}
+
+output "grafana_canary_endpoint" {
+  value = aws_grafana_workspace.monitoring_canary.endpoint
+}

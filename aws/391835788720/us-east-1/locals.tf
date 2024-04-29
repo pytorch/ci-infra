@@ -9,4 +9,8 @@ locals {
         for loc in local.availability_zones_canary_loc :
         "${local.aws_region}${loc}"
     ]
+    aws_vpc_suffixes_permutations = tolist([
+        for p in setproduct(var.aws_vpc_suffixes, var.aws_vpc_suffixes) : tolist(p)
+        if p[0] != p[1]
+    ])
 }
