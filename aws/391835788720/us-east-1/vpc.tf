@@ -16,11 +16,12 @@ module "runners_vpc" {
 }
 resource "aws_vpc_peering_connection" "runners_vpc_peering_connection" {
   for_each = {
-    for suffix_pair in local.aws_vpc_suffixes_permutations:
+    for suffix_pair in var.aws_vpc_suffixes_combinations:
     "${suffix_pair[0]}-${suffix_pair[1]}" => suffix_pair
   }
   peer_vpc_id   = module.runners_vpc[each.value[0]].vpc_id
   vpc_id        = module.runners_vpc[each.value[1]].vpc_id
+  auto_accept   = true
 
   accepter {
     allow_remote_vpc_dns_resolution = true
