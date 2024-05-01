@@ -22,6 +22,12 @@ variable "aws_vpc_suffixes" {
   default     = ["I", "II"]
 }
 
+variable "aws_vpc_suffixes_combinations" {
+  description = "this should be the unique combination pair of aws_vpc_suffixes"
+  type        = list
+  default     = [["I", "II"]]
+}
+
 variable "aws_canary_vpc_suffixes" {
   description = "suffixes to define aws vpcs per AZ per location for canary"
   type        = list

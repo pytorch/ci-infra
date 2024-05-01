@@ -41,6 +41,7 @@ init: .terraform/modules/modules.json
 clean:
 	$(RM) -rf .terraform
 	$(RM) -rf inventory
+	$(RM) ../eks_users
 	$(RM) .terraform.lock.hcl
 	$(RM) ARC_NODE_CONFIG.yaml
 	$(RM) ARC_RUNNER_CONFIG.yaml
@@ -381,4 +382,8 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config $(PR
 
 .PHONY: eks-use-cluster
 eks-use-cluster:
-	cd $(PROHOME)/modules/arc ; $(MAKE) EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users EKS_CLUSTER_NAME=$(CLUSTER) update-kubectl
+	@if [ -z "$(CLUSTER_TARGET)" ]; then \
+		echo "CLUSTER_TARGET must be set when using eks-use-cluster"; \
+		exit 1; \
+	fi
+	cd $(PROHOME)/modules/arc ; $(MAKE) EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users EKS_CLUSTER_NAME=$(CLUSTER_TARGET) update-kubectl

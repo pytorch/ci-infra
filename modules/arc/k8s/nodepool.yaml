@@ -28,7 +28,6 @@ spec:
           ephemeral-storage: 3Gi
         cpuCFSQuota: true
   disruption:
-    consolidationPolicy: WhenEmpty
-    consolidateAfter: 30s
-    expireAfter: 720h
+    consolidationPolicy: WhenUnderutilized
+    expireAfter: 12h
   weight: 10

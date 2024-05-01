@@ -18,6 +18,7 @@ KARPENTERNODEROLEARN := $(shell jq '.["$(EKS_CLUSTER_NAME)"]["karpenter_node_rol
 KARPENTERSGIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["security_group_ids"][] | {"id": .}]' <"${CLUSTER_CONFIG_FILE}")
 KARPENTERSUBNETIDS := $(shell jq -c '[.["$(EKS_CLUSTER_NAME)"]["subnet_ids"][] | {"id": .}]' <"${CLUSTER_CONFIG_FILE}")
 
+ARC_VERSION = 0.8.3  # DO NOT use 0.9.1 as it breaks on ON_DEMAND instances (https://github.com/actions/actions-runner-controller/issues/3450)
 RUNNERS_NAMESPACE = actions-runners
 RUNNERS_SYSTEM_NAMESPACE = actions-runner-system
 KARPENTER_NAMESPACE = karpenter
@@ -205,6 +206,7 @@ install-arc: helm-repo-update create-gha-arc-secret
 	helm upgrade --install arc oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
 		--namespace $(RUNNERS_SYSTEM_NAMESPACE) \
 		--create-namespace \
+		--version ${ARC_VERSION} \
 		--set=replicaCount=3 \
 		--set githubConfigSecret.create=true \
 		--set githubConfigSecret.github_app_id="$(GHA_ID)" \
@@ -292,10 +294,12 @@ k8s-runner-scaler: .latest-arc-runner-pytorch .latest-arc-dind-pytorch
 	[ "$(GHA_INST_ID)" != "" ] || (echo "GHA_INST_ID not set"; exit 1)
 	[ "$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "GHA_PRIVATE_KEY_VAR not set"; exit 1)
 	[ "$$$(GHA_PRIVATE_KEY_VAR)" != "" ] || (echo "$(GHA_PRIVATE_KEY_VAR) not set"; exit 1)
+	[ "$(ARC_VERSION)" != "" ] || (echo "ARC_VERSION not set"; exit 1)
 	../../venv/bin/python3 ../../scripts/helm_upgrade_runner_templates.py \
 		--github-app-id $(GHA_ID) \
 		--github-app-installation-id $(GHA_INST_ID) \
 		--github-app-key "$$$(GHA_PRIVATE_KEY_VAR)" \
+		--arc-version $(ARC_VERSION) \
 		--template-name runnerscaleset/values.yaml \
 		--namespace $(RUNNERS_NAMESPACE) \
 		--arc-runner-config-files $(ARC_CFG_FILE_FOLDER)/ARC_NODE_CONFIG.yaml $(ARC_CFG_FILE_FOLDER)/ARC_RUNNER_CONFIG.yaml \
