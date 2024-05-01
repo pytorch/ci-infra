@@ -191,8 +191,9 @@ arc-canary-monitoring: inventory/eks/canary_monitoring_cluster_name inventory/ek
 		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: install-prometheus" ; \
+			echo "OPS: install-aws-load-balancer-controller install-prometheus update-prometheus-url install-grafana update-grafana-url" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				ACCOUNT=$(ACCOUNT) \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
 				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_config \
 				EKS_ENVIRONMENT=canary \
@@ -204,7 +205,10 @@ arc-canary-monitoring: inventory/eks/canary_monitoring_cluster_name inventory/ek
 				PROJECTTAG=gi-ci-canary \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
-				install-prometheus || exit 1 ; \
+				install-prometheus update-prometheus-url install-grafana update-grafana-url || exit 1 ; \
+			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p ; \
+			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
+			cp grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.url ; \
 		done
 
 .PHONY: arc-canary

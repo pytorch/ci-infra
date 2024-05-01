@@ -54,9 +54,9 @@ module "eks" {
 
   eks_managed_node_groups = {
     green = {
-      min_size     = 2
-      max_size     = 20
-      desired_size = 2
+      min_size     = 1
+      max_size     = 5
+      desired_size = 1
 
       taints = []
 

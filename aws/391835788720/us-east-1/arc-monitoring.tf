@@ -20,6 +20,6 @@ module "arc_prod_monitoring" {
     aws_vpc_suffix = "I"
     eks_cidr_blocks = local.external_k8s_cidr_ipv4
     environment = var.prod_environment
-    subnet_ids = module.runners_canary_vpc["I"].private_subnets
-    vpc_id = module.runners_canary_vpc["I"].vpc_id
+    subnet_ids = module.runners_vpc["I"].private_subnets
+    vpc_id = module.runners_vpc["I"].vpc_id
 }

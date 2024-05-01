@@ -4,10 +4,12 @@ output "canary_monitoring_eks_cluster_name" {
 
 output "canary_monitoring_eks_config" {
   value = {
-    cluster_arn        = module.arc_canary_monitoring.cluster_arn
-    cluster_name       = module.arc_canary_monitoring.cluster_name
-    security_group_ids = module.arc_canary_monitoring.security_group_ids
-    subnet_ids         = module.arc_canary_monitoring.subnet_ids
+    aws_vpc_suffix                  = module.arc_canary_monitoring.aws_vpc_suffix
+    cluster_arn                     = module.arc_canary_monitoring.cluster_arn
+    cluster_name                    = module.arc_canary_monitoring.cluster_name
+    environment                     = module.arc_canary_monitoring.environment
+    security_group_ids              = module.arc_canary_monitoring.security_group_ids
+    subnet_ids                      = module.arc_canary_monitoring.subnet_ids
   }
 }
 
