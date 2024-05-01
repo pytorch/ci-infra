@@ -1,9 +1,10 @@
 resource "aws_grafana_workspace" "monitoring_production" {
   account_access_type      = "CURRENT_ACCOUNT"
-  authentication_providers = ["SAML", "AWS_SSO"]
+  authentication_providers = ["AWS_SSO"]
   permission_type          = "SERVICE_MANAGED"
   data_sources             = ["PROMETHEUS", "CLOUDWATCH"]
   role_arn                 = aws_iam_role.grafana_assume_production.arn
+  name                     = "arc_prod"
 
   tags = {
     Environment = var.prod_environment
@@ -33,10 +34,11 @@ resource "aws_iam_role" "grafana_assume_production" {
 
 resource "aws_grafana_workspace" "monitoring_canary" {
   account_access_type      = "CURRENT_ACCOUNT"
-  authentication_providers = ["SAML", "AWS_SSO"]
+  authentication_providers = ["AWS_SSO"]
   permission_type          = "SERVICE_MANAGED"
   data_sources             = ["PROMETHEUS", "CLOUDWATCH"]
   role_arn                 = aws_iam_role.grafana_assume_canary.arn
+  name                     = "arc_canary"
 
   tags = {
     Environment = var.canary_environment
