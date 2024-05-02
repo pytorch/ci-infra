@@ -1,3 +1,4 @@
+grafana.password
 grafana.url
 k8s/.loki-valyes.yaml
 loki.url

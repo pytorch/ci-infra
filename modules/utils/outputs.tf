@@ -107,9 +107,17 @@ output "prod_monitoring_eks_cluster_name" {
 
 output "prod_monitoring_eks_config" {
   value = {
-    cluster_arn        = module.arc_prod_monitoring.cluster_arn
-    cluster_name       = module.arc_prod_monitoring.cluster_name
-    security_group_ids = module.arc_prod_monitoring.security_group_ids
-    subnet_ids         = module.arc_prod_monitoring.subnet_ids
+    aws_vpc_suffix                  = module.arc_prod_monitoring.aws_vpc_suffix
+    cluster_arn                     = module.arc_prod_monitoring.cluster_arn
+    cluster_name                    = module.arc_prod_monitoring.cluster_name
+    environment                     = module.arc_prod_monitoring.environment
+    loki_access_key_id              = module.arc_prod_monitoring.loki_access_key_id
+    loki_secret_access_key          = module.arc_prod_monitoring.loki_secret_access_key
+    loki_admin_bucket               = module.arc_prod_monitoring.loki_admin_bucket
+    loki_chunks_bucket              = module.arc_prod_monitoring.loki_chunks_bucket
+    loki_ruler_bucket               = module.arc_prod_monitoring.loki_ruler_bucket
+    security_group_ids              = module.arc_prod_monitoring.security_group_ids
+    subnet_ids                      = module.arc_prod_monitoring.subnet_ids
   }
+  sensitive = true
 }

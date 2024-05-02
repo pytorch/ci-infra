@@ -77,8 +77,11 @@ install-grafana: helm-repo-update update-prometheus-url update-loki-url
 		--values k8s/grafana-values.yaml \
 		--set datasources."datasources\.yaml".datasources[0].url="http://$$(cat prometheus.url)" \
 		--set datasources."datasources\.yaml".datasources[1].url="http://$$(cat loki.url)"
-	# to get the admin password: kubectl get secret --namespace grafana grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo
 
 .PHONY: update-grafana-url
 update-grafana-url: do-update-kubectl
 	kubectl get svc grafana --namespace=grafana -o json | jq ".status.loadBalancer.ingress[0].hostname" | sed 's/"//g' >grafana.url
+
+.PHONY: update-grafana-password
+update-grafana-password: do-update-kubectl
+	kubectl get secret --namespace grafana grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo >grafana.password

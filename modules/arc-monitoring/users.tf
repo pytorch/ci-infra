@@ -1,5 +1,5 @@
 resource "aws_iam_user" "loki" {
-  name = "loki-s3-access"
+  name = "loki-s3-access-${var.environment}-${var.aws_vpc_suffix}"
   path = "/system/"
 
   tags = {
