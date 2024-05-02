@@ -1,0 +1,15 @@
+loki:
+  storage:
+    bucketNames:
+      chunks: LOKICHUNKSBUCKET
+      ruler: LOKIRULERBUCKET
+      admin: LOKIADMINBUCKET
+    type: s3
+    s3:
+      region: REGION
+      secretAccessKey: LOKISECRETACCESSKEY
+      accessKeyId: LOKIACCESSKEYID
+      s3ForcePathStyle: false
+      insecure: false
+  service:
+    type: NodePort

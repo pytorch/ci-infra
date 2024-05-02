@@ -1,0 +1,15 @@
+loki:
+  storage:
+    bucketNames:
+      chunks: loki-chunks-i-ghci-arc-c
+      ruler: loki-ruler-i-ghci-arc-c
+      admin: loki-admin-i-ghci-arc-c
+    type: s3
+    s3:
+      region: us-east-1
+      secretAccessKey: YzLVJiemCXvWh5ypfNF96zWvn1w/WtDlEbZqWd0d
+      accessKeyId: AKIAVWOZ3UWYAFGHPWEQ
+      s3ForcePathStyle: false
+      insecure: false
+  service:
+    type: NodePort

@@ -21,3 +21,23 @@ output "environment" {
 output "aws_vpc_suffix" {
   value = var.aws_vpc_suffix
 }
+
+output "loki_chunks_bucket" {
+  value = aws_s3_bucket.loki_chunks.id
+}
+
+output "loki_ruler_bucket" {
+  value = aws_s3_bucket.loki_ruler.id
+}
+
+output "loki_admin_bucket" {
+  value = aws_s3_bucket.loki_admin.id
+}
+
+output "loki_access_key_id" {
+  value = aws_iam_access_key.loki.id
+}
+
+output "loki_secret_access_key" {
+  value = aws_iam_access_key.loki.secret
+}

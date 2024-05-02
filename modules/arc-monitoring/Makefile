@@ -2,6 +2,11 @@ SHELL := /bin/bash -o pipefail
 
 CLUSTERENVIRONMENT := $(shell jq '.["environment"]' <"${CLUSTER_CONFIG_FILE}")
 CLUSTERSUFFIX := $(shell jq '.["aws_vpc_suffix"]' <"${CLUSTER_CONFIG_FILE}")
+LOKIACCESSKEYID := $(shell jq '.["loki_access_key_id"]' <"${CLUSTER_CONFIG_FILE}")
+LOKIADMINBUCKET := $(shell jq '.["loki_admin_bucket"]' <"${CLUSTER_CONFIG_FILE}")
+LOKICHUNKSBUCKET := $(shell jq '.["loki_chunks_bucket"]' <"${CLUSTER_CONFIG_FILE}")
+LOKIRULERBUCKET := $(shell jq '.["loki_ruler_bucket"]' <"${CLUSTER_CONFIG_FILE}")
+LOKISECRETACCESSKEY := $(shell jq '.["loki_secret_access_key"]' <"${CLUSTER_CONFIG_FILE}")
 
 .PHONY: add-eksctl-identity-mappings
 add-eksctl-identity-mappings:
@@ -34,24 +39,46 @@ install-prometheus: helm-repo-update
 		prometheus-community/prometheus \
 		--namespace prometheus \
 		--create-namespace \
-		--wait \
+		--wait --debug \
 		--values k8s/prometheus-values.yaml
 
 .PHONY: update-prometheus-url
-update-prometheus-url: install-prometheus
+update-prometheus-url: do-update-kubectl
 	echo $$(kubectl get node -o json | jq '.items[0].metadata.annotations["alpha.kubernetes.io/provided-node-ip"]' | sed 's/"//g'):$$(kubectl get svc prometheus-server --namespace=prometheus -o json | jq '.spec.ports[0].nodePort') >prometheus.url
 
+.PHONY: install-loki
+install-loki: helm-repo-update
+	cat k8s/loki-values.yaml \
+		| sed "s/LOKIACCESSKEYID/$(LOKIACCESSKEYID)/g" \
+		| sed "s/LOKIADMINBUCKET/$(LOKIADMINBUCKET)/g" \
+		| sed "s/LOKICHUNKSBUCKET/$(LOKICHUNKSBUCKET)/g" \
+		| sed "s/LOKIRULERBUCKET/$(LOKIRULERBUCKET)/g" \
+		| sed "s#LOKISECRETACCESSKEY#$(LOKISECRETACCESSKEY)#g" \
+		| sed "s/REGION/$(REGION)/g" \
+		>k8s/.loki-values.yaml
+	helm upgrade --install loki \
+		grafana/loki-stack \
+		--namespace loki \
+		--create-namespace \
+		--wait --debug \
+		--values k8s/.loki-values.yaml
+
+.PHONY: update-loki-url
+update-loki-url: do-update-kubectl
+	echo $$(kubectl get node -o json | jq '.items[0].metadata.annotations["alpha.kubernetes.io/provided-node-ip"]' | sed 's/"//g'):$$(kubectl get svc --namespace=loki loki -o json | jq '.spec.ports[0].nodePort') >loki.url
+
 .PHONY: install-grafana
-install-grafana: helm-repo-update update-prometheus-url
+install-grafana: helm-repo-update update-prometheus-url update-loki-url
 	helm upgrade --install grafana \
 		grafana/grafana \
 		--namespace grafana \
 		--create-namespace \
-		--wait \
+		--wait --debug \
 		--values k8s/grafana-values.yaml \
-		--set datasources."datasources\.yaml".datasources[0].url="http://$$(cat prometheus.url)"
+		--set datasources."datasources\.yaml".datasources[0].url="http://$$(cat prometheus.url)" \
+		--set datasources."datasources\.yaml".datasources[1].url="http://$$(cat loki.url)"
 	# to get the admin password: kubectl get secret --namespace grafana grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo
 
 .PHONY: update-grafana-url
-update-grafana-url: install-grafana
+update-grafana-url: do-update-kubectl
 	kubectl get svc grafana --namespace=grafana -o json | jq ".status.loadBalancer.ingress[0].hostname" | sed 's/"//g' >grafana.url

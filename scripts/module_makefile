@@ -191,7 +191,7 @@ arc-canary-monitoring: inventory/eks/canary_monitoring_cluster_name inventory/ek
 		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name | \
 		while read p ; do \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: install-aws-load-balancer-controller install-prometheus update-prometheus-url install-grafana update-grafana-url" ; \
+			echo "OPS: install-loki update-loki-url install-prometheus update-prometheus-url install-grafana update-grafana-url" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
 				ACCOUNT=$(ACCOUNT) \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
@@ -205,25 +205,24 @@ arc-canary-monitoring: inventory/eks/canary_monitoring_cluster_name inventory/ek
 				PROJECTTAG=gi-ci-canary \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
-				install-prometheus update-prometheus-url install-grafana update-grafana-url || exit 1 ; \
+				install-loki update-loki-url install-prometheus update-prometheus-url install-grafana update-grafana-url || exit 1 ; \
 			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p ; \
-			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
 			cp grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.url ; \
+			cp loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/loki.url ; \
+			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
 		done
 
 .PHONY: arc-canary
-arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
-	cd $(PROHOME)/modules/arc ; \
-		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_name | \
+arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_config inventory/eks/canary_monitoring_cluster_name inventory/eks/canary_monitoring_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
+	cd $(PROHOME)/modules/arc-monitoring ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name | \
 		while read p ; do \
-			if [ "$$CLUSTER_TARGET" != "" ] && [ "$$p" != "$$CLUSTER_TARGET" ] ; then \
-				echo "Skipping $$p - as CLUSTER_TARGET is defined as '$$CLUSTER_TARGET'" ; continue ; \
-			fi ; \
 			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources" ; \
+			echo "OPS: update-loki-url update-prometheus-url update-grafana-url" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				ACCOUNT=$(ACCOUNT) \
 				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
-				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_config \
 				EKS_ENVIRONMENT=canary \
 				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				GHA_ID=808166 \
@@ -233,7 +232,35 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				PROJECTTAG=gi-ci-canary \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
-				clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources || exit 1 ; \
+				update-loki-url update-prometheus-url update-grafana-url || exit 1 ; \
+			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p ; \
+			cp grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.url ; \
+			cp loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/loki.url ; \
+			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
+		done
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_name | \
+		while read p ; do \
+			if [ "$$CLUSTER_TARGET" != "" ] && [ "$$p" != "$$CLUSTER_TARGET" ] ; then \
+				echo "Skipping $$p - as CLUSTER_TARGET is defined as '$$CLUSTER_TARGET'" ; continue ; \
+			fi ; \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: install-grafana-scrappers clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_config \
+				EKS_ENVIRONMENT=canary \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
+				GHA_ID=808166 \
+				GHA_INST_ID=46578864 \
+				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
+				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name)/loki.url) \
+				MINRUNNERS=$(CANARY_MIN_RUNNERS) \
+				PROJECTTAG=gi-ci-canary \
+				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name)/prometheus.url) \
+				REGION=$(REGION) \
+				RUNNERSCOPE=pytorch-canary \
+				install-grafana-scrappers clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
 .PHONY: install-docker-registry-canary
