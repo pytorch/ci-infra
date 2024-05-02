@@ -84,4 +84,4 @@ update-grafana-url: do-update-kubectl
 
 .PHONY: update-grafana-password
 update-grafana-password: do-update-kubectl
-	kubectl get secret --namespace grafana grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo >grafana.password
+	kubectl get secret --namespace grafana grafana -o jsonpath="{.data.admin-password}" | base64 --decode >grafana.password
