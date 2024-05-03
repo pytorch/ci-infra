@@ -105,6 +105,7 @@ update-kubectl: do-update-kubectl add-eksctl-identity-mappings
 .PHONY: helm-repo-update
 helm-repo-update: update-kubectl
 	helm repo add docker-registry-mirror https://t83714.github.io/docker-registry-mirror
+	helm repo add grafana https://grafana.github.io/helm-charts
 	helm repo add nvdp https://nvidia.github.io/k8s-device-plugin
 	helm repo add twuni https://helm.twun.io
 	helm repo update
@@ -164,7 +165,7 @@ install-docker-registry: helm-repo-update create-docker-registry-tls-secret
 	helm upgrade --install docker-registry-mirror-docker-io docker-registry-mirror/docker-registry-mirror \
 		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
 		--create-namespace \
-		--wait \
+		--wait --debug \
 		--set service.type=ClusterIP \
 		--set service.port=5000 \
 		--set service.clusterIP=172.20.56.113 \
@@ -173,7 +174,7 @@ install-docker-registry: helm-repo-update create-docker-registry-tls-secret
 	helm upgrade --install docker-registry-mirror-ghcr-io docker-registry-mirror/docker-registry-mirror \
 		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
 		--create-namespace \
-		--wait \
+		--wait --debug \
 		--set proxy.remoteurl=https://ghcr.io \
 		--set proxy.username=pytorch \
 		--set proxy.password="$$PUSH_PACKAGE_DOCKER_GITHUB_TOKEN" \
@@ -185,7 +186,7 @@ install-docker-registry: helm-repo-update create-docker-registry-tls-secret
 	helm upgrade --install $(DOCKER_REGISTRY_INTERNAL_NAME) twuni/docker-registry \
 		--namespace=$(DOCKER_REGISTRY_NAMESPACE) \
 		--create-namespace \
-		--wait \
+		--wait --debug \
 		--set tlsSecretName=$(DOCKER_REGISTRY_TLS_SECRET_NAME) \
 		--set s3.region=$(REGION) \
 		--set s3.bucket=$(DOCKERREGISTRYBUCKET) \
@@ -213,7 +214,7 @@ install-arc: helm-repo-update create-gha-arc-secret
 		--set githubConfigSecret.github_app_installation_id="$(GHA_INST_ID)" \
 		--set githubConfigSecret.github_app_private_key="$$$(GHA_PRIVATE_KEY_VAR)" \
 		--set tolerations[0].key=$(ARC_SYS_TAINT),tolerations[0].operator="Exists",tolerations[0].effect=NoSchedule \
-		--wait
+		--wait --debug
 
 .PHONY: install-karpenter
 install-karpenter: helm-repo-update
@@ -325,4 +326,27 @@ setup-nvidia-device-plugin: helm-repo-update
 		--namespace $(NVIDIA_NAMESPACE) \
 		--create-namespace \
 		--values runnerscaleset/nvidia-device-plugin-values.yaml
-		--wait
+		--wait --debug
+
+.PHONY: install-grafana-scrappers
+install-grafana-scrappers: helm-repo-update
+	[ "$(LOKI_URL)" != "" ] || (echo "LOKI_URL not set"; exit 1)
+	[ "$(PROMETHEUS_URL)" != "" ] || (echo "PROMETHEUS_URL not set"; exit 1)
+	helm upgrade --install \
+		grafana-k8s-monitoring grafana/k8s-monitoring \
+		--set alloy-events.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy-events.controller.tolerations[0].operator="Exists",alloy-events.controller.tolerations[0].effect=NoSchedule \
+		--set alloy-logs.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy-logs.controller.tolerations[0].operator="Exists",alloy-logs.controller.tolerations[0].effect=NoSchedule \
+		--set alloy-profiles.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy-profiles.controller.tolerations[0].operator="Exists",alloy-profiles.controller.tolerations[0].effect=NoSchedule \
+		--set alloy.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy.controller.tolerations[0].operator="Exists",alloy.controller.tolerations[0].effect=NoSchedule \
+		--set alloy.tolerations[0].key=$(ARC_SYS_TAINT),alloy.tolerations[0].operator="Exists",alloy.tolerations[0].effect=NoSchedule \
+		--set cluster.name=$(EKS_CLUSTER_NAME) \
+		--set configAnalysis.tolerations[0].key=$(ARC_SYS_TAINT),configAnalysis.tolerations[0].operator="Exists",configAnalysis.tolerations[0].effect=NoSchedule \
+		--set configValidator.tolerations[0].key=$(ARC_SYS_TAINT),configValidator.tolerations[0].operator="Exists",configValidator.tolerations[0].effect=NoSchedule \
+		--set cost.enabled=false \
+		--set externalServices.loki.host="http://$(LOKI_URL)" \
+		--set externalServices.prometheus.host="http://$(PROMETHEUS_URL)" \
+		--set kube-state-metrics.tolerations[0].key=$(ARC_SYS_TAINT),kube-state-metrics.tolerations[0].operator="Exists",kube-state-metrics.tolerations[0].effect=NoSchedule \
+		--set opencost.enabled=false \
+		--set test.tolerations[0].key=$(ARC_SYS_TAINT),test.tolerations[0].operator="Exists",test.tolerations[0].effect=NoSchedule \
+		--set traces.enabled=false \
+		--wait --timeout 300s --debug

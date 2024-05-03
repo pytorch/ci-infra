@@ -1,0 +1,18 @@
+persistence:
+  storageClassName: gp2
+  enabled: true
+
+service:
+  type: LoadBalancer
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      access: proxy
+      isDefault: true
+    - name: Loki
+      type: loki
+      access: proxy

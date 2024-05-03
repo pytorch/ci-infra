@@ -158,3 +158,10 @@ To release the latest `main` branch to prod do the following:
 ## Project organization decision
 
 On the path starting with `aws/` everything that is considered critical and secret should be placed. The idea is that all the other paths could be OpenSourced and any config that is only specific for the cluster being deployed or the account being managed for the responsible team should be placed there. Eventually those configs should be broken into different repositories. Enabling collaborators to reuse the project in a modular approach.
+
+## Update/Upgrade/Deploy monitoring infra
+The monitoring infrastructure (except scrappers) is deployed in a separate cluster and is not integrated with the current Makefile targets nor is integrated in the rollout procedure. The reasoning is that it is assumed that there won't be required frequent updates in it and that deploying both in symultaneously can create problems of becoming blind right when monitoring is the most important for infra. So, to update, after communicating with everyone on slack, get a pair programming session with another person in the team and run:
+
+```
+$ cd aws/391835788720/us-east-1 && make clean && op run --env-file ../../../make.env -- make apply-arc-canary-monitoring arc-canary-monitoring apply-arc-prod-monitoring arc-prod-monitoring
+```
