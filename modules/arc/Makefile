@@ -335,8 +335,6 @@ install-grafana-scrappers: helm-repo-update
 	helm upgrade --install \
 		grafana-k8s-monitoring grafana/k8s-monitoring \
 		--set alloy-events.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy-events.controller.tolerations[0].operator="Exists",alloy-events.controller.tolerations[0].effect=NoSchedule \
-		--set alloy-events.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy-events.controller.tolerations[0].operator="Exists",alloy-events.controller.tolerations[0].effect=NoSchedule \
-		--set alloy-events.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy-events.controller.tolerations[0].operator="Exists",alloy-events.controller.tolerations[0].effect=NoSchedule \
 		--set alloy-logs.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy-logs.controller.tolerations[0].operator="Exists",alloy-logs.controller.tolerations[0].effect=NoSchedule \
 		--set alloy-profiles.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy-profiles.controller.tolerations[0].operator="Exists",alloy-profiles.controller.tolerations[0].effect=NoSchedule \
 		--set alloy.controller.tolerations[0].key=$(ARC_SYS_TAINT),alloy.controller.tolerations[0].operator="Exists",alloy.controller.tolerations[0].effect=NoSchedule \

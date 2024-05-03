@@ -8,6 +8,10 @@ LOKICHUNKSBUCKET := $(shell jq '.["loki_chunks_bucket"]' <"${CLUSTER_CONFIG_FILE
 LOKIRULERBUCKET := $(shell jq '.["loki_ruler_bucket"]' <"${CLUSTER_CONFIG_FILE}")
 LOKISECRETACCESSKEY := $(shell jq '.["loki_secret_access_key"]' <"${CLUSTER_CONFIG_FILE}")
 
+.PHONY: clean
+clean:
+	rm -rf ./artifacts
+
 .PHONY: add-eksctl-identity-mappings
 add-eksctl-identity-mappings:
 	[ "$(EKS_USERS_PATH)" != "" ] || (echo "EKS_USERS_PATH not set"; exit 1)
@@ -44,7 +48,8 @@ install-prometheus: helm-repo-update
 
 .PHONY: update-prometheus-url
 update-prometheus-url: do-update-kubectl
-	echo $$(kubectl get node -o json | jq '.items[0].metadata.annotations["alpha.kubernetes.io/provided-node-ip"]' | sed 's/"//g'):$$(kubectl get svc prometheus-server --namespace=prometheus -o json | jq '.spec.ports[0].nodePort') >prometheus.url
+	mkdir -p artifacts
+	echo $$(kubectl get node -o json | jq '.items[0].metadata.annotations["alpha.kubernetes.io/provided-node-ip"]' | sed 's/"//g'):$$(kubectl get svc prometheus-server --namespace=prometheus -o json | jq '.spec.ports[0].nodePort') >artifacts/prometheus.url
 
 .PHONY: install-loki
 install-loki: helm-repo-update
@@ -65,7 +70,8 @@ install-loki: helm-repo-update
 
 .PHONY: update-loki-url
 update-loki-url: do-update-kubectl
-	echo $$(kubectl get node -o json | jq '.items[0].metadata.annotations["alpha.kubernetes.io/provided-node-ip"]' | sed 's/"//g'):$$(kubectl get svc --namespace=loki loki -o json | jq '.spec.ports[0].nodePort') >loki.url
+	mkdir -p artifacts
+	echo $$(kubectl get node -o json | jq '.items[0].metadata.annotations["alpha.kubernetes.io/provided-node-ip"]' | sed 's/"//g'):$$(kubectl get svc --namespace=loki loki -o json | jq '.spec.ports[0].nodePort') >artifacts/loki.url
 
 .PHONY: install-grafana
 install-grafana: helm-repo-update update-prometheus-url update-loki-url
@@ -75,13 +81,15 @@ install-grafana: helm-repo-update update-prometheus-url update-loki-url
 		--create-namespace \
 		--wait --debug \
 		--values k8s/grafana-values.yaml \
-		--set datasources."datasources\.yaml".datasources[0].url="http://$$(cat prometheus.url)" \
-		--set datasources."datasources\.yaml".datasources[1].url="http://$$(cat loki.url)"
+		--set datasources."datasources\.yaml".datasources[0].url="http://$$(cat artifacts/prometheus.url)" \
+		--set datasources."datasources\.yaml".datasources[1].url="http://$$(cat artifacts/loki.url)"
 
 .PHONY: update-grafana-url
 update-grafana-url: do-update-kubectl
-	kubectl get svc grafana --namespace=grafana -o json | jq ".status.loadBalancer.ingress[0].hostname" | sed 's/"//g' >grafana.url
+	mkdir -p artifacts
+	kubectl get svc grafana --namespace=grafana -o json | jq ".status.loadBalancer.ingress[0].hostname" | sed 's/"//g' >artifacts/grafana.url
 
 .PHONY: update-grafana-password
 update-grafana-password: do-update-kubectl
-	kubectl get secret --namespace grafana grafana -o jsonpath="{.data.admin-password}" | base64 --decode >grafana.password
+	mkdir -p artifacts
+	kubectl get secret --namespace grafana grafana -o jsonpath="{.data.admin-password}" | base64 --decode >artifacts/grafana.password

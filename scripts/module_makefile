@@ -206,11 +206,11 @@ arc-canary-monitoring: inventory/eks/canary_monitoring_cluster_name inventory/ek
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				install-loki update-loki-url install-prometheus update-prometheus-url install-grafana update-grafana-url update-grafana-password || exit 1 ; \
-			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p ; \
-			cp grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.url ; \
-			cp loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/loki.url ; \
-			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
-			cp grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.password ; \
+			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts ; \
+			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
+			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
+			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 
 .PHONY: arc-canary
@@ -234,11 +234,11 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				update-loki-url update-prometheus-url update-grafana-url update-grafana-password || exit 1 ; \
-			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p ; \
-			cp grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.url ; \
-			cp loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/loki.url ; \
-			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
-			cp grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.password ; \
+			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts ; \
+			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
+			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
+			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 	cd $(PROHOME)/modules/arc ; \
 		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_name | \
@@ -256,10 +256,10 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 				GHA_ID=808166 \
 				GHA_INST_ID=46578864 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
-				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name)/loki.url) \
+				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name)/artifacts/loki.url) \
 				MINRUNNERS=$(CANARY_MIN_RUNNERS) \
 				PROJECTTAG=gi-ci-canary \
-				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name)/prometheus.url) \
+				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_monitoring_cluster_name)/artifacts/prometheus.url) \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-canary \
 				install-grafana-scrappers clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources || exit 1 ; \
@@ -360,11 +360,11 @@ arc-vanguard: inventory/eks/prod_monitoring_cluster_name inventory/eks/prod_moni
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-prod \
 				update-loki-url update-prometheus-url update-grafana-url update-grafana-password || exit 1 ; \
-			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p ; \
-			cp grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.url ; \
-			cp loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/loki.url ; \
-			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
-			cp grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.password ; \
+			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts ; \
+			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
+			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
+			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 	cd $(PROHOME)/modules/arc ; \
 		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_name | \
@@ -382,11 +382,11 @@ arc-vanguard: inventory/eks/prod_monitoring_cluster_name inventory/eks/prod_moni
 				GHA_ID=343735 \
 				GHA_INST_ID=38323217 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
-				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/loki.url) \
+				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/loki.url) \
 				MAXRUNNERS=30 \
 				MINRUNNERS=30 \
 				PROJECTTAG=gi-ci-vanguard \
-				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/prometheus.url) \
+				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/prometheus.url) \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-org \
 				install-grafana-scrappers clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources || exit 1 ; \
@@ -440,11 +440,11 @@ arc-prod-monitoring: inventory/eks/prod_monitoring_cluster_name inventory/eks/pr
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-prod \
 				install-loki update-loki-url install-prometheus update-prometheus-url install-grafana update-grafana-url update-grafana-password || exit 1 ; \
-			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p ; \
-			cp grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.url ; \
-			cp loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/loki.url ; \
-			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
-			cp grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.password ; \
+			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts ; \
+			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
+			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
+			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 
 .PHONY: arc-prod
@@ -463,18 +463,18 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config inve
 				GHA_ID=808166 \
 				GHA_INST_ID=46578864 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
-				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/loki.url) \
+				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/loki.url) \
 				MINRUNNERS=$(CANARY_MIN_RUNNERS) \
 				PROJECTTAG=gi-ci-prod \
-				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/prometheus.url) \
+				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/prometheus.url) \
 				REGION=$(REGION) \
 				RUNNERSCOPE=pytorch-prod \
 				update-loki-url update-prometheus-url update-grafana-url update-grafana-password || exit 1 ; \
-			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p ; \
-			cp grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.url ; \
-			cp loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/loki.url ; \
-			cp prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/prometheus.url ; \
-			cp grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/grafana.password ; \
+			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts ; \
+			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
+			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
+			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 	cd $(PROHOME)/modules/arc ; \
 		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_name | \
