@@ -246,9 +246,14 @@ def wait_check_user_comment(gh: Github, opts: argparse.Namespace) -> None:
     time_limit = datetime.datetime.now() + datetime.timedelta(minutes=15)
     while not found_coment and time_limit > datetime.datetime.now():
         for comment in pull.get_issue_comments():
-            if comment.body.strip() == opts.comment.strip() and comment.user.type.lower() != 'bot' and comment.get_reactions().totalCount != 0:
-                found_coment = True
-                break
+            if comment.user.type.lower() == 'bot':
+                continue
+            if comment.body.strip() != opts.comment.strip():
+                continue
+            if comment.get_reactions().totalCount != 0:
+                continue
+            found_coment = True
+            break
 
         if not found_coment:
             time.sleep(30)

@@ -1,0 +1,20 @@
+alertmanager:
+  enabled: false
+
+server:
+  persistentVolume:
+    storageClass: "gp2"
+  service:
+    type: NodePort
+
+alertmanagerFiles:
+  alertmanager.yml: ""
+
+kubeStateMetrics:
+  enabled: false
+
+nodeExporter:
+  enabled: false
+
+pushgateway:
+  enabled: false

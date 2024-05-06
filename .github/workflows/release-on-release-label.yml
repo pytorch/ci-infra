@@ -67,7 +67,7 @@ jobs:
 
     - name: Terraform Apply / ARC canary (apply-arc-canary arc-canary)
       shell: bash
-      run: make apply-arc-canary arc-canary
+      run: make apply-arc-canary-monitoring apply-arc-canary arc-canary-monitoring arc-canary
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
         DOCKER_REGISTRY_PASSWORDS: ${{ secrets.DOCKER_REGISTRY_PASSWORDS }}
