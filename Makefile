@@ -65,6 +65,34 @@ apply-arc-canary:
 		popd ; \
 	done
 
+.PHONY: apply-arc-canary-monitoring
+apply-arc-canary-monitoring:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== START make apply-arc-canary-monitoring: aws/$$account/$$region ============================================" ; \
+			$(MAKE) apply-arc-canary-monitoring || exit 1 ; \
+			echo "==== END make apply-arc-canary-monitoring: aws/$$account/$$region ============================================" ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: arc-canary-monitoring
+arc-canary-monitoring:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== START make apply-arc-canary: aws/$$account/$$region ============================================" ; \
+			$(MAKE) arc-canary-monitoring || exit 1 ; \
+			echo "==== END make apply-arc-canary: aws/$$account/$$region ============================================" ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
 .PHONY: apply-arc-vanguard
 apply-arc-vanguard:
 	cd aws ; for account in ./*/ ; do \
