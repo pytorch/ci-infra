@@ -85,9 +85,9 @@ arc-canary-monitoring:
 		pushd $$account ; \
 		for region in ./*/ ; do \
 			pushd $$region ; \
-			echo "==== START make apply-arc-canary: aws/$$account/$$region ============================================" ; \
+			echo "==== START make arc-canary-monitoring: aws/$$account/$$region ============================================" ; \
 			$(MAKE) arc-canary-monitoring || exit 1 ; \
-			echo "==== END make apply-arc-canary: aws/$$account/$$region ============================================" ; \
+			echo "==== END make arc-canary-monitoring: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
 		popd ; \
