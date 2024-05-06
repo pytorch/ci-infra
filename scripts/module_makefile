@@ -482,16 +482,18 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config inve
 			echo "==== Cluster $$p ============================================" ; \
 			echo "OPS: install-grafana-scrappers clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources" ; \
 			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
+				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_config \
+				EKS_ENVIRONMENT=prod \
+				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
 				GHA_ID=343735 \
 				GHA_INST_ID=38323217 \
 				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY \
-				EKS_ENVIRONMENT=prod \
-				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
+				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/loki.url) \
 				PROJECTTAG=gi-ci-prod \
-				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_config \
-				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
-				RUNNERSCOPE=pytorch-org \
+				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/prometheus.url) \
 				REGION=$(REGION) \
+				RUNNERSCOPE=pytorch-org \
 				install-grafana-scrappers clean-k8s-rds-state install-arc install-karpenter install-docker-registry setup-karpenter-autoscaler setup-nvidia-device-plugin k8s-runner-scaler delete-stale-resources || exit 1 ; \
 		done
 
