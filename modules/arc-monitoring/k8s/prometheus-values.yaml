@@ -6,15 +6,21 @@ server:
     storageClass: "gp2"
   service:
     type: NodePort
+  retention: "365d"
+  extraFlags:
+    - "web.enable-remote-write-receiver"
 
 alertmanagerFiles:
   alertmanager.yml: ""
 
-kubeStateMetrics:
+kube-state-metrics:
   enabled: false
 
-nodeExporter:
+prometheus-node-exporter:
   enabled: false
 
-pushgateway:
-  enabled: false
+prometheus-pushgateway:
+  enabled: true
+  service:
+    type: NodePort
+
