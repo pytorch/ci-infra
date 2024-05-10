@@ -80,6 +80,11 @@ template:
       args:
         - dockerd
         - --host=unix:///run/docker/docker.sock
+      resources:
+        limits:
+          cpu: $(CPU)
+          memory: $(MEMORY)
+          $(NVIDIA_GPU)
       securityContext:
         privileged: true
         runAsUser: 1000
