@@ -177,6 +177,20 @@ arc-prod:
 		popd ; \
 	done
 
+.PHONY: k8s-delete-stuck-resources
+k8s-delete-stuck-resources:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== START make k8s-delete-stuck-resources: aws/$$account/$$region ============================================" ; \
+			$(MAKE) k8s-delete-stuck-resources || exit 1 ; \
+			echo "==== END make k8s-delete-stuck-resources: aws/$$account/$$region ============================================" ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
 venv/bin/pip:
 	virtualenv venv
 	venv/bin/pip install -r requirements.txt
