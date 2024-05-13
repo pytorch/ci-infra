@@ -50,3 +50,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        NO_EKSCTL: 'true'
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
+        EKS_USERS: ${{ secrets.EKS_USERS }}
