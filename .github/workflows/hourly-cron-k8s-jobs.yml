@@ -3,6 +3,7 @@ name: Hourly Cron Kubernetes Jobs
 on:
   schedule:
     - cron: '53 * * * *'
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}
