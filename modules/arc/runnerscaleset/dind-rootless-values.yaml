@@ -84,7 +84,9 @@ template:
         limits:
           cpu: $(CPU)
           memory: $(MEMORY)
-          $(NVIDIA_GPU)
+        requests: # Set some tiny request. The actual usage will be bould be the limits value
+          cpu: 0.1
+          memory: 10Mi
       securityContext:
         privileged: true
         runAsUser: 1000
