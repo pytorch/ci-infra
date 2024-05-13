@@ -350,3 +350,19 @@ install-grafana-scrappers: helm-repo-update
 		--set test.tolerations[0].key=$(ARC_SYS_TAINT),test.tolerations[0].operator="Exists",test.tolerations[0].effect=NoSchedule \
 		--set traces.enabled=false \
 		--wait --timeout 300s --debug
+
+
+# This is required, as failed ephemeral runners, even when not created, count towards the total number of runners both for quota (max) and for the numeb of runners
+# so arc won't create them, but they will never go live, ever.
+.PHONY: delete-stuck-ephemeral-runners
+delete-stuck-ephemeral-runners: do-update-kubectl
+	if kubectl get ephemeralrunners --namespace=actions-runners | grep Failed ; then \
+		kubectl delete ephemeralrunners --namespace=actions-runners $$(kubectl get ephemeralrunners --namespace=actions-runners | grep Failed | cut -d ' ' -f 1) ; \
+	fi
+
+# This is required, as nodes that aws-node pods are stuck on, will never be deleted by karpenter, so we need to delete them manually
+.PHONY: delete-stuck-aws-node-pods
+delete-stuck-aws-node-pods: do-update-kubectl
+	if kubectl get pods -n kube-system -l k8s-app=aws-node -o wide | grep 'Init:' ; then \
+		kubectl delete pod -n kube-system $$(kubectl get pods -n kube-system -l k8s-app=aws-node -o wide | grep 'Init:' | cut -d ' ' -f 1) ; \
+	fi

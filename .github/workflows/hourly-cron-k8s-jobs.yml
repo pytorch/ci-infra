@@ -1,0 +1,54 @@
+name: Hourly Cron Kubernetes Jobs
+
+on:
+  schedule:
+    - cron: '53 * * * *'
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  k8s-delete-stuck-resources:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v4
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.7
+        terraform_wrapper: false
+
+    - name: Install virtualenv
+      run: pip install virtualenv
+
+    - name: Install AWS CLI
+      uses: unfor19/install-aws-cli-action@v1
+      with:
+        arch: amd64
+
+    - name: Install Kubectl
+      uses: azure/setup-kubectl@v1
+      with:
+        version: latest
+
+    - name: configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        role-to-assume:  arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
+        aws-region: us-east-1
+
+    - name: Make k8s-delete-stuck-resources
+      shell: bash
+      run: make k8s-delete-stuck-resources
+      env:
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        NO_EKSCTL: 'true'
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
