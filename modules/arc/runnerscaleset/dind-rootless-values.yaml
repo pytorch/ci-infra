@@ -85,6 +85,13 @@ template:
       args:
         - dockerd
         - --host=unix:///run/docker/docker.sock
+      resources:
+        limits:
+          cpu: $(CPU)
+          memory: $(MEMORY)
+        requests: # Set some tiny request. The actual usage will be bould be the limits value
+          cpu: 100m
+          memory: 10Mi
       securityContext:
         privileged: true
         runAsUser: 1000
