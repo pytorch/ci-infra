@@ -353,7 +353,6 @@ install-grafana-scrappers: helm-repo-update
 		--set traces.enabled=false \
 		--wait --timeout 300s --debug
 
-
 # This is required, as failed ephemeral runners, even when not created, count towards the total number of runners both for quota (max) and for the numeb of runners
 # so arc won't create them, but they will never go live, ever.
 .PHONY: delete-stuck-ephemeral-runners
