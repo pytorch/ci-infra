@@ -20,6 +20,7 @@ template:
     containers:
     - name: runner
       image: ghcr.io/pytorch/arc-runner-pytorch:$(LATESTRUNNERIMG)
+      imagePullPolicy: Always
       command: ["/home/runner/run.sh"]
       env:
       - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER

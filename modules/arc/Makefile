@@ -342,17 +342,13 @@ install-grafana-scrappers: helm-repo-update
 		--set cluster.name=$(EKS_CLUSTER_NAME) \
 		--set configAnalysis.tolerations[0].key=$(ARC_SYS_TAINT),configAnalysis.tolerations[0].operator="Exists",configAnalysis.tolerations[0].effect=NoSchedule \
 		--set configValidator.tolerations[0].key=$(ARC_SYS_TAINT),configValidator.tolerations[0].operator="Exists",configValidator.tolerations[0].effect=NoSchedule \
-		--set cost.enabled=false \
 		--set externalServices.loki.host="http://$(LOKI_URL)" \
 		--set externalServices.prometheus.host="http://$(PROMETHEUS_URL)" \
 		--set externalServices.prometheus.queryEndpoint="/api/v1/query" \
 		--set externalServices.prometheus.writeEndpoint="/api/v1/write" \
 		--set kube-state-metrics.tolerations[0].key=$(ARC_SYS_TAINT),kube-state-metrics.tolerations[0].operator="Exists",kube-state-metrics.tolerations[0].effect=NoSchedule \
-		--set opencost.enabled=false \
 		--set test.tolerations[0].key=$(ARC_SYS_TAINT),test.tolerations[0].operator="Exists",test.tolerations[0].effect=NoSchedule \
-		--set traces.enabled=false \
 		--wait --timeout 300s --debug
-
 
 # This is required, as failed ephemeral runners, even when not created, count towards the total number of runners both for quota (max) and for the numeb of runners
 # so arc won't create them, but they will never go live, ever.

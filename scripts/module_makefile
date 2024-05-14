@@ -453,34 +453,34 @@ arc-prod-monitoring: inventory/eks/prod_monitoring_cluster_name inventory/eks/pr
 
 .PHONY: arc-prod
 arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config inventory/eks/prod_monitoring_cluster_name inventory/eks/prod_monitoring_cluster_config $(PROHOME)/venv/bin/pip ARC_NODE_CONFIG.yaml ARC_RUNNER_CONFIG.yaml
-	cd $(PROHOME)/modules/arc-monitoring ; \
-		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name | \
-		while read p ; do \
-			echo "==== Cluster $$p ============================================" ; \
-			echo "OPS: update-loki-url update-prometheus-url update-grafana-url update-grafana-password" ; \
-			$(MAKE) EKS_CLUSTER_NAME=$$p \
-				ACCOUNT=$(ACCOUNT) \
-				ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
-				CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_config \
-				EKS_ENVIRONMENT=prod \
-				EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
-				GHA_ID=808166 \
-				GHA_INST_ID=46578864 \
-				GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
-				LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/loki.url) \
-				MINRUNNERS=$(CANARY_MIN_RUNNERS) \
-				PROJECTTAG=gi-ci-prod \
-				PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/prometheus.url) \
-				REGION=$(REGION) \
-				RUNNERSCOPE=pytorch-prod \
-				update-loki-url update-prometheus-url update-grafana-url update-grafana-password || exit 1 ; \
-			mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts ; \
-			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
-			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
-			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
-			cp artifacts/prometheus-pushgateway.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus-pushgateway.url ; \
-			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
-		done
+	# cd $(PROHOME)/modules/arc-monitoring ; \
+	# 	cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name | \
+	# 	while read p ; do \
+	# 		echo "==== Cluster $$p ============================================" ; \
+	# 		echo "OPS: update-loki-url update-prometheus-url update-grafana-url update-grafana-password" ; \
+	# 		$(MAKE) EKS_CLUSTER_NAME=$$p \
+	# 			ACCOUNT=$(ACCOUNT) \
+	# 			ARC_CFG_FILE_FOLDER=$(PROHOME)/aws/$(ACCOUNT)/$(REGION) \
+	# 			CLUSTER_CONFIG_FILE=$(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_config \
+	# 			EKS_ENVIRONMENT=prod \
+	# 			EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users \
+	# 			GHA_ID=808166 \
+	# 			GHA_INST_ID=46578864 \
+	# 			GHA_PRIVATE_KEY_VAR=GHA_PRIVATE_KEY_CANARY \
+	# 			LOKI_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/loki.url) \
+	# 			MINRUNNERS=$(CANARY_MIN_RUNNERS) \
+	# 			PROJECTTAG=gi-ci-prod \
+	# 			PROMETHEUS_URL=$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$(cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_monitoring_cluster_name)/artifacts/prometheus.url) \
+	# 			REGION=$(REGION) \
+	# 			RUNNERSCOPE=pytorch-prod \
+	# 			update-loki-url update-prometheus-url update-grafana-url update-grafana-password || exit 1 ; \
+	# 		mkdir -p $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts ; \
+	# 		cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
+	# 		cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
+	# 		cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+	# 		cp artifacts/prometheus-pushgateway.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus-pushgateway.url ; \
+	# 		cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
+	# 	done
 	cd $(PROHOME)/modules/arc ; \
 		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_name | \
 		while read p ; do \
