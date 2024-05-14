@@ -1,0 +1,32 @@
+name: Update the arc-runner and arc-dind docker images
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  update-arc-docker-images:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Build and push arc-dind
+        env:
+          PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
+        working-directory: docker/arc-dind
+        run: |
+          make arc-dind
+
+      - name: Build and push arc-runner
+        env:
+          PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
+        working-directory: docker/arc-runner
+        run: |
+          make arc-runner
