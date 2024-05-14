@@ -250,7 +250,7 @@ def wait_check_user_comment(gh: Github, opts: argparse.Namespace) -> None:
                 continue
             if comment.body.strip() != opts.comment.strip():
                 continue
-            if comment.get_reactions().totalCount != 0:
+            if comment.get_reactions().totalCount == 0:
                 continue
             found_coment = True
             break

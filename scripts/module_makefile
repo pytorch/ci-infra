@@ -210,6 +210,7 @@ arc-canary-monitoring: inventory/eks/canary_monitoring_cluster_name inventory/ek
 			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
 			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
 			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/prometheus-pushgateway.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus-pushgateway.url ; \
 			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 
@@ -238,6 +239,7 @@ arc-canary: inventory/eks/canary_cluster_name inventory/eks/canary_cluster_confi
 			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
 			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
 			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/prometheus-pushgateway.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus-pushgateway.url ; \
 			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 	cd $(PROHOME)/modules/arc ; \
@@ -364,6 +366,7 @@ arc-vanguard: inventory/eks/prod_monitoring_cluster_name inventory/eks/prod_moni
 			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
 			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
 			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/prometheus-pushgateway.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus-pushgateway.url ; \
 			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 	cd $(PROHOME)/modules/arc ; \
@@ -444,6 +447,7 @@ arc-prod-monitoring: inventory/eks/prod_monitoring_cluster_name inventory/eks/pr
 			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
 			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
 			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/prometheus-pushgateway.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus-pushgateway.url ; \
 			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 
@@ -474,6 +478,7 @@ arc-prod: inventory/eks/prod_cluster_name inventory/eks/prod_cluster_config inve
 			cp artifacts/grafana.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.url ; \
 			cp artifacts/loki.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/loki.url ; \
 			cp artifacts/prometheus.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus.url ; \
+			cp artifacts/prometheus-pushgateway.url $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/prometheus-pushgateway.url ; \
 			cp artifacts/grafana.password $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/entry/$$p/artifacts/grafana.password ; \
 		done
 	cd $(PROHOME)/modules/arc ; \
@@ -504,3 +509,30 @@ eks-use-cluster:
 		exit 1; \
 	fi
 	cd $(PROHOME)/modules/arc ; $(MAKE) EKS_USERS_PATH=$(PROHOME)/aws/$(ACCOUNT)/eks_users EKS_CLUSTER_NAME=$(CLUSTER_TARGET) update-kubectl
+
+.PHONY: k8s-delete-stuck-resources
+k8s-delete-stuck-resources: inventory/eks/prod_cluster_name inventory/eks/vanguard_cluster_name inventory/eks/canary_cluster_name
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/canary_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: delete-stuck-ephemeral-runners delete-stuck-aws-node-pods" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				delete-stuck-ephemeral-runners delete-stuck-aws-node-pods || exit 1 ; \
+			done
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/vanguard_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: delete-stuck-ephemeral-runners delete-stuck-aws-node-pods" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				delete-stuck-ephemeral-runners delete-stuck-aws-node-pods || exit 1 ; \
+			done
+	cd $(PROHOME)/modules/arc ; \
+		cat $(PROHOME)/aws/$(ACCOUNT)/$(REGION)/inventory/eks/prod_cluster_name | \
+		while read p ; do \
+			echo "==== Cluster $$p ============================================" ; \
+			echo "OPS: delete-stuck-ephemeral-runners delete-stuck-aws-node-pods" ; \
+			$(MAKE) EKS_CLUSTER_NAME=$$p \
+				delete-stuck-ephemeral-runners delete-stuck-aws-node-pods || exit 1 ; \
+			done

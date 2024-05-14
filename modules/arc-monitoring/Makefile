@@ -50,6 +50,7 @@ install-prometheus: helm-repo-update
 update-prometheus-url: do-update-kubectl
 	mkdir -p artifacts
 	echo $$(kubectl get node -o json | jq '.items[0].metadata.annotations["alpha.kubernetes.io/provided-node-ip"]' | sed 's/"//g'):$$(kubectl get svc prometheus-server --namespace=prometheus -o json | jq '.spec.ports[0].nodePort') >artifacts/prometheus.url
+	echo $$(kubectl get node -o json | jq '.items[0].metadata.annotations["alpha.kubernetes.io/provided-node-ip"]' | sed 's/"//g'):$$(kubectl get svc prometheus-prometheus-pushgateway --namespace=prometheus -o json | jq '.spec.ports[0].nodePort') >artifacts/prometheus-pushgateway.url
 
 .PHONY: install-loki
 install-loki: helm-repo-update

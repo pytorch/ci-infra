@@ -6,6 +6,7 @@ module "eks" {
   cluster_version = "1.29"
 
   cluster_endpoint_public_access  = true
+  create_node_security_group      = true
 
   cluster_security_group_additional_rules = {
     ingress = {
@@ -17,6 +18,24 @@ module "eks" {
       cidr_blocks                = var.eks_cidr_blocks
       ipv6_cidr_blocks           = []
       source_node_security_group = false
+    }
+  }
+  node_security_group_additional_rules = {
+    ingress_self_all = {
+      description = "Node to node all ports/protocols"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 65535
+      type        = "ingress"
+      cidr_blocks      = ["0.0.0.0/0"]
+    }
+    egress_all = {
+      description      = "Allow all egress"
+      protocol         = "-1"
+      from_port        = 0
+      to_port          = 65535
+      type             = "egress"
+      cidr_blocks      = ["0.0.0.0/0"]
     }
   }
 
