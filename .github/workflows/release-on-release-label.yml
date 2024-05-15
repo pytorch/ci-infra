@@ -16,26 +16,6 @@ permissions:
   contents: read
 
 jobs:
-  update-arc-docker-images:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout branch
-        uses: actions/checkout@v4
-
-      - name: Build and push arc-dind
-        env:
-          PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
-        working-directory: docker/arc-dind
-        run: |
-          make arc-dind
-
-      - name: Build and push arc-runner
-        env:
-          PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
-        working-directory: docker/arc-runner
-        run: |
-          make arc-runner
-
   deploy-to-canary:
     if: ${{ github.event.label.name == 'deploy-to-canary' }}
     name: Deploy to Canary
@@ -84,6 +64,22 @@ jobs:
         GITHUB_APP_ID: ${{ secrets.RELEASE_APP_ID }}
         GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
         GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Build and push arc-dind
+      shell: bash
+      env:
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
+      working-directory: docker/arc-dind
+      run: |
+        make arc-dind
+
+    - name: Build and push arc-runner
+      shell: bash
+      env:
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
+      working-directory: docker/arc-runner
+      run: |
+        make arc-runner
 
     - name: Terraform Apply / ARC canary (apply-arc-canary arc-canary)
       shell: bash
