@@ -65,6 +65,22 @@ jobs:
         GITHUB_APP_INSTALLATION_ID: ${{ secrets.RELEASE_APP_INSTALLATION_ID }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
+    - name: Build and push arc-dind
+      shell: bash
+      env:
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
+      working-directory: docker/arc-dind
+      run: |
+        make arc-dind
+
+    - name: Build and push arc-runner
+      shell: bash
+      env:
+        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
+      working-directory: docker/arc-runner
+      run: |
+        make arc-runner
+
     - name: Terraform Apply / ARC canary (apply-arc-canary arc-canary)
       shell: bash
       run: make apply-arc-canary-monitoring apply-arc-canary arc-canary-monitoring arc-canary
