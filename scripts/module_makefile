@@ -92,9 +92,17 @@ backend-state.tf: dyn_locals.tf external_k8s_cidr_ipv4.tf
 plan: .terraform/modules/modules.json
 	terraform plan $(TERRAFORM_EXTRAS)
 
+.PHONY: plan-ali
+plan-ali: .terraform/modules/modules.json
+	terraform plan $(TERRAFORM_EXTRAS) --target=module.autoscaler-lambda
+
 .PHONY: apply
 apply: .terraform/modules/modules.json
 	terraform apply ${TERRAFORM_EXTRAS}
+
+.PHONY: apply-ali
+apply-ali: .terraform/modules/modules.json
+	terraform apply ${TERRAFORM_EXTRAS} --target=module.autoscaler-lambda
 
 .PHONY: apply-arc-canary
 apply-arc-canary: .terraform/modules/modules.json

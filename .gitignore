@@ -25,8 +25,8 @@ aws/*/eks_users
 crash.log
 modules/arc/.helm-pkg-state
 modules/arc/.k8s-rds-state
-modules/arc/.latest-arc-runner-pytorch
 modules/arc/.latest-arc-dind-pytorch
+modules/arc/.latest-arc-runner-pytorch
 modules/arc/.terraform.lock.hcl
 modules/arc/.terraform/
 modules/arc/tls/

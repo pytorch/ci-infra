@@ -6,9 +6,9 @@ module "arc_canary_monitoring" {
     aws_account_id = local.aws_account_id
     aws_vpc_suffix = "I"
     eks_cidr_blocks = local.external_k8s_cidr_ipv4
-    environment = var.canary_environment
-    subnet_ids = module.runners_canary_vpc["I"].private_subnets
-    vpc_id = module.runners_canary_vpc["I"].vpc_id
+    environment = var.arc_canary_environment
+    subnet_ids = module.arc_runners_canary_vpc["I"].private_subnets
+    vpc_id = module.arc_runners_canary_vpc["I"].vpc_id
 }
 
 module "arc_prod_monitoring" {
@@ -19,7 +19,7 @@ module "arc_prod_monitoring" {
     aws_account_id = local.aws_account_id
     aws_vpc_suffix = "I"
     eks_cidr_blocks = local.external_k8s_cidr_ipv4
-    environment = var.prod_environment
-    subnet_ids = module.runners_vpc["I"].private_subnets
-    vpc_id = module.runners_vpc["I"].vpc_id
+    environment = var.arc_prod_environment
+    subnet_ids = module.arc_runners_vpc["I"].private_subnets
+    vpc_id = module.arc_runners_vpc["I"].vpc_id
 }
