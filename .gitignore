@@ -8,7 +8,6 @@ __pycache__/
 *.tfstate
 *.tfstate.*
 *.tfvars
-*.zip
 **/.terraform/*
 **/.venv/
 **/tf-modules/
