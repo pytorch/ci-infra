@@ -1,5 +1,4 @@
 __pycache__/
-tf-modules/
 .account-checked
 .DS_Store
 .idea/
@@ -22,6 +21,10 @@ aws/*/*/external_k8s_cidr_ipv4.tf
 aws/*/*/inventory/
 aws/*/eks_users
 crash.log
+lambdas-download-canary/runners.zip
+lambdas-download-canary/webhook.zip
+lambdas-download/runners.zip
+lambdas-download/webhook.zip
 modules/arc/.helm-pkg-state
 modules/arc/.k8s-rds-state
 modules/arc/.latest-arc-dind-pytorch
@@ -30,3 +33,4 @@ modules/arc/.terraform.lock.hcl
 modules/arc/.terraform/
 modules/arc/tls/
 terraform.rc
+tf-modules/
