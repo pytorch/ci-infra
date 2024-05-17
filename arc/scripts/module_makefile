@@ -11,7 +11,9 @@ export AWS_PROFILE := $(ACCOUNT)
 endif
 
 .PHONY: all
-all: k8s-runner-scaler
+all:
+	echo "Please specify a target"
+	exit 1
 
 .PHONY: venv
 venv: $(PROHOME)/venv/bin/pip
@@ -91,10 +93,6 @@ backend-state.tf: dyn_locals.tf external_k8s_cidr_ipv4.tf
 .PHONY: plan
 plan: .terraform/modules/modules.json
 	terraform plan $(TERRAFORM_EXTRAS)
-
-.PHONY: plan-ali
-plan-ali: .terraform/modules/modules.json
-	terraform plan $(TERRAFORM_EXTRAS) --target=module.autoscaler-lambda
 
 .PHONY: apply
 apply: .terraform/modules/modules.json

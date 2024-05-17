@@ -1,13 +1,3 @@
 terraform-aws-vpc:
   source: "jeanschmidt/terraform-aws-vpc"
   rev: "8fdd56aa6467a28471f696e5fb0c4174de2c1367"
-terraform-aws-github-runner:
-  source: "pytorch/test-infra"
-  module-root: "terraform-aws-github-runner"
-  tag: "v20230821-122750"
-  assets:
-    - "runners.zip"
-    - "webhook.zip"
-  asset-folders:
-    - lambdas-download
-    - lambdas-download-canary
