@@ -43,7 +43,6 @@ clean:
 	$(RM) dyn_locals.tf
 	$(RM) external_k8s_cidr_ipv4.tf
 	$(RM) terraform.tfstate
-	cd $(PROHOME)/modules/arc && make clean
 	cd $(PROHOME)/ && make clean
 
 .PHONY: backend-state
