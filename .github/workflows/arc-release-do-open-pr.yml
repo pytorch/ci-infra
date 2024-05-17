@@ -26,6 +26,7 @@ jobs:
 
     - name: Open PR
       shell: bash
+      working-directory: arc
       run: make open-rel-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

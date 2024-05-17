@@ -58,6 +58,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Starting to deploy to canary, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -67,22 +68,23 @@ jobs:
 
     - name: Build and push arc-dind
       shell: bash
+      working-directory: arc/docker/arc-dind
       env:
         PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
-      working-directory: docker/arc-dind
       run: |
         make arc-dind
 
     - name: Build and push arc-runner
       shell: bash
+      working-directory: arc/docker/arc-runner
       env:
         PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
-      working-directory: docker/arc-runner
       run: |
         make arc-runner
 
     - name: Terraform Apply / ARC canary (apply-arc-canary arc-canary)
       shell: bash
+      working-directory: arc
       run: make apply-arc-canary-monitoring apply-arc-canary arc-canary-monitoring arc-canary
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
@@ -98,6 +100,7 @@ jobs:
 
     - name: Notify job success
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Successfully deployed to canary, add a comment with PROCEED_TO_VANGUARD in order to proceed deploying to vanguard, or close this PR in order to abort" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -122,6 +125,7 @@ jobs:
 
     - name: Notify deploy-to-canary job Failure
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Something went wrong when deploying to canary, either re-run the job or close this PR to abort the deployment process" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -172,6 +176,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Starting to deploy to vanguard, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -181,6 +186,7 @@ jobs:
 
     - name: Double-check comment added
       shell: bash
+      working-directory: arc
       run: make WAIT_COMMENT="PROCEED_TO_VANGUARD" wait-check-user-comment
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -190,6 +196,7 @@ jobs:
 
     - name: Double-check bot comment added
       shell: bash
+      working-directory: arc
       run: make WAIT_COMMENT="Successfully deployed to canary" wait-check-bot-comment
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -199,6 +206,7 @@ jobs:
 
     - name: Check PR approval
       shell: bash
+      working-directory: arc
       run: make wait-check-pr-approved
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -208,6 +216,7 @@ jobs:
 
     - name: Terraform Apply / ARC vanguard (apply-arc-vanguard arc-vanguard)
       shell: bash
+      working-directory: arc
       run: make apply-arc-vanguard arc-vanguard
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
@@ -223,6 +232,7 @@ jobs:
 
     - name: Notify job success
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Successfully deployed to vanguard. In order to proceed find someone to approve this PR and then add a comment with PROCEED_TO_PRODUCTION in order to proceed deploying to production environment or ABORT_DEPLOYMENT_SHUTDOWN_VANGUARD in order to stop vanguard and close this PR" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -247,6 +257,7 @@ jobs:
 
     - name: Notify deploy-to-vanguard job Failure
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Something went wrong when deploying to vanguard, either re-run the job or comment ABORT_DEPLOYMENT_SHUTDOWN_VANGUARD to revert vanguard to old state, abort the deployment proces and close the PR" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -297,6 +308,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Starting to deploy to prod, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -306,6 +318,7 @@ jobs:
 
     - name: Double-check comment added
       shell: bash
+      working-directory: arc
       run: make WAIT_COMMENT="PROCEED_TO_PRODUCTION" wait-check-user-comment
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -315,6 +328,7 @@ jobs:
 
     - name: Double-check bot comment added
       shell: bash
+      working-directory: arc
       run: make WAIT_COMMENT="Successfully deployed to vanguard" wait-check-bot-comment
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -324,6 +338,7 @@ jobs:
 
     - name: Terraform Apply / ARC prod (arc-prod)
       shell: bash
+      working-directory: arc
       run: make apply arc-prod
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
@@ -339,6 +354,7 @@ jobs:
 
     - name: Notify job success
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Successfully deployed to production, add a comment with CLEANUP_DEPLOYMENT in order to merge this PR and stop vanguard" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -363,6 +379,7 @@ jobs:
 
     - name: Notify deploy-to-prod job Failure
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Something went wrong when deploying to production, re-run the job given job. If it does not work, manual action is required" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -415,6 +432,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Starting to revert vanguard to old state and shut it down, wait for its conclusion and I'll guide you to next steps. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -424,6 +442,7 @@ jobs:
 
     - name: Double-check comment added
       shell: bash
+      working-directory: arc
       run: make WAIT_COMMENT="ABORT_DEPLOYMENT_SHUTDOWN_VANGUARD" wait-check-user-comment
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -433,6 +452,7 @@ jobs:
 
     - name: Terraform Apply / ARC vanguard OFF (apply-arc-vanguard arc-vanguard-off)
       shell: bash
+      working-directory: arc
       run: make apply-arc-vanguard arc-vanguard-off
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
@@ -448,6 +468,7 @@ jobs:
 
     - name: Notify job success
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Successfully reverted vanguard to current prod_live branch state and disabled it" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
@@ -456,6 +477,7 @@ jobs:
 
     - name: Close PR
       shell: bash
+      working-directory: arc
       run: make close-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -480,6 +502,7 @@ jobs:
 
     - name: Notify abort-vanguard job Failure
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Something went wrong when restoring vanguard state, THIS IS A MAJOR ISSUE, firefight starts **NOW**" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -530,6 +553,7 @@ jobs:
 
     - name: Notify job started
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Finishing deployment, shutting down vanguard and merging this PR. If the job fails and you need to retry it, do so by using the link ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -539,6 +563,7 @@ jobs:
 
     - name: Double-check comment added
       shell: bash
+      working-directory: arc
       run: make WAIT_COMMENT="CLEANUP_DEPLOYMENT" wait-check-user-comment
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -548,6 +573,7 @@ jobs:
 
     - name: Double-check bot comment added
       shell: bash
+      working-directory: arc
       run: make WAIT_COMMENT="Successfully deployed to production" wait-check-bot-comment
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -557,6 +583,7 @@ jobs:
 
     - name: Terraform Apply / ARC vanguard OFF (arc-vanguard-off)
       shell: bash
+      working-directory: arc
       run: make arc-vanguard-off
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
@@ -572,6 +599,7 @@ jobs:
 
     - name: Notify job success
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Successfully stopped vanguard" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -581,6 +609,7 @@ jobs:
 
     - name: Merge PR
       shell: bash
+      working-directory: arc
       run: make merge-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -605,6 +634,7 @@ jobs:
 
     - name: Notify cleanup-deployment job Failure
       shell: bash
+      working-directory: arc
       run: make COMMENT_TO_ADD="Something went wrong when stopping vanguard and merging the PR, pleae take manual actions from now on to stabelize the status of the system" add-comment-to-pr
       env:
         GHA_PRIVATE_KEY_DEPLOY : ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

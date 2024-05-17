@@ -57,12 +57,14 @@ jobs:
 
     - name: "Run TFLint runners"
       shell: bash
+      working-directory: arc
       run: make tflint
       env:
         EKS_USERS: ${{ secrets.EKS_USERS }}
 
     - name: Make plan
       shell: bash
+      working-directory: arc
       run: make plan
       env:
         DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}

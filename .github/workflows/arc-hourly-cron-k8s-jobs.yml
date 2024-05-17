@@ -47,6 +47,7 @@ jobs:
 
     - name: Make k8s-delete-stuck-resources
       shell: bash
+      working-directory: arc
       run: make k8s-delete-stuck-resources
       env:
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
