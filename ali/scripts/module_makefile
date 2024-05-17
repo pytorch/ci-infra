@@ -25,7 +25,7 @@ $(PROHOME)/tf-modules/VERSIONS: $(PROHOME)/venv/bin/pip $(PROHOME)/Terrafile
 .PHONY: terrafile
 terrafile: $(PROHOME)/tf-modules/VERSIONS
 
-.terraform/modules/modules.json: $(PROHOME)/tf-modules/VERSIONS backend.tf ../eks_users
+.terraform/modules/modules.json: $(PROHOME)/tf-modules/VERSIONS backend.tf
 	terraform init
 
 .PHONY: init
@@ -35,7 +35,6 @@ init: .terraform/modules/modules.json
 clean:
 	$(RM) -rf .terraform
 	$(RM) -rf inventory
-	$(RM) ../eks_users
 	$(RM) .terraform.lock.hcl
 	$(RM) backend-state.tf
 	$(RM) backend.plan
