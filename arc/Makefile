@@ -5,6 +5,8 @@ clean:
 	$(RM) -r .terraform
 	$(RM) -r modules/arc/.terraform
 	$(RM) -r modules/arc/.terraform.lock.hcl
+	$(RM) -r modules/arc-monitoring/.terraform
+	$(RM) -r modules/arc-monitoring/.terraform.lock.hcl
 	$(RM) -r tf-modules
 	$(RM) -r venv
 

@@ -33,8 +33,8 @@ resource "aws_iam_role" "ossci_gha_terraform" {
   })
 
   tags = {
-    project = var.prod_environment
-    environment = "${var.prod_environment}-workflows"
+    project = var.arc_prod_environment
+    environment = "${var.arc_prod_environment}-workflows"
   }
 }
 

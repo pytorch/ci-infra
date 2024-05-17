@@ -1,0 +1,1 @@
+../../scripts/simplify_cidr_blocks.py
