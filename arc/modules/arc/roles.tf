@@ -45,11 +45,6 @@ resource "aws_iam_role" "karpenter_node_role" {
             ],
             "Effect": "Allow",
             "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": "sts:AssumeRole",
-            "Resource": "arn:aws:iam::308535385114:role/gh-ci-github-action-runners-runner-role"
         }
       ]
     })
