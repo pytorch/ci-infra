@@ -1,7 +1,12 @@
-name: On PR
+name: ARC On PR
 
 on:
-  pull_request: {}
+  pull_request:
+    paths:
+      - '.github/workflows/arc-*'
+      - 'arc/**'
+      - 'modules/**'
+      - 'scripts/**'
   push:
     branches:
       - main
@@ -12,7 +17,7 @@ permissions:
 
 jobs:
   tflint-plan:
-    name: tflint + terraform plan
+    name: ARC tflint + terraform plan
     runs-on: ubuntu-latest
 
     steps:

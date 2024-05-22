@@ -12,7 +12,13 @@ clean:
 
 .PHONY: tflint
 tflint:
-	cd modules/arc && terraform init && tflint --init && tflint --module --color --minimum-failure-severity=warning --recursive
+	cd modules ; for module in ./*/ ; do \
+		pushd $$module ; \
+		echo "==== START TFLINT: modules/$$module ============================================" ; \
+		terraform init && tflint --init && tflint --module --color --minimum-failure-severity=warning --recursive ; \
+		echo "==== END TFLINT: modules/$$module ============================================" ; \
+		popd ; \
+	done
 	cd aws ; for account in ./*/ ; do \
 		pushd $$account ; \
 		for region in ./*/ ; do \
