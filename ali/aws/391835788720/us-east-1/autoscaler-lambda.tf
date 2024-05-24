@@ -8,7 +8,7 @@ resource "random_password" "webhook_secret" {
 }
 
 module "autoscaler-lambda" {
-  source = "../../../tf-modules/terraform-aws-github-runner"
+  source = "github.com/pytorch/test-infra//terraform-aws-github-runner"
 
   aws_region           = local.aws_region
   aws_region_instances = var.ali_aws_region
