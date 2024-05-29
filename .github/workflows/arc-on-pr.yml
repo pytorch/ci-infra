@@ -1,4 +1,4 @@
-name: ARC On PR
+name: TFLint & Plan - ARC 
 
 on:
   pull_request:
