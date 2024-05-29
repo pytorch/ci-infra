@@ -72,12 +72,12 @@ module "autoscaler-lambda" {
   # TODO This won't work, we need to copy the windows AMI to this account
   ami_owners_windows = ["amazon"]
   ami_filter_windows = {
-    name = ["Windows_Server-2022-English-Full-Base-2024.04.10"]
+    name = var.ami_filter_windows
   }
 
   ami_owners_linux = ["amazon"]
   ami_filter_linux = {
-    name = ["amzn2-ami-hvm-2.0.20240306.2-x86_64-ebs"]
+    name = var.ami_filter_linux
   }
 
   enable_ssm_on_runners = true

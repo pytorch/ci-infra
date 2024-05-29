@@ -34,3 +34,16 @@ variable "aws_canary_vpc_suffixes" {
   type        = list
   default     = ["I"]
 }
+
+variable "ami_filter_linux" {
+  description = "AMI for linux"
+  type        = list
+  default     = ["amzn2-ami-hvm-2.0.20240306.2-x86_64-ebs"]
+}
+
+variable "ami_filter_windows" {
+  description = "AMI for windows"
+  type        = list
+  default     = ["Windows 2019 GHA CI - 20240411213841"]
+
+}
