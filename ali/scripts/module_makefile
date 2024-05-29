@@ -78,14 +78,6 @@ backend-state.tf: dyn_locals.tf external_k8s_cidr_ipv4.tf
 			exit 1 ; \
 		fi
 
-.PHONY: plan
-plan: .terraform/modules/modules.json
-	terraform plan $(TERRAFORM_EXTRAS)
-
-.PHONY: apply
-apply: .terraform/modules/modules.json
-	terraform apply ${TERRAFORM_EXTRAS}
-
 .PHONY: destroy
 destroy: .terraform/modules/modules.json
 	echo "To make sure you want to run this, go to the Makefile and comment out the destroy target" ; exit 1
@@ -104,3 +96,22 @@ link-test-infra-canary: .terraform/modules/modules.json $(ALL_ZIPS)
 	cd ../../../tf-modules/terraform-aws-github-runner/modules/webhook/lambdas/webhook && yarn install && yarn dist
 	cp ../../../tf-modules/terraform-aws-github-runner/modules/runners/lambdas/runners/runners.zip  ../../../lambdas-download-canary/runners.zip
 	cp ../../../tf-modules/terraform-aws-github-runner/modules/webhook/lambdas/webhook/webhook.zip  ../../../lambdas-download-canary/webhook.zip
+
+# Production / full targets
+.PHONY: plan
+plan: .terraform/modules/modules.json
+	terraform plan $(TERRAFORM_EXTRAS)
+
+.PHONY: apply
+apply: .terraform/modules/modules.json
+	terraform apply ${TERRAFORM_EXTRAS}
+
+# Canary targets
+.PHONY: plan-canary
+plan-canary: .terraform/modules/modules.json
+	terraform plan --target 'module.autoscaler-lambda-canary' $(TERRAFORM_EXTRAS)
+
+.PHONY: apply-canary
+apply-canary: .terraform/modules/modules.json
+	terraform apply --target 'module.autoscaler-lambda-canary' ${TERRAFORM_EXTRAS}
+

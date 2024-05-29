@@ -6,44 +6,17 @@ data "aws_secretsmanager_secret_version" "canary_app_creds" {
   secret_id = "pytorch-gha-canary-infra-app-vars"
 }
 
-data "aws_security_groups" "canary_additional_sgs" {
-  count     = length(module.ali_runners_canary_vpc)
 
-  tags = {
-    Project = var.ali_canary_environment
-  }
-  filter {
-    name   = "vpc-id"
-    values = [module.ali_runners_canary_vpc[count.index].vpc_id]
-  }
-  filter {
-    name   = "group-name"
-    values = flatten([
-      for idx in range(5) :
-      [
-        "fb-corp-canary-${idx}-2-with-ssh-sg",
-        "fb-corp-canary-${idx}-with-ssh-sg",
-      ]
-    ])
-  }
-}
+module "autoscaler-lambda-canary" {
+  source = "../../../tf-modules/terraform-aws-github-runner"
 
-module "canary_runners" {
-  source = "./tf-modules/terraform-aws-github-runner"
-
-  aws_region           = var.aws_region
-  aws_region_instances = var.aws_region_instances
+  aws_region           = local.aws_region
+  aws_region_instances = var.ali_aws_region
   vpc_ids              = [
     for module_def in module.ali_runners_canary_vpc:
-      {vpc = module_def.vpc_id, region = var.aws_region}
+      {vpc = module_def.vpc_id, region = local.aws_region}
   ]
-  vpc_sgs              = flatten([
-    for sgs in data.aws_security_groups.canary_additional_sgs:
-      flatten([
-        for sg in sgs.ids:
-          {sg = sg, vpc = sgs.vpc_ids[0]}  # we filter by vpc_id, so all ids should be equal
-      ])
-  ])
+  vpc_sgs = []
   subnet_vpc_ids       = flatten([
     for module_def in module.ali_runners_canary_vpc:
       flatten([
@@ -60,11 +33,11 @@ module "canary_runners" {
       {vpc = module_def.vpc_id, cidr = module_def.vpc_cidr}
   ]
 
-  lambda_subnet_ids         = module.ali_runners_canary_vpc[0].private_subnets
-  lambda_security_group_ids = flatten([
-    for sg in data.aws_security_groups.canary_additional_sgs[0].ids:
-      sg
-  ])
+  lambda_subnet_ids         = module.ali_runners_canary_vpc[var.aws_vpc_suffixes[0]].private_subnets
+  # lambda_security_group_ids = flatten([
+  #   for sg in data.aws_security_groups.canary_additional_sgs[0].ids:
+  #     sg
+  # ])
 
   environment = var.ali_canary_environment
   tags = {
@@ -83,9 +56,9 @@ module "canary_runners" {
     webhook_secret = random_password.webhook_secret_canary.result
   }
 
-  webhook_lambda_zip                = "lambdas-download-canary/webhook.zip"
-  runner_binaries_syncer_lambda_zip = "lambdas-download-canary/runner-binaries-syncer.zip"
-  runners_lambda_zip                = "lambdas-download-canary/runners.zip"
+  webhook_lambda_zip                = "../../../assets/lambdas-download-canary/webhook.zip"
+  runner_binaries_syncer_lambda_zip = "../../../assets/lambdas-download-canary/runner-binaries-syncer.zip"
+  runners_lambda_zip                = "../../../assets/lambdas-download-canary/runners.zip"
   enable_organization_runners       = false
   minimum_running_time_in_minutes   = 10
   runner_extra_labels               = "pytorch.runners"
@@ -99,7 +72,7 @@ module "canary_runners" {
   encrypt_secrets           = false
   secretsmanager_secrets_id = data.aws_secretsmanager_secret_version.canary_app_creds.secret_id
 
-  ami_owners_windows = ["308535385114"]
+  ami_owners_windows = ["amazon"]
   ami_filter_windows = {
     name = var.ami_filter_windows
   }
@@ -116,9 +89,10 @@ module "canary_runners" {
   }
 
   runner_iam_role_managed_policy_arns = [
-    aws_iam_policy.allow_ecr_on_gha_runners.arn,
-    aws_iam_policy.allow_s3_sccache_access_on_gha_runners.arn,
-    aws_iam_policy.allow_lambda_on_gha_runners.arn
+    # TODO Here we have all the policies for the runners for the implicit access
+    # aws_iam_policy.allow_ecr_on_gha_runners.arn,
+    # aws_iam_policy.allow_s3_sccache_access_on_gha_runners.arn,
+    # aws_iam_policy.allow_lambda_on_gha_runners.arn
   ]
 
   userdata_post_install = file("${path.module}/scripts/linux_post_install.sh")
