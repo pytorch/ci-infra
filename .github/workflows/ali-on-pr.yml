@@ -1,10 +1,10 @@
-name: TFLint & Plan - ARC 
+name: TFLint & Plan - ALI 
 
 on:
   pull_request:
     paths:
-      - '.github/workflows/arc-*'
-      - 'arc/**'
+      - '.github/workflows/ali-*'
+      - 'ali/**'
       - 'modules/**'
       - 'scripts/**'
   push:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   tflint-plan:
-    name: ARC tflint + terraform plan
+    name: ALI tflint + terraform plan
     runs-on: ubuntu-latest
 
     steps:
@@ -43,17 +43,6 @@ jobs:
       with:
         arch: amd64
 
-    - name: Install Kubectl
-      uses: azure/setup-kubectl@v1
-      with:
-        version: latest
-
-    - name: Install Helm
-      uses: azure/setup-helm@v3
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        version: latest
-
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
@@ -62,23 +51,12 @@ jobs:
 
     - name: "Run TFLint runners"
       shell: bash
-      working-directory: arc
+      working-directory: ali
       run: make tflint
-      env:
-        EKS_USERS: ${{ secrets.EKS_USERS }}
 
     - name: Make plan
       shell: bash
-      working-directory: arc
+      working-directory: ali
       run: make plan
       env:
-        DOCKER_REGISTRY_HTPASSWD: ${{ secrets.DOCKER_REGISTRY_HTPASSWD }}
-        DOCKER_REGISTRY_PASSWORDS: ${{ secrets.DOCKER_REGISTRY_PASSWORDS }}
-        EKS_USERS: ${{ secrets.EKS_USERS }}
-        GHA_PRIVATE_KEY_CANARY: ${{ secrets.GHA_PRIVATE_KEY_CANARY }}
-        GHA_PRIVATE_KEY: ${{ secrets.GHA_PRIVATE_KEY }}
-        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
-        KUBECONFIG: ${{ runner.temp }}/kubeconfig
-        NO_EKSCTL: 'true'
-        PUSH_PACKAGE_DOCKER_GITHUB_TOKEN: ${{ secrets.PUSH_PACKAGE_DOCKER_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -lock-timeout=15m
