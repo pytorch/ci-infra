@@ -1,4 +1,4 @@
-name: ALI On PR
+name: TFLint & Plan - ALI 
 
 on:
   pull_request:
