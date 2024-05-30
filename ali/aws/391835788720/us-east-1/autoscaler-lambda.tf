@@ -86,10 +86,9 @@ module "autoscaler-lambda" {
   }
 
   runner_iam_role_managed_policy_arns = [
-    # TODO Here we have all the policies for the runners for the implicit access
-    # aws_iam_policy.allow_ecr_on_gha_runners.arn,
-    # aws_iam_policy.allow_s3_sccache_access_on_gha_runners.arn,
-    # aws_iam_policy.allow_lambda_on_gha_runners.arn
+    aws_iam_policy.allow_ecr_on_gha_runners.arn,
+    aws_iam_policy.allow_s3_sccache_access_on_gha_runners.arn,
+    aws_iam_policy.allow_lambda_on_gha_runners.arn
   ]
 
   userdata_post_install = file("${path.module}/scripts/linux_post_install.sh")
