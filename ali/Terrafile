@@ -9,5 +9,5 @@ terraform-aws-github-runner:
     - "runners.zip"
     - "webhook.zip"
   asset-folders:
-    - lambdas-download
-    - lambdas-download-canary
+    - assets/lambdas-download
+    - assets/lambdas-download-canary
