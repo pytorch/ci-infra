@@ -51,9 +51,9 @@ module "autoscaler-lambda" {
     webhook_secret = random_password.webhook_secret.result
   }
 
-  webhook_lambda_zip                = "../../../assets/lambdas-download/webhook.zip"
-  runner_binaries_syncer_lambda_zip = "../../../assets/lambdas-download/runner-binaries-syncer.zip"
-  runners_lambda_zip                = "../../../assets/lambdas-download/runners.zip"
+  webhook_lambda_zip                = abspath("../../../assets/lambdas-download/webhook.zip")
+  runner_binaries_syncer_lambda_zip = abspath("../../../assets/lambdas-download/runner-binaries-syncer.zip")
+  runners_lambda_zip                = abspath("../../../assets/lambdas-download/runners.zip")
   enable_organization_runners       = false
   minimum_running_time_in_minutes   = 10
   runner_extra_labels               = "pytorch.runners"

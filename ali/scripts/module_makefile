@@ -99,8 +99,12 @@ tflint: .terraform/modules/modules.json
 .PHONY: link-test-infra-canary
 link-test-infra-canary: .terraform/modules/modules.json $(ALL_ZIPS)
 	rm -rf ../../../tf-modules/terraform-aws-github-runner
+	rm -rf ../../../lambdas-download-canary/*
+	rm -rf ../../../lambdas-download/*
 	cd ../../../tf-modules && ln -s $(TEST_INFRA_DIR)/terraform-aws-github-runner/
-	cd ../../../tf-modules/terraform-aws-github-runner/modules/runners/lambdas/runners && yarn install && yarn dist
-	cd ../../../tf-modules/terraform-aws-github-runner/modules/webhook/lambdas/webhook && yarn install && yarn dist
+	cd ../../../tf-modules/terraform-aws-github-runner/modules/runners/lambdas/runners && rm -rf dist && rm -rf runners.zip && yarn install && yarn dist
+	cd ../../../tf-modules/terraform-aws-github-runner/modules/webhook/lambdas/webhook && rm -rf dist && rm -rf webhook.zip && yarn install && yarn dist
 	cp ../../../tf-modules/terraform-aws-github-runner/modules/runners/lambdas/runners/runners.zip  ../../../lambdas-download-canary/runners.zip
 	cp ../../../tf-modules/terraform-aws-github-runner/modules/webhook/lambdas/webhook/webhook.zip  ../../../lambdas-download-canary/webhook.zip
+	cp ../../../tf-modules/terraform-aws-github-runner/modules/runners/lambdas/runners/runners.zip  ../../../lambdas-download/runners.zip
+	cp ../../../tf-modules/terraform-aws-github-runner/modules/webhook/lambdas/webhook/webhook.zip  ../../../lambdas-download/webhook.zip
