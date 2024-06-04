@@ -1,0 +1,42 @@
+name: Terraform Apply / Runners / Production - ALI
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: "terraform-make-apply"
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  release:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@v3
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.7
+        terraform_wrapper: false
+
+    - name: configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1.7.0
+      with:
+        role-to-assume: arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
+        aws-region: us-east-1
+
+    - name: Terraform Apply
+      working-directory: runners
+      shell: bash
+      run: make apply
+      env:
+        AWS_DEFAULT_REGION: us-east-1
+        GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
+        TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m

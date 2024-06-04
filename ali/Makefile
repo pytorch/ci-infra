@@ -51,6 +51,20 @@ plan:
 		popd ; \
 	done
 
+.PHONY: plan-canary
+plan-canary:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== START make plan: aws/$$account/$$region ============================================" ; \
+			$(MAKE) plan-canary || exit 1 ; \
+			echo "==== END make plan: aws/$$account/$$region ============================================" ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
 .PHONY: apply
 apply:
 	cd aws ; for account in ./*/ ; do \
@@ -59,6 +73,20 @@ apply:
 			pushd $$region ; \
 			echo "==== START make apply: aws/$$account/$$region ============================================" ; \
 			$(MAKE) apply || exit 1 ; \
+			echo "==== END make apply: aws/$$account/$$region ============================================" ; \
+			popd ; \
+		done ; \
+		popd ; \
+	done
+
+.PHONY: apply-canary
+apply-canary:
+	cd aws ; for account in ./*/ ; do \
+		pushd $$account ; \
+		for region in ./*/ ; do \
+			pushd $$region ; \
+			echo "==== START make apply: aws/$$account/$$region ============================================" ; \
+			$(MAKE) apply-canary || exit 1 ; \
 			echo "==== END make apply: aws/$$account/$$region ============================================" ; \
 			popd ; \
 		done ; \
