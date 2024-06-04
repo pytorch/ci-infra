@@ -139,11 +139,11 @@ def open_release_pr(gh: Github, opts: argparse.Namespace) -> None:
     usr = gh.get_user_by_id(opts.github_actor_id)
 
     right_now = datetime.datetime.now()
-    gh_righ_now = right_now.strftime('%Y%m%d%H%M%S')
+    gh_right_now = right_now.strftime('%Y%m%d%H%M%S')
     human_right_now = right_now.strftime('%Y-%m-%dT%H:%M:%S')
 
-    tag_name = f'arc-prod-release-{gh_righ_now}'
-    branch_name = f'prod-release/{gh_righ_now}'
+    tag_name = f'arc-prod-release-{gh_right_now}'
+    branch_name = f'prod-release/{gh_right_now}'
 
     git_repo = Repo('.')
 
