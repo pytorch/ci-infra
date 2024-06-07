@@ -157,7 +157,8 @@ resource "aws_iam_policy" "allow_s3_sccache_access_on_gha_runners" {
                 "s3:ListBucket*"
             ],
             "Resource": [
-                "arn:aws:s3:::target-determinator-assets/*"
+                "arn:aws:s3:::target-determinator-assets/*",
+                "arn:aws:s3:::target-determinator-assets"
             ]
         }
     ]
