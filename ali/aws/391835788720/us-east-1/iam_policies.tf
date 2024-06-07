@@ -147,6 +147,18 @@ resource "aws_iam_policy" "allow_s3_sccache_access_on_gha_runners" {
             "Effect": "Allow",
             "Action": "s3:*Object*",
             "Resource": ["arn:aws:s3:::pytorch-tutorial-build-pull-request/*"]
+        },
+        {
+            "Sid": "ReadTargetDeterminatorAssets",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:ListBucket*"
+            ],
+            "Resource": [
+                "arn:aws:s3:::target-determinator-assets/*"
+            ]
         }
     ]
 }
