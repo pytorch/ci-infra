@@ -1,3 +1,40 @@
+resource "aws_iam_role" "ossci_gha_terraform" {
+  name = "ossci_gha_terraform"
+
+  max_session_duration = 18000
+  description = "used by pytorch/ci-infra workflows to deploy terraform configs"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = "arn:aws:iam::${local.aws_account_id}:oidc-provider/token.actions.githubusercontent.com"
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = "repo:pytorch/ci-infra:*"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    project = var.ali_prod_environment
+    environment = "${var.ali_prod_environment}-workflows"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ossci_gha_terraform_admin" {
+  role       = aws_iam_role.ossci_gha_terraform.name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
 // Taken from https://docs.aws.amazon.com/AmazonECR/latest/userguide/ecr_managed_policies.html
 resource "aws_iam_policy" "allow_ecr_on_gha_runners" {
   name        = "${var.ali_prod_environment}_allow_ecr_on_gha_runners"
@@ -189,4 +226,3 @@ resource "aws_iam_policy" "allow_lambda_on_gha_runners" {
 }
 EOT
 }
-
