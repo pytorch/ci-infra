@@ -26,6 +26,9 @@ jobs:
         terraform_version: 1.5.7
         terraform_wrapper: false
 
+    - name: Install virtualenv
+      run: pip install virtualenv
+
     - name: configure aws credentials
       uses: aws-actions/configure-aws-credentials@v1.7.0
       with:
