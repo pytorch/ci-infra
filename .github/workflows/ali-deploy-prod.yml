@@ -33,7 +33,7 @@ jobs:
         aws-region: us-east-1
 
     - name: Terraform Apply
-      working-directory: runners
+      working-directory: ali/aws/391835788720/us-east-1
       shell: bash
       run: make apply
       env:
