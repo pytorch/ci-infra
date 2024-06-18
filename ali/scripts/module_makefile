@@ -106,7 +106,7 @@ tflint: .terraform/modules/modules.json
 
 .PHONY: link-test-infra-canary
 link-test-infra-canary: .terraform/modules/modules.json $(ALL_ZIPS)
-	@if [ -z "$${TEST_INFRA_DIR}" ]; then echo "Error: TEST_INFRA_DIR must be set to the path to your local pytorch/test-infra repo" && exit 1; fi
+	@if [ -z "$${TEST_INFRA_DIR}" ]; then echo -e "\033[31mError: TEST_INFRA_DIR must be set to the path to your local pytorch/test-infra repo\033[0m" && exit 1; fi
 	rm -rf ../../../tf-modules/terraform-aws-github-runner
 	rm -rf ../../../lambdas-download-canary/*
 	rm -rf ../../../lambdas-download/*
