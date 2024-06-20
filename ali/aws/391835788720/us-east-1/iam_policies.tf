@@ -197,6 +197,17 @@ resource "aws_iam_policy" "allow_s3_sccache_access_on_gha_runners" {
                 "arn:aws:s3:::target-determinator-assets/*",
                 "arn:aws:s3:::target-determinator-assets"
             ]
+        },
+        {
+            "Sid": "ReadListOssciWindowsAssets",
+            "Effect": "Allow",
+            "Action": [
+                "s3:Get*",
+                "s3:ListBucket*"
+            ],
+            "Resource": [
+                "arn:aws:s3:::ossci-windows/*"
+            ]
         }
     ]
 }
