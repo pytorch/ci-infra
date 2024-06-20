@@ -65,7 +65,7 @@ module "autoscaler-lambda-canary" {
   secretsmanager_secrets_id = data.aws_secretsmanager_secret_version.app_creds_canary.secret_id
 
   # TODO This won't work, we need to copy the windows AMI to this account
-  ami_owners_windows = ["amazon"]
+  ami_owners_windows = ["391835788720"]
   ami_filter_windows = {
     name = var.ami_filter_windows
   }
