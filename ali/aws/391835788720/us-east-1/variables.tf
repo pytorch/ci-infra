@@ -44,5 +44,5 @@ variable "ami_filter_linux" {
 variable "ami_filter_windows" {
   description = "AMI for windows"
   type        = list
-  default     = ["Windows_Server-2022-English-Full-Base-2024.04.10"]
+  default     = ["Windows 2019 GHA CI - 20240618170857"]
 }
