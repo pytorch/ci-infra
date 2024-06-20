@@ -1,3 +1,6 @@
+data "aws_secretsmanager_secret_version" "app_creds_canary" {
+  secret_id = "pytorch-gha-canary-infra-app-vars"
+}
 
 module "autoscaler-lambda-canary" {
   source = "../../../tf-modules/terraform-aws-github-runner"
@@ -59,7 +62,7 @@ module "autoscaler-lambda-canary" {
   scale_config_repo_path                  = ".github/lf-canary-scale-config.yml"
 
   encrypt_secrets           = false
-  secretsmanager_secrets_id = data.aws_secretsmanager_secret_version.app_creds.secret_id
+  secretsmanager_secrets_id = data.aws_secretsmanager_secret_version.app_creds_canary.secret_id
 
   # TODO This won't work, we need to copy the windows AMI to this account
   ami_owners_windows = ["amazon"]
