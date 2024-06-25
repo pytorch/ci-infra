@@ -38,7 +38,7 @@ variable "aws_canary_vpc_suffixes" {
 variable "ami_filter_linux" {
   description = "AMI for linux"
   type        = list
-  default     = ["al2023-ami-2023.4.20240528.0-kernel-6.1-x86_64"]
+  default     = ["amzn2-ami-hvm-2.0.20240306.2-x86_64-ebs"]
 }
 
 variable "ami_filter_windows" {
