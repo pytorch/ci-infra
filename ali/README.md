@@ -9,3 +9,9 @@ To test local changes to that branch, you can link your local test-infra repo in
 cd aws/391835788720/us-east-1
 TEST_INFRA_DIR=[PATH_TO_YOUR_LOCAL_TEST_INFRA_REPO_DIR] make link-test-infra-canary
 ```
+
+# Troubleshooting
+
+Useful tools for troubleshooting:
+
+- [Send Scale Message](../helpers/README.md)
