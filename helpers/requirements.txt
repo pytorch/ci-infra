@@ -1,0 +1,4 @@
+black
+boto3
+tqdm
+PyYaml
