@@ -237,3 +237,29 @@ resource "aws_iam_policy" "allow_lambda_on_gha_runners" {
 }
 EOT
 }
+
+resource "aws_iam_policy" "allow_torchci_metrics_on_gha_runners" {
+  name        = "${var.ali_prod_environment}_allow_torchci_metrics_on_gha_runners"
+  description = "Allows TorchCI Metrics to be modifiable by our GHA EC2 runners"
+  policy      = <<EOT
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowUploadingTorchciMetrics",
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:Scan",
+                "dynamodb:Query"
+            ],
+            "Resource": "arn:aws:dynamodb:*:308535385114:table/torchci-metrics"
+        }
+    ]
+}
+EOT
+}
+
