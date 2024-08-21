@@ -75,6 +75,11 @@ module "autoscaler-lambda-canary" {
     name = var.ami_filter_linux
   }
 
+  ami_owners_linux_arm64 = ["amazon"]
+  ami_filter_linux_arm64 = {
+    name = var.ami_filter_linux_arm64
+  }
+
   enable_ssm_on_runners = true
   block_device_mappings = {
     volume_size = 100
