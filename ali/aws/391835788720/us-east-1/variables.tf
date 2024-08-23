@@ -41,6 +41,12 @@ variable "ami_filter_linux" {
   default     = ["amzn2-ami-hvm-2.0.20240306.2-x86_64-ebs"]
 }
 
+variable "ami_filter_linux_arm64" {
+  description = "AMI for linux"
+  type        = list
+  default     = ["al2023-ami-2023.5.20240701.0-kernel-6.1-arm64"]
+}
+
 variable "ami_filter_windows" {
   description = "AMI for windows"
   type        = list
