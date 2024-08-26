@@ -60,6 +60,7 @@ module "autoscaler-lambda-canary" {
   scale_down_schedule_expression          = "cron(*/15 * * * ? *)"
   cant_have_issues_labels                 = []
   scale_config_repo_path                  = ".github/lf-canary-scale-config.yml"
+  min_available_runners                   = 0
 
   encrypt_secrets           = false
   secretsmanager_secrets_id = data.aws_secretsmanager_secret_version.app_creds_canary.secret_id
