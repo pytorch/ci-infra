@@ -55,7 +55,7 @@ module "autoscaler-lambda" {
   runner_binaries_syncer_lambda_zip = abspath("../../../assets/lambdas-download/runner-binaries-syncer.zip")
   runners_lambda_zip                = abspath("../../../assets/lambdas-download/runners.zip")
   enable_organization_runners       = false
-  minimum_running_time_in_minutes   = 10
+  minimum_running_time_in_minutes   = 60
   runner_extra_labels               = "pytorch.runners"
   runners_scale_down_lambda_timeout = 600
   runners_scale_up_lambda_timeout         = 600
