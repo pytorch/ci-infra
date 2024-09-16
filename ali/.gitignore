@@ -13,10 +13,7 @@ __pycache__/
 **/venv/
 ARC_NODE_CONFIG.yaml
 ARC_RUNNER_CONFIG.yaml
-assets/lambdas-download-canary/runners.zip
-assets/lambdas-download-canary/webhook.zip
-assets/lambdas-download/runners.zip
-assets/lambdas-download/webhook.zip
+assets/
 aws/*/*/backend-state.tf
 aws/*/*/backend.plan
 aws/*/*/backend.tf
