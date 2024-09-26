@@ -4,7 +4,7 @@ terraform-aws-vpc:
 terraform-aws-github-runner:
   source: "pytorch/test-infra"
   module-root: "terraform-aws-github-runner"
-  tag: "v20240916-152841"
+  tag: "v20240924-163756"
   assets:
     - "runner-binaries-syncer.zip"
     - "runners.zip"
