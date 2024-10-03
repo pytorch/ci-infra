@@ -49,7 +49,7 @@ module "autoscaler-lambda-canary" {
   webhook_lambda_zip                = abspath("../../../assets/lambdas-download-canary/webhook.zip")
   runner_binaries_syncer_lambda_zip = abspath("../../../assets/lambdas-download-canary/runner-binaries-syncer.zip")
   runners_lambda_zip                = abspath("../../../assets/lambdas-download-canary/runners.zip")
-  enable_organization_runners       = false
+  enable_organization_runners       = true
   minimum_running_time_in_minutes   = 10
   runner_extra_labels               = "pytorch.runners"
   runners_scale_down_lambda_timeout = 600
