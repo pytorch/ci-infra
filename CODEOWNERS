@@ -1,0 +1,14 @@
+# IMPORTANT:
+# This file is ONLY used to subscribe for notifications for PRs
+# related to a specific file path. Approvals from people in this
+# file are not required for merges.
+
+# This is a comment.
+# Each line is a file pattern followed by one or more owners.
+
+/.github/workflows/ @jeanschmidt @zxiiro @ZainRizvi
+/ali/ @jeanschmidt @zxiiro @ZainRizvi
+/arc/ @jeanschmidt @zxiiro @ZainRizvi
+/helpers/ @zxiiro @jeanschmidt
+/modules/backend-state/ @jeanschmidt
+/scripts/ @jeanschmidt @zxiiro @ZainRizvi
