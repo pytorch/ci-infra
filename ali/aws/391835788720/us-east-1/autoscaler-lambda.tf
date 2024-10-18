@@ -64,6 +64,7 @@ module "autoscaler-lambda" {
   runners_scale_up_sqs_message_ret_s      = 7200
   scale_down_schedule_expression          = "cron(*/15 * * * ? *)"
   cant_have_issues_labels                 = ["Use Canary Lambdas"]
+  scale_config_repo                       = "test-infra"
   scale_config_repo_path                  = ".github/lf-scale-config.yml"
   min_available_runners                   = 6
 
