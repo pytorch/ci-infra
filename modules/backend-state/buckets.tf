@@ -12,6 +12,7 @@ resource "aws_s3_bucket" "terraform_state" {
 }
 
 resource "aws_s3_bucket_public_access_block" "access_terraform_state" {
+  count =  data.external.terraform_state_bucket_exists.result.exists == "true" ? 0 : 1
   bucket = local.terraform_state_bucket_name
 
   block_public_acls       = true
