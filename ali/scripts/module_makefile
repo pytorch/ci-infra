@@ -102,7 +102,7 @@ destroy: .terraform/modules/modules.json
 .PHONY: tflint
 tflint: .terraform/modules/modules.json
 	tflint --init
-	tflint --module --color --minimum-failure-severity=warning --recursive
+	tflint --call-module-type=all --color --minimum-failure-severity=warning --recursive
 
 .PHONY: link-test-infra-canary
 link-test-infra-canary: .terraform/modules/modules.json $(ALL_ZIPS)
