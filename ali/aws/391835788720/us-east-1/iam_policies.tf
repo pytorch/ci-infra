@@ -32,7 +32,7 @@ resource "aws_iam_role" "ossci_gha_terraform" {
 
 resource "aws_iam_role_policy_attachment" "ossci_gha_terraform_admin" {
   role       = aws_iam_role.ossci_gha_terraform.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
 }
 
 // Taken from https://docs.aws.amazon.com/AmazonECR/latest/userguide/ecr_managed_policies.html
