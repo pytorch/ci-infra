@@ -208,6 +208,12 @@ resource "aws_iam_policy" "allow_s3_sccache_access_on_gha_runners" {
             "Resource": [
                 "arn:aws:s3:::ossci-windows/*"
             ]
+        },
+        {
+            "Sid": "AllObjectActionsOssciBenchmarks",
+            "Effect": "Allow",
+            "Action": "s3:*Object",
+            "Resource": ["arn:aws:s3:::ossci-benchmarks/*"]
         }
     ]
 }
