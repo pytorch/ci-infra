@@ -3,6 +3,8 @@ name: Lint GitHub Actions workflows
 # yamllint disable-line rule:truthy
 on: [push, pull_request]
 
+permissions: read-all
+
 jobs:
   actionlint:
     runs-on: ubuntu-latest
