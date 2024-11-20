@@ -51,7 +51,7 @@ Policy:
 * Read-Only level permissions will be granted
   (arn:aws:iam::aws:policy/ReadOnlyAccess).
 * Permissions automatically expire after 6 months if not renewed.
-* Permissions will be reviewed an extended on a quarterly cadence by existing
+* Permissions will be reviewed and extended on a quarterly cadence by existing
   pytorch-infra-admins.
 
 ## How to request access permissions for new contributors
