@@ -54,6 +54,14 @@ Policy:
 * Permissions will be reviewed an extended on a quarterly cadence by existing
   pytorch-infra-admins.
 
+## How to request access permissions for new contributors
+
+To request Cloud Account Access for someone who does not already have access
+this can be done via one of 2 methods:
+
+1. Request access at the weekly PyTorch CI Sync meeting.
+2. At the discretion of one of the existing pytorch-infra-admins.
+
 ## Implementation
 
 The implementation of the account access will be defined via Terraform
