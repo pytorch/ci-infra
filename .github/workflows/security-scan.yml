@@ -40,4 +40,4 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
       - name: Run Checkov
-        run: checkov -d .
+        run: checkov --quiet -d .
