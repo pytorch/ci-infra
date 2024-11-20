@@ -17,7 +17,6 @@ skip-check:
   - CKV_AWS_145
   - CKV_AWS_144
   - CKV2_AWS_16
-  - CKV_AWS_28
 
 # Configure Checkov's log level (useful for debugging)
 # log-level: DEBUG  # Available options: DEBUG, INFO, WARN, ERROR
