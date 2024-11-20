@@ -19,14 +19,16 @@ Policy:
   (arn:aws:iam::aws:policy/AdministratorAccess).
 * Permissions automatically expire after 6 months if not renewed.
 * Permissions will be reviewed and extended on a quarterly cadence by existing
-  pytorch-infra-administrators with advisory of regular attendees of the
-  PyTorch Infrastructure weekly meeting or the PyTorch TAC.
+  pytorch-infra-admins with advisory of regular attendees of the weekly
+  PyTorch CI Sync meeting or the PyTorch TAC.
+* pytorch-infra-admins should themselves be regular attendees of the weekly
+  PyTorch CI Sync meeting.
 * MFA-Required policy will be configured on the permissions group.
 
 ### Infra Contributor Level Access: pytorch-infra-contributors
 
 This permission level access is granted to those participating in the PyTorch
-Infrastructure that may need access to work on features that need access to
+Infrastructure that may need access to work on features that require access to
 AWS to develop.
 
 Policy:
