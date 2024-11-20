@@ -8,7 +8,6 @@ skip-path:
 # Skip INFO and other unresolvable checks
 skip-check:
   - CKV2_AWS_61
-  - CKV_AWS_274
   - CKV_AWS_355
   - CKV_AWS_290
   - CKV_AWS_119

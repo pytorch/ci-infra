@@ -32,6 +32,7 @@ resource "aws_iam_role" "ossci_gha_terraform" {
 
 resource "aws_iam_role_policy_attachment" "ossci_gha_terraform_admin" {
   role       = aws_iam_role.ossci_gha_terraform.name
+  #checkov:skip=CKV_AWS_274:Terraform needs AdministratorAccess to run
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
 
