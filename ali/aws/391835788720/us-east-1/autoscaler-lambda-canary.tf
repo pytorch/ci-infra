@@ -89,6 +89,7 @@ module "autoscaler-lambda-canary" {
 
   runner_iam_role_managed_policy_arns = [
     aws_iam_policy.allow_ecr_on_gha_runners.arn,
+    aws_iam_policy.allow_secretmanager_docker_hub_token_on_gha_runners.arn,
     aws_iam_policy.allow_s3_sccache_access_on_gha_runners.arn,
     aws_iam_policy.allow_lambda_on_gha_runners.arn,
     aws_iam_policy.allow_torchci_metrics_on_gha_runners.arn
