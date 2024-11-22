@@ -69,6 +69,23 @@ resource "aws_iam_policy" "allow_ecr_on_gha_runners" {
 EOT
 }
 
+resource "aws_iam_policy" "allow_secretmanager_docker_hub_token_on_gha_runners" {
+  name        = "${var.ali_prod_environment}_allow_secretmanager_docker_hub_token_on_gha_runners"
+  description = "Allows our GHA EC2 runners access to the read-only docker.io token"
+  policy      = <<EOT
+{
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Action": [
+            "secretsmanager:GetSecretValue"
+        ],
+        "Resource": "arn:aws:secretsmanager:us-east-1:391835788720:secret:docker_hub_readonly_token-V74gSU"
+    }]
+}
+EOT
+}
+
 // ossci-compiler-cache-circleci-v2 = linux sccache
 // ossci-compiler-cache = windows sccache
 resource "aws_iam_policy" "allow_s3_sccache_access_on_gha_runners" {
