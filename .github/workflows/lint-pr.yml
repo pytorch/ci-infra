@@ -19,28 +19,6 @@ jobs:
         run: ${{ steps.get_actionlint.outputs.executable }} -color
         shell: bash
 
-  commit-message:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          # checkout at the last commit
-          ref: ${{ github.event.pull_request.head.sha }}
-          # get all history
-          fetch-depth: 0
-
-      - name: Install gitlint
-        shell: bash
-        run: |
-          python -m pip install gitlint
-
-      - name: Run gitlint
-        shell: bash
-        run: |
-          gitlint --commits "${{ github.event.pull_request.base.sha }}..HEAD"
-
   pre-commit:
     runs-on: ubuntu-latest
     steps:
