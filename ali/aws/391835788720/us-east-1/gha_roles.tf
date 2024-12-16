@@ -77,7 +77,8 @@ resource "aws_iam_role" "gha-packer-role" {
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
               "repo:pytorch/pytorch:environment:packer-build-env",
-              "repo:pytorch/pytorch-canary:environment:packer-build-env"
+              "repo:pytorch/pytorch-canary:environment:packer-build-env",
+              "repo:pytorch/test-infra:environment:packer-build-env"
             ]
           }
         }
