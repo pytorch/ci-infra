@@ -32,6 +32,7 @@ resource "aws_iam_role" "ossci_gha_terraform" {
 
 resource "aws_iam_role_policy_attachment" "ossci_gha_terraform_admin" {
   role       = aws_iam_role.ossci_gha_terraform.name
+  #checkov:skip=CKV_AWS_274:Terraform needs AdministratorAccess to run
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
 
@@ -63,6 +64,23 @@ resource "aws_iam_policy" "allow_ecr_on_gha_runners" {
             "ecr:UploadLayerPart"
         ],
         "Resource": "*"
+    }]
+}
+EOT
+}
+
+resource "aws_iam_policy" "allow_secretmanager_docker_hub_token_on_gha_runners" {
+  name        = "${var.ali_prod_environment}_allow_secretmanager_docker_hub_token_on_gha_runners"
+  description = "Allows our GHA EC2 runners access to the read-only docker.io token"
+  policy      = <<EOT
+{
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Action": [
+            "secretsmanager:GetSecretValue"
+        ],
+        "Resource": "arn:aws:secretsmanager:us-east-1:391835788720:secret:docker_hub_readonly_token-V74gSU"
     }]
 }
 EOT

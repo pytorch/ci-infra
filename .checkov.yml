@@ -1,0 +1,21 @@
+# .checkov.yml - Configuration file for Checkov
+
+# Path configurations
+skip-path:
+  - arc
+  - '.github/workflows/arc*'
+
+# Skip INFO and other unresolvable checks
+skip-check:
+  - CKV2_AWS_61
+  - CKV_AWS_355
+  - CKV_AWS_290
+  - CKV_AWS_119
+  - CKV2_AWS_62
+  - CKV_AWS_18
+  - CKV_AWS_145
+  - CKV_AWS_144
+  - CKV2_AWS_16
+
+# Configure Checkov's log level (useful for debugging)
+# log-level: DEBUG  # Available options: DEBUG, INFO, WARN, ERROR

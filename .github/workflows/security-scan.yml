@@ -1,0 +1,43 @@
+# CodeQL and Checkov scans for ci-infra
+#
+name: "Security Scan"
+
+permissions: read-all
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 12 * * 6'  # Runs every Saturday at 12:00 PM
+
+jobs:
+  Analyze-Python:
+    name: Analyze Python code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        continue-on-error: true
+
+  Analyze-IaC:
+    name: Analyze Infra as Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install Checkov
+        run: pip install checkov
+      - name: Run Checkov
+        run: checkov --quiet -d .

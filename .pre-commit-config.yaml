@@ -1,0 +1,5 @@
+repos:
+- repo: https://github.com/editorconfig-checker/editorconfig-checker
+  rev: main  # We want to pin to a tag here but v3.0.3 does not have hooks yet.
+  hooks:
+  - id: editorconfig-checker

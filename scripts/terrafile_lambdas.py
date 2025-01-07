@@ -13,8 +13,10 @@ import yaml
 
 
 def cli_args():
-    parser = argparse.ArgumentParser(description="Just an example",
-                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description="Just an example",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument("-t", "--terrafile", help="location of terrafile", default="Terrafile")
     parser.add_argument("-m", "--modules", help="location of modules", default="tf-modules")
     return parser.parse_args()
