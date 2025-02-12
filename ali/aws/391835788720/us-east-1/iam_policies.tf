@@ -232,6 +232,12 @@ resource "aws_iam_policy" "allow_s3_sccache_access_on_gha_runners" {
             "Effect": "Allow",
             "Action": "s3:*Object",
             "Resource": ["arn:aws:s3:::ossci-benchmarks/*"]
+        },
+        {
+            "Sid": "AllObjectActionsOssciUtilization",
+            "Effect": "Allow",
+            "Action": "s3:*Object",
+            "Resource": ["arn:aws:s3:::ossci-utilization/*"]
         }
     ]
 }
@@ -286,4 +292,3 @@ resource "aws_iam_policy" "allow_torchci_metrics_on_gha_runners" {
 }
 EOT
 }
-
