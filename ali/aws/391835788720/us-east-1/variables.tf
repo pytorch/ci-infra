@@ -50,5 +50,5 @@ variable "ami_filter_linux_arm64" {
 variable "ami_filter_windows" {
   description = "AMI for windows"
   type        = list
-  default     = ["Windows 2019 GHA CI - 20241127165339"]
+  default     = ["Windows 2019 GHA CI - 20250213172435"]
 }
