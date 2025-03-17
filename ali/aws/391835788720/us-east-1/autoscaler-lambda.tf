@@ -64,9 +64,11 @@ module "autoscaler-lambda" {
   runners_scale_up_sqs_message_ret_s      = 7200
   scale_down_schedule_expression          = "cron(*/15 * * * ? *)"
   cant_have_issues_labels                 = ["Use Canary Lambdas"]
+  scale_config_org                        = "pytorch"
   scale_config_repo                       = "test-infra"
   scale_config_repo_path                  = ".github/lf-scale-config.yml"
   min_available_runners                   = 6
+  retry_scale_up_chron_hud_query_url      = "https://hud.pytorch.org/api/clickhouse/queued_jobs_aggregate?parameters=%5B%5D"
 
   encrypt_secrets           = false
   secretsmanager_secrets_id = data.aws_secretsmanager_secret_version.app_creds.secret_id

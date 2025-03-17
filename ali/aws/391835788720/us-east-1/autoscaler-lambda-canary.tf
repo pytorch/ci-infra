@@ -59,6 +59,7 @@ module "autoscaler-lambda-canary" {
   runners_scale_up_sqs_message_ret_s      = 7200
   scale_down_schedule_expression          = "cron(*/15 * * * ? *)"
   cant_have_issues_labels                 = []
+  scale_config_org                        = "pytorch"
   scale_config_repo                       = "test-infra"
   scale_config_repo_path                  = ".github/lf-canary-scale-config.yml"
   min_available_runners                   = 0
