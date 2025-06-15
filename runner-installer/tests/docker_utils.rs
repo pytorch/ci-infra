@@ -4,31 +4,14 @@ use bollard::image::BuildImageOptions;
 use bollard::Docker;
 use futures_util::stream::StreamExt;
 use std::path::Path;
-use std::sync::Once;
-use lazy_static::lazy_static;
-use std::env;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const TEST_IMAGE_NAME: &str = "runner-installer-test-ubuntu-jammy";
-pub const TEST_CONTAINER_NAME: &str = "runner-installer-test-container";
 
-static INIT: Once = Once::new();
-lazy_static! {
-    static ref DOCKER: Docker = {
-        let docker = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(setup_docker())
-            .expect("Failed to setup Docker");
-        docker
-    };
-}
+static IMAGE_BUILT: AtomicBool = AtomicBool::new(false);
 
-pub async fn setup_docker() -> Result<Docker, Box<dyn std::error::Error>> {
-    // Set DOCKER_HOST to use Colima socket
-    if env::var("DOCKER_HOST").is_err() {
-        let home = env::var("HOME")?;
-        env::set_var("DOCKER_HOST", format!("unix://{}/.colima/docker.sock", home));
-    }
-
+pub async fn get_docker() -> Result<Docker, Box<dyn std::error::Error>> {
     let docker = Docker::connect_with_local_defaults()?;
 
     // Test Docker connection
@@ -39,12 +22,14 @@ pub async fn setup_docker() -> Result<Docker, Box<dyn std::error::Error>> {
 }
 
 pub async fn ensure_test_image() -> Result<(), Box<dyn std::error::Error>> {
-    INIT.call_once(|| {
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(build_test_image(&DOCKER))
-            .expect("Failed to build test image");
-    });
+    if IMAGE_BUILT.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    
+    let docker = get_docker().await?;
+    build_test_image(&docker).await?;
+    IMAGE_BUILT.store(true, Ordering::Relaxed);
+    
     Ok(())
 }
 
@@ -90,9 +75,14 @@ pub async fn build_test_image(docker: &Docker) -> Result<(), Box<dyn std::error:
 
 pub async fn create_and_start_container() -> Result<String, Box<dyn std::error::Error>> {
     ensure_test_image().await?;
+    let docker = get_docker().await?;
     
-    // Remove existing container if it exists
-    let _ = DOCKER.remove_container(TEST_CONTAINER_NAME, None).await;
+    // Generate unique container name
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let container_name = format!("runner-installer-test-{}", timestamp);
 
     let config = Config {
         image: Some(TEST_IMAGE_NAME.to_string()),
@@ -103,14 +93,14 @@ pub async fn create_and_start_container() -> Result<String, Box<dyn std::error::
     };
 
     let options = CreateContainerOptions {
-        name: TEST_CONTAINER_NAME,
+        name: container_name.as_str(),
         ..Default::default()
     };
 
-    let container = DOCKER.create_container(Some(options), config).await?;
+    let container = docker.create_container(Some(options), config).await?;
     let container_id = container.id;
 
-    DOCKER.start_container(&container_id, None::<StartContainerOptions<String>>).await?;
+    docker.start_container(&container_id, None::<StartContainerOptions<String>>).await?;
 
     println!("Started container: {}", container_id);
     Ok(container_id)
@@ -120,6 +110,8 @@ pub async fn exec_command_in_container(
     container_id: &str,
     cmd: Vec<&str>,
 ) -> Result<(String, String, i64), Box<dyn std::error::Error>> {
+    let docker = get_docker().await?;
+    
     let exec_options = CreateExecOptions {
         cmd: Some(cmd),
         attach_stdout: Some(true),
@@ -129,14 +121,14 @@ pub async fn exec_command_in_container(
         ..Default::default()
     };
 
-    let exec = DOCKER.create_exec(container_id, exec_options).await?;
+    let exec = docker.create_exec(container_id, exec_options).await?;
     let exec_id = exec.id;
 
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut exit_code = 0i64;
 
-    if let StartExecResults::Attached { mut output, .. } = DOCKER.start_exec(&exec_id, None).await? {
+    if let StartExecResults::Attached { mut output, .. } = docker.start_exec(&exec_id, None).await? {
         while let Some(Ok(msg)) = output.next().await {
             match msg {
                 bollard::container::LogOutput::StdOut { message } => {
@@ -155,7 +147,7 @@ pub async fn exec_command_in_container(
     }
 
     // Get exit code
-    let exec_inspect = DOCKER.inspect_exec(&exec_id).await?;
+    let exec_inspect = docker.inspect_exec(&exec_id).await?;
     if let Some(code) = exec_inspect.exit_code {
         exit_code = code;
     }
@@ -164,8 +156,9 @@ pub async fn exec_command_in_container(
 }
 
 pub async fn cleanup_container(container_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = DOCKER.stop_container(container_id, None).await;
-    let _ = DOCKER.remove_container(container_id, None).await;
+    let docker = get_docker().await?;
+    let _ = docker.stop_container(container_id, None).await;
+    let _ = docker.remove_container(container_id, None).await;
     println!("Cleaned up container: {}", container_id);
     Ok(())
 } 
