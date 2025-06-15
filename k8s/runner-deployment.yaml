@@ -1,0 +1,148 @@
+# GitHub Actions Runner - Kubernetes Deployment
+# Purpose: Deploy self-hosted runner with dynamic features to Kubernetes
+# Prerequisites:
+#   1. Container image pushed to registry (e.g., ghcr.io/org/runner:latest)
+#   2. Secret 'github-runner-secret' with runner token
+#   3. ConfigMap 'github-runner-config' with GitHub URL
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-runner
+  labels:
+    app: github-runner
+    component: ci-runner
+spec:
+  # Start with single replica - scale based on workload
+  replicas: 1
+  
+  selector:
+    matchLabels:
+      app: github-runner
+      
+  template:
+    metadata:
+      labels:
+        app: github-runner
+      annotations:
+        # Force pod restart when config changes
+        checksum/config: "UPDATE_ON_CONFIG_CHANGE"
+        
+    spec:
+      # Security context for container
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        
+      containers:
+      - name: runner
+        # Update this with your actual image registry and tag
+        image: ghcr.io/your-org/github-runner:latest
+        imagePullPolicy: Always
+        
+        # Resource limits to prevent resource exhaustion
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+            
+        # Environment configuration
+        env:
+        # Required: GitHub repository URL
+        - name: GITHUB_URL
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: github-url
+              
+        # Required: Runner registration token (sensitive)
+        - name: RUNNER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-runner-secret
+              key: runner-token
+              
+        # Optional: Runner name (unique per pod)
+        - name: RUNNER_NAME
+          value: "k8s-runner-$(HOSTNAME)"
+          
+        # Optional: Labels for job targeting
+        - name: RUNNER_LABELS
+          value: "self-hosted,Linux,X64,kubernetes,container"
+          
+        # Optional: Features to install
+        - name: RUNNER_FEATURES
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: runner-features
+              optional: true
+              
+        # Health check to ensure runner is operational
+        livenessProbe:
+          exec:
+            command:
+            - pgrep
+            - -f
+            - "Runner.Listener"
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+          
+        # Readiness check for runner registration
+        readinessProbe:
+          exec:
+            command:
+            - test
+            - -f
+            - "/home/runner/.runner"
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          
+        # Graceful shutdown handling
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - "pkill -TERM Runner.Listener || true; sleep 10"
+              
+      # Restart policy for runner stability
+      restartPolicy: Always
+      
+      # Graceful termination period
+      terminationGracePeriodSeconds: 120
+
+---
+# ConfigMap for non-sensitive configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: github-runner-config
+data:
+  # Update with your GitHub repository or organization URL
+  github-url: "https://github.com/your-org/your-repo"
+  
+  # Features to install (space-separated)
+  runner-features: "nodejs python docker"
+
+---
+# Secret template for sensitive data
+# Note: Create this manually with actual values
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-runner-secret
+type: Opaque
+data:
+  # Base64 encoded runner token from GitHub
+  # Get token from: GitHub Settings > Actions > Runners > New self-hosted runner
+  # Example: echo -n "your_token_here" | base64
+  runner-token: "BASE64_ENCODED_TOKEN_HERE"

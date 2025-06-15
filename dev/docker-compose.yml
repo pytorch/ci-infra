@@ -1,0 +1,56 @@
+# GitHub Actions Runner - Local Development Setup
+# Purpose: Test runner container locally before deployment
+# Usage: 
+#   1. Copy .env.example to .env and configure
+#   2. Run: docker-compose up --build
+
+version: '3.8'
+
+services:
+  # GitHub Actions Runner with feature installation
+  runner:
+    build:
+      context: ../runners/base
+      dockerfile: Dockerfile
+      # Ensure linux/amd64 platform for ARM64 macOS users
+      # This prevents architecture mismatches when deploying to x86_64 servers
+      platforms:
+        - linux/amd64
+    container_name: github-runner-dev
+    
+    # Environment configuration
+    # Note: Sensitive values should be in .env file (not committed)
+    environment:
+      # Required: GitHub repository URL
+      GITHUB_URL: ${GITHUB_URL}
+      
+      # Required: Runner registration token from GitHub
+      RUNNER_TOKEN: ${RUNNER_TOKEN}
+      
+      # Optional: Custom runner name (defaults to container hostname)
+      RUNNER_NAME: ${RUNNER_NAME:-dev-runner}
+      
+      # Optional: Runner labels for job targeting
+      RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,Linux,X64,container,dev}
+      
+      # Optional: Features to install (space-separated)
+      RUNNER_FEATURES: ${RUNNER_FEATURES:-nodejs python docker}
+    
+    # Mount docker socket for Docker-in-Docker functionality
+    # This allows the runner to build and run containers
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      
+      # Optional: Mount local workspace for development
+      # - ./workspace:/home/runner/_work
+    
+    # Restart policy for development stability
+    restart: unless-stopped
+    
+    # Health check to ensure runner is operational
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "Runner.Listener"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
