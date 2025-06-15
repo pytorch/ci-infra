@@ -1,0 +1,47 @@
+FROM ubuntu:jammy
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Set working directory
+WORKDIR /app
+
+# Copy Cargo files first for better caching
+COPY Cargo.toml Cargo.lock ./
+
+# Create a dummy main.rs to build dependencies
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+
+# Build dependencies (this layer will be cached)
+RUN cargo build --release && rm -rf src
+
+# Copy the actual source code
+COPY src ./src
+
+# Build the actual project
+RUN cargo build --release
+
+# Create a non-root user for testing
+RUN useradd -m -s /bin/bash testuser
+
+# Set up environment for testing
+ENV HOME=/home/testuser
+USER testuser
+WORKDIR /home/testuser
+
+# Copy the built binary
+COPY target/release/runner-installer /usr/local/bin/runner-installer
+
+# Default command
+CMD ["/bin/bash"]

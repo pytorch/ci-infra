@@ -26,4 +26,9 @@ async-trait = "0.1"
 winapi = { version = "0.3", features = ["winbase", "processenv"] }
 
 [dev-dependencies]
-tempfile = "3.0" 
+tempfile = "3.0"
+bollard = "0.16"
+tokio-test = "0.4"
+tar = "0.4"
+futures-util = "0.3"
+lazy_static = "1.4"
