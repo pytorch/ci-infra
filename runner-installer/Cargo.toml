@@ -1,0 +1,29 @@
+[package]
+name = "runner-installer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "GitHub Actions Runner feature installer"
+
+[[bin]]
+name = "runner-installer"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+which = "4.0"
+async-trait = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winbase", "processenv"] }
+
+[dev-dependencies]
+tempfile = "3.0" 

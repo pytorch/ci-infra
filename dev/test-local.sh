@@ -1,13 +1,13 @@
 #!/bin/bash
-# GitHub Actions Runner - Local Testing Script
-# Purpose: Build and test runner container without connecting to GitHub
+# GitHub Actions Runner - Local Testing Script (Rust-based)
+# Purpose: Build and test runner container with Rust installer without connecting to GitHub
 # Usage: ./test-local.sh [feature1] [feature2] ...
 
 set -e
 
 # Configuration
 IMAGE_NAME="github-runner-test"
-BUILD_CONTEXT="../runners/base"
+BUILD_CONTEXT="../"
 
 # Colors for output
 RED='\033[0;31m'
@@ -45,7 +45,7 @@ log_info "Testing features: $TEST_FEATURES"
 
 # Step 1: Build the container image
 log_info "Building runner container image..."
-if ! docker build $PLATFORM -t "$IMAGE_NAME" "$BUILD_CONTEXT"; then
+if ! docker build $PLATFORM -f runners/base/Dockerfile -t "$IMAGE_NAME" "$BUILD_CONTEXT"; then
     log_error "Failed to build container image"
     if [[ -n "$PLATFORM" ]]; then
         log_error "Tip: Ensure Docker Desktop has 'Use cross-platform features' enabled"
@@ -61,10 +61,10 @@ log_info "Testing feature installation..."
 # Create a test command that installs features and verifies them
 TEST_CMD="
 set -e
-echo 'Testing feature installation...'
+echo 'Testing Rust-based feature installation...'
 
-# Install features
-RUNNER_FEATURES='$TEST_FEATURES' /usr/local/bin/install-features.sh
+# Install features using Rust installer
+runner-installer --features='$TEST_FEATURES' --verbose
 
 # Verify installations
 echo 'Verifying installed features...'

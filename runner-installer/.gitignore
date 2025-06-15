@@ -1,0 +1,10 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo configuration
+.cargo/
+
+# Test artifacts
+tests/fixtures/output/
+tests/temp/ 

@@ -45,13 +45,13 @@ log "  Runner Name: $RUNNER_NAME"
 log "  Labels: $RUNNER_LABELS"
 log "  Work Directory: $RUNNER_WORKDIR"
 
-# Install features if requested
+# Install features using Rust-based installer
 if [ -n "${RUNNER_FEATURES:-}" ]; then
     log "Features requested: $RUNNER_FEATURES"
-    log "Installing features..."
+    log "Installing features using Rust installer..."
     
-    # Call our feature installation script
-    if ! /usr/local/bin/install-features.sh; then
+    # Call our Rust-based feature installer with verbose logging
+    if ! runner-installer --features="$RUNNER_FEATURES" --verbose; then
         log "ERROR: Feature installation failed"
         exit 1
     fi
