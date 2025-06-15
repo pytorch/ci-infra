@@ -182,10 +182,24 @@ cargo test --test integration_tests -- --test-threads=1
 
 ### Container Testing
 
-Advanced Docker-based testing using the **bollard** Docker API for programmatic container management:
+Advanced Docker-based testing using the **bollard** Docker API for programmatic container management.
+
+#### Prerequisites
+
+Before running container tests, you must first build the test Docker image:
 
 ```bash
-# Run container tests (requires Docker daemon)
+# Build the test Docker image (required before running tests)
+make build-test-image
+
+# Or build manually
+docker build -f docker/Dockerfile.ubuntu-jammy -t runner-installer-test-ubuntu-jammy .
+```
+
+#### Running Tests
+
+```bash
+# Run container tests (requires Docker daemon and pre-built image)
 cargo test --test container_tests
 
 # Run specific container test
@@ -193,6 +207,31 @@ cargo test --test container_tests test_uv_installation_ubuntu_jammy
 
 # Run with verbose output
 cargo test --test container_tests -- --nocapture
+
+# Build image and run tests in one command
+make test-with-image
+```
+
+#### Available Make Commands
+
+```bash
+# Show all available commands
+make help
+
+# Build the test Docker image
+make build-test-image
+
+# Remove the test Docker image
+make clean-test-image
+
+# Run tests (requires image to be built first)
+make test
+
+# Build image and run tests
+make test-with-image
+
+# Clean up all test artifacts
+make clean
 ```
 
 #### Container Test Features
@@ -214,11 +253,14 @@ Current container tests include:
 ### Manual Docker Testing
 
 ```bash
-# Build test container manually
-docker build -f docker/Dockerfile.ubuntu-jammy -t runner-installer-test .
+# Build test container using Makefile
+make build-test-image
+
+# Or build manually
+docker build -f docker/Dockerfile.ubuntu-jammy -t runner-installer-test-ubuntu-jammy .
 
 # Test feature installation interactively
-docker run --rm -it runner-installer-test bash
+docker run --rm -it runner-installer-test-ubuntu-jammy bash
 # Inside container: runner-installer --features="python,uv" --verbose
 ```
 
@@ -337,8 +379,11 @@ git clone <repository-url>
 cd runner-installer
 cargo build
 
-# Run tests (requires Docker for container tests)
-cargo test
+# Build Docker test image (required for container tests)
+make build-test-image
+
+# Run all tests (requires Docker)
+make test
 
 # Run only unit tests (no Docker required)
 cargo test --lib

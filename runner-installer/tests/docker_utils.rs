@@ -9,6 +9,7 @@ use std::time::Instant;
 
 pub const TEST_IMAGE_NAME: &str = "runner-installer-test-ubuntu-jammy";
 
+// Track whether we've already verified the image exists (to avoid repeated checks)
 static IMAGE_BUILT: AtomicBool = AtomicBool::new(false);
 
 // Debug logging macro - always output during tests for debugging
@@ -61,23 +62,41 @@ pub async fn get_docker() -> Result<Docker, Box<dyn std::error::Error>> {
 
 pub async fn ensure_test_image() -> Result<(), Box<dyn std::error::Error>> {
     if IMAGE_BUILT.load(Ordering::Relaxed) {
-        debug_log!("Test image already built, skipping");
+        debug_log!("Test image already verified to exist, skipping check");
         return Ok(());
     }
 
-    debug_log!("Test image not built yet, building now...");
+    debug_log!("Checking if test image exists...");
     let docker = get_docker().await?;
 
-    time_operation!("Docker image build", {
-        build_test_image(&docker).await?;
-        IMAGE_BUILT.store(true, Ordering::Relaxed);
-        debug_log!("Image build completed and marked as built");
-        Ok::<(), Box<dyn std::error::Error>>(())
-    })?;
+    // Check if the image exists
+    debug_log!("Inspecting image: {}", TEST_IMAGE_NAME);
+    match docker.inspect_image(TEST_IMAGE_NAME).await {
+        Ok(_) => {
+            debug_log!("Test image found: {}", TEST_IMAGE_NAME);
+            IMAGE_BUILT.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+        Err(_) => {
+            debug_log!("Image not found: {}", TEST_IMAGE_NAME);
+            eprintln!("
+❌ Docker test image '{}' not found.
 
-    Ok(())
+Please build it first by running:
+  cd runner-installer && make build-test-image
+
+Or run the full test suite with image building:
+  cd runner-installer && make test-with-image
+", TEST_IMAGE_NAME);
+            Err(format!("Docker test image '{}' not found", TEST_IMAGE_NAME).into())
+        }
+    }
 }
 
+// NOTE: Docker image building has been moved to Makefile.
+// Use `make build-test-image` to build the test image.
+// This function is kept for reference but is no longer used.
+#[allow(dead_code)]
 pub async fn build_test_image(docker: &Docker) -> Result<(), Box<dyn std::error::Error>> {
     debug_log!("Starting Docker image build process");
 
