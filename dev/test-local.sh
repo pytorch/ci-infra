@@ -45,7 +45,7 @@ log_info "Testing features: $TEST_FEATURES"
 
 # Step 1: Build the container image
 log_info "Building runner container image..."
-if ! docker build $PLATFORM -f runners/base/Dockerfile -t "$IMAGE_NAME" "$BUILD_CONTEXT"; then
+if ! docker build $PLATFORM -f "${BUILD_CONTEXT}/runners/base/Dockerfile" -t "$IMAGE_NAME" "$BUILD_CONTEXT"; then
     log_error "Failed to build container image"
     if [[ -n "$PLATFORM" ]]; then
         log_error "Tip: Ensure Docker Desktop has 'Use cross-platform features' enabled"
@@ -59,12 +59,14 @@ log_info "Container build successful"
 log_info "Testing feature installation..."
 
 # Create a test command that installs features and verifies them
+# Convert space-separated features to comma-separated for CLI
+FEATURES_CSV=$(echo "$TEST_FEATURES" | tr ' ' ',')
 TEST_CMD="
 set -e
 echo 'Testing Rust-based feature installation...'
 
 # Install features using Rust installer
-runner-installer --features='$TEST_FEATURES' --verbose
+runner-installer --features='$FEATURES_CSV' --verbose
 
 # Verify installations
 echo 'Verifying installed features...'
