@@ -101,11 +101,9 @@ impl Feature for Uv {
         info!("Installing uv...");
 
         match &self.os_info.family {
-            OsFamily::Linux => match self.os_info.name.as_str() {
-                _ => {
-                    debug!("Installing uv via standalone installer (fallback)");
-                    self.install_via_standalone().await?;
-                }
+            OsFamily::Linux => {
+                debug!("Installing uv via standalone installer");
+                self.install_via_standalone().await?;
             },
             OsFamily::Windows => {
                 debug!("Attempting to install uv on Windows via package manager");
@@ -266,7 +264,7 @@ impl Uv {
                     debug!("Failed to create symlink to /usr/local/bin: {}", e);
                     // Try with sudo if available
                     let sudo_result = tokio::process::Command::new("sudo")
-                        .args(&["ln", "-sf", &uv_path, usr_local_bin])
+                        .args(["ln", "-sf", &uv_path, usr_local_bin])
                         .status()
                         .await;
 
@@ -371,7 +369,7 @@ impl Uv {
         let powershell_cmd = format!("irm {} | iex", install_url);
 
         let status = tokio::process::Command::new("powershell")
-            .args(&["-ExecutionPolicy", "ByPass", "-c", &powershell_cmd])
+            .args(["-ExecutionPolicy", "ByPass", "-c", &powershell_cmd])
             .status()
             .await?;
 

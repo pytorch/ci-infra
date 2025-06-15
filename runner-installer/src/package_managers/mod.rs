@@ -41,6 +41,12 @@ pub fn create_package_manager(os_info: &OsInfo) -> Result<Box<dyn PackageManager
 /// APT package manager for Debian/Ubuntu
 pub struct AptPackageManager;
 
+impl Default for AptPackageManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AptPackageManager {
     pub fn new() -> Self {
         Self
@@ -64,7 +70,7 @@ impl PackageManager for AptPackageManager {
 
     async fn is_installed(&self, package: &str) -> bool {
         tokio::process::Command::new("dpkg")
-            .args(&["-l", package])
+            .args(["-l", package])
             .output()
             .await
             .map(|output| output.status.success())
@@ -93,6 +99,12 @@ impl PackageManager for AptPackageManager {
 /// YUM package manager for CentOS/RHEL/Fedora
 pub struct YumPackageManager;
 
+impl Default for YumPackageManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl YumPackageManager {
     pub fn new() -> Self {
         Self
@@ -116,7 +128,7 @@ impl PackageManager for YumPackageManager {
 
     async fn is_installed(&self, package: &str) -> bool {
         tokio::process::Command::new("rpm")
-            .args(&["-q", package])
+            .args(["-q", package])
             .output()
             .await
             .map(|output| output.status.success())
@@ -145,6 +157,12 @@ impl PackageManager for YumPackageManager {
 /// APK package manager for Alpine Linux
 pub struct ApkPackageManager;
 
+impl Default for ApkPackageManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ApkPackageManager {
     pub fn new() -> Self {
         Self
@@ -168,7 +186,7 @@ impl PackageManager for ApkPackageManager {
 
     async fn is_installed(&self, package: &str) -> bool {
         tokio::process::Command::new("apk")
-            .args(&["info", "-e", package])
+            .args(["info", "-e", package])
             .output()
             .await
             .map(|output| output.status.success())
@@ -197,6 +215,12 @@ impl PackageManager for ApkPackageManager {
 /// Chocolatey package manager for Windows
 pub struct ChocolateyPackageManager;
 
+impl Default for ChocolateyPackageManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChocolateyPackageManager {
     pub fn new() -> Self {
         Self
@@ -221,7 +245,7 @@ impl PackageManager for ChocolateyPackageManager {
 
     async fn is_installed(&self, package: &str) -> bool {
         tokio::process::Command::new("choco")
-            .args(&["list", "--local-only", package])
+            .args(["list", "--local-only", package])
             .output()
             .await
             .map(|output| output.status.success())
@@ -249,6 +273,12 @@ impl PackageManager for ChocolateyPackageManager {
 /// Homebrew package manager for macOS
 pub struct BrewPackageManager;
 
+impl Default for BrewPackageManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BrewPackageManager {
     pub fn new() -> Self {
         Self
@@ -271,7 +301,7 @@ impl PackageManager for BrewPackageManager {
 
     async fn is_installed(&self, package: &str) -> bool {
         tokio::process::Command::new("brew")
-            .args(&["list", package])
+            .args(["list", package])
             .output()
             .await
             .map(|output| output.status.success())

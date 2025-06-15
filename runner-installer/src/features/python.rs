@@ -140,7 +140,7 @@ impl Feature for Python {
 
         // Test virtual environment creation
         let venv_test = tokio::process::Command::new("python3")
-            .args(&["-m", "venv", "--help"])
+            .args(["-m", "venv", "--help"])
             .output()
             .await;
 
@@ -160,7 +160,7 @@ impl Python {
         debug!("Upgrading pip to latest version");
 
         let status = tokio::process::Command::new("python3")
-            .args(&["-m", "pip", "install", "--upgrade", "pip"])
+            .args(["-m", "pip", "install", "--upgrade", "pip"])
             .status()
             .await?;
 
