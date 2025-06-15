@@ -1,0 +1,40 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Git
+.git/
+.gitignore
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+tests/fixtures/output/
+tests/temp/
+
+# Logs
+*.log
+
+# Docker
+.dockerignore
+Dockerfile*
+
+# Documentation that's not needed in container
+README.md
+docs/
+
+# CI/CD files
+.github/
+
+# Other large directories that aren't needed
+node_modules/
+.cargo/registry/
+.cargo/git/ 

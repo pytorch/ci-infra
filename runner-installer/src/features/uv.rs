@@ -101,14 +101,12 @@ impl Feature for Uv {
         info!("Installing uv...");
 
         match &self.os_info.family {
-            OsFamily::Linux => {
-                match self.os_info.name.as_str() {
-                    _ => {
-                        debug!("Installing uv via standalone installer (fallback)");
-                        self.install_via_standalone().await?;
-                    }
+            OsFamily::Linux => match self.os_info.name.as_str() {
+                _ => {
+                    debug!("Installing uv via standalone installer (fallback)");
+                    self.install_via_standalone().await?;
                 }
-            }
+            },
             OsFamily::Windows => {
                 debug!("Attempting to install uv on Windows via package manager");
                 // Try Chocolatey/Scoop first, fall back to standalone installer
@@ -177,7 +175,6 @@ impl Feature for Uv {
 }
 
 impl Uv {
-
     /// Try to install via Windows package managers
     async fn try_windows_package_manager_install(
         &self,
@@ -220,13 +217,149 @@ impl Uv {
                 .await?
         };
 
-        if status.success() {
-            debug!("uv installed successfully via standalone installer");
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
+        if !status.success() {
+            return Err(anyhow::anyhow!(
                 "Failed to install uv via standalone installer"
-            ))
+            ));
+        }
+
+        debug!("uv installed successfully via standalone installer");
+
+        // After installation, ensure uv is accessible in PATH
+        self.ensure_uv_in_path().await?;
+
+        Ok(())
+    }
+
+    /// Ensure uv is accessible in PATH after installation
+    async fn ensure_uv_in_path(&self) -> Result<()> {
+        let home_dir = std::env::var("HOME").unwrap_or_default();
+        let uv_path = format!("{}/.cargo/bin/uv", home_dir);
+
+        // Check if uv was installed to ~/.cargo/bin
+        if !std::path::Path::new(&uv_path).exists() {
+            debug!("uv not found at expected location: {}", uv_path);
+            return Ok(()); // Maybe it was installed elsewhere
+        }
+
+        debug!("Found uv at: {}", uv_path);
+
+        // First, try to add ~/.cargo/bin to PATH by updating shell profile
+        let bash_profile_updated = self.update_shell_profile(&home_dir).await;
+        if bash_profile_updated {
+            debug!("Updated shell profile to include ~/.cargo/bin in PATH");
+            return Ok(());
+        }
+
+        // If profile update didn't work, try to create symlinks in system directories
+        // Try to create a symlink in /usr/local/bin if it exists and is writable
+        let usr_local_bin = "/usr/local/bin/uv";
+        if std::path::Path::new("/usr/local/bin").exists() {
+            // Check if we can write to /usr/local/bin (may need sudo)
+            let symlink_result = tokio::fs::symlink(&uv_path, usr_local_bin).await;
+            match symlink_result {
+                Ok(_) => {
+                    debug!("Created symlink: {} -> {}", usr_local_bin, uv_path);
+                    return Ok(());
+                }
+                Err(e) => {
+                    debug!("Failed to create symlink to /usr/local/bin: {}", e);
+                    // Try with sudo if available
+                    let sudo_result = tokio::process::Command::new("sudo")
+                        .args(&["ln", "-sf", &uv_path, usr_local_bin])
+                        .status()
+                        .await;
+
+                    if let Ok(status) = sudo_result {
+                        if status.success() {
+                            debug!(
+                                "Created symlink with sudo: {} -> {}",
+                                usr_local_bin, uv_path
+                            );
+                            return Ok(());
+                        }
+                    }
+                    debug!("Failed to create symlink even with sudo");
+                }
+            }
+        }
+
+        // Try to create ~/bin directory and symlink there
+        let user_bin_dir = format!("{}/bin", home_dir);
+        let user_bin_uv = format!("{}/uv", user_bin_dir);
+
+        // Create ~/bin directory if it doesn't exist
+        if let Err(e) = tokio::fs::create_dir_all(&user_bin_dir).await {
+            debug!("Failed to create ~/bin directory: {}", e);
+        } else {
+            // Create symlink in ~/bin
+            match tokio::fs::symlink(&uv_path, &user_bin_uv).await {
+                Ok(_) => {
+                    debug!("Created symlink: {} -> {}", user_bin_uv, uv_path);
+                    // Also try to add ~/bin to PATH in shell profile
+                    self.add_user_bin_to_path(&home_dir).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    debug!("Failed to create symlink in ~/bin: {}", e);
+                }
+            }
+        }
+
+        warn!("Could not create symlink for uv in any PATH directory. uv may not be accessible without using full path: {}", uv_path);
+        Ok(())
+    }
+
+    /// Update shell profile to include ~/.cargo/bin in PATH
+    async fn update_shell_profile(&self, home_dir: &str) -> bool {
+        let cargo_env_path = format!("{}/.cargo/env", home_dir);
+        let bashrc_path = format!("{}/.bashrc", home_dir);
+
+        // First check if ~/.cargo/env exists (created by rustup)
+        if std::path::Path::new(&cargo_env_path).exists() {
+            // Add source ~/.cargo/env to .bashrc if not already there
+            if let Ok(bashrc_contents) = tokio::fs::read_to_string(&bashrc_path).await {
+                if !bashrc_contents.contains("source $HOME/.cargo/env") {
+                    let source_line =
+                        "\n# Added by runner-installer for cargo/uv\nsource $HOME/.cargo/env\n";
+                    if tokio::fs::write(&bashrc_path, format!("{}{}", bashrc_contents, source_line))
+                        .await
+                        .is_ok()
+                    {
+                        debug!("Added source ~/.cargo/env to .bashrc");
+                        return true;
+                    }
+                }
+            } else {
+                // Create .bashrc with cargo env source
+                let bashrc_content =
+                    "# Added by runner-installer for cargo/uv\nsource $HOME/.cargo/env\n";
+                if tokio::fs::write(&bashrc_path, bashrc_content).await.is_ok() {
+                    debug!("Created .bashrc with cargo env source");
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Add ~/bin to PATH in shell profile
+    async fn add_user_bin_to_path(&self, home_dir: &str) {
+        let bashrc_path = format!("{}/.bashrc", home_dir);
+        let export_line =
+            "\n# Added by runner-installer for ~/bin\nexport PATH=\"$HOME/bin:$PATH\"\n";
+
+        if let Ok(bashrc_contents) = tokio::fs::read_to_string(&bashrc_path).await {
+            if !bashrc_contents.contains("export PATH=\"$HOME/bin:$PATH\"") {
+                let _ =
+                    tokio::fs::write(&bashrc_path, format!("{}{}", bashrc_contents, export_line))
+                        .await;
+                debug!("Added ~/bin to PATH in .bashrc");
+            }
+        } else {
+            let _ = tokio::fs::write(&bashrc_path, export_line).await;
+            debug!("Created .bashrc with ~/bin in PATH");
         }
     }
 

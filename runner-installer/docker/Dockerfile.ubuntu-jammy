@@ -32,6 +32,9 @@ COPY src ./src
 # Build the actual project
 RUN cargo build --release
 
+# Move the built binary to /usr/local/bin (built inside container)
+RUN cp target/release/runner-installer /usr/local/bin/runner-installer
+
 # Create a non-root user for testing
 RUN useradd -m -s /bin/bash testuser
 
@@ -39,9 +42,6 @@ RUN useradd -m -s /bin/bash testuser
 ENV HOME=/home/testuser
 USER testuser
 WORKDIR /home/testuser
-
-# Copy the built binary
-COPY target/release/runner-installer /usr/local/bin/runner-installer
 
 # Default command
 CMD ["/bin/bash"]
