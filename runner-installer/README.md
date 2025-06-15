@@ -40,7 +40,27 @@ RUNNER_FEATURES="python uv" ./target/release/runner-installer
 
 ### Docker Integration
 
-The installer is designed to be embedded in Docker containers:
+The installer includes comprehensive Docker testing infrastructure. Pre-built Dockerfiles are available in the `docker/` directory for testing across different platforms.
+
+#### Available Test Images
+
+- **Ubuntu Jammy (22.04)**: `docker/Dockerfile.ubuntu-jammy`
+  - Includes Rust toolchain and build dependencies
+  - Pre-compiled runner-installer binary
+  - Used for container-based testing
+
+#### Building Test Containers
+
+```bash
+# Build Ubuntu test container
+docker build -f docker/Dockerfile.ubuntu-jammy -t runner-installer-ubuntu-jammy .
+
+# Run feature installation test
+docker run --rm runner-installer-ubuntu-jammy \
+    runner-installer --features="python,uv" --verbose
+```
+
+#### Embedding in Custom Images
 
 ```dockerfile
 # Copy and build Rust installer
@@ -61,9 +81,18 @@ runner-installer/
 │   ├── main.rs           # CLI entry point
 │   ├── lib.rs            # Main library interface
 │   ├── os/               # OS detection and abstractions
-│   ├── features/         # Feature implementations
+│   ├── features/         # Feature implementations (python, uv)
 │   ├── package_managers/ # Package manager abstractions
 │   └── config/           # Configuration management
+├── tests/
+│   ├── integration_tests.rs  # Feature integration tests
+│   ├── container_tests.rs    # Docker container tests
+│   └── docker_utils.rs       # Docker testing utilities
+├── docker/
+│   ├── Dockerfile.ubuntu-jammy  # Ubuntu 22.04 test container
+│   └── README.md                # Docker testing documentation
+├── Cargo.toml            # Project configuration and dependencies
+└── README.md             # This file
 ```
 
 ### Feature System
@@ -131,6 +160,8 @@ Usage: `runner-installer --config=config.yml`
 
 ## 🧪 Testing
 
+The project includes a comprehensive testing suite with unit tests, integration tests, and sophisticated container-based testing.
+
 ### Unit Tests
 
 ```bash
@@ -139,23 +170,56 @@ cargo test
 
 ### Integration Tests
 
+Test feature detection and installation logic:
+
 ```bash
-# Test feature detection
+# Run feature integration tests
 cargo test --test integration_tests
 
-# Test with specific OS
+# Run with specific test threading
 cargo test --test integration_tests -- --test-threads=1
 ```
 
-### Docker Testing
+### Container Testing
+
+Advanced Docker-based testing using the **bollard** Docker API for programmatic container management:
 
 ```bash
-# Build test container
-docker build -t runner-installer-test .
+# Run container tests (requires Docker daemon)
+cargo test --test container_tests
 
-# Test feature installation
-docker run --rm runner-installer-test \
-  runner-installer --features="python,uv" --verbose
+# Run specific container test
+cargo test --test container_tests test_uv_installation_ubuntu_jammy
+
+# Run with verbose output
+cargo test --test container_tests -- --nocapture
+```
+
+#### Container Test Features
+
+- **Automated Docker Operations**: Uses bollard crate for programmatic Docker interaction
+- **Multi-OS Testing**: Tests across different Linux distributions
+- **Feature Verification**: Validates both installation and functionality
+- **Cleanup Management**: Automatic container cleanup after tests
+- **Realistic Scenarios**: Tests include "already installed" and "fresh install" scenarios
+
+#### Test Coverage
+
+Current container tests include:
+- **UV Installation**: Fresh installation and verification on Ubuntu Jammy
+- **UV Already Installed**: Detection of existing installations
+- **UV Functionality**: Basic functionality verification after installation
+- **Python Integration**: Python ecosystem compatibility tests
+
+### Manual Docker Testing
+
+```bash
+# Build test container manually
+docker build -f docker/Dockerfile.ubuntu-jammy -t runner-installer-test .
+
+# Test feature installation interactively
+docker run --rm -it runner-installer-test bash
+# Inside container: runner-installer --features="python,uv" --verbose
 ```
 
 ## 🛠️ Development
@@ -273,8 +337,14 @@ git clone <repository-url>
 cd runner-installer
 cargo build
 
-# Run tests
+# Run tests (requires Docker for container tests)
 cargo test
+
+# Run only unit tests (no Docker required)
+cargo test --lib
+
+# Generate documentation
+cargo doc --open
 ```
 
 ## 📜 License
