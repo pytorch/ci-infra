@@ -17,9 +17,8 @@ A robust, cross-platform feature installation system for GitHub Actions runners,
 
 | Feature | Description | Platforms |
 |---------|-------------|-----------|
-| `nodejs` | Node.js JavaScript runtime | Linux, Windows, macOS |
-| `python` | Python programming language | Linux, Windows, macOS |
-| `docker` | Docker container runtime | Linux, Windows, macOS |
+| `python` | Python programming language with pip and venv | Linux, Windows, macOS |
+| `uv` | An extremely fast Python package installer and resolver | Linux, Windows, macOS |
 
 ## 🚀 Quick Start
 
@@ -30,13 +29,13 @@ A robust, cross-platform feature installation system for GitHub Actions runners,
 cargo build --release
 
 # Install features via environment variable
-RUNNER_FEATURES="nodejs python" ./target/release/runner-installer
+RUNNER_FEATURES="python uv" ./target/release/runner-installer
 
 # Install features via CLI argument
-./target/release/runner-installer --features="nodejs,python,docker"
+./target/release/runner-installer --features="python,uv"
 
 # Verbose logging
-./target/release/runner-installer --features="nodejs" --verbose
+./target/release/runner-installer --features="python" --verbose
 ```
 
 ### Docker Integration
@@ -156,7 +155,7 @@ docker build -t runner-installer-test .
 
 # Test feature installation
 docker run --rm runner-installer-test \
-  runner-installer --features="nodejs,python" --verbose
+  runner-installer --features="python,uv" --verbose
 ```
 
 ## 🛠️ Development
@@ -166,27 +165,27 @@ docker run --rm runner-installer-test \
 1. Create a new feature module in `src/features/`:
 
 ```rust
-// src/features/terraform.rs
+// src/features/nodejs.rs
 use async_trait::async_trait;
 use anyhow::Result;
 use crate::{features::Feature, package_managers::PackageManager, os::OsInfo};
 
-pub struct Terraform {
+pub struct NodeJs {
     os_info: OsInfo,
 }
 
-impl Terraform {
+impl NodeJs {
     pub fn new(os_info: OsInfo) -> Self {
         Self { os_info }
     }
 }
 
 #[async_trait]
-impl Feature for Terraform {
-    fn name(&self) -> &str { "terraform" }
+impl Feature for NodeJs {
+    fn name(&self) -> &str { "nodejs" }
     
     fn description(&self) -> &str {
-        "HashiCorp Terraform infrastructure as code"
+        "Node.js JavaScript runtime with npm package manager"
     }
     
     async fn is_installed(&self) -> bool {
@@ -206,12 +205,13 @@ impl Feature for Terraform {
 2. Register the feature in `src/features/mod.rs`:
 
 ```rust
-pub mod terraform;
+pub mod nodejs;
 
 pub fn create_feature(name: &str, os_info: &OsInfo) -> Result<Box<dyn Feature>> {
     match name {
-        // ... existing features
-        "terraform" => Ok(Box::new(terraform::Terraform::new(os_info.clone()))),
+        "python" => Ok(Box::new(python::Python::new(os_info.clone()))),
+        "uv" => Ok(Box::new(uv::Uv::new(os_info.clone()))),
+        "nodejs" => Ok(Box::new(nodejs::NodeJs::new(os_info.clone()))),
         _ => Err(anyhow::anyhow!("Unknown feature: {}", name)),
     }
 }
@@ -245,13 +245,13 @@ The installer uses structured logging with multiple levels:
 
 ```bash
 # Basic logging
-RUST_LOG=info runner-installer --features="nodejs"
+RUST_LOG=info runner-installer --features="python"
 
 # Debug logging
-RUST_LOG=debug runner-installer --features="nodejs"
+RUST_LOG=debug runner-installer --features="python"
 
 # JSON logging for monitoring
-RUST_LOG=info runner-installer --features="nodejs" 2>&1 | jq .
+RUST_LOG=info runner-installer --features="python" 2>&1 | jq .
 ```
 
 ## 🤝 Contributing
