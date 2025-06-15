@@ -50,7 +50,7 @@ async fn test_valid_feature_names() {
         .args(&[
             "run",
             "--",
-            "--features=nodejs",
+            "--features=python",
             "--config=/nonexistent/config.yml",
         ])
         .output()
@@ -60,14 +60,14 @@ async fn test_valid_feature_names() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should not contain "Unknown feature" error
-    assert!(!stderr.contains("Unknown feature: nodejs"));
-    assert!(!stdout.contains("Unknown feature: nodejs"));
+    assert!(!stderr.contains("Unknown feature: python"));
+    assert!(!stdout.contains("Unknown feature: python"));
 }
 
 #[tokio::test]
 async fn test_version_output() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--features=nodejs", "--verbose"])
+        .args(&["run", "--", "--features=python", "--verbose"])
         .output()
         .expect("Failed to execute command");
 
@@ -95,7 +95,7 @@ update_packages: false
         .args(&[
             "run",
             "--",
-            "--features=nodejs",
+            "--features=python",
             &format!("--config={}", config_path.display()),
         ])
         .output()
@@ -110,20 +110,20 @@ update_packages: false
 #[tokio::test]
 async fn test_comma_separated_features() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--features=nodejs,python,docker"])
+        .args(&["run", "--", "--features=python,uv"])
         .output()
         .expect("Failed to execute command");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Should detect all three features
-    assert!(stdout.contains("Installing 3 features"));
+    // Should detect both features
+    assert!(stdout.contains("Installing 2 features"));
 }
 
 #[tokio::test]
 async fn test_os_detection() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--features=nodejs", "--verbose"])
+        .args(&["run", "--", "--features=python", "--verbose"])
         .output()
         .expect("Failed to execute command");
 
@@ -138,7 +138,7 @@ async fn test_os_detection() {
 #[tokio::test]
 async fn test_unix_specific_features() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--features=nodejs", "--verbose"])
+        .args(&["run", "--", "--features=python", "--verbose"])
         .output()
         .expect("Failed to execute command");
 
@@ -157,7 +157,7 @@ async fn test_unix_specific_features() {
 async fn test_environment_variable_parsing() {
     let output = Command::new("cargo")
         .args(&["run"])
-        .env("RUNNER_FEATURES", "nodejs python")
+        .env("RUNNER_FEATURES", "python uv")
         .output()
         .expect("Failed to execute command");
 
@@ -171,7 +171,7 @@ async fn test_environment_variable_parsing() {
 async fn test_logging_levels() {
     // Test verbose logging
     let verbose_output = Command::new("cargo")
-        .args(&["run", "--", "--features=nodejs", "--verbose"])
+        .args(&["run", "--", "--features=python", "--verbose"])
         .output()
         .expect("Failed to execute command");
 
@@ -182,7 +182,7 @@ async fn test_logging_levels() {
 
     // Test normal logging
     let normal_output = Command::new("cargo")
-        .args(&["run", "--", "--features=nodejs"])
+        .args(&["run", "--", "--features=python"])
         .output()
         .expect("Failed to execute command");
 

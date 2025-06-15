@@ -2,8 +2,6 @@ use crate::{os::OsInfo, package_managers::PackageManager};
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub mod docker;
-pub mod nodejs;
 pub mod python;
 pub mod uv;
 
@@ -29,9 +27,7 @@ pub trait Feature {
 /// Create a feature instance by name
 pub fn create_feature(name: &str, os_info: &OsInfo) -> Result<Box<dyn Feature>> {
     match name {
-        "nodejs" => Ok(Box::new(nodejs::NodeJs::new(os_info.clone()))),
         "python" => Ok(Box::new(python::Python::new(os_info.clone()))),
-        "docker" => Ok(Box::new(docker::Docker::new(os_info.clone()))),
         "uv" => Ok(Box::new(uv::Uv::new(os_info.clone()))),
         _ => Err(anyhow::anyhow!("Unknown feature: {}", name)),
     }
