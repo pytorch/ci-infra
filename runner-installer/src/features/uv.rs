@@ -103,24 +103,6 @@ impl Feature for Uv {
         match &self.os_info.family {
             OsFamily::Linux => {
                 match self.os_info.name.as_str() {
-                    "ubuntu" | "debian" => {
-                        debug!("Attempting to install uv on Ubuntu/Debian via package manager");
-                        // Try package manager first, fall back to standalone installer
-                        if let Err(e) = self.try_package_manager_install(package_manager).await {
-                            warn!("Package manager installation failed: {}, falling back to standalone installer", e);
-                            self.install_via_standalone().await?;
-                        }
-                    }
-                    "alpine" => {
-                        debug!("Installing uv on Alpine Linux via standalone installer");
-                        // Alpine likely doesn't have uv in repos, use standalone installer
-                        self.install_via_standalone().await?;
-                    }
-                    "centos" | "rhel" | "fedora" => {
-                        debug!("Installing uv on CentOS/RHEL/Fedora via standalone installer");
-                        // These distros likely don't have uv in repos, use standalone installer
-                        self.install_via_standalone().await?;
-                    }
                     _ => {
                         debug!("Installing uv via standalone installer (fallback)");
                         self.install_via_standalone().await?;
@@ -195,17 +177,6 @@ impl Feature for Uv {
 }
 
 impl Uv {
-    /// Try to install via package manager (for Ubuntu/Debian)
-    async fn try_package_manager_install(
-        &self,
-        package_manager: &dyn PackageManager,
-    ) -> Result<()> {
-        // Most package managers don't have uv yet, but we can try common ones
-        package_manager.update().await?;
-        // Try to install specific version, may not be supported by all package managers
-        let package_spec = format!("uv={}", UV_VERSION);
-        package_manager.install(&package_spec).await
-    }
 
     /// Try to install via Windows package managers
     async fn try_windows_package_manager_install(
