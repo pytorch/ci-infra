@@ -1,7 +1,11 @@
-use async_trait::async_trait;
+use crate::{
+    features::Feature,
+    os::{OsFamily, OsInfo},
+    package_managers::PackageManager,
+};
 use anyhow::Result;
-use tracing::{info, debug, warn};
-use crate::{features::Feature, package_managers::PackageManager, os::{OsInfo, OsFamily}};
+use async_trait::async_trait;
+use tracing::{debug, info, warn};
 
 pub struct Docker {
     os_info: OsInfo,
@@ -51,7 +55,7 @@ impl Feature for Docker {
                         debug!("Installing Docker on Alpine Linux");
                         package_manager.install("docker").await?;
                         package_manager.install("docker-compose").await?;
-                        
+
                         // Start Docker service
                         self.start_docker_service().await?;
                     }
@@ -101,23 +105,25 @@ impl Feature for Docker {
         if output.status.success() {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             info!("Docker installed successfully: {}", version);
-            
+
             // Test Docker functionality (if daemon is running)
             let hello_world = tokio::process::Command::new("docker")
                 .args(&["run", "--rm", "hello-world"])
                 .output()
                 .await;
-                
+
             match hello_world {
                 Ok(output) if output.status.success() => {
                     info!("Docker functionality test: ✓");
                 }
                 _ => {
                     warn!("Docker installed but daemon may not be running");
-                    info!("Note: You may need to start Docker daemon or log out/in for group changes");
+                    info!(
+                        "Note: You may need to start Docker daemon or log out/in for group changes"
+                    );
                 }
             }
-            
+
             Ok(())
         } else {
             Err(anyhow::anyhow!("Docker verification failed"))
@@ -127,10 +133,13 @@ impl Feature for Docker {
 
 impl Docker {
     /// Install Docker on Ubuntu/Debian using official repository
-    async fn install_docker_ubuntu_debian(&self, package_manager: &dyn PackageManager) -> Result<()> {
+    async fn install_docker_ubuntu_debian(
+        &self,
+        package_manager: &dyn PackageManager,
+    ) -> Result<()> {
         // Update package list
         package_manager.update().await?;
-        
+
         // Install prerequisites
         package_manager.install("ca-certificates").await?;
         package_manager.install("curl").await?;
@@ -179,7 +188,11 @@ impl Docker {
 
         // Add Docker repository
         let repo_status = tokio::process::Command::new("sudo")
-            .args(&["yum-config-manager", "--add-repo", "https://download.docker.com/linux/centos/docker-ce.repo"])
+            .args(&[
+                "yum-config-manager",
+                "--add-repo",
+                "https://download.docker.com/linux/centos/docker-ce.repo",
+            ])
             .status()
             .await?;
 
@@ -225,13 +238,13 @@ impl Docker {
         if let Ok(status) = systemctl_status {
             if status.success() {
                 debug!("Docker service started via systemctl");
-                
+
                 // Enable Docker to start on boot
                 let _ = tokio::process::Command::new("sudo")
                     .args(&["systemctl", "enable", "docker"])
                     .status()
                     .await;
-                
+
                 return Ok(());
             }
         }
@@ -256,15 +269,15 @@ impl Docker {
     /// Add current user to docker group
     async fn add_user_to_docker_group(&self) -> Result<()> {
         // Get current user
-        let user_output = tokio::process::Command::new("whoami")
-            .output()
-            .await?;
+        let user_output = tokio::process::Command::new("whoami").output().await?;
 
         if !user_output.status.success() {
             return Err(anyhow::anyhow!("Failed to get current user"));
         }
 
-        let username = String::from_utf8_lossy(&user_output.stdout).trim().to_string();
+        let username = String::from_utf8_lossy(&user_output.stdout)
+            .trim()
+            .to_string();
 
         // Add user to docker group
         let status = tokio::process::Command::new("sudo")
@@ -281,4 +294,4 @@ impl Docker {
             Ok(())
         }
     }
-} 
+}

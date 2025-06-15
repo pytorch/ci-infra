@@ -39,4 +39,4 @@ impl InstallerConfig {
             None => Ok(Self::default()),
         }
     }
-} 
+}

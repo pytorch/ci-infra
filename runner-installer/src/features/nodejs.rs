@@ -1,7 +1,11 @@
-use async_trait::async_trait;
+use crate::{
+    features::Feature,
+    os::{OsFamily, OsInfo},
+    package_managers::PackageManager,
+};
 use anyhow::Result;
-use tracing::{info, debug};
-use crate::{features::Feature, package_managers::PackageManager, os::{OsInfo, OsFamily}};
+use async_trait::async_trait;
+use tracing::{debug, info};
 
 pub struct NodeJs {
     os_info: OsInfo,
@@ -45,7 +49,7 @@ impl Feature for NodeJs {
                 match self.os_info.name.as_str() {
                     "ubuntu" | "debian" => {
                         debug!("Installing Node.js on Ubuntu/Debian via NodeSource repository");
-                        
+
                         // Add NodeSource repository
                         let setup_script = tokio::process::Command::new("curl")
                             .args(&["-fsSL", "https://deb.nodesource.com/setup_18.x"])
@@ -53,14 +57,18 @@ impl Feature for NodeJs {
                             .await?;
 
                         if !setup_script.status.success() {
-                            return Err(anyhow::anyhow!("Failed to download NodeSource setup script"));
+                            return Err(anyhow::anyhow!(
+                                "Failed to download NodeSource setup script"
+                            ));
                         }
 
                         // Execute the setup script
                         let status = tokio::process::Command::new("sudo")
                             .arg("bash")
                             .arg("-c")
-                            .arg("curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -")
+                            .arg(
+                                "curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -",
+                            )
                             .status()
                             .await?;
 
@@ -77,8 +85,10 @@ impl Feature for NodeJs {
                         package_manager.install("npm").await?;
                     }
                     "centos" | "rhel" | "fedora" => {
-                        debug!("Installing Node.js on CentOS/RHEL/Fedora via NodeSource repository");
-                        
+                        debug!(
+                            "Installing Node.js on CentOS/RHEL/Fedora via NodeSource repository"
+                        );
+
                         // Add NodeSource repository
                         let status = tokio::process::Command::new("sudo")
                             .arg("bash")
@@ -130,20 +140,20 @@ impl Feature for NodeJs {
         if output.status.success() {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             info!("Node.js installed successfully: {}", version);
-            
+
             // Also check npm
             let npm_output = tokio::process::Command::new("npm")
                 .arg("--version")
                 .output()
                 .await;
-                
+
             if let Ok(npm_out) = npm_output {
                 if npm_out.status.success() {
                     let npm_version = String::from_utf8_lossy(&npm_out.stdout).trim().to_string();
                     info!("npm available: v{}", npm_version);
                 }
             }
-            
+
             Ok(())
         } else {
             Err(anyhow::anyhow!("Node.js verification failed"))
@@ -158,7 +168,12 @@ impl NodeJs {
             "x86_64" => "x64",
             "aarch64" => "arm64",
             "armv7l" => "armv7l",
-            _ => return Err(anyhow::anyhow!("Unsupported architecture: {}", self.os_info.arch)),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported architecture: {}",
+                    self.os_info.arch
+                ))
+            }
         };
 
         let download_url = format!(
@@ -185,4 +200,4 @@ impl NodeJs {
             Err(anyhow::anyhow!("Failed to install Node.js binary"))
         }
     }
-} 
+}

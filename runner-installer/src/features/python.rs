@@ -1,7 +1,11 @@
-use async_trait::async_trait;
+use crate::{
+    features::Feature,
+    os::{OsFamily, OsInfo},
+    package_managers::PackageManager,
+};
 use anyhow::Result;
-use tracing::{info, debug};
-use crate::{features::Feature, package_managers::PackageManager, os::{OsInfo, OsFamily}};
+use async_trait::async_trait;
+use tracing::{debug, info};
 
 pub struct Python {
     os_info: OsInfo,
@@ -112,7 +116,9 @@ impl Feature for Python {
             .await?;
 
         if python_output.status.success() {
-            let python_version = String::from_utf8_lossy(&python_output.stdout).trim().to_string();
+            let python_version = String::from_utf8_lossy(&python_output.stdout)
+                .trim()
+                .to_string();
             info!("Python installed successfully: {}", python_version);
         }
 
@@ -123,8 +129,13 @@ impl Feature for Python {
             .await?;
 
         if pip_output.status.success() {
-            let pip_version = String::from_utf8_lossy(&pip_output.stdout).trim().to_string();
-            info!("pip available: {}", pip_version.split_whitespace().nth(1).unwrap_or("unknown"));
+            let pip_version = String::from_utf8_lossy(&pip_output.stdout)
+                .trim()
+                .to_string();
+            info!(
+                "pip available: {}",
+                pip_version.split_whitespace().nth(1).unwrap_or("unknown")
+            );
         }
 
         // Test virtual environment creation
@@ -147,7 +158,7 @@ impl Python {
     /// Upgrade pip to the latest version
     async fn upgrade_pip(&self) -> Result<()> {
         debug!("Upgrading pip to latest version");
-        
+
         let status = tokio::process::Command::new("python3")
             .args(&["-m", "pip", "install", "--upgrade", "pip"])
             .status()
@@ -162,4 +173,4 @@ impl Python {
             Ok(())
         }
     }
-} 
+}
