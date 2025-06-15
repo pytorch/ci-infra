@@ -4,9 +4,9 @@ use bollard::image::BuildImageOptions;
 use bollard::Docker;
 use futures_util::stream::StreamExt;
 use std::path::Path;
-use std::env;
 use std::sync::Once;
 use lazy_static::lazy_static;
+use std::env;
 
 pub const TEST_IMAGE_NAME: &str = "runner-installer-test-ubuntu-jammy";
 pub const TEST_CONTAINER_NAME: &str = "runner-installer-test-container";
