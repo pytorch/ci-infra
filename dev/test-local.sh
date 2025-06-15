@@ -2,6 +2,13 @@
 # GitHub Actions Runner - Local Testing Script (Rust-based)
 # Purpose: Build and test runner container with Rust installer without connecting to GitHub
 # Usage: ./test-local.sh [feature1] [feature2] ...
+# Examples:
+#   ./test-local.sh                    # Test all default features (nodejs python docker uv)
+#   ./test-local.sh uv                 # Test only uv feature
+#   ./test-local.sh python uv          # Test python and uv features
+#   ./test-local.sh nodejs python      # Test nodejs and python features
+#
+# For comprehensive uv-only testing, use: ./test-uv.sh
 
 set -e
 
@@ -38,7 +45,7 @@ fi
 
 
 # Test features (default set if none provided)
-TEST_FEATURES=${*:-"nodejs python docker"}
+TEST_FEATURES=${*:-"nodejs python docker uv"}
 
 log_info "Starting local runner container test"
 log_info "Testing features: $TEST_FEATURES"
@@ -101,6 +108,34 @@ if command -v docker >/dev/null 2>&1; then
     echo '✓ Docker: \$(docker --version)'
 else
     echo '✗ Docker installation failed'
+    exit 1
+fi"
+            ;;
+        uv)
+            TEST_CMD="$TEST_CMD
+# Check for uv in PATH first, then common installation locations
+UV_CMD=''
+if command -v uv >/dev/null 2>&1; then
+    UV_CMD='uv'
+elif [ -f \"\$HOME/.cargo/bin/uv\" ]; then
+    UV_CMD=\"\$HOME/.cargo/bin/uv\"
+elif [ -f \"/usr/local/bin/uv\" ]; then
+    UV_CMD='/usr/local/bin/uv'
+elif [ -f \"/usr/bin/uv\" ]; then
+    UV_CMD='/usr/bin/uv'
+fi
+
+if [ -n \"\$UV_CMD\" ]; then
+    echo '✓ uv: \$(\$UV_CMD --version)'
+    # Test basic uv functionality
+    if \$UV_CMD --help >/dev/null 2>&1; then
+        echo '✓ uv help command works'
+    else
+        echo '✗ uv help command failed'
+        exit 1
+    fi
+else
+    echo '✗ uv installation failed'
     exit 1
 fi"
             ;;
