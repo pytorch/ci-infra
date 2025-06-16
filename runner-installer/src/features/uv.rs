@@ -2,6 +2,7 @@ use crate::{
     features::Feature,
     os::{OsFamily, OsInfo},
     package_managers::PackageManager,
+    utils::run_command,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -53,9 +54,7 @@ impl Feature for Uv {
 
     async fn is_installed(&self) -> bool {
         // First check if uv is in PATH
-        if tokio::process::Command::new("uv")
-            .arg("--version")
-            .output()
+        if run_command("uv", &["--version"])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false)
@@ -76,9 +75,7 @@ impl Feature for Uv {
 
         for path in common_paths {
             debug!("Checking for uv at: {}", path);
-            if tokio::process::Command::new(&path)
-                .arg("--version")
-                .output()
+            if run_command(&path, &["--version"])
                 .await
                 .map(|output| output.status.success())
                 .unwrap_or(false)
@@ -104,7 +101,7 @@ impl Feature for Uv {
             OsFamily::Linux => {
                 debug!("Installing uv via standalone installer");
                 self.install_via_standalone().await?;
-            },
+            }
             OsFamily::Windows => {
                 debug!("Attempting to install uv on Windows via package manager");
                 // Try Chocolatey/Scoop first, fall back to standalone installer
@@ -144,10 +141,7 @@ impl Feature for Uv {
         let uv_cmd = self.get_uv_command();
 
         // Get uv version
-        let uv_output = tokio::process::Command::new(&uv_cmd)
-            .arg("--version")
-            .output()
-            .await?;
+        let uv_output = run_command(&uv_cmd, &["--version"]).await?;
 
         if uv_output.status.success() {
             let uv_version = String::from_utf8_lossy(&uv_output.stdout)
@@ -157,10 +151,7 @@ impl Feature for Uv {
         }
 
         // Test basic uv functionality
-        let help_output = tokio::process::Command::new(&uv_cmd)
-            .arg("--help")
-            .output()
-            .await;
+        let help_output = run_command(&uv_cmd, &["--help"]).await;
 
         if let Ok(help_out) = help_output {
             if help_out.status.success() {
@@ -189,9 +180,7 @@ impl Uv {
         debug!("Installing uv via standalone installer");
 
         // Check if curl is available, fallback to wget
-        let curl_available = tokio::process::Command::new("curl")
-            .arg("--version")
-            .output()
+        let curl_available = run_command("curl", &["--version"])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false);
@@ -200,19 +189,11 @@ impl Uv {
         let status = if curl_available {
             debug!("Using curl for uv installation");
             let curl_cmd = format!("curl -LsSf {} | sh", install_url);
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(&curl_cmd)
-                .status()
-                .await?
+            run_command("sh", &["-c", &curl_cmd]).await?.status
         } else {
             debug!("Using wget for uv installation");
             let wget_cmd = format!("wget -qO- {} | sh", install_url);
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(&wget_cmd)
-                .status()
-                .await?
+            run_command("sh", &["-c", &wget_cmd]).await?.status
         };
 
         if !status.success() {
@@ -263,10 +244,9 @@ impl Uv {
                 Err(e) => {
                     debug!("Failed to create symlink to /usr/local/bin: {}", e);
                     // Try with sudo if available
-                    let sudo_result = tokio::process::Command::new("sudo")
-                        .args(["ln", "-sf", &uv_path, usr_local_bin])
-                        .status()
-                        .await;
+                    let sudo_result = run_command("sudo", &["ln", "-sf", &uv_path, usr_local_bin])
+                        .await
+                        .map(|output| output.status);
 
                     if let Ok(status) = sudo_result {
                         if status.success() {
@@ -368,10 +348,12 @@ impl Uv {
         let install_url = format!("https://astral.sh/uv/{}/install.ps1", UV_VERSION);
         let powershell_cmd = format!("irm {} | iex", install_url);
 
-        let status = tokio::process::Command::new("powershell")
-            .args(["-ExecutionPolicy", "ByPass", "-c", &powershell_cmd])
-            .status()
-            .await?;
+        let status = run_command(
+            "powershell",
+            &["-ExecutionPolicy", "ByPass", "-c", &powershell_cmd],
+        )
+        .await?
+        .status;
 
         if status.success() {
             debug!("uv installed successfully via standalone installer on Windows");

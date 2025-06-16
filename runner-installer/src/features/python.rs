@@ -2,6 +2,7 @@ use crate::{
     features::Feature,
     os::{OsFamily, OsInfo},
     package_managers::PackageManager,
+    utils::run_command,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -29,16 +30,12 @@ impl Feature for Python {
 
     async fn is_installed(&self) -> bool {
         // Check for Python 3
-        let python3_check = tokio::process::Command::new("python3")
-            .arg("--version")
-            .output()
+        let python3_check = run_command("python3", &["--version"])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false);
 
-        let pip_check = tokio::process::Command::new("pip3")
-            .arg("--version")
-            .output()
+        let pip_check = run_command("pip3", &["--version"])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false);
@@ -110,10 +107,7 @@ impl Feature for Python {
         }
 
         // Get Python version
-        let python_output = tokio::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .await?;
+        let python_output = run_command("python3", &["--version"]).await?;
 
         if python_output.status.success() {
             let python_version = String::from_utf8_lossy(&python_output.stdout)
@@ -123,10 +117,7 @@ impl Feature for Python {
         }
 
         // Get pip version
-        let pip_output = tokio::process::Command::new("pip3")
-            .arg("--version")
-            .output()
-            .await?;
+        let pip_output = run_command("pip3", &["--version"]).await?;
 
         if pip_output.status.success() {
             let pip_version = String::from_utf8_lossy(&pip_output.stdout)
@@ -139,10 +130,7 @@ impl Feature for Python {
         }
 
         // Test virtual environment creation
-        let venv_test = tokio::process::Command::new("python3")
-            .args(["-m", "venv", "--help"])
-            .output()
-            .await;
+        let venv_test = run_command("python3", &["-m", "venv", "--help"]).await;
 
         if let Ok(venv_out) = venv_test {
             if venv_out.status.success() {
@@ -159,12 +147,9 @@ impl Python {
     async fn upgrade_pip(&self) -> Result<()> {
         debug!("Upgrading pip to latest version");
 
-        let status = tokio::process::Command::new("python3")
-            .args(["-m", "pip", "install", "--upgrade", "pip"])
-            .status()
-            .await?;
+        let output = run_command("python3", &["-m", "pip", "install", "--upgrade", "pip"]).await?;
 
-        if status.success() {
+        if output.status.success() {
             debug!("pip upgraded successfully");
             Ok(())
         } else {

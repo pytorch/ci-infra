@@ -1,4 +1,7 @@
-use crate::os::{OsFamily, OsInfo};
+use crate::{
+    os::{OsFamily, OsInfo},
+    utils::run_command,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -69,26 +72,23 @@ impl PackageManager for AptPackageManager {
     }
 
     async fn is_installed(&self, package: &str) -> bool {
-        tokio::process::Command::new("dpkg")
-            .args(["-l", package])
-            .output()
+        run_command("dpkg", &["-l", package])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false)
     }
 
     async fn execute_command(&self, command: &str, args: &[&str]) -> Result<()> {
-        let status = tokio::process::Command::new("sudo")
-            .arg(command)
-            .args(args)
-            .status()
-            .await?;
+        let mut cmd_args = vec![command];
+        cmd_args.extend_from_slice(args);
 
-        if status.success() {
+        let output = run_command("sudo", &cmd_args).await?;
+
+        if output.status.success() {
             Ok(())
         } else {
             Err(anyhow::anyhow!(
-                "Command failed: {} {}",
+                "Command failed: sudo {} {}",
                 command,
                 args.join(" ")
             ))
@@ -127,26 +127,23 @@ impl PackageManager for YumPackageManager {
     }
 
     async fn is_installed(&self, package: &str) -> bool {
-        tokio::process::Command::new("rpm")
-            .args(["-q", package])
-            .output()
+        run_command("rpm", &["-q", package])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false)
     }
 
     async fn execute_command(&self, command: &str, args: &[&str]) -> Result<()> {
-        let status = tokio::process::Command::new("sudo")
-            .arg(command)
-            .args(args)
-            .status()
-            .await?;
+        let mut cmd_args = vec![command];
+        cmd_args.extend_from_slice(args);
+        
+        let output = run_command("sudo", &cmd_args).await?;
 
-        if status.success() {
+        if output.status.success() {
             Ok(())
         } else {
             Err(anyhow::anyhow!(
-                "Command failed: {} {}",
+                "Command failed: sudo {} {}",
                 command,
                 args.join(" ")
             ))
@@ -185,26 +182,23 @@ impl PackageManager for ApkPackageManager {
     }
 
     async fn is_installed(&self, package: &str) -> bool {
-        tokio::process::Command::new("apk")
-            .args(["info", "-e", package])
-            .output()
+        run_command("apk", &["info", "-e", package])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false)
     }
 
     async fn execute_command(&self, command: &str, args: &[&str]) -> Result<()> {
-        let status = tokio::process::Command::new("sudo")
-            .arg(command)
-            .args(args)
-            .status()
-            .await?;
+        let mut cmd_args = vec![command];
+        cmd_args.extend_from_slice(args);
+        
+        let output = run_command("sudo", &cmd_args).await?;
 
-        if status.success() {
+        if output.status.success() {
             Ok(())
         } else {
             Err(anyhow::anyhow!(
-                "Command failed: {} {}",
+                "Command failed: sudo {} {}",
                 command,
                 args.join(" ")
             ))
@@ -244,21 +238,16 @@ impl PackageManager for ChocolateyPackageManager {
     }
 
     async fn is_installed(&self, package: &str) -> bool {
-        tokio::process::Command::new("choco")
-            .args(["list", "--local-only", package])
-            .output()
+        run_command("choco", &["list", "--local-only", package])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false)
     }
 
     async fn execute_command(&self, command: &str, args: &[&str]) -> Result<()> {
-        let status = tokio::process::Command::new(command)
-            .args(args)
-            .status()
-            .await?;
+        let output = run_command(command, args).await?;
 
-        if status.success() {
+        if output.status.success() {
             Ok(())
         } else {
             Err(anyhow::anyhow!(
@@ -300,21 +289,16 @@ impl PackageManager for BrewPackageManager {
     }
 
     async fn is_installed(&self, package: &str) -> bool {
-        tokio::process::Command::new("brew")
-            .args(["list", package])
-            .output()
+        run_command("brew", &["list", package])
             .await
             .map(|output| output.status.success())
             .unwrap_or(false)
     }
 
     async fn execute_command(&self, command: &str, args: &[&str]) -> Result<()> {
-        let status = tokio::process::Command::new(command)
-            .args(args)
-            .status()
-            .await?;
+        let output = run_command(command, args).await?;
 
-        if status.success() {
+        if output.status.success() {
             Ok(())
         } else {
             Err(anyhow::anyhow!(

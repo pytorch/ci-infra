@@ -6,6 +6,7 @@ pub mod config;
 pub mod features;
 pub mod os;
 pub mod package_managers;
+pub mod utils;
 
 use anyhow::Result;
 use tracing::{info, warn};
@@ -63,6 +64,8 @@ impl FeatureInstaller {
 
     async fn install_single_feature(&self, feature_name: &str) -> Result<()> {
         let feature = features::create_feature(feature_name, &self.os_info)?;
-        feature.install(&*self.package_manager).await
+        feature.install(&*self.package_manager).await?;
+        feature.verify().await?;
+        Ok(())
     }
 }

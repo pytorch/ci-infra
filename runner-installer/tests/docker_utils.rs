@@ -77,7 +77,8 @@ pub async fn ensure_test_image() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(_) => {
             debug_log!("Image not found: {}", TEST_IMAGE_NAME);
-            eprintln!("
+            eprintln!(
+                "
 ❌ Docker test image '{}' not found.
 
 Please build it first by running:
@@ -85,7 +86,9 @@ Please build it first by running:
 
 Or run the full test suite with image building:
   cd runner-installer && make test-with-image
-", TEST_IMAGE_NAME);
+",
+                TEST_IMAGE_NAME
+            );
             Err(format!("Docker test image '{}' not found", TEST_IMAGE_NAME).into())
         }
     }
