@@ -2,7 +2,7 @@ use crate::{
     features::Feature,
     os::{OsFamily, OsInfo},
     package_managers::PackageManager,
-    utils::run_command,
+    utils::{cleanup_file, download_file, run_command},
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -179,22 +179,19 @@ impl Uv {
     async fn install_via_standalone(&self) -> Result<()> {
         debug!("Installing uv via standalone installer");
 
-        // Check if curl is available, fallback to wget
-        let curl_available = run_command("curl", &["--version"])
-            .await
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-
         let install_url = format!("https://astral.sh/uv/{}/install.sh", UV_VERSION);
-        let status = if curl_available {
-            debug!("Using curl for uv installation");
-            let curl_cmd = format!("curl -LsSf {} | sh", install_url);
-            run_command("sh", &["-c", &curl_cmd]).await?.status
-        } else {
-            debug!("Using wget for uv installation");
-            let wget_cmd = format!("wget -qO- {} | sh", install_url);
-            run_command("sh", &["-c", &wget_cmd]).await?.status
-        };
+
+        // Download the install script to a temporary file
+        let script_path = download_file(&install_url, "uv_install.sh", true).await?;
+
+        // Execute the install script
+        debug!("Executing install script");
+        let status = run_command("sh", &[script_path.to_str().unwrap()])
+            .await?
+            .status;
+
+        // Clean up temporary file
+        cleanup_file(&script_path).await;
 
         if !status.success() {
             return Err(anyhow::anyhow!(
@@ -346,14 +343,25 @@ impl Uv {
         debug!("Installing uv via standalone installer on Windows");
 
         let install_url = format!("https://astral.sh/uv/{}/install.ps1", UV_VERSION);
-        let powershell_cmd = format!("irm {} | iex", install_url);
 
+        // Download the PowerShell install script to a temporary file
+        let script_path = download_file(&install_url, "uv_install.ps1", false).await?;
+
+        // Execute the PowerShell script
         let status = run_command(
             "powershell",
-            &["-ExecutionPolicy", "ByPass", "-c", &powershell_cmd],
+            &[
+                "-ExecutionPolicy",
+                "ByPass",
+                "-File",
+                script_path.to_str().unwrap(),
+            ],
         )
         .await?
         .status;
+
+        // Clean up temporary file
+        cleanup_file(&script_path).await;
 
         if status.success() {
             debug!("uv installed successfully via standalone installer on Windows");

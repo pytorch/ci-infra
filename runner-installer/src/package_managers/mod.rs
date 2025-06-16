@@ -136,7 +136,7 @@ impl PackageManager for YumPackageManager {
     async fn execute_command(&self, command: &str, args: &[&str]) -> Result<()> {
         let mut cmd_args = vec![command];
         cmd_args.extend_from_slice(args);
-        
+
         let output = run_command("sudo", &cmd_args).await?;
 
         if output.status.success() {
@@ -191,7 +191,7 @@ impl PackageManager for ApkPackageManager {
     async fn execute_command(&self, command: &str, args: &[&str]) -> Result<()> {
         let mut cmd_args = vec![command];
         cmd_args.extend_from_slice(args);
-        
+
         let output = run_command("sudo", &cmd_args).await?;
 
         if output.status.success() {
