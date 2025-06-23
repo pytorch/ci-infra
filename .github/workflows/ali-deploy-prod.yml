@@ -1,6 +1,8 @@
 name: Terraform Apply / Runners / Production - ALI
 
 on:
+  schedule:
+    - cron: "0 12 * * 1"  # Monday mornings at 7 or 8 AM ET
   workflow_dispatch:
 
 concurrency:
