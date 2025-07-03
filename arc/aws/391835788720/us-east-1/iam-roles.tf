@@ -7,7 +7,7 @@ resource "aws_iam_role" "pytorch_ci_admins" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::391835788720:user/tha@linuxfoundation.org"
+          AWS = "arn:aws:iam::${local.aws_account_id}:root"
         }
         Action = "sts:AssumeRole"
       }
