@@ -12,7 +12,7 @@ To manage the ARC Cluster we need to assume role.
 Because the kubernetes_cluster_role_binding resource is bootstrapped by the
 Terraform CI Job. It will cause an "Unauthorized" failure when we try to
 terminate the EKS cluster if not using the job. If that's the case run
-`tofu state list` to get a list of all available state resources man remove
+`tofu state list` to get a list of all available state resources and remove
 the resource with `tofu state rm <resource>` to remove the admin_binding
 cluster role.
 
