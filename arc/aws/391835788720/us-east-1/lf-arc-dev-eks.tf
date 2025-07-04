@@ -12,6 +12,10 @@ module "pytorch_arc_dev_eks" {
   cluster_endpoint_public_access = true
   enable_cluster_creator_admin_permissions = false
 
+  kms_key_administrators = [
+    "arn:aws:iam::391835788720:role/ossci_gha_terraform"
+  ]
+
   access_entries = {
     ossci_gha_terraform = {
       principal_arn = "arn:aws:iam::${local.aws_account_id}:role/ossci_gha_terraform"
