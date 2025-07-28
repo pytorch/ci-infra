@@ -67,7 +67,7 @@ module "autoscaler-lambda" {
   scale_config_org                        = "pytorch"
   scale_config_repo                       = "test-infra"
   scale_config_repo_path                  = ".github/lf-scale-config.yml"
-  min_available_runners                   = 2
+  min_available_runners                   = 0
   retry_scale_up_chron_hud_query_url      = "https://hud.pytorch.org/api/clickhouse/queued_jobs_aggregate?parameters=%5B%5D"
 
   encrypt_secrets           = false
