@@ -442,7 +442,7 @@ def parse_args() -> argparse.Namespace:
     opts.add_argument(
         '--repo',
         help='Github repo to use for the deployment',
-        default=os.environ.get('GITHUB_REPOSITORY', 'pytorch-labs/pytorch-gha-infra').strip() or None,
+        default=os.environ.get('GITHUB_REPOSITORY', 'meta-pytorch/pytorch-gha-infra').strip() or None,
         type=str,
         required=False
     )
