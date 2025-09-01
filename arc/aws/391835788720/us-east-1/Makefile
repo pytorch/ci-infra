@@ -8,74 +8,92 @@ ifneq ($(GITHUB_ACTIONS),true)
 export AWS_PROFILE := $(ACCOUNT)
 endif
 
+# Default target
 .PHONY: all
 all:
-	echo "Please specify a target"
-	exit 1
+	@echo "$(ACCOUNT) Terraform orchestrator"
+	@echo ""
+	@echo "Usage:"
+	@echo "  make LAYER=01_infra init-layer"
+	@echo "  make LAYER=02_helm plan-layer"
+	@echo "  make LAYER=03_argocd apply-layer"
+	@echo "  make apply"
+	@echo ""
+	@echo "Available layers: 01_infra, 02_helm, 03_argocd"
+	@echo "Available layer commands: init-layer, plan-layer, apply-layer, destroy-layer, clean-layer, tflint-layer"
+	@echo "Available all-commands: init, plan, apply, destroy, clean, tflint"
+	@exit 1
 
-.terraform/modules/modules.json: backend.tf
-	tofu init
+LAYERS := 01_infra 02_helm 03_argocd
+VALID_LAYERS := $(LAYERS)
 
-.PHONY: init
-init: .terraform/modules/modules.json
+# Layer validation for single-layer commands
+ifdef LAYER
+ifeq (,$(filter $(LAYER),$(VALID_LAYERS)))
+$(error Invalid LAYER: $(LAYER). Must be one of: $(VALID_LAYERS))
+endif
+ifeq (,$(wildcard $(LAYER)))
+$(error Layer path $(LAYER) does not exist)
+endif
+endif
 
-.PHONY: clean
+# Export variables for child makefiles
+export PROHOME ACCOUNT REGION
+
+# Single layer commands - delegate to layer-specific makefile
+.PHONY: init-layer plan-layer apply-layer destroy-layer clean-layer tflint-layer
+init-layer plan-layer apply-layer destroy-layer clean-layer tflint-layer:
+ifndef LAYER
+	$(error LAYER is required for single commands. Usage: make REGION=$(REGION) LAYER=01_infra $@)
+endif
+	@echo "=== Running $@ for $(LAYER) layer in $(ACCOUNT)/$(REGION) ==="
+	cd $(LAYER) && $(MAKE) $(word 1,$(subst -, ,$@))
+
+# Multi-layer orchestration commands
+.PHONY: init apply destroy clean tflint plan
+
+# Initialize all layers
+init:
+	@echo "=== Initializing all layers for $(ACCOUNT)/$(REGION) ==="
+	$(foreach layer,$(LAYERS),$(MAKE) REGION=$(REGION) LAYER=$(layer) init-layer &&) true
+
+apply:
+	@echo "=== Deploying all layers for $(ACCOUNT)/$(REGION) ==="
+	$(foreach layer,$(LAYERS),$(MAKE) REGION=$(REGION) LAYER=$(layer) apply-layer &&) true
+
+plan:
+	@echo "=== Planning all layers for $(ACCOUNT)/$(REGION) ==="
+	$(foreach layer,$(LAYERS),$(MAKE) REGION=$(REGION) LAYER=$(layer) plan-layer &&) true
+
+tflint:
+	@echo "=== Linting all layers for $(ACCOUNT)/$(REGION) ==="
+	$(foreach layer,$(LAYERS),$(MAKE) REGION=$(REGION) LAYER=$(layer) tflint-layer &&) true
+
+destroy:
+	@echo "=== Destroying all layers for $(ACCOUNT)/$(REGION) (reverse order) ==="
+	$(foreach layer,$(call reverse,$(LAYERS)),$(MAKE) REGION=$(REGION) LAYER=$(layer) destroy-layer &&) true
+
 clean:
-	$(RM) -rf .terraform
-	$(RM) -rf inventory
-	$(RM) .terraform.lock.hcl
-	$(RM) backend-state.tf
-	$(RM) backend.plan
-	$(RM) backend.tf
-	$(RM) dyn_locals.tf
-	$(RM) terraform.tfstate
-	cd $(PROHOME)/ && make clean
+	@echo "=== Cleaning all layers for $(ACCOUNT)/$(REGION) ==="
+	$(foreach layer,$(LAYERS),$(MAKE) REGION=$(REGION) LAYER=$(layer) clean-layer &&) true
 
-.PHONY: backend-state
-backend-state: backend.tf
+# Utility function to reverse list (for destroy order)
+reverse = $(if $(1),$(call reverse,$(wordlist 2,$(words $(1)),$(1)))) $(firstword $(1))
 
-dyn_locals.tf:
-	echo -e "locals {\n  # tflint-ignore: terraform_unused_declarations\n  aws_region = \"$(REGION)\"\n  # tflint-ignore: terraform_unused_declarations\n  aws_account_id = \"$(ACCOUNT)\"\n}\n" >dyn_locals.tf
-
-backend.tf: backend-state.tf
-	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend.tf >backend.tf
-	$(RM) terraform.tfstate
-
-backend-state.tf: dyn_locals.tf
-	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
-	tofu get -update
-	tofu init -backend=false
-	tofu plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state -lock-timeout=15m ; \
-		ext_code=$$? ; \
-		if [ $$ext_code -eq 2 ] ; then \
-			if [ "$$GITHUB_ACTIONS" != "true" ] ; then \
-				echo "Backend state does not exist, creating" ; \
-				tofu apply ${TERRAFORM_EXTRAS} backend.plan ; \
-			else \
-				echo "Backend state does not exist, should not do it on a github action!" ; \
-				exit 1 ; \
-			fi ; \
-		elif [ $$ext_code -eq 0 ] ; then \
-			echo "Backend state already exists" ; \
+# Region status check
+.PHONY: status
+status:
+	@echo "=== Status: $(ACCOUNT)/$(REGION) ==="
+	@for layer in $(LAYERS); do \
+		echo "--- $$layer layer ---"; \
+		if [ -d "$(REGION)/$$layer" ]; then \
+			cd "$(REGION)/$$layer" && $(MAKE) --quiet status 2>/dev/null || echo "  Status: Not initialized"; \
 		else \
-			echo "Unexpected exit code $$ext_code" ; \
-			exit 1 ; \
-		fi
+			echo "  Status: Directory missing"; \
+		fi; \
+		echo ""; \
+	done
 
-.PHONY: plan
-plan: .terraform/modules/modules.json
-	tofu plan $(TERRAFORM_EXTRAS)
-
-.PHONY: apply
-apply: .terraform/modules/modules.json
-	tofu apply ${TERRAFORM_EXTRAS}
-
-.PHONY: destroy
-destroy: .terraform/modules/modules.json
-	echo "To make sure you want to run this, go to the Makefile and comment out the destroy target" ; exit 1
-	# terraform destroy ${TERRAFORM_EXTRAS}
-
-.PHONY: tflint
-tflint: .terraform/modules/modules.json
-	tflint --init
-	tflint --call-module-type=all --color --minimum-failure-severity=warning --recursive
+# Help target
+.PHONY: help
+help: all
