@@ -4,7 +4,7 @@ variable "aws_region" {
 }
 
 variable "bucket_state_name" {
-  description = "The naem for the bucket state"
+  description = "The name for the bucket state"
   type        = string
   default     = "tfstate"
 }

@@ -11,7 +11,7 @@ tflint:
 	cd modules ; for module in ./*/ ; do \
 		pushd $$module ; \
 		echo "==== START TFLINT: modules/$$module ============================================" ; \
-		tofu init && tflint --init && tflint --module --color --minimum-failure-severity=warning --recursive ; \
+		tofu init && tflint --init && tflint --call-module-type=all --color --minimum-failure-severity=warning --recursive ; \
 		echo "==== END TFLINT: modules/$$module ============================================" ; \
 		popd ; \
 	done
