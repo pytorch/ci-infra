@@ -1,0 +1,32 @@
+# This is a very simple setup of ArgoCD
+# No HA, no Ingress, no TLS, no Dex (for OIDC)
+# The admin password is generated and stored in a secret in the cluster
+
+# The domain is only set when exposing ArgoCD through an ingress
+# See https://artifacthub.io/packages/helm/argo/argo-cd#aws-application-load-balancer
+
+# global:
+#   domain: __ingress_host__
+
+configs:
+  params:
+    server.insecure: true
+
+server:
+  ingress:
+    enabled: false
+
+controller:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+redis:
+  enabled: true
+
+dex:
+  enabled: false

@@ -13,6 +13,10 @@ terraform {
       version = ">= 2.37, < 3.0"
       source  = "hashicorp/kubernetes"
     }
+    external = {
+      source  = "hashicorp/external"
+      version = "~> 2.0"
+    }
     helm = {
       source  = "hashicorp/helm"
       version = "~> 2.10"
@@ -22,8 +26,8 @@ terraform {
 
 provider "helm" {
   kubernetes {
-    host                  = data.terraform_remote_state.infra.outputs.cluster_endpoint
-    cluster_ca_certificate = base64decode(data.terraform_remote_state.infra.outputs.cluster_ca_certificate)
+    host                  = data.terraform_remote_state.runners[0].outputs.cluster_endpoint
+    cluster_ca_certificate = base64decode(data.terraform_remote_state.runners[0].outputs.cluster_ca_certificate)
     
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
@@ -32,7 +36,7 @@ provider "helm" {
         "eks",
         "get-token",
         "--cluster-name",
-        data.terraform_remote_state.outputs.cluster_name,
+        data.terraform_remote_state.runners[0].outputs.cluster_name,
       ]
     }
   }
