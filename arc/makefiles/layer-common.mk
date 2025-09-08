@@ -51,7 +51,7 @@ clean:
 	$(RM) terraform.tfstate*
 
 .PHONY: backend-state
-backend-state: backend.tf remote-state.tf
+backend-state: backend.tf
 
 dyn_locals.tf:
 	@echo "Generating dynamic locals for $(LAYER) layer..."
@@ -67,7 +67,7 @@ backend.tf: backend-state.tf
 	sed -e "s/#AWS_REGION/$(REGION)/g" -e "s/#BACKEND_KEY/$$BACKEND_KEY_PREFIX/g" <$(PROHOME)/templates/backend-file/backend.tf >backend.tf
 	$(RM) terraform.tfstate
 
-backend-state.tf: dyn_locals.tf
+backend-state.tf: dyn_locals.tf remote-state.tf
 	@echo "Setting up backend state for $(LAYER) layer..."
 	sed -e "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/templates/backend-file/backend-state.tf >backend-state.tf
 	tofu get -update

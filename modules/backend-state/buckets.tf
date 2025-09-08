@@ -1,9 +1,9 @@
-resource "aws_s3_bucket" "terraform_state" {
+resource "aws_s3_bucket_versioning" "terraform_state" {
   count =  data.external.terraform_state_bucket_exists.result.exists == "true" ? 0 : 1
   bucket = local.terraform_state_bucket_name
 
-  versioning {
-    enabled = true
+  versioning_configuration {
+    status = "Enabled"
   }
 
   lifecycle {
