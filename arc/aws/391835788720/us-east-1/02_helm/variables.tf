@@ -9,3 +9,21 @@ variable "argocd_namespace" {
   type        = string
   default     = "argocd"
 }
+
+variable "cert_manager_email" {
+  type        = string
+  description = "Email to be used for the cert-manager cluster issuer"
+  default     = "hostmaster+pytorch-ci-argocd@linuxfoundation.org"
+}
+
+variable "letsencrypt_issuer" {
+  type        = string
+  description = "Name of the cert-manager cluster issuer"
+  default     = "letsencrypt-prod"
+}
+
+variable "argocd_ingress_host" {
+  type        = string
+  description = "Public ArgoCD endpoint"
+  default     = "argocd.pytorch.org"
+}
