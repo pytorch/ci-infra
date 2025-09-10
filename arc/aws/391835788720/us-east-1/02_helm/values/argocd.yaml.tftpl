@@ -1,20 +1,27 @@
 # This is a very simple setup of ArgoCD
-# No HA, no Ingress, no TLS, no Dex (for OIDC)
+# No HA, no Dex (for OIDC)
 # The admin password is generated and stored in a secret in the cluster
 
-# The domain is only set when exposing ArgoCD through an ingress
-# See https://artifacthub.io/packages/helm/argo/argo-cd#aws-application-load-balancer
-
-# global:
-#   domain: __ingress_host__
+global:
+  domain: ${ingress_host}
 
 configs:
   params:
-    server.insecure: true
+    server.insecure: false
 
 server:
   ingress:
-    enabled: false
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: ${letsencrypt_issuer}
+      nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/app-root: /login
+    tls: 
+    - hosts:
+      - ${ingress_host}
+      secretName: ingress-argocd-server-tls
 
 controller:
   resources:

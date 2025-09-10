@@ -10,8 +10,13 @@ resource "helm_release" "argocd" {
 
   values = [
     # Nothing to pass to the template for now
-    templatefile("${path.module}/values/argocd.yaml.tftpl", {})
+    templatefile("${path.module}/values/argocd.yaml.tftpl", {
+      ingress_host       = var.argocd_ingress_host,
+      letsencrypt_issuer = var.letsencrypt_issuer,
+    })
   ]
+
+  depends_on = [null_resource.k8s_infra_ready]
 }
 
 # Verify that the service exists with expected name and namespace
