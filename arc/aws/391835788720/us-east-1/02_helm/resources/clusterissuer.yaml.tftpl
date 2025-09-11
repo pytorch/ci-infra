@@ -4,7 +4,6 @@ metadata:
   name: ${letsencrypt_issuer}
 spec:
   acme:
-    email: ${cert_manager_email}
     privateKeySecretRef:
       name: ${letsencrypt_issuer}
     server: https://acme-v02.api.letsencrypt.org/directory

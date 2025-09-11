@@ -29,8 +29,8 @@ terraform {
 }
 
 provider "kubernetes" {
-  host                   = data.terraform_remote_state.runners[0].outputs.cluster_endpoint
-  cluster_ca_certificate  = base64decode(data.terraform_remote_state.runners[0].outputs.cluster_ca_certificate)
+  host                   = local.cluster_endpoint
+  cluster_ca_certificate  = base64decode(local.cluster_ca_certificate)
   
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
@@ -39,7 +39,7 @@ provider "kubernetes" {
       "eks",
       "get-token",
       "--cluster-name",
-      data.terraform_remote_state.runners[0].outputs.cluster_name,
+      local.cluster_name,
     ]
   }
 }
@@ -47,8 +47,8 @@ provider "kubernetes" {
 
 provider "helm" {
   kubernetes {
-    host                  = data.terraform_remote_state.runners[0].outputs.cluster_endpoint
-    cluster_ca_certificate = base64decode(data.terraform_remote_state.runners[0].outputs.cluster_ca_certificate)
+    host                  = local.cluster_endpoint
+    cluster_ca_certificate = base64decode(local.cluster_ca_certificate)
     
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
@@ -57,8 +57,18 @@ provider "helm" {
         "eks",
         "get-token",
         "--cluster-name",
-        data.terraform_remote_state.runners[0].outputs.cluster_name,
+        local.cluster_name,
       ]
     }
   }
+}
+
+locals {
+  cluster_name            = data.terraform_remote_state.runners[0].outputs.cluster_name
+  cluster_endpoint        = data.terraform_remote_state.runners[0].outputs.cluster_endpoint
+  cluster_ca_certificate   = data.terraform_remote_state.runners[0].outputs.cluster_ca_certificate
+  vpc_id                  = try(data.terraform_remote_state.runners[0].outputs.vpc_id, "")
+  oidc_provider_arn       = try(data.terraform_remote_state.runners[0].outputs.oidc_provider_arn, "")
+  cluster_oidc_issuer_url = try(data.terraform_remote_state.runners[0].outputs.cluster_oidc_issuer_url, "")
+  oidc_provider           = local.cluster_oidc_issuer_url != "" ? replace(local.cluster_oidc_issuer_url, "https://", "") : ""
 }
