@@ -1,13 +1,37 @@
-# This is a very simple setup of ArgoCD
-# No HA, no Dex (for OIDC)
-# The admin password is generated and stored in a secret in the cluster
-
 global:
   domain: ${ingress_host}
 
 configs:
   params:
     server.insecure: false
+    server.url: https://${ingress_host}
+
+  cm:
+    # Dex configuration for GitHub SSO
+    dex.config: |
+      connectors:
+      - type: github
+        id: github
+        name: GitHub
+        config:
+          clientID: ${github_client_id}
+          # Reference to the Kubernetes secret
+          clientSecret: ${github_client_secret_name}:clientSecret
+          orgs:
+          - name: ${github_org}
+            teams:
+            - ${github_team}
+          loadAllGroups: false
+          teamNameField: slug
+          useLoginAsID: false
+
+  rbac:
+    # No default role - explicit assignment only
+    policy.default: ""
+    scopes: "[groups]"
+    policy.csv: |
+      # Map GitHub team to built-in readonly role
+      g, ${github_org}:${github_team}, role:readonly
 
 server:
   ingress:
@@ -36,4 +60,4 @@ redis:
   enabled: true
 
 dex:
-  enabled: false
+  enabled: true
