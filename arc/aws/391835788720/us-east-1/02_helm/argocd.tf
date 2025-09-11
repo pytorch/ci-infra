@@ -2,10 +2,14 @@ resource "kubernetes_secret" "argocd_dex_github_oauth" {
   metadata {
     name      = "argocd-github-oauth"
     namespace = var.argocd_namespace
+    labels = {
+      "app.kubernetes.io/name"       = "argocd-github-oauth"
+      "app.kubernetes.io/part-of"    = "argocd"
+    }
   }
 
   data = {
-    clientSecret = var.argocd_dex_github_client_secret
+    "dex.github.clientSecret" = var.argocd_dex_github_client_secret
   }
 
   type = "Opaque"
@@ -29,7 +33,7 @@ resource "helm_release" "argocd" {
       github_org                = var.argocd_dex_github_org
       github_team               = var.argocd_dex_github_team
       github_client_id          = var.argocd_dex_github_client_id
-      github_client_secret_name = kubernetes_secret.argocd_dex_github_oauth.metadata[0].name
+      github_client_secret_name = format("$%s", kubernetes_secret.argocd_dex_github_oauth.metadata[0].name)
     })
   ]
 

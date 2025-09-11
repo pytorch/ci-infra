@@ -16,7 +16,7 @@ configs:
         config:
           clientID: ${github_client_id}
           # Reference to the Kubernetes secret
-          clientSecret: $$${github_client_secret_name}:clientSecret
+          clientSecret: ${github_client_secret_name}:dex.github.clientSecret
           redirectURI: https://argocd.pytorch.org/api/dex/callback
           orgs:
           - name: ${github_org}
