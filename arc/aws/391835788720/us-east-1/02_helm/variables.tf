@@ -41,5 +41,5 @@ variable "argocd_dex_github_client_id" {
 
 variable "argocd_dex_github_client_secret" {
     type        = string
-    description = "GitHub OAuth App Client Id ArgoCD Dex"
+    description = "GitHub OAuth App Client Secret ArgoCD Dex"
 }
