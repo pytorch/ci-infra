@@ -1,3 +1,20 @@
+resource "kubernetes_secret" "argocd_dex_github_oauth" {
+  metadata {
+    name      = "argocd-github-oauth"
+    namespace = var.argocd_namespace
+    labels = {
+      "app.kubernetes.io/name"       = "argocd-github-oauth"
+      "app.kubernetes.io/part-of"    = "argocd"
+    }
+  }
+
+  data = {
+    "dex.github.clientSecret" = var.argocd_dex_github_client_secret
+  }
+
+  type = "Opaque"
+}
+
 resource "helm_release" "argocd" {
   name             = "argocd"
   repository       = "https://argoproj.github.io/argo-helm"
@@ -11,8 +28,12 @@ resource "helm_release" "argocd" {
   values = [
     # Nothing to pass to the template for now
     templatefile("${path.module}/values/argocd.yaml.tftpl", {
-      ingress_host       = var.argocd_ingress_host,
-      letsencrypt_issuer = var.letsencrypt_issuer,
+      ingress_host              = var.argocd_ingress_host,
+      letsencrypt_issuer        = var.letsencrypt_issuer,
+      github_org                = var.argocd_dex_github_org
+      github_team               = var.argocd_dex_github_team
+      github_client_id          = var.argocd_dex_github_client_id
+      github_client_secret_name = format("$%s", kubernetes_secret.argocd_dex_github_oauth.metadata[0].name)
     })
   ]
 
