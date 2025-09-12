@@ -49,9 +49,6 @@ jobs:
       shell: bash
       working-directory: arc
       run: make tflint
-      env:
-        TF_VAR_argocd_dex_github_client_id: ${{ secrets.ARGOCD_GITHUB_CLIENT_ID }}
-        TF_VAR_argocd_dex_github_client_secret: ${{ secrets.ARGOCD_GITHUB_CLIENT_SECRET }}
 
     - name: Make plan
       shell: bash
@@ -59,5 +56,3 @@ jobs:
       run: make plan
       env:
         TERRAFORM_EXTRAS: -lock-timeout=15m
-        TF_VAR_argocd_dex_github_client_id: ${{ secrets.ARGOCD_GITHUB_CLIENT_ID }}
-        TF_VAR_argocd_dex_github_client_secret: ${{ secrets.ARGOCD_GITHUB_CLIENT_SECRET }}

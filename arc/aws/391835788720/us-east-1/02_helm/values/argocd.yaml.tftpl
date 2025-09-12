@@ -7,6 +7,9 @@ configs:
     server.url: https://${ingress_host}
 
   cm:
+    # No local admin user. Authn/authz managed via Dex/RBAC
+    admin.enabled: "false"
+
     # Dex configuration for GitHub SSO
     dex.config: |
       connectors:
