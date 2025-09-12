@@ -40,5 +40,3 @@ jobs:
         AWS_DEFAULT_REGION: us-east-1
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
-        TF_VAR_argocd_dex_github_client_id: ${{ secrets.ARGOCD_GITHUB_CLIENT_ID }}
-        TF_VAR_argocd_dex_github_client_secret: ${{ secrets.ARGOCD_GITHUB_CLIENT_SECRET }}

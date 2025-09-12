@@ -33,13 +33,3 @@ variable "argocd_dex_github_team" {
     description = "GitHub team with readonly access to ArgoCD"
     default     = "multicloud-wg"
 }
-
-variable "argocd_dex_github_client_id" {
-    type        = string
-    description = "GitHub OAuth App Client Id ArgoCD Dex"
-}
-
-variable "argocd_dex_github_client_secret" {
-    type        = string
-    description = "GitHub OAuth App Client Secret ArgoCD Dex"
-}

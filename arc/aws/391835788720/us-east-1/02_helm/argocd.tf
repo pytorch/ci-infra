@@ -1,3 +1,14 @@
+data "aws_secretsmanager_secret_version" "pytorch_argocd_dex_github_oauth_app" {
+  secret_id = "pytorch-argocd-dex-github-oauth-app"
+}
+
+# Extract specific key from JSON secret
+locals {
+  argocd_dex_oauth                  = jsondecode(data.aws_secretsmanager_secret_version.pytorch_argocd_dex_github_oauth_app.secret_string)
+  argocd_dex_github_client_secret   = local.argocd_dex_oauth["client_secret"]
+  argocd_dex_github_client_id       = local.argocd_dex_oauth["client_id"]
+}
+
 resource "kubernetes_secret" "argocd_dex_github_oauth" {
   metadata {
     name      = "argocd-github-oauth"
@@ -9,7 +20,7 @@ resource "kubernetes_secret" "argocd_dex_github_oauth" {
   }
 
   data = {
-    "dex.github.clientSecret" = var.argocd_dex_github_client_secret
+    "dex.github.clientSecret" = local.argocd_dex_github_client_secret
   }
 
   type = "Opaque"
@@ -32,7 +43,7 @@ resource "helm_release" "argocd" {
       letsencrypt_issuer        = var.letsencrypt_issuer,
       github_org                = var.argocd_dex_github_org
       github_team               = var.argocd_dex_github_team
-      github_client_id          = var.argocd_dex_github_client_id
+      github_client_id          = local.argocd_dex_github_client_id
       github_client_secret_name = format("$%s", kubernetes_secret.argocd_dex_github_oauth.metadata[0].name)
     })
   ]
