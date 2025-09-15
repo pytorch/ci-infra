@@ -20,6 +20,7 @@ output "cluster_info" {
     ca_certificate = base64decode(data.terraform_remote_state.runners[0].outputs.cluster_ca_certificate)
     name          = data.terraform_remote_state.runners[0].outputs.cluster_name
   }
+  sensitive       = true
 }
 
 # ArgoCD is available through a public endpoint, but we use the internal endpoint
