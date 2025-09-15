@@ -23,14 +23,9 @@ output "cluster_info" {
   sensitive       = true
 }
 
-# ArgoCD is available through a public endpoint, but we use the internal endpoint
-# for the ArgoCD terraform provider. The public endpoint depends on the cert-manager
-# ClusterIssuer that is only provisioned in the next layer (see comments there), which
-# means that terraform cannot assume that the public endpoint is up and running at the
-# time when ArgoCD applications are deployed.
 output "argocd_endpoint" {
   description = "ArgoCD Endpoint"
-  value = "http://${data.kubernetes_service.argocd_server.metadata[0].name}.${helm_release.argocd.namespace}.svc.cluster.local"
+  value = "${var.argocd_ingress_host}:443"
 }
 
 output "argocd_admin_secret_name" {

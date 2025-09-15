@@ -5,6 +5,7 @@
  *
  * ARC provides and helm chart for the RunnerScaleSets
  */
+
 resource "helm_release" "arc" {
   name       = "arc"
   repository = "oci://ghcr.io/actions/actions-runner-controller-charts"

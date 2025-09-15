@@ -33,3 +33,9 @@ variable "argocd_dex_github_team" {
     description = "GitHub team with readonly access to ArgoCD"
     default     = "multicloud-wg"
 }
+
+variable "argocd_sa_terraform" {
+  type        = string
+  description = "Name of the ArgoCD service account for terraform"
+  default     = "terraform-sa"
+}
