@@ -1,0 +1,52 @@
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+## If `metrics:` object is not provided, or commented out, the following flags
+## will be applied the controller-manager and listener pods with empty values:
+## `--metrics-addr`, `--listener-metrics-addr`, `--listener-metrics-endpoint`.
+## This will disable metrics.
+##
+## To enable metrics, uncomment the following lines.
+# metrics:
+#   controllerManagerAddr: ":8080"
+#   listenerAddr: ":8080"
+#   listenerEndpoint: "/metrics"
+
+flags:
+  logLevel: "debug"
+  logFormat: "json"
+
+  ## The maximum number of concurrent reconciles which can be run by the EphemeralRunner controller.
+  # Increase this value to improve the throughput of the controller.
+  # It may also increase the load on the API server and the external service (e.g. GitHub API).
+  runnerMaxConcurrentReconciles: 2
+
+  ## Defines how the controller should handle upgrades while having running jobs.
+  ##
+  ## The strategies available are:
+  ## - "immediate": (default) The controller will immediately apply the change causing the
+  ##   recreation of the listener and ephemeral runner set. This can lead to an
+  ##   overprovisioning of runners, if there are pending / running jobs. This should not
+  ##   be a problem at a small scale, but it could lead to a significant increase of
+  ##   resources if you have a lot of jobs running concurrently.
+  ##
+  ## - "eventual": The controller will remove the listener and ephemeral runner set
+  ##   immediately, but will not recreate them (to apply changes) until all
+  ##   pending / running jobs have completed.
+  ##   This can lead to a longer time to apply the change but it will ensure
+  ##   that you don't have any overprovisioning of runners.
+  updateStrategy: "eventual"
+
+  ## Defines a list of prefixes that should not be propagated to internal resources.
+  ## This is useful when you have labels that are used for internal purposes and should not be propagated to internal resources.
+  ## See https://github.com/actions/actions-runner-controller/issues/3533 for more information.
+  ##
+  ## By default, all labels are propagated to internal resources
+  ## Labels that match prefix specified in the list are excluded from propagation.
+  excludeLabelPropagationPrefixes:
+    - "argocd.argoproj.io/instance"
