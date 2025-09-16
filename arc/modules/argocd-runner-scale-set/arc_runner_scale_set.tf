@@ -105,7 +105,7 @@ resource "argocd_application_set" "arc_runner_scale_set" {
         repo_url = "https://github.com/pytorch/ci-infra"
         revision = var.git_revision
         directory {
-            path = "${var.provider_path}/${var.cluster}/${var.namespace}"
+            path = "${var.provider_path}/${var.cluster}/${var.namespace}/*"
         }
       }
     }
