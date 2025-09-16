@@ -10,6 +10,9 @@ configs:
     # No local admin user. Authn/authz managed via Dex/RBAC
     admin.enabled: "false"
 
+    # Service account for the terraform provider
+    accounts.${argocd_sa_terraform}: apiKey
+
     # Dex configuration for GitHub SSO
     dex.config: |
       connectors:
@@ -36,6 +39,8 @@ configs:
     policy.csv: |
       # Map GitHub team to built-in readonly role
       g, ${github_org}:${github_team}, role:readonly
+      # Terraform account for the provider is an admin
+      g, ${argocd_sa_terraform}, role:admin
 
 server:
   ingress:
