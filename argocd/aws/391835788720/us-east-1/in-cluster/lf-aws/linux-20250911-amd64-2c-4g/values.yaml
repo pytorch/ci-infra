@@ -21,3 +21,8 @@ template:
       - name: runner
         image: ghcr.io/actions/actions-runner:latest
         command: ["/home/runner/run.sh"]
+
+# Service account of the controller
+controllerServiceAccount:
+  name: "arc-gha-rs-controller"
+  namespace: "arc-systems"

@@ -23,7 +23,7 @@ variable "namespace" {
 variable "cluster" {
     description = "The name of the cluster as defined in ArgoCD"
     type        = string
-    default     = "local"
+    default     = "in-cluster"
 }
 
 variable "provider_path" {

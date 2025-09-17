@@ -40,3 +40,4 @@ jobs:
         AWS_DEFAULT_REGION: us-east-1
         GITHUB_TOKEN: ${{ secrets.LIST_PYTORCH_RUNNERS_GITHUB_TOKEN }}
         TERRAFORM_EXTRAS: -auto-approve -lock-timeout=15m
+        TF_VAR_git_revision: ${{ github.ref_name }}

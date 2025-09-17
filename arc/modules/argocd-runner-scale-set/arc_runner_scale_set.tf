@@ -45,6 +45,27 @@ resource "kubernetes_secret" "github_app" {
   type = "Opaque"
 }
 
+// This secret is required by ArgoCD to enable using an OCI repo
+// for helm charts. It's deployed once in the argocd namespace.
+resource "kubernetes_secret" "arc_runner_scale_set_oci_repo" {
+  metadata {
+    name      = "arc-runner-scale-set-oci-repo"
+    namespace = "argocd"
+    labels    = {
+      "argocd.argoproj.io/secret-type" = "repository"
+    }
+  }
+  
+  data = {
+    url       = "ghcr.io/actions/actions-runner-controller-charts"
+    name      = "actions-runner-controller"
+    type      = "helm"
+    enableOCI = "true"
+  }
+  
+  type = "Opaque"
+}
+
 /*
  * Create the ArgoCD project that contains the ApplicationSet if it does
  * not yet exists. The project is contrained to k8s namespaces with a name
@@ -59,7 +80,10 @@ resource "argocd_project" "arc_rss_project" {
   spec {
     description = "Project that includes all ${var.organization} RunnerScaleSets"
     
-    source_repos = ["github.com/pytorch/ci-infra"]
+    source_repos = [
+      "https://github.com/pytorch/ci-infra",
+      "ghcr.io/actions/actions-runner-controller-charts",
+    ]
     source_namespaces = ["argocd"]
     
     destination {
@@ -75,6 +99,21 @@ resource "argocd_project" "arc_rss_project" {
     namespace_resource_whitelist {
       group = "actions.github.com"
       kind  = "*"
+    }
+
+    namespace_resource_whitelist {
+      group = ""
+      kind  = "ServiceAccount"
+    }
+
+    namespace_resource_whitelist {
+      group = "rbac.authorization.k8s.io"
+      kind  = "Role"
+    }
+
+    namespace_resource_whitelist {
+      group = "rbac.authorization.k8s.io"
+      kind  = "RoleBinding"
     }
   }
 }
@@ -100,6 +139,9 @@ resource "argocd_application_set" "arc_runner_scale_set" {
   }
 
   spec {
+    go_template = true
+    go_template_options = ["missingkey=error"]
+
     generator {
       git {
         repo_url = "https://github.com/pytorch/ci-infra"
@@ -120,7 +162,8 @@ resource "argocd_application_set" "arc_runner_scale_set" {
         project = argocd_project.arc_rss_project.metadata[0].name
 
         source {
-          repo_url        = "oci://ghcr.io/actions/actions-runner-controller-charts"
+          repo_url        = "ghcr.io/actions/actions-runner-controller-charts"
+          path            = "gha-runner-scale-set"
           chart           = "gha-runner-scale-set"
           target_revision = "0.12.1"
           helm {
@@ -136,8 +179,15 @@ resource "argocd_application_set" "arc_runner_scale_set" {
         }
 
         destination {
-          server    = "{{index .path.segments 4}}"
+          name      = "{{index .path.segments 4}}"
           namespace = "{{index .path.segments 5}}"
+        }
+
+        sync_policy {
+          automated {
+            prune    = true
+            self_heal = true
+          }
         }
       }
     }
