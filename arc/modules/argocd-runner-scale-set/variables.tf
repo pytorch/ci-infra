@@ -14,12 +14,6 @@ variable "organization" {
     default     = "lf"
 }
 
-variable "namespace" {
-    description = "The namespace for in the format <org>-<cloud>"
-    type        = string
-    default     = "lf-aws"
-}
-
 variable "cluster" {
     description = "The name of the cluster as defined in ArgoCD"
     type        = string
@@ -49,4 +43,16 @@ variable "aws_secret_key_name" {
     description = "The name of the AWS SM secret with private key"
     type        = string
     default     = "pytorch-arc-github-app-private-key"
+}
+
+variable "arc_controller_sa" {
+    description = "Service account used by the ARC controller"
+    type        = string
+    default     = "arc-gha-rs-controller"
+}
+
+variable "arc_controller_sa_namespace" {
+    description = "Namespace where the service account used by the ARC controller is defined"
+    type        = string
+    default     = "arc-system"
 }
