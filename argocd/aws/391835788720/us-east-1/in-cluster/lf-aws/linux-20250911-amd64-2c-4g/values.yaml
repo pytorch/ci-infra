@@ -1,5 +1,5 @@
-# ci-infra repo only for now
-githubConfigUrl: https://github.com/pytorch/ci-infra
+# pytorch repo only
+githubConfigUrl: https://github.com/pytorch/pytorch
 
 ## githubConfigSecret is provisioned by terraform on the k8s cluster/namespace
 githubConfigSecret: github-config # checkov:skip=CKV_SECRET_6:Secret name reference, not actual secret
