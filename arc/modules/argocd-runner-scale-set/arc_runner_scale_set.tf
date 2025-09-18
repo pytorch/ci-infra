@@ -24,16 +24,53 @@ locals {
   arc_private_key = data.aws_secretsmanager_secret_version.arc_secrets_private_key.secret_string
 }
 
-resource "kubernetes_namespace" "arc_runners" {
+# ClusterRole with secret read permissions
+# This is never used cluster-wide, only in specific namespaces
+resource "kubernetes_cluster_role" "secret_reader" {
   metadata {
-    name = var.namespace
+    name = "secret-reader"
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["secrets"]
+    verbs      = ["get", "list", "watch"]
+  }
+}
+
+/*
+ * A few resources need to be provisioned for each RunnerScaleSet
+ * i.e. for each folder under ${var.provider_path}/${var.cluster}
+ * 
+ * - A namespace
+ * - The GitHub secret
+ * - A RoleBinding the allows access to the secret 
+ */
+
+// Find folders directly under argocd/${var.provider_path}/${var.cluster}
+// and create a JSON map of results for next resources to loop on
+data "external" "runner_scale_sets" {
+  program = ["bash", "-c", <<-EOT
+    REPO_ROOT=$(git rev-parse --show-toplevel)
+    find "$REPO_ROOT/${var.provider_path}/${var.cluster}" -mindepth 1 -maxdepth 1 -type d -type d -exec basename {} \; | jq -R -s -c 'split("\n")[:-1] | map({key: ., value: .}) | from_entries'
+  EOT
+  ]
+}
+
+resource "kubernetes_namespace" "arc_runners" {
+  for_each = data.external.runner_scale_sets.result
+
+  metadata {
+    name = "${var.organization}-${each.value}"
   }
 }
 
 resource "kubernetes_secret" "github_app" {
+  for_each = data.external.runner_scale_sets.result
+
   metadata {
     name      = "github-config"
-    namespace = var.namespace
+    namespace = "${var.organization}-${each.value}"
   }
   
   data = {
@@ -43,6 +80,27 @@ resource "kubernetes_secret" "github_app" {
   }
   
   type = "Opaque"
+}
+
+resource "kubernetes_role_binding" "secret_access" {
+  for_each = data.external.runner_scale_sets.result
+
+  metadata {
+    name      = "secret-reader-binding"
+    namespace = "${var.organization}-${each.value}"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role.secret_reader.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = var.arc_controller_sa
+    namespace = var.arc_controller_sa_namespace
+  }
 }
 
 // This secret is required by ArgoCD to enable using an OCI repo
@@ -123,18 +181,17 @@ resource "argocd_project" "arc_rss_project" {
  * - the helm chart
  * - the value files
  *
- * Value files can be found under argocd/cloud/tenant/region/cluster/namespace/<runner-scale-set-name>.
- * Each cloud/tenant/region/cluster/namespace combination has its ApplicationSet.
- * Various RunnerSets in the same namespace belong to the same ApplicationSet, with one application each.
+ * Value files can be found under argocd/cloud/tenant/region/cluster/<runner-scale-set-name>.
+ * Each cloud/tenant/region/cluster combination has its ApplicationSet.
+ * Each RunnerSets runs in its own namespace belong to the ApplicationSet, with one application each.
  *
  * The cluster folder is used to select the cluster name in ArgoCD
- * The namespace folder is used to define the target namespace in ArgoCD
  * Each resource in the folder is applied as a dedicated Application
  */
 resource "argocd_application_set" "arc_runner_scale_set" {
 
   metadata {
-    name      = "arc-rss-${var.cluster}-${var.namespace}"
+    name      = "arc-rss-${var.organization}-${var.cluster}"
     namespace = "argocd"
   }
 
@@ -147,7 +204,7 @@ resource "argocd_application_set" "arc_runner_scale_set" {
         repo_url = "https://github.com/pytorch/ci-infra"
         revision = var.git_revision
         directory {
-            path = "${var.provider_path}/${var.cluster}/${var.namespace}/*"
+            path = "${var.provider_path}/${var.cluster}/*"
         }
       }
     }
@@ -170,6 +227,11 @@ resource "argocd_application_set" "arc_runner_scale_set" {
             value_files = [
               "$values/{{.path.path}}/values.yaml"
             ]
+            values = <<-EOT
+              controllerServiceAccount:
+                name: ${var.arc_controller_sa}
+                namespace: ${var.arc_controller_sa_namespace}
+            EOT
           }
         }
         source {
@@ -180,7 +242,7 @@ resource "argocd_application_set" "arc_runner_scale_set" {
 
         destination {
           name      = "{{index .path.segments 4}}"
-          namespace = "{{index .path.segments 5}}"
+          namespace = "${var.organization}-{{index .path.segments 5}}"
         }
 
         sync_policy {

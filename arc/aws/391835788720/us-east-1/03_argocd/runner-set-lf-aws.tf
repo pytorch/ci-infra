@@ -7,7 +7,6 @@ module "argocd-runner-scale-set" {
   token         = local.argocd_ready ? local.argocd_terraform_sa_token : null
   organization  = "lf"
   cluster       = "in-cluster"
-  namespace     = "lf-aws"
   provider_path = "argocd/aws/391835788720/us-east-1"
   git_revision  = var.git_revision
 }
