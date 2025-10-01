@@ -81,7 +81,7 @@ def validate_cli_version(message_body):
     if not cli_version:
         raise ValueError(
             f"Your gpu-dev CLI is outdated and no longer supported. "
-            f"Please upgrade by running: python3 -m pip install --upgrade \"git+https://github.com/wdvr/osdc.git#subdirectory=cli-tools/gpu-dev-cli\""
+            f"Please upgrade by running: python3 -m pip install --upgrade \"git+https://github.com/wdvr/osdc.git\""
         )
 
     def parse_version(version_str):
@@ -98,7 +98,7 @@ def validate_cli_version(message_body):
         raise ValueError(
             f"Your gpu-dev CLI version {cli_version} is outdated. "
             f"Minimum required version is {MIN_CLI_VERSION}. "
-            f"Please upgrade by running: python3 -m pip install --upgrade \"git+https://github.com/wdvr/osdc.git#subdirectory=cli-tools/gpu-dev-cli\""
+            f"Please upgrade by running: python3 -m pip install --upgrade \"git+https://github.com/wdvr/osdc.git\""
         )
 
     logger.info(f"CLI version {cli_version} validated successfully")
