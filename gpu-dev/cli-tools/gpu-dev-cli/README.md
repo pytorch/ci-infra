@@ -13,14 +13,12 @@ A command-line tool for reserving and managing PyTorch GPU development servers.
 ## Installation
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd cli-tools/gpu-dev-cli
+# Install directly from GitHub (recommended)
+python3 -m pip install --upgrade "git+https://github.com/wdvr/osdc.git#subdirectory=cli-tools/gpu-dev-cli"
 
-# Install with Poetry
-poetry install
-
-# Or install with pip
+# Or install from local clone
+git clone https://github.com/wdvr/osdc.git
+cd osdc/cli-tools/gpu-dev-cli
 pip install -e .
 ```
 
