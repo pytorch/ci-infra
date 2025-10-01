@@ -27,7 +27,7 @@ resource "aws_lambda_function" "availability_updater" {
   handler          = "index.handler"
   runtime          = "python3.11"
   timeout          = 300
-  source_code_hash = data.archive_file.availability_updater_zip.output_base64sha256
+  source_code_hash = null_resource.availability_updater_build.triggers.code_hash
 
   environment {
     variables = {
@@ -41,7 +41,7 @@ resource "aws_lambda_function" "availability_updater" {
   depends_on = [
     aws_iam_role_policy.availability_updater_policy,
     aws_cloudwatch_log_group.availability_updater_logs,
-    data.archive_file.availability_updater_zip,
+    null_resource.availability_updater_build,
   ]
 
   tags = {
@@ -164,6 +164,34 @@ resource "aws_lambda_permission" "allow_eventbridge_availability" {
   source_arn    = aws_cloudwatch_event_rule.asg_capacity_change.arn
 }
 
+# Scheduled trigger to run availability updater every minute
+resource "aws_cloudwatch_event_rule" "availability_updater_schedule" {
+  name                = "${var.prefix}-availability-updater-schedule"
+  description         = "Trigger availability updater every minute to keep GPU availability current"
+  schedule_expression = "rate(1 minute)"
+  
+  tags = {
+    Name        = "${var.prefix}-availability-updater-schedule"
+    Environment = local.current_config.environment
+  }
+}
+
+# EventBridge target for scheduled availability updater
+resource "aws_cloudwatch_event_target" "availability_updater_schedule_target" {
+  rule      = aws_cloudwatch_event_rule.availability_updater_schedule.name
+  target_id = "AvailabilityUpdaterScheduleTarget"
+  arn       = aws_lambda_function.availability_updater.arn
+}
+
+# Permission for scheduled EventBridge to invoke availability updater Lambda
+resource "aws_lambda_permission" "allow_eventbridge_availability_schedule" {
+  statement_id  = "AllowExecutionFromScheduledEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.availability_updater.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.availability_updater_schedule.arn
+}
+
 # CloudWatch log group for availability updater Lambda
 resource "aws_cloudwatch_log_group" "availability_updater_logs" {
   name              = "/aws/lambda/${var.prefix}-availability-updater"
@@ -175,14 +203,13 @@ resource "aws_cloudwatch_log_group" "availability_updater_logs" {
   }
 }
 
-# Build availability updater Lambda package with dependencies
+# Build availability updater Lambda package with dependencies and create zip in one step
 resource "null_resource" "availability_updater_build" {
   triggers = {
     # Rebuild when source files change
-    code_hash           = filebase64sha256("${path.module}/lambda/availability_updater/index.py")
-    requirements_hash   = try(filebase64sha256("${path.module}/lambda/availability_updater/requirements.txt"), "none")
-    shared_code_hash    = filebase64sha256("${path.module}/lambda/shared/k8s_client.py")
-    shared_tracker_hash = filebase64sha256("${path.module}/lambda/shared/k8s_resource_tracker.py")
+    code_hash         = filebase64sha256("${path.module}/lambda/availability_updater/index.py")
+    requirements_hash = try(filebase64sha256("${path.module}/lambda/availability_updater/requirements.txt"), "none")
+    shared_folder_hash = sha256(join("", [for f in fileset("${path.module}/lambda/shared", "**") : filesha256("${path.module}/lambda/shared/${f}")]))
   }
 
   provisioner "local-exec" {
@@ -208,18 +235,23 @@ resource "null_resource" "availability_updater_build" {
 
       echo "Availability updater Lambda package built successfully"
       ls -la package/
+
+      # Create zip file directly, excluding any existing zip files
+      cd package/
+      zip -r ../availability_updater_new.zip .
+      cd ..
+
+      # Replace old zip file and move to parent lambda directory
+      mv availability_updater_new.zip ../availability_updater.zip
+
+      # Clean up package folder
+      rm -rf package
+
+      echo "Availability updater Lambda zip created and package folder cleaned up"
     EOT
   }
 }
 
-# Archive file for availability updater Lambda deployment
-data "archive_file" "availability_updater_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/lambda/availability_updater/package"
-  output_path = "${path.module}/lambda/availability_updater.zip"
-
-  depends_on = [null_resource.availability_updater_build]
-}
 
 # Output the availability table name for CLI configuration
 output "gpu_availability_table_name" {

@@ -27,7 +27,7 @@ variable "vpc_cidr" {
 variable "subnet_cidr" {
   description = "CIDR block for subnet"
   type        = string
-  default     = "10.0.0.0/22"  # Expanded from /24 to /22 (1024 IPs instead of 256)
+  default     = "10.0.0.0/20"  # Expanded to /20 (4096 IPs for future-proofing)
 }
 
 variable "gpu_instance_count" {
@@ -130,5 +130,16 @@ variable "queue_message_retention" {
   description = "SQS message retention period in seconds"
   type        = number
   default     = 1209600 # 14 days
+}
+
+variable "domain_name" {
+  description = "Domain name for SSH access to reservations. Leave empty to disable domain names."
+  type        = string
+  default     = null # Will use workspace config if not overridden
+
+  validation {
+    condition = var.domain_name == null || var.domain_name == "" || can(regex("^[a-z0-9.-]+\\.[a-z]{2,}$", var.domain_name))
+    error_message = "Domain name must be a valid DNS name (e.g., devservers.io or test.devservers.io)."
+  }
 }
 

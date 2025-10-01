@@ -199,6 +199,12 @@ def _show_single_reservation(connection_info: dict) -> None:
             connection_info["ssh_command"]
         )
 
+        # Check for warnings
+        warning_message = connection_info.get("warning", "")
+        warning_section = ""
+        if warning_message:
+            warning_section = f"\n\n{warning_message}"
+
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
             f"[blue]SSH Command:[/blue] {ssh_with_forwarding}\n"
@@ -211,6 +217,7 @@ def _show_single_reservation(connection_info: dict) -> None:
             + f"[blue]Storage:[/blue] {disk_status}\n"
             f"[blue]Started:[/blue] {launched_formatted}\n"
             f"[blue]Expires:[/blue] {expires_formatted}"
+            + warning_section
         )
         panel = Panel.fit(panel_content, title="🚀 Active Reservation")
         console.print(panel)
@@ -411,6 +418,16 @@ def main(ctx: click.Context) -> None:
     is_flag=True,
     help="Enable verbose debug output",
 )
+@click.option(
+    "--dockerfile",
+    type=click.Path(exists=True, readable=True),
+    help="Path to custom Dockerfile to use instead of default container image (max 512KB)",
+)
+@click.option(
+    "--dockerimage",
+    type=str,
+    help="Custom Docker image to use instead of default container image (e.g., pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel)",
+)
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -424,6 +441,8 @@ def reserve(
     interactive: Optional[bool],
     distributed: bool,
     verbose: bool,
+    dockerfile: Optional[str],
+    dockerimage: Optional[str],
 ) -> None:
     """Reserve GPU development server(s)
 
@@ -625,6 +644,72 @@ def reserve(
             rprint("[red]❌ Minimum reservation time is 5 minutes (0.0833 hours)[/red]")
             return
 
+        # Validate Docker options
+        if dockerfile and dockerimage:
+            rprint("[red]❌ Cannot specify both --dockerfile and --dockerimage[/red]")
+            return
+
+        # Process Dockerfile if provided
+        dockerfile_s3_key = None
+        if dockerfile:
+            try:
+                import os
+                import tarfile
+                import tempfile
+                import uuid
+
+                # Check file size (512KB limit for individual Dockerfile)
+                file_size = os.path.getsize(dockerfile)
+                if file_size > 512 * 1024:
+                    rprint(f"[red]❌ Dockerfile too large: {file_size} bytes (max 512KB)[/red]")
+                    return
+
+                # Create build context (Dockerfile + any files in same directory)
+                dockerfile_dir = os.path.dirname(os.path.abspath(dockerfile))
+                dockerfile_name = os.path.basename(dockerfile)
+
+                rprint(f"[cyan]📦 Creating build context from {dockerfile_dir}[/cyan]")
+
+                # Create a temporary tar.gz with the build context
+                with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as temp_tar:
+                    with tarfile.open(temp_tar.name, 'w:gz') as tar:
+                        # Add all files from the Dockerfile directory
+                        for root, dirs, files in os.walk(dockerfile_dir):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                # Calculate relative path from dockerfile_dir
+                                arcname = os.path.relpath(file_path, dockerfile_dir)
+                                tar.add(file_path, arcname=arcname)
+
+                        # Ensure Dockerfile is at root with standard name if needed
+                        if dockerfile_name.lower() != 'dockerfile':
+                            dockerfile_path = os.path.join(dockerfile_dir, dockerfile_name)
+                            tar.add(dockerfile_path, arcname='Dockerfile')
+
+                    # Check compressed size limit (SQS has 1 MiB limit, base64 adds ~33% overhead)
+                    compressed_size = os.path.getsize(temp_tar.name)
+                    max_tar_size = 700 * 1024  # ~700KB to allow for base64 overhead and other message fields
+                    if compressed_size > max_tar_size:
+                        os.unlink(temp_tar.name)
+                        rprint(f"[red]❌ Build context too large: {compressed_size} bytes (max ~700KB compressed)[/red]")
+                        return
+
+                    # Base64 encode the tar.gz for SQS message
+                    import base64
+                    with open(temp_tar.name, 'rb') as f:
+                        build_context_data = base64.b64encode(f.read()).decode('utf-8')
+
+                    dockerfile_s3_key = build_context_data  # Pass base64 data instead of S3 key
+
+                    # Cleanup temp file
+                    os.unlink(temp_tar.name)
+
+                    rprint(f"[green]✅ Build context prepared: {compressed_size} bytes compressed[/green]")
+
+            except Exception as e:
+                rprint(f"[red]❌ Error processing Dockerfile: {str(e)}[/red]")
+                return
+
         # Use a single spinner context for the entire process
         with Live(
             Spinner("dots", text="📡 Starting reservation process..."), console=console
@@ -743,6 +828,8 @@ def reserve(
                     github_user=user_info["github_user"],
                     jupyter_enabled=jupyter,
                     recreate_env=recreate_env,
+                    dockerfile_s3_key=dockerfile_s3_key,
+                    dockerimage=dockerimage,
                 )
             else:
                 # Single node reservation
@@ -755,6 +842,8 @@ def reserve(
                     github_user=user_info["github_user"],
                     jupyter_enabled=jupyter,
                     recreate_env=recreate_env,
+                    dockerfile_s3_key=dockerfile_s3_key,
+                    dockerimage=dockerimage,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 
@@ -1661,6 +1750,111 @@ def _show_availability() -> None:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
+def _show_availability_watch(interval: int) -> None:
+    """Watch mode for GPU availability with auto-refresh"""
+    import time
+    from datetime import datetime
+    from rich.console import Group
+    from rich.panel import Panel
+
+    try:
+        config = load_config()
+        # Authenticate once at the start
+        try:
+            user_info = authenticate_user(config)
+            reservation_mgr = ReservationManager(config)
+        except RuntimeError as e:
+            rprint(f"[red]❌ {str(e)}[/red]")
+            return
+
+        # Use Live display to avoid flickering
+        with Live(console=console, refresh_per_second=4) as live:
+            while True:
+                try:
+                    # Get current timestamp
+                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                    # Get availability data
+                    availability_info = reservation_mgr.get_gpu_availability_by_type()
+
+                    if availability_info:
+                        table = Table(title="GPU Availability by Type")
+                        table.add_column("GPU Type", style="cyan")
+                        table.add_column("Available", style="green")
+                        table.add_column("Total", style="blue")
+                        table.add_column("Queue Length", style="yellow")
+                        table.add_column("Est. Wait Time", style="magenta")
+
+                        for gpu_type, info in availability_info.items():
+                            available = info.get("available", 0)
+                            total = info.get("total", 0)
+                            queue_length = info.get("queue_length", 0)
+                            est_wait = info.get("estimated_wait_minutes", 0)
+
+                            # Format wait time
+                            if available > 0:
+                                wait_display = "Available now"
+                            elif est_wait == 0:
+                                wait_display = "Unknown"
+                            elif est_wait < 60:
+                                wait_display = f"{int(est_wait)}min"
+                            else:
+                                hours = int(est_wait // 60)
+                                minutes = int(est_wait % 60)
+                                if minutes == 0:
+                                    wait_display = f"{hours}h"
+                                else:
+                                    wait_display = f"{hours}h {minutes}min"
+
+                            # Color code availability
+                            if available > 0:
+                                available_display = f"[green]{available}[/green]"
+                            else:
+                                available_display = f"[red]{available}[/red]"
+
+                            table.add_row(
+                                gpu_type.upper(),
+                                available_display,
+                                str(total),
+                                str(queue_length),
+                                wait_display,
+                            )
+
+                        # Create display with header, table, and footer
+                        header = f"[dim]🕒 Last updated: {current_time} (refreshing every {interval}s) • Press Ctrl+C to exit[/dim]"
+                        footer = f"[dim]💡 Use 'gpu-dev reserve --gpu-type <type>' to reserve GPUs of a specific type[/dim]"
+                        display_group = Group(header, "", table, "", footer)
+                        live.update(display_group)
+                    else:
+                        # Show error message
+                        error_msg = f"[red]❌ Could not get GPU availability information[/red]"
+                        retry_msg = f"[dim]🔄 Retrying in {interval} seconds...[/dim]"
+                        header = f"[dim]🕒 Last updated: {current_time} (refreshing every {interval}s) • Press Ctrl+C to exit[/dim]"
+                        display_group = Group(header, "", error_msg, retry_msg)
+                        live.update(display_group)
+
+                    # Wait for next refresh
+                    time.sleep(interval)
+
+                except KeyboardInterrupt:
+                    live.stop()
+                    rprint("\n[yellow]👋 Exiting watch mode...[/yellow]")
+                    break
+                except Exception as e:
+                    error_msg = f"[red]❌ Error during refresh: {str(e)}[/red]"
+                    retry_msg = f"[dim]🔄 Retrying in {interval} seconds...[/dim]"
+                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    header = f"[dim]🕒 Last updated: {current_time} (refreshing every {interval}s) • Press Ctrl+C to exit[/dim]"
+                    display_group = Group(header, "", error_msg, retry_msg)
+                    live.update(display_group)
+                    time.sleep(interval)
+
+    except KeyboardInterrupt:
+        rprint("\n[yellow]👋 Exiting watch mode...[/yellow]")
+    except Exception as e:
+        rprint(f"[red]❌ Error in watch mode: {str(e)}[/red]")
+
+
 @main.command()
 @click.pass_context
 def help(ctx: click.Context) -> None:
@@ -1677,8 +1871,18 @@ def help(ctx: click.Context) -> None:
 
 
 @main.command(name="avail")
+@click.option(
+    "--watch",
+    is_flag=True,
+    help="Watch mode - refresh availability every 5 seconds",
+)
+@click.option(
+    "--interval",
+    default=5,
+    help="Refresh interval in seconds for watch mode (default: 5)",
+)
 @click.pass_context
-def avail(ctx: click.Context) -> None:
+def avail(ctx: click.Context, watch: bool, interval: int) -> None:
     """Show GPU availability by type and queue estimates
 
     Displays real-time information about GPU availability for each GPU type.
@@ -1692,10 +1896,15 @@ def avail(ctx: click.Context) -> None:
     \b
     Examples:
         gpu-dev avail                           # Show availability for all GPU types
+        gpu-dev avail --watch                   # Watch mode with 5s refresh
+        gpu-dev avail --watch --interval 10     # Watch mode with 10s refresh
 
     This helps you choose the right GPU type and understand wait times before reserving.
     """
-    _show_availability()
+    if watch:
+        _show_availability_watch(interval)
+    else:
+        _show_availability()
 
 
 @main.command()
@@ -2148,7 +2357,7 @@ def edit(
                 rprint("[red]❌ Maximum extension is 24 hours[/red]")
                 return
 
-            success = reservation_mgr.extend_reservation(reservation_id, extend)
+            success = reservation_mgr.extend_reservation(reservation_id, user_info["user_id"], extend)
             if success:
                 rprint(
                     f"[green]✅ Extended reservation {reservation_id} by {extend} hours[/green]"

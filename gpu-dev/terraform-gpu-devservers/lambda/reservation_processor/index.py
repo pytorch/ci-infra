@@ -21,6 +21,16 @@ import boto3
 
 from shared import K8sGPUTracker, setup_kubernetes_client
 from shared.snapshot_utils import create_pod_shutdown_snapshot, get_latest_snapshot
+from buildkit_job import create_buildkit_job, wait_for_buildkit_job
+from shared.dns_utils import (
+    generate_unique_name,
+    create_dns_record,
+    delete_dns_record,
+    get_dns_enabled,
+    format_ssh_command_with_domain,
+    store_domain_mapping,
+    delete_domain_mapping
+)
 
 from kubernetes import client
 from kubernetes.stream import stream
@@ -40,6 +50,11 @@ PRIMARY_AVAILABILITY_ZONE = os.environ["PRIMARY_AVAILABILITY_ZONE"]
 GPU_DEV_CONTAINER_IMAGE = os.environ.get("GPU_DEV_CONTAINER_IMAGE", "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel")
 EFS_SECURITY_GROUP_ID = os.environ.get("EFS_SECURITY_GROUP_ID")
 EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(",") if os.environ.get("EFS_SUBNET_IDS") else []
+ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
+
+# Version validation - injected via Terraform
+LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.2.0")
+MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.2.0")
 
 # AWS clients
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
@@ -53,6 +68,40 @@ _k8s_client = None
 
 # Global monitoring threads registry (for cancellation cleanup)
 _monitoring_threads = {}
+
+
+def validate_cli_version(message_body):
+    """
+    Validate CLI version against minimum required version.
+    Raises exception with user-friendly error message if version is too old.
+    """
+    cli_version = message_body.get("version")
+
+    # If no version provided, assume old CLI
+    if not cli_version:
+        raise ValueError(
+            f"Your gpu-dev CLI is outdated and no longer supported. "
+            f"Please upgrade by running: python3 -m pip install --upgrade \"git+https://github.com/pytorch/test-infra.git@wdvr/clouddevservers#subdirectory=cli-tools/gpu-dev-cli\""
+        )
+
+    def parse_version(version_str):
+        """Parse semantic version string into comparable tuple"""
+        try:
+            return tuple(map(int, version_str.split('.')))
+        except (ValueError, AttributeError):
+            return (0, 0, 0)
+
+    cli_ver_tuple = parse_version(cli_version)
+    min_ver_tuple = parse_version(MIN_CLI_VERSION)
+
+    if cli_ver_tuple < min_ver_tuple:
+        raise ValueError(
+            f"Your gpu-dev CLI version {cli_version} is outdated. "
+            f"Minimum required version is {MIN_CLI_VERSION}. "
+            f"Please upgrade by running: python3 -m pip install --upgrade \"git+https://github.com/pytorch/test-infra.git@wdvr/clouddevservers#subdirectory=cli-tools/gpu-dev-cli\""
+        )
+
+    logger.info(f"CLI version {cli_version} validated successfully")
 
 
 def get_k8s_client():
@@ -515,32 +564,91 @@ def update_reservation_error(reservation_id: str, error_message: str, error_fiel
 
 
 def find_reservation_by_prefix(reservation_id: str, user_id: str = None) -> dict:
-    """Find reservation by ID prefix with optional user validation"""
+    """Find reservation by ID prefix with optional user validation - optimized with Query operations"""
     try:
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
 
-        filter_expression = "begins_with(reservation_id, :prefix)"
-        expression_values = {":prefix": reservation_id}
+        # First try exact match (most efficient)
+        if len(reservation_id) == 36 and reservation_id.count('-') == 4:  # Full UUID format
+            try:
+                response = reservations_table.get_item(Key={"reservation_id": reservation_id})
+                if "Item" in response:
+                    item = response["Item"]
+                    # Check user_id if provided
+                    if user_id and item.get("user_id") != user_id:
+                        raise ValueError(f"Reservation {reservation_id} not found for user {user_id}")
+                    return item
+            except Exception:
+                pass  # Fall through to prefix search
 
+        # For prefix searches, use Query on UserIndex if user_id is provided (much more efficient)
         if user_id:
-            filter_expression += " AND user_id = :user_id"
-            expression_values[":user_id"] = user_id
+            matching_items = query_user_reservations_with_prefix(reservations_table, user_id, reservation_id)
+        else:
+            # Fallback to scan with pagination if no user_id (less efficient but comprehensive)
+            matching_items = scan_all_reservations_with_prefix(reservations_table, reservation_id)
 
-        scan_response = reservations_table.scan(
-            FilterExpression=filter_expression,
-            ExpressionAttributeValues=expression_values
-        )
-
-        items = scan_response.get("Items", [])
-        if len(items) == 0:
+        if len(matching_items) == 0:
             raise ValueError(f"Reservation {reservation_id} not found" + (f" for user {user_id}" if user_id else ""))
-        elif len(items) > 1:
-            raise ValueError(f"Ambiguous reservation ID {reservation_id} - found {len(items)} matches")
+        elif len(matching_items) > 1:
+            raise ValueError(f"Ambiguous reservation ID {reservation_id} - found {len(matching_items)} matches")
 
-        return items[0]
+        return matching_items[0]
     except Exception as e:
         logger.error(f"Error finding reservation {reservation_id}: {e}")
         raise
+
+
+def query_user_reservations_with_prefix(table, user_id: str, reservation_prefix: str) -> list:
+    """Query user reservations using UserIndex GSI and filter by prefix"""
+    from boto3.dynamodb.conditions import Key, Attr
+
+    matching_items = []
+    last_evaluated_key = None
+
+    while True:
+        query_kwargs = {
+            'IndexName': 'UserIndex',
+            'KeyConditionExpression': Key('user_id').eq(user_id),
+            'FilterExpression': Attr('reservation_id').begins_with(reservation_prefix)
+        }
+
+        if last_evaluated_key:
+            query_kwargs['ExclusiveStartKey'] = last_evaluated_key
+
+        response = table.query(**query_kwargs)
+        matching_items.extend(response.get('Items', []))
+
+        last_evaluated_key = response.get('LastEvaluatedKey')
+        if not last_evaluated_key:
+            break
+
+    return matching_items
+
+
+def scan_all_reservations_with_prefix(table, reservation_prefix: str) -> list:
+    """Scan all reservations with prefix - fallback when no user_id provided"""
+    from boto3.dynamodb.conditions import Attr
+
+    matching_items = []
+    last_evaluated_key = None
+
+    while True:
+        scan_kwargs = {
+            'FilterExpression': Attr('reservation_id').begins_with(reservation_prefix)
+        }
+
+        if last_evaluated_key:
+            scan_kwargs['ExclusiveStartKey'] = last_evaluated_key
+
+        response = table.scan(**scan_kwargs)
+        matching_items.extend(response.get('Items', []))
+
+        last_evaluated_key = response.get('LastEvaluatedKey')
+        if not last_evaluated_key:
+            break
+
+    return matching_items
 
 
 def handler(event, context):
@@ -564,6 +672,27 @@ def handler(event, context):
                 # Determine message type and process accordingly
                 try:
                     message_body = json.loads(record["body"])
+
+                    # Validate CLI version before processing any request
+                    try:
+                        validate_cli_version(message_body)
+                    except ValueError as version_error:
+                        # Handle version validation errors - update reservation status with error
+                        reservation_id = message_body.get("reservation_id")
+                        if reservation_id:
+                            logger.info(f"Updating reservation {reservation_id} with version error")
+                            update_reservation_status(
+                                reservation_id=reservation_id,
+                                status="failed",
+                                detailed_status="CLI version validation failed",
+                                failure_reason=str(version_error)
+                            )
+                            # Delete message after updating status
+                            delete_sqs_message(record)
+                        else:
+                            logger.error(f"Version validation failed but no reservation_id found: {version_error}")
+                        continue
+
                     message_type = message_body.get("type", "reservation")
 
                     if message_type == "cancellation":
@@ -1176,6 +1305,12 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 if reservation_request.get("github_user"):
                     initial_record["github_user"] = reservation_request["github_user"]
 
+                # Add Docker options if provided
+                if reservation_request.get("dockerfile_s3_key"):
+                    initial_record["dockerfile_base64_data"] = reservation_request["dockerfile_s3_key"]
+                if reservation_request.get("dockerimage"):
+                    initial_record["dockerimage"] = reservation_request["dockerimage"]
+
                 # Store initial record
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
                 reservations_table.put_item(Item=initial_record)
@@ -1590,6 +1725,98 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         github_user = request.get(
             "github_user", user_id
         )
+
+        # Extract Docker options if provided
+        dockerfile_base64_data = request.get("dockerfile_s3_key")
+        dockerimage = request.get("dockerimage")
+
+        # Set up K8s client early for both Docker builds and pod creation
+        k8s_client = get_k8s_client()
+
+        # Handle Dockerfile build if provided
+        if dockerfile_base64_data:
+            logger.info(f"Custom Dockerfile provided for reservation {reservation_id}: {len(dockerfile_base64_data)} bytes base64")
+
+            # Update status: Building custom Docker image
+            if is_multinode:
+                update_multinode_pod_status(reservation_id, "building custom Docker image", node_index, total_nodes)
+            update_reservation_status(
+                reservation_id,
+                "preparing",
+                detailed_status=f"Building custom Docker image from Dockerfile"
+            )
+
+            try:
+                # Create BuildKit job to build the image
+                image_tag = reservation_id[:8]  # Use short reservation ID as tag
+                buildkit_job_name = create_buildkit_job(
+                    k8s_client,
+                    reservation_id,
+                    dockerfile_base64_data,
+                    image_tag,
+                    ECR_REPOSITORY_URL
+                )
+
+                # Create progress callback to update DynamoDB status (with deduplication)
+                last_progress_message = [None]  # Use list to allow modification in nested function
+
+                def progress_callback(progress_message):
+                    try:
+                        # Only update if the progress message has actually changed
+                        if progress_message != last_progress_message[0]:
+                            update_reservation_status(
+                                reservation_id,
+                                "creating_server",
+                                detailed_status=progress_message
+                            )
+                            logger.info(f"Updated build progress for {reservation_id}: {progress_message}")
+                            last_progress_message[0] = progress_message
+                        # If message hasn't changed, skip the update (no log spam)
+                    except Exception as e:
+                        logger.warning(f"Failed to update build progress for {reservation_id}: {str(e)}")
+
+                # Wait for build to complete
+                logger.info(f"Waiting for Docker build to complete: {buildkit_job_name}")
+                build_result = wait_for_buildkit_job(
+                    k8s_client,
+                    buildkit_job_name,
+                    timeout_seconds=900,  # 15 minutes
+                    progress_callback=progress_callback
+                )
+
+                if build_result["success"]:
+                    logger.info(f"Docker build successful for {reservation_id}")
+                    # Use the built image
+                    dockerimage = f"{ECR_REPOSITORY_URL}:{image_tag}"
+                    logger.info(f"Will use built image: {dockerimage}")
+                else:
+                    build_logs = build_result.get('logs', 'No logs available')
+                    logger.error(f"Docker build failed for {reservation_id}: {build_result['message']}")
+                    logger.error(f"Build logs for {reservation_id}:\n{build_logs}")
+                    # Update reservation to failed
+                    update_reservation_status(
+                        reservation_id,
+                        "failed",
+                        detailed_status="Docker image build failed",
+                        failure_reason=f"Docker image build failed: {build_result['message']}\nLogs: {build_logs}"
+                    )
+                    return  # Don't raise exception, we've already marked as failed
+
+            except Exception as build_error:
+                logger.error(f"Exception during Docker build process for {reservation_id}: {str(build_error)}")
+                logger.error(f"Exception type: {type(build_error).__name__}")
+                import traceback
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+                update_reservation_status(
+                    reservation_id,
+                    "failed",
+                    detailed_status="Docker build process failed",
+                    failure_reason=f"Docker image build error: {str(build_error)}"
+                )
+                raise
+        elif dockerimage:
+            logger.info(f"Custom Docker image specified: {dockerimage}")
+
         github_public_key = get_github_public_key(github_user, validate=True)
         if not github_public_key:
             raise ValueError(
@@ -1711,9 +1938,14 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         "preparing",
                         "Setting up persistent disk for user data",
                     )
-                    persistent_volume_id, is_new_disk = create_or_find_persistent_disk_in_az(user_id, target_az)
+                    persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
                     logger.info(
                         f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
+
+                    # Store warning in database if multiple disks were detected
+                    if disk_warning:
+                        update_reservation_fields(reservation_id, warning=disk_warning)
+                        logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
 
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
@@ -1757,9 +1989,6 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             f"Creating pod {pod_name} with {gpu_count}x {gpu_type.upper()} GPUs {disk_status}{shared_status}",
         )
 
-        # Set up K8s client for resource management
-        k8s_client = get_k8s_client()
-
         # Create Kubernetes pod and services
         jupyter_enabled = request.get("jupyter_enabled", False)
         node_port, jupyter_port = create_kubernetes_resources(
@@ -1775,6 +2004,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             recreate_env=recreate_env,
             efs_filesystem_id=efs_filesystem_id,
             is_multinode=is_multinode,
+            dockerfile_base64_data=dockerfile_base64_data,
+            dockerimage=dockerimage,
         )
 
         # Update status: Pod created, waiting for container to start
@@ -1789,11 +2020,37 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         # Get node public IP for the specific pod
         node_public_ip = get_pod_node_public_ip(pod_name)
 
-        # Generate SSH command
-        ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
+        # Generate domain name if DNS is enabled
+        domain_name = None
+        domain_ssh_command = None
+        if get_dns_enabled():
+            # Get the preferred name from the request
+            preferred_name = request.get("name")
+            domain_name = generate_unique_name(preferred_name)
+
+            # Create DNS record
+            dns_success = create_dns_record(domain_name, node_public_ip, node_port)
+            if dns_success:
+                domain_ssh_command = format_ssh_command_with_domain(domain_name, node_port)
+
+                # Store domain mapping for tracking
+                duration_hours = float(request.get("duration_hours", 8))
+                expires_timestamp = int(time.time()) + int(duration_hours * 3600)
+                store_domain_mapping(domain_name, node_public_ip, node_port, reservation_id, expires_timestamp)
+
+                logger.info(f"Created domain name {domain_name} for reservation {reservation_id}")
+
+        # Generate SSH command (prefer domain name if available)
+        ssh_command = domain_ssh_command if domain_ssh_command else f"ssh -p {node_port} dev@{node_public_ip}"
 
         # Generate Jupyter URL (we'll get the token after pod is ready)
-        jupyter_url_base = f"http://{node_public_ip}:{jupyter_port}"
+        if domain_name and domain_ssh_command:
+            # Use HTTP with domain name for Jupyter when DNS is configured
+            # TODO: Add HTTPS support with SSL certificate
+            jupyter_url_base = f"http://{domain_name}:{jupyter_port}"
+        else:
+            # Fallback to HTTP with IP when DNS is not configured
+            jupyter_url_base = f"http://{node_public_ip}:{jupyter_port}"
 
         # Update status: Waiting for SSH service
         update_reservation_status(
@@ -1826,6 +2083,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 k8s_client=k8s_client,
                 persistent_volume_id=persistent_volume_id,
                 ebs_availability_zone=target_az if use_persistent_disk else None,
+                domain_name=domain_name,
             )
 
             # Trigger availability table update after successful reservation
@@ -2088,6 +2346,8 @@ def create_kubernetes_resources(
     recreate_env: bool = False,
     efs_filesystem_id: str = None,
     is_multinode: bool = False,
+    dockerfile_base64_data: str = None,
+    dockerimage: str = None,
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
@@ -2181,6 +2441,8 @@ def create_kubernetes_resources(
                         recreate_env=recreate_env,
                         efs_filesystem_id=efs_filesystem_id,
                         is_multinode=is_multinode,
+                        dockerfile_base64_data=dockerfile_base64_data,
+                        dockerimage=dockerimage,
                     )
                     logger.info(f"Created new pod {pod_name} with Jupyter")
                     update_reservation_status(
@@ -2250,6 +2512,8 @@ def create_kubernetes_resources(
                         recreate_env=recreate_env,
                         efs_filesystem_id=efs_filesystem_id,
                         is_multinode=is_multinode,
+                        dockerfile_base64_data=dockerfile_base64_data,
+                        dockerimage=dockerimage,
                     )
                     logger.info(f"Created new pod {pod_name} without Jupyter")
                     update_reservation_status(
@@ -2440,10 +2704,25 @@ def create_pod(
     recreate_env: bool = False,
     efs_filesystem_id: str = None,
     is_multinode: bool = False,
+    dockerfile_base64_data: str = None,
+    dockerimage: str = None,
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
         v1 = client.CoreV1Api(k8s_client)
+
+        # Determine container image to use
+        container_image = GPU_DEV_CONTAINER_IMAGE  # Default
+
+        if dockerimage:
+            logger.info(f"Using custom Docker image: {dockerimage}")
+            container_image = dockerimage
+        elif dockerfile_base64_data:
+            # This should not happen - Dockerfile should have been built already
+            logger.warning(f"Dockerfile base64 data provided but no built image: {len(dockerfile_base64_data)} bytes")
+            logger.warning("Using default image - Dockerfile should have been built earlier")
+
+        logger.info(f"Pod {pod_name} will use container image: {container_image}")
 
         # Handle persistent disk setup if provided
         ebs_volume_spec = None
@@ -2470,6 +2749,7 @@ def create_pod(
                 client.V1Container(
                     name="ssh-setup",
                     image="alpine:latest",
+                    image_pull_policy="Always",  # Fail fast if image doesn't exist
                     command=["/bin/sh"],
                     args=[
                         "-c",
@@ -2525,12 +2805,18 @@ def create_pod(
                     volume_mounts=[
                         client.V1VolumeMount(name="dev-home", mount_path="/home/dev")
                     ],
+                    security_context=client.V1SecurityContext(
+                        # Init container always runs as root to set up SSH keys
+                        run_as_user=0,
+                        run_as_group=0
+                    ),
                 )
             ],
             containers=[
                 client.V1Container(
                     name="gpu-dev",
-                    image=GPU_DEV_CONTAINER_IMAGE,
+                    image=container_image,
+                    image_pull_policy="Always",  # Always pull to check if image exists, fail fast if not
                     command=["/bin/bash"],
                     args=[
                         "-c",
@@ -2542,6 +2828,14 @@ def create_pod(
                         echo "[STARTUP] - CREATE_SH_ENV=$CREATE_SH_ENV"
                         echo "[STARTUP] - JUPYTER_ENABLED=$JUPYTER_ENABLED"
                         echo "[STARTUP] - USE_PERSISTENT_DISK=$USE_PERSISTENT_DISK"
+
+                        echo "[STARTUP] Setting up dev user..."
+                        # Create dev user with zsh as default shell (same UID as init container)
+                        id dev &>/dev/null || useradd -u 1000 -m -s /usr/bin/zsh dev
+
+                        # Ensure dev user is not locked (useradd creates locked accounts by default)
+                        # Use passwd -d to remove password and unlock account for SSH key authentication
+                        passwd -d dev >/dev/null 2>&1 || echo "[STARTUP] Warning: Could not unlock dev user"
 
                         echo "[STARTUP] Checking persistent disk setup..."
                         
@@ -2587,13 +2881,18 @@ def create_pod(
                         # Copy shell configs from Docker image to persistent disk if needed
                         echo "[STARTUP] Shell config setup - CREATE_SH_ENV='$CREATE_SH_ENV'"
                         
-                        # List what's available in the source directory
-                        echo "[STARTUP] Available files in /devserver-setup:"
-                        ls -la /devserver-setup/ || echo "[STARTUP] ERROR: /devserver-setup directory not found!"
-                        
-                        if [ "$CREATE_SH_ENV" = "true" ]; then
+                        # Check if the source directory exists (custom Docker images may not have it)
+                        if [ -d "/devserver-setup" ]; then
+                            echo "[STARTUP] Available files in /devserver-setup:"
+                            ls -la /devserver-setup/
+                        else
+                            echo "[STARTUP] /devserver-setup directory not found - custom Docker image detected"
+                            echo "[STARTUP] Skipping pre-built shell configuration copy"
+                        fi
+
+                        if [ "$CREATE_SH_ENV" = "true" ] && [ -d "/devserver-setup" ]; then
                             echo "[STARTUP] CREATE_SH_ENV=true - Copying shell configurations and user directories to persistent disk..."
-                            
+
                             # Copy pre-built configs from Docker image to persistent disk with error checking
                             echo "[STARTUP] Copying shell configurations from /devserver-setup to /home/dev..."
                             
@@ -2640,6 +2939,49 @@ def create_pod(
 
                             echo "[STARTUP] Shell configuration files and user directories copied to persistent disk"
 
+                        elif [ "$CREATE_SH_ENV" = "true" ]; then
+                            echo "[STARTUP] CREATE_SH_ENV=true but /devserver-setup not found - creating basic shell configuration"
+
+                            # Create basic bashrc with expiration warning support for custom Docker images
+                            cat > /home/dev/.bashrc << 'EOF_BASHRC'
+# Basic bashrc for GPU dev servers - Custom Docker image
+
+# Source system bashrc if it exists
+[ -r /etc/bash.bashrc ] && . /etc/bash.bashrc
+
+# Function to check for GPU reservation expiry warnings
+check_warnings() {{
+    for warning_file in /home/dev/WARN_EXPIRES_IN_*MIN.txt; do
+        if [ -f "$warning_file" ]; then
+            # Extract minutes from filename (e.g., WARN_EXPIRES_IN_15MIN.txt -> 15)
+            minutes=$(echo "$warning_file" | sed 's/.*WARN_EXPIRES_IN_\\([0-9]*\\)MIN.txt/\\1/')
+            echo -e "\\033[1;31m🚨 URGENT: Server expires in <${{minutes}} minutes! 🚨\\033[0m"
+            return
+        fi
+    done 2>/dev/null
+}}
+
+# Run warning check before every command prompt
+PROMPT_COMMAND="check_warnings; $PROMPT_COMMAND"
+
+# Basic info on login
+echo "🚀 GPU Dev Server Ready!"
+echo "🔗 Shared storage: /shared (if mounted)"
+echo "📁 Original container files preserved in their original locations"
+EOF_BASHRC
+
+                            chown 1000:1000 /home/dev/.bashrc
+                            echo "[STARTUP] ✓ Created basic .bashrc with expiration warnings"
+
+                            # Ensure .bashrc is sourced for SSH login shells
+                            cat > /home/dev/.bash_profile << 'EOF_PROFILE'
+# Source .bashrc for interactive login shells (like SSH)
+if [ -f ~/.bashrc ]; then
+    . ~/.bashrc
+fi
+EOF_PROFILE
+                            chown 1000:1000 /home/dev/.bash_profile
+                            echo "[STARTUP] ✓ Created .bash_profile to source .bashrc for SSH sessions"
                         else
                             echo "[STARTUP] CREATE_SH_ENV='$CREATE_SH_ENV' - Using existing shell configuration from persistent disk"
                             echo "[STARTUP] Current files in /home/dev:"
@@ -2710,13 +3052,41 @@ EOFREADME
                             echo "[STARTUP] Dotfiles persistence not available without shared storage"
                         fi
 
-                        echo "[STARTUP] Setting up dev user..."
-                        # Create dev user with zsh as default shell (same UID as init container)
-                        id dev &>/dev/null || useradd -u 1000 -m -s /usr/bin/zsh dev
-                        # NO password for dev user - passwordless sudo only
-                        usermod -aG sudo dev
-                        # Allow passwordless sudo for dev user
-                        echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev
+                        echo "[STARTUP] Configuring dev user shell and permissions..."
+                        # Set up default shell for dev user (user already created earlier)
+                        # Fallback to bash if zsh is not available
+                        if [ -x "/usr/bin/zsh" ]; then
+                            DEFAULT_SHELL="/usr/bin/zsh"
+                            echo "[STARTUP] Using zsh as default shell"
+                        elif [ -x "/bin/bash" ]; then
+                            DEFAULT_SHELL="/bin/bash"
+                            echo "[STARTUP] Zsh not available, using bash as default shell"
+                        else
+                            DEFAULT_SHELL="/bin/sh"
+                            echo "[STARTUP] Neither zsh nor bash available, using sh as default shell"
+                        fi
+
+                        # Update shell for existing dev user
+                        usermod -s "$DEFAULT_SHELL" dev
+
+                        # Ensure dev user is not locked (important for existing users from persistent disks)
+                        passwd -d dev >/dev/null 2>&1 || echo "[STARTUP] Warning: Could not unlock existing dev user"
+
+                        # Set up sudo access if sudo is available
+                        if command -v usermod >/dev/null 2>&1 && getent group sudo >/dev/null 2>&1; then
+                            usermod -aG sudo dev
+                            echo "[STARTUP] Added dev user to sudo group"
+                        else
+                            echo "[STARTUP] Sudo not available - dev user will not have sudo access"
+                        fi
+
+                        # Allow passwordless sudo for dev user if sudoers.d exists
+                        if [ -d "/etc/sudoers.d" ]; then
+                            echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev
+                            echo "[STARTUP] Configured passwordless sudo for dev user"
+                        else
+                            echo "[STARTUP] /etc/sudoers.d not available - dev user will need password for sudo"
+                        fi
 
                         # Clean up any old warning files from previous sessions
                         echo "[STARTUP] Cleaning up old warning files..."
@@ -2732,8 +3102,75 @@ EOFREADME
                         mkdir -p /run/sshd
                         mkdir -p /var/run/sshd
 
+                        # Check if SSH server is available in common locations
+                        SSHD_PATH=""
+                        for path in /usr/sbin/sshd /sbin/sshd /usr/bin/sshd /bin/sshd; do
+                            if [ -x "$path" ]; then
+                                SSHD_PATH="$path"
+                                echo "[STARTUP] Found SSH server at: $SSHD_PATH"
+                                break
+                            fi
+                        done
+
+                        # If not found, try to install it automatically
+                        if [ -z "$SSHD_PATH" ]; then
+                            echo "[STARTUP] SSH server not found, attempting automatic installation..."
+
+                            # Try different package managers
+                            if command -v apt-get >/dev/null 2>&1; then
+                                echo "[STARTUP] Installing SSH server with apt-get..."
+                                apt-get update && apt-get install -y openssh-server
+                            elif command -v yum >/dev/null 2>&1; then
+                                echo "[STARTUP] Installing SSH server with yum..."
+                                yum install -y openssh-server
+                            elif command -v apk >/dev/null 2>&1; then
+                                echo "[STARTUP] Installing SSH server with apk..."
+                                apk add --no-cache openssh-server
+                            elif command -v dnf >/dev/null 2>&1; then
+                                echo "[STARTUP] Installing SSH server with dnf..."
+                                dnf install -y openssh-server
+                            else
+                                echo "[STARTUP] ❌ ERROR: No known package manager found!"
+                                echo "[STARTUP] Custom Docker images must install SSH server."
+                                echo "[STARTUP] For Ubuntu/Debian: RUN apt-get update && apt-get install -y openssh-server"
+                                echo "[STARTUP] For CentOS/Rocky: RUN yum install -y openssh-server"
+                                echo "[STARTUP] For Alpine: RUN apk add --no-cache openssh-server"
+                                echo "[STARTUP] Container will exit - SSH access is required for gpu-dev servers"
+                                exit 1
+                            fi
+
+                            # Re-check for SSH server after installation
+                            for path in /usr/sbin/sshd /sbin/sshd /usr/bin/sshd /bin/sshd; do
+                                if [ -x "$path" ]; then
+                                    SSHD_PATH="$path"
+                                    echo "[STARTUP] SSH server successfully installed at: $SSHD_PATH"
+                                    break
+                                fi
+                            done
+
+                            if [ -z "$SSHD_PATH" ]; then
+                                echo "[STARTUP] ❌ ERROR: SSH server installation failed!"
+                                exit 1
+                            fi
+                        fi
+
                         # Configure SSH daemon - NO password authentication
-                        cat > /etc/ssh/sshd_config << 'EOF'
+                        if [ -d "/etc/ssh" ]; then
+                            # Find the correct sftp-server path
+                            SFTP_SERVER=""
+                            for path in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server; do
+                                if [ -x "$path" ]; then
+                                    SFTP_SERVER="$path"
+                                    break
+                                fi
+                            done
+
+                            if [ -z "$SFTP_SERVER" ]; then
+                                echo "[STARTUP] Warning: sftp-server not found, SSH may have limited functionality"
+                                SFTP_SERVER="/usr/lib/openssh/sftp-server"  # fallback
+                            fi
+
+                            cat > /etc/ssh/sshd_config << EOF
 Port 22
 PermitRootLogin no
 PasswordAuthentication no
@@ -2742,16 +3179,29 @@ AuthorizedKeysFile .ssh/authorized_keys
 HostKey /etc/ssh/ssh_host_rsa_key
 HostKey /etc/ssh/ssh_host_ecdsa_key
 HostKey /etc/ssh/ssh_host_ed25519_key
-UsePAM yes
+UsePAM no
 X11Forwarding yes
 PrintMotd no
 PrintLastLog yes
 AcceptEnv LANG LC_*
-Subsystem sftp /usr/lib/openssh/sftp-server
+Subsystem sftp $SFTP_SERVER
 EOF
+                            echo "[STARTUP] SSH daemon configured"
+                        else
+                            echo "[STARTUP] ❌ ERROR: /etc/ssh directory not found!"
+                            echo "[STARTUP] SSH server installation may be incomplete."
+                            exit 1
+                        fi
 
                         # Generate host keys if they don't exist
-                        ssh-keygen -A
+                        if command -v ssh-keygen >/dev/null 2>&1; then
+                            ssh-keygen -A
+                            echo "[STARTUP] SSH host keys generated"
+                        else
+                            echo "[STARTUP] ❌ ERROR: ssh-keygen not found!"
+                            echo "[STARTUP] SSH server installation is incomplete."
+                            exit 1
+                        fi
 
                         echo "[STARTUP] Setting up dev user home directory..."
                         # Ensure all shell config files have correct ownership
@@ -2832,17 +3282,34 @@ EOF
                             echo "Welcome to GPU dev server!" > /etc/motd
                         fi
 
-                        echo "[STARTUP] Jupyter Lab pre-installed in Docker image..."
+                        # Check if Jupyter Lab is actually available in the Docker image
+                        if command -v jupyter-lab >/dev/null 2>&1 || [ -x "/opt/conda/bin/jupyter-lab" ]; then
+                            echo "[STARTUP] Jupyter Lab found in Docker image"
 
-                        # Always create Jupyter config and token (for later use)
-                        echo "[STARTUP] Setting up Jupyter Lab configuration..."
-                        su - dev -c "mkdir -p ~/.jupyter"
+                            # Always create Jupyter config and token (for later use)
+                            echo "[STARTUP] Setting up Jupyter Lab configuration..."
+                            su - dev -c "mkdir -p ~/.jupyter"
 
-                        # Generate Jupyter config and token (always, regardless of JUPYTER_ENABLED)
-                        JUPYTER_TOKEN=$(openssl rand -hex 32)
+                            # Generate Jupyter config and token (always, regardless of JUPYTER_ENABLED)
+                            # Check if openssl is available for token generation
+                            if command -v openssl >/dev/null 2>&1; then
+                                JUPYTER_TOKEN=$(openssl rand -hex 32)
+                                echo "[STARTUP] Generated Jupyter token using openssl"
+                            else
+                                # Fallback: use /dev/urandom if available, otherwise disable Jupyter
+                                if [ -r "/dev/urandom" ]; then
+                                    JUPYTER_TOKEN=$(head -c 32 /dev/urandom | xxd -p -c 32)
+                                    echo "[STARTUP] Generated Jupyter token using /dev/urandom (openssl not available)"
+                                else
+                                    JUPYTER_TOKEN=""
+                                    echo "[STARTUP] Neither openssl nor /dev/urandom available - Jupyter functionality disabled"
+                                fi
+                            fi
 
-                        # Create Jupyter config file
-                        cat > /home/dev/.jupyter/jupyter_lab_config.py << EOF
+                            # Create Jupyter config file only if we have a token
+                            if [ -n "$JUPYTER_TOKEN" ]; then
+                                mkdir -p /home/dev/.jupyter
+                                cat > /home/dev/.jupyter/jupyter_lab_config.py << EOF
 c.ServerApp.ip = '0.0.0.0'
 c.ServerApp.port = 8888
 c.ServerApp.token = '$JUPYTER_TOKEN'
@@ -2853,51 +3320,93 @@ c.ServerApp.allow_remote_access = True
 c.ServerApp.notebook_dir = '/workspace'
 c.ServerApp.root_dir = '/workspace'
 EOF
-                        chown 1000:1000 /home/dev/.jupyter/jupyter_lab_config.py
+                                chown 1000:1000 /home/dev/.jupyter/jupyter_lab_config.py
+                                echo "[STARTUP] Jupyter Lab configured with security token"
 
-                        # Store Jupyter token in a file for later retrieval
-                        echo "$JUPYTER_TOKEN" > /tmp/jupyter_token
-                        chown 1000:1000 /tmp/jupyter_token
-                        chmod 600 /tmp/jupyter_token
+                                # Store Jupyter token in a file for later retrieval
+                                echo "$JUPYTER_TOKEN" > /tmp/jupyter_token
+                                chown 1000:1000 /tmp/jupyter_token
+                                chmod 600 /tmp/jupyter_token
+                            else
+                                echo "[STARTUP] Jupyter Lab configuration skipped - no token available"
+                            fi
 
-                        # Only start Jupyter if enabled at creation time
-                        if [ "$JUPYTER_ENABLED" = "true" ]; then
-                            echo "[STARTUP] Starting Jupyter Lab in background..."
-                            nohup su - dev -c "cd /workspace && /opt/conda/bin/jupyter-lab --config=/home/dev/.jupyter/jupyter_lab_config.py" > /tmp/jupyter.log 2>&1 &
-                            echo "[STARTUP] Jupyter Lab started (check /tmp/jupyter.log for details)"
+                            # Only start Jupyter if enabled at creation time
+                            if [ "$JUPYTER_ENABLED" = "true" ]; then
+                                echo "[STARTUP] Starting Jupyter Lab in background..."
+                                nohup su - dev -c "cd /workspace && /opt/conda/bin/jupyter-lab --config=/home/dev/.jupyter/jupyter_lab_config.py" > /tmp/jupyter.log 2>&1 &
+                                echo "[STARTUP] Jupyter Lab started (check /tmp/jupyter.log for details)"
+                            else
+                                echo "[STARTUP] Jupyter Lab configured but not started (use 'gpu-dev edit --enable-jupyter' to enable)"
+                            fi
+
                         else
-                            echo "[STARTUP] Jupyter Lab configured but not started (use 'gpu-dev edit --enable-jupyter' to enable)"
+                            echo "[STARTUP] Jupyter Lab not found in Docker image - skipping Jupyter setup"
                         fi
 
                         # Set up automatic dotfiles backup on container shutdown
                         if [ -d "/shared-personal" ]; then
                             echo "[STARTUP] Setting up automatic dotfiles backup on shutdown..."
-                            
+
                             # Set up signal handler to backup dotfiles on graceful shutdown
-                            trap '/usr/local/bin/dotfiles-shutdown-handler; exit 0' TERM INT
-                            
+                            if [ -f "/usr/local/bin/dotfiles-shutdown-handler" ]; then
+                                trap '/usr/local/bin/dotfiles-shutdown-handler; exit 0' TERM INT
+                                echo "[STARTUP] Shutdown backup handler configured"
+                            else
+                                echo "[STARTUP] No shutdown backup handler found - using default signal handling"
+                                trap 'exit 0' TERM INT
+                            fi
+
                             # Also set up periodic backup every 30 minutes if shared storage is available
-                            echo "[STARTUP] Starting periodic backup (every 30 minutes)..."
-                            (
-                                while true; do
-                                    sleep 1800  # 30 minutes
-                                    if [ -f /usr/local/bin/backup-dotfiles ]; then
+                            # Only enable if backup script exists
+                            if [ -f "/usr/local/bin/backup-dotfiles" ]; then
+                                echo "[STARTUP] Starting periodic backup (every 30 minutes)..."
+                                (
+                                    while true; do
+                                        sleep 1800  # 30 minutes
                                         echo "$(date): Performing periodic dotfiles backup..."
                                         su - dev -c "/usr/local/bin/backup-dotfiles" 2>/dev/null || echo "Periodic backup failed"
-                                    fi
-                                done
-                            ) &
-                            
+                                    done
+                                ) &
+                            else
+                                echo "[STARTUP] No backup script found - skipping periodic backup for custom Docker image"
+                            fi
+
                             echo "[STARTUP] ✓ Automatic dotfiles backup configured"
+                        else
+                            echo "[STARTUP] No shared storage - skipping backup setup"
                         fi
 
                         echo "[STARTUP] Starting SSH daemon..."
                         # Test SSH config first
-                        /usr/sbin/sshd -t
+                        if $SSHD_PATH -t; then
+                            echo "[STARTUP] SSH configuration is valid"
+                        else
+                            echo "[STARTUP] ❌ ERROR: SSH configuration is invalid"
+                            echo "[STARTUP] Check the logs above for details"
+                            exit 1
+                        fi
 
-                        # Start SSH daemon in foreground
-                        echo "[STARTUP] SSH daemon starting on port 22"
-                        exec /usr/sbin/sshd -D -e
+                        # Start SSH daemon with auto-restart capability
+                        echo "[STARTUP] SSH daemon starting on port 22 using $SSHD_PATH"
+                        echo "[STARTUP] Container ready for SSH connections"
+
+                        # Run SSH daemon with automatic restart in case of crashes
+                        while true; do
+                            echo "[STARTUP] Starting SSH daemon..."
+                            $SSHD_PATH -D -e
+                            EXIT_CODE=$?
+                            echo "[STARTUP] SSH daemon exited with code $EXIT_CODE"
+
+                            # If SSH daemon exits, wait a moment and restart it
+                            if [ $EXIT_CODE -eq 0 ]; then
+                                echo "[STARTUP] SSH daemon exited normally"
+                                break
+                            else
+                                echo "[STARTUP] SSH daemon crashed, restarting in 5 seconds..."
+                                sleep 5
+                            fi
+                        done
                         """,
                     ],
                     ports=[
@@ -2935,7 +3444,10 @@ EOF
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
                             add=["IPC_LOCK"]
-                        )
+                        ),
+                        # Run as root when using custom Docker images to allow SSH setup
+                        run_as_user=0 if dockerimage else None,
+                        run_as_group=0 if dockerimage else None
                     ),
                 )
             ],
@@ -3213,8 +3725,8 @@ def get_node_instance_id() -> str:
         return None
 
 
-def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -> tuple[str, bool]:
-    """Create or find existing persistent disk for user in specific AZ, returns (volume_id, is_new_disk)"""
+def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -> tuple[str, bool, str]:
+    """Create or find existing persistent disk for user in specific AZ, returns (volume_id, is_new_disk, warning_message)"""
     try:
         # Use EC2 tags to track user disks
         disk_tag_key = "gpu-dev-user"
@@ -3232,10 +3744,57 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
         )
 
         volumes = response.get("Volumes", [])
+        warning_message = None
+
+        # BUG FIX: Detect multiple persistent disks and return warning instead of erroring
+        if len(volumes) > 1:
+            volume_ids = [vol["VolumeId"] for vol in volumes]
+            warning_message = f"⚠️ Multiple persistent disks detected ({len(volumes)} disks: {', '.join(volume_ids)}). Using oldest available. Please contact oncall:pytorch_release_engineering to clean up duplicate disks."
+            logger.error(f"❌ DOUBLE PERSISTENT DISK DETECTED for user {user_id} in AZ {availability_zone}: {volume_ids}. Please report to oncall:pytorch_release_engineering")
+            logger.error(f"This should not happen! User {user_id} should only have ONE persistent disk per AZ.")
+
         if volumes:
-            volume_id = volumes[0]["VolumeId"]
-            logger.info(f"Found existing persistent disk {volume_id} for user {user_id} in {availability_zone}")
-            return volume_id, False  # existing disk
+            # BUG FIX: Sort by creation time to always use the oldest disk
+            volumes_sorted = sorted(volumes, key=lambda v: v.get("CreateTime", datetime.min))
+
+            # Check if any volumes are available (not in-use)
+            available_volumes = [vol for vol in volumes_sorted if vol["State"] == "available"]
+
+            if available_volumes:
+                # BUG FIX: Use the oldest available disk
+                oldest_volume = available_volumes[0]
+                volume_id = oldest_volume["VolumeId"]
+                create_time = oldest_volume.get("CreateTime", "unknown")
+
+                if len(available_volumes) > 1:
+                    logger.warning(f"Multiple available disks found for {user_id}, using oldest: {volume_id} (created {create_time})")
+                else:
+                    logger.info(f"Found existing available persistent disk {volume_id} for user {user_id} in {availability_zone}")
+
+                return volume_id, False, warning_message  # existing disk, with optional warning
+            else:
+                # BUG FIX: All volumes are in-use - this is a race condition bug!
+                # DO NOT create a new disk. Instead, return a warning to be stored in the database.
+                in_use_volumes = [vol for vol in volumes_sorted if vol["State"] == "in-use"]
+
+                if in_use_volumes:
+                    oldest_in_use = in_use_volumes[0]
+                    in_use_volume_id = oldest_in_use["VolumeId"]
+                    all_in_use_ids = [vol["VolumeId"] for vol in in_use_volumes]
+
+                    # Create warning message for database (CLI will display this)
+                    warning_msg = (
+                        f"⚠️ All persistent disks are in-use by other reservations. "
+                        f"Found {len(in_use_volumes)} in-use disk(s): {', '.join(all_in_use_ids)}. "
+                        f"Please contact oncall:pytorch_release_engineering to resolve this issue."
+                    )
+                    logger.error(f"❌ DOUBLE PERSISTENT DISK - ALL IN-USE for user {user_id}: {all_in_use_ids}")
+
+                    # Raise exception to prevent reservation from continuing without persistent disk
+                    raise RuntimeError(warning_msg)
+                else:
+                    logger.warning(f"User {user_id} has persistent disk(s) in unexpected state: {[vol['State'] for vol in volumes]}.")
+                    # Fall through to create new disk for unexpected states
 
         # Create new 1TB gp3 disk in the specified AZ
         logger.info(f"Creating new 1TB persistent disk for user {user_id} in AZ {availability_zone}")
@@ -3267,7 +3826,7 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
         waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
 
         logger.info(f"Created new persistent disk {volume_id} for user {user_id} in {availability_zone}")
-        return volume_id, True  # new disk
+        return volume_id, True, None  # new disk, no warning
 
     except Exception as e:
         logger.error(f"Error creating/finding persistent disk for user {user_id} in AZ {availability_zone}: {str(e)}")
@@ -3294,9 +3853,20 @@ def create_or_find_persistent_disk(user_id: str) -> tuple[str, bool]:
 
         volumes = response.get("Volumes", [])
         if volumes:
-            volume_id = volumes[0]["VolumeId"]
-            logger.info(f"Found existing persistent disk {volume_id} for user {user_id}")
-            return volume_id, False  # existing disk
+            # Check if any volumes are available (not in-use)
+            available_volumes = [vol for vol in volumes if vol["State"] == "available"]
+            if available_volumes:
+                volume_id = available_volumes[0]["VolumeId"]
+                logger.info(f"Found existing available persistent disk {volume_id} for user {user_id}")
+                return volume_id, False  # existing disk
+            else:
+                # All volumes are in-use, log this and create a new one
+                in_use_volumes = [vol for vol in volumes if vol["State"] == "in-use"]
+                if in_use_volumes:
+                    in_use_volume_id = in_use_volumes[0]["VolumeId"]
+                    logger.warning(f"User {user_id} has persistent disk {in_use_volume_id} but it's currently in-use by another reservation. Creating new disk instead.")
+                else:
+                    logger.warning(f"User {user_id} has persistent disk(s) in unexpected state: {[vol['State'] for vol in volumes]}. Creating new disk.")
 
         # Create new 1TB gp3 disk
         logger.info(f"Creating new 1TB persistent disk for user {user_id}")
@@ -3532,6 +4102,7 @@ def update_reservation_connection_info(
     k8s_client=None,
     persistent_volume_id: str = None,
     ebs_availability_zone: str = None,
+    domain_name: str = None,
 ):
     """Update reservation with connection details and set proper expiration time"""
     logger.info(f"MAIN FLOW: Starting to update connection info for reservation {reservation_id} (pod: {pod_name})")
@@ -3648,6 +4219,10 @@ def update_reservation_connection_info(
         # Add Jupyter error message if there was one
         if jupyter_error_msg:
             update_fields["jupyter_error"] = jupyter_error_msg
+
+        # Add domain name if provided
+        if domain_name:
+            update_fields["domain_name"] = domain_name
 
         # Update all fields at once
         update_reservation_fields(reservation_id, **update_fields)
@@ -3875,57 +4450,18 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
             logger.info(
                 f"Latest events for {pod_name}: {[(e.reason, e.type, e.message[:50]) for e in sorted_events[:3]]}")
 
-            for event in sorted_events[:3]:  # Check last 3 events
-                event_type = event.type
-                reason = event.reason
-                message = event.message
-
-                if event_type == "Warning":
-                    if "FailedAttachVolume" in reason:
-                        event_message = f"❌ Volume attachment failed: {message[:60]}..."
+            # Look for Pulling events in last 2 messages, ignore container started/created
+            for event in sorted_events[:2]:
+                if event.reason == "Pulling":
+                    event_message = event.message
+                    break
+            
+            # If no pulling event, use latest non-container event
+            if not event_message:
+                for event in sorted_events[:3]:
+                    if event.reason not in ["Started", "Created"]:
+                        event_message = event.message
                         break
-                    elif "FailedScheduling" in reason:
-                        # Extract resource info from scheduling message
-                        if "nodes are available" in message:
-                            import re
-                            match = re.search(r'(\d+)/(\d+) nodes are available', message)
-                            if match:
-                                available, total = match.groups()
-                                event_message = f"⏳ Waiting for resources ({available}/{total} nodes available)"
-                                break
-                        event_message = f"⏳ Scheduling: {message[:60]}..."
-                        break
-                    elif "FailedMount" in reason and "kube-api-access" in message:
-                        # kube-api-access mount failures are commonly transient in EKS - don't fail immediately
-                        event_message = f"⏳ Setting up pod access (transient)..."
-                        break
-                    elif "Failed" in reason:
-                        event_message = f"❌ {reason}: {message[:50]}..."
-                        break
-                elif event_type == "Normal":
-                    if reason == "Scheduled":
-                        node_name = message.split(" to ")[-1] if " to " in message else "node"
-                        event_message = f"✅ Pod scheduled to {node_name[:20]}"
-                    elif reason == "Pulling":
-                        # Extract image name for better status
-                        if "image" in message:
-                            image_part = message.split('"')[1] if '"' in message else "image"
-                            # Simplify long image names
-                            if "ecr" in image_part:
-                                image_name = "GPU dev container"
-                            elif "alpine" in image_part:
-                                image_name = "alpine"
-                            else:
-                                image_name = image_part.split("/")[-1].split(":")[0]
-                            event_message = f"📥 Pulling {image_name} image..."
-                        else:
-                            event_message = "📥 Pulling container image..."
-                    elif reason == "Pulled":
-                        event_message = "✅ Container image pulled"
-                    elif reason == "Created":
-                        event_message = "🏗️ Container created"
-                    elif reason == "Started":
-                        event_message = "🚀 Container started"
 
         # Parse startup logs for container initialization progress
         startup_message = ""
@@ -4285,18 +4821,20 @@ def process_scheduled_queue_management():
                 reservation_id = reservation["reservation_id"]
                 requested_gpus = int(reservation.get("gpu_count", 1))
                 current_status = reservation.get("status", "pending")
+                gpu_type = reservation.get("gpu_type", "h100")
 
-                # Check if this reservation can be allocated now
-                if available_gpus >= requested_gpus:
+                # Check if this reservation can be allocated now - validate GPU type availability
+                type_available_gpus = check_gpu_availability(gpu_type)
+                if type_available_gpus >= requested_gpus:
                     logger.info(
-                        f"Allocating {requested_gpus} GPUs for reservation {reservation_id}"
+                        f"Allocating {requested_gpus} {gpu_type.upper()} GPUs for reservation {reservation_id} - {type_available_gpus} available"
                     )
 
                     # Update status to preparing
                     update_reservation_status(
                         reservation_id,
                         "preparing",
-                        "GPUs available - preparing environment",
+                        f"Found {type_available_gpus} available {gpu_type.upper()} GPUs - preparing environment",
                     )
 
                     # Try to create the actual resources
@@ -4308,7 +4846,6 @@ def process_scheduled_queue_management():
                         if (
                             allocation_success is not False
                         ):  # None or True means success
-                            available_gpus -= requested_gpus  # Reduce available count
                             allocated_count += 1
                             logger.info(
                                 f"Successfully allocated resources for reservation {reservation_id}"
@@ -4332,42 +4869,57 @@ def process_scheduled_queue_management():
                             f"Allocation error: {str(alloc_error)}",
                         )
                 else:
-                    # Update queue position and ETA for waiting reservations
+                    # Update queue position and ETA for waiting reservations  
                     queue_position = i + 1
+                    
+                    logger.info(
+                        f"Reservation {reservation_id} queued: needs {requested_gpus} {gpu_type.upper()} GPUs, only {type_available_gpus} available"
+                    )
 
-                    # Calculate estimated wait time using K8s tracker
-                    try:
-                        wait_estimate = gpu_tracker.estimate_wait_time(
-                            requested_gpus, active_reservations
-                        )
-                        estimated_wait_minutes = wait_estimate.get(
-                            "estimated_wait_minutes", 30
-                        )
-                    except Exception as e:
-                        logger.warning(f"Could not calculate wait time: {e}")
-                        estimated_wait_minutes = (
-                            queue_position * 15
-                        )
+                    # Calculate estimated wait time 
+                    if type_available_gpus == 0:
+                        # No GPUs of this type available - infinite wait or contact oncall
+                        estimated_wait_minutes = 999999  # Effectively infinite
+                        logger.warning(f"No {gpu_type.upper()} GPUs available for reservation {reservation_id} - contact oncall:pytorch_release_engineering")
+                    else:
+                        # Some GPUs available, use K8s tracker for normal estimation
+                        try:
+                            wait_estimate = gpu_tracker.estimate_wait_time(
+                                requested_gpus, active_reservations
+                            )
+                            estimated_wait_minutes = wait_estimate.get(
+                                "estimated_wait_minutes", 30
+                            )
+                        except Exception as e:
+                            logger.warning(f"Could not calculate wait time: {e}")
+                            estimated_wait_minutes = (
+                                queue_position * 15
+                            )
 
                     # Update reservation with current queue info
                     update_reservation_with_queue_info(
                         reservation_id,
                         str(queue_position),
                         str(estimated_wait_minutes),
-                        available_gpus,
+                        type_available_gpus,
                     )
 
                     # Update status with human-readable timestamps if needed
                     if current_status == "pending":
+                        if type_available_gpus == 0:
+                            status_message = f"In queue position #{queue_position} - No {gpu_type.upper()} GPUs available, contact oncall:pytorch_release_engineering"
+                        else:
+                            status_message = f"In queue position #{queue_position}"
+                        
                         update_reservation_status(
                             reservation_id,
-                            "queued",
-                            f"In queue position #{queue_position}",
+                            "queued", 
+                            status_message,
                         )
 
                     updated_count += 1
                     logger.info(
-                        f"Updated queue info for reservation {reservation_id}: pos={queue_position}, wait={estimated_wait_minutes}min"
+                        f"Updated queue info for reservation {reservation_id}: pos={queue_position}, wait={estimated_wait_minutes}min, {gpu_type.upper()} available={type_available_gpus}"
                     )
 
                 processed_count += 1
@@ -5055,6 +5607,46 @@ def cleanup_pod_resources(pod_name: str, namespace: str = "gpu-dev") -> None:
         raise
 
 
+def clear_warning_files_from_pod(pod_name: str, namespace: str = "gpu-dev") -> bool:
+    """Clear all warning files from a pod when reservation is extended"""
+    try:
+        from kubernetes import client
+        from kubernetes.stream import stream
+
+        # Set up Kubernetes client
+        k8s_client = setup_kubernetes_client()
+        v1 = client.CoreV1Api(k8s_client)
+
+        # Command to remove all warning files
+        clear_warning_commands = [
+            "/bin/bash",
+            "-c",
+            "rm -f /home/dev/WARN_EXPIRES_IN_*MIN.txt 2>/dev/null || true; echo 'Warning files cleared'"
+        ]
+
+        exec_resp = stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=clear_warning_commands,
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+
+        if "Warning files cleared" in exec_resp:
+            logger.info(f"Successfully cleared warning files from pod {pod_name}")
+            return True
+        else:
+            logger.warning(f"Unexpected response clearing warning files from pod {pod_name}: {exec_resp}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error clearing warning files from pod {pod_name}: {str(e)}")
+        return False
+
+
 def process_extend_reservation_action(record: dict[str, Any]) -> bool:
     """Process reservation extension requests"""
     try:
@@ -5124,7 +5716,8 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
                 update_expression += ", duration_hours = :new_duration"
                 expression_values[":new_duration"] = Decimal(str(new_duration))
 
-            update_expression += " REMOVE extension_error"
+            # Clear warning state when extending reservation
+            update_expression += " REMOVE extension_error, warnings_sent, last_warning_time"
 
             reservations_table.update_item(
                 Key={"reservation_id": full_reservation_id},
@@ -5133,7 +5726,23 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
             )
 
             logger.info(f"Successfully extended reservation {full_reservation_id} by {extension_hours} hours")
-            
+
+            # Clear warning files from pod if reservation is active
+            if current_status == "active":
+                try:
+                    pod_name = reservation.get("pod_name")
+                    namespace = reservation.get("namespace", "gpu-dev")
+
+                    if pod_name:
+                        logger.info(f"Clearing warning files from pod {pod_name}")
+                        clear_warning_files_from_pod(pod_name, namespace)
+                        logger.info(f"Warning files cleared from pod {pod_name}")
+                    else:
+                        logger.warning(f"No pod name found for reservation {full_reservation_id}")
+
+                except Exception as clear_error:
+                    logger.warning(f"Could not clear warning files from pod: {clear_error}")
+
             # Add successful extension to status history
             try:
                 current_time = datetime.utcnow().isoformat()
@@ -5141,7 +5750,7 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
                 append_status_history(full_reservation_id, current_time, extension_message)
             except Exception as history_error:
                 logger.warning(f"Could not add extension to status history: {history_error}")
-            
+
             return True
 
         except Exception as update_error:
