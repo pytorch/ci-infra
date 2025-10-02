@@ -1,6 +1,7 @@
 """
 GPU Reservation Processor Lambda
 Handles reservation requests and manages K8s pod allocation
+(Version with multi-volume migration bug fix - Oct 1 2025)
 """
 
 import json
@@ -189,6 +190,42 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
         return PRIMARY_AVAILABILITY_ZONE
 
 
+def check_for_multiple_volumes(user_id):
+    """
+    Check if user has multiple EBS volumes and return warning message if found.
+    Returns None if user has 0 or 1 volume.
+    """
+    try:
+        response = ec2_client.describe_volumes(
+            Filters=[
+                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "status", "Values": ["available", "in-use"]},
+            ]
+        )
+
+        volumes = response.get("Volumes", [])
+        if len(volumes) > 1:
+            volume_info = []
+            for vol in volumes:
+                vol_id = vol["VolumeId"]
+                vol_az = vol["AvailabilityZone"]
+                vol_created = vol.get("CreateTime", "unknown")
+                vol_state = vol["State"]
+                volume_info.append(f"{vol_id} ({vol_az}, {vol_state}, created {vol_created})")
+
+            warning = (
+                f"⚠️ Multiple persistent disks detected for your account:\n"
+                + "\n".join(f"  • {info}" for info in volume_info)
+                + f"\n\nUsing oldest volume (should have your data). "
+                f"Please contact oncall:pytorch_release_engineering to clean up duplicate disks."
+            )
+            return warning
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to check for multiple volumes for user {user_id}: {e}")
+        return None
+
+
 def needs_ebs_migration(user_id, target_az):
     """Check if user's EBS volume needs to be migrated to a different AZ"""
     try:
@@ -207,10 +244,18 @@ def needs_ebs_migration(user_id, target_az):
             logger.info(f"No existing EBS volumes found for user {user_id} - no migration needed")
             return False, None, None
 
-        # Get the most recent volume (by creation time)
-        current_volume = max(volumes, key=lambda v: v["CreateTime"])
+        # CRITICAL BUG FIX: Get the OLDEST volume (has user data), not newest (might be empty)
+        # If multiple volumes exist (shouldn't happen but does due to race conditions),
+        # the oldest one is the one that has been used and contains the user's data
+        if len(volumes) > 1:
+            volume_ids = [vol["VolumeId"] for vol in volumes]
+            logger.warning(f"⚠️ Multiple EBS volumes found for user {user_id}: {volume_ids}. Using oldest volume with data.")
+
+        current_volume = min(volumes, key=lambda v: v["CreateTime"])  # Get OLDEST volume (has data)
         current_volume_id = current_volume["VolumeId"]
         current_az = current_volume["AvailabilityZone"]
+
+        logger.info(f"Selected volume {current_volume_id} in {current_az} for user {user_id} (created: {current_volume.get('CreateTime')})")
 
         if current_az == target_az:
             logger.info(
@@ -232,6 +277,17 @@ def migrate_ebs_across_az(user_id, current_volume_id, current_az, target_az):
     """
     try:
         logger.info(f"Starting EBS migration for user {user_id} from {current_az} to {target_az}")
+
+        # Get volume details before snapshotting
+        try:
+            vol_response = ec2_client.describe_volumes(VolumeIds=[current_volume_id])
+            vol_info = vol_response["Volumes"][0]
+            vol_size = vol_info.get("Size", "unknown")
+            vol_created = vol_info.get("CreateTime", "unknown")
+            vol_state = vol_info.get("State", "unknown")
+            logger.info(f"Volume to migrate: {current_volume_id} (size: {vol_size}GB, created: {vol_created}, state: {vol_state})")
+        except Exception as e:
+            logger.warning(f"Could not get volume details for {current_volume_id}: {e}")
 
         # Step 1: Create snapshot of current volume
         logger.info(f"Creating snapshot of volume {current_volume_id}")
@@ -1865,6 +1921,12 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 # Step 2: Check if EBS migration is needed
                 migration_needed, current_volume_id, current_az = needs_ebs_migration(user_id, target_az)
 
+                # Check for multiple volumes and log warning if found
+                multiple_volumes_warning = check_for_multiple_volumes(user_id)
+                if multiple_volumes_warning:
+                    update_reservation_fields(reservation_id, warning=multiple_volumes_warning)
+                    logger.warning(f"Stored multiple volume warning for reservation {reservation_id}: {multiple_volumes_warning}")
+
                 if migration_needed:
                     # User has existing EBS in different AZ - need to migrate
                     update_reservation_status(
@@ -1875,7 +1937,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     logger.info(f"Starting EBS migration for user {user_id}: {current_az} -> {target_az}")
 
                     # Check if we have a recent completed or pending snapshot to use instead of creating new one
-                    latest_snapshot = get_latest_snapshot(user_id, current_volume_id, include_pending=True)
+                    # CRITICAL: Get snapshot from ANY volume to ensure we use the newest data
+                    latest_snapshot = get_latest_snapshot(user_id, volume_id=None, include_pending=True)
 
                     if latest_snapshot and latest_snapshot['State'] == 'completed':
                         # Use existing completed snapshot for migration
@@ -1933,19 +1996,116 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                 else:
                     # Either no existing EBS, or existing EBS is already in target AZ
-                    update_reservation_status(
-                        reservation_id,
-                        "preparing",
-                        "Setting up persistent disk for user data",
-                    )
-                    persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
-                    logger.info(
-                        f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
+                    # CRITICAL: If volume exists in target AZ, check if we have newer snapshots from other AZs
+                    if current_volume_id:
+                        # Volume already exists in target AZ - check if we should restore from newer snapshot
+                        logger.info(f"Volume {current_volume_id} already exists in target AZ {target_az}")
 
-                    # Store warning in database if multiple disks were detected
-                    if disk_warning:
-                        update_reservation_fields(reservation_id, warning=disk_warning)
-                        logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
+                        # Get the latest snapshot from ANY AZ (not just this volume)
+                        latest_snapshot = get_latest_snapshot(user_id, volume_id=None, include_pending=False)
+
+                        if latest_snapshot:
+                            # Get volume creation time
+                            vol_response = ec2_client.describe_volumes(VolumeIds=[current_volume_id])
+                            volume_create_time = vol_response["Volumes"][0]["CreateTime"]
+                            snapshot_time = latest_snapshot["StartTime"]
+                            snapshot_volume_id = latest_snapshot.get("VolumeId")
+
+                            logger.info(f"Comparing: volume {current_volume_id} created at {volume_create_time} vs snapshot {latest_snapshot['SnapshotId']} from {snapshot_time} (source volume: {snapshot_volume_id})")
+
+                            # If snapshot is newer than volume creation, restore from it
+                            # This handles both: snapshots from different volumes, AND snapshots from same volume that are newer
+                            if snapshot_time > volume_create_time:
+                                logger.info(f"Found newer snapshot {latest_snapshot['SnapshotId']} ({snapshot_time}) than volume {current_volume_id} ({volume_create_time}) - restoring from snapshot to get latest data")
+                                update_reservation_status(
+                                    reservation_id,
+                                    "preparing",
+                                    f"Restoring persistent disk from latest snapshot (has newer data than existing volume)",
+                                )
+
+                                # Delete the old volume in this AZ
+                                try:
+                                    logger.info(f"Deleting outdated volume {current_volume_id} in {target_az}")
+                                    ec2_client.delete_volume(VolumeId=current_volume_id)
+                                    logger.info(f"Deleted outdated volume {current_volume_id}")
+                                except Exception as delete_error:
+                                    logger.warning(f"Failed to delete outdated volume {current_volume_id}: {delete_error}")
+                                    # If delete fails, volume might be in-use by another reservation - this is a race condition
+                                    # Fall through to create new volume from snapshot anyway
+
+                                # Restore from the latest snapshot
+                                persistent_volume_id = restore_ebs_from_existing_snapshot(
+                                    latest_snapshot['SnapshotId'], target_az, user_id
+                                )
+                                is_new_disk = False  # Restored from snapshot with existing data
+                                logger.info(f"Restored volume {persistent_volume_id} from latest snapshot {latest_snapshot['SnapshotId']}")
+                            else:
+                                # Existing volume is newer or snapshot is from same volume - use existing volume
+                                logger.info(f"Existing volume {current_volume_id} is up-to-date (no newer snapshots from other AZs)")
+                                update_reservation_status(
+                                    reservation_id,
+                                    "preparing",
+                                    "Setting up persistent disk for user data",
+                                )
+                                persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
+                                logger.info(f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
+
+                                # Store warning in database if multiple disks were detected
+                                if disk_warning:
+                                    update_reservation_fields(reservation_id, warning=disk_warning)
+                                    logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
+                        else:
+                            # No snapshots found - just use existing volume or create new one
+                            logger.info(f"No snapshots found for user {user_id}, using existing volume or creating new one")
+                            update_reservation_status(
+                                reservation_id,
+                                "preparing",
+                                "Setting up persistent disk for user data",
+                            )
+                            persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
+                            logger.info(f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
+
+                            # Store warning in database if multiple disks were detected
+                            if disk_warning:
+                                update_reservation_fields(reservation_id, warning=disk_warning)
+                                logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
+                    else:
+                        # No existing volume at all - but check if we have snapshots to restore from
+                        logger.info(f"No existing volume found for user {user_id} - checking for snapshots to restore")
+
+                        # Check for any existing snapshots from previous sessions
+                        latest_snapshot = get_latest_snapshot(user_id, volume_id=None, include_pending=False)
+
+                        if latest_snapshot:
+                            # User has previous data in snapshots - restore from latest
+                            logger.info(f"Found existing snapshot {latest_snapshot['SnapshotId']} for user {user_id} - restoring instead of creating empty volume")
+                            update_reservation_status(
+                                reservation_id,
+                                "preparing",
+                                f"Restoring persistent disk from previous session snapshot {latest_snapshot['SnapshotId']}",
+                            )
+
+                            # Restore from the latest snapshot
+                            persistent_volume_id = restore_ebs_from_existing_snapshot(
+                                latest_snapshot['SnapshotId'], target_az, user_id
+                            )
+                            is_new_disk = False  # Restored from snapshot with existing data
+                            logger.info(f"Restored volume {persistent_volume_id} from snapshot {latest_snapshot['SnapshotId']} for user {user_id}")
+                        else:
+                            # Truly new user - create new empty volume
+                            logger.info(f"No existing volumes or snapshots for user {user_id} - creating new persistent disk")
+                            update_reservation_status(
+                                reservation_id,
+                                "preparing",
+                                "Setting up persistent disk for user data",
+                            )
+                            persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
+                            logger.info(f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
+
+                            # Store warning in database if multiple disks were detected
+                            if disk_warning:
+                                update_reservation_fields(reservation_id, warning=disk_warning)
+                                logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
 
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
@@ -3749,12 +3909,16 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
         # BUG FIX: Detect multiple persistent disks and return warning instead of erroring
         if len(volumes) > 1:
             volume_ids = [vol["VolumeId"] for vol in volumes]
+            volume_info = [(vol["VolumeId"], vol.get("CreateTime", "unknown"), vol["State"]) for vol in volumes]
             warning_message = f"⚠️ Multiple persistent disks detected ({len(volumes)} disks: {', '.join(volume_ids)}). Using oldest available. Please contact oncall:pytorch_release_engineering to clean up duplicate disks."
-            logger.error(f"❌ DOUBLE PERSISTENT DISK DETECTED for user {user_id} in AZ {availability_zone}: {volume_ids}. Please report to oncall:pytorch_release_engineering")
+            logger.error(f"❌ DOUBLE PERSISTENT DISK DETECTED for user {user_id} in AZ {availability_zone}:")
+            for vol_id, create_time, state in volume_info:
+                logger.error(f"  - {vol_id}: created {create_time}, state {state}")
             logger.error(f"This should not happen! User {user_id} should only have ONE persistent disk per AZ.")
+            logger.error(f"Will use OLDEST volume which should have the user's data.")
 
         if volumes:
-            # BUG FIX: Sort by creation time to always use the oldest disk
+            # BUG FIX: Sort by creation time to always use the OLDEST disk (has user data)
             volumes_sorted = sorted(volumes, key=lambda v: v.get("CreateTime", datetime.min))
 
             # Check if any volumes are available (not in-use)
