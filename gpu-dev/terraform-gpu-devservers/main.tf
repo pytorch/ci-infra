@@ -186,9 +186,7 @@ locals {
         { id = "cr-0f6d0766f5d3339e6", instance_count = 2 }   # H200 reservation us-east-2c (p5e.48xlarge)
       ]
       b200 = [
-        # cr-0e2d0247fafbd380a expired and removed
-        { id = "cr-031d8bb5684158555", instance_count = 1 },  # B200 reservation (1 instance)
-        { id = "cr-08086480a68cd29ec", instance_count = 3 }   # Newest B200 reservation us-east-2b (3 nodes)
+        { id = "cr-0c366fb8339a10f69", instance_count = 1 },  # B200 reservation (1 instance)
       ]
     }
   }
@@ -204,7 +202,7 @@ locals {
     }
     prod = {
       # Production environment subnet assignments
-      b200 = "secondary"
+      b200 = "primary"
       h200 = "tertiary"  # us-east-2c for H200 capacity reservation
       h100 = "primary"
       a100 = "primary"
@@ -433,7 +431,7 @@ resource "aws_placement_group" "gpu_dev_pg" {
 
   name     = "${local.workspace_prefix}-gpu-${each.key}-cluster"
   strategy = "cluster"
-  
+
   # Note: Placement group AZ will be determined by first instance launched
 
   tags = {
