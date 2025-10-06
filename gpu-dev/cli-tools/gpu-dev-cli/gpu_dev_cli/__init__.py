@@ -1,3 +1,9 @@
 """GPU Developer CLI Package"""
 
-__version__ = "0.2.5"
+import importlib.metadata
+
+try:
+    __version__ = importlib.metadata.version("gpu-dev-cli")
+except importlib.metadata.PackageNotFoundError:
+    # Fallback for development installations
+    __version__ = "0.0.0-dev"

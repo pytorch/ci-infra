@@ -4866,6 +4866,105 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
 
                             event_message = f"⏳ Mounting API access volume (retry {retry_count}/20 - automatic)"
 
+                        # Handle scheduling failures - convert to queued status with proper queue info
+                        if event.reason == "FailedScheduling":
+                            scheduling_events = [e for e in sorted_events if e.reason == "FailedScheduling"]
+
+                            # If stuck in FailedScheduling for >30 seconds, convert to queued
+                            if len(scheduling_events) >= 3:  # Multiple failures
+                                oldest_sched = scheduling_events[-1]
+                                oldest_ts = oldest_sched.last_timestamp or oldest_sched.first_timestamp
+                                if oldest_ts:
+                                    time_stuck = (datetime.now(oldest_ts.tzinfo) - oldest_ts).total_seconds()
+                                    if time_stuck > 30:
+                                        # Convert to queued status with proper queue calculation
+                                        try:
+                                            # Get reservation details
+                                            reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                                            res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                                            requested_gpus = int(res_item.get("gpu_count", 1))
+                                            gpu_type = res_item.get("gpu_type", "")
+
+                                            # Calculate queue info
+                                            k8s_client_temp = get_k8s_client()
+                                            gpu_tracker = K8sGPUTracker(k8s_client_temp)
+                                            available_gpus = gpu_tracker.get_available_gpus(gpu_type)
+
+                                            queue_info = calculate_queue_position_and_wait_time(
+                                                reservation_id, requested_gpus, gpu_type, available_gpus
+                                            )
+
+                                            # Update with queue info
+                                            update_reservation_with_queue_info(
+                                                reservation_id,
+                                                queue_info["position"],
+                                                queue_info["estimated_wait_minutes"],
+                                                available_gpus,
+                                            )
+
+                                            # Delete the pod so it doesn't keep trying
+                                            v1 = client.CoreV1Api(k8s_client)
+                                            v1.delete_namespaced_pod(name=pod_name, namespace="gpu-dev")
+                                            logger.info(f"Deleted pod {pod_name} and converted to queued status")
+
+                                            # Set queued status with user-friendly message
+                                            queue_message = f"⏳ Queued - position #{queue_info['position']} (est. wait: {queue_info['estimated_wait_minutes']}min)"
+                                            update_reservation_status(reservation_id, "queued", queue_message)
+
+                                            event_message = queue_message
+                                            break
+                                        except Exception as queue_err:
+                                            logger.error(f"Failed to convert to queued: {queue_err}")
+
+                            # Show user-friendly scheduling messages while waiting
+                            if "Insufficient nvidia.com/gpu" in event.message:
+                                # Check if it's a fragmentation issue (GPUs exist but not enough on single node)
+                                try:
+                                    reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                                    res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                                    requested_gpus = int(res_item.get("gpu_count", 1))
+                                    gpu_type = res_item.get("gpu_type", "")
+
+                                    k8s_client_temp = get_k8s_client()
+                                    gpu_tracker = K8sGPUTracker(k8s_client_temp)
+                                    available_gpus = gpu_tracker.get_available_gpus(gpu_type)
+
+                                    if available_gpus >= requested_gpus:
+                                        # GPUs exist but fragmented across nodes
+                                        event_message = f"⏳ Waiting for {requested_gpus} GPUs on single node (GPUs available but spread across nodes)"
+                                    else:
+                                        # All GPUs in use
+                                        event_message = f"⏳ All {gpu_type.upper()} GPUs currently in use - queuing for next available slot"
+                                except:
+                                    event_message = "⏳ Waiting for GPUs to become available"
+                            elif "didn't match Pod's node affinity/selector" in event.message:
+                                # Check if nodes exist for this GPU type
+                                try:
+                                    reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                                    res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                                    gpu_type = res_item.get("gpu_type", "")
+
+                                    k8s_client_temp = get_k8s_client()
+                                    v1 = client.CoreV1Api(k8s_client_temp)
+                                    nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+
+                                    if len(nodes.items) == 0:
+                                        # No nodes exist for this GPU type - fail immediately
+                                        event_message = f"❌ No {gpu_type.upper()} nodes configured in cluster"
+                                        # Mark as failed
+                                        update_reservation_status(reservation_id, "failed", f"GPU type '{gpu_type.upper()}' not available")
+                                        # Delete pod
+                                        v1.delete_namespaced_pod(name=pod_name, namespace="gpu-dev")
+                                        logger.error(f"No nodes with GpuType={gpu_type}, failing reservation {reservation_id}")
+                                    else:
+                                        # Nodes exist but currently unavailable/full
+                                        event_message = f"⏳ Waiting for {gpu_type.upper()} node capacity"
+                                except Exception as e:
+                                    logger.warning(f"Could not check node availability: {e}")
+                                    event_message = "⏳ Waiting for node capacity"
+                            else:
+                                event_message = "⏳ Waiting for resources"
+
                         break
 
         # Parse startup logs for container initialization progress
