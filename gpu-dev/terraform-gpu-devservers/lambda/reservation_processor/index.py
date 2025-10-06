@@ -2254,7 +2254,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                                     full_domain = f"{domain_name}.{DNS_DOMAIN}"
 
                                     # SSH with ProxyCommand for HTTP CONNECT tunneling
-                                    ssh_command = f"ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' dev@{full_domain}"
+                                    ssh_command = f"ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null dev@{full_domain}"
 
                                     # Jupyter with HTTPS
                                     jupyter_url_base = f"https://{full_domain}"
