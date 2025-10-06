@@ -240,7 +240,7 @@ resource "null_resource" "reservation_processor_build" {
 
       # Create zip file directly, excluding any existing zip files
       cd package/
-      zip -r ../reservation_processor_new.zip .
+      zip -q -r ../reservation_processor_new.zip .
       cd ..
 
       # Replace old zip file and move to parent lambda directory

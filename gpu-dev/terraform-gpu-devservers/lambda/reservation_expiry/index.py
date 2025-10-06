@@ -293,19 +293,41 @@ def handler(event, context):
                 if not pod_name.startswith("gpu-dev-"):
                     continue
 
-                reservation_id = pod_name[8:]  # Remove "gpu-dev-" prefix
+                reservation_id_prefix = pod_name[8:]  # Remove "gpu-dev-" prefix (this is truncated)
 
                 try:
-                    # Look up reservation status in DynamoDB
-                    reservation_response = reservations_table.get_item(
-                        Key={"reservation_id": reservation_id}
-                    )
+                    # Look up reservation by prefix using paginated scan (pod names are truncated)
+                    items = []
+                    last_evaluated_key = None
 
-                    if "Item" not in reservation_response:
-                        logger.warning(f"Pod {pod_name} has no corresponding reservation in DynamoDB - keeping pod")
+                    # Scan all pages to find the reservation
+                    while True:
+                        if last_evaluated_key:
+                            scan_response = reservations_table.scan(
+                                FilterExpression="begins_with(reservation_id, :prefix)",
+                                ExpressionAttributeValues={":prefix": reservation_id_prefix},
+                                ExclusiveStartKey=last_evaluated_key
+                            )
+                        else:
+                            scan_response = reservations_table.scan(
+                                FilterExpression="begins_with(reservation_id, :prefix)",
+                                ExpressionAttributeValues={":prefix": reservation_id_prefix}
+                            )
+
+                        items.extend(scan_response.get("Items", []))
+
+                        # Check if there are more pages
+                        last_evaluated_key = scan_response.get("LastEvaluatedKey")
+                        if not last_evaluated_key or items:  # Stop if we found items or no more pages
+                            break
+
+                    if not items:
+                        logger.warning(f"Pod {pod_name} has no corresponding reservation in DynamoDB (searched prefix: {reservation_id_prefix}) - keeping pod")
                         continue
 
-                    reservation = reservation_response["Item"]
+                    # Use the first matching reservation (there should only be one with this prefix)
+                    reservation = items[0]
+                    reservation_id = reservation.get("reservation_id", "")
                     reservation_status = reservation.get("status", "")
 
                     # Clean up pod if reservation is in a terminal state

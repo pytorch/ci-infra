@@ -171,7 +171,7 @@ resource "null_resource" "reservation_expiry_build" {
 
       # Create zip file directly, excluding any existing zip files
       cd package/
-      zip -r ../reservation_expiry_new.zip .
+      zip -q -r ../reservation_expiry_new.zip .
       cd ..
 
       # Replace old zip file and move to parent lambda directory

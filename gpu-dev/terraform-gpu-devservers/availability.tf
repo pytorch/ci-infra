@@ -238,7 +238,7 @@ resource "null_resource" "availability_updater_build" {
 
       # Create zip file directly, excluding any existing zip files
       cd package/
-      zip -r ../availability_updater_new.zip .
+      zip -q -r ../availability_updater_new.zip .
       cd ..
 
       # Replace old zip file and move to parent lambda directory

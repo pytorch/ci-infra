@@ -4825,147 +4825,151 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                     break
             
             # If no pulling event, use latest non-container event
+            # Skip normal scheduling events as they're not helpful when there are issues
             if not event_message:
-                for event in sorted_events[:3]:
-                    if event.reason not in ["Started", "Created"]:
-                        event_message = event.message
+                for event in sorted_events[:5]:
+                    # Skip uninteresting events
+                    if event.reason in ["Started", "Created", "Scheduled"]:
+                        continue
 
-                        # Add retry counter for FailedAttachVolume errors
-                        if event.reason == "FailedAttachVolume":
-                            # Count how many FailedAttachVolume events we have
-                            attach_failure_events = [e for e in sorted_events if e.reason == "FailedAttachVolume"]
-                            retry_count = len(attach_failure_events)
+                    event_message = event.message
 
-                            # Kubernetes retries volumes automatically - typically takes 30-60 seconds
-                            # Show retry status to reassure user
-                            if "Multi-Attach" in event.message or "already attached" in event.message:
-                                event_message = f"⏳ Waiting for disk to detach (retry {retry_count}/∞ - automatic)"
-                            else:
-                                event_message = f"⏳ Attaching disk (retry {retry_count}/∞ - automatic)"
+                    # Add retry counter for FailedAttachVolume errors
+                    if event.reason == "FailedAttachVolume":
+                        # Count how many FailedAttachVolume events we have
+                        attach_failure_events = [e for e in sorted_events if e.reason == "FailedAttachVolume"]
+                        retry_count = len(attach_failure_events)
 
-                        # Detect repeated kube-api-access mount failures (infrastructure issue)
-                        if event.reason == "FailedMount" and "kube-api-access" in event.message:
-                            mount_failure_events = [e for e in sorted_events if e.reason == "FailedMount" and "kube-api-access" in e.message]
-                            retry_count = len(mount_failure_events)
+                        # Kubernetes retries volumes automatically - typically takes 30-60 seconds
+                        # Show retry status to reassure user
+                        if "Multi-Attach" in event.message or "already attached" in event.message:
+                            event_message = f"⏳ Waiting for disk to detach (retry {retry_count}/∞ - automatic)"
+                        else:
+                            event_message = f"⏳ Attaching disk (retry {retry_count}/∞ - automatic)"
 
-                            # Check if we've been stuck for too long
-                            # Fail after 20 events OR if oldest event is > 60 seconds old
-                            if retry_count >= 20:
-                                event_message = f"❌ Pod failed to mount API access volume (infrastructure issue - contact admin)"
-                                break
+                    # Detect repeated kube-api-access mount failures (infrastructure issue)
+                    if event.reason == "FailedMount" and "kube-api-access" in event.message:
+                        mount_failure_events = [e for e in sorted_events if e.reason == "FailedMount" and "kube-api-access" in e.message]
+                        retry_count = len(mount_failure_events)
 
-                            # Check time since first failure
-                            if mount_failure_events:
-                                oldest_event = mount_failure_events[-1]
-                                oldest_timestamp = oldest_event.last_timestamp or oldest_event.first_timestamp
-                                if oldest_timestamp:
-                                    time_stuck = (datetime.now(oldest_timestamp.tzinfo) - oldest_timestamp).total_seconds()
-                                    if time_stuck > 60:
-                                        event_message = f"❌ Pod failed to mount API access volume after {int(time_stuck)}s (infrastructure issue - contact admin)"
-                                        break
+                        # Check if we've been stuck for too long
+                        # Fail after 20 events OR if oldest event is > 60 seconds old
+                        if retry_count >= 20:
+                            event_message = f"❌ Pod failed to mount API access volume (infrastructure issue - contact admin)"
+                            break
 
-                            event_message = f"⏳ Mounting API access volume (retry {retry_count}/20 - automatic)"
+                        # Check time since first failure
+                        if mount_failure_events:
+                            oldest_event = mount_failure_events[-1]
+                            oldest_timestamp = oldest_event.last_timestamp or oldest_event.first_timestamp
+                            if oldest_timestamp:
+                                time_stuck = (datetime.now(oldest_timestamp.tzinfo) - oldest_timestamp).total_seconds()
+                                if time_stuck > 60:
+                                    event_message = f"❌ Pod failed to mount API access volume after {int(time_stuck)}s (infrastructure issue - contact admin)"
+                                    break
 
-                        # Handle scheduling failures - convert to queued status with proper queue info
-                        if event.reason == "FailedScheduling":
-                            scheduling_events = [e for e in sorted_events if e.reason == "FailedScheduling"]
+                        event_message = f"⏳ Mounting API access volume (retry {retry_count}/20 - automatic)"
 
-                            # If stuck in FailedScheduling for >30 seconds, convert to queued
-                            if len(scheduling_events) >= 3:  # Multiple failures
-                                oldest_sched = scheduling_events[-1]
-                                oldest_ts = oldest_sched.last_timestamp or oldest_sched.first_timestamp
-                                if oldest_ts:
-                                    time_stuck = (datetime.now(oldest_ts.tzinfo) - oldest_ts).total_seconds()
-                                    if time_stuck > 30:
-                                        # Convert to queued status with proper queue calculation
-                                        try:
-                                            # Get reservation details
-                                            reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                                            res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
-                                            requested_gpus = int(res_item.get("gpu_count", 1))
-                                            gpu_type = res_item.get("gpu_type", "")
+                    # Handle scheduling failures - convert to queued status with proper queue info
+                    if event.reason == "FailedScheduling":
+                        scheduling_events = [e for e in sorted_events if e.reason == "FailedScheduling"]
 
-                                            # Calculate queue info
-                                            k8s_client_temp = get_k8s_client()
-                                            gpu_tracker = K8sGPUTracker(k8s_client_temp)
-                                            available_gpus = gpu_tracker.get_available_gpus(gpu_type)
+                        # If stuck in FailedScheduling for >30 seconds, convert to queued
+                        if len(scheduling_events) >= 3:  # Multiple failures
+                            oldest_sched = scheduling_events[-1]
+                            oldest_ts = oldest_sched.last_timestamp or oldest_sched.first_timestamp
+                            if oldest_ts:
+                                time_stuck = (datetime.now(oldest_ts.tzinfo) - oldest_ts).total_seconds()
+                                if time_stuck > 30:
+                                    # Convert to queued status with proper queue calculation
+                                    try:
+                                        # Get reservation details
+                                        reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                                        res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                                        requested_gpus = int(res_item.get("gpu_count", 1))
+                                        gpu_type = res_item.get("gpu_type", "")
 
-                                            queue_info = calculate_queue_position_and_wait_time(
-                                                reservation_id, requested_gpus, gpu_type, available_gpus
-                                            )
+                                        # Calculate queue info
+                                        k8s_client_temp = get_k8s_client()
+                                        gpu_tracker = K8sGPUTracker(k8s_client_temp)
+                                        available_gpus = gpu_tracker.get_available_gpus(gpu_type)
 
-                                            # Update with queue info
-                                            update_reservation_with_queue_info(
-                                                reservation_id,
-                                                queue_info["position"],
-                                                queue_info["estimated_wait_minutes"],
-                                                available_gpus,
-                                            )
+                                        queue_info = calculate_queue_position_and_wait_time(
+                                            reservation_id, requested_gpus, gpu_type, available_gpus
+                                        )
 
-                                            # Delete the pod so it doesn't keep trying
-                                            v1 = client.CoreV1Api(k8s_client)
-                                            v1.delete_namespaced_pod(name=pod_name, namespace="gpu-dev")
-                                            logger.info(f"Deleted pod {pod_name} and converted to queued status")
+                                        # Update with queue info
+                                        update_reservation_with_queue_info(
+                                            reservation_id,
+                                            queue_info["position"],
+                                            queue_info["estimated_wait_minutes"],
+                                            available_gpus,
+                                        )
 
-                                            # Set queued status with user-friendly message
-                                            queue_message = f"⏳ Queued - position #{queue_info['position']} (est. wait: {queue_info['estimated_wait_minutes']}min)"
-                                            update_reservation_status(reservation_id, "queued", queue_message)
-
-                                            event_message = queue_message
-                                            break
-                                        except Exception as queue_err:
-                                            logger.error(f"Failed to convert to queued: {queue_err}")
-
-                            # Show user-friendly scheduling messages while waiting
-                            if "Insufficient nvidia.com/gpu" in event.message:
-                                # Check if it's a fragmentation issue (GPUs exist but not enough on single node)
-                                try:
-                                    reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                                    res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
-                                    requested_gpus = int(res_item.get("gpu_count", 1))
-                                    gpu_type = res_item.get("gpu_type", "")
-
-                                    k8s_client_temp = get_k8s_client()
-                                    gpu_tracker = K8sGPUTracker(k8s_client_temp)
-                                    available_gpus = gpu_tracker.get_available_gpus(gpu_type)
-
-                                    if available_gpus >= requested_gpus:
-                                        # GPUs exist but fragmented across nodes
-                                        event_message = f"⏳ Waiting for {requested_gpus} GPUs on single node (GPUs available but spread across nodes)"
-                                    else:
-                                        # All GPUs in use
-                                        event_message = f"⏳ All {gpu_type.upper()} GPUs currently in use - queuing for next available slot"
-                                except:
-                                    event_message = "⏳ Waiting for GPUs to become available"
-                            elif "didn't match Pod's node affinity/selector" in event.message:
-                                # Check if nodes exist for this GPU type
-                                try:
-                                    reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                                    res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
-                                    gpu_type = res_item.get("gpu_type", "")
-
-                                    k8s_client_temp = get_k8s_client()
-                                    v1 = client.CoreV1Api(k8s_client_temp)
-                                    nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
-
-                                    if len(nodes.items) == 0:
-                                        # No nodes exist for this GPU type - fail immediately
-                                        event_message = f"❌ No {gpu_type.upper()} nodes configured in cluster"
-                                        # Mark as failed
-                                        update_reservation_status(reservation_id, "failed", f"GPU type '{gpu_type.upper()}' not available")
-                                        # Delete pod
+                                        # Delete the pod so it doesn't keep trying
+                                        v1 = client.CoreV1Api(k8s_client)
                                         v1.delete_namespaced_pod(name=pod_name, namespace="gpu-dev")
-                                        logger.error(f"No nodes with GpuType={gpu_type}, failing reservation {reservation_id}")
-                                    else:
-                                        # Nodes exist but currently unavailable/full
-                                        event_message = f"⏳ Waiting for {gpu_type.upper()} node capacity"
-                                except Exception as e:
-                                    logger.warning(f"Could not check node availability: {e}")
-                                    event_message = "⏳ Waiting for node capacity"
-                            else:
-                                event_message = "⏳ Waiting for resources"
+                                        logger.info(f"Deleted pod {pod_name} and converted to queued status")
 
-                        break
+                                        # Set queued status with user-friendly message
+                                        queue_message = f"⏳ Queued - position #{queue_info['position']} (est. wait: {queue_info['estimated_wait_minutes']}min)"
+                                        update_reservation_status(reservation_id, "queued", queue_message)
+
+                                        event_message = queue_message
+                                        break
+                                    except Exception as queue_err:
+                                        logger.error(f"Failed to convert to queued: {queue_err}")
+
+                        # Show user-friendly scheduling messages while waiting
+                        if "Insufficient nvidia.com/gpu" in event.message:
+                            # Check if it's a fragmentation issue (GPUs exist but not enough on single node)
+                            try:
+                                reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                                res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                                requested_gpus = int(res_item.get("gpu_count", 1))
+                                gpu_type = res_item.get("gpu_type", "")
+
+                                k8s_client_temp = get_k8s_client()
+                                gpu_tracker = K8sGPUTracker(k8s_client_temp)
+                                available_gpus = gpu_tracker.get_available_gpus(gpu_type)
+
+                                if available_gpus >= requested_gpus:
+                                    # GPUs exist but fragmented across nodes
+                                    event_message = f"⏳ Waiting for {requested_gpus} GPUs on single node (GPUs available but spread across nodes)"
+                                else:
+                                    # All GPUs in use
+                                    event_message = f"⏳ All {gpu_type.upper()} GPUs currently in use - queuing for next available slot"
+                            except:
+                                event_message = "⏳ Waiting for GPUs to become available"
+                        elif "didn't match Pod's node affinity/selector" in event.message:
+                            # Check if nodes exist for this GPU type
+                            try:
+                                reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                                res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                                gpu_type = res_item.get("gpu_type", "")
+
+                                k8s_client_temp = get_k8s_client()
+                                v1 = client.CoreV1Api(k8s_client_temp)
+                                nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+
+                                if len(nodes.items) == 0:
+                                    # No nodes exist for this GPU type - fail immediately
+                                    event_message = f"❌ No {gpu_type.upper()} nodes configured in cluster"
+                                    # Mark as failed
+                                    update_reservation_status(reservation_id, "failed", f"GPU type '{gpu_type.upper()}' not available")
+                                    # Delete pod
+                                    v1.delete_namespaced_pod(name=pod_name, namespace="gpu-dev")
+                                    logger.error(f"No nodes with GpuType={gpu_type}, failing reservation {reservation_id}")
+                                else:
+                                    # Nodes exist but currently unavailable/full
+                                    event_message = f"⏳ Waiting for {gpu_type.upper()} node capacity"
+                            except Exception as e:
+                                logger.warning(f"Could not check node availability: {e}")
+                                event_message = "⏳ Waiting for node capacity"
+                        else:
+                            event_message = "⏳ Waiting for resources"
+
+                    break
 
         # Parse startup logs for container initialization progress
         startup_message = ""

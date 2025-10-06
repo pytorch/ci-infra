@@ -1,0 +1,190 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPU Dev Server Analytics Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .subtitle {
+            color: rgba(255,255,255,0.9);
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .charts {
+            display: grid;
+            gap: 20px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .chart-card img {
+            width: 100%;
+            height: auto;
+            border-radius: 8px;
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            color: #333;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+
+        .gpu-types {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .gpu-type-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .gpu-type-item:last-child {
+            border-bottom: none;
+        }
+
+        .footer {
+            text-align: center;
+            color: rgba(255,255,255,0.8);
+            margin-top: 40px;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 GPU Dev Server Analytics</h1>
+        <p class="subtitle">Generated on October 06, 2025 at 15:55:47</p>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">399</div>
+                <div class="stat-label">Total Reservations</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">22</div>
+                <div class="stat-label">Unique Users</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">6,022</div>
+                <div class="stat-label">Total GPU Hours</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">10</div>
+                <div class="stat-label">Currently Active</div>
+            </div>
+        </div>
+
+        <div class="gpu-types">
+            <h2 class="chart-title">GPU Type Distribution</h2>
+            <div class="gpu-type-item"><span><strong>b200</strong></span><span>120 reservations</span></div><div class="gpu-type-item"><span><strong>h100</strong></span><span>85 reservations</span></div><div class="gpu-type-item"><span><strong>h200</strong></span><span>76 reservations</span></div><div class="gpu-type-item"><span><strong>t4</strong></span><span>68 reservations</span></div><div class="gpu-type-item"><span><strong>a100</strong></span><span>29 reservations</span></div><div class="gpu-type-item"><span><strong>l4</strong></span><span>16 reservations</span></div><div class="gpu-type-item"><span><strong>cpu-arm</strong></span><span>3 reservations</span></div><div class="gpu-type-item"><span><strong>unknown</strong></span><span>2 reservations</span></div>
+        </div>
+
+        <div class="charts">
+            <div class="chart-card">
+                <h2 class="chart-title">Daily Active Reservations (Last 4 Weeks)</h2>
+                <img src="daily_active_reservations.png" alt="Daily Active Reservations">
+            </div>
+
+            <div class="chart-card">
+                <h2 class="chart-title">Hourly Active GPU Count (Last 4 Weeks)</h2>
+                <img src="hourly_gpu_usage.png" alt="Hourly GPU Usage">
+            </div>
+
+            <div class="chart-card">
+                <h2 class="chart-title">Reservations by GPU Type</h2>
+                <img src="gpu_type_distribution.png" alt="GPU Type Distribution">
+            </div>
+
+            <div class="chart-card">
+                <h2 class="chart-title">Top 10 Users by Reservation Count</h2>
+                <img src="top_users.png" alt="Top Users">
+            </div>
+
+            <div class="chart-card">
+                <h2 class="chart-title">Top 10 Users by GPU Hours (by Type)</h2>
+                <img src="top_users_gpu_hours.png" alt="Top Users by GPU Hours">
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Data spans from August 16, 2025 to October 06, 2025</p>
+        </div>
+    </div>
+</body>
+</html>
+    

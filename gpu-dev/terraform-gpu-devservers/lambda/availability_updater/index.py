@@ -114,25 +114,62 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
         gpu_config = SUPPORTED_GPU_TYPES.get(gpu_type, {})
         gpus_per_instance = gpu_config.get("gpus_per_instance", 8)
 
-        total_gpus = running_instances * gpus_per_instance
-        logger.info(
-            f"ASG calculation: {running_instances} instances * {gpus_per_instance} GPUs = {total_gpus} total GPUs")
+        # Handle CPU-only nodes differently (they don't have GPUs)
+        is_cpu_type = gpus_per_instance == 0
 
-        # Query Kubernetes API for actual GPU allocations
-        if k8s_client is not None:
-            try:
-                logger.info(f"Starting Kubernetes query for {gpu_type} GPU availability")
-                available_gpus = check_schedulable_gpus_for_type(k8s_client, gpu_type)
-                logger.info(f"Kubernetes reports {available_gpus} schedulable {gpu_type.upper()} GPUs")
+        if is_cpu_type:
+            # For CPU nodes, report instance slots (assuming 3 users per node)
+            max_users_per_node = 3
+            total_gpus = running_instances * max_users_per_node
+            logger.info(
+                f"CPU ASG calculation: {running_instances} instances * {max_users_per_node} slots = {total_gpus} total slots")
 
-            except Exception as k8s_error:
-                logger.warning(f"Failed to query Kubernetes for {gpu_type} availability: {k8s_error}")
-                # Fallback to ASG-based calculation (assume all GPUs available)
+            # Check actual pod usage on CPU nodes
+            if k8s_client is not None:
+                try:
+                    logger.info(f"Checking CPU node availability for {gpu_type}")
+                    # Count available slots by checking pod count on each node
+                    v1 = client.CoreV1Api(k8s_client)
+                    nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+
+                    total_available_slots = 0
+                    for node in nodes.items:
+                        if is_node_ready_and_schedulable(node):
+                            # Count gpu-dev pods on this node
+                            pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node.metadata.name}")
+                            gpu_dev_pods = [p for p in pods.items if p.metadata.name.startswith('gpu-dev-')]
+                            used_slots = len(gpu_dev_pods)
+                            available_slots = max(0, max_users_per_node - used_slots)
+                            total_available_slots += available_slots
+
+                    available_gpus = total_available_slots
+                    logger.info(f"Found {available_gpus} available CPU slots across {len(nodes.items)} nodes")
+                except Exception as k8s_error:
+                    logger.warning(f"Failed to query Kubernetes for {gpu_type} CPU availability: {k8s_error}")
+                    available_gpus = total_gpus
+            else:
                 available_gpus = total_gpus
         else:
-            logger.warning(f"No Kubernetes client available for {gpu_type}, using ASG-based calculation")
-            # Fallback to ASG-based calculation (assume all GPUs available)
-            available_gpus = total_gpus
+            # GPU nodes - use existing logic
+            total_gpus = running_instances * gpus_per_instance
+            logger.info(
+                f"ASG calculation: {running_instances} instances * {gpus_per_instance} GPUs = {total_gpus} total GPUs")
+
+            # Query Kubernetes API for actual GPU allocations
+            if k8s_client is not None:
+                try:
+                    logger.info(f"Starting Kubernetes query for {gpu_type} GPU availability")
+                    available_gpus = check_schedulable_gpus_for_type(k8s_client, gpu_type)
+                    logger.info(f"Kubernetes reports {available_gpus} schedulable {gpu_type.upper()} GPUs")
+
+                except Exception as k8s_error:
+                    logger.warning(f"Failed to query Kubernetes for {gpu_type} availability: {k8s_error}")
+                    # Fallback to ASG-based calculation (assume all GPUs available)
+                    available_gpus = total_gpus
+            else:
+                logger.warning(f"No Kubernetes client available for {gpu_type}, using ASG-based calculation")
+                # Fallback to ASG-based calculation (assume all GPUs available)
+                available_gpus = total_gpus
 
         # Update DynamoDB table
         table = dynamodb.Table(AVAILABILITY_TABLE)

@@ -135,6 +135,10 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
 - **Add user collaboration feature** - Add `--add-user <github_name>` flag to allow users to add someone to the server
 - **Display Bug:** - CLI shows "G6" instead of "L4" in availability table - likely resolves on prod release when Lambda functions are updated with new GPU type mappings
 - **Fix extend command warning cleanup** - When using `--extend`, the system doesn't remove the WARN_EXPIRES_IN_5MIN.txt file and doesn't reset the expiry warning tracking in the database. Need to either clear the warning state from the table or keep warning history elsewhere for auditing purposes
+- **Max reservation time: 48 hours** - Maximum reservation duration is 48 hours (initial 24h + one 24h extension allowed)
+- **Scale up T4 instances** - Add 3 more T4 nodes (g4dn.12xlarge) to cluster
+- **Scale up L4 instances** - Add 3 more L4 nodes (g6.12xlarge) to cluster
+- **Add on-demand H100/H200/B200 capacity** - Add at least 2 nodes each of H100 (p5.48xlarge), H200 (p5e.48xlarge), and B200 (p6-b200.48xlarge) as on-demand capacity in addition to existing reserved instances
 - **Future features**:
   - Multi-server (16 GPU) reservations
   - GitHub organization/team verification
