@@ -4837,6 +4837,29 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                             else:
                                 event_message = f"⏳ Attaching disk (retry {retry_count}/∞ - automatic)"
 
+                        # Detect repeated kube-api-access mount failures (infrastructure issue)
+                        if event.reason == "FailedMount" and "kube-api-access" in event.message:
+                            mount_failure_events = [e for e in sorted_events if e.reason == "FailedMount" and "kube-api-access" in e.message]
+                            retry_count = len(mount_failure_events)
+
+                            # Check if we've been stuck for too long
+                            # Fail after 20 events OR if oldest event is > 60 seconds old
+                            if retry_count >= 20:
+                                event_message = f"❌ Pod failed to mount API access volume (infrastructure issue - contact admin)"
+                                break
+
+                            # Check time since first failure
+                            if mount_failure_events:
+                                oldest_event = mount_failure_events[-1]
+                                oldest_timestamp = oldest_event.last_timestamp or oldest_event.first_timestamp
+                                if oldest_timestamp:
+                                    time_stuck = (datetime.now(oldest_timestamp.tzinfo) - oldest_timestamp).total_seconds()
+                                    if time_stuck > 60:
+                                        event_message = f"❌ Pod failed to mount API access volume after {int(time_stuck)}s (infrastructure issue - contact admin)"
+                                        break
+
+                            event_message = f"⏳ Mounting API access volume (retry {retry_count}/20 - automatic)"
+
                         break
 
         # Parse startup logs for container initialization progress

@@ -63,64 +63,47 @@ def validate_ssh_key_matches_github_user(config: Config, live=None) -> Dict[str,
         ssh_output = None
 
         try:
-            # First try with batch mode to check if host key is already known
-            batch_result = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "git@github.com"],
+            # Use interactive SSH to allow password-protected keys
+            # Stop the spinner to allow password prompt if needed
+            if live:
+                live.stop()
+
+            # Run SSH without BatchMode to allow password prompts
+            result = subprocess.run(
+                ["ssh", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "git@github.com"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=30,
             )
 
-            # If batch mode works, use that output
-            ssh_output = batch_result.stderr or ""
+            # Restart the spinner
+            if live:
+                live.start()
+                live.update(Spinner("dots", text="🔐 Validating SSH key..."))
 
-            # Check if output indicates host key verification failure
-            if "Host key verification failed" in ssh_output or "authenticity of host" in ssh_output:
-                raise subprocess.CalledProcessError(batch_result.returncode, "ssh", "Host verification needed")
+            ssh_output = result.stderr or ""
 
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as batch_error:
-            try:
-                # Host key not known, need interactive verification
-                from rich.console import Console
-                console = Console()
+            # Check if we got the expected GitHub response
+            if "Hi " in ssh_output and "You've successfully authenticated" in ssh_output:
+                # Success case - continue to parse username
+                pass
+            elif "Host key verification failed" in ssh_output:
+                raise subprocess.CalledProcessError(result.returncode, "ssh", "Host verification failed")
 
-                # Stop the spinner to allow interactive input
-                if live:
-                    live.stop()
-
-                console.print(
-                    "[yellow]⚠️  GitHub host key verification required. Please respond to the prompt below.[/yellow]")
-
-                # Use os.system for true terminal interaction
-                import os
-                exit_code = os.system("ssh -o BatchMode=no -o ConnectTimeout=10 git@github.com")
-
-                # Restart the spinner
-                if live:
-                    live.start()
-                    live.update(Spinner("dots", text="🔐 Validating SSH key..."))
-                # SSH should return non-zero (that's normal for GitHub), but if it's 255 it means connection failed
-                if exit_code == 255 * 256:  # os.system returns exit_code * 256
-                    console.print("[red]⚠️  SSH connection failed - host key may not have been accepted.[/red]")
-                    raise Exception("SSH connection failed - host key may not have been accepted")
-
-                # After interactive verification, run again in batch mode to get output
-                final_result = subprocess.run(
-                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "git@github.com"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-
-                ssh_output = final_result.stderr or ""
-
-            except Exception as interactive_error:
-                return {
-                    "valid": False,
-                    "configured_user": github_user,
-                    "ssh_user": None,
-                    "error": f"Interactive SSH verification failed: {str(interactive_error)}",
-                }
+        except subprocess.TimeoutExpired:
+            return {
+                "valid": False,
+                "configured_user": github_user,
+                "ssh_user": None,
+                "error": "SSH connection timed out - please check your connection",
+            }
+        except Exception as e:
+            return {
+                "valid": False,
+                "configured_user": github_user,
+                "ssh_user": None,
+                "error": f"SSH connection failed: {str(e)}",
+            }
 
         # Ensure ssh_output is not None
         if ssh_output is None:

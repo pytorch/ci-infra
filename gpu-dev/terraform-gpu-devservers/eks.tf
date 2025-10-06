@@ -104,7 +104,9 @@ resource "aws_eks_cluster" "gpu_dev_cluster" {
       aws_subnet.gpu_dev_subnet.id,
       aws_subnet.gpu_dev_subnet_secondary.id
     ], length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : [])
-    security_group_ids = [aws_security_group.eks_control_plane_sg.id]
+    security_group_ids         = [aws_security_group.eks_control_plane_sg.id]
+    endpoint_private_access    = true
+    endpoint_public_access     = true
   }
 
   depends_on = [
