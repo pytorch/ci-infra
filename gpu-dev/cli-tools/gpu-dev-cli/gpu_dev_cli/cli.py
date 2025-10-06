@@ -934,8 +934,14 @@ def reserve(
     type=str,
     help='Filter by status (comma-separated, default: active,preparing,queued,pending). Use "all" for all statuses. Available: active,preparing,queued,pending,expired,cancelled,failed,all',
 )
+@click.option(
+    "--details",
+    "-d",
+    is_flag=True,
+    help="Show additional details including CLI version used for reservation",
+)
 @click.pass_context
-def list(ctx: click.Context, user: Optional[str], status: Optional[str]) -> None:
+def list(ctx: click.Context, user: Optional[str], status: Optional[str], details: bool = False) -> None:
     """List GPU reservations (shows in-progress + recent failed reservations by default)
 
     By default, shows your in-progress reservations (active, preparing, queued, pending)
@@ -1091,6 +1097,9 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str]) -> None
         table.add_column("Queue Info", style="cyan")
         table.add_column("Created", style="blue")
         table.add_column("Expires/ETA", style="red")
+        if details:
+            table.add_column("CLI Ver", style="dim", no_wrap=True)
+            table.add_column("Lambda Ver", style="dim", no_wrap=True)
 
         for reservation in reservations:
             try:
@@ -1112,7 +1121,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str]) -> None
 
                 # Format GPU information
                 if gpu_type and gpu_type not in ["unknown", "Unknown"]:
-                    gpu_display = f"{gpu_count}x {gpu_type}"
+                    # For CPU nodes (gpu_count = 0), show just the type
+                    if gpu_count == 0:
+                        gpu_display = gpu_type
+                    else:
+                        gpu_display = f"{gpu_count}x {gpu_type}"
                 else:
                     gpu_display = str(gpu_count)
 
@@ -1240,29 +1253,33 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str]) -> None
                 else:
                     status_display = str(status)  # No color for unknown statuses
 
+                # Extract CLI and Lambda versions if details flag is set
+                cli_version_display = ""
+                lambda_version_display = ""
+                if details:
+                    cli_version = reservation.get("cli_version", "")
+                    cli_version_display = cli_version if cli_version else "<0.2.5"
+
+                    lambda_version = reservation.get("lambda_version", "")
+                    lambda_version_display = lambda_version if lambda_version else "<0.2.6"
+
                 # Apply dimming to entire row for cancelled/expired reservations
-                if dim_row:
-                    table.add_row(
-                        f"[dim]{str(reservation_id)[:8]}[/dim]",
-                        f"[dim]{user_display}[/dim]",
-                        f"[dim]{gpu_display}[/dim]",
-                        status_display,
-                        f"[dim]{storage_display}[/dim]",
-                        f"[dim]{queue_info}[/dim]",
-                        f"[dim]{created_formatted}[/dim]",
-                        f"[dim]{expires_formatted}[/dim]",
-                    )
-                else:
-                    table.add_row(
-                        str(reservation_id)[:8],
-                        user_display,
-                        gpu_display,
-                        status_display,
-                        storage_display,
-                        queue_info,
-                        created_formatted,
-                        expires_formatted,
-                    )
+                row_data = [
+                    f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(reservation_id)[:8],
+                    f"[dim]{user_display}[/dim]" if dim_row else user_display,
+                    f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
+                    status_display,
+                    f"[dim]{storage_display}[/dim]" if dim_row else storage_display,
+                    f"[dim]{queue_info}[/dim]" if dim_row else queue_info,
+                    f"[dim]{created_formatted}[/dim]" if dim_row else created_formatted,
+                    f"[dim]{expires_formatted}[/dim]" if dim_row else expires_formatted,
+                ]
+
+                if details:
+                    row_data.append(f"[dim]{cli_version_display}[/dim]" if dim_row else cli_version_display)
+                    row_data.append(f"[dim]{lambda_version_display}[/dim]" if dim_row else lambda_version_display)
+
+                table.add_row(*row_data)
 
             except Exception as row_error:
                 # Skip malformed reservations but log the error

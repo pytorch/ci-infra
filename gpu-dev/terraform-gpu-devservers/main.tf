@@ -137,7 +137,7 @@ locals {
         "b200" = {
           instance_type       = "p6-b200.48xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 2  # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -145,7 +145,7 @@ locals {
         "h200" = {
           instance_type       = "p5e.48xlarge" # Match capacity reservation type
           instance_types      = ["p5e.48xlarge", "p5en.48xlarge"]
-          instance_count      = 2
+          instance_count      = 4  # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -153,7 +153,7 @@ locals {
         "h100" = {
           instance_type       = "p5.48xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 2  # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -161,7 +161,7 @@ locals {
         "a100" = {
           instance_type       = "p4d.24xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 2  # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -169,7 +169,7 @@ locals {
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 5  # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
@@ -177,7 +177,7 @@ locals {
         "l4" = {
           instance_type       = "g6.12xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 5  # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 4 # 4x L4 GPUs
           use_placement_group = false
           architecture        = "x86_64"
@@ -219,17 +219,22 @@ locals {
     prod = {
       # Production environment capacity reservations
       a100 = [
-        { id = "cr-01cc0f00f28b095af", instance_count = 1 } # A100 reservation (1 instance)
+        { id = "cr-01cc0f00f28b095af", instance_count = 1 }, # A100 reservation (1 instance)
+        { id = null, instance_count = 1 }                    # A100 on-demand (1 instance)
       ]
       h100 = [
-        # cr-003773252aa2ea59a expired and removed
+        { id = null, instance_count = 2 }                    # H100 on-demand (2 instances)
       ]
       h200 = [
-        { id = "cr-0f6d0766f5d3339e6", instance_count = 2 } # H200 reservation us-east-2c (p5e.48xlarge)
+        { id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 reservation us-east-2c (p5e.48xlarge)
+        { id = null, instance_count = 2 }                    # H200 on-demand (2 instances)
       ]
       b200 = [
         { id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
+        { id = null, instance_count = 1 }                    # B200 on-demand (1 instance)
       ]
+      # T4 and L4 don't have capacity reservations - managed via supported_gpu_types fallback
+      # This avoids destroying/recreating existing ASGs
     }
   }
 

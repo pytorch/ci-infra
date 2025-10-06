@@ -839,6 +839,10 @@ def process_multinode_reservation_request(reservation_request: dict[str, Any]) -
 
                 if reservation_request.get("github_user"):
                     initial_record["github_user"] = reservation_request["github_user"]
+                if reservation_request.get("version"):
+                    initial_record["cli_version"] = reservation_request["version"]
+                # Store Lambda version
+                initial_record["lambda_version"] = LAMBDA_VERSION
 
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
                 reservations_table.put_item(Item=initial_record)
@@ -1760,6 +1764,10 @@ def create_reservation(request: dict[str, Any]) -> str:
             reservation["jupyter_enabled"] = request["jupyter_enabled"]
         if "github_user" in request:
             reservation["github_user"] = request["github_user"]
+        if "version" in request:
+            reservation["cli_version"] = request["version"]
+        # Store Lambda version that processed this reservation
+        reservation["lambda_version"] = LAMBDA_VERSION
 
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
         reservations_table.put_item(Item=reservation)
