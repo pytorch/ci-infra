@@ -69,19 +69,20 @@ locals {
   # Workspace-specific configurations
   workspace_configs = {
     default = {
-      aws_region = "us-west-1"
-      environment = "test"
-      domain_name = "test.devservers.io"
-      gpu_instance_count = 2
+      aws_region             = "us-west-1"
+      environment            = "test"
+      domain_name            = "test.devservers.io"
+      gpu_instance_count     = 2
       use_self_managed_nodes = true
-      instance_type = "g4dn.12xlarge"
+      instance_type          = "g4dn.12xlarge"
       supported_gpu_types = {
         "h200" = {
-          instance_type       = "p5en.48xlarge"  # H200 available in us-west-1
+          instance_type       = "p5en.48xlarge" # H200 available in us-west-1
           instance_types      = ["p5en.48xlarge"]
           instance_count      = 2
           gpus_per_instance   = 8
           use_placement_group = false
+          architecture        = "x86_64"
         }
         "h100" = {
           instance_type       = "p5.48xlarge"
@@ -89,6 +90,23 @@ locals {
           instance_count      = 2
           gpus_per_instance   = 8
           use_placement_group = true
+          architecture        = "x86_64"
+        }
+        "cpu-arm" = {
+          instance_type       = "c7g.4xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 0
+          use_placement_group = false
+          architecture        = "arm64"
+        }
+        "cpu-x86" = {
+          instance_type       = "c7i.4xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 0
+          use_placement_group = false
+          architecture        = "x86_64"
         }
         "t4" = {
           instance_type       = "g4dn.12xlarge"
@@ -96,6 +114,7 @@ locals {
           instance_count      = 2
           gpus_per_instance   = 4
           use_placement_group = true
+          architecture        = "x86_64"
         }
         "t4-small" = {
           instance_type       = "g4dn.2xlarge"
@@ -103,16 +122,17 @@ locals {
           instance_count      = 1
           gpus_per_instance   = 1
           use_placement_group = false
+          architecture        = "x86_64"
         }
       }
     }
     prod = {
-      aws_region = "us-east-2"
-      environment = "prod"
-      domain_name = "devservers.io"
-      gpu_instance_count = 2
+      aws_region             = "us-east-2"
+      environment            = "prod"
+      domain_name            = "devservers.io"
+      gpu_instance_count     = 2
       use_self_managed_nodes = true
-      instance_type = "p4d.24xlarge"
+      instance_type          = "p4d.24xlarge"
       supported_gpu_types = {
         "b200" = {
           instance_type       = "p6-b200.48xlarge"
@@ -120,13 +140,15 @@ locals {
           instance_count      = 2
           gpus_per_instance   = 8
           use_placement_group = false
+          architecture        = "x86_64"
         }
         "h200" = {
-          instance_type       = "p5e.48xlarge"   # Match capacity reservation type
+          instance_type       = "p5e.48xlarge" # Match capacity reservation type
           instance_types      = ["p5e.48xlarge", "p5en.48xlarge"]
           instance_count      = 2
           gpus_per_instance   = 8
           use_placement_group = false
+          architecture        = "x86_64"
         }
         "h100" = {
           instance_type       = "p5.48xlarge"
@@ -134,6 +156,7 @@ locals {
           instance_count      = 2
           gpus_per_instance   = 8
           use_placement_group = false
+          architecture        = "x86_64"
         }
         "a100" = {
           instance_type       = "p4d.24xlarge"
@@ -141,6 +164,7 @@ locals {
           instance_count      = 2
           gpus_per_instance   = 8
           use_placement_group = false
+          architecture        = "x86_64"
         }
         "t4" = {
           instance_type       = "g4dn.12xlarge"
@@ -148,13 +172,31 @@ locals {
           instance_count      = 2
           gpus_per_instance   = 4
           use_placement_group = true
+          architecture        = "x86_64"
         }
         "l4" = {
           instance_type       = "g6.12xlarge"
           instance_types      = null
           instance_count      = 2
-          gpus_per_instance   = 4  # 4x L4 GPUs
+          gpus_per_instance   = 4 # 4x L4 GPUs
           use_placement_group = false
+          architecture        = "x86_64"
+        }
+        "cpu-arm" = {
+          instance_type       = "c7g.8xlarge"
+          instance_types      = null
+          instance_count      = 4
+          gpus_per_instance   = 0
+          use_placement_group = false
+          architecture        = "arm64"
+        }
+        "cpu-x86" = {
+          instance_type       = "c7i.8xlarge"
+          instance_types      = null
+          instance_count      = 4
+          gpus_per_instance   = 0
+          use_placement_group = false
+          architecture        = "x86_64"
         }
       }
     }
@@ -177,16 +219,16 @@ locals {
     prod = {
       # Production environment capacity reservations
       a100 = [
-        { id = "cr-01cc0f00f28b095af", instance_count = 1 }   # A100 reservation (1 instance)
+        { id = "cr-01cc0f00f28b095af", instance_count = 1 } # A100 reservation (1 instance)
       ]
       h100 = [
         # cr-003773252aa2ea59a expired and removed
       ]
       h200 = [
-        { id = "cr-0f6d0766f5d3339e6", instance_count = 2 }   # H200 reservation us-east-2c (p5e.48xlarge)
+        { id = "cr-0f6d0766f5d3339e6", instance_count = 2 } # H200 reservation us-east-2c (p5e.48xlarge)
       ]
       b200 = [
-        { id = "cr-0c366fb8339a10f69", instance_count = 1 },  # B200 reservation (1 instance)
+        { id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
       ]
     }
   }
@@ -195,19 +237,23 @@ locals {
   gpu_subnet_assignments = {
     default = {
       # Test environment - H200 and H100 in us-west-1c (secondary subnet)
-      h200 = "secondary"
-      h100 = "secondary"
-      t4 = "primary"
+      h200       = "secondary"
+      h100       = "secondary"
+      t4         = "primary"
+      "cpu-arm"  = "primary"
+      "cpu-x86"  = "primary"
       "t4-small" = "secondary"
     }
     prod = {
       # Production environment subnet assignments
-      b200 = "primary"
-      h200 = "tertiary"  # us-east-2c for H200 capacity reservation
-      h100 = "primary"
-      a100 = "primary"
-      t4 = "primary"
-      l4 = "secondary"
+      b200      = "primary"
+      h200      = "tertiary" # us-east-2c for H200 capacity reservation
+      h100      = "primary"
+      a100      = "primary"
+      t4        = "primary"
+      l4        = "secondary"
+      "cpu-arm" = "primary"
+      "cpu-x86" = "primary"
     }
   }
 }

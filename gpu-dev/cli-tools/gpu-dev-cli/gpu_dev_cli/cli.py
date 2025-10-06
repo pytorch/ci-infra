@@ -199,6 +199,10 @@ def _show_single_reservation(connection_info: dict) -> None:
             connection_info["ssh_command"]
         )
 
+        # Generate convenience connect command
+        short_id = connection_info["reservation_id"][:8]
+        connect_command = f"[cyan]gpu-dev connect {short_id}[/cyan]"
+
         # Check for warnings
         warning_message = connection_info.get("warning", "")
         warning_section = ""
@@ -207,6 +211,7 @@ def _show_single_reservation(connection_info: dict) -> None:
 
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
+            f"[blue]Quick Connect:[/blue] {connect_command}\n"
             f"[blue]SSH Command:[/blue] {ssh_with_forwarding}\n"
             + vscode_info
             + jupyter_info
@@ -264,7 +269,8 @@ def _show_single_reservation(connection_info: dict) -> None:
         # Show failure reason for failed reservations
         if status == "failed":
             failure_reason = connection_info.get(
-                "failure_reason", "Unknown error"
+                "failure_reason",
+                connection_info.get("current_detailed_status", "Unknown error")
             )
             panel_content += f"\n[blue]Error:[/blue] {failure_reason}"
 
@@ -352,6 +358,7 @@ def main(ctx: click.Context) -> None:
         gpu-dev list                            # Check your reservations
         gpu-dev show                            # Show detailed info for active/pending reservations
         gpu-dev show abc12345                   # Get detailed reservation info
+        gpu-dev connect                         # Connect to active reservation via SSH
         gpu-dev avail                           # Check GPU availability by type
         gpu-dev status                          # Check cluster status
         gpu-dev help                            # Show this help message
@@ -375,9 +382,9 @@ def main(ctx: click.Context) -> None:
     "--gpu-type",
     "-t",
     type=click.Choice(
-        ["b200", "h200", "h100", "a100", "t4", "l4", "t4-small"], case_sensitive=False
+        ["b200", "h200", "h100", "a100", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
     ),
-    help="GPU type to reserve (b200/h200/h100/a100/t4/l4/t4-small)",
+    help="GPU type to reserve (b200/h200/h100/a100/t4/l4/t4-small/cpu-arm/cpu-x86)",
 )
 @click.option(
     "--hours",
@@ -479,11 +486,13 @@ def reserve(
         use_interactive = interactive
         if use_interactive is None:
             # Auto-detect: use interactive if no key parameters provided
+            # For CPU instances, gpus parameter is optional (defaults to 0)
+            gpu_required = gpus is None and (gpu_type is None or not gpu_type.lower().startswith("cpu-"))
             use_interactive = (
-                gpus is None or gpu_type is None or hours is None
+                gpu_required or gpu_type is None or hours is None
             ) and check_interactive_support()
 
-        # GPU config for validation
+        # GPU config for validation (includes CPU-only instances)
         gpu_configs = {
             "t4": {"max_gpus": 4, "instance_type": "g4dn.12xlarge"},
             "l4": {"max_gpus": 4, "instance_type": "g6.12xlarge"},
@@ -492,6 +501,8 @@ def reserve(
             "h100": {"max_gpus": 8, "instance_type": "p5.48xlarge"},
             "h200": {"max_gpus": 8, "instance_type": "p5e.48xlarge"},
             "b200": {"max_gpus": 8, "instance_type": "p6-b200.48xlarge"},
+            "cpu-arm": {"max_gpus": 0, "instance_type": "c7g.4xlarge"},
+            "cpu-x86": {"max_gpus": 0, "instance_type": "c7i.4xlarge"},
         }
 
         if use_interactive:
@@ -589,12 +600,17 @@ def reserve(
 
         else:
             # Non-interactive mode - use defaults and validate
-            if gpus is None:
-                gpus = "1"
             if gpu_type is None:
                 gpu_type = "a100"
             if hours is None:
                 hours = 8.0
+
+            # Set default GPU count based on GPU type
+            if gpus is None:
+                if gpu_type and gpu_type.lower().startswith("cpu-"):
+                    gpus = "0"  # CPU instances default to 0 GPUs
+                else:
+                    gpus = "1"  # GPU instances default to 1 GPU
 
             gpu_count = int(gpus)
 
@@ -609,7 +625,16 @@ def reserve(
             return
 
         max_gpus = gpu_configs[gpu_type]["max_gpus"]
-        
+
+        # Special validation for CPU-only instances
+        if gpu_type.startswith("cpu-"):
+            if gpu_count != 0:
+                rprint(f"[red]❌ CPU-only instances must have --gpus=0 or omit --gpus, not {gpu_count}[/red]")
+                return
+        elif gpu_count == 0:
+            rprint(f"[red]❌ GPU type '{gpu_type}' must have --gpus > 0. Use cpu-arm or cpu-x86 for CPU-only instances[/red]")
+            return
+
         # Check if this is a multinode request
         if gpu_count > max_gpus:
             # Validate that it's a valid multiple for multinode
@@ -1853,6 +1878,112 @@ def _show_availability_watch(interval: int) -> None:
         rprint("\n[yellow]👋 Exiting watch mode...[/yellow]")
     except Exception as e:
         rprint(f"[red]❌ Error in watch mode: {str(e)}[/red]")
+
+
+@main.command()
+@click.argument("reservation_id", required=False)
+@click.pass_context
+def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
+    """Connect to a reservation via SSH
+
+    Convenience command that wraps SSH with ProxyCommand for easy access.
+    If no reservation ID is provided, shows your active reservations and lets you select one.
+
+    Arguments:
+        RESERVATION_ID: Optional reservation ID (8-character prefix is sufficient)
+
+    \b
+    Examples:
+        gpu-dev connect                         # Interactive mode - select reservation
+        gpu-dev connect abc12345                # Connect to reservation abc12345
+        gpu-dev connect abc1                    # Short form works too
+
+    This command:
+        - Uses HTTP CONNECT tunneling through ssh.devservers.io
+        - Handles ProxyCommand setup automatically
+        - Works with agent forwarding enabled by default
+
+    For VS Code Remote or manual SSH, use 'gpu-dev show' to see full SSH command.
+    """
+    import subprocess
+
+    try:
+        with Live(
+            Spinner("dots", text="📡 Fetching reservation details..."), console=console
+        ) as live:
+            config = load_config()
+
+            # Authenticate
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+            except RuntimeError as e:
+                live.stop()
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return
+
+            # If no reservation ID provided, show interactive selection
+            if reservation_id is None:
+                reservations = reservation_mgr.list_reservations(
+                    user_filter=user_info["user_id"],
+                    statuses_to_include=["active"]
+                )
+
+                live.stop()
+
+                if not reservations:
+                    rprint("[yellow]📋 No active reservations found[/yellow]")
+                    return
+
+                if len(reservations) == 1:
+                    # Auto-select if only one active reservation
+                    reservation_id = reservations[0].get("reservation_id")
+                    rprint(f"[cyan]Connecting to reservation {reservation_id[:8]}...[/cyan]\n")
+                else:
+                    # Interactive selection
+                    rprint("[cyan]🎯 Select reservation to connect to:[/cyan]")
+                    selected_id = select_reservation_interactive(reservations, "connect")
+                    if selected_id is None or selected_id == "__QUIT__":
+                        rprint("[yellow]Connection cancelled.[/yellow]")
+                        return
+                    reservation_id = selected_id
+                    rprint(f"\n[cyan]Connecting to reservation {reservation_id[:8]}...[/cyan]\n")
+
+                live.start()
+
+            # Get connection info
+            connection_info = reservation_mgr.get_connection_info(
+                reservation_id, user_info["user_id"]
+            )
+
+        live.stop()
+
+        if not connection_info:
+            rprint(f"[red]❌ Could not get connection info for {reservation_id}[/red]")
+            return
+
+        if connection_info["status"] != "active":
+            rprint(f"[red]❌ Reservation is not active (status: {connection_info['status']})[/red]")
+            return
+
+        # Extract SSH command and execute it
+        ssh_command = connection_info.get("ssh_command", "")
+        if not ssh_command:
+            rprint("[red]❌ No SSH command available for this reservation[/red]")
+            return
+
+        # Add agent forwarding if not already present
+        if "-A" not in ssh_command and "-o ForwardAgent=yes" not in ssh_command:
+            ssh_command = ssh_command.replace("ssh ", "ssh -A ", 1)
+
+        # Parse and execute the command
+        rprint(f"[dim]Executing: {ssh_command}[/dim]\n")
+        subprocess.run(ssh_command, shell=True)
+
+    except KeyboardInterrupt:
+        rprint("\n[yellow]Connection cancelled by user[/yellow]")
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
 @main.command()

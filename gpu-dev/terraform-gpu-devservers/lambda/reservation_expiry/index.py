@@ -247,6 +247,11 @@ def handler(event, context):
                 except (ValueError, AttributeError):
                     continue  # Can't parse timestamp, skip
 
+                # Check if pod actually exists before trying to clean it up
+                if not check_pod_exists(pod_name):
+                    logger.debug(f"Pod {pod_name} for failed reservation {reservation_id[:8]} already deleted")
+                    continue
+
                 logger.info(
                     f"Cleaning up failed reservation {reservation_id[:8]} with pod {pod_name}"
                 )
@@ -263,7 +268,68 @@ def handler(event, context):
         except Exception as e:
             logger.error(f"Error processing failed reservations: {e}")
 
-        # Clean up expired and cancelled reservations that still have running pods
+        # Pod-centric cleanup: Check all running pods and clean up those with failed/cancelled/expired reservations
+        try:
+            logger.info("Starting pod-centric cleanup - checking all running gpu-dev pods")
+
+            # Get Kubernetes client
+            k8s_client = get_k8s_client()
+            v1 = client.CoreV1Api(k8s_client)
+
+            # List all pods in gpu-dev namespace with gpu-dev- prefix
+            pod_list = v1.list_namespaced_pod(
+                namespace="gpu-dev",
+                label_selector=""  # Get all pods, we'll filter by name
+            )
+
+            gpu_dev_pods = [pod for pod in pod_list.items if pod.metadata.name.startswith("gpu-dev-")]
+            logger.info(f"Found {len(gpu_dev_pods)} gpu-dev pods to check")
+
+            pods_cleaned = 0
+            for pod in gpu_dev_pods:
+                pod_name = pod.metadata.name
+
+                # Extract reservation ID from pod name (format: gpu-dev-{reservation_id})
+                if not pod_name.startswith("gpu-dev-"):
+                    continue
+
+                reservation_id = pod_name[8:]  # Remove "gpu-dev-" prefix
+
+                try:
+                    # Look up reservation status in DynamoDB
+                    reservation_response = reservations_table.get_item(
+                        Key={"reservation_id": reservation_id}
+                    )
+
+                    if "Item" not in reservation_response:
+                        logger.warning(f"Pod {pod_name} has no corresponding reservation in DynamoDB - keeping pod")
+                        continue
+
+                    reservation = reservation_response["Item"]
+                    reservation_status = reservation.get("status", "")
+
+                    # Clean up pod if reservation is in a terminal state
+                    if reservation_status in ["failed", "cancelled", "expired"]:
+                        logger.info(f"Cleaning up pod {pod_name} - reservation status: {reservation_status}")
+                        try:
+                            cleanup_pod(pod_name, reservation_data=reservation)
+                            pods_cleaned += 1
+                            logger.info(f"Successfully cleaned up pod {pod_name} with {reservation_status} reservation")
+                        except Exception as cleanup_error:
+                            logger.error(f"Failed to cleanup pod {pod_name} with {reservation_status} reservation: {cleanup_error}")
+                    else:
+                        logger.debug(f"Pod {pod_name} has active reservation status: {reservation_status}")
+
+                except Exception as e:
+                    logger.error(f"Error checking reservation status for pod {pod_name}: {e}")
+                    continue
+
+            logger.info(f"Pod-centric cleanup completed - cleaned up {pods_cleaned} pods")
+
+        except Exception as e:
+            logger.error(f"Error in pod-centric cleanup: {e}")
+
+        # Also keep the original expired/cancelled reservation cleanup for redundancy
         try:
             expired_statuses = ["expired", "cancelled"]
             expired_cancelled_reservations = []
@@ -277,7 +343,7 @@ def handler(event, context):
                 )
                 expired_cancelled_reservations.extend(response.get("Items", []))
 
-            logger.info(f"Found {len(expired_cancelled_reservations)} expired/cancelled reservations")
+            logger.info(f"Found {len(expired_cancelled_reservations)} expired/cancelled reservations for redundant cleanup")
 
             # Clean up pods from expired/cancelled reservations (within last 7 days to avoid processing very old ones)
             EXPIRED_CLEANUP_WINDOW = 7 * 24 * 3600  # 7 days
@@ -311,8 +377,13 @@ def handler(event, context):
                 except (ValueError, AttributeError):
                     continue  # Can't parse timestamp, skip
 
+                # Check if pod actually exists before trying to clean it up
+                if not check_pod_exists(pod_name):
+                    logger.debug(f"Pod {pod_name} for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} already deleted")
+                    continue
+
                 logger.info(
-                    f"Cleaning up {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} with pod {pod_name}"
+                    f"Redundant cleanup: {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} with pod {pod_name}"
                 )
                 try:
                     cleanup_pod(pod_name, reservation_data=reservation)
@@ -806,6 +877,24 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
                     logger.info(f"Successfully deleted domain mapping for {domain_name}")
                 else:
                     logger.warning(f"Failed to delete domain mapping for {domain_name}")
+
+        # Clean up ALB/NLB resources if configured
+        if reservation_data:
+            reservation_id = reservation_data.get("reservation_id")
+            if reservation_id:
+                try:
+                    from shared.alb_utils import delete_alb_mapping, is_alb_enabled
+
+                    if is_alb_enabled():
+                        logger.info(f"Cleaning up ALB/NLB resources for reservation {reservation_id}")
+                        alb_success = delete_alb_mapping(reservation_id)
+                        if alb_success:
+                            logger.info(f"Successfully deleted ALB/NLB resources for {reservation_id}")
+                        else:
+                            logger.warning(f"Failed to delete ALB/NLB resources for {reservation_id}")
+                except Exception as alb_error:
+                    logger.error(f"Error cleaning up ALB/NLB resources: {alb_error}")
+                    # Don't re-raise - continue with pod cleanup
 
         # Configure Kubernetes client
         logger.info(f"Setting up Kubernetes client for cleanup...")

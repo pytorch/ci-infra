@@ -136,10 +136,17 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
         return None
 
     # Generate valid choices based on GPU type limits
-    if gpu_type in ["t4", "l4"]:
+    if gpu_type.startswith("cpu-"):
+        # CPU instances don't have GPUs, but we still need a "count" for nodes
+        valid_counts = [0]  # 0 GPUs for CPU-only instances
+        multinode_counts = []  # No multinode for CPU instances
+    elif gpu_type in ["t4", "l4"]:
         valid_counts = [1, 2, 4]
         # Add multinode options
         multinode_counts = [8, 12, 16, 20, 24]  # multiples of 4
+    elif gpu_type == "g5g":
+        valid_counts = [1, 2]
+        multinode_counts = [4, 8]  # multiples of 4
     elif gpu_type == "t4-small":
         valid_counts = [1]
         multinode_counts = [2, 3, 4, 5, 6]  # multiples of 1
@@ -150,12 +157,13 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
 
     # Filter single-node by actual max for this GPU type
     valid_counts = [count for count in valid_counts if count <= max_gpus]
-    
+
     # Add multinode options (multiples of max_gpus)
-    multinode_counts = [count for count in multinode_counts if count % max_gpus == 0]
+    multinode_counts = [
+        count for count in multinode_counts if count % max_gpus == 0]
 
     choices = []
-    
+
     # Add single-node options
     for count in valid_counts:
         if count == 1:
@@ -163,18 +171,24 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
         else:
             label = f"{count} GPUs (single node)"
         choices.append(questionary.Choice(title=label, value=count))
-    
+
     # Add separator and multinode options
     if multinode_counts:
-        choices.append(questionary.Separator("--- Multinode (Distributed) ---"))
+        choices.append(questionary.Separator(
+            "--- Multinode (Distributed) ---"))
         for count in multinode_counts:
             nodes = count // max_gpus
             label = f"{count} GPUs ({nodes} nodes × {max_gpus} GPUs)"
             choices.append(questionary.Choice(title=label, value=count))
 
     try:
+        if gpu_type.startswith("cpu-"):
+            question = f"Reserve {gpu_type.upper()} CPU instance?"
+        else:
+            question = f"How many {gpu_type.upper()} GPUs?"
+
         answer = questionary.select(
-            f"How many {gpu_type.upper()} GPUs?", choices=choices, style=custom_style
+            question, choices=choices, style=custom_style
         ).ask()
 
         return answer
@@ -251,11 +265,13 @@ def select_reservation_interactive(
         return None
 
     if not reservations:
-        console.print(f"[yellow]No reservations available to {action}.[/yellow]")
+        console.print(
+            f"[yellow]No reservations available to {action}.[/yellow]")
         return None
 
     # Display reservations table
-    console.print(f"\n[cyan]📋 Your reservations (available to {action}):[/cyan]")
+    console.print(
+        f"\n[cyan]📋 Your reservations (available to {action}):[/cyan]")
 
     table = Table()
     table.add_column("ID", style="cyan", no_wrap=True)
@@ -297,7 +313,8 @@ def select_reservation_interactive(
                             from datetime import timezone
 
                             naive_dt = datetime.fromisoformat(expires_at)
-                            expires_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                            expires_dt_utc = naive_dt.replace(
+                                tzinfo=timezone.utc)
 
                         expires_dt = expires_dt_utc.astimezone()
                         expires_formatted = expires_dt.strftime("%m-%d %H:%M")
@@ -332,7 +349,8 @@ def select_reservation_interactive(
                             from datetime import timezone
 
                             naive_dt = datetime.fromisoformat(created_at)
-                            created_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                            created_dt_utc = naive_dt.replace(
+                                tzinfo=timezone.utc)
 
                         created_dt = created_dt_utc.astimezone()
                         created_formatted = created_dt.strftime("%m-%d %H:%M")
@@ -355,7 +373,8 @@ def select_reservation_interactive(
 
             # Create choice for interactive selection
             choice_label = f"{reservation_id[:8]} - {gpu_display} ({status})"
-            choices.append(questionary.Choice(title=choice_label, value=reservation_id))
+            choices.append(questionary.Choice(
+                title=choice_label, value=reservation_id))
 
         except Exception as row_error:
             console.print(
@@ -367,7 +386,8 @@ def select_reservation_interactive(
     console.print()
 
     if not choices:
-        console.print(f"[yellow]No valid reservations found to {action}.[/yellow]")
+        console.print(
+            f"[yellow]No valid reservations found to {action}.[/yellow]")
         return None
 
     # Add "all" option for cancel action when there are multiple reservations
@@ -377,7 +397,7 @@ def select_reservation_interactive(
                 title="🗑️  Cancel ALL reservations above", value="__ALL__"
             )
         )
-    
+
     # Add quit option at the end for all actions
     action_verb = "cancel" if action == "cancel" else "edit"
     choices.append(

@@ -222,33 +222,41 @@ def generate_unique_name(preferred_name: Optional[str] = None) -> str:
 
 def create_dns_record(subdomain: str, target_ip: str, target_port: int) -> bool:
     """
-    Create DNS A record for a reservation.
+    Create DNS CNAME record pointing to ALB for a reservation.
 
     Args:
         subdomain: The subdomain name (e.g., 'grumpybear')
-        target_ip: The IP address to point to
+        target_ip: Unused (kept for backwards compatibility)
         target_port: The port number (stored in TXT record for reference)
 
     Returns:
         bool: True if successful, False otherwise
     """
+    import os
+
     if not DOMAIN_NAME or not HOSTED_ZONE_ID:
         logger.info("Domain name not configured, skipping DNS record creation")
         return True  # Not an error if DNS is not configured
 
+    # Get ALB DNS name from environment
+    alb_dns = os.environ.get("JUPYTER_ALB_DNS", "")
+    if not alb_dns:
+        logger.error("JUPYTER_ALB_DNS not configured, cannot create DNS record")
+        return False
+
     try:
         fqdn = f"{subdomain}.{DOMAIN_NAME}"
 
-        # Create A record pointing to the node IP
+        # Create CNAME record pointing to ALB
         change_batch = {
             'Changes': [
                 {
                     'Action': 'CREATE',
                     'ResourceRecordSet': {
                         'Name': fqdn,
-                        'Type': 'A',
+                        'Type': 'CNAME',
                         'TTL': 60,  # 1 minute TTL
-                        'ResourceRecords': [{'Value': target_ip}]
+                        'ResourceRecords': [{'Value': alb_dns}]
                     }
                 },
                 {
@@ -269,7 +277,7 @@ def create_dns_record(subdomain: str, target_ip: str, target_port: int) -> bool:
         )
 
         change_id = response['ChangeInfo']['Id']
-        logger.info(f"Created DNS record {fqdn} -> {target_ip}:{target_port} (Change ID: {change_id})")
+        logger.info(f"Created DNS CNAME record {fqdn} -> {alb_dns} (Change ID: {change_id})")
         return True
 
     except ClientError as e:
@@ -400,8 +408,8 @@ def store_domain_mapping(subdomain: str, target_ip: str, target_port: int, reser
         table.put_item(
             Item={
                 'domain_name': subdomain,
-                'target_ip': target_ip,
-                'target_port': target_port,
+                'node_ip': target_ip,  # Proxy expects 'node_ip'
+                'node_port': target_port,  # Proxy expects 'node_port'
                 'reservation_id': reservation_id,
                 'expires_at': expires_at
             }

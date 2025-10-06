@@ -144,6 +144,12 @@ resource "aws_eks_addon" "ebs_csi_driver" {
 }
 
 locals {
+  # Architecture to AMI mapping
+  architecture_ami_map = {
+    "x86_64" = data.aws_ami.eks_gpu_ami_x86_64.id
+    "arm64"  = data.aws_ami.eks_gpu_ami_arm64.id
+  }
+
   # Flatten capacity reservations to create multiple ASGs when needed
   gpu_capacity_reservations = flatten([
     for gpu_type, gpu_config in local.current_config.supported_gpu_types : [
@@ -263,7 +269,7 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
   for_each = local.gpu_asg_configs
 
   name_prefix = "${var.prefix}-gpu-${each.key}-"
-  image_id    = data.aws_ami.eks_gpu_ami.id
+  image_id    = local.architecture_ami_map[try(each.value.gpu_config.architecture, "x86_64")]
   key_name    = var.key_pair_name
 
   # Set instance_type if not using mixed instances policy OR if using capacity reservations
@@ -299,8 +305,8 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
     associate_public_ip_address = true
     security_groups             = [aws_security_group.gpu_dev_sg.id]
     subnet_id                   = each.value.gpu_config.use_placement_group ? null : (local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? aws_subnet.gpu_dev_subnet_secondary.id : aws_subnet.gpu_dev_subnet.id)
-    # EFA is not supported on g4dn.2xlarge (t4-small), only on larger instances
-    interface_type              = each.value.gpu_type == "t4-small" ? "interface" : "efa"
+    # EFA is not supported on g4dn.2xlarge (t4-small) and CPU instances
+    interface_type              = (each.value.gpu_type == "t4-small" || each.value.gpu_config.gpus_per_instance == 0) ? "interface" : "efa"
     delete_on_termination       = true
   }
 
@@ -364,8 +370,8 @@ resource "aws_iam_instance_profile" "eks_node_instance_profile" {
 
 # Using only Auto Scaling Groups for GPU nodes
 
-# Get the latest EKS-optimized AL2023 GPU AMI for the cluster version
-data "aws_ami" "eks_gpu_ami" {
+# Get the latest EKS-optimized AL2023 GPU AMI for x86_64
+data "aws_ami" "eks_gpu_ami_x86_64" {
   most_recent = true
   owners      = ["amazon"]
 
@@ -377,6 +383,22 @@ data "aws_ami" "eks_gpu_ami" {
   filter {
     name   = "architecture"
     values = ["x86_64"]
+  }
+}
+
+# Get the latest EKS-optimized AL2023 GPU AMI for ARM64
+data "aws_ami" "eks_gpu_ami_arm64" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amazon-eks-node-al2023-arm64-standard-1.33-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["arm64"]
   }
 }
 
@@ -406,7 +428,7 @@ data "aws_ami" "deep_learning_gpu_ami" {
 # CPU Launch template and Auto Scaling Group (consistent with GPU nodes)
 resource "aws_launch_template" "cpu_launch_template" {
   name_prefix = "${var.prefix}-cpu-"
-  image_id    = data.aws_ami.eks_gpu_ami.id
+  image_id    = data.aws_ami.eks_gpu_ami_x86_64.id
   key_name    = var.key_pair_name
   instance_type = "c5.4xlarge"
 

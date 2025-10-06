@@ -1,7 +1,7 @@
 """
 GPU Reservation Processor Lambda
 Handles reservation requests and manages K8s pod allocation
-(Version with multi-volume migration bug fix - Oct 1 2025)
+(Version with CNAME DNS records - Oct 6 2025)
 """
 
 import json
@@ -1380,10 +1380,16 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 # Continue processing even if record creation fails
 
         # Validate request
-        if not validate_reservation_request(reservation_request):
-            logger.error(f"Invalid reservation request: {reservation_request}")
-            # Let invalid messages go to DLQ by raising an exception
-            raise ValueError(f"Invalid reservation request: {reservation_request}")
+        is_valid, validation_error = validate_reservation_request(reservation_request)
+        if not is_valid:
+            logger.error(f"Validation failed: {validation_error}")
+            # Update reservation status with specific error message instead of raising exception
+            update_reservation_status(
+                reservation_id,
+                "failed",
+                detailed_status=f"Validation error: {validation_error}"
+            )
+            return  # Don't raise exception to prevent DLQ, just mark as failed
 
         # Check availability for the specific GPU type
         gpu_type = reservation_request.get("gpu_type", "a100")
@@ -1478,30 +1484,47 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         raise
 
 
-def validate_reservation_request(request: dict[str, Any]) -> bool:
+def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     """Validate reservation request parameters"""
     required_fields = ["user_id", "gpu_count"]
 
     for field in required_fields:
         if field not in request:
-            logger.error(f"Missing required field: {field}")
-            return False
+            error_msg = f"Missing required field: {field}"
+            logger.error(error_msg)
+            return False, error_msg
 
-    # Validate GPU count
+    # Validate GPU type and count
     gpu_count = request.get("gpu_count", 1)
-    if gpu_count not in [1, 2, 4, 8, 16]:  # 16 for 2x8 GPU setup
-        logger.error(f"Invalid GPU count: {gpu_count}")
-        return False
+    gpu_type = request.get("gpu_type", "")
+
+    # Validate GPU type
+    valid_gpu_types = ["t4", "l4", "t4-small", "a100", "h100", "h200", "b200", "cpu-arm", "cpu-x86"]
+    if gpu_type not in valid_gpu_types:
+        error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
+        logger.error(error_msg)
+        return False, error_msg
+
+    # Validate GPU count based on type
+    if gpu_type.startswith("cpu-") and gpu_count == 0:
+        pass  # Valid CPU-only instance
+    elif gpu_type.startswith("cpu-") and gpu_count != 0:
+        error_msg = f"CPU instances (gpu_type: {gpu_type}) must have gpu_count=0, got {gpu_count}"
+        logger.error(error_msg)
+        return False, error_msg
+    elif gpu_count not in [1, 2, 4, 8, 16]:  # 16 for 2x8 GPU setup
+        error_msg = f"Invalid GPU count: {gpu_count}. Must be one of: 1, 2, 4, 8, 16"
+        logger.error(error_msg)
+        return False, error_msg
 
     # Validate duration
     duration_hours = request.get("duration_hours", DEFAULT_TIMEOUT_HOURS)
     if duration_hours > MAX_RESERVATION_HOURS:
-        logger.error(
-            f"Duration exceeds maximum: {duration_hours} > {MAX_RESERVATION_HOURS}"
-        )
-        return False
+        error_msg = f"Duration exceeds maximum: {duration_hours} > {MAX_RESERVATION_HOURS} hours"
+        logger.error(error_msg)
+        return False, error_msg
 
-    return True
+    return True, "Valid request"
 
 
 def check_gpu_availability(gpu_type: str = None) -> int:
@@ -1996,116 +2019,52 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                 else:
                     # Either no existing EBS, or existing EBS is already in target AZ
-                    # CRITICAL: If volume exists in target AZ, check if we have newer snapshots from other AZs
                     if current_volume_id:
-                        # Volume already exists in target AZ - check if we should restore from newer snapshot
-                        logger.info(f"Volume {current_volume_id} already exists in target AZ {target_az}")
-
-                        # Get the latest snapshot from ANY AZ (not just this volume)
-                        latest_snapshot = get_latest_snapshot(user_id, volume_id=None, include_pending=False)
-
-                        if latest_snapshot:
-                            # Get volume creation time
-                            vol_response = ec2_client.describe_volumes(VolumeIds=[current_volume_id])
-                            volume_create_time = vol_response["Volumes"][0]["CreateTime"]
-                            snapshot_time = latest_snapshot["StartTime"]
-                            snapshot_volume_id = latest_snapshot.get("VolumeId")
-
-                            logger.info(f"Comparing: volume {current_volume_id} created at {volume_create_time} vs snapshot {latest_snapshot['SnapshotId']} from {snapshot_time} (source volume: {snapshot_volume_id})")
-
-                            # If snapshot is newer than volume creation, restore from it
-                            # This handles both: snapshots from different volumes, AND snapshots from same volume that are newer
-                            if snapshot_time > volume_create_time:
-                                logger.info(f"Found newer snapshot {latest_snapshot['SnapshotId']} ({snapshot_time}) than volume {current_volume_id} ({volume_create_time}) - restoring from snapshot to get latest data")
-                                update_reservation_status(
-                                    reservation_id,
-                                    "preparing",
-                                    f"Restoring persistent disk from latest snapshot (has newer data than existing volume)",
-                                )
-
-                                # Delete the old volume in this AZ
-                                try:
-                                    logger.info(f"Deleting outdated volume {current_volume_id} in {target_az}")
-                                    ec2_client.delete_volume(VolumeId=current_volume_id)
-                                    logger.info(f"Deleted outdated volume {current_volume_id}")
-                                except Exception as delete_error:
-                                    logger.warning(f"Failed to delete outdated volume {current_volume_id}: {delete_error}")
-                                    # If delete fails, volume might be in-use by another reservation - this is a race condition
-                                    # Fall through to create new volume from snapshot anyway
-
-                                # Restore from the latest snapshot
-                                persistent_volume_id = restore_ebs_from_existing_snapshot(
-                                    latest_snapshot['SnapshotId'], target_az, user_id
-                                )
-                                is_new_disk = False  # Restored from snapshot with existing data
-                                logger.info(f"Restored volume {persistent_volume_id} from latest snapshot {latest_snapshot['SnapshotId']}")
-                            else:
-                                # Existing volume is newer or snapshot is from same volume - use existing volume
-                                logger.info(f"Existing volume {current_volume_id} is up-to-date (no newer snapshots from other AZs)")
-                                update_reservation_status(
-                                    reservation_id,
-                                    "preparing",
-                                    "Setting up persistent disk for user data",
-                                )
-                                persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
-                                logger.info(f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
-
-                                # Store warning in database if multiple disks were detected
-                                if disk_warning:
-                                    update_reservation_fields(reservation_id, warning=disk_warning)
-                                    logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
-                        else:
-                            # No snapshots found - just use existing volume or create new one
-                            logger.info(f"No snapshots found for user {user_id}, using existing volume or creating new one")
-                            update_reservation_status(
-                                reservation_id,
-                                "preparing",
-                                "Setting up persistent disk for user data",
-                            )
-                            persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
-                            logger.info(f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
-
-                            # Store warning in database if multiple disks were detected
-                            if disk_warning:
-                                update_reservation_fields(reservation_id, warning=disk_warning)
-                                logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
+                        # Volume already exists in target AZ - use it directly (no migration needed)
+                        logger.info(f"Volume {current_volume_id} already exists in target AZ {target_az} - using existing volume")
+                        update_reservation_status(
+                            reservation_id,
+                            "preparing",
+                            "Using existing persistent disk",
+                        )
+                        persistent_volume_id = current_volume_id
+                        is_new_disk = False  # Using existing volume
+                        logger.info(f"Using existing volume {persistent_volume_id} in {target_az}")
                     else:
-                        # No existing volume at all - but check if we have snapshots to restore from
-                        logger.info(f"No existing volume found for user {user_id} - checking for snapshots to restore")
+                        # No existing volume - create new one
+                        logger.info(f"No existing volume found for user {user_id}, creating new one")
+                        update_reservation_status(
+                            reservation_id,
+                            "preparing",
+                            "Setting up persistent disk for user data",
+                        )
+                        persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
+                        logger.info(f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
 
-                        # Check for any existing snapshots from previous sessions
-                        latest_snapshot = get_latest_snapshot(user_id, volume_id=None, include_pending=False)
+                        # Store warning in database if multiple disks were detected
+                        if disk_warning:
+                            update_reservation_fields(reservation_id, warning=disk_warning)
+                            logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
 
-                        if latest_snapshot:
-                            # User has previous data in snapshots - restore from latest
-                            logger.info(f"Found existing snapshot {latest_snapshot['SnapshotId']} for user {user_id} - restoring instead of creating empty volume")
-                            update_reservation_status(
-                                reservation_id,
-                                "preparing",
-                                f"Restoring persistent disk from previous session snapshot {latest_snapshot['SnapshotId']}",
-                            )
+                # Check for any existing snapshots from previous sessions for new volumes only
+                if not current_volume_id:
+                    latest_snapshot = get_latest_snapshot(user_id, volume_id=None, include_pending=False)
 
-                            # Restore from the latest snapshot
-                            persistent_volume_id = restore_ebs_from_existing_snapshot(
-                                latest_snapshot['SnapshotId'], target_az, user_id
-                            )
-                            is_new_disk = False  # Restored from snapshot with existing data
-                            logger.info(f"Restored volume {persistent_volume_id} from snapshot {latest_snapshot['SnapshotId']} for user {user_id}")
-                        else:
-                            # Truly new user - create new empty volume
-                            logger.info(f"No existing volumes or snapshots for user {user_id} - creating new persistent disk")
-                            update_reservation_status(
-                                reservation_id,
-                                "preparing",
-                                "Setting up persistent disk for user data",
-                            )
-                            persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
-                            logger.info(f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
+                    if latest_snapshot:
+                        # User has previous data in snapshots - restore from latest
+                        logger.info(f"Found existing snapshot {latest_snapshot['SnapshotId']} for user {user_id} - restoring instead of creating empty volume")
+                        update_reservation_status(
+                            reservation_id,
+                            "preparing",
+                            f"Restoring persistent disk from previous session snapshot {latest_snapshot['SnapshotId']}",
+                        )
 
-                            # Store warning in database if multiple disks were detected
-                            if disk_warning:
-                                update_reservation_fields(reservation_id, warning=disk_warning)
-                                logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
+                        # Restore from the latest snapshot
+                        persistent_volume_id = restore_ebs_from_existing_snapshot(
+                            latest_snapshot['SnapshotId'], target_az, user_id
+                        )
+                        is_new_disk = False  # Restored from snapshot with existing data
+                        logger.info(f"Restored volume {persistent_volume_id} from snapshot {latest_snapshot['SnapshotId']} for user {user_id}")
 
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
@@ -2177,8 +2136,9 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             f"Pod created, downloading container image and starting services",
         )
 
-        # Get node public IP for the specific pod
+        # Get node IPs - public for DNS, private for proxy routing
         node_public_ip = get_pod_node_public_ip(pod_name)
+        node_private_ip = get_pod_node_private_ip(pod_name)
 
         # Generate domain name if DNS is enabled
         domain_name = None
@@ -2188,15 +2148,15 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             preferred_name = request.get("name")
             domain_name = generate_unique_name(preferred_name)
 
-            # Create DNS record
+            # Create DNS record (points to ALB, but we store for reference)
             dns_success = create_dns_record(domain_name, node_public_ip, node_port)
             if dns_success:
                 domain_ssh_command = format_ssh_command_with_domain(domain_name, node_port)
 
-                # Store domain mapping for tracking
+                # Store domain mapping with PRIVATE IP for proxy to reach NodePort
                 duration_hours = float(request.get("duration_hours", 8))
                 expires_timestamp = int(time.time()) + int(duration_hours * 3600)
-                store_domain_mapping(domain_name, node_public_ip, node_port, reservation_id, expires_timestamp)
+                store_domain_mapping(domain_name, node_private_ip or node_public_ip, node_port, reservation_id, expires_timestamp)
 
                 logger.info(f"Created domain name {domain_name} for reservation {reservation_id}")
 
@@ -2207,7 +2167,13 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         if domain_name and domain_ssh_command:
             # Use HTTP with domain name for Jupyter when DNS is configured
             # TODO: Add HTTPS support with SSL certificate
-            jupyter_url_base = f"http://{domain_name}:{jupyter_port}"
+            # domain_name is just the subdomain, we need to add DOMAIN_NAME to get FQDN
+            from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
+            if DNS_DOMAIN:
+                full_domain = f"{domain_name}.{DNS_DOMAIN}"
+            else:
+                full_domain = domain_name
+            jupyter_url_base = f"http://{full_domain}:{jupyter_port}"
         else:
             # Fallback to HTTP with IP when DNS is not configured
             jupyter_url_base = f"http://{node_public_ip}:{jupyter_port}"
@@ -2230,6 +2196,81 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         logger.info(f"MAIN FLOW: SSH connectivity test result for {reservation_id}: ssh_ready={ssh_ready}")
 
         if ssh_ready:
+            # Update status: Finalizing connection
+            update_reservation_status(
+                reservation_id,
+                "preparing",
+                "Finalizing connection and setting up access...",
+            )
+
+            # Create ALB/NLB resources if enabled
+            alb_config = None
+            if domain_name:
+                logger.info(f"Domain name exists ({domain_name}), checking if ALB is enabled for reservation {reservation_id}")
+                try:
+                    from shared.alb_utils import (
+                        is_alb_enabled,
+                        create_jupyter_target_group,
+                        create_alb_listener_rule,
+                        store_alb_mapping,
+                        get_instance_id_from_pod,
+                    )
+
+                    alb_enabled = is_alb_enabled()
+                    logger.info(f"ALB enabled check result: {alb_enabled}")
+                    if alb_enabled:
+                        logger.info(f"Setting up ALB/NLB for reservation {reservation_id}")
+
+                        # Get instance ID from pod
+                        instance_id = get_instance_id_from_pod(k8s_client, pod_name)
+
+                        if instance_id:
+                            # Create Jupyter target group (SSH uses HTTP CONNECT proxy)
+                            jupyter_tg_arn = create_jupyter_target_group(
+                                reservation_id, pod_name, instance_id, jupyter_port
+                            )
+
+                            if jupyter_tg_arn:
+                                # Create Jupyter ALB listener rule
+                                jupyter_rule_arn = create_alb_listener_rule(
+                                    domain_name, jupyter_tg_arn
+                                )
+
+                                if jupyter_rule_arn:
+                                    # Store mapping for cleanup
+                                    duration_hours = float(request.get("duration_hours", 8))
+                                    expires_timestamp = int(time.time()) + int(duration_hours * 3600)
+
+                                    store_alb_mapping(
+                                        reservation_id,
+                                        domain_name,
+                                        jupyter_tg_arn,
+                                        jupyter_rule_arn,
+                                        expires_timestamp,
+                                    )
+
+                                    # Update URLs - Jupyter uses HTTPS via ALB, SSH uses ProxyCommand
+                                    from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
+                                    full_domain = f"{domain_name}.{DNS_DOMAIN}"
+
+                                    # SSH with ProxyCommand for HTTP CONNECT tunneling
+                                    ssh_command = f"ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' dev@{full_domain}"
+
+                                    # Jupyter with HTTPS
+                                    jupyter_url_base = f"https://{full_domain}"
+
+                                    alb_config = {
+                                        "jupyter_target_group_arn": jupyter_tg_arn,
+                                        "jupyter_rule_arn": jupyter_rule_arn,
+                                    }
+
+                                    logger.info(f"ALB setup complete for {reservation_id} (Jupyter HTTPS + SSH proxy)")
+                        else:
+                            logger.warning(f"Could not get instance ID for pod {pod_name}, skipping ALB setup")
+                except Exception as alb_error:
+                    logger.error(f"Failed to setup ALB/NLB: {alb_error}")
+                    # Continue with NodePort fallback
+
             # Update reservation with connection details and mark as active
             update_reservation_connection_info(
                 reservation_id=reservation_id,
@@ -2244,6 +2285,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 persistent_volume_id=persistent_volume_id,
                 ebs_availability_zone=target_az if use_persistent_disk else None,
                 domain_name=domain_name,
+                alb_config=alb_config,
             )
 
             # Trigger availability table update after successful reservation
@@ -2763,20 +2805,72 @@ def find_available_node_port(k8s_client) -> int:
 
 def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource limits for pod based on GPU type and deployment mode"""
-    limits = {
-        "nvidia.com/gpu": str(gpu_count),
+    limits = {}
+
+    # Define max GPUs per node for each GPU type
+    gpu_max_per_node = {
+        "t4": 4, "l4": 4, "t4-small": 1, "g5g": 2,
+        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
+        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
     }
+
+    # Set appropriate resource limits based on instance type and proportional allocation
+    if gpu_type.startswith("cpu-"):
+        # CPU instances get reasonable limits for dedicated nodes
+        limits.update({
+            "cpu": "15",      # Reserve 1 CPU for system on 16-CPU nodes
+            "memory": "30Gi"  # Reserve 2GB for system on 32GB nodes
+        })
+    else:
+        # GPU instances get proportional CPU/memory based on GPU allocation
+        if gpu_count > 0:
+            limits["nvidia.com/gpu"] = str(gpu_count)
+
+            # Get instance specs for proportional allocation
+            instance_specs = {
+                "g4dn.12xlarge": {"cpus": 48, "memory_gb": 192},    # T4
+                "g6.12xlarge": {"cpus": 48, "memory_gb": 192},      # L4
+                "g4dn.2xlarge": {"cpus": 8, "memory_gb": 32},       # T4-small
+                "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},    # A100
+                "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},    # H100
+                "p5e.48xlarge": {"cpus": 192, "memory_gb": 2048},   # H200
+                "p6-b200.48xlarge": {"cpus": 192, "memory_gb": 2048} # B200
+            }
+
+            # Get max GPUs per node for this GPU type
+            max_gpus = gpu_max_per_node.get(gpu_type, 1)
+
+            # Calculate proportional allocation: (requested_gpus / max_gpus) * total_resources
+            gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
+
+            # Default fallback specs if instance type not found
+            default_specs = {"cpus": 48, "memory_gb": 192}
+
+            # Find instance type from GPU type mapping (approximate)
+            instance_type_map = {
+                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "t4-small": "g4dn.2xlarge",
+                "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
+                "h200": "p5e.48xlarge", "b200": "p6-b200.48xlarge"
+            }
+
+            instance_type = instance_type_map.get(gpu_type)
+            specs = instance_specs.get(instance_type, default_specs)
+
+            # Calculate proportional limits (reserve some for system)
+            proportional_cpu = int(specs["cpus"] * gpu_ratio * 0.9)  # 90% to reserve for system
+            proportional_memory = int(specs["memory_gb"] * gpu_ratio * 0.9)
+
+            limits.update({
+                "cpu": str(proportional_cpu),
+                "memory": f"{proportional_memory}Gi"
+            })
     
     # EFA optimization: Only use EFA for full-node multinode deployments
     # This prevents partial-node reservations from competing for limited EFA resources
-    gpu_max_per_node = {
-        "t4": 4, "l4": 4, "t4-small": 1,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8
-    }
-    
     max_gpus = gpu_max_per_node.get(gpu_type, 1)
     use_efa = (
         gpu_type != "t4-small" and  # EFA not supported on t4-small
+        not gpu_type.startswith("cpu-") and  # EFA not needed for CPU instances
         is_multinode and            # Only for multinode deployments
         gpu_count == max_gpus       # Only when using all GPUs per node
     )
@@ -2792,20 +2886,65 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
 
 def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource requests for pod based on GPU type and deployment mode"""
-    requests = {
-        "nvidia.com/gpu": str(gpu_count),
+    requests = {}
+
+    # Define max GPUs per node for each GPU type
+    gpu_max_per_node = {
+        "t4": 4, "l4": 4, "t4-small": 1, "g5g": 2,
+        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
+        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
     }
+
+    # Set appropriate resource requests based on instance type
+    if gpu_type.startswith("cpu-"):
+        # CPU instances request reasonable baseline
+        requests.update({
+            "cpu": "2",       # Reasonable baseline request
+            "memory": "4Gi"   # Reasonable baseline request
+        })
+    else:
+        # GPU instances get proportional requests (same logic as limits but more conservative)
+        if gpu_count > 0:
+            requests["nvidia.com/gpu"] = str(gpu_count)
+
+            # Reuse the same calculation logic for consistency
+            instance_specs = {
+                "g4dn.12xlarge": {"cpus": 48, "memory_gb": 192},
+                "g6.12xlarge": {"cpus": 48, "memory_gb": 192},
+                "g4dn.2xlarge": {"cpus": 8, "memory_gb": 32},
+                "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},
+                "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},
+                "p5e.48xlarge": {"cpus": 192, "memory_gb": 2048},
+                "p6-b200.48xlarge": {"cpus": 192, "memory_gb": 2048}
+            }
+
+            max_gpus = gpu_max_per_node.get(gpu_type, 1)
+            gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
+
+            instance_type_map = {
+                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "t4-small": "g4dn.2xlarge",
+                "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
+                "h200": "p5e.48xlarge", "b200": "p6-b200.48xlarge"
+            }
+
+            instance_type = instance_type_map.get(gpu_type)
+            specs = instance_specs.get(instance_type, {"cpus": 48, "memory_gb": 192})
+
+            # More conservative requests (50% of proportional allocation)
+            proportional_cpu = max(1, int(specs["cpus"] * gpu_ratio * 0.5))
+            proportional_memory = max(1, int(specs["memory_gb"] * gpu_ratio * 0.5))
+
+            requests.update({
+                "cpu": str(proportional_cpu),
+                "memory": f"{proportional_memory}Gi"
+            })
     
     # EFA optimization: Only use EFA for full-node multinode deployments
     # This prevents partial-node reservations from competing for limited EFA resources
-    gpu_max_per_node = {
-        "t4": 4, "l4": 4, "t4-small": 1,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8
-    }
-    
     max_gpus = gpu_max_per_node.get(gpu_type, 1)
     use_efa = (
         gpu_type != "t4-small" and  # EFA not supported on t4-small
+        not gpu_type.startswith("cpu-") and  # EFA not needed for CPU instances
         is_multinode and            # Only for multinode deployments
         gpu_count == max_gpus       # Only when using all GPUs per node
     )
@@ -2819,10 +2958,10 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
 def _pod_uses_efa(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> bool:
     """Check if pod will use EFA based on configuration"""
     gpu_max_per_node = {
-        "t4": 4, "l4": 4, "t4-small": 1,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8
+        "t4": 4, "l4": 4, "t4-small": 1, "g5g": 2,
+        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
+        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
     }
-    
     max_gpus = gpu_max_per_node.get(gpu_type, 1)
     return (
         gpu_type != "t4-small" and  # EFA not supported on t4-small
@@ -2871,8 +3010,12 @@ def create_pod(
     try:
         v1 = client.CoreV1Api(k8s_client)
 
-        # Determine container image to use
-        container_image = GPU_DEV_CONTAINER_IMAGE  # Default
+        # Determine container image to use based on architecture
+        if gpu_type.startswith("cpu-arm"):
+            # Use Python base image for ARM64 CPU instances with PyTorch installed via pip
+            container_image = "python:3.11-slim"  # Multi-arch image with ARM64 support
+        else:
+            container_image = GPU_DEV_CONTAINER_IMAGE  # Default x86_64 PyTorch image
 
         if dockerimage:
             logger.info(f"Using custom Docker image: {dockerimage}")
@@ -2988,6 +3131,25 @@ def create_pod(
                         echo "[STARTUP] - CREATE_SH_ENV=$CREATE_SH_ENV"
                         echo "[STARTUP] - JUPYTER_ENABLED=$JUPYTER_ENABLED"
                         echo "[STARTUP] - USE_PERSISTENT_DISK=$USE_PERSISTENT_DISK"
+
+                        # Install PyTorch for ARM64 CPU instances
+                        if [ "{gpu_type}" = "cpu-arm" ]; then
+                            echo "[STARTUP] ARM64 CPU instance detected - installing PyTorch and dependencies..."
+
+                            # Update package manager and install system dependencies
+                            apt-get update -qq
+                            apt-get install -y -qq wget curl git build-essential openssh-server sudo zsh
+
+                            # Install PyTorch CPU version for ARM64
+                            echo "[STARTUP] Installing PyTorch CPU (ARM64)..."
+                            pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+                            # Install common ML packages
+                            echo "[STARTUP] Installing common ML packages..."
+                            pip install --no-cache-dir numpy pandas matplotlib jupyter ipython scikit-learn
+
+                            echo "[STARTUP] PyTorch ARM64 installation complete"
+                        fi
 
                         echo "[STARTUP] Setting up dev user..."
                         # Create dev user with zsh as default shell (same UID as init container)
@@ -3642,7 +3804,8 @@ EOF
                 client.V1Toleration(
                     key="nvidia.com/gpu", operator="Exists", effect="NoSchedule"
                 )
-            ],
+            ] if not gpu_type.startswith("cpu-") else [],
+            termination_grace_period_seconds=10,  # Faster pod deletion (default is 30s)
         )
 
         # Create pod metadata
@@ -3861,6 +4024,36 @@ def get_pod_node_public_ip(pod_name: str) -> str:
     except Exception as e:
         logger.error(f"Error getting pod node IP for {pod_name}: {str(e)}")
         return get_node_public_ip()  # Fallback
+
+
+def get_pod_node_private_ip(pod_name: str) -> str:
+    """Get private IP of the specific node where a pod is running (for VPC-internal connections)"""
+    try:
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+
+        # Get the pod to find which node it's on
+        pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
+        node_name = pod.spec.node_name
+
+        if not node_name:
+            logger.warning(f"Pod {pod_name} not scheduled to any node yet")
+            return None
+
+        # Get the specific node's internal IP
+        node = v1.read_node(name=node_name)
+        if node.status.addresses:
+            for addr in node.status.addresses:
+                if addr.type == "InternalIP":
+                    logger.info(f"Pod {pod_name} is on node {node_name} with private IP {addr.address}")
+                    return addr.address
+
+        logger.warning(f"No internal IP found for node {node_name}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error getting pod node private IP for {pod_name}: {str(e)}")
+        return None
 
 
 def get_node_instance_id() -> str:
@@ -4267,6 +4460,7 @@ def update_reservation_connection_info(
     persistent_volume_id: str = None,
     ebs_availability_zone: str = None,
     domain_name: str = None,
+    alb_config: dict = None,
 ):
     """Update reservation with connection details and set proper expiration time"""
     logger.info(f"MAIN FLOW: Starting to update connection info for reservation {reservation_id} (pod: {pod_name})")
@@ -4387,6 +4581,10 @@ def update_reservation_connection_info(
         # Add domain name if provided
         if domain_name:
             update_fields["domain_name"] = domain_name
+
+        # Add ALB configuration if provided
+        if alb_config:
+            update_fields["alb_config"] = alb_config
 
         # Update all fields at once
         update_reservation_fields(reservation_id, **update_fields)
@@ -4625,6 +4823,20 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                 for event in sorted_events[:3]:
                     if event.reason not in ["Started", "Created"]:
                         event_message = event.message
+
+                        # Add retry counter for FailedAttachVolume errors
+                        if event.reason == "FailedAttachVolume":
+                            # Count how many FailedAttachVolume events we have
+                            attach_failure_events = [e for e in sorted_events if e.reason == "FailedAttachVolume"]
+                            retry_count = len(attach_failure_events)
+
+                            # Kubernetes retries volumes automatically - typically takes 30-60 seconds
+                            # Show retry status to reassure user
+                            if "Multi-Attach" in event.message or "already attached" in event.message:
+                                event_message = f"⏳ Waiting for disk to detach (retry {retry_count}/∞ - automatic)"
+                            else:
+                                event_message = f"⏳ Attaching disk (retry {retry_count}/∞ - automatic)"
+
                         break
 
         # Parse startup logs for container initialization progress
@@ -5314,7 +5526,22 @@ def enable_jupyter_in_pod(
                 # Get node IP and token for URL
                 node_public_ip = get_pod_node_public_ip(pod_name)
                 jupyter_token = get_jupyter_token_from_pod(k8s_client, pod_name)
-                jupyter_url = f"http://{node_public_ip}:{jupyter_port}"
+
+                # Try to use domain name if available
+                from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
+                reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                reservation_resp = reservations_table.get_item(Key={"reservation_id": reservation_id})
+                domain_name = None
+                if "Item" in reservation_resp:
+                    domain_name = reservation_resp["Item"].get("domain_name")
+
+                # Build Jupyter URL with domain if available, otherwise use IP
+                if domain_name and DNS_DOMAIN:
+                    full_domain = f"{domain_name}.{DNS_DOMAIN}"
+                    jupyter_url = f"http://{full_domain}:{jupyter_port}"
+                else:
+                    jupyter_url = f"http://{node_public_ip}:{jupyter_port}"
+
                 if jupyter_token:
                     jupyter_url += f"?token={jupyter_token}"
 

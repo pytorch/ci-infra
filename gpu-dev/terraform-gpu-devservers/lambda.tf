@@ -153,10 +153,11 @@ resource "aws_lambda_function" "reservation_processor" {
   handler          = "index.handler"
   runtime          = "python3.13"
   timeout          = 900 # 15 minutes for K8s operations
+  memory_size      = 2048 # 2GB memory to prevent out-of-memory crashes
   source_code_hash = null_resource.reservation_processor_build.triggers.code_hash
 
   environment {
-    variables = {
+    variables = merge({
       RESERVATIONS_TABLE                 = aws_dynamodb_table.gpu_reservations.name
       AVAILABILITY_TABLE                 = aws_dynamodb_table.gpu_availability.name
       EKS_CLUSTER_NAME                   = aws_eks_cluster.gpu_dev_cluster.name
@@ -177,7 +178,7 @@ resource "aws_lambda_function" "reservation_processor" {
       SSL_CERTIFICATE_ARN                = local.effective_domain_name != "" ? aws_acm_certificate.wildcard[0].arn : ""
       LAMBDA_VERSION                     = "0.2.1"
       MIN_CLI_VERSION                    = "0.2.1"
-    }
+    }, local.alb_env_vars)
   }
 
   depends_on = [

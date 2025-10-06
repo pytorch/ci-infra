@@ -17,10 +17,12 @@ dependencies = [
     "rich>=13.7.0",
     "pyyaml>=6.0.1",
     "questionary>=2.1.1",
+    "websockets>=12.0",
 ]
 
 [project.scripts]
 gpu-dev = "gpu_dev_cli.cli:main"
+gpu-dev-ssh-proxy = "gpu_dev_cli.ssh_proxy:main"
 
 [tool.setuptools]
 packages = ["gpu_dev_cli"]
