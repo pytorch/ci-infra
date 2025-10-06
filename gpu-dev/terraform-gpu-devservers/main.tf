@@ -227,10 +227,13 @@ locals {
       ]
       h200 = [
         { id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 reservation us-east-2c (p5e.48xlarge)
+        { id = "cr-06c9c978dea756a26", instance_count = 3 }, # H200 reservation (3 instances)
         { id = null, instance_count = 2 }                    # H200 on-demand (2 instances)
       ]
       b200 = [
         { id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
+        { id = "cr-0122dff5e01d566dc", instance_count = 2 }, # B200 reservation (2 instances)
+        { id = "cr-08e7fee0b8dc3de5e", instance_count = 3 }, # B200 reservation (3 instances)
         { id = null, instance_count = 1 }                    # B200 on-demand (1 instance)
       ]
       # T4 and L4 don't have capacity reservations - managed via supported_gpu_types fallback
@@ -259,6 +262,22 @@ locals {
       l4        = "secondary"
       "cpu-arm" = "primary"
       "cpu-x86" = "primary"
+    }
+  }
+
+  # Per-capacity-reservation AZ mappings (overrides gpu_subnet_assignments when CR is used)
+  capacity_reservation_azs = {
+    default = {}
+    prod = {
+      # B200 capacity reservations
+      "cr-0c366fb8339a10f69" = "primary"   # us-east-2a
+      "cr-0122dff5e01d566dc" = "secondary" # us-east-2b
+      "cr-08e7fee0b8dc3de5e" = "secondary" # us-east-2b
+      # H200 capacity reservations
+      "cr-0f6d0766f5d3339e6" = "tertiary"  # us-east-2c (p5e.48xlarge)
+      "cr-06c9c978dea756a26" = "tertiary"  # us-east-2c
+      # A100 capacity reservation
+      "cr-01cc0f00f28b095af" = "primary"   # us-east-2a
     }
   }
 }

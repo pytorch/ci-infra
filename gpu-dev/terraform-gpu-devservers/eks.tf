@@ -178,9 +178,24 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
 
   name                      = "${var.prefix}-gpu-nodes-${each.key}"
   vpc_zone_identifier       = (
-    local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? [aws_subnet.gpu_dev_subnet_secondary.id] :
-    local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "tertiary" && length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] :
-    [aws_subnet.gpu_dev_subnet.id]
+    # Use per-CR AZ mapping if capacity reservation is used and has a mapping
+    each.value.capacity_reservation_id != null ? (
+      lookup(local.capacity_reservation_azs[terraform.workspace], each.value.capacity_reservation_id, null) != null ? (
+        local.capacity_reservation_azs[terraform.workspace][each.value.capacity_reservation_id] == "secondary" ? [aws_subnet.gpu_dev_subnet_secondary.id] :
+        local.capacity_reservation_azs[terraform.workspace][each.value.capacity_reservation_id] == "tertiary" && length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] :
+        [aws_subnet.gpu_dev_subnet.id]
+      ) : (
+        # CR exists but no mapping - fall back to GPU type mapping
+        local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? [aws_subnet.gpu_dev_subnet_secondary.id] :
+        local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "tertiary" && length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] :
+        [aws_subnet.gpu_dev_subnet.id]
+      )
+    ) : (
+      # No CR - use GPU type mapping
+      local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? [aws_subnet.gpu_dev_subnet_secondary.id] :
+      local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "tertiary" && length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] :
+      [aws_subnet.gpu_dev_subnet.id]
+    )
   )
   target_group_arns         = []
   health_check_type         = "EC2"

@@ -1736,14 +1736,55 @@ def _show_availability() -> None:
         # Stop spinner after getting results
 
         if availability_info:
-            table = Table(title="GPU Availability by Type")
+            # GPU architecture mapping (for display)
+            gpu_architectures = {
+                "b200": "Blackwell (sm100)",
+                "h200": "Hopper (sm90)",
+                "h100": "Hopper (sm90)",
+                "a100": "Ampere (sm80)",
+                "l4": "Ada Lovelace (sm89)",
+                "t4": "Turing (sm75)",
+                "cpu-x86": "CPU (x86_64)",
+                "cpu-arm": "CPU (arm64)",
+            }
+
+            # Sort order: newest GPU architectures first, then CPUs at the bottom
+            arch_priority = {
+                "Blackwell (sm100)": 0,
+                "Hopper (sm90)": 1,
+                "Ada Lovelace (sm89)": 2,
+                "Ampere (sm80)": 3,
+                "Turing (sm75)": 4,
+                "CPU (x86_64)": 5,
+                "CPU (arm64)": 6,
+            }
+
+            # Sort GPU types by architecture priority, then by name
+            sorted_gpu_types = sorted(
+                availability_info.items(),
+                key=lambda x: (
+                    arch_priority.get(gpu_architectures.get(x[0], "Unknown"), 99),
+                    x[0]
+                )
+            )
+
+            table = Table(title="GPU Availability by Type (numbers are GPUs, not nodes)")
             table.add_column("GPU Type", style="cyan")
             table.add_column("Available", style="green")
             table.add_column("Total", style="blue")
             table.add_column("Queue Length", style="yellow")
+            table.add_column("Architecture", style="dim")
             table.add_column("Est. Wait Time", style="magenta")
 
-            for gpu_type, info in availability_info.items():
+            last_arch = None
+            for gpu_type, info in sorted_gpu_types:
+                arch = gpu_architectures.get(gpu_type, "Unknown")
+
+                # Add separator before CPU section
+                if last_arch and not last_arch.startswith("CPU") and arch.startswith("CPU"):
+                    table.add_row("---", "---", "---", "---", "---", "---")
+
+                last_arch = arch
                 available = info.get("available", 0)
                 total = info.get("total", 0)
                 queue_length = info.get("queue_length", 0)
@@ -1775,6 +1816,7 @@ def _show_availability() -> None:
                     available_display,
                     str(total),
                     str(queue_length),
+                    arch,
                     wait_display,
                 )
 
@@ -1820,14 +1862,55 @@ def _show_availability_watch(interval: int) -> None:
                     availability_info = reservation_mgr.get_gpu_availability_by_type()
 
                     if availability_info:
-                        table = Table(title="GPU Availability by Type")
+                        # GPU architecture mapping (for display)
+                        gpu_architectures = {
+                            "b200": "Blackwell (sm100)",
+                            "h200": "Hopper (sm90)",
+                            "h100": "Hopper (sm90)",
+                            "a100": "Ampere (sm80)",
+                            "l4": "Ada Lovelace (sm89)",
+                            "t4": "Turing (sm75)",
+                            "cpu-x86": "CPU (x86_64)",
+                            "cpu-arm": "CPU (arm64)",
+                        }
+
+                        # Sort order: newest GPU architectures first, then CPUs at the bottom
+                        arch_priority = {
+                            "Blackwell (sm100)": 0,
+                            "Hopper (sm90)": 1,
+                            "Ada Lovelace (sm89)": 2,
+                            "Ampere (sm80)": 3,
+                            "Turing (sm75)": 4,
+                            "CPU (x86_64)": 5,
+                            "CPU (arm64)": 6,
+                        }
+
+                        # Sort GPU types by architecture priority, then by name
+                        sorted_gpu_types = sorted(
+                            availability_info.items(),
+                            key=lambda x: (
+                                arch_priority.get(gpu_architectures.get(x[0], "Unknown"), 99),
+                                x[0]
+                            )
+                        )
+
+                        table = Table(title="GPU Availability by Type (numbers are GPUs, not nodes)")
                         table.add_column("GPU Type", style="cyan")
                         table.add_column("Available", style="green")
                         table.add_column("Total", style="blue")
                         table.add_column("Queue Length", style="yellow")
+                        table.add_column("Architecture", style="dim")
                         table.add_column("Est. Wait Time", style="magenta")
 
-                        for gpu_type, info in availability_info.items():
+                        last_arch = None
+                        for gpu_type, info in sorted_gpu_types:
+                            arch = gpu_architectures.get(gpu_type, "Unknown")
+
+                            # Add separator before CPU section
+                            if last_arch and not last_arch.startswith("CPU") and arch.startswith("CPU"):
+                                table.add_row("---", "---", "---", "---", "---", "---")
+
+                            last_arch = arch
                             available = info.get("available", 0)
                             total = info.get("total", 0)
                             queue_length = info.get("queue_length", 0)
@@ -1859,6 +1942,7 @@ def _show_availability_watch(interval: int) -> None:
                                 available_display,
                                 str(total),
                                 str(queue_length),
+                                arch,
                                 wait_display,
                             )
 
