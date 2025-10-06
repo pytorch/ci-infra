@@ -2160,8 +2160,14 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                 logger.info(f"Created domain name {domain_name} for reservation {reservation_id}")
 
-        # Generate SSH command (prefer domain name if available)
-        ssh_command = domain_ssh_command if domain_ssh_command else f"ssh -p {node_port} dev@{node_public_ip}"
+        # Generate SSH command (use ProxyCommand with domain if available, otherwise fallback to direct IP+port)
+        if domain_name:
+            from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
+            full_domain = f"{domain_name}.{DNS_DOMAIN}"
+            ssh_command = f"ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null dev@{full_domain}"
+        else:
+            # Fallback to direct IP+port when DNS is not configured
+            ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
 
         # Generate Jupyter URL (we'll get the token after pod is ready)
         if domain_name and domain_ssh_command:
