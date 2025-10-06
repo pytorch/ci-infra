@@ -305,7 +305,7 @@ resource "aws_lb_listener_rule" "ssh_proxy" {
 # IAM roles for ECS tasks
 resource "aws_iam_role" "ssh_proxy_execution" {
   count = local.effective_domain_name != "" ? 1 : 0
-  name  = substr("${var.prefix}-ssh-proxy-execution", 0, 64)
+  name  = substr("${local.workspace_prefix}-ssh-proxy-execution", 0, 64)
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -334,7 +334,7 @@ resource "aws_iam_role_policy_attachment" "ssh_proxy_execution" {
 
 resource "aws_iam_role" "ssh_proxy_task" {
   count = local.effective_domain_name != "" ? 1 : 0
-  name  = substr("${var.prefix}-ssh-proxy-task", 0, 64)
+  name  = substr("${local.workspace_prefix}-ssh-proxy-task", 0, 64)
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
