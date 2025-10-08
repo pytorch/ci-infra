@@ -36,6 +36,19 @@ def _make_vscode_link(pod_name: str) -> str:
     return f"vscode://vscode-remote/ssh-remote+{pod_name}/home/dev"
 
 
+def _make_cursor_link(pod_name: str) -> str:
+    """Create a clickable cursor:// URL for opening remote SSH connection in Cursor
+
+    Args:
+        pod_name: The SSH host name (e.g., gpu-dev-34f5f9e0)
+
+    Returns:
+        A cursor:// URL that opens Cursor with the remote SSH connection
+    """
+    # Based on VS Code remote SSH URL format: cursor://vscode-remote/ssh-remote+<host>/path
+    return f"cursor://vscode-remote/ssh-remote+{pod_name}/home/dev"
+
+
 def get_version() -> str:
     """Get CLI version for inclusion in SQS messages"""
     return __version__
@@ -115,6 +128,26 @@ def _generate_vscode_command(ssh_command: str) -> Optional[str]:
             f"/home/dev"
         )
 
+    except Exception:
+        return None
+
+
+def _generate_cursor_command(ssh_command: str) -> Optional[str]:
+    """Generate Cursor remote connection command from SSH command"""
+    try:
+        # Extract remote server from SSH command
+        # Expected format: ssh dev@<hostname> or various formats with -o options
+        if not ssh_command or not ssh_command.startswith("ssh "):
+            return None
+
+        # Parse SSH command to extract hostname
+        parts = ssh_command.split()
+        remote_server = parts[-1]
+        if '@' in remote_server:
+            remote_server = remote_server.split('@')[1]
+
+        # Return the VS Code command format
+        return f"cursor --remote ssh-remote+{remote_server} /home/dev"
     except Exception:
         return None
 
@@ -1943,6 +1976,12 @@ class ReservationManager:
                                         vscode_command = f"code --remote ssh-remote+{pod_name} /home/dev"
                                         console.print(
                                             f"[cyan]💻 VS Code Remote:[/cyan] [link={vscode_url}][green]{vscode_command}[/green][/link]")
+
+                                        # Create clickable Cursor link
+                                        cursor_url = _make_cursor_link(pod_name)
+                                        cursor_command = f"cursor --remote ssh-remote+{pod_name} /home/dev"
+                                        console.print(
+                                            f"[cyan]🖥️ Cursor Remote:[/cyan] [link={cursor_url}][green]{cursor_command}[/green][/link]")
                                     else:
                                         # User declined Include - show commands with -F flag
                                         console.print(
@@ -1961,6 +2000,11 @@ class ReservationManager:
                                     if vscode_command:
                                         console.print(
                                             f"[cyan]💻 VS Code Remote:[/cyan] {vscode_command}")
+
+                                    cursor_command = _generate_cursor_command(ssh_command)
+                                    if cursor_command:
+                                        console.print(
+                                            f"[cyan]🖱️  Cursor Remote:[/cyan] {cursor_command}")
 
                                 # Show Jupyter link if enabled
                                 jupyter_enabled = reservation.get(
