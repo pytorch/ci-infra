@@ -2798,12 +2798,6 @@ def edit(
         rprint(f"[red]❌ Error editing reservation: {str(e)}[/red]")
 
 
-@main.group()
-def config():
-    """Configure GPU dev CLI settings"""
-    pass
-
-
 @config.command(name="ssh-include")
 @click.argument("action", type=click.Choice(["enable", "disable"], case_sensitive=False))
 def ssh_include(action: str):
