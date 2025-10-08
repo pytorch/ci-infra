@@ -96,10 +96,11 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
 ### 📋 Remaining Tasks
 
 - **FQDN for devservers** - Set up proper domain names for development server access
-- automated ssh connection (similar to dev connect)
+- **Automated SSH config per reservation** - ✅ DONE - Each reservation now gets `~/.devgpu/<reservation_id>-sshconfig` file, use with `ssh -F ~/.devgpu/<reservation_id>-sshconfig <pod_name>`
 - **Custom Docker image scaffold** - Create Dockerfile with pre-installed packages (Jupyter, etc.)
 - **Add Docker CI image run** - allow user to specify gpu-dev ci-debug <testurl> that downloads that docker-image and goes for it
 - **Increase /dev/shm for NCCL** - Bump /dev/shm space from 64MB for NCCL requirements (https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting.html#docker)
+- **Add nvcuvid.so support** - Enable NCU (NVIDIA Nsight Compute) support with nvcuvid.so library
 
 - **Make gpu-type case agnostic** - Allow case-insensitive GPU type parameters (e.g., h100, H100, HuNdred should all work)
 - **Error on non-existing GPU type** - Error out if people ask for a non-existing GPU type

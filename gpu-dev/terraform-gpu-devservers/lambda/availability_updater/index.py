@@ -171,6 +171,58 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                 # Fallback to ASG-based calculation (assume all GPUs available)
                 available_gpus = total_gpus
 
+        # Calculate full nodes available (nodes with all GPUs free) and max reservable
+        full_nodes_available = 0
+        max_reservable = 0  # Maximum GPUs reservable (considering multinode for high-end GPUs)
+        if k8s_client is not None and not is_cpu_type:
+            try:
+                from kubernetes import client
+                v1 = client.CoreV1Api(k8s_client)
+                nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+
+                single_node_max = 0  # Max available on any single node
+                for node in nodes.items:
+                    if is_node_ready_and_schedulable(node):
+                        available_on_node = get_available_gpus_on_node(v1, node)
+                        total_on_node = 0
+                        if node.status.allocatable:
+                            gpu_allocatable = node.status.allocatable.get("nvidia.com/gpu", "0")
+                            try:
+                                total_on_node = int(gpu_allocatable)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Track max available on any single node
+                        single_node_max = max(single_node_max, available_on_node)
+
+                        # Count as full node if all GPUs are available
+                        if total_on_node > 0 and available_on_node == total_on_node:
+                            full_nodes_available += 1
+
+                # Calculate max reservable considering multinode scenarios
+                # Only high-end GPU types support multinode (up to 4 nodes = 32 GPUs)
+                multinode_gpu_types = ['h100', 'h200', 'b200', 'a100']
+                if gpu_type in multinode_gpu_types and gpus_per_instance == 8:
+                    max_nodes = min(4, full_nodes_available)  # Up to 4 nodes
+                    max_reservable = max_nodes * gpus_per_instance  # e.g., 4 * 8 = 32 GPUs
+
+                    # If no full nodes available, fall back to single node max
+                    if max_reservable == 0:
+                        max_reservable = single_node_max
+                else:
+                    # For all other GPU types (T4, L4, T4-small, etc.), only single node
+                    max_reservable = single_node_max
+
+                logger.info(f"Found {full_nodes_available} full nodes available for {gpu_type}, max reservable: {max_reservable} (single node max: {single_node_max})")
+            except Exception as e:
+                logger.warning(f"Could not calculate full nodes available for {gpu_type}: {str(e)}")
+                full_nodes_available = 0
+                max_reservable = 0
+        elif is_cpu_type:
+            # For CPU nodes, each node supports 1 reservation
+            full_nodes_available = available_gpus  # Each "GPU" represents one CPU node slot
+            max_reservable = 1 if available_gpus > 0 else 0  # Max 1 CPU node per reservation
+
         # Update DynamoDB table
         table = dynamodb.Table(AVAILABILITY_TABLE)
 
@@ -179,6 +231,8 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                 "gpu_type": gpu_type,
                 "total_gpus": total_gpus,
                 "available_gpus": available_gpus,
+                "max_reservable": max_reservable,
+                "full_nodes_available": full_nodes_available,
                 "running_instances": running_instances,
                 "desired_capacity": desired_capacity,
                 "gpus_per_instance": gpus_per_instance,
@@ -190,7 +244,7 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
         )
 
         logger.info(
-            f"Updated {gpu_type}: {available_gpus}/{total_gpus} GPUs available ({running_instances} instances)"
+            f"Updated {gpu_type}: {available_gpus}/{total_gpus} GPUs available ({running_instances} instances, {full_nodes_available} full nodes, max reservable: {max_reservable})"
         )
 
     except Exception as e:

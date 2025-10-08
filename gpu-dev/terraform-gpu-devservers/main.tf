@@ -418,22 +418,7 @@ resource "aws_security_group" "gpu_dev_sg" {
   description = "Security group for GPU development servers"
   vpc_id      = aws_vpc.gpu_dev_vpc.id
 
-  # SSH access
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
-  # NodePort range for SSH services to pods
-  ingress {
-    from_port   = 30000
-    to_port     = 32767
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Kubernetes NodePort range for pod SSH access"
-  }
 
   # Kubelet API for logs/exec/port-forward
   ingress {
@@ -476,6 +461,30 @@ resource "aws_security_group" "gpu_dev_sg" {
     to_port   = 65535
     protocol  = "tcp"
     self      = true
+  }
+
+  # NodePort range for WebSocket SSH proxy ECS tasks
+  dynamic "ingress" {
+    for_each = local.effective_domain_name != "" ? [1] : []
+    content {
+      from_port       = 30000
+      to_port         = 32767
+      protocol        = "tcp"
+      security_groups = [aws_security_group.ssh_proxy[0].id]
+      description     = "NodePort range for SSH via WebSocket proxy ECS tasks"
+    }
+  }
+
+  # NodePort range for Jupyter ALB access
+  dynamic "ingress" {
+    for_each = local.effective_domain_name != "" ? [1] : []
+    content {
+      from_port       = 30000
+      to_port         = 32767
+      protocol        = "tcp"
+      security_groups = [aws_security_group.alb_sg[0].id]
+      description     = "NodePort range for Jupyter Lab via ALB"
+    }
   }
 
   # All outbound traffic

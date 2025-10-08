@@ -54,8 +54,8 @@ EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(",") if os.environ.g
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 
 # Version validation - injected via Terraform
-LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.2.0")
-MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.2.0")
+LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.0")
+MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.0")
 
 # AWS clients
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
@@ -231,11 +231,11 @@ def needs_ebs_migration(user_id, target_az):
     try:
         logger.info(f"Checking for existing EBS volumes for user {user_id}")
 
-        # Look for ANY existing EBS volume with user tag, regardless of AZ
+        # Look for available EBS volumes only (not in-use by other reservations)
         response = ec2_client.describe_volumes(
             Filters=[
                 {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-                {"Name": "status", "Values": ["available", "in-use"]},
+                {"Name": "status", "Values": ["available"]},
             ]
         )
 
@@ -2161,7 +2161,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             if dns_success:
                 domain_ssh_command = format_ssh_command_with_domain(domain_name, node_port)
 
-                # Store domain mapping with PRIVATE IP for proxy to reach NodePort
+                # Store domain mapping with PRIVATE IP - WebSocket proxy runs in same VPC
                 duration_hours = float(request.get("duration_hours", 8))
                 expires_timestamp = int(time.time()) + int(duration_hours * 3600)
                 store_domain_mapping(domain_name, node_private_ip or node_public_ip, node_port, reservation_id, expires_timestamp)
@@ -2192,22 +2192,42 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             # Fallback to HTTP with IP when DNS is not configured
             jupyter_url_base = f"http://{node_public_ip}:{jupyter_port}"
 
-        # Update status: Waiting for SSH service
+        # Update status: Finalizing connection setup
         update_reservation_status(
             reservation_id,
             "preparing",
-            f"Container started, waiting for SSH service on port {node_port}",
+            "Finalizing connection and configuring access...",
         )
 
-        # Wait for SSH service to be fully ready (additional wait beyond pod ready)
+        # Skip direct SSH connectivity test - rely on pod readiness and SSH daemon logs
+        # All access goes through NLB, so direct node connectivity test is not needed
         logger.info(
-            f"MAIN FLOW: Pod is ready, testing SSH connectivity on {node_public_ip}:{node_port} for reservation {reservation_id}"
+            f"MAIN FLOW: Pod is ready, checking SSH daemon status from logs for {reservation_id}"
         )
-        ssh_ready = wait_for_ssh_service(
-            k8s_client, pod_name, node_public_ip, node_port, timeout_seconds=180
-        )
-        
-        logger.info(f"MAIN FLOW: SSH connectivity test result for {reservation_id}: ssh_ready={ssh_ready}")
+
+        ssh_ready = False
+        try:
+            v1 = client.CoreV1Api(k8s_client)
+            logs = v1.read_namespaced_pod_log(
+                name=pod_name, namespace="gpu-dev", tail_lines=50
+            )
+            if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
+                logger.info(f"SSH daemon confirmed running in pod logs for {pod_name}")
+                ssh_ready = True
+            else:
+                logger.warning(f"SSH daemon not yet started according to logs for {pod_name}")
+                # Wait a bit and try again
+                time.sleep(5)
+                logs = v1.read_namespaced_pod_log(
+                    name=pod_name, namespace="gpu-dev", tail_lines=50
+                )
+                if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
+                    logger.info(f"SSH daemon confirmed running after retry for {pod_name}")
+                    ssh_ready = True
+        except Exception as e:
+            logger.warning(f"Could not check SSH daemon logs: {e}")
+            # Assume ready if pod is running (NLB will handle routing)
+            ssh_ready = True
 
         if ssh_ready:
             # Update status: Finalizing connection
@@ -4595,6 +4615,12 @@ def update_reservation_connection_info(
         # Add domain name if provided
         if domain_name:
             update_fields["domain_name"] = domain_name
+            # Also set fqdn (full qualified domain name) for SSH config generation
+            from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
+            if DNS_DOMAIN:
+                update_fields["fqdn"] = f"{domain_name}.{DNS_DOMAIN}"
+            else:
+                update_fields["fqdn"] = domain_name
 
         # Add ALB configuration if provided
         if alb_config:
@@ -4993,7 +5019,8 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                 "✓ Successfully copied": "✓ Shell configs copied",
                 "✗ FAILED to copy": "✗ Failed to copy shell configs",
                 "Setting up shared personal storage": "Setting up shared storage",
-                "SSH daemon starting": "✓ SSH daemon ready",
+                "SSH daemon starting": "⏳ Finalizing connection setup",
+                "Server listening on": "⏳ Finalizing connection setup",
                 "ERROR:": "❌ Setup error occurred"
             }
 

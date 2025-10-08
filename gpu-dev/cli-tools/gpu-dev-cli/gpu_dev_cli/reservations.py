@@ -23,6 +23,19 @@ from . import __version__
 console = Console()
 
 
+def _make_vscode_link(pod_name: str) -> str:
+    """Create a clickable vscode:// URL for opening remote SSH connection
+
+    Args:
+        pod_name: The SSH host name (e.g., gpu-dev-34f5f9e0)
+
+    Returns:
+        A vscode:// URL that opens VS Code with the remote SSH connection
+    """
+    # VS Code remote SSH URL format: vscode://vscode-remote/ssh-remote+<host>/path
+    return f"vscode://vscode-remote/ssh-remote+{pod_name}/home/dev"
+
+
 def get_version() -> str:
     """Get CLI version for inclusion in SQS messages"""
     return __version__
@@ -69,35 +82,263 @@ def _generate_vscode_command(ssh_command: str) -> Optional[str]:
     """Generate VS Code remote connection command from SSH command"""
     try:
         # Extract remote server from SSH command
-        # Expected format: ssh dev@<hostname> -p <port> or ssh -p <port> dev@<hostname>
+        # Expected format: ssh dev@<hostname> or various formats with -o options
         if not ssh_command or not ssh_command.startswith("ssh "):
             return None
 
-        # Parse SSH command to extract user@host and port
+        # Parse SSH command to extract hostname
         parts = ssh_command.split()
-        user_host = None
-        port = None
+        hostname = None
 
         for i, part in enumerate(parts):
             if "@" in part and not part.startswith("-"):
-                user_host = part
-            elif part == "-p" and i + 1 < len(parts):
-                port = parts[i + 1]
+                # Extract just the hostname part (e.g., from dev@hostname.io)
+                hostname = part.split("@")[1]
+                break
 
-        if not user_host:
+        if not hostname:
             return None
 
-        # Build VS Code remote server string
-        if port:
-            remote_server = f"{user_host}:{port}"
-        else:
-            remote_server = user_host
+        # Generate VS Code command with ProxyCommand and agent forwarding
+        # VS Code will use the ssh command options we provide
+        remote_server = f"dev@{hostname}"
 
-        # Generate VS Code command with SSH agent forwarding
-        return f"code --remote ssh-remote+{remote_server} --ssh-option ForwardAgent=yes /home/dev"
+        # Escape single quotes in the ProxyCommand for shell
+        proxy_cmd = "gpu-dev-ssh-proxy %h %p"
+
+        return (
+            f"code --remote ssh-remote+{remote_server} "
+            f"--ssh-option ForwardAgent=yes "
+            f"--ssh-option ProxyCommand='{proxy_cmd}' "
+            f"--ssh-option StrictHostKeyChecking=no "
+            f"--ssh-option UserKnownHostsFile=/dev/null "
+            f"/home/dev"
+        )
 
     except Exception:
         return None
+
+
+def _generate_ssh_config(hostname: str, pod_name: str) -> str:
+    """Generate SSH config for a reservation
+
+    Args:
+        hostname: The FQDN hostname (e.g., old_bison.devservers.io)
+        pod_name: The pod name to use as SSH host alias
+
+    Returns:
+        SSH config content as string
+    """
+    config_content = f"""Host {pod_name}
+    HostName {hostname}
+    User dev
+    ForwardAgent yes
+    ProxyCommand gpu-dev-ssh-proxy %h %p
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+"""
+    return config_content
+
+
+def _check_ssh_config_permission() -> bool:
+    """Check if user has given permission to modify ~/.ssh/config
+
+    Returns:
+        True if permission granted or already set up, False otherwise
+    """
+    import click
+    from pathlib import Path
+
+    gpu_dev_dir = Path.home() / ".gpu-dev"
+    permission_file = gpu_dev_dir / ".ssh-config-permission"
+
+    # Check if already asked and answered
+    if permission_file.exists():
+        try:
+            response = permission_file.read_text().strip()
+            return response == "yes"
+        except Exception:
+            pass
+
+    # Check if Include already exists in ~/.ssh/config
+    ssh_config = Path.home() / ".ssh" / "config"
+    if ssh_config.exists():
+        try:
+            content = ssh_config.read_text()
+            if "Include ~/.gpu-dev/" in content:
+                # Already set up, save permission
+                gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
+                permission_file.write_text("yes")
+                return True
+        except Exception:
+            pass
+
+    # Ask user for permission
+    console.print("\n[yellow]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/yellow]")
+    console.print("[cyan]🔧 SSH Configuration Setup[/cyan]\n")
+    console.print("To enable easy SSH access and VS Code Remote connections,")
+    console.print("we can add GPU dev server configs to your ~/.ssh/config file.")
+    console.print("\n[dim]This adds one line at the top of ~/.ssh/config:[/dim]")
+    console.print("[dim]  Include ~/.gpu-dev/*-sshconfig[/dim]\n")
+    console.print("[green]Benefits:[/green]")
+    console.print("  • Simple commands: [green]ssh <pod-name>[/green]")
+    console.print("  • VS Code Remote works: [green]code --remote ssh-remote+<pod-name>[/green]")
+    console.print("\n[dim]Without this, you'll need to use: [green]ssh -F ~/.gpu-dev/<id>-sshconfig <pod-name>[/green][/dim]")
+    console.print("[yellow]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/yellow]\n")
+
+    approved = click.confirm("Add Include directive to ~/.ssh/config?", default=True)
+
+    # Save response
+    gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
+    permission_file.write_text("yes" if approved else "no")
+
+    return approved
+
+
+def _ensure_ssh_config_includes_devgpu() -> bool:
+    """Ensure ~/.ssh/config includes ~/.devgpu/* configs for VS Code compatibility
+
+    Returns:
+        True if Include was added/exists, False if user declined
+    """
+    from pathlib import Path
+
+    # Check permission first
+    if not _check_ssh_config_permission():
+        return False
+
+    ssh_dir = Path.home() / ".ssh"
+    ssh_dir.mkdir(mode=0o700, exist_ok=True)
+
+    ssh_config = ssh_dir / "config"
+    include_line = "Include ~/.gpu-dev/*-sshconfig\n"
+
+    try:
+        # Read existing config or create empty
+        if ssh_config.exists():
+            content = ssh_config.read_text()
+        else:
+            content = ""
+
+        # Check if Include already exists
+        if "Include ~/.gpu-dev/" in content:
+            return True
+
+        # Add Include at the top (must be first in SSH config)
+        new_content = include_line + "\n" + content
+        ssh_config.write_text(new_content)
+        ssh_config.chmod(0o600)
+        return True
+    except Exception:
+        return False
+
+
+def create_ssh_config_for_reservation(hostname: str, pod_name: str, reservation_id: str, name: Optional[str] = None) -> tuple[Optional[str], bool]:
+    """Create SSH config file for a reservation in ~/.gpu-dev/
+
+    Args:
+        hostname: The FQDN hostname (e.g., old_bison.devservers.io)
+        pod_name: The pod name to use as SSH host alias
+        reservation_id: The reservation ID (full or short)
+        name: Optional reservation name to use for filename (falls back to short ID)
+
+    Returns:
+        Tuple of (config_path, use_include) where:
+          - config_path: Path to the created config file, or None on error
+          - use_include: True if ~/.ssh/config includes devgpu configs, False if need -F flag
+    """
+    from pathlib import Path
+
+    # Create ~/.gpu-dev directory
+    gpu_dev_dir = Path.home() / ".gpu-dev"
+    gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
+
+    # Use name if provided, otherwise use short ID (first 8 chars)
+    if name:
+        filename = f"{name}-sshconfig"
+    else:
+        short_id = reservation_id[:8]
+        filename = f"{short_id}-sshconfig"
+
+    config_file = gpu_dev_dir / filename
+    config_content = _generate_ssh_config(hostname, pod_name)
+
+    try:
+        config_file.write_text(config_content)
+        config_file.chmod(0o600)
+
+        # Check/ask permission to include in ~/.ssh/config
+        use_include = _ensure_ssh_config_includes_devgpu()
+
+        return (str(config_file), use_include)
+    except Exception:
+        return (None, False)
+
+
+def remove_ssh_config_for_reservation(reservation_id: str, name: Optional[str] = None) -> bool:
+    """Remove SSH config file for a reservation
+
+    Args:
+        reservation_id: The reservation ID (full or short)
+        name: Optional reservation name to use for filename (falls back to short ID)
+
+    Returns:
+        True if successful (or file didn't exist), False on error
+    """
+    from pathlib import Path
+
+    # Use name if provided, otherwise use short ID (first 8 chars)
+    if name:
+        filename = f"{name}-sshconfig"
+    else:
+        short_id = reservation_id[:8]
+        filename = f"{short_id}-sshconfig"
+
+    config_file = Path.home() / ".gpu-dev" / filename
+
+    try:
+        if config_file.exists():
+            config_file.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def is_ssh_include_enabled() -> bool:
+    """Check if user has approved SSH config Include directive
+
+    Returns:
+        True if Include is enabled, False otherwise
+    """
+    from pathlib import Path
+
+    permission_file = Path.home() / ".gpu-dev" / ".ssh-config-permission"
+    if permission_file.exists():
+        try:
+            return permission_file.read_text().strip() == "yes"
+        except Exception:
+            pass
+    return False
+
+
+def get_ssh_config_path(reservation_id: str, name: Optional[str] = None) -> str:
+    """Get the SSH config file path for a reservation
+
+    Args:
+        reservation_id: The reservation ID (full or short)
+        name: Optional reservation name to use for filename (falls back to short ID)
+
+    Returns:
+        Path to the config file (may not exist)
+    """
+    from pathlib import Path
+    # Use name if provided, otherwise use short ID (first 8 chars)
+    if name:
+        filename = f"{name}-sshconfig"
+    else:
+        short_id = reservation_id[:8]
+        filename = f"{short_id}-sshconfig"
+    return str(Path.home() / ".gpu-dev" / filename)
 
 
 class ReservationManager:
@@ -242,8 +483,8 @@ class ReservationManager:
                 reservation_ids.append(node_reservation_id)
 
                 # Node-specific name
-                node_name = f"{name or f'{gpu_count}x {gpu_type.upper()} multinode'} - Node {
-                    node_idx + 1}/{num_nodes}"
+                base_name = name or f'{gpu_count}x {gpu_type.upper()} multinode'
+                node_name = f"{base_name} - Node {node_idx + 1}/{num_nodes}"
 
                 # Create reservation message for this node
                 message = {
@@ -426,6 +667,7 @@ class ReservationManager:
                 "expires_at": reservation.get("expires_at"),
                 "created_at": reservation.get("created_at"),
                 "reservation_id": reservation["reservation_id"],
+                "name": reservation.get("name"),
                 "instance_type": reservation.get("instance_type", "unknown"),
                 "gpu_type": reservation.get("gpu_type", "unknown"),
                 "failure_reason": reservation.get("failure_reason", ""),
@@ -613,6 +855,9 @@ class ReservationManager:
                 availability_info[gpu_type] = {
                     "available": int(item.get("available_gpus", 0)),
                     "total": int(item.get("total_gpus", 0)),
+                    "max_reservable": int(item.get("max_reservable", 0)),
+                    "full_nodes_available": int(item.get("full_nodes_available", 0)),
+                    "gpus_per_instance": int(item.get("gpus_per_instance", 0)),
                     "queue_length": queue_length,
                     "estimated_wait_minutes": estimated_wait,
                     "running_instances": int(item.get("running_instances", 0)),
@@ -1154,7 +1399,7 @@ class ReservationManager:
     def _wait_for_reservations_completion(
         self, reservation_ids: List[str], timeout_minutes: Optional[int] = 10, is_multinode: bool = False, verbose: bool = False
     ) -> Optional[List[Dict[str, Any]]]:
-        """Shared polling logic for both single and multinode reservations"""
+        """Shared polling logic for both single and multinode reservations (always creates SSH config)"""
 
         status_messages = {
             "pending": "⏳ Reservation request submitted, waiting for processing...",
@@ -1672,18 +1917,50 @@ class ReservationManager:
                                 console.print(
                                     f"[cyan]⚡ Quick Connect:[/cyan] [green]gpu-dev connect {short_id}[/green]")
 
-                                # Add agent forwarding to SSH command
-                                ssh_with_forwarding = _add_agent_forwarding_to_ssh(
-                                    ssh_command)
-                                console.print(
-                                    f"[cyan]🖥️  SSH Command:[/cyan] {ssh_with_forwarding}")
+                                # Always create SSH config file for this reservation
+                                fqdn = reservation.get("fqdn")
+                                pod_name = reservation.get("pod_name")
+                                res_id = reservation.get("reservation_id")
+                                res_name = reservation.get("name")
+                                config_path = None
+                                use_include = False
+                                if fqdn and pod_name and res_id:
+                                    try:
+                                        config_path, use_include = create_ssh_config_for_reservation(
+                                            fqdn, pod_name, res_id, res_name)
+                                    except Exception as e:
+                                        console.print(
+                                            f"[yellow]⚠️  Could not create SSH config: {str(e)}[/yellow]")
 
-                                # Show VS Code remote command
-                                vscode_command = _generate_vscode_command(
-                                    ssh_command)
-                                if vscode_command:
+                                # Show SSH command using config file if created, otherwise fallback
+                                if config_path and pod_name:
+                                    if use_include:
+                                        # User approved Include - show simple commands
+                                        console.print(
+                                            f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh {pod_name}[/green]")
+                                        # Create clickable VS Code link
+                                        vscode_url = _make_vscode_link(pod_name)
+                                        vscode_command = f"code --remote ssh-remote+{pod_name} /home/dev"
+                                        console.print(
+                                            f"[cyan]💻 VS Code Remote:[/cyan] [link={vscode_url}][green]{vscode_command}[/green][/link]")
+                                    else:
+                                        # User declined Include - show commands with -F flag
+                                        console.print(
+                                            f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh -F {config_path} {pod_name}[/green]")
+                                        console.print(
+                                            f"[cyan]💻 VS Code:[/cyan] Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config")
+                                        console.print(
+                                            f"[dim]   Or run: [green]gpu-dev config ssh-include enable[/green][/dim]")
+                                else:
+                                    # Fallback to full SSH command if config creation failed
+                                    ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command)
                                     console.print(
-                                        f"[cyan]💻 VS Code Remote:[/cyan] {vscode_command}")
+                                        f"[cyan]🖥️  SSH Command:[/cyan] {ssh_with_forwarding}")
+
+                                    vscode_command = _generate_vscode_command(ssh_command)
+                                    if vscode_command:
+                                        console.print(
+                                            f"[cyan]💻 VS Code Remote:[/cyan] {vscode_command}")
 
                                 # Show Jupyter link if enabled
                                 jupyter_enabled = reservation.get(
@@ -1831,7 +2108,7 @@ class ReservationManager:
     def wait_for_reservation_completion(
         self, reservation_id: str, timeout_minutes: Optional[int] = 10, verbose: bool = False
     ) -> Optional[Dict[str, Any]]:
-        """Poll for single reservation completion using shared polling logic"""
+        """Poll for single reservation completion using shared polling logic (always creates SSH config)"""
         results = self._wait_for_reservations_completion(
             [reservation_id], timeout_minutes, is_multinode=False, verbose=verbose)
         return results[0] if results else None

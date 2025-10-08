@@ -17,6 +17,10 @@ from .reservations import (
     ReservationManager,
     _generate_vscode_command,
     _add_agent_forwarding_to_ssh,
+    create_ssh_config_for_reservation,
+    remove_ssh_config_for_reservation,
+    get_ssh_config_path,
+    is_ssh_include_enabled,
 )
 from .config import Config, load_config
 from .interactive import (
@@ -39,14 +43,15 @@ def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
     """Format timestamp as relative time if within 24h, otherwise absolute"""
     if not timestamp_str or timestamp_str == "N/A":
         return "N/A"
-    
+
     try:
         from datetime import datetime, timezone, timedelta
-        
+
         # Parse the timestamp
         if isinstance(timestamp_str, str):
             if timestamp_str.endswith("Z"):
-                dt_utc = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                dt_utc = datetime.fromisoformat(
+                    timestamp_str.replace("Z", "+00:00"))
             elif "+" in timestamp_str or timestamp_str.endswith("00:00"):
                 dt_utc = datetime.fromisoformat(timestamp_str)
             else:
@@ -54,18 +59,18 @@ def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
                 dt_utc = naive_dt.replace(tzinfo=timezone.utc)
         else:
             dt_utc = datetime.fromtimestamp(timestamp_str, tz=timezone.utc)
-        
+
         now = datetime.now(timezone.utc)
         delta = dt_utc - now if relative_to == "expires" else now - dt_utc
-        
+
         # If more than 24 hours, use absolute time
         if abs(delta.total_seconds()) > 24 * 3600:
             dt_local = dt_utc.astimezone()
             return dt_local.strftime("%Y-%m-%d %H:%M:%S")
-        
+
         # Format relative time
         total_seconds = abs(delta.total_seconds())
-        
+
         if total_seconds < 60:
             if relative_to == "expires":
                 return f"expires in {int(total_seconds)}s"
@@ -90,7 +95,7 @@ def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
                     return f"expires in {hours}h"
                 else:
                     return f"{hours}h ago"
-    
+
     except (ValueError, TypeError):
         # Fallback to original format
         return str(timestamp_str)[:19] if len(str(timestamp_str)) > 10 else str(timestamp_str)
@@ -112,7 +117,7 @@ def _show_single_reservation(connection_info: dict) -> None:
     # Format timestamps - only show launched_at (started time), not created time
     launched_at = connection_info.get("launched_at", "N/A")
     expires_at = connection_info.get("expires_at", "N/A")
-    
+
     # Get persistent disk status
     ebs_volume_id = connection_info.get("ebs_volume_id", None)
     has_persistent_disk = bool(ebs_volume_id and ebs_volume_id.strip())
@@ -150,7 +155,7 @@ def _show_single_reservation(connection_info: dict) -> None:
 
     launched_formatted = _format_relative_time(launched_at, "now")
     expires_formatted = _format_relative_time(expires_at, "expires")
-    
+
     # Format persistent disk status
     disk_status = "Persistent" if has_persistent_disk else "Temporary"
 
@@ -203,6 +208,35 @@ def _show_single_reservation(connection_info: dict) -> None:
         short_id = connection_info["reservation_id"][:8]
         connect_command = f"[cyan]gpu-dev connect {short_id}[/cyan]"
 
+        # Get SSH config path for this reservation
+        reservation_id = connection_info["reservation_id"]
+        reservation_name = connection_info.get("name")
+        pod_name = connection_info.get("pod_name", "")
+        ssh_config_path = get_ssh_config_path(reservation_id, reservation_name)
+        use_include = is_ssh_include_enabled()
+
+        # Use SSH config in commands if it exists
+        from pathlib import Path
+        if Path(ssh_config_path).exists() and pod_name:
+            if use_include:
+                # User approved Include - show simple commands
+                from .reservations import _make_vscode_link
+                ssh_command_display = f"[green]ssh {pod_name}[/green]"
+                vscode_url = _make_vscode_link(pod_name)
+                vscode_cmd_text = f"code --remote ssh-remote+{pod_name} /home/dev"
+                vscode_command_display = f"[link={vscode_url}][green]{vscode_cmd_text}[/green][/link]"
+                vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command_display}\n"
+            else:
+                # User declined Include - show commands with -F flag
+                ssh_command_display = f"[green]ssh -F {ssh_config_path} {pod_name}[/green]"
+                vscode_command_display = f"Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config (or: [green]gpu-dev config ssh-include enable[/green])"
+                vscode_info = f"[blue]VS Code:[/blue] {vscode_command_display}\n"
+        else:
+            # Fallback to full commands if SSH config doesn't exist
+            ssh_command_display = ssh_with_forwarding
+            vscode_command_display = vscode_command if vscode_command else ""
+            vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command_display}\n" if vscode_command_display else ""
+
         # Check for warnings
         warning_message = connection_info.get("warning", "")
         warning_section = ""
@@ -212,7 +246,7 @@ def _show_single_reservation(connection_info: dict) -> None:
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
             f"[blue]Quick Connect:[/blue] {connect_command}\n"
-            f"[blue]SSH Command:[/blue] {ssh_with_forwarding}\n"
+            f"[blue]SSH Command:[/blue] {ssh_command_display}\n"
             + vscode_info
             + jupyter_info
             + f"[blue]Pod Name:[/blue] {connection_info['pod_name']}\n"
@@ -237,7 +271,8 @@ def _show_single_reservation(connection_info: dict) -> None:
         if status == "preparing":
             panel_content += f"\n[blue]Pod Name:[/blue] {connection_info.get('pod_name', 'N/A')}"
             # Show current detailed status from unified status tracking
-            current_detailed_status = connection_info.get("current_detailed_status", "")
+            current_detailed_status = connection_info.get(
+                "current_detailed_status", "")
             if current_detailed_status:
                 panel_content += (
                     f"\n[blue]Current Status:[/blue] {current_detailed_status}"
@@ -363,6 +398,11 @@ def main(ctx: click.Context) -> None:
         gpu-dev status                          # Check cluster status
         gpu-dev help                            # Show this help message
 
+    \b
+    Configuration:
+        gpu-dev config ssh-include enable       # Enable SSH config auto-include
+        gpu-dev config ssh-include disable      # Disable SSH config auto-include
+
     Interactive mode is automatically enabled when running commands without
     parameters in a terminal. Use --no-interactive to disable.
 
@@ -375,7 +415,8 @@ def main(ctx: click.Context) -> None:
 @click.option(
     "--gpus",
     "-g",
-    type=click.Choice(["1", "2", "4", "8", "12", "16", "20", "24", "32", "40", "48"]),
+    type=click.Choice(["1", "2", "4", "8", "12", "16",
+                      "20", "24", "32", "40", "48"]),
     help="Number of GPUs to reserve (multiples of max-per-node for multinode setups)",
 )
 @click.option(
@@ -487,7 +528,8 @@ def reserve(
         if use_interactive is None:
             # Auto-detect: use interactive if no key parameters provided
             # For CPU instances, gpus parameter is optional (defaults to 0)
-            gpu_required = gpus is None and (gpu_type is None or not gpu_type.lower().startswith("cpu-"))
+            gpu_required = gpus is None and (
+                gpu_type is None or not gpu_type.lower().startswith("cpu-"))
             use_interactive = (
                 gpu_required or gpu_type is None or hours is None
             ) and check_interactive_support()
@@ -508,7 +550,8 @@ def reserve(
         if use_interactive:
             # Interactive mode - gather parameters interactively
             rprint("[cyan]🎯 Interactive reservation mode[/cyan]")
-            rprint("[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
+            rprint(
+                "[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
 
             # Setup config early for availability check
             with Live(
@@ -527,7 +570,8 @@ def reserve(
                 if not _validate_ssh_key_or_exit(config, live):
                     return
 
-                live.update(Spinner("dots", text="📡 Loading GPU availability..."))
+                live.update(
+                    Spinner("dots", text="📡 Loading GPU availability..."))
                 reservation_mgr = ReservationManager(config)
                 availability_info = reservation_mgr.get_gpu_availability_by_type()
 
@@ -552,28 +596,36 @@ def reserve(
                     return
 
                 max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
-                gpu_count = select_gpu_count_interactive(gpu_type_lower, max_gpus)
+                gpu_count = select_gpu_count_interactive(
+                    gpu_type_lower, max_gpus)
                 if gpu_count is None:
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
-                
+
                 # Show distributed warning for interactive multinode selections (always show)
                 if gpu_count > max_gpus:
                     num_nodes = gpu_count // max_gpus
-                    rprint(f"\n[yellow]⚠️  You selected {gpu_count} GPUs. This is supported for distributed workflows.[/yellow]")
-                    rprint(f"[yellow]This will reserve {num_nodes} pods that have:[/yellow]")
+                    rprint(
+                        f"\n[yellow]⚠️  You selected {gpu_count} GPUs. This is supported for distributed workflows.[/yellow]")
+                    rprint(
+                        f"[yellow]This will reserve {num_nodes} pods that have:[/yellow]")
                     rprint("[yellow]• A shared network drive[/yellow]")
                     rprint("[yellow]• Network connectivity to each other[/yellow]")
-                    rprint(f"[yellow]• Hostname resolution (<podname>-headless.gpu-dev.svc.cluster.local)[/yellow]")
-                    rprint(f"[yellow]• Master port 29500 available on all nodes[/yellow]\n")
-                    
+                    rprint(
+                        f"[yellow]• Hostname resolution (<podname>-headless.gpu-dev.svc.cluster.local)[/yellow]")
+                    rprint(
+                        f"[yellow]• Master port 29500 available on all nodes[/yellow]\n")
+
                     try:
-                        choice = click.confirm("Do you want to continue?", default=False)
+                        choice = click.confirm(
+                            "Do you want to continue?", default=False)
                         if not choice:
-                            rprint("[yellow]Reservation cancelled by user[/yellow]")
+                            rprint(
+                                "[yellow]Reservation cancelled by user[/yellow]")
                             return
                     except (KeyboardInterrupt, click.Abort):
-                        rprint("\n[yellow]Reservation cancelled by user[/yellow]")
+                        rprint(
+                            "\n[yellow]Reservation cancelled by user[/yellow]")
                         return
             else:
                 gpu_count = int(gpus)
@@ -629,10 +681,12 @@ def reserve(
         # Special validation for CPU-only instances
         if gpu_type.startswith("cpu-"):
             if gpu_count != 0:
-                rprint(f"[red]❌ CPU-only instances must have --gpus=0 or omit --gpus, not {gpu_count}[/red]")
+                rprint(
+                    f"[red]❌ CPU-only instances must have --gpus=0 or omit --gpus, not {gpu_count}[/red]")
                 return
         elif gpu_count == 0:
-            rprint(f"[red]❌ GPU type '{gpu_type}' must have --gpus > 0. Use cpu-arm or cpu-x86 for CPU-only instances[/red]")
+            rprint(
+                f"[red]❌ GPU type '{gpu_type}' must have --gpus > 0. Use cpu-arm or cpu-x86 for CPU-only instances[/red]")
             return
 
         # Check if this is a multinode request
@@ -642,22 +696,28 @@ def reserve(
                 rprint(
                     f"[red]❌ For multinode deployments, GPU count must be a multiple of {max_gpus} (max per node for {gpu_type})[/red]"
                 )
-                rprint(f"[yellow]Valid counts: {max_gpus}, {max_gpus*2}, {max_gpus*3}, etc.[/yellow]")
+                rprint(
+                    f"[yellow]Valid counts: {max_gpus}, {max_gpus*2}, {max_gpus*3}, etc.[/yellow]")
                 return
-            
+
             # Calculate number of nodes needed
             num_nodes = gpu_count // max_gpus
-            
+
             # For non-interactive mode, require --distributed flag
             if not use_interactive and not distributed:
-                rprint(f"\n[red]❌ Multinode GPU reservations require the --distributed flag[/red]")
-                rprint(f"[yellow]You requested {gpu_count} GPUs ({num_nodes} nodes × {max_gpus} GPUs)[/yellow]")
+                rprint(
+                    f"\n[red]❌ Multinode GPU reservations require the --distributed flag[/red]")
+                rprint(
+                    f"[yellow]You requested {gpu_count} GPUs ({num_nodes} nodes × {max_gpus} GPUs)[/yellow]")
                 rprint(f"[yellow]This creates a distributed setup with:[/yellow]")
                 rprint("[yellow]• Shared network drive between nodes[/yellow]")
                 rprint("[yellow]• Network connectivity between pods[/yellow]")
-                rprint(f"[yellow]• Hostname resolution (<podname>-headless.gpu-dev.svc.cluster.local)[/yellow]")
-                rprint(f"[yellow]• Master port 29500 available on all nodes[/yellow]")
-                rprint(f"\n[cyan]Add --distributed to proceed: gpu-dev reserve -g {gpu_count} --distributed[/cyan]")
+                rprint(
+                    f"[yellow]• Hostname resolution (<podname>-headless.gpu-dev.svc.cluster.local)[/yellow]")
+                rprint(
+                    f"[yellow]• Master port 29500 available on all nodes[/yellow]")
+                rprint(
+                    f"\n[cyan]Add --distributed to proceed: gpu-dev reserve -g {gpu_count} --distributed[/cyan]")
                 return
 
         # Validate parameters
@@ -666,7 +726,8 @@ def reserve(
             return
 
         if hours < 0.0833:  # Less than 5 minutes
-            rprint("[red]❌ Minimum reservation time is 5 minutes (0.0833 hours)[/red]")
+            rprint(
+                "[red]❌ Minimum reservation time is 5 minutes (0.0833 hours)[/red]")
             return
 
         # Validate Docker options
@@ -686,14 +747,16 @@ def reserve(
                 # Check file size (512KB limit for individual Dockerfile)
                 file_size = os.path.getsize(dockerfile)
                 if file_size > 512 * 1024:
-                    rprint(f"[red]❌ Dockerfile too large: {file_size} bytes (max 512KB)[/red]")
+                    rprint(
+                        f"[red]❌ Dockerfile too large: {file_size} bytes (max 512KB)[/red]")
                     return
 
                 # Create build context (Dockerfile + any files in same directory)
                 dockerfile_dir = os.path.dirname(os.path.abspath(dockerfile))
                 dockerfile_name = os.path.basename(dockerfile)
 
-                rprint(f"[cyan]📦 Creating build context from {dockerfile_dir}[/cyan]")
+                rprint(
+                    f"[cyan]📦 Creating build context from {dockerfile_dir}[/cyan]")
 
                 # Create a temporary tar.gz with the build context
                 with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as temp_tar:
@@ -703,33 +766,39 @@ def reserve(
                             for file in files:
                                 file_path = os.path.join(root, file)
                                 # Calculate relative path from dockerfile_dir
-                                arcname = os.path.relpath(file_path, dockerfile_dir)
+                                arcname = os.path.relpath(
+                                    file_path, dockerfile_dir)
                                 tar.add(file_path, arcname=arcname)
 
                         # Ensure Dockerfile is at root with standard name if needed
                         if dockerfile_name.lower() != 'dockerfile':
-                            dockerfile_path = os.path.join(dockerfile_dir, dockerfile_name)
+                            dockerfile_path = os.path.join(
+                                dockerfile_dir, dockerfile_name)
                             tar.add(dockerfile_path, arcname='Dockerfile')
 
                     # Check compressed size limit (SQS has 1 MiB limit, base64 adds ~33% overhead)
                     compressed_size = os.path.getsize(temp_tar.name)
-                    max_tar_size = 700 * 1024  # ~700KB to allow for base64 overhead and other message fields
+                    # ~700KB to allow for base64 overhead and other message fields
+                    max_tar_size = 700 * 1024
                     if compressed_size > max_tar_size:
                         os.unlink(temp_tar.name)
-                        rprint(f"[red]❌ Build context too large: {compressed_size} bytes (max ~700KB compressed)[/red]")
+                        rprint(
+                            f"[red]❌ Build context too large: {compressed_size} bytes (max ~700KB compressed)[/red]")
                         return
 
                     # Base64 encode the tar.gz for SQS message
                     import base64
                     with open(temp_tar.name, 'rb') as f:
-                        build_context_data = base64.b64encode(f.read()).decode('utf-8')
+                        build_context_data = base64.b64encode(
+                            f.read()).decode('utf-8')
 
                     dockerfile_s3_key = build_context_data  # Pass base64 data instead of S3 key
 
                     # Cleanup temp file
                     os.unlink(temp_tar.name)
 
-                    rprint(f"[green]✅ Build context prepared: {compressed_size} bytes compressed[/green]")
+                    rprint(
+                        f"[green]✅ Build context prepared: {compressed_size} bytes compressed[/green]")
 
             except Exception as e:
                 rprint(f"[red]❌ Error processing Dockerfile: {str(e)}[/red]")
@@ -771,13 +840,15 @@ def reserve(
                 reservation_mgr = ReservationManager(config)
 
             # Check for existing reservations with persistent disks (persistent disk warning)
-            live.update(Spinner("dots", text="📡 Checking existing reservations..."))
+            live.update(
+                Spinner("dots", text="📡 Checking existing reservations..."))
 
             persistent_reservations = []
             if not ignore_no_persist:
                 existing_reservations = reservation_mgr.list_reservations(
                     user_filter=user_info["user_id"],
-                    statuses_to_include=["active", "preparing", "queued", "pending"],
+                    statuses_to_include=[
+                        "active", "preparing", "queued", "pending"],
                 )
 
                 # Find reservations that actually have persistent disks
@@ -790,8 +861,10 @@ def reserve(
             # Stop spinner before user interaction
             if persistent_reservations:
                 live.stop()
-                persistent_res = persistent_reservations[0]  # Should only be one
-                persistent_res_id = persistent_res.get("reservation_id", "unknown")[:8]
+                # Should only be one
+                persistent_res = persistent_reservations[0]
+                persistent_res_id = persistent_res.get(
+                    "reservation_id", "unknown")[:8]
 
                 rprint(
                     f"\n[yellow]⚠️  Warning: Your persistent disk is currently mounted on reservation {persistent_res_id}[/yellow]"
@@ -842,7 +915,8 @@ def reserve(
                 # Multinode reservation
                 num_nodes = gpu_count // max_gpus
                 live.update(
-                    Spinner("dots", text=f"📡 Submitting multinode reservation ({num_nodes} nodes)...")
+                    Spinner(
+                        "dots", text=f"📡 Submitting multinode reservation ({num_nodes} nodes)...")
                 )
                 reservation_ids = reservation_mgr.create_multinode_reservation(
                     user_id=user_info["user_id"],
@@ -881,31 +955,36 @@ def reserve(
                 completed_reservations = reservation_mgr.wait_for_multinode_reservation_completion(
                     reservation_ids=reservation_ids, timeout_minutes=None, verbose=verbose
                 )
-                
+
                 if not completed_reservations:
                     rprint(
                         f"[yellow]💡 Use 'gpu-dev show' to check multinode reservation status[/yellow]"
                     )
                 else:
                     # Show connection details for all nodes
-                    rprint(f"\n[green]🎉 All {len(reservation_ids)} nodes are ready![/green]")
+                    rprint(
+                        f"\n[green]🎉 All {len(reservation_ids)} nodes are ready![/green]")
                     for i, reservation in enumerate(completed_reservations):
-                        rprint(f"\n[cyan]━━━ Node {i+1}/{len(reservation_ids)} ━━━[/cyan]")
+                        rprint(
+                            f"\n[cyan]━━━ Node {i+1}/{len(reservation_ids)} ━━━[/cyan]")
                         # Convert raw reservation data to connection_info format expected by _show_single_reservation
                         try:
-                            reservation_id = reservation.get("reservation_id", "")
-                            connection_info = reservation_mgr.get_connection_info(reservation_id, user_info["user_id"])
+                            reservation_id = reservation.get(
+                                "reservation_id", "")
+                            connection_info = reservation_mgr.get_connection_info(
+                                reservation_id, user_info["user_id"])
                             if connection_info:
                                 _show_single_reservation(connection_info)
                             else:
-                                rprint(f"[red]❌ Could not get connection info for {reservation_id[:8]}[/red]")
+                                rprint(
+                                    f"[red]❌ Could not get connection info for {reservation_id[:8]}[/red]")
                         except Exception as e:
                             rprint(f"[red]❌ Error: {str(e)}[/red]")
             else:
                 rprint(
                     f"[green]✅ Reservation request submitted: {reservation_ids[0][:8]}...[/green]"
                 )
-                # Poll for single node completion
+                # Poll for single node completion (SSH config is always created)
                 completed_reservation = reservation_mgr.wait_for_reservation_completion(
                     reservation_id=reservation_ids[0], timeout_minutes=None, verbose=verbose
                 )
@@ -978,7 +1057,8 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                 elif user:
                     user_filter = user  # Show specific user
                 else:
-                    user_filter = current_user  # Show only current user (default)
+                    # Show only current user (default)
+                    user_filter = current_user
 
                 # Determine status filter
                 if status:
@@ -987,7 +1067,8 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         statuses_to_include = None  # None means all statuses
                     else:
                         # Parse comma-separated statuses and validate
-                        requested_statuses = [s.strip() for s in status.split(",")]
+                        requested_statuses = [s.strip()
+                                              for s in status.split(",")]
                         valid_statuses = [
                             "active",
                             "preparing",
@@ -1015,7 +1096,8 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         statuses_to_include = requested_statuses
                 else:
                     # Default: in-progress + recent failures (last hour)
-                    statuses_to_include = ["active", "preparing", "queued", "pending", "failed", "cancelled"]
+                    statuses_to_include = [
+                        "active", "preparing", "queued", "pending", "failed", "cancelled"]
 
                 reservations = reservation_mgr.list_reservations(
                     user_filter=user_filter, statuses_to_include=statuses_to_include
@@ -1034,7 +1116,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
             from datetime import datetime, timezone, timedelta
             now = datetime.now(timezone.utc)
             one_hour_ago = now - timedelta(hours=1)
-            
+
             filtered_reservations = []
             for reservation in reservations:
                 reservation_status = reservation.get("status", "unknown")
@@ -1048,15 +1130,20 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         try:
                             if isinstance(created_at, str):
                                 if created_at.endswith("Z"):
-                                    created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                                    created_dt = datetime.fromisoformat(
+                                        created_at.replace("Z", "+00:00"))
                                 elif "+" in created_at or created_at.endswith("00:00"):
-                                    created_dt = datetime.fromisoformat(created_at)
+                                    created_dt = datetime.fromisoformat(
+                                        created_at)
                                 else:
-                                    naive_dt = datetime.fromisoformat(created_at)
-                                    created_dt = naive_dt.replace(tzinfo=timezone.utc)
+                                    naive_dt = datetime.fromisoformat(
+                                        created_at)
+                                    created_dt = naive_dt.replace(
+                                        tzinfo=timezone.utc)
                             else:
-                                created_dt = datetime.fromtimestamp(created_at, tz=timezone.utc)
-                            
+                                created_dt = datetime.fromtimestamp(
+                                    created_at, tz=timezone.utc)
+
                             if created_dt >= one_hour_ago:
                                 filtered_reservations.append(reservation)
                         except (ValueError, TypeError):
@@ -1065,7 +1152,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                 else:
                     # Include other statuses as-is
                     filtered_reservations.append(reservation)
-            
+
             reservations = filtered_reservations
 
         if not reservations:
@@ -1084,7 +1171,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                 return 2  # Show last (current work)
             else:
                 return 1.5  # Unknown statuses between cancelled and active
-        
+
         reservations = sorted(reservations, key=sort_key)
 
         # Create table with enhanced columns for queue info
@@ -1145,13 +1232,15 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                 )
                             elif "+" in expires_at or expires_at.endswith("00:00"):
                                 # Format: 2025-01-11T23:30:00+00:00
-                                expires_dt_utc = datetime.fromisoformat(expires_at)
+                                expires_dt_utc = datetime.fromisoformat(
+                                    expires_at)
                             else:
                                 # Format: 2025-01-11T23:30:00 (naive datetime, assume UTC)
                                 from datetime import timezone
 
                                 naive_dt = datetime.fromisoformat(expires_at)
-                                expires_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                                expires_dt_utc = naive_dt.replace(
+                                    tzinfo=timezone.utc)
 
                             expires_dt = (
                                 expires_dt_utc.astimezone()
@@ -1164,7 +1253,8 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         expires_formatted = "Invalid"
                 elif status in ["queued", "pending"]:
                     # Show estimated wait time if available
-                    estimated_wait = reservation.get("estimated_wait_minutes", "?")
+                    estimated_wait = reservation.get(
+                        "estimated_wait_minutes", "?")
                     if estimated_wait != "?" and estimated_wait is not None:
                         expires_formatted = f"~{estimated_wait}min"
                     else:
@@ -1176,7 +1266,8 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                 queue_info = ""
                 if status in ["queued", "pending"]:
                     queue_position = reservation.get("queue_position", "?")
-                    estimated_wait = reservation.get("estimated_wait_minutes", "?")
+                    estimated_wait = reservation.get(
+                        "estimated_wait_minutes", "?")
                     if queue_position != "?" and queue_position is not None:
                         queue_info = f"#{queue_position}"
                         if estimated_wait != "?" and estimated_wait is not None:
@@ -1218,20 +1309,24 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                     created_at.replace("Z", "+00:00")
                                 )
                             elif "+" in created_at or created_at.endswith("00:00"):
-                                created_dt_utc = datetime.fromisoformat(created_at)
+                                created_dt_utc = datetime.fromisoformat(
+                                    created_at)
                             else:
                                 # Assume naive datetime is UTC
                                 from datetime import timezone
 
                                 naive_dt = datetime.fromisoformat(created_at)
-                                created_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                                created_dt_utc = naive_dt.replace(
+                                    tzinfo=timezone.utc)
 
                             created_dt = created_dt_utc.astimezone()  # Convert to local
-                            created_formatted = created_dt.strftime("%m-%d %H:%M")
+                            created_formatted = created_dt.strftime(
+                                "%m-%d %H:%M")
                         else:
                             # Legacy timestamp
                             created_dt = datetime.fromtimestamp(created_at)
-                            created_formatted = created_dt.strftime("%m-%d %H:%M")
+                            created_formatted = created_dt.strftime(
+                                "%m-%d %H:%M")
                     except (ValueError, TypeError):
                         # Fallback to old format
                         if len(str(created_at)) > 10:
@@ -1251,7 +1346,8 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                 elif status == "active":
                     status_display = f"[green]{status}[/green]"
                 else:
-                    status_display = str(status)  # No color for unknown statuses
+                    # No color for unknown statuses
+                    status_display = str(status)
 
                 # Extract CLI and Lambda versions if details flag is set
                 cli_version_display = ""
@@ -1276,8 +1372,10 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                 ]
 
                 if details:
-                    row_data.append(f"[dim]{cli_version_display}[/dim]" if dim_row else cli_version_display)
-                    row_data.append(f"[dim]{lambda_version_display}[/dim]" if dim_row else lambda_version_display)
+                    row_data.append(
+                        f"[dim]{cli_version_display}[/dim]" if dim_row else cli_version_display)
+                    row_data.append(
+                        f"[dim]{lambda_version_display}[/dim]" if dim_row else lambda_version_display)
 
                 table.add_row(*row_data)
 
@@ -1370,7 +1468,8 @@ def cancel(
                 # Get cancellable reservations
                 reservations = reservation_mgr.list_reservations(
                     user_filter=user_info["user_id"],
-                    statuses_to_include=["active", "queued", "pending", "preparing"],
+                    statuses_to_include=[
+                        "active", "queued", "pending", "preparing"],
                 )
 
             live.stop()
@@ -1418,18 +1517,22 @@ def cancel(
                                     created_at.replace("Z", "+00:00")
                                 )
                             elif "+" in created_at or created_at.endswith("00:00"):
-                                created_dt_utc = datetime.fromisoformat(created_at)
+                                created_dt_utc = datetime.fromisoformat(
+                                    created_at)
                             else:
                                 from datetime import timezone
 
                                 naive_dt = datetime.fromisoformat(created_at)
-                                created_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                                created_dt_utc = naive_dt.replace(
+                                    tzinfo=timezone.utc)
 
                             created_dt = created_dt_utc.astimezone()
-                            created_formatted = created_dt.strftime("%m-%d %H:%M")
+                            created_formatted = created_dt.strftime(
+                                "%m-%d %H:%M")
                         else:
                             created_dt = datetime.fromtimestamp(created_at)
-                            created_formatted = created_dt.strftime("%m-%d %H:%M")
+                            created_formatted = created_dt.strftime(
+                                "%m-%d %H:%M")
                     except (ValueError, TypeError):
                         created_formatted = (
                             str(created_at)[:10]
@@ -1445,7 +1548,8 @@ def cancel(
 
             # Confirmation prompt (skip if --force flag is used)
             if not force:
-                rprint(f"\n[red]⚠️  Are you sure you want to cancel ALL {len(reservations)} reservations? This cannot be undone.[/red]")
+                rprint(
+                    f"\n[red]⚠️  Are you sure you want to cancel ALL {len(reservations)} reservations? This cannot be undone.[/red]")
                 try:
                     confirmed = click.confirm(
                         "Do you want to proceed?", default=False
@@ -1472,6 +1576,8 @@ def cancel(
                         )
                         if success:
                             cancelled_count += 1
+                            # Remove SSH config file for this reservation
+                            remove_ssh_config_for_reservation(res_id)
                         else:
                             failed_count += 1
 
@@ -1483,7 +1589,8 @@ def cancel(
                     f"[green]✅ Successfully cancelled {cancelled_count} reservation(s)[/green]"
                 )
             if failed_count > 0:
-                rprint(f"[red]❌ Failed to cancel {failed_count} reservation(s)[/red]")
+                rprint(
+                    f"[red]❌ Failed to cancel {failed_count} reservation(s)[/red]")
 
             return
 
@@ -1496,7 +1603,8 @@ def cancel(
         if use_interactive:
             # Interactive mode - show reservations and let user select
             rprint("[cyan]🎯 Interactive cancellation mode[/cyan]")
-            rprint("[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
+            rprint(
+                "[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
 
             with Live(
                 Spinner("dots", text="📡 Loading your reservations..."), console=console
@@ -1514,7 +1622,8 @@ def cancel(
                 # Get cancellable reservations (active, queued, pending, preparing)
                 reservations = reservation_mgr.list_reservations(
                     user_filter=user_info["user_id"],
-                    statuses_to_include=["active", "queued", "pending", "preparing"],
+                    statuses_to_include=[
+                        "active", "queued", "pending", "preparing"],
                 )
 
             live.stop()
@@ -1524,11 +1633,12 @@ def cancel(
                 return
 
             # Interactive selection
-            selected_id = select_reservation_interactive(reservations, "cancel")
+            selected_id = select_reservation_interactive(
+                reservations, "cancel")
             if selected_id is None:
                 rprint("[yellow]Cancellation cancelled.[/yellow]")
                 return
-            
+
             # Handle quit selection
             if selected_id == "__QUIT__":
                 rprint("[yellow]Cancellation cancelled - no changes made.[/yellow]")
@@ -1538,16 +1648,19 @@ def cancel(
             if selected_id == "__ALL__":
                 # Confirmation prompt for cancelling all (skip if --force flag is used)
                 if not force:
-                    rprint(f"\n[red]⚠️  Are you sure you want to cancel ALL {len(reservations)} reservations? This cannot be undone.[/red]")
+                    rprint(
+                        f"\n[red]⚠️  Are you sure you want to cancel ALL {len(reservations)} reservations? This cannot be undone.[/red]")
                     try:
                         confirmed = click.confirm(
                             "Do you want to proceed?", default=False
                         )
                         if not confirmed:
-                            rprint("[yellow]Cancellation cancelled by user[/yellow]")
+                            rprint(
+                                "[yellow]Cancellation cancelled by user[/yellow]")
                             return
                     except (KeyboardInterrupt, click.Abort):
-                        rprint("\n[yellow]Cancellation cancelled by user[/yellow]")
+                        rprint(
+                            "\n[yellow]Cancellation cancelled by user[/yellow]")
                         return
 
                 # Cancel all reservations
@@ -1566,6 +1679,8 @@ def cancel(
                             )
                             if success:
                                 cancelled_count += 1
+                                # Remove SSH config file for this reservation
+                                remove_ssh_config_for_reservation(res_id)
                             else:
                                 failed_count += 1
 
@@ -1612,9 +1727,13 @@ def cancel(
         live.stop()
 
         if success:
-            rprint(f"[green]✅ Reservation {reservation_id[:8]} cancelled[/green]")
+            # Remove SSH config file for this reservation
+            remove_ssh_config_for_reservation(reservation_id)
+            rprint(
+                f"[green]✅ Reservation {reservation_id[:8]} cancelled[/green]")
         else:
-            rprint(f"[red]❌ Failed to cancel reservation {reservation_id[:8]}[/red]")
+            rprint(
+                f"[red]❌ Failed to cancel reservation {reservation_id[:8]}[/red]")
 
     except Exception as e:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
@@ -1664,16 +1783,17 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
             try:
                 user_info = authenticate_user(config)
                 reservation_mgr = ReservationManager(config)
-                
+
                 if reservation_id is None:
                     # Show user's active and pending reservations only
                     reservations = reservation_mgr.list_reservations(
                         user_filter=user_info["user_id"],
-                        statuses_to_include=["active", "preparing", "queued", "pending"]
+                        statuses_to_include=[
+                            "active", "preparing", "queued", "pending"]
                     )
-                    
+
                     live.stop()
-                    
+
                     if not reservations:
                         rprint("[yellow]📋 No reservations found[/yellow]")
                         return
@@ -1682,23 +1802,23 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
                     for i, reservation in enumerate(reservations):
                         if i > 0:
                             rprint("")  # Add spacing between reservations
-                        
+
                         res_id = reservation.get("reservation_id", "unknown")
                         connection_info = reservation_mgr.get_connection_info(
                             res_id, user_info["user_id"]
                         )
-                        
+
                         if connection_info:
                             # Use the existing display logic from the original show command
                             _show_single_reservation(connection_info)
-                    
+
                     return
                 else:
                     # Show specific reservation
                     connection_info = reservation_mgr.get_connection_info(
                         reservation_id, user_info["user_id"]
                     )
-                    
+
             except RuntimeError as e:
                 live.stop()
                 rprint(f"[red]❌ {str(e)}[/red]")
@@ -1709,7 +1829,8 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
         if connection_info:
             _show_single_reservation(connection_info)
         else:
-            rprint(f"[red]❌ Could not get connection info for {reservation_id}[/red]")
+            rprint(
+                f"[red]❌ Could not get connection info for {reservation_id}[/red]")
 
     except Exception as e:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
@@ -1763,14 +1884,17 @@ def _show_availability() -> None:
             sorted_gpu_types = sorted(
                 availability_info.items(),
                 key=lambda x: (
-                    arch_priority.get(gpu_architectures.get(x[0], "Unknown"), 99),
+                    arch_priority.get(
+                        gpu_architectures.get(x[0], "Unknown"), 99),
                     x[0]
                 )
             )
 
-            table = Table(title="GPU Availability by Type (numbers are GPUs, not nodes)")
+            table = Table(
+                title="GPU Availability by Type (numbers are GPUs, not nodes)")
             table.add_column("GPU Type", style="cyan")
             table.add_column("Available", style="green")
+            table.add_column("Max Reservable", style="bright_green")
             table.add_column("Total", style="blue")
             table.add_column("Queue Length", style="yellow")
             table.add_column("Architecture", style="dim")
@@ -1782,11 +1906,15 @@ def _show_availability() -> None:
 
                 # Add separator before CPU section
                 if last_arch and not last_arch.startswith("CPU") and arch.startswith("CPU"):
-                    table.add_row("---", "---", "---", "---", "---", "---")
+                    table.add_row("---", "---", "---",
+                                  "---", "---", "---", "---")
 
                 last_arch = arch
                 available = info.get("available", 0)
+                max_reservable = info.get("max_reservable", 0)
                 total = info.get("total", 0)
+                full_nodes_available = info.get("full_nodes_available", 0)
+                gpus_per_instance = info.get("gpus_per_instance", 0)
                 queue_length = info.get("queue_length", 0)
                 est_wait = info.get("estimated_wait_minutes", 0)
 
@@ -1805,15 +1933,21 @@ def _show_availability() -> None:
                     else:
                         wait_display = f"{hours}h {minutes}min"
 
-                # Color code availability
-                if available > 0:
+                # Color code availability based on full nodes available
+                # Red: 0 GPUs available
+                # Yellow: Some GPUs available but no full node
+                # Green: At least one full node available
+                if available == 0:
+                    available_display = f"[red]{available}[/red]"
+                elif full_nodes_available > 0:
                     available_display = f"[green]{available}[/green]"
                 else:
-                    available_display = f"[red]{available}[/red]"
+                    available_display = f"[yellow]{available}[/yellow]"
 
                 table.add_row(
                     gpu_type.upper(),
                     available_display,
+                    str(max_reservable),
                     str(total),
                     str(queue_length),
                     arch,
@@ -1821,6 +1955,10 @@ def _show_availability() -> None:
                 )
 
             console.print(table)
+
+            # Show color legend
+            rprint("\n[bold]Availability legend:[/bold]")
+            rprint("  [green]●[/green]: 1+ full node available - [yellow]●[/yellow]: GPUs available, but no full node - [red]●[/red]: No GPUs available")
 
             # Show usage tip
             rprint(
@@ -1889,12 +2027,14 @@ def _show_availability_watch(interval: int) -> None:
                         sorted_gpu_types = sorted(
                             availability_info.items(),
                             key=lambda x: (
-                                arch_priority.get(gpu_architectures.get(x[0], "Unknown"), 99),
+                                arch_priority.get(
+                                    gpu_architectures.get(x[0], "Unknown"), 99),
                                 x[0]
                             )
                         )
 
-                        table = Table(title="GPU Availability by Type (numbers are GPUs, not nodes)")
+                        table = Table(
+                            title="GPU Availability by Type (numbers are GPUs, not nodes)")
                         table.add_column("GPU Type", style="cyan")
                         table.add_column("Available", style="green")
                         table.add_column("Total", style="blue")
@@ -1908,7 +2048,8 @@ def _show_availability_watch(interval: int) -> None:
 
                             # Add separator before CPU section
                             if last_arch and not last_arch.startswith("CPU") and arch.startswith("CPU"):
-                                table.add_row("---", "---", "---", "---", "---", "---")
+                                table.add_row("---", "---", "---",
+                                              "---", "---", "---")
 
                             last_arch = arch
                             available = info.get("available", 0)
@@ -2039,16 +2180,19 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                 if len(reservations) == 1:
                     # Auto-select if only one active reservation
                     reservation_id = reservations[0].get("reservation_id")
-                    rprint(f"[cyan]Connecting to reservation {reservation_id[:8]}...[/cyan]\n")
+                    rprint(
+                        f"[cyan]Connecting to reservation {reservation_id[:8]}...[/cyan]\n")
                 else:
                     # Interactive selection
                     rprint("[cyan]🎯 Select reservation to connect to:[/cyan]")
-                    selected_id = select_reservation_interactive(reservations, "connect")
+                    selected_id = select_reservation_interactive(
+                        reservations, "connect")
                     if selected_id is None or selected_id == "__QUIT__":
                         rprint("[yellow]Connection cancelled.[/yellow]")
                         return
                     reservation_id = selected_id
-                    rprint(f"\n[cyan]Connecting to reservation {reservation_id[:8]}...[/cyan]\n")
+                    rprint(
+                        f"\n[cyan]Connecting to reservation {reservation_id[:8]}...[/cyan]\n")
 
                 live.start()
 
@@ -2060,11 +2204,13 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         live.stop()
 
         if not connection_info:
-            rprint(f"[red]❌ Could not get connection info for {reservation_id}[/red]")
+            rprint(
+                f"[red]❌ Could not get connection info for {reservation_id}[/red]")
             return
 
         if connection_info["status"] != "active":
-            rprint(f"[red]❌ Reservation is not active (status: {connection_info['status']})[/red]")
+            rprint(
+                f"[red]❌ Reservation is not active (status: {connection_info['status']})[/red]")
             return
 
         # Extract SSH command and execute it
@@ -2184,10 +2330,13 @@ def status(ctx: click.Context) -> None:
             table.add_column("Value", style="green")
 
             table.add_row("Total GPUs", str(cluster_status["total_gpus"]))
-            table.add_row("Available GPUs", str(cluster_status["available_gpus"]))
-            table.add_row("Reserved GPUs", str(cluster_status["reserved_gpus"]))
+            table.add_row("Available GPUs", str(
+                cluster_status["available_gpus"]))
+            table.add_row("Reserved GPUs", str(
+                cluster_status["reserved_gpus"]))
             table.add_row(
-                "Active Reservations", str(cluster_status["active_reservations"])
+                "Active Reservations", str(
+                    cluster_status["active_reservations"])
             )
             table.add_row("Queue Length", str(cluster_status["queue_length"]))
 
@@ -2285,6 +2434,7 @@ def set(key: str, value: str) -> None:
         github_user: Your GitHub username (used to fetch SSH public keys)
 
     Note: SSH keys must be public on your GitHub profile (github.com/username.keys)
+    Note: SSH config files are automatically created in ~/.devgpu/ for each reservation
     """
     try:
         config = load_config()
@@ -2452,7 +2602,8 @@ def edit(
         if use_interactive:
             # Interactive mode
             rprint("[cyan]🎯 Interactive edit mode[/cyan]")
-            rprint("[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
+            rprint(
+                "[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
 
             # Load reservations and let user select
             with Live(
@@ -2471,7 +2622,8 @@ def edit(
                 if reservation_id is None:
                     # Get active reservations (only active can be edited)
                     reservations = reservation_mgr.list_reservations(
-                        user_filter=user_info["user_id"], statuses_to_include=["active"]
+                        user_filter=user_info["user_id"], statuses_to_include=[
+                            "active"]
                     )
 
                     live.stop()
@@ -2483,14 +2635,16 @@ def edit(
                         return
 
                     # Interactive reservation selection
-                    selected_id = select_reservation_interactive(reservations, "edit")
+                    selected_id = select_reservation_interactive(
+                        reservations, "edit")
                     if selected_id is None:
                         rprint("[yellow]Edit cancelled.[/yellow]")
                         return
-                    
+
                     # Handle quit selection
                     if selected_id == "__QUIT__":
-                        rprint("[yellow]Edit cancelled - no changes made.[/yellow]")
+                        rprint(
+                            "[yellow]Edit cancelled - no changes made.[/yellow]")
                         return
 
                     reservation_id = selected_id
@@ -2589,13 +2743,15 @@ def edit(
                 rprint("[red]❌ Maximum extension is 24 hours[/red]")
                 return
 
-            success = reservation_mgr.extend_reservation(reservation_id, user_info["user_id"], extend)
+            success = reservation_mgr.extend_reservation(
+                reservation_id, user_info["user_id"], extend)
             if success:
                 rprint(
                     f"[green]✅ Extended reservation {reservation_id} by {extend} hours[/green]"
                 )
             else:
-                rprint(f"[red]❌ Failed to extend reservation {reservation_id}[/red]")
+                rprint(
+                    f"[red]❌ Failed to extend reservation {reservation_id}[/red]")
             return
 
         # Enable/disable Jupyter
@@ -2640,6 +2796,79 @@ def edit(
 
     except Exception as e:
         rprint(f"[red]❌ Error editing reservation: {str(e)}[/red]")
+
+
+@main.group()
+def config():
+    """Configure GPU dev CLI settings"""
+    pass
+
+
+@config.command(name="ssh-include")
+@click.argument("action", type=click.Choice(["enable", "disable"], case_sensitive=False))
+def ssh_include(action: str):
+    """Enable or disable SSH config Include directive
+
+    This controls whether GPU dev server configs are automatically
+    included in your ~/.ssh/config file.
+
+    \b
+    When enabled:
+      • Simple SSH commands: ssh <pod-name>
+      • VS Code Remote works: code --remote ssh-remote+<pod-name>
+
+    \b
+    When disabled:
+      • Need -F flag: ssh -F ~/.gpu-dev/<id>-sshconfig <pod-name>
+      • VS Code requires manual config setup
+
+    \b
+    Examples:
+      gpu-dev config ssh-include enable   # Enable automatic SSH config
+      gpu-dev config ssh-include disable  # Disable automatic SSH config
+    """
+    from pathlib import Path
+
+    try:
+        gpu_dev_dir = Path.home() / ".gpu-dev"
+        gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
+        permission_file = gpu_dev_dir / ".ssh-config-permission"
+
+        if action.lower() == "enable":
+            # Set permission to yes
+            permission_file.write_text("yes")
+
+            # Add Include directive if not already present
+            ssh_config = Path.home() / ".ssh" / "config"
+            ssh_dir = Path.home() / ".ssh"
+            ssh_dir.mkdir(mode=0o700, exist_ok=True)
+
+            include_line = "Include ~/.gpu-dev/*-sshconfig\n"
+
+            if ssh_config.exists():
+                content = ssh_config.read_text()
+            else:
+                content = ""
+
+            if "Include ~/.gpu-dev/" not in content:
+                # Add Include at the top
+                new_content = include_line + "\n" + content
+                ssh_config.write_text(new_content)
+                ssh_config.chmod(0o600)
+                rprint("[green]✅ Enabled SSH config Include directive[/green]")
+                rprint(f"[cyan]Added 'Include ~/.gpu-dev/*-sshconfig' to ~/.ssh/config[/cyan]")
+            else:
+                rprint("[green]✅ SSH config Include already enabled[/green]")
+
+        else:  # disable
+            # Set permission to no
+            permission_file.write_text("no")
+            rprint("[yellow]✅ Disabled automatic SSH config Include[/yellow]")
+            rprint("[dim]Note: Existing Include directive in ~/.ssh/config not removed[/dim]")
+            rprint("[dim]You can manually remove the 'Include ~/.gpu-dev/*-sshconfig' line if desired[/dim]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error updating SSH config setting: {str(e)}[/red]")
 
 
 if __name__ == "__main__":
