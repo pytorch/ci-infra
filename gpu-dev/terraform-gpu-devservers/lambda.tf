@@ -91,7 +91,8 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
           "ec2:CreateSnapshot",
           "ec2:DescribeSnapshots",
           "ec2:DeleteSnapshot",
-          "ec2:CreateTags"
+          "ec2:CreateTags",
+          "ec2:DeleteTags"
         ]
         Resource = "*"
       },

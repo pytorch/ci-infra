@@ -393,6 +393,7 @@ class ReservationManager:
         jupyter_enabled: bool = False,
         recreate_env: bool = False,
         dockerfile_s3_key: Optional[str] = None,
+        no_persistent_disk: bool = False,
         dockerimage: Optional[str] = None,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
@@ -446,6 +447,7 @@ class ReservationManager:
                 "status": "pending",
                 "jupyter_enabled": jupyter_enabled,
                 "recreate_env": recreate_env,
+                "no_persistent_disk": no_persistent_disk,
                 "version": get_version(),
             }
 
@@ -482,6 +484,7 @@ class ReservationManager:
         recreate_env: bool = False,
         dockerfile_s3_key: Optional[str] = None,
         dockerimage: Optional[str] = None,
+        no_persistent_disk: bool = False,
     ) -> Optional[List[str]]:
         """Create multiple GPU reservations for multinode setup"""
         try:
@@ -538,6 +541,7 @@ class ReservationManager:
                     "jupyter_enabled": jupyter_enabled and node_idx == 0,
                     "recreate_env": recreate_env,
                     "is_multinode": True,
+                    "no_persistent_disk": no_persistent_disk,
                 }
 
                 if github_user:

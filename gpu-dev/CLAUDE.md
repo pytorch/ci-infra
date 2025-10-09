@@ -92,6 +92,48 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
 - **SSORole + instructions for that** - Implement SSO role authentication and provide setup instructions
 - **Rename G6 to L4** - Update G6 references to L4 (similar to T4 GPU type naming)
 - **Add network drive (EFS)** - Implement 20TB EFS shared storage mounted at /shared with user folders
+- **GPU Profiling Support** - Added NVIDIA profiling capabilities for all pods:
+  - Node-level: Added `options nvidia NVreg_RestrictProfilingToAdminUsers=0` to `/etc/modprobe.d/nvprof.conf` on all T4 nodes
+  - Pod-level: Added Linux capability `SYS_ADMIN` to all GPU pods (required for NVIDIA profiling tools like ncu/nsys)
+  - Environment: Set `NVIDIA_DRIVER_CAPABILITIES=compute,utility` (note: `profile` is NOT supported by NVIDIA device plugin)
+  - Location: `terraform-gpu-devservers/lambda/reservation_processor/index.py:4000` and `:3984`
+
+## Recent Fixes (Oct 8, 2025)
+
+**Kubelet Auto-Start Issue on T4 Nodes:**
+- **Problem**: After rebooting T4 nodes to apply NVIDIA profiling config, kubelet didn't auto-start
+- **Root Cause**: `systemctl enable kubelet` wasn't being called during node bootstrap
+- **Temporary Fix**: Manually enabled and started kubelet on all 5 T4 nodes via SSH
+- **Future**: Nodes should be terminated and recreated by ASG to get fresh bootstrap (user-data runs nodeadm which should enable kubelet)
+
+**Decimal/Float Type Error in Lambda:**
+- **Problem**: `unsupported operand type(s) for *: 'decimal.Decimal' and 'float'` error when allocating GPU resources
+- **Root Cause**: DynamoDB returns numbers as `Decimal` type, but Lambda code was multiplying with Python floats
+- **Fix**: Added `gpu_count = int(gpu_count)` at start of `get_pod_resource_limits()` and `get_pod_resource_requests()` functions
+- **Location**: `terraform-gpu-devservers/lambda/reservation_processor/index.py:3034` and `:3117`
+
+**NVIDIA Profiling Configuration:**
+- **Problem 1**: Pods failed with "unsupported capabilities found in 'compute,profile,utility' (allowed 'compute,utility')"
+  - Fix: Removed `profile` from `NVIDIA_DRIVER_CAPABILITIES`, kept only `compute,utility`
+- **Problem 2**: Profiling failed with "driver resource unavailable" even with `CAP_PERFMON` and `CAP_SYS_PTRACE`
+  - Fix: Changed to `CAP_SYS_ADMIN` which is required for NVIDIA GPU profiling (ncu, nsys)
+- **Root Cause**: NVIDIA profiling tools need full SYS_ADMIN capability to access driver resources
+- **Final Config**: `SYS_ADMIN` capability + node-level `NVreg_RestrictProfilingToAdminUsers=0`
+- **Location**: `terraform-gpu-devservers/lambda/reservation_processor/index.py:4000` and `:3984`
+
+**No Persistent Disk Flag (Oct 8, 2025):**
+- **Problem**: When user created 2nd reservation and confirmed "continue without persistent disk", Lambda waited 60s for disk detachment, timed out, set status to "failed", but then CONTINUED execution and restored from snapshot anyway
+- **Root Cause 1**: The timeout logic at line 305 raised `RuntimeError` which was caught by outer try-except block at line 2108, but `persistent_volume_id` variable remained set from earlier operations, so pod creation still used a persistent disk
+- **Root Cause 2**: Exception handler at line 2275 only set `use_persistent_disk = False` but didn't clear `persistent_volume_id`, so any disk created/restored before the exception would still be attached to the pod
+- **Fix Part 1 - Explicit Flag**: Added `no_persistent_disk` flag that flows from CLI through SQS to Lambda
+  - CLI: When user confirms to continue without persistent disk, sets `no_persistent_disk=True` in SQS message
+  - Lambda: Checks `no_persistent_disk` flag early (line 2087-2090) and skips ALL persistent disk logic if true
+  - Files: `cli-tools/gpu-dev-cli/gpu_dev_cli/cli.py:914`, `reservations.py:396,450,487,544`, `lambda/reservation_processor/index.py:2087-2090`
+- **Fix Part 2 - Exception Cleanup**: Updated exception handler at line 2275 to properly clean up state
+  - Sets `persistent_volume_id = None` to clear any volume created before the error
+  - Sets `is_new_disk = True` so EmptyDir gets proper shell environment setup
+  - Location: `lambda/reservation_processor/index.py:2279-2280`
+- **Benefit**: No more waiting for disk detachment, no snapshot restoration, clean EmptyDir volume from the start. Even if disk operations fail mid-way, exception handler ensures no disk is attached.
 
 ### 📋 Remaining Tasks
 

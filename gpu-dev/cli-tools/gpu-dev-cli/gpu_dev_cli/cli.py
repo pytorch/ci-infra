@@ -910,6 +910,9 @@ def reserve(
                 )
 
             # Determine if this is multinode and submit appropriate reservation
+            # If user confirmed to continue without persistent disk, set flag
+            no_persistent_disk = bool(persistent_reservations)
+
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
             if gpu_count > max_gpus:
                 # Multinode reservation
@@ -929,6 +932,7 @@ def reserve(
                     recreate_env=recreate_env,
                     dockerfile_s3_key=dockerfile_s3_key,
                     dockerimage=dockerimage,
+                    no_persistent_disk=no_persistent_disk,
                 )
             else:
                 # Single node reservation
@@ -943,6 +947,7 @@ def reserve(
                     recreate_env=recreate_env,
                     dockerfile_s3_key=dockerfile_s3_key,
                     dockerimage=dockerimage,
+                    no_persistent_disk=no_persistent_disk,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 

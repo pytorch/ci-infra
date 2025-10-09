@@ -226,44 +226,203 @@ def check_for_multiple_volumes(user_id):
         return None
 
 
-def needs_ebs_migration(user_id, target_az):
-    """Check if user's EBS volume needs to be migrated to a different AZ"""
+def needs_ebs_migration(user_id, target_az, reservation_id=None):
+    """
+    Check if user's EBS volume needs to be migrated to a different AZ.
+
+    NEW LOGIC (single source of truth):
+    - Search for volumes with ActiveVolume=true tag (new managed volumes)
+    - If no active volumes found, fall back to legacy behavior (pick oldest, tag it)
+    - Only ONE volume per user should exist at any time
+    - Migration deletes source volume after creating destination
+    """
     try:
         logger.info(f"Checking for existing EBS volumes for user {user_id}")
 
-        # Look for available EBS volumes only (not in-use by other reservations)
-        response = ec2_client.describe_volumes(
+        # First check if there are any in-use volumes that are being detached
+        in_use_response = ec2_client.describe_volumes(
             Filters=[
                 {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "status", "Values": ["in-use"]},
+            ]
+        )
+
+        in_use_volumes = in_use_response.get("Volumes", [])
+        if in_use_volumes:
+            # Volume is still attached to another pod - wait for it to detach
+            in_use_volume_ids = [v["VolumeId"] for v in in_use_volumes]
+            logger.info(f"Found {len(in_use_volumes)} in-use volume(s) for user {user_id}: {in_use_volume_ids} - waiting for detachment")
+
+            # Update status for user feedback
+            if reservation_id:
+                update_reservation_status(
+                    reservation_id,
+                    "preparing",
+                    f"Waiting for persistent disk to detach from previous session (up to 60s)"
+                )
+
+            import time
+            max_wait_seconds = 60
+            wait_interval = 2
+            elapsed = 0
+
+            while elapsed < max_wait_seconds:
+                time.sleep(wait_interval)
+                elapsed += wait_interval
+
+                # Check if volumes are now available
+                check_response = ec2_client.describe_volumes(
+                    Filters=[
+                        {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                        {"Name": "status", "Values": ["in-use"]},
+                    ]
+                )
+
+                remaining_in_use = check_response.get("Volumes", [])
+                if not remaining_in_use:
+                    logger.info(f"All volumes now available after {elapsed}s wait")
+                    if reservation_id:
+                        update_reservation_status(
+                            reservation_id,
+                            "preparing",
+                            f"Persistent disk detached successfully after {elapsed}s"
+                        )
+                    break
+
+                logger.info(f"Still waiting for volumes to detach... ({elapsed}s/{max_wait_seconds}s)")
+
+            if remaining_in_use:
+                # Disk didn't detach in time - error out
+                error_msg = f"Persistent disk did not detach from previous session in time ({max_wait_seconds}s timeout). Please wait a moment and try again."
+                logger.error(f"Volume detachment timeout for user {user_id}: {in_use_volume_ids}")
+                if reservation_id:
+                    update_reservation_status(
+                        reservation_id,
+                        "failed",
+                        detailed_status="Persistent disk detachment timeout",
+                        failure_reason=error_msg
+                    )
+                raise RuntimeError(error_msg)
+
+        # NEW LOGIC: Search ALL AZs for volumes with ActiveVolume=true tag
+        # This ensures single source of truth across all availability zones
+        active_volumes_response = ec2_client.describe_volumes(
+            Filters=[
+                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "tag:ActiveVolume", "Values": ["true"]},
                 {"Name": "status", "Values": ["available"]},
             ]
         )
 
-        volumes = response.get("Volumes", [])
-        if not volumes:
-            logger.info(f"No existing EBS volumes found for user {user_id} - no migration needed")
-            return False, None, None
+        active_volumes = active_volumes_response.get("Volumes", [])
 
-        # CRITICAL BUG FIX: Get the OLDEST volume (has user data), not newest (might be empty)
-        # If multiple volumes exist (shouldn't happen but does due to race conditions),
-        # the oldest one is the one that has been used and contains the user's data
-        if len(volumes) > 1:
-            volume_ids = [vol["VolumeId"] for vol in volumes]
-            logger.warning(f"⚠️ Multiple EBS volumes found for user {user_id}: {volume_ids}. Using oldest volume with data.")
+        if len(active_volumes) > 1:
+            # This should NEVER happen - multiple active volumes is a bug!
+            volume_ids = [vol["VolumeId"] for vol in active_volumes]
+            volume_details = [(vol["VolumeId"], vol["AvailabilityZone"], vol.get("CreateTime", "unknown")) for vol in active_volumes]
+            logger.error(f"❌ CRITICAL BUG: Multiple ActiveVolume=true volumes found for user {user_id}:")
+            for vol_id, az, create_time in volume_details:
+                logger.error(f"  - {vol_id} in {az}, created {create_time}")
+            logger.error(f"This violates single source of truth! Using oldest and cleaning up others.")
 
-        current_volume = min(volumes, key=lambda v: v["CreateTime"])  # Get OLDEST volume (has data)
-        current_volume_id = current_volume["VolumeId"]
-        current_az = current_volume["AvailabilityZone"]
+            # Use oldest active volume and remove ActiveVolume tag from others
+            oldest_active = min(active_volumes, key=lambda v: v["CreateTime"])
+            current_volume_id = oldest_active["VolumeId"]
+            current_az = oldest_active["AvailabilityZone"]
 
-        logger.info(f"Selected volume {current_volume_id} in {current_az} for user {user_id} (created: {current_volume.get('CreateTime')})")
+            # Clean up: remove ActiveVolume tag from non-oldest volumes
+            for vol in active_volumes:
+                if vol["VolumeId"] != current_volume_id:
+                    try:
+                        logger.info(f"Removing ActiveVolume tag from duplicate volume {vol['VolumeId']}")
+                        ec2_client.delete_tags(
+                            Resources=[vol["VolumeId"]],
+                            Tags=[{"Key": "ActiveVolume"}]
+                        )
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to remove ActiveVolume tag from {vol['VolumeId']}: {cleanup_error}")
 
-        if current_az == target_az:
-            logger.info(
-                f"User {user_id} EBS volume {current_volume_id} already in target AZ {target_az} - no migration needed")
-            return False, current_volume_id, current_az
+            # After cleanup, check if migration is needed for the active volume
+            if current_az == target_az:
+                logger.info(f"Active volume {current_volume_id} already in target AZ {target_az} - no migration needed")
+                return False, current_volume_id, current_az
+            else:
+                logger.info(f"Active volume {current_volume_id} needs migration: {current_az} -> {target_az}")
+                return True, current_volume_id, current_az
 
-        logger.info(f"User {user_id} needs EBS migration: volume {current_volume_id} from {current_az} to {target_az}")
-        return True, current_volume_id, current_az
+        elif len(active_volumes) == 1:
+            # Exactly one active volume found - this is the happy path!
+            current_volume_id = active_volumes[0]["VolumeId"]
+            current_az = active_volumes[0]["AvailabilityZone"]
+            logger.info(f"Found active volume {current_volume_id} in {current_az} for user {user_id}")
+
+            if current_az == target_az:
+                logger.info(f"Active volume {current_volume_id} already in target AZ {target_az} - no migration needed")
+                return False, current_volume_id, current_az
+            else:
+                logger.info(f"Active volume {current_volume_id} needs migration: {current_az} -> {target_az}")
+                return True, current_volume_id, current_az
+
+        else:
+            # No active volumes found - LEGACY BEHAVIOR for existing users
+            # Search for ANY volumes (without ActiveVolume tag) and pick oldest
+            logger.info(f"No active volumes found for user {user_id} - checking for legacy volumes")
+
+            legacy_volumes_response = ec2_client.describe_volumes(
+                Filters=[
+                    {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                    {"Name": "status", "Values": ["available"]},
+                ]
+            )
+
+            legacy_volumes = legacy_volumes_response.get("Volumes", [])
+
+            if not legacy_volumes:
+                logger.info(f"No available EBS volumes found for user {user_id} - no migration needed")
+                return False, None, None
+
+            # Filter out volumes that already have ActiveVolume tag (shouldn't happen, but be safe)
+            untagged_volumes = []
+            for vol in legacy_volumes:
+                tags = {tag["Key"]: tag["Value"] for tag in vol.get("Tags", [])}
+                if "ActiveVolume" not in tags:
+                    untagged_volumes.append(vol)
+
+            if not untagged_volumes:
+                logger.warning(f"All legacy volumes already have ActiveVolume tag - should have been found earlier")
+                return False, None, None
+
+            # Pick oldest legacy volume and tag it as active
+            oldest_legacy = min(untagged_volumes, key=lambda v: v["CreateTime"])
+            current_volume_id = oldest_legacy["VolumeId"]
+            current_az = oldest_legacy["AvailabilityZone"]
+
+            if len(untagged_volumes) > 1:
+                volume_ids = [vol["VolumeId"] for vol in untagged_volumes]
+                logger.warning(f"⚠️ Multiple legacy volumes found for user {user_id}: {volume_ids}")
+                logger.warning(f"Tagging oldest volume {current_volume_id} as active. Others will be left unmanaged.")
+
+            # Tag this volume as the active one going forward
+            try:
+                logger.info(f"Tagging legacy volume {current_volume_id} as ActiveVolume=true for user {user_id}")
+                ec2_client.create_tags(
+                    Resources=[current_volume_id],
+                    Tags=[
+                        {"Key": "ActiveVolume", "Value": "true"},
+                        {"Key": "MigrationVersion", "Value": "v2-single-source"}
+                    ]
+                )
+                logger.info(f"Successfully tagged {current_volume_id} as active volume")
+            except Exception as tag_error:
+                logger.warning(f"Failed to tag volume {current_volume_id} as active: {tag_error}")
+                # Continue anyway - tagging is not critical for this reservation
+
+            if current_az == target_az:
+                logger.info(f"Legacy volume {current_volume_id} already in target AZ {target_az} - no migration needed")
+                return False, current_volume_id, current_az
+            else:
+                logger.info(f"Legacy volume {current_volume_id} needs migration: {current_az} -> {target_az}")
+                return True, current_volume_id, current_az
 
     except Exception as e:
         logger.error(f"Error checking EBS migration need for user {user_id}: {str(e)}")
@@ -318,6 +477,7 @@ def migrate_ebs_across_az(user_id, current_volume_id, current_az, target_az):
         logger.info(f"Snapshot {snapshot_id} completed successfully")
 
         # Step 2: Create new volume from snapshot in target AZ
+        # NEW: Tag with ActiveVolume=true to mark as the single source of truth
         logger.info(f"Creating new volume from snapshot {snapshot_id} in AZ {target_az}")
         new_volume_response = ec2_client.create_volume(
             AvailabilityZone=target_az,
@@ -333,19 +493,33 @@ def migrate_ebs_across_az(user_id, current_volume_id, current_az, target_az):
                     {"Key": "Project", "Value": "gpu-dev-servers"},
                     {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
                     {"Key": "MigratedFrom", "Value": current_az},
-                    {"Key": "SourceSnapshot", "Value": snapshot_id}
+                    {"Key": "SourceSnapshot", "Value": snapshot_id},
+                    {"Key": "ActiveVolume", "Value": "true"},  # NEW: Mark as active volume
+                    {"Key": "MigrationVersion", "Value": "v2-single-source"},
+                    {"Key": "PreviousVolumeId", "Value": current_volume_id}  # Track lineage
                 ]
             }]
         )
 
         new_volume_id = new_volume_response["VolumeId"]
-        logger.info(f"Created new volume {new_volume_id}, waiting for availability...")
+        logger.info(f"Created new volume {new_volume_id} with ActiveVolume=true tag, waiting for availability...")
 
         # Wait for new volume to be available
         waiter = ec2_client.get_waiter("volume_available")
         waiter.wait(VolumeIds=[new_volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
 
-        # Step 3: Delete old volume (after successful creation)
+        # Step 3: Remove ActiveVolume tag from old volume, then delete it
+        # This ensures only ONE volume has ActiveVolume=true at any time
+        try:
+            logger.info(f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
+            ec2_client.delete_tags(
+                Resources=[current_volume_id],
+                Tags=[{"Key": "ActiveVolume"}]
+            )
+        except Exception as tag_error:
+            logger.warning(f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
+            # Continue anyway - deletion is more important
+
         logger.info(f"Deleting old volume {current_volume_id} from {current_az}")
         ec2_client.delete_volume(VolumeId=current_volume_id)
 
@@ -369,12 +543,14 @@ def get_latest_completed_snapshot(user_id, volume_id=None):
 def restore_ebs_from_existing_snapshot(snapshot_id, target_az, user_id):
     """
     Create new EBS volume from existing snapshot in target AZ.
+    NEW: Tags with ActiveVolume=true to mark as single source of truth.
     Returns volume_id of the restored volume.
     """
     try:
         logger.info(f"Restoring EBS volume from snapshot {snapshot_id} in AZ {target_az}")
 
         # Create new volume from existing snapshot in target AZ
+        # NEW: Tag with ActiveVolume=true for single source of truth
         new_volume_response = ec2_client.create_volume(
             AvailabilityZone=target_az,
             SnapshotId=snapshot_id,
@@ -389,13 +565,15 @@ def restore_ebs_from_existing_snapshot(snapshot_id, target_az, user_id):
                     {"Key": "Project", "Value": "gpu-dev-servers"},
                     {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
                     {"Key": "RestoredFrom", "Value": snapshot_id},
-                    {"Key": "RestoredToAZ", "Value": target_az}
+                    {"Key": "RestoredToAZ", "Value": target_az},
+                    {"Key": "ActiveVolume", "Value": "true"},  # NEW: Mark as active volume
+                    {"Key": "MigrationVersion", "Value": "v2-single-source"}
                 ]
             }]
         )
 
         new_volume_id = new_volume_response["VolumeId"]
-        logger.info(f"Created new volume {new_volume_id}, waiting for availability...")
+        logger.info(f"Created new volume {new_volume_id} with ActiveVolume=true tag, waiting for availability...")
 
         # Wait for new volume to be available
         waiter = ec2_client.get_waiter("volume_available")
@@ -1910,9 +2088,16 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 f"Could not fetch GitHub public key for GitHub user '{github_user}'"
             )
 
-        # Check if user should get persistent disk 
-        # For multinode: only node 0 gets persistent disk, others get EFS shared storage
-        if is_multinode and node_index > 0:
+        # Check if user should get persistent disk
+        # Check if user explicitly requested no persistent disk (e.g., confirmed continuing without disk when another reservation has it)
+        no_persistent_disk_requested = request.get("no_persistent_disk", False)
+
+        if no_persistent_disk_requested:
+            # User explicitly requested no persistent disk - skip all persistent disk logic
+            use_persistent_disk = False
+            logger.info(f"User explicitly requested no persistent disk for reservation {reservation_id} - skipping all disk logic")
+        elif is_multinode and node_index > 0:
+            # For multinode: only node 0 gets persistent disk, others get EFS shared storage
             use_persistent_disk = False  # Only master node gets persistent disk
             logger.info(f"Multinode node {node_index + 1}/{total_nodes}: using EFS shared storage instead of persistent disk")
         else:
@@ -1950,7 +2135,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 logger.info(f"Target AZ for reservation: {target_az}")
 
                 # Step 2: Check if EBS migration is needed
-                migration_needed, current_volume_id, current_az = needs_ebs_migration(user_id, target_az)
+                migration_needed, current_volume_id, current_az = needs_ebs_migration(user_id, target_az, reservation_id)
 
                 # Check for multiple volumes and log warning if found
                 multiple_volumes_warning = check_for_multiple_volumes(user_id)
@@ -1967,9 +2152,10 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     )
                     logger.info(f"Starting EBS migration for user {user_id}: {current_az} -> {target_az}")
 
-                    # Check if we have a recent completed or pending snapshot to use instead of creating new one
-                    # CRITICAL: Get snapshot from ANY volume to ensure we use the newest data
-                    latest_snapshot = get_latest_snapshot(user_id, volume_id=None, include_pending=True)
+                    # Check if we have a recent snapshot from THIS SPECIFIC VOLUME to avoid version confusion
+                    # IMPORTANT: Only use snapshots from the volume being migrated (current_volume_id)
+                    # This prevents using snapshots from other volumes which may have stale/different data
+                    latest_snapshot = get_latest_snapshot(user_id, volume_id=current_volume_id, include_pending=True)
 
                     if latest_snapshot and latest_snapshot['State'] == 'completed':
                         # Use existing completed snapshot for migration
@@ -1980,6 +2166,16 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         snapshot_id = latest_snapshot['SnapshotId']
 
                         # Clean up old volume after successful restoration
+                        # NEW: Remove ActiveVolume tag before deletion to maintain single source of truth
+                        try:
+                            logger.info(f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
+                            ec2_client.delete_tags(
+                                Resources=[current_volume_id],
+                                Tags=[{"Key": "ActiveVolume"}]
+                            )
+                        except Exception as tag_error:
+                            logger.warning(f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
+
                         try:
                             logger.info(
                                 f"Deleting old volume {current_volume_id} from {current_az} after snapshot restoration")
@@ -2008,6 +2204,16 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         )
 
                         # Clean up old volume after successful restoration
+                        # NEW: Remove ActiveVolume tag before deletion to maintain single source of truth
+                        try:
+                            logger.info(f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
+                            ec2_client.delete_tags(
+                                Resources=[current_volume_id],
+                                Tags=[{"Key": "ActiveVolume"}]
+                            )
+                        except Exception as tag_error:
+                            logger.warning(f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
+
                         try:
                             logger.info(
                                 f"Deleting old volume {current_volume_id} from {current_az} after snapshot restoration")
@@ -2078,6 +2284,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
                 # Continue without persistent disk rather than failing
                 use_persistent_disk = False
+                persistent_volume_id = None  # Clear any volume that was set before the error
+                is_new_disk = True  # EmptyDir volume will need shell environment setup
                 update_reservation_status(
                     reservation_id,
                     "preparing",
@@ -2208,22 +2416,25 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         ssh_ready = False
         try:
             v1 = client.CoreV1Api(k8s_client)
-            logs = v1.read_namespaced_pod_log(
-                name=pod_name, namespace="gpu-dev", tail_lines=50
-            )
-            if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
-                logger.info(f"SSH daemon confirmed running in pod logs for {pod_name}")
-                ssh_ready = True
-            else:
-                logger.warning(f"SSH daemon not yet started according to logs for {pod_name}")
-                # Wait a bit and try again
-                time.sleep(5)
+
+            # Try multiple times to find SSH daemon in logs (custom images may take longer)
+            max_retries = 6  # 6 retries = up to 30 seconds total
+            retry_delay = 5  # seconds between retries
+
+            for attempt in range(max_retries):
                 logs = v1.read_namespaced_pod_log(
-                    name=pod_name, namespace="gpu-dev", tail_lines=50
+                    name=pod_name, namespace="gpu-dev", tail_lines=100  # Increased from 50
                 )
                 if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
-                    logger.info(f"SSH daemon confirmed running after retry for {pod_name}")
+                    logger.info(f"SSH daemon confirmed running in pod logs for {pod_name} (attempt {attempt + 1})")
                     ssh_ready = True
+                    break
+                else:
+                    if attempt < max_retries - 1:
+                        logger.info(f"SSH daemon not yet started, waiting {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                    else:
+                        logger.warning(f"SSH daemon not detected after {max_retries} attempts, logs preview: {logs[-200:]}")
         except Exception as e:
             logger.warning(f"Could not check SSH daemon logs: {e}")
             # Assume ready if pod is running (NLB will handle routing)
@@ -2839,6 +3050,8 @@ def find_available_node_port(k8s_client) -> int:
 
 def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource limits for pod based on GPU type and deployment mode"""
+    # Convert Decimal to int if coming from DynamoDB
+    gpu_count = int(gpu_count)
     limits = {}
 
     # Define max GPUs per node for each GPU type
@@ -2920,6 +3133,8 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
 
 def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource requests for pod based on GPU type and deployment mode"""
+    # Convert Decimal to int if coming from DynamoDB
+    gpu_count = int(gpu_count)
     requests = {}
 
     # Define max GPUs per node for each GPU type
@@ -3784,6 +3999,9 @@ EOF
                         ),
                         client.V1EnvVar(
                             name="SUPPORTS_EFA", value=str(_pod_uses_efa(gpu_count, gpu_type, is_multinode)).lower()
+                        ),
+                        client.V1EnvVar(
+                            name="NVIDIA_DRIVER_CAPABILITIES", value="compute,utility"
                         )
                     ] + get_nccl_env_vars(gpu_type),
                     resources=client.V1ResourceRequirements(
@@ -3799,7 +4017,7 @@ EOF
                     ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
-                            add=["IPC_LOCK"]
+                            add=["IPC_LOCK", "SYS_ADMIN"]  # SYS_ADMIN required for NVIDIA GPU profiling (ncu, nsys)
                         ),
                         # Run as root when using custom Docker images to allow SSH setup
                         run_as_user=0 if dockerimage else None,
@@ -4188,6 +4406,7 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
                     # Fall through to create new disk for unexpected states
 
         # Create new 1TB gp3 disk in the specified AZ
+        # NEW: Tag with ActiveVolume=true for single source of truth
         logger.info(f"Creating new 1TB persistent disk for user {user_id} in AZ {availability_zone}")
         create_response = ec2_client.create_volume(
             AvailabilityZone=availability_zone,
@@ -4204,6 +4423,8 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
                         {"Key": "Project", "Value": "gpu-dev-servers"},
                         {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
                         {"Key": "CreatedInAZ", "Value": availability_zone},
+                        {"Key": "ActiveVolume", "Value": "true"},  # NEW: Mark as active volume
+                        {"Key": "MigrationVersion", "Value": "v2-single-source"},
                     ],
                 }
             ],
@@ -5117,19 +5338,43 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
             # Calculate status flags first
             # Don't treat transient kube-api-access issues as errors
             has_errors = "❌" in display_message and "transient" not in display_message
-            
-            # CRITICAL: Background monitoring should NOT set "active" status initially
-            # Only the main flow after SSH connectivity test should set "active"
-            # Background monitoring only tracks preparation progress and maintains existing active status
-            
+
+            # Check if SSH is ready (pod running + SSH daemon confirmed in logs)
+            ssh_is_ready = False
+            if pod_phase == "Running" and logs:
+                # Check for SSH daemon startup messages
+                if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
+                    ssh_is_ready = True
+                    logger.info(f"SSH daemon confirmed running in logs for {pod_name} (background monitoring)")
+
+            # Background monitoring can transition to "active" when SSH is confirmed ready
             if current_status == "active":
                 high_level_status = "active"  # Always maintain active status
                 logger.info(f"Reservation {reservation_id} already active - maintaining status")
+            elif ssh_is_ready and not has_errors:
+                # Check if connection info is already set
+                try:
+                    reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                    res = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+
+                    # Only transition if we have the required connection info already set
+                    if res.get("node_port") and res.get("ssh_command"):
+                        # Connection info exists, transition to active
+                        high_level_status = "active"
+                        logger.info(f"Transitioning {reservation_id} to active - SSH confirmed ready and connection info set")
+                    else:
+                        # Connection info not set yet - this means main flow exited early
+                        # Keep as preparing and log a clear message
+                        high_level_status = "preparing"
+                        display_message = "✅ SSH ready, waiting for connection setup"
+                        logger.warning(f"Connection info not yet set for {reservation_id}, SSH is ready but main flow incomplete")
+                except Exception as e:
+                    logger.warning(f"Could not check connection info for {reservation_id}: {e}")
+                    high_level_status = "preparing"
             else:
-                # Background monitoring can only set "preparing" - never "active"
-                # The lock mechanism prevents race conditions with main flow
-                high_level_status = "preparing" if pod_phase != "Running" else "preparing"
-                logger.info(f"Pod preparation status for {pod_name}: pod_phase={pod_phase}")
+                # Still preparing
+                high_level_status = "preparing"
+                logger.info(f"Pod preparation status for {pod_name}: pod_phase={pod_phase}, ssh_ready={ssh_is_ready}")
             
             failure_reason = None
             
