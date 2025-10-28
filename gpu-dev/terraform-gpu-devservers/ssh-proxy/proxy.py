@@ -58,8 +58,9 @@ def get_target_from_hostname(hostname: str) -> tuple:
             return None, None
 
         item = response["Item"]
-        target_ip = item.get("node_ip")
-        target_port = int(item.get("node_port", 22))
+        # Support both old (node_ip/node_port) and new (target_host/target_port) field names
+        target_ip = item.get("target_host") or item.get("node_ip")
+        target_port = int(item.get("target_port") or item.get("node_port", 22))
 
         logger.info(f"Resolved {hostname} -> {target_ip}:{target_port}")
         return target_ip, target_port

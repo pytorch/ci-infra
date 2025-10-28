@@ -68,8 +68,8 @@ RUN pip install --no-cache-dir \
         plotly \
         tensorboard
 
-# Create dev user with consistent UID (1000)
-RUN useradd -u 1000 -m -s /usr/bin/zsh dev && \
+# Create dev user with UID 1081 to avoid conflicts with common base image users (e.g., ubuntu=1000)
+RUN useradd -u 1081 -m -s /usr/bin/zsh dev && \
     usermod -aG sudo dev && \
     echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev && \
     echo 'Defaults lecture=never' >> /etc/sudoers.d/dev && \

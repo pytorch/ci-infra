@@ -93,10 +93,21 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
 - **Rename G6 to L4** - Update G6 references to L4 (similar to T4 GPU type naming)
 - **Add network drive (EFS)** - Implement 20TB EFS shared storage mounted at /shared with user folders
 - **GPU Profiling Support** - Added NVIDIA profiling capabilities for all pods:
-  - Node-level: Added `options nvidia NVreg_RestrictProfilingToAdminUsers=0` to `/etc/modprobe.d/nvprof.conf` on all T4 nodes
+  - Node-level: Added `options nvidia NVreg_RestrictProfilingToAdminUsers=0` to `/etc/modprobe.d/nvprof.conf` in node bootstrap script - automatically configured on ALL new GPU nodes
+  - Bootstrap: Configuration added at `terraform-gpu-devservers/templates/al2023-user-data.sh:17-19` (applied BEFORE NVIDIA driver installation to avoid auto-load issue)
   - Pod-level: Added Linux capability `SYS_ADMIN` to all GPU pods (required for NVIDIA profiling tools like ncu/nsys)
   - Environment: Set `NVIDIA_DRIVER_CAPABILITIES=compute,utility` (note: `profile` is NOT supported by NVIDIA device plugin)
   - Location: `terraform-gpu-devservers/lambda/reservation_processor/index.py:4000` and `:3984`
+
+## Recent Fixes (Oct 27, 2025)
+
+**NVIDIA Profiling Bootstrap Configuration (Oct 27, 2025):**
+- **Bug Found**: NVIDIA driver installation (`dnf install nvidia-driver`) automatically loads kernel modules during install, so config must be created BEFORE driver installation, not just before explicit modprobe
+- **Fix**: Moved `echo "options nvidia NVreg_RestrictProfilingToAdminUsers=0" > /etc/modprobe.d/nvprof.conf` to line 19 (before driver install at line 23)
+- **Previous Location**: Line 59-60 (after driver install) - TOO LATE, modules already loaded during dnf install
+- **New Location**: `terraform-gpu-devservers/templates/al2023-user-data.sh:17-19` (before driver installation)
+- **Benefit**: All new GPU nodes will have profiling enabled automatically without requiring manual configuration or reboots
+- **Rollout**: Run `tf apply` to update launch template, then terminate existing nodes so ASG recreates them with new bootstrap script
 
 ## Recent Fixes (Oct 8, 2025)
 

@@ -476,6 +476,11 @@ def main(ctx: click.Context) -> None:
     type=str,
     help="Custom Docker image to use instead of default container image (e.g., pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel)",
 )
+@click.option(
+    "--preserve-entrypoint",
+    is_flag=True,
+    help="Preserve the original container ENTRYPOINT/CMD instead of overriding with bash script",
+)
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -491,6 +496,7 @@ def reserve(
     verbose: bool,
     dockerfile: Optional[str],
     dockerimage: Optional[str],
+    preserve_entrypoint: bool,
 ) -> None:
     """Reserve GPU development server(s)
 
@@ -930,9 +936,10 @@ def reserve(
                     github_user=user_info["github_user"],
                     jupyter_enabled=jupyter,
                     recreate_env=recreate_env,
-                    dockerfile_s3_key=dockerfile_s3_key,
+                    dockerfile=dockerfile_s3_key,
                     dockerimage=dockerimage,
                     no_persistent_disk=no_persistent_disk,
+                    preserve_entrypoint=preserve_entrypoint,
                 )
             else:
                 # Single node reservation
@@ -945,9 +952,10 @@ def reserve(
                     github_user=user_info["github_user"],
                     jupyter_enabled=jupyter,
                     recreate_env=recreate_env,
-                    dockerfile_s3_key=dockerfile_s3_key,
+                    dockerfile=dockerfile_s3_key,
                     dockerimage=dockerimage,
                     no_persistent_disk=no_persistent_disk,
+                    preserve_entrypoint=preserve_entrypoint,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 
@@ -1024,18 +1032,26 @@ def reserve(
     is_flag=True,
     help="Show additional details including CLI version used for reservation",
 )
+@click.option(
+    "--watch",
+    "-w",
+    is_flag=True,
+    help="Watch mode: continuously update the list every 2 seconds (exit with Ctrl+C)",
+)
 @click.pass_context
-def list(ctx: click.Context, user: Optional[str], status: Optional[str], details: bool = False) -> None:
+def list(ctx: click.Context, user: Optional[str], status: Optional[str], details: bool = False, watch: bool = False) -> bool:
     """List GPU reservations (shows in-progress + recent failed reservations by default)
 
     By default, shows your in-progress reservations (active, preparing, queued, pending)
     plus recent failed/cancelled reservations (last hour).
     Use --user all to see all users' reservations.
     Use --status to filter by specific statuses.
+    Use --watch to continuously monitor reservations (refreshes every 2 seconds).
 
     \b
     Examples:
         gpu-dev list                             # Your in-progress reservations
+        gpu-dev list --watch                     # Watch mode - continuously refresh
         gpu-dev list --user all                 # All users' in-progress reservations
         gpu-dev list --status expired           # Your expired reservations
         gpu-dev list --status active,expired    # Your active + expired
@@ -1044,10 +1060,10 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
 
     Available statuses: active, preparing, queued, pending, expired, cancelled, failed, all
     """
-    try:
-        with Live(
-            Spinner("dots", text="📡 Fetching reservations..."), console=console
-        ) as live:
+
+    def fetch_and_display_reservations(first_load: bool = False) -> bool:
+        """Fetch and display reservations. Returns True on success, False on error."""
+        try:
             config = load_config()
 
             # Authenticate using AWS credentials
@@ -1089,14 +1105,13 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             s for s in requested_statuses if s not in valid_statuses
                         ]
                         if invalid_statuses:
-                            live.stop()
                             rprint(
                                 f"[red]❌ Invalid status(es): {', '.join(invalid_statuses)}[/red]"
                             )
                             rprint(
                                 f"[yellow]Valid statuses: {', '.join(valid_statuses)}, all[/yellow]"
                             )
-                            return
+                            return False
 
                         statuses_to_include = requested_statuses
                 else:
@@ -1108,297 +1123,540 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     user_filter=user_filter, statuses_to_include=statuses_to_include
                 )
             except RuntimeError as e:
-                live.stop()
                 rprint(f"[red]❌ {str(e)}[/red]")
-                return
+                return False
 
-        # Stop spinner after getting results
-        live.stop()
+            # Filter failed/cancelled reservations to only show recent ones (last hour)
+            if not status or "all" not in (status.split(",") if status else []):
+                # Only apply time filtering when using default filters (not when user specifies --status)
+                from datetime import datetime, timezone, timedelta
+                now = datetime.now(timezone.utc)
+                one_hour_ago = now - timedelta(hours=1)
 
-        # Filter failed/cancelled reservations to only show recent ones (last hour)
-        if not status or "all" not in (status.split(",") if status else []):
-            # Only apply time filtering when using default filters (not when user specifies --status)
-            from datetime import datetime, timezone, timedelta
-            now = datetime.now(timezone.utc)
-            one_hour_ago = now - timedelta(hours=1)
-
-            filtered_reservations = []
-            for reservation in reservations:
-                reservation_status = reservation.get("status", "unknown")
-                if reservation_status in ["active", "preparing", "queued", "pending"]:
-                    # Always show active/pending reservations
-                    filtered_reservations.append(reservation)
-                elif reservation_status in ["failed", "cancelled"]:
-                    # Only show failed/cancelled from last hour
-                    created_at = reservation.get("created_at")
-                    if created_at:
-                        try:
-                            if isinstance(created_at, str):
-                                if created_at.endswith("Z"):
-                                    created_dt = datetime.fromisoformat(
-                                        created_at.replace("Z", "+00:00"))
-                                elif "+" in created_at or created_at.endswith("00:00"):
-                                    created_dt = datetime.fromisoformat(
-                                        created_at)
+                filtered_reservations = []
+                for reservation in reservations:
+                    reservation_status = reservation.get("status", "unknown")
+                    if reservation_status in ["active", "preparing", "queued", "pending"]:
+                        # Always show active/pending reservations
+                        filtered_reservations.append(reservation)
+                    elif reservation_status in ["failed", "cancelled"]:
+                        # Only show failed/cancelled from last hour
+                        created_at = reservation.get("created_at")
+                        if created_at:
+                            try:
+                                if isinstance(created_at, str):
+                                    if created_at.endswith("Z"):
+                                        created_dt = datetime.fromisoformat(
+                                            created_at.replace("Z", "+00:00"))
+                                    elif "+" in created_at or created_at.endswith("00:00"):
+                                        created_dt = datetime.fromisoformat(
+                                            created_at)
+                                    else:
+                                        naive_dt = datetime.fromisoformat(
+                                            created_at)
+                                        created_dt = naive_dt.replace(
+                                            tzinfo=timezone.utc)
                                 else:
-                                    naive_dt = datetime.fromisoformat(
-                                        created_at)
-                                    created_dt = naive_dt.replace(
-                                        tzinfo=timezone.utc)
-                            else:
-                                created_dt = datetime.fromtimestamp(
-                                    created_at, tz=timezone.utc)
+                                    created_dt = datetime.fromtimestamp(
+                                        created_at, tz=timezone.utc)
 
-                            if created_dt >= one_hour_ago:
+                                if created_dt >= one_hour_ago:
+                                    filtered_reservations.append(reservation)
+                            except (ValueError, TypeError):
+                                # If timestamp parsing fails, include it to be safe
                                 filtered_reservations.append(reservation)
-                        except (ValueError, TypeError):
-                            # If timestamp parsing fails, include it to be safe
-                            filtered_reservations.append(reservation)
-                else:
-                    # Include other statuses as-is
-                    filtered_reservations.append(reservation)
+                    else:
+                        # Include other statuses as-is
+                        filtered_reservations.append(reservation)
 
-            reservations = filtered_reservations
+                reservations = filtered_reservations
 
-        if not reservations:
-            rprint("[yellow]📋 No reservations found[/yellow]")
-            return
+            if not reservations:
+                rprint("[yellow]📋 No reservations found[/yellow]")
+                return True
 
-        # Sort reservations to show successful/pending ones at the bottom
-        def sort_key(reservation):
-            status = reservation.get("status", "unknown")
-            # Priority order: failed first, cancelled/expired middle, active/preparing/queued/pending last
-            if status == "failed":
-                return 0  # Show first (most important)
-            elif status in ["cancelled", "expired"]:
-                return 1  # Show second (less urgent but still notable)
-            elif status in ["active", "preparing", "queued", "pending"]:
-                return 2  # Show last (current work)
-            else:
-                return 1.5  # Unknown statuses between cancelled and active
-
-        reservations = sorted(reservations, key=sort_key)
-
-        # Create table with enhanced columns for queue info
-        table = Table(title="GPU Reservations")
-        table.add_column("ID", style="cyan", no_wrap=True)
-        table.add_column("User", style="green")
-        table.add_column("GPUs", style="magenta")
-        table.add_column("Status")
-        table.add_column("Storage", style="dim", no_wrap=True)
-        table.add_column("Queue Info", style="cyan")
-        table.add_column("Created", style="blue")
-        table.add_column("Expires/ETA", style="red")
-        if details:
-            table.add_column("CLI Ver", style="dim", no_wrap=True)
-            table.add_column("Lambda Ver", style="dim", no_wrap=True)
-
-        for reservation in reservations:
-            try:
-                # Safely get reservation data with defaults
-                reservation_id = reservation.get("reservation_id", "unknown")
-                user_id = reservation.get("user_id", "unknown")
-                gpu_count = reservation.get("gpu_count", 1)
-                gpu_type = reservation.get("gpu_type", "unknown")
+            # Sort reservations to show successful/pending ones at the bottom
+            def sort_key(reservation):
                 status = reservation.get("status", "unknown")
-                created_at = reservation.get("created_at", "N/A")
-
-                # Extract persistent disk info for storage indicator
-                ebs_volume_id = reservation.get("ebs_volume_id", None)
-
-                # Format user display (part before @)
-                user_display = user_id
-                if "@" in user_id:
-                    user_display = user_id.split("@")[0]
-
-                # Format GPU information
-                if gpu_type and gpu_type not in ["unknown", "Unknown"]:
-                    # For CPU nodes (gpu_count = 0), show just the type
-                    if gpu_count == 0:
-                        gpu_display = gpu_type
-                    else:
-                        gpu_display = f"{gpu_count}x {gpu_type}"
+                # Priority order: failed first, cancelled/expired middle, active/preparing/queued/pending last
+                if status == "failed":
+                    return 0  # Show first (most important)
+                elif status in ["cancelled", "expired"]:
+                    return 1  # Show second (less urgent but still notable)
+                elif status in ["active", "preparing", "queued", "pending"]:
+                    return 2  # Show last (current work)
                 else:
-                    gpu_display = str(gpu_count)
+                    return 1.5  # Unknown statuses between cancelled and active
 
-                # Format expiration time or ETA
-                expires_at = reservation.get("expires_at", "N/A")
+            reservations = sorted(reservations, key=sort_key)
 
-                if status == "active" and expires_at != "N/A":
-                    from datetime import datetime
+            # Create table with enhanced columns for queue info
+            table = Table(title="GPU Reservations")
+            table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("User", style="green")
+            table.add_column("GPUs", style="magenta")
+            table.add_column("Status")
+            table.add_column("Storage", style="dim", no_wrap=True)
+            table.add_column("Queue Info", style="cyan")
+            table.add_column("Created", style="blue")
+            table.add_column("Expires/ETA", style="red")
+            if details:
+                table.add_column("CLI Ver", style="dim", no_wrap=True)
+                table.add_column("Lambda Ver", style="dim", no_wrap=True)
 
-                    try:
-                        if isinstance(expires_at, str):
-                            # Handle different ISO format variations
-                            if expires_at.endswith("Z"):
-                                # Format: 2025-01-11T23:30:00Z
-                                expires_dt_utc = datetime.fromisoformat(
-                                    expires_at.replace("Z", "+00:00")
-                                )
-                            elif "+" in expires_at or expires_at.endswith("00:00"):
-                                # Format: 2025-01-11T23:30:00+00:00
-                                expires_dt_utc = datetime.fromisoformat(
-                                    expires_at)
-                            else:
-                                # Format: 2025-01-11T23:30:00 (naive datetime, assume UTC)
-                                from datetime import timezone
+            for reservation in reservations:
+                try:
+                    # Safely get reservation data with defaults
+                    reservation_id = reservation.get(
+                        "reservation_id", "unknown")
+                    user_id = reservation.get("user_id", "unknown")
+                    gpu_count = reservation.get("gpu_count", 1)
+                    gpu_type = reservation.get("gpu_type", "unknown")
+                    res_status = reservation.get("status", "unknown")
+                    created_at = reservation.get("created_at", "N/A")
 
-                                naive_dt = datetime.fromisoformat(expires_at)
-                                expires_dt_utc = naive_dt.replace(
-                                    tzinfo=timezone.utc)
+                    # Extract persistent disk info for storage indicator
+                    ebs_volume_id = reservation.get("ebs_volume_id", None)
 
-                            expires_dt = (
-                                expires_dt_utc.astimezone()
-                            )  # Convert to local timezone
+                    # Format user display (part before @)
+                    user_display = user_id
+                    if "@" in user_id:
+                        user_display = user_id.split("@")[0]
+
+                    # Format GPU information
+                    if gpu_type and gpu_type not in ["unknown", "Unknown"]:
+                        # For CPU nodes (gpu_count = 0), show just the type
+                        if gpu_count == 0:
+                            gpu_display = gpu_type
                         else:
-                            # Legacy Unix timestamp (backward compatibility)
-                            expires_dt = datetime.fromtimestamp(expires_at)
-                        expires_formatted = expires_dt.strftime("%m-%d %H:%M")
-                    except (ValueError, TypeError):
-                        expires_formatted = "Invalid"
-                elif status in ["queued", "pending"]:
-                    # Show estimated wait time if available
-                    estimated_wait = reservation.get(
-                        "estimated_wait_minutes", "?")
-                    if estimated_wait != "?" and estimated_wait is not None:
-                        expires_formatted = f"~{estimated_wait}min"
+                            gpu_display = f"{gpu_count}x {gpu_type}"
                     else:
-                        expires_formatted = "Calculating..."
-                else:
-                    expires_formatted = "N/A"
+                        gpu_display = str(gpu_count)
 
-                # Format queue info for queued reservations
-                queue_info = ""
-                if status in ["queued", "pending"]:
-                    queue_position = reservation.get("queue_position", "?")
-                    estimated_wait = reservation.get(
-                        "estimated_wait_minutes", "?")
-                    if queue_position != "?" and queue_position is not None:
-                        queue_info = f"#{queue_position}"
-                        if estimated_wait != "?" and estimated_wait is not None:
-                            queue_info += f" (~{estimated_wait}min)"
-                    else:
-                        queue_info = "Calculating..."
-                elif status == "active":
-                    # Show SSH connection hint for active reservations
-                    ssh_command = reservation.get("ssh_command", "")
-                    if ssh_command and "dev@" in ssh_command:
-                        try:
-                            node_info = (
-                                ssh_command.split("dev@")[1].split()[0]
-                                if "dev@" in ssh_command
-                                else "Ready"
-                            )
-                            queue_info = f"Ready: {node_info}"
-                        except (IndexError, AttributeError):
-                            queue_info = "Ready"
-                    else:
-                        queue_info = "Ready"
+                    # Format expiration time or ETA
+                    expires_at = reservation.get("expires_at", "N/A")
 
-                # Format storage indicator
-                if ebs_volume_id and ebs_volume_id.strip():
-                    storage_display = "persistent"
-                else:
-                    storage_display = "temporary"
-
-                # Format created_at datetime (similar to expires formatting)
-                created_formatted = "N/A"
-                if created_at and created_at != "N/A":
-                    try:
+                    if res_status == "active" and expires_at != "N/A":
                         from datetime import datetime
 
-                        if isinstance(created_at, str):
-                            # Handle different ISO format variations
-                            if created_at.endswith("Z"):
-                                created_dt_utc = datetime.fromisoformat(
-                                    created_at.replace("Z", "+00:00")
-                                )
-                            elif "+" in created_at or created_at.endswith("00:00"):
-                                created_dt_utc = datetime.fromisoformat(
-                                    created_at)
+                        try:
+                            if isinstance(expires_at, str):
+                                # Handle different ISO format variations
+                                if expires_at.endswith("Z"):
+                                    # Format: 2025-01-11T23:30:00Z
+                                    expires_dt_utc = datetime.fromisoformat(
+                                        expires_at.replace("Z", "+00:00")
+                                    )
+                                elif "+" in expires_at or expires_at.endswith("00:00"):
+                                    # Format: 2025-01-11T23:30:00+00:00
+                                    expires_dt_utc = datetime.fromisoformat(
+                                        expires_at)
+                                else:
+                                    # Format: 2025-01-11T23:30:00 (naive datetime, assume UTC)
+                                    from datetime import timezone
+
+                                    naive_dt = datetime.fromisoformat(
+                                        expires_at)
+                                    expires_dt_utc = naive_dt.replace(
+                                        tzinfo=timezone.utc)
+
+                                expires_dt = (
+                                    expires_dt_utc.astimezone()
+                                )  # Convert to local timezone
                             else:
-                                # Assume naive datetime is UTC
-                                from datetime import timezone
-
-                                naive_dt = datetime.fromisoformat(created_at)
-                                created_dt_utc = naive_dt.replace(
-                                    tzinfo=timezone.utc)
-
-                            created_dt = created_dt_utc.astimezone()  # Convert to local
-                            created_formatted = created_dt.strftime(
+                                # Legacy Unix timestamp (backward compatibility)
+                                expires_dt = datetime.fromtimestamp(expires_at)
+                            expires_formatted = expires_dt.strftime(
                                 "%m-%d %H:%M")
+                        except (ValueError, TypeError):
+                            expires_formatted = "Invalid"
+                    elif res_status in ["queued", "pending"]:
+                        # Show estimated wait time if available
+                        estimated_wait = reservation.get(
+                            "estimated_wait_minutes", "?")
+                        if estimated_wait != "?" and estimated_wait is not None:
+                            expires_formatted = f"~{estimated_wait}min"
                         else:
-                            # Legacy timestamp
-                            created_dt = datetime.fromtimestamp(created_at)
-                            created_formatted = created_dt.strftime(
-                                "%m-%d %H:%M")
-                    except (ValueError, TypeError):
-                        # Fallback to old format
-                        if len(str(created_at)) > 10:
-                            created_formatted = str(created_at)[:10]
+                            expires_formatted = "Calculating..."
+                    else:
+                        expires_formatted = "N/A"
+
+                    # Format queue info for queued reservations
+                    queue_info = ""
+                    if res_status in ["queued", "pending"]:
+                        queue_position = reservation.get("queue_position", "?")
+                        estimated_wait = reservation.get(
+                            "estimated_wait_minutes", "?")
+                        if queue_position != "?" and queue_position is not None:
+                            queue_info = f"#{queue_position}"
+                            if estimated_wait != "?" and estimated_wait is not None:
+                                queue_info += f" (~{estimated_wait}min)"
                         else:
-                            created_formatted = str(created_at)
+                            queue_info = "Calculating..."
+                    elif res_status == "active":
+                        # Show SSH connection hint for active reservations
+                        ssh_command = reservation.get("ssh_command", "")
+                        if ssh_command and "dev@" in ssh_command:
+                            try:
+                                node_info = (
+                                    ssh_command.split("dev@")[1].split()[0]
+                                    if "dev@" in ssh_command
+                                    else "Ready"
+                                )
+                                queue_info = f"Ready: {node_info}"
+                            except (IndexError, AttributeError):
+                                queue_info = "Ready"
+                        else:
+                            queue_info = "Ready"
 
-                # Add color coding to status and determine if whole row should be dimmed
-                dim_row = False
-                if status == "failed":
-                    status_display = f"[red]{status}[/red]"
-                elif status in ["cancelled", "expired"]:
-                    status_display = f"[dim]{status}[/dim]"
-                    dim_row = True  # Grey out entire row for cancelled/expired
-                elif status in ["queued", "pending", "preparing"]:
-                    status_display = f"[yellow]{status}[/yellow]"
-                elif status == "active":
-                    status_display = f"[green]{status}[/green]"
-                else:
-                    # No color for unknown statuses
-                    status_display = str(status)
+                    # Format storage indicator
+                    if ebs_volume_id and ebs_volume_id.strip():
+                        storage_display = "persistent"
+                    else:
+                        storage_display = "temporary"
 
-                # Extract CLI and Lambda versions if details flag is set
-                cli_version_display = ""
-                lambda_version_display = ""
-                if details:
-                    cli_version = reservation.get("cli_version", "")
-                    cli_version_display = cli_version if cli_version else "<0.2.5"
+                    # Format created_at datetime (similar to expires formatting)
+                    created_formatted = "N/A"
+                    if created_at and created_at != "N/A":
+                        try:
+                            from datetime import datetime
 
-                    lambda_version = reservation.get("lambda_version", "")
-                    lambda_version_display = lambda_version if lambda_version else "<0.2.6"
+                            if isinstance(created_at, str):
+                                # Handle different ISO format variations
+                                if created_at.endswith("Z"):
+                                    created_dt_utc = datetime.fromisoformat(
+                                        created_at.replace("Z", "+00:00")
+                                    )
+                                elif "+" in created_at or created_at.endswith("00:00"):
+                                    created_dt_utc = datetime.fromisoformat(
+                                        created_at)
+                                else:
+                                    # Assume naive datetime is UTC
+                                    from datetime import timezone
 
-                # Apply dimming to entire row for cancelled/expired reservations
-                row_data = [
-                    f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(reservation_id)[:8],
-                    f"[dim]{user_display}[/dim]" if dim_row else user_display,
-                    f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
-                    status_display,
-                    f"[dim]{storage_display}[/dim]" if dim_row else storage_display,
-                    f"[dim]{queue_info}[/dim]" if dim_row else queue_info,
-                    f"[dim]{created_formatted}[/dim]" if dim_row else created_formatted,
-                    f"[dim]{expires_formatted}[/dim]" if dim_row else expires_formatted,
-                ]
+                                    naive_dt = datetime.fromisoformat(
+                                        created_at)
+                                    created_dt_utc = naive_dt.replace(
+                                        tzinfo=timezone.utc)
 
-                if details:
-                    row_data.append(
-                        f"[dim]{cli_version_display}[/dim]" if dim_row else cli_version_display)
-                    row_data.append(
-                        f"[dim]{lambda_version_display}[/dim]" if dim_row else lambda_version_display)
+                                created_dt = created_dt_utc.astimezone()  # Convert to local
+                                created_formatted = created_dt.strftime(
+                                    "%m-%d %H:%M")
+                            else:
+                                # Legacy timestamp
+                                created_dt = datetime.fromtimestamp(created_at)
+                                created_formatted = created_dt.strftime(
+                                    "%m-%d %H:%M")
+                        except (ValueError, TypeError):
+                            # Fallback to old format
+                            if len(str(created_at)) > 10:
+                                created_formatted = str(created_at)[:10]
+                            else:
+                                created_formatted = str(created_at)
 
-                table.add_row(*row_data)
+                    # Add color coding to status and determine if whole row should be dimmed
+                    dim_row = False
+                    if res_status == "failed":
+                        status_display = f"[red]{res_status}[/red]"
+                    elif res_status in ["cancelled", "expired"]:
+                        status_display = f"[dim]{res_status}[/dim]"
+                        dim_row = True  # Grey out entire row for cancelled/expired
+                    elif res_status in ["queued", "pending", "preparing"]:
+                        status_display = f"[yellow]{res_status}[/yellow]"
+                    elif res_status == "active":
+                        status_display = f"[green]{res_status}[/green]"
+                    else:
+                        # No color for unknown statuses
+                        status_display = str(res_status)
 
-            except Exception as row_error:
-                # Skip malformed reservations but log the error
-                rprint(
-                    f"[yellow]⚠️  Skipping malformed reservation: {str(row_error)}[/yellow]"
-                )
-                continue
+                    # Extract CLI and Lambda versions if details flag is set
+                    cli_version_display = ""
+                    lambda_version_display = ""
+                    if details:
+                        cli_version = reservation.get("cli_version", "")
+                        cli_version_display = cli_version if cli_version else "<0.2.5"
 
-        console.print(table)
+                        lambda_version = reservation.get("lambda_version", "")
+                        lambda_version_display = lambda_version if lambda_version else "<0.2.6"
 
-    except Exception as e:
-        rprint(f"[red]❌ Error in list command: {str(e)}[/red]")
-        # Debug info for troubleshooting
-        import traceback
+                    # Apply dimming to entire row for cancelled/expired reservations
+                    row_data = [
+                        f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(
+                            reservation_id)[:8],
+                        f"[dim]{user_display}[/dim]" if dim_row else user_display,
+                        f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
+                        status_display,
+                        f"[dim]{storage_display}[/dim]" if dim_row else storage_display,
+                        f"[dim]{queue_info}[/dim]" if dim_row else queue_info,
+                        f"[dim]{created_formatted}[/dim]" if dim_row else created_formatted,
+                        f"[dim]{expires_formatted}[/dim]" if dim_row else expires_formatted,
+                    ]
 
-        rprint(f"[dim]Debug traceback: {traceback.format_exc()}[/dim]")
+                    if details:
+                        row_data.append(
+                            f"[dim]{cli_version_display}[/dim]" if dim_row else cli_version_display)
+                        row_data.append(
+                            f"[dim]{lambda_version_display}[/dim]" if dim_row else lambda_version_display)
+
+                    table.add_row(*row_data)
+
+                except Exception as row_error:
+                    # Skip malformed reservations but log the error
+                    rprint(
+                        f"[yellow]⚠️  Skipping malformed reservation: {str(row_error)}[/yellow]"
+                    )
+                    continue
+
+            console.print(table)
+            return True
+
+        except Exception as e:
+            rprint(f"[red]❌ Error in list command: {str(e)}[/red]")
+            # Debug info for troubleshooting
+            import traceback
+
+            rprint(f"[dim]Debug traceback: {traceback.format_exc()}[/dim]")
+            return False
+
+    # Watch mode: continuously refresh the list
+    if watch:
+        import time
+        from datetime import datetime
+        from rich.console import Group
+
+        try:
+            config = load_config()
+            # Authenticate once at the start
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+            except RuntimeError as e:
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return False
+
+            # Use Live display to avoid flickering
+            with Live(console=console, refresh_per_second=4) as live:
+                while True:
+                    try:
+                        # Get current timestamp
+                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        # Determine user filter
+                        if user == "all":
+                            user_filter = None
+                        elif user:
+                            user_filter = user
+                        else:
+                            user_filter = user_info["user_id"]
+
+                        # Determine status filter
+                        if status:
+                            if status.strip().lower() == "all":
+                                statuses_to_include = None
+                            else:
+                                statuses_to_include = [s.strip() for s in status.split(",")]
+                        else:
+                            statuses_to_include = ["active", "preparing", "queued", "pending", "failed", "cancelled"]
+
+                        # Fetch reservations
+                        reservations = reservation_mgr.list_reservations(
+                            user_filter=user_filter, statuses_to_include=statuses_to_include
+                        )
+
+                        # Apply time filtering for failed/cancelled
+                        if not status or "all" not in (status.split(",") if status else []):
+                            from datetime import timezone, timedelta
+                            now = datetime.now(timezone.utc)
+                            one_hour_ago = now - timedelta(hours=1)
+
+                            filtered_reservations = []
+                            for reservation in reservations:
+                                reservation_status = reservation.get("status", "unknown")
+                                if reservation_status in ["active", "preparing", "queued", "pending"]:
+                                    filtered_reservations.append(reservation)
+                                elif reservation_status in ["failed", "cancelled"]:
+                                    created_at = reservation.get("created_at")
+                                    if created_at:
+                                        try:
+                                            if isinstance(created_at, str):
+                                                if created_at.endswith("Z"):
+                                                    created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                                                elif "+" in created_at or created_at.endswith("00:00"):
+                                                    created_dt = datetime.fromisoformat(created_at)
+                                                else:
+                                                    naive_dt = datetime.fromisoformat(created_at)
+                                                    created_dt = naive_dt.replace(tzinfo=timezone.utc)
+                                            else:
+                                                created_dt = datetime.fromtimestamp(created_at, tz=timezone.utc)
+
+                                            if created_dt >= one_hour_ago:
+                                                filtered_reservations.append(reservation)
+                                        except (ValueError, TypeError):
+                                            filtered_reservations.append(reservation)
+                                else:
+                                    filtered_reservations.append(reservation)
+
+                            reservations = filtered_reservations
+
+                        # Build the table (reuse existing table building logic)
+                        if reservations:
+                            # Sort reservations
+                            def sort_key(reservation):
+                                res_status = reservation.get("status", "unknown")
+                                if res_status == "failed":
+                                    return 0
+                                elif res_status in ["cancelled", "expired"]:
+                                    return 1
+                                elif res_status in ["active", "preparing", "queued", "pending"]:
+                                    return 2
+                                else:
+                                    return 1.5
+
+                            reservations = sorted(reservations, key=sort_key)
+
+                            # Create table
+                            table = Table(title="GPU Reservations")
+                            table.add_column("ID", style="cyan", no_wrap=True)
+                            table.add_column("User", style="green")
+                            table.add_column("GPUs", style="magenta")
+                            table.add_column("Status")
+                            table.add_column("Storage", style="dim", no_wrap=True)
+                            table.add_column("Queue Info", style="cyan")
+                            table.add_column("Created", style="blue")
+                            table.add_column("Expires/ETA", style="red")
+
+                            # Add rows (simplified version - just the key fields)
+                            for reservation in reservations[:20]:  # Limit to 20 for watch mode
+                                try:
+                                    res_id = reservation.get("reservation_id", "unknown")[:8]
+                                    user_id = reservation.get("user_id", "unknown")
+                                    user_display = user_id.split("@")[0] if "@" in user_id else user_id
+                                    gpu_count = reservation.get("gpu_count", 1)
+                                    gpu_type = reservation.get("gpu_type", "unknown")
+                                    res_status = reservation.get("status", "unknown")
+
+                                    if gpu_type and gpu_type not in ["unknown", "Unknown"]:
+                                        if gpu_count == 0:
+                                            gpu_display = gpu_type
+                                        else:
+                                            gpu_display = f"{gpu_count}x {gpu_type}"
+                                    else:
+                                        gpu_display = str(gpu_count)
+
+                                    # Status display
+                                    if res_status == "failed":
+                                        status_display = f"[red]{res_status}[/red]"
+                                    elif res_status in ["cancelled", "expired"]:
+                                        status_display = f"[dim]{res_status}[/dim]"
+                                    elif res_status in ["queued", "pending", "preparing"]:
+                                        status_display = f"[yellow]{res_status}[/yellow]"
+                                    elif res_status == "active":
+                                        status_display = f"[green]{res_status}[/green]"
+                                    else:
+                                        status_display = str(res_status)
+
+                                    ebs_volume_id = reservation.get("ebs_volume_id", None)
+                                    storage_display = "persistent" if ebs_volume_id and ebs_volume_id.strip() else "temporary"
+
+                                    queue_info = ""
+                                    if res_status in ["queued", "pending"]:
+                                        queue_position = reservation.get("queue_position", "?")
+                                        queue_info = f"#{queue_position}" if queue_position != "?" else "Calculating..."
+                                    elif res_status == "active":
+                                        queue_info = "Ready"
+
+                                    # Format created_at
+                                    created_at = reservation.get("created_at", "N/A")
+                                    created_formatted = "N/A"
+                                    if created_at and created_at != "N/A":
+                                        try:
+                                            if isinstance(created_at, str):
+                                                if created_at.endswith("Z"):
+                                                    created_dt_utc = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                                                elif "+" in created_at or created_at.endswith("00:00"):
+                                                    created_dt_utc = datetime.fromisoformat(created_at)
+                                                else:
+                                                    from datetime import timezone
+                                                    naive_dt = datetime.fromisoformat(created_at)
+                                                    created_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                                                created_dt = created_dt_utc.astimezone()
+                                                created_formatted = created_dt.strftime("%m-%d %H:%M")
+                                            else:
+                                                created_dt = datetime.fromtimestamp(created_at)
+                                                created_formatted = created_dt.strftime("%m-%d %H:%M")
+                                        except (ValueError, TypeError):
+                                            created_formatted = str(created_at)[:10] if len(str(created_at)) > 10 else str(created_at)
+
+                                    # Format expires_at
+                                    expires_at = reservation.get("expires_at", "N/A")
+                                    expires_formatted = "N/A"
+                                    if res_status == "active" and expires_at != "N/A":
+                                        try:
+                                            if isinstance(expires_at, str):
+                                                if expires_at.endswith("Z"):
+                                                    expires_dt_utc = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                                                elif "+" in expires_at or expires_at.endswith("00:00"):
+                                                    expires_dt_utc = datetime.fromisoformat(expires_at)
+                                                else:
+                                                    from datetime import timezone
+                                                    naive_dt = datetime.fromisoformat(expires_at)
+                                                    expires_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                                                expires_dt = expires_dt_utc.astimezone()
+                                                expires_formatted = expires_dt.strftime("%m-%d %H:%M")
+                                            else:
+                                                expires_dt = datetime.fromtimestamp(expires_at)
+                                                expires_formatted = expires_dt.strftime("%m-%d %H:%M")
+                                        except (ValueError, TypeError):
+                                            expires_formatted = "Invalid"
+                                    elif res_status in ["queued", "pending"]:
+                                        estimated_wait = reservation.get("estimated_wait_minutes", "?")
+                                        if estimated_wait != "?" and estimated_wait is not None:
+                                            expires_formatted = f"~{estimated_wait}min"
+                                        else:
+                                            expires_formatted = "Calculating..."
+
+                                    table.add_row(res_id, user_display, gpu_display, status_display,
+                                                storage_display, queue_info, created_formatted, expires_formatted)
+                                except:
+                                    continue
+
+                            header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                            display_group = Group(header, "", table)
+                            live.update(display_group)
+                        else:
+                            header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                            no_reservations = "[yellow]📋 No reservations found[/yellow]"
+                            display_group = Group(header, "", no_reservations)
+                            live.update(display_group)
+
+                        # Wait before next refresh
+                        time.sleep(2)
+
+                    except KeyboardInterrupt:
+                        live.stop()
+                        rprint("\n[yellow]👋 Watch mode stopped[/yellow]")
+                        break
+                    except Exception as e:
+                        error_msg = f"[red]❌ Error: {str(e)}[/red]"
+                        header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                        display_group = Group(header, "", error_msg)
+                        live.update(display_group)
+                        time.sleep(2)
+
+            # If we exit the while loop normally (via break)
+            return True
+
+        except KeyboardInterrupt:
+            rprint("\n[yellow]👋 Watch mode stopped[/yellow]")
+            return True
+    else:
+        # Single fetch mode
+        with Live(
+            Spinner("dots", text="📡 Fetching reservations..."), console=console
+        ) as live:
+            result = fetch_and_display_reservations(first_load=True)
+            live.stop()
+        return result
 
 
 @main.command()
@@ -2855,7 +3113,8 @@ def ssh_include(action: str):
                 ssh_config.write_text(new_content)
                 ssh_config.chmod(0o600)
                 rprint("[green]✅ Enabled SSH config Include directive[/green]")
-                rprint(f"[cyan]Added 'Include ~/.gpu-dev/*-sshconfig' to ~/.ssh/config[/cyan]")
+                rprint(
+                    f"[cyan]Added 'Include ~/.gpu-dev/*-sshconfig' to ~/.ssh/config[/cyan]")
             else:
                 rprint("[green]✅ SSH config Include already enabled[/green]")
 
@@ -2863,8 +3122,10 @@ def ssh_include(action: str):
             # Set permission to no
             permission_file.write_text("no")
             rprint("[yellow]✅ Disabled automatic SSH config Include[/yellow]")
-            rprint("[dim]Note: Existing Include directive in ~/.ssh/config not removed[/dim]")
-            rprint("[dim]You can manually remove the 'Include ~/.gpu-dev/*-sshconfig' line if desired[/dim]")
+            rprint(
+                "[dim]Note: Existing Include directive in ~/.ssh/config not removed[/dim]")
+            rprint(
+                "[dim]You can manually remove the 'Include ~/.gpu-dev/*-sshconfig' line if desired[/dim]")
 
     except Exception as e:
         rprint(f"[red]❌ Error updating SSH config setting: {str(e)}[/red]")

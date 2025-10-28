@@ -392,9 +392,10 @@ class ReservationManager:
         github_user: Optional[str] = None,
         jupyter_enabled: bool = False,
         recreate_env: bool = False,
-        dockerfile_s3_key: Optional[str] = None,
+        dockerfile: Optional[str] = None,
         no_persistent_disk: bool = False,
         dockerimage: Optional[str] = None,
+        preserve_entrypoint: bool = False,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
@@ -456,10 +457,12 @@ class ReservationManager:
                 message["github_user"] = github_user
 
             # Add Docker options if provided
-            if dockerfile_s3_key:
-                message["dockerfile_s3_key"] = dockerfile_s3_key
+            if dockerfile:
+                message["dockerfile"] = dockerfile
             if dockerimage:
                 message["dockerimage"] = dockerimage
+            # Always include preserve_entrypoint flag (don't make it conditional)
+            message["preserve_entrypoint"] = preserve_entrypoint
 
             queue_url = self.config.get_queue_url()
             self.config.sqs_client.send_message(
@@ -482,9 +485,10 @@ class ReservationManager:
         github_user: Optional[str] = None,
         jupyter_enabled: bool = False,
         recreate_env: bool = False,
-        dockerfile_s3_key: Optional[str] = None,
+        dockerfile: Optional[str] = None,
         dockerimage: Optional[str] = None,
         no_persistent_disk: bool = False,
+        preserve_entrypoint: bool = False,
     ) -> Optional[List[str]]:
         """Create multiple GPU reservations for multinode setup"""
         try:
@@ -548,10 +552,12 @@ class ReservationManager:
                     message["github_user"] = github_user
 
                 # Add Docker options if provided
-                if dockerfile_s3_key:
-                    message["dockerfile_s3_key"] = dockerfile_s3_key
+                if dockerfile:
+                    message["dockerfile"] = dockerfile
                 if dockerimage:
                     message["dockerimage"] = dockerimage
+                # Always include preserve_entrypoint flag (don't make it conditional)
+                message["preserve_entrypoint"] = preserve_entrypoint
 
                 # Send to SQS queue
                 queue_url = self.config.get_queue_url()
@@ -836,6 +842,33 @@ class ReservationManager:
     def extend_reservation(self, reservation_id: str, user_id: str, extension_hours: float) -> bool:
         """Extend an active reservation by the specified number of hours"""
         try:
+            # Capture current expiration BEFORE sending extension request to avoid race condition
+            response = self.reservations_table.query(
+                IndexName="UserIndex",
+                KeyConditionExpression="user_id = :user_id",
+                ExpressionAttributeValues={":user_id": user_id},
+            )
+            all_reservations = response.get("Items", [])
+
+            # Handle pagination for UserIndex query
+            while "LastEvaluatedKey" in response:
+                response = self.reservations_table.query(
+                    IndexName="UserIndex",
+                    KeyConditionExpression="user_id = :user_id",
+                    ExpressionAttributeValues={":user_id": user_id},
+                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                )
+                all_reservations.extend(response.get("Items", []))
+
+            matching_reservations = [
+                res for res in all_reservations
+                if res.get("reservation_id", "").startswith(reservation_id)
+            ]
+
+            initial_expires_at = None
+            if matching_reservations:
+                initial_expires_at = matching_reservations[0].get("expires_at", "")
+
             # Send message to Lambda to extend reservation
             # Lambda will handle both the expiration timestamp update and any necessary pod updates
             message = {
@@ -856,7 +889,7 @@ class ReservationManager:
 
             # Poll for 3 minutes to show the outcome
             return self._poll_extend_action_result(
-                reservation_id, user_id, extension_hours, timeout_minutes=3
+                reservation_id, user_id, extension_hours, timeout_minutes=3, initial_expires_at=initial_expires_at
             )
 
         except Exception as e:
@@ -1231,7 +1264,7 @@ class ReservationManager:
             return False
 
     def _poll_extend_action_result(
-        self, reservation_id: str, user_id: str, extension_hours: float, timeout_minutes: int = 3
+        self, reservation_id: str, user_id: str, extension_hours: float, timeout_minutes: int = 3, initial_expires_at: str = None
     ) -> bool:
         """Poll reservation table for extend action result"""
         try:
@@ -1245,7 +1278,8 @@ class ReservationManager:
                 )
                 live.update(spinner)
 
-                initial_expiration = None
+                # Use pre-captured initial_expires_at if provided (to avoid race condition)
+                initial_expiration = initial_expires_at
 
                 while time.time() - start_time < timeout_seconds:
                     try:
@@ -1310,45 +1344,25 @@ class ReservationManager:
                             and current_expiration
                         ):
                             live.stop()
-                            from datetime import datetime
+                            from datetime import datetime, timezone
 
                             try:
-                                exp_dt = datetime.fromisoformat(
-                                    current_expiration.replace("Z", "+00:00")
-                                )
-                                # Convert to local timezone for display
-                                try:
-                                    # Try to get local timezone (Python 3.9+)
-                                    local_exp = exp_dt.astimezone()
-                                    formatted_expiration = local_exp.strftime(
-                                        "%Y-%m-%d %H:%M:%S %Z"
-                                    )
-                                except:
-                                    # Fallback to UTC if timezone conversion fails
-                                    formatted_expiration = exp_dt.strftime(
-                                        "%Y-%m-%d %H:%M:%S UTC"
-                                    )
+                                # Treat as naive datetime and manually add UTC timezone (matches list command)
+                                naive_dt = datetime.fromisoformat(current_expiration)
+                                exp_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+                                # Convert to local timezone
+                                local_exp = exp_dt_utc.astimezone()
+                                # Format with same style as list command: month-day hour:minute
+                                formatted_expiration = local_exp.strftime("%m-%d %H:%M")
                                 console.print(
                                     f"[green]✅ Extended reservation {reservation_id} by {extension_hours} hours -- your new expiration is {formatted_expiration}[/green]"
                                 )
                                 return True
                             except Exception:
-                                # Fallback to UTC display if timezone conversion fails
-                                try:
-                                    exp_dt = datetime.fromisoformat(
-                                        current_expiration.replace(
-                                            "Z", "+00:00")
-                                    )
-                                    formatted_expiration = exp_dt.strftime(
-                                        "%Y-%m-%d %H:%M:%S UTC"
-                                    )
-                                    console.print(
-                                        f"[green]✅ Extended reservation {reservation_id} by {extension_hours} hours -- your new expiration is {formatted_expiration}[/green]"
-                                    )
-                                except:
-                                    console.print(
-                                        f"[green]✅ Extended reservation {reservation_id} by {extension_hours} hours -- your new expiration is {current_expiration}[/green]"
-                                    )
+                                # Fallback to raw display if parsing fails
+                                console.print(
+                                    f"[green]✅ Extended reservation {reservation_id} by {extension_hours} hours -- your new expiration is {current_expiration}[/green]"
+                                )
                                 return True
 
                         spinner.text = f"🔄 Processing extension request..."

@@ -152,6 +152,21 @@ locals {
     "arm64"  = data.aws_ami.eks_gpu_ami_arm64.id
   }
 
+  # Map internal Terraform GPU types to user-facing Kubernetes GPU types
+  # This allows multiple AZ node groups to share the same user-facing GPU type
+  gpu_type_kubernetes_labels = {
+    "t4"     = "t4"
+    "t4-az2" = "t4"  # Both t4 and t4-az2 should be labeled as "t4" in Kubernetes
+    "l4"     = "l4"
+    "h100"   = "h100"
+    "h200"   = "h200"
+    "b200"   = "b200"
+    "a100"   = "a100"
+    "cpu-arm" = "cpu-arm"
+    "cpu-x86" = "cpu-x86"
+    "t4-small" = "t4-small"
+  }
+
   # Flatten capacity reservations to create multiple ASGs when needed
   gpu_capacity_reservations = flatten([
     for gpu_type, gpu_config in local.current_config.supported_gpu_types : [
@@ -352,7 +367,7 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
     cluster_ca       = aws_eks_cluster.gpu_dev_cluster.certificate_authority[0].data
     cluster_cidr     = var.vpc_cidr
     region           = local.current_config.aws_region
-    gpu_type         = each.value.gpu_type
+    gpu_type         = local.gpu_type_kubernetes_labels[each.value.gpu_type]
   }))
 
   tag_specifications {

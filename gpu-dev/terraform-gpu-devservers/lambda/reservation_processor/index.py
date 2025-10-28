@@ -48,14 +48,16 @@ MAX_RESERVATION_HOURS = int(os.environ["MAX_RESERVATION_HOURS"])
 DEFAULT_TIMEOUT_HOURS = int(os.environ["DEFAULT_TIMEOUT_HOURS"])
 QUEUE_URL = os.environ["QUEUE_URL"]
 PRIMARY_AVAILABILITY_ZONE = os.environ["PRIMARY_AVAILABILITY_ZONE"]
-GPU_DEV_CONTAINER_IMAGE = os.environ.get("GPU_DEV_CONTAINER_IMAGE", "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel")
+GPU_DEV_CONTAINER_IMAGE = os.environ.get(
+    "GPU_DEV_CONTAINER_IMAGE", "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel")
 EFS_SECURITY_GROUP_ID = os.environ.get("EFS_SECURITY_GROUP_ID")
-EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(",") if os.environ.get("EFS_SUBNET_IDS") else []
+EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(
+    ",") if os.environ.get("EFS_SUBNET_IDS") else []
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 
 # Version validation - injected via Terraform
-LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.0")
-MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.0")
+LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.2")
+MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.2")
 
 # AWS clients
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
@@ -126,7 +128,8 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
         v1 = client.CoreV1Api(k8s_client)
 
         # Get all nodes with the requested GPU type
-        logger.info(f"Querying nodes for GPU type {gpu_type} with {gpus_requested} GPUs needed")
+        logger.info(
+            f"Querying nodes for GPU type {gpu_type} with {gpus_requested} GPUs needed")
         nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
 
         candidate_nodes = []
@@ -146,16 +149,19 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
                 schedulable = False
 
             if not ready or not schedulable:
-                logger.debug(f"Skipping node {node.metadata.name} - not ready or not schedulable")
+                logger.debug(
+                    f"Skipping node {node.metadata.name} - not ready or not schedulable")
                 continue
 
             # Get node's availability zone
             node_az = None
             if node.metadata.labels:
-                node_az = node.metadata.labels.get('topology.kubernetes.io/zone')
+                node_az = node.metadata.labels.get(
+                    'topology.kubernetes.io/zone')
                 if not node_az:
                     # Fallback to failure-domain label (older k8s versions)
-                    node_az = node.metadata.labels.get('failure-domain.beta.kubernetes.io/zone')
+                    node_az = node.metadata.labels.get(
+                        'failure-domain.beta.kubernetes.io/zone')
 
             if not node_az:
                 logger.warning(f"Node {node.metadata.name} has no AZ label")
@@ -170,10 +176,12 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
                     'az': node_az,
                     'available_gpus': available_gpus
                 })
-                logger.info(f"Node {node.metadata.name} in {node_az}: {available_gpus} available GPUs")
+                logger.info(
+                    f"Node {node.metadata.name} in {node_az}: {available_gpus} available GPUs")
 
         if not candidate_nodes:
-            logger.warning(f"No nodes found with {gpus_requested} available {gpu_type} GPUs")
+            logger.warning(
+                f"No nodes found with {gpus_requested} available {gpu_type} GPUs")
             return None
 
         # Return the AZ of the first suitable node (Kubernetes scheduler will make the final decision)
@@ -181,7 +189,8 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
         selected_node = candidate_nodes[0]
         target_az = selected_node['az']
 
-        logger.info(f"Target AZ for {gpu_type} reservation: {target_az} (node: {selected_node['node_name']})")
+        logger.info(
+            f"Target AZ for {gpu_type} reservation: {target_az} (node: {selected_node['node_name']})")
         return target_az
 
     except Exception as e:
@@ -211,7 +220,8 @@ def check_for_multiple_volumes(user_id):
                 vol_az = vol["AvailabilityZone"]
                 vol_created = vol.get("CreateTime", "unknown")
                 vol_state = vol["State"]
-                volume_info.append(f"{vol_id} ({vol_az}, {vol_state}, created {vol_created})")
+                volume_info.append(
+                    f"{vol_id} ({vol_az}, {vol_state}, created {vol_created})")
 
             warning = (
                 f"⚠️ Multiple persistent disks detected for your account:\n"
@@ -222,7 +232,8 @@ def check_for_multiple_volumes(user_id):
             return warning
         return None
     except Exception as e:
-        logger.warning(f"Failed to check for multiple volumes for user {user_id}: {e}")
+        logger.warning(
+            f"Failed to check for multiple volumes for user {user_id}: {e}")
         return None
 
 
@@ -251,7 +262,8 @@ def needs_ebs_migration(user_id, target_az, reservation_id=None):
         if in_use_volumes:
             # Volume is still attached to another pod - wait for it to detach
             in_use_volume_ids = [v["VolumeId"] for v in in_use_volumes]
-            logger.info(f"Found {len(in_use_volumes)} in-use volume(s) for user {user_id}: {in_use_volume_ids} - waiting for detachment")
+            logger.info(
+                f"Found {len(in_use_volumes)} in-use volume(s) for user {user_id}: {in_use_volume_ids} - waiting for detachment")
 
             # Update status for user feedback
             if reservation_id:
@@ -280,7 +292,8 @@ def needs_ebs_migration(user_id, target_az, reservation_id=None):
 
                 remaining_in_use = check_response.get("Volumes", [])
                 if not remaining_in_use:
-                    logger.info(f"All volumes now available after {elapsed}s wait")
+                    logger.info(
+                        f"All volumes now available after {elapsed}s wait")
                     if reservation_id:
                         update_reservation_status(
                             reservation_id,
@@ -289,12 +302,14 @@ def needs_ebs_migration(user_id, target_az, reservation_id=None):
                         )
                     break
 
-                logger.info(f"Still waiting for volumes to detach... ({elapsed}s/{max_wait_seconds}s)")
+                logger.info(
+                    f"Still waiting for volumes to detach... ({elapsed}s/{max_wait_seconds}s)")
 
             if remaining_in_use:
                 # Disk didn't detach in time - error out
                 error_msg = f"Persistent disk did not detach from previous session in time ({max_wait_seconds}s timeout). Please wait a moment and try again."
-                logger.error(f"Volume detachment timeout for user {user_id}: {in_use_volume_ids}")
+                logger.error(
+                    f"Volume detachment timeout for user {user_id}: {in_use_volume_ids}")
                 if reservation_id:
                     update_reservation_status(
                         reservation_id,
@@ -319,11 +334,14 @@ def needs_ebs_migration(user_id, target_az, reservation_id=None):
         if len(active_volumes) > 1:
             # This should NEVER happen - multiple active volumes is a bug!
             volume_ids = [vol["VolumeId"] for vol in active_volumes]
-            volume_details = [(vol["VolumeId"], vol["AvailabilityZone"], vol.get("CreateTime", "unknown")) for vol in active_volumes]
-            logger.error(f"❌ CRITICAL BUG: Multiple ActiveVolume=true volumes found for user {user_id}:")
+            volume_details = [(vol["VolumeId"], vol["AvailabilityZone"], vol.get(
+                "CreateTime", "unknown")) for vol in active_volumes]
+            logger.error(
+                f"❌ CRITICAL BUG: Multiple ActiveVolume=true volumes found for user {user_id}:")
             for vol_id, az, create_time in volume_details:
                 logger.error(f"  - {vol_id} in {az}, created {create_time}")
-            logger.error(f"This violates single source of truth! Using oldest and cleaning up others.")
+            logger.error(
+                f"This violates single source of truth! Using oldest and cleaning up others.")
 
             # Use oldest active volume and remove ActiveVolume tag from others
             oldest_active = min(active_volumes, key=lambda v: v["CreateTime"])
@@ -334,39 +352,47 @@ def needs_ebs_migration(user_id, target_az, reservation_id=None):
             for vol in active_volumes:
                 if vol["VolumeId"] != current_volume_id:
                     try:
-                        logger.info(f"Removing ActiveVolume tag from duplicate volume {vol['VolumeId']}")
+                        logger.info(
+                            f"Removing ActiveVolume tag from duplicate volume {vol['VolumeId']}")
                         ec2_client.delete_tags(
                             Resources=[vol["VolumeId"]],
                             Tags=[{"Key": "ActiveVolume"}]
                         )
                     except Exception as cleanup_error:
-                        logger.warning(f"Failed to remove ActiveVolume tag from {vol['VolumeId']}: {cleanup_error}")
+                        logger.warning(
+                            f"Failed to remove ActiveVolume tag from {vol['VolumeId']}: {cleanup_error}")
 
             # After cleanup, check if migration is needed for the active volume
             if current_az == target_az:
-                logger.info(f"Active volume {current_volume_id} already in target AZ {target_az} - no migration needed")
+                logger.info(
+                    f"Active volume {current_volume_id} already in target AZ {target_az} - no migration needed")
                 return False, current_volume_id, current_az
             else:
-                logger.info(f"Active volume {current_volume_id} needs migration: {current_az} -> {target_az}")
+                logger.info(
+                    f"Active volume {current_volume_id} needs migration: {current_az} -> {target_az}")
                 return True, current_volume_id, current_az
 
         elif len(active_volumes) == 1:
             # Exactly one active volume found - this is the happy path!
             current_volume_id = active_volumes[0]["VolumeId"]
             current_az = active_volumes[0]["AvailabilityZone"]
-            logger.info(f"Found active volume {current_volume_id} in {current_az} for user {user_id}")
+            logger.info(
+                f"Found active volume {current_volume_id} in {current_az} for user {user_id}")
 
             if current_az == target_az:
-                logger.info(f"Active volume {current_volume_id} already in target AZ {target_az} - no migration needed")
+                logger.info(
+                    f"Active volume {current_volume_id} already in target AZ {target_az} - no migration needed")
                 return False, current_volume_id, current_az
             else:
-                logger.info(f"Active volume {current_volume_id} needs migration: {current_az} -> {target_az}")
+                logger.info(
+                    f"Active volume {current_volume_id} needs migration: {current_az} -> {target_az}")
                 return True, current_volume_id, current_az
 
         else:
             # No active volumes found - LEGACY BEHAVIOR for existing users
             # Search for ANY volumes (without ActiveVolume tag) and pick oldest
-            logger.info(f"No active volumes found for user {user_id} - checking for legacy volumes")
+            logger.info(
+                f"No active volumes found for user {user_id} - checking for legacy volumes")
 
             legacy_volumes_response = ec2_client.describe_volumes(
                 Filters=[
@@ -378,33 +404,40 @@ def needs_ebs_migration(user_id, target_az, reservation_id=None):
             legacy_volumes = legacy_volumes_response.get("Volumes", [])
 
             if not legacy_volumes:
-                logger.info(f"No available EBS volumes found for user {user_id} - no migration needed")
+                logger.info(
+                    f"No available EBS volumes found for user {user_id} - no migration needed")
                 return False, None, None
 
             # Filter out volumes that already have ActiveVolume tag (shouldn't happen, but be safe)
             untagged_volumes = []
             for vol in legacy_volumes:
-                tags = {tag["Key"]: tag["Value"] for tag in vol.get("Tags", [])}
+                tags = {tag["Key"]: tag["Value"]
+                        for tag in vol.get("Tags", [])}
                 if "ActiveVolume" not in tags:
                     untagged_volumes.append(vol)
 
             if not untagged_volumes:
-                logger.warning(f"All legacy volumes already have ActiveVolume tag - should have been found earlier")
+                logger.warning(
+                    f"All legacy volumes already have ActiveVolume tag - should have been found earlier")
                 return False, None, None
 
             # Pick oldest legacy volume and tag it as active
-            oldest_legacy = min(untagged_volumes, key=lambda v: v["CreateTime"])
+            oldest_legacy = min(
+                untagged_volumes, key=lambda v: v["CreateTime"])
             current_volume_id = oldest_legacy["VolumeId"]
             current_az = oldest_legacy["AvailabilityZone"]
 
             if len(untagged_volumes) > 1:
                 volume_ids = [vol["VolumeId"] for vol in untagged_volumes]
-                logger.warning(f"⚠️ Multiple legacy volumes found for user {user_id}: {volume_ids}")
-                logger.warning(f"Tagging oldest volume {current_volume_id} as active. Others will be left unmanaged.")
+                logger.warning(
+                    f"⚠️ Multiple legacy volumes found for user {user_id}: {volume_ids}")
+                logger.warning(
+                    f"Tagging oldest volume {current_volume_id} as active. Others will be left unmanaged.")
 
             # Tag this volume as the active one going forward
             try:
-                logger.info(f"Tagging legacy volume {current_volume_id} as ActiveVolume=true for user {user_id}")
+                logger.info(
+                    f"Tagging legacy volume {current_volume_id} as ActiveVolume=true for user {user_id}")
                 ec2_client.create_tags(
                     Resources=[current_volume_id],
                     Tags=[
@@ -412,20 +445,25 @@ def needs_ebs_migration(user_id, target_az, reservation_id=None):
                         {"Key": "MigrationVersion", "Value": "v2-single-source"}
                     ]
                 )
-                logger.info(f"Successfully tagged {current_volume_id} as active volume")
+                logger.info(
+                    f"Successfully tagged {current_volume_id} as active volume")
             except Exception as tag_error:
-                logger.warning(f"Failed to tag volume {current_volume_id} as active: {tag_error}")
+                logger.warning(
+                    f"Failed to tag volume {current_volume_id} as active: {tag_error}")
                 # Continue anyway - tagging is not critical for this reservation
 
             if current_az == target_az:
-                logger.info(f"Legacy volume {current_volume_id} already in target AZ {target_az} - no migration needed")
+                logger.info(
+                    f"Legacy volume {current_volume_id} already in target AZ {target_az} - no migration needed")
                 return False, current_volume_id, current_az
             else:
-                logger.info(f"Legacy volume {current_volume_id} needs migration: {current_az} -> {target_az}")
+                logger.info(
+                    f"Legacy volume {current_volume_id} needs migration: {current_az} -> {target_az}")
                 return True, current_volume_id, current_az
 
     except Exception as e:
-        logger.error(f"Error checking EBS migration need for user {user_id}: {str(e)}")
+        logger.error(
+            f"Error checking EBS migration need for user {user_id}: {str(e)}")
         return False, None, None
 
 
@@ -435,18 +473,22 @@ def migrate_ebs_across_az(user_id, current_volume_id, current_az, target_az):
     Returns (new_volume_id, snapshot_id) or raises exception.
     """
     try:
-        logger.info(f"Starting EBS migration for user {user_id} from {current_az} to {target_az}")
+        logger.info(
+            f"Starting EBS migration for user {user_id} from {current_az} to {target_az}")
 
         # Get volume details before snapshotting
         try:
-            vol_response = ec2_client.describe_volumes(VolumeIds=[current_volume_id])
+            vol_response = ec2_client.describe_volumes(
+                VolumeIds=[current_volume_id])
             vol_info = vol_response["Volumes"][0]
             vol_size = vol_info.get("Size", "unknown")
             vol_created = vol_info.get("CreateTime", "unknown")
             vol_state = vol_info.get("State", "unknown")
-            logger.info(f"Volume to migrate: {current_volume_id} (size: {vol_size}GB, created: {vol_created}, state: {vol_state})")
+            logger.info(
+                f"Volume to migrate: {current_volume_id} (size: {vol_size}GB, created: {vol_created}, state: {vol_state})")
         except Exception as e:
-            logger.warning(f"Could not get volume details for {current_volume_id}: {e}")
+            logger.warning(
+                f"Could not get volume details for {current_volume_id}: {e}")
 
         # Step 1: Create snapshot of current volume
         logger.info(f"Creating snapshot of volume {current_volume_id}")
@@ -457,7 +499,8 @@ def migrate_ebs_across_az(user_id, current_volume_id, current_az, target_az):
                 "ResourceType": "snapshot",
                 "Tags": [
                     {"Key": "gpu-dev-user", "Value": user_id},
-                    {"Key": "Name", "Value": f"gpu-dev-migration-{user_id.split('@')[0]}-{int(time.time())}"},
+                    {"Key": "Name",
+                        "Value": f"gpu-dev-migration-{user_id.split('@')[0]}-{int(time.time())}"},
                     {"Key": "Project", "Value": "gpu-dev-servers"},
                     {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
                     {"Key": "MigrationType", "Value": "az-migration"},
@@ -468,17 +511,20 @@ def migrate_ebs_across_az(user_id, current_volume_id, current_az, target_az):
         )
 
         snapshot_id = snapshot_response["SnapshotId"]
-        logger.info(f"Created snapshot {snapshot_id}, waiting for completion...")
+        logger.info(
+            f"Created snapshot {snapshot_id}, waiting for completion...")
 
         # Wait for snapshot to complete
         waiter = ec2_client.get_waiter("snapshot_completed")
-        waiter.wait(SnapshotIds=[snapshot_id], WaiterConfig={"Delay": 15, "MaxAttempts": 240})  # Up to 1 hour
+        waiter.wait(SnapshotIds=[snapshot_id], WaiterConfig={
+                    "Delay": 15, "MaxAttempts": 240})  # Up to 1 hour
 
         logger.info(f"Snapshot {snapshot_id} completed successfully")
 
         # Step 2: Create new volume from snapshot in target AZ
         # NEW: Tag with ActiveVolume=true to mark as the single source of truth
-        logger.info(f"Creating new volume from snapshot {snapshot_id} in AZ {target_az}")
+        logger.info(
+            f"Creating new volume from snapshot {snapshot_id} in AZ {target_az}")
         new_volume_response = ec2_client.create_volume(
             AvailabilityZone=target_az,
             SnapshotId=snapshot_id,
@@ -489,45 +535,55 @@ def migrate_ebs_across_az(user_id, current_volume_id, current_az, target_az):
                 "ResourceType": "volume",
                 "Tags": [
                     {"Key": "gpu-dev-user", "Value": user_id},
-                    {"Key": "Name", "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
+                    {"Key": "Name",
+                        "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
                     {"Key": "Project", "Value": "gpu-dev-servers"},
                     {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
                     {"Key": "MigratedFrom", "Value": current_az},
                     {"Key": "SourceSnapshot", "Value": snapshot_id},
-                    {"Key": "ActiveVolume", "Value": "true"},  # NEW: Mark as active volume
+                    # NEW: Mark as active volume
+                    {"Key": "ActiveVolume", "Value": "true"},
                     {"Key": "MigrationVersion", "Value": "v2-single-source"},
-                    {"Key": "PreviousVolumeId", "Value": current_volume_id}  # Track lineage
+                    # Track lineage
+                    {"Key": "PreviousVolumeId", "Value": current_volume_id}
                 ]
             }]
         )
 
         new_volume_id = new_volume_response["VolumeId"]
-        logger.info(f"Created new volume {new_volume_id} with ActiveVolume=true tag, waiting for availability...")
+        logger.info(
+            f"Created new volume {new_volume_id} with ActiveVolume=true tag, waiting for availability...")
 
         # Wait for new volume to be available
         waiter = ec2_client.get_waiter("volume_available")
-        waiter.wait(VolumeIds=[new_volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+        waiter.wait(VolumeIds=[new_volume_id], WaiterConfig={
+                    "Delay": 5, "MaxAttempts": 60})
 
         # Step 3: Remove ActiveVolume tag from old volume, then delete it
         # This ensures only ONE volume has ActiveVolume=true at any time
         try:
-            logger.info(f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
+            logger.info(
+                f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
             ec2_client.delete_tags(
                 Resources=[current_volume_id],
                 Tags=[{"Key": "ActiveVolume"}]
             )
         except Exception as tag_error:
-            logger.warning(f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
+            logger.warning(
+                f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
             # Continue anyway - deletion is more important
 
-        logger.info(f"Deleting old volume {current_volume_id} from {current_az}")
+        logger.info(
+            f"Deleting old volume {current_volume_id} from {current_az}")
         ec2_client.delete_volume(VolumeId=current_volume_id)
 
-        logger.info(f"EBS migration completed: {current_volume_id} ({current_az}) -> {new_volume_id} ({target_az})")
+        logger.info(
+            f"EBS migration completed: {current_volume_id} ({current_az}) -> {new_volume_id} ({target_az})")
         return new_volume_id, snapshot_id
 
     except Exception as e:
-        logger.error(f"Error during EBS migration for user {user_id}: {str(e)}")
+        logger.error(
+            f"Error during EBS migration for user {user_id}: {str(e)}")
         raise
 
 
@@ -547,7 +603,8 @@ def restore_ebs_from_existing_snapshot(snapshot_id, target_az, user_id):
     Returns volume_id of the restored volume.
     """
     try:
-        logger.info(f"Restoring EBS volume from snapshot {snapshot_id} in AZ {target_az}")
+        logger.info(
+            f"Restoring EBS volume from snapshot {snapshot_id} in AZ {target_az}")
 
         # Create new volume from existing snapshot in target AZ
         # NEW: Tag with ActiveVolume=true for single source of truth
@@ -561,29 +618,35 @@ def restore_ebs_from_existing_snapshot(snapshot_id, target_az, user_id):
                 "ResourceType": "volume",
                 "Tags": [
                     {"Key": "gpu-dev-user", "Value": user_id},
-                    {"Key": "Name", "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
+                    {"Key": "Name",
+                        "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
                     {"Key": "Project", "Value": "gpu-dev-servers"},
                     {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
                     {"Key": "RestoredFrom", "Value": snapshot_id},
                     {"Key": "RestoredToAZ", "Value": target_az},
-                    {"Key": "ActiveVolume", "Value": "true"},  # NEW: Mark as active volume
+                    # NEW: Mark as active volume
+                    {"Key": "ActiveVolume", "Value": "true"},
                     {"Key": "MigrationVersion", "Value": "v2-single-source"}
                 ]
             }]
         )
 
         new_volume_id = new_volume_response["VolumeId"]
-        logger.info(f"Created new volume {new_volume_id} with ActiveVolume=true tag, waiting for availability...")
+        logger.info(
+            f"Created new volume {new_volume_id} with ActiveVolume=true tag, waiting for availability...")
 
         # Wait for new volume to be available
         waiter = ec2_client.get_waiter("volume_available")
-        waiter.wait(VolumeIds=[new_volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+        waiter.wait(VolumeIds=[new_volume_id], WaiterConfig={
+                    "Delay": 5, "MaxAttempts": 60})
 
-        logger.info(f"EBS restore completed: snapshot {snapshot_id} -> volume {new_volume_id} in {target_az}")
+        logger.info(
+            f"EBS restore completed: snapshot {snapshot_id} -> volume {new_volume_id} in {target_az}")
         return new_volume_id
 
     except Exception as e:
-        logger.error(f"Error restoring EBS from snapshot {snapshot_id}: {str(e)}")
+        logger.error(
+            f"Error restoring EBS from snapshot {snapshot_id}: {str(e)}")
         raise
 
 
@@ -601,17 +664,20 @@ def create_or_find_user_efs(user_id: str) -> str:
             # Get tags for this filesystem
             try:
                 tags_response = efs_client.describe_tags(FileSystemId=fs_id)
-                tags = {tag["Key"]: tag["Value"] for tag in tags_response.get("Tags", [])}
+                tags = {tag["Key"]: tag["Value"]
+                        for tag in tags_response.get("Tags", [])}
 
                 if tags.get("gpu-dev-user") == user_id:
-                    logger.info(f"Found existing EFS {fs_id} for user {user_id}")
+                    logger.info(
+                        f"Found existing EFS {fs_id} for user {user_id}")
 
                     # Ensure mount target exists
                     ensure_efs_mount_target(fs_id)
                     return fs_id
 
             except Exception as tag_error:
-                logger.warning(f"Could not get tags for EFS {fs_id}: {tag_error}")
+                logger.warning(
+                    f"Could not get tags for EFS {fs_id}: {tag_error}")
                 continue
 
         # Create new EFS filesystem
@@ -624,7 +690,8 @@ def create_or_find_user_efs(user_id: str) -> str:
             ProvisionedThroughputInMibps=125,  # 125 MiB/s for good performance
             Tags=[
                 {"Key": "gpu-dev-user", "Value": user_id},
-                {"Key": "Name", "Value": f"gpu-dev-shared-{user_id.split('@')[0]}"},
+                {"Key": "Name",
+                    "Value": f"gpu-dev-shared-{user_id.split('@')[0]}"},
                 {"Key": "Project", "Value": "gpu-dev-servers"},
                 {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
             ]
@@ -651,7 +718,8 @@ def create_or_find_user_efs(user_id: str) -> str:
             logger.info(f"EFS {fs_id} state: {fs_state}, waiting...")
             time.sleep(10)
         else:
-            raise Exception(f"EFS {fs_id} did not become available within {max_wait} seconds")
+            raise Exception(
+                f"EFS {fs_id} did not become available within {max_wait} seconds")
 
         # Create mount target
         ensure_efs_mount_target(fs_id)
@@ -662,21 +730,26 @@ def create_or_find_user_efs(user_id: str) -> str:
                 FileSystemId=fs_id,
                 LifecyclePolicies=[
                     {
-                        'TransitionToIA': 'AFTER_30_DAYS',  # Move to Infrequent Access after 30 days (cheaper)
-                        'TransitionToPrimaryStorageClass': 'AFTER_1_ACCESS'  # Move back to standard when accessed
+                        # Move to Infrequent Access after 30 days (cheaper)
+                        'TransitionToIA': 'AFTER_30_DAYS',
+                        # Move back to standard when accessed
+                        'TransitionToPrimaryStorageClass': 'AFTER_1_ACCESS'
                     }
                 ]
             )
-            logger.info(f"Set lifecycle policy for EFS {fs_id} - files move to IA after 30 days")
+            logger.info(
+                f"Set lifecycle policy for EFS {fs_id} - files move to IA after 30 days")
         except Exception as lifecycle_error:
-            logger.warning(f"Failed to set lifecycle policy for EFS {fs_id}: {lifecycle_error}")
+            logger.warning(
+                f"Failed to set lifecycle policy for EFS {fs_id}: {lifecycle_error}")
             # Don't fail EFS creation for this
 
         logger.info(f"Created new EFS filesystem {fs_id} for user {user_id}")
         return fs_id
 
     except Exception as e:
-        logger.error(f"Error creating/finding EFS for user {user_id}: {str(e)}")
+        logger.error(
+            f"Error creating/finding EFS for user {user_id}: {str(e)}")
         raise
 
 
@@ -685,62 +758,73 @@ def ensure_efs_mount_target(fs_id: str) -> str:
     try:
         # Check for existing mount targets
         response = efs_client.describe_mount_targets(FileSystemId=fs_id)
-        existing_mount_targets = {mt["SubnetId"]: mt for mt in response.get("MountTargets", [])}
-        
+        existing_mount_targets = {
+            mt["SubnetId"]: mt for mt in response.get("MountTargets", [])}
+
         created_mount_target_id = None
-        
+
         # Ensure we have mount targets in all subnets
         for subnet_id in EFS_SUBNET_IDS:
             if subnet_id in existing_mount_targets:
                 mt = existing_mount_targets[subnet_id]
                 if mt["LifeCycleState"] == "available":
-                    logger.info(f"Found existing mount target {mt['MountTargetId']} for EFS {fs_id} in subnet {subnet_id}")
+                    logger.info(
+                        f"Found existing mount target {mt['MountTargetId']} for EFS {fs_id} in subnet {subnet_id}")
                     if created_mount_target_id is None:
                         created_mount_target_id = mt["MountTargetId"]
                     continue
-            
+
             # Create mount target for this subnet
-            logger.info(f"Creating mount target for EFS {fs_id} in subnet {subnet_id}")
-            
+            logger.info(
+                f"Creating mount target for EFS {fs_id} in subnet {subnet_id}")
+
             try:
                 create_response = efs_client.create_mount_target(
                     FileSystemId=fs_id,
                     SubnetId=subnet_id,
                     SecurityGroups=[EFS_SECURITY_GROUP_ID]
                 )
-                
+
                 mount_target_id = create_response["MountTargetId"]
                 if created_mount_target_id is None:
                     created_mount_target_id = mount_target_id
-                
+
                 # Wait for this mount target to be available
-                logger.info(f"Waiting for mount target {mount_target_id} to become available")
-                
+                logger.info(
+                    f"Waiting for mount target {mount_target_id} to become available")
+
                 max_wait = 180  # 3 minutes
                 start_time = time.time()
-                
+
                 while time.time() - start_time < max_wait:
-                    mt_response = efs_client.describe_mount_targets(MountTargetId=mount_target_id)
+                    mt_response = efs_client.describe_mount_targets(
+                        MountTargetId=mount_target_id)
                     mt_state = mt_response["MountTargets"][0]["LifeCycleState"]
-                    
+
                     if mt_state == "available":
-                        logger.info(f"Mount target {mount_target_id} is now available")
+                        logger.info(
+                            f"Mount target {mount_target_id} is now available")
                         break
                     elif mt_state in ["error", "deleted"]:
-                        raise Exception(f"Mount target {mount_target_id} entered error state: {mt_state}")
-                    
-                    logger.info(f"Mount target {mount_target_id} state: {mt_state}, waiting...")
+                        raise Exception(
+                            f"Mount target {mount_target_id} entered error state: {mt_state}")
+
+                    logger.info(
+                        f"Mount target {mount_target_id} state: {mt_state}, waiting...")
                     time.sleep(10)
                 else:
-                    raise Exception(f"Mount target {mount_target_id} did not become available within {max_wait} seconds")
-                    
+                    raise Exception(
+                        f"Mount target {mount_target_id} did not become available within {max_wait} seconds")
+
             except Exception as e:
                 if "MountTargetConflict" in str(e):
-                    logger.info(f"Mount target already exists for subnet {subnet_id}, continuing...")
+                    logger.info(
+                        f"Mount target already exists for subnet {subnet_id}, continuing...")
                 else:
-                    logger.error(f"Error creating mount target in subnet {subnet_id}: {str(e)}")
+                    logger.error(
+                        f"Error creating mount target in subnet {subnet_id}: {str(e)}")
                     raise
-        
+
         return created_mount_target_id
 
     except Exception as e:
@@ -791,10 +875,13 @@ def trigger_availability_update():
 def update_reservation_error(reservation_id: str, error_message: str, error_field: str = "failure_reason") -> None:
     """Update reservation with error message in any error field"""
     try:
-        update_reservation_fields(reservation_id, **{error_field: error_message})
-        logger.info(f"Updated reservation {reservation_id} with {error_field}: {error_message}")
+        update_reservation_fields(
+            reservation_id, **{error_field: error_message})
+        logger.info(
+            f"Updated reservation {reservation_id} with {error_field}: {error_message}")
     except Exception as e:
-        logger.error(f"Failed to update reservation {reservation_id} with error: {e}")
+        logger.error(
+            f"Failed to update reservation {reservation_id} with error: {e}")
 
 
 def find_reservation_by_prefix(reservation_id: str, user_id: str = None) -> dict:
@@ -805,27 +892,33 @@ def find_reservation_by_prefix(reservation_id: str, user_id: str = None) -> dict
         # First try exact match (most efficient)
         if len(reservation_id) == 36 and reservation_id.count('-') == 4:  # Full UUID format
             try:
-                response = reservations_table.get_item(Key={"reservation_id": reservation_id})
+                response = reservations_table.get_item(
+                    Key={"reservation_id": reservation_id})
                 if "Item" in response:
                     item = response["Item"]
                     # Check user_id if provided
                     if user_id and item.get("user_id") != user_id:
-                        raise ValueError(f"Reservation {reservation_id} not found for user {user_id}")
+                        raise ValueError(
+                            f"Reservation {reservation_id} not found for user {user_id}")
                     return item
             except Exception:
                 pass  # Fall through to prefix search
 
         # For prefix searches, use Query on UserIndex if user_id is provided (much more efficient)
         if user_id:
-            matching_items = query_user_reservations_with_prefix(reservations_table, user_id, reservation_id)
+            matching_items = query_user_reservations_with_prefix(
+                reservations_table, user_id, reservation_id)
         else:
             # Fallback to scan with pagination if no user_id (less efficient but comprehensive)
-            matching_items = scan_all_reservations_with_prefix(reservations_table, reservation_id)
+            matching_items = scan_all_reservations_with_prefix(
+                reservations_table, reservation_id)
 
         if len(matching_items) == 0:
-            raise ValueError(f"Reservation {reservation_id} not found" + (f" for user {user_id}" if user_id else ""))
+            raise ValueError(
+                f"Reservation {reservation_id} not found" + (f" for user {user_id}" if user_id else ""))
         elif len(matching_items) > 1:
-            raise ValueError(f"Ambiguous reservation ID {reservation_id} - found {len(matching_items)} matches")
+            raise ValueError(
+                f"Ambiguous reservation ID {reservation_id} - found {len(matching_items)} matches")
 
         return matching_items[0]
     except Exception as e:
@@ -892,7 +985,8 @@ def handler(event, context):
 
         # Check if this is a scheduled event for queue processing
         if event.get("source") == "cloudwatch.schedule":
-            logger.info("Processing scheduled queue management and ETA updates")
+            logger.info(
+                "Processing scheduled queue management and ETA updates")
             return process_scheduled_queue_management()
 
         # Process SQS messages
@@ -900,9 +994,10 @@ def handler(event, context):
             if record.get("eventSource") == "aws:sqs":
                 # CRITICAL: Reset Lambda-wide state between each SQS record to prevent cross-contamination
                 # Clear monitoring threads registry to prevent interference between reservations
-                logger.info(f"Clearing {len(_monitoring_threads)} monitoring threads from previous processing")
+                logger.info(
+                    f"Clearing {len(_monitoring_threads)} monitoring threads from previous processing")
                 _monitoring_threads.clear()
-                
+
                 # Determine message type and process accordingly
                 try:
                     message_body = json.loads(record["body"])
@@ -914,7 +1009,8 @@ def handler(event, context):
                         # Handle version validation errors - update reservation status with error
                         reservation_id = message_body.get("reservation_id")
                         if reservation_id:
-                            logger.info(f"Updating reservation {reservation_id} with version error")
+                            logger.info(
+                                f"Updating reservation {reservation_id} with version error")
                             update_reservation_status(
                                 reservation_id=reservation_id,
                                 status="failed",
@@ -924,7 +1020,8 @@ def handler(event, context):
                             # Delete message after updating status
                             delete_sqs_message(record)
                         else:
-                            logger.error(f"Version validation failed but no reservation_id found: {version_error}")
+                            logger.error(
+                                f"Version validation failed but no reservation_id found: {version_error}")
                         continue
 
                     message_type = message_body.get("type", "reservation")
@@ -941,7 +1038,8 @@ def handler(event, context):
                     elif message_body.get("action") == "extend_reservation":
                         success = process_extend_reservation_action(record)
                     elif message_body.get("action") == "process_multinode_individual":
-                        success = process_multinode_individual_node(message_body)
+                        success = process_multinode_individual_node(
+                            message_body)
                     else:
                         success = process_reservation_request(record)
 
@@ -969,25 +1067,27 @@ def scan_dynamodb_paginated(table, **scan_kwargs) -> list:
     items = []
     response = table.scan(**scan_kwargs)
     items.extend(response.get("Items", []))
-    
+
     while "LastEvaluatedKey" in response:
         scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
         response = table.scan(**scan_kwargs)
         items.extend(response.get("Items", []))
-    
+
     return items
 
 
 def process_multinode_reservation_request(reservation_request: dict[str, Any]) -> bool:
     """Process multinode reservation with coordination"""
     try:
-        master_reservation_id = reservation_request.get("master_reservation_id")
+        master_reservation_id = reservation_request.get(
+            "master_reservation_id")
         node_index = reservation_request.get("node_index", 0)
         total_nodes = reservation_request.get("total_nodes", 1)
         reservation_id = reservation_request.get("reservation_id")
-        
-        logger.info(f"Processing multinode reservation node {node_index + 1}/{total_nodes}, master_id: {master_reservation_id}")
-        
+
+        logger.info(
+            f"Processing multinode reservation node {node_index + 1}/{total_nodes}, master_id: {master_reservation_id}")
+
         # Create initial reservation record in DynamoDB with multinode info
         if reservation_id:
             try:
@@ -995,7 +1095,8 @@ def process_multinode_reservation_request(reservation_request: dict[str, Any]) -
                 duration_hours = reservation_request.get("duration_hours", 8)
                 # Convert to float for timedelta, then back to Decimal for DynamoDB
                 duration_float = float(duration_hours)
-                expires_at = (datetime.utcnow() + timedelta(hours=duration_float)).isoformat()
+                expires_at = (datetime.utcnow() +
+                              timedelta(hours=duration_float)).isoformat()
                 duration_decimal = Decimal(str(duration_hours))
 
                 initial_record = {
@@ -1024,25 +1125,30 @@ def process_multinode_reservation_request(reservation_request: dict[str, Any]) -
 
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
                 reservations_table.put_item(Item=initial_record)
-                logger.info(f"Created multinode reservation record: {reservation_id}")
+                logger.info(
+                    f"Created multinode reservation record: {reservation_id}")
             except Exception as record_error:
-                logger.error(f"Failed to create multinode reservation record: {record_error}")
+                logger.error(
+                    f"Failed to create multinode reservation record: {record_error}")
 
         # Check if all nodes in the multinode reservation are ready for coordination
-        all_nodes_ready = check_all_multinode_nodes_ready(master_reservation_id, total_nodes)
-        
+        all_nodes_ready = check_all_multinode_nodes_ready(
+            master_reservation_id, total_nodes)
+
         if not all_nodes_ready:
-            logger.info(f"Waiting for other nodes in multinode reservation {master_reservation_id}")
+            logger.info(
+                f"Waiting for other nodes in multinode reservation {master_reservation_id}")
             return True  # Successfully processed, but waiting for coordination
-        
+
         # All nodes are ready - coordinate the multinode reservation
         return coordinate_multinode_reservation(master_reservation_id, total_nodes)
-        
+
     except Exception as e:
         logger.error(f"Error processing multinode reservation: {str(e)}")
         # Update all related nodes to failed status
         if reservation_request.get("master_reservation_id"):
-            fail_all_multinode_reservations(reservation_request["master_reservation_id"], str(e))
+            fail_all_multinode_reservations(
+                reservation_request["master_reservation_id"], str(e))
         return False
 
 
@@ -1050,27 +1156,29 @@ def check_all_multinode_nodes_ready(master_reservation_id: str, total_nodes: int
     """Check if all nodes in a multinode reservation are ready for coordination"""
     try:
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-        
+
         # Query all reservations with the same master_reservation_id
         nodes = scan_dynamodb_paginated(
             reservations_table,
             FilterExpression="master_reservation_id = :master_id",
             ExpressionAttributeValues={":master_id": master_reservation_id}
         )
-        logger.info(f"Found {len(nodes)} nodes for master reservation {master_reservation_id}, expected {total_nodes}")
-        
+        logger.info(
+            f"Found {len(nodes)} nodes for master reservation {master_reservation_id}, expected {total_nodes}")
+
         # Check if we have all expected nodes
         if len(nodes) < total_nodes:
             return False
-            
+
         # Check if all nodes are in pending status (ready for coordination)
         for node in nodes:
             if node.get("status") != "pending":
-                logger.info(f"Node {node.get('reservation_id')} has status {node.get('status')}, not ready for coordination")
+                logger.info(
+                    f"Node {node.get('reservation_id')} has status {node.get('status')}, not ready for coordination")
                 return False
-                
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Error checking multinode readiness: {str(e)}")
         return False
@@ -1081,11 +1189,12 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
     try:
         # Acquire coordination lock to prevent concurrent coordinators
         if not acquire_multinode_lock(master_reservation_id):
-            logger.info(f"Another coordinator holds the lock for {master_reservation_id}; skipping")
+            logger.info(
+                f"Another coordinator holds the lock for {master_reservation_id}; skipping")
             return True
 
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-        
+
         # Get all nodes for this multinode reservation
         nodes = scan_dynamodb_paginated(
             reservations_table,
@@ -1097,103 +1206,121 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
             }
         )
         if len(nodes) != total_nodes:
-            logger.error(f"Expected {total_nodes} nodes, found {len(nodes)} for {master_reservation_id}")
-            fail_all_multinode_reservations(master_reservation_id, "Incomplete node set")
+            logger.error(
+                f"Expected {total_nodes} nodes, found {len(nodes)} for {master_reservation_id}")
+            fail_all_multinode_reservations(
+                master_reservation_id, "Incomplete node set")
             return False
-            
+
         # Calculate total GPU requirements
         first_node = nodes[0]
         gpu_type = first_node.get("gpu_type", "a100")
         gpus_per_node = first_node.get("gpu_count", 1)
         total_gpus_needed = gpus_per_node * total_nodes
-        
-        logger.info(f"Multinode reservation needs {total_gpus_needed} {gpu_type} GPUs ({total_nodes} nodes × {gpus_per_node} GPUs)")
-        
+
+        logger.info(
+            f"Multinode reservation needs {total_gpus_needed} {gpu_type} GPUs ({total_nodes} nodes × {gpus_per_node} GPUs)")
+
         # Check if enough resources are available for the entire multinode reservation
-        available_gpus = check_gpu_availability(gpu_type)  
-        
+        available_gpus = check_gpu_availability(gpu_type)
+
         if available_gpus >= total_gpus_needed:
             # Sufficient resources - start parallel processing for all nodes
-            logger.info(f"Found resources for {total_nodes} nodes - starting parallel pod creation")
-            
+            logger.info(
+                f"Found resources for {total_nodes} nodes - starting parallel pod creation")
+
             # Release the coordination lock early so individual nodes can process in parallel
             release_multinode_lock(master_reservation_id)
-            
+
             # Process all nodes in parallel using ThreadPoolExecutor
-            logger.info(f"Starting parallel processing for {total_nodes} nodes")
-            
+            logger.info(
+                f"Starting parallel processing for {total_nodes} nodes")
+
             def process_single_node(node_data):
                 """Process a single node - to be run in parallel"""
                 i, node = node_data
                 try:
                     reservation_id = node.get("reservation_id")
                     node_index = node.get("node_index", i)
-                    
+
                     message_body = {
                         'reservation_id': str(reservation_id),
-                        'action': 'process_multinode_individual', 
+                        'action': 'process_multinode_individual',
                         'node_index': int(node_index),
                         'total_nodes': int(total_nodes),
                         'master_reservation_id': str(master_reservation_id)
                     }
-                    
-                    logger.info(f"Starting parallel processing for node {reservation_id} ({node_index+1}/{total_nodes})")
+
+                    logger.info(
+                        f"Starting parallel processing for node {reservation_id} ({node_index+1}/{total_nodes})")
                     result = process_multinode_individual_node(message_body)
-                    
+
                     if result:
-                        logger.info(f"✓ Successfully processed node {reservation_id} ({node_index+1}/{total_nodes})")
+                        logger.info(
+                            f"✓ Successfully processed node {reservation_id} ({node_index+1}/{total_nodes})")
                     else:
-                        logger.error(f"✗ Failed to process node {reservation_id} ({node_index+1}/{total_nodes})")
-                    
+                        logger.error(
+                            f"✗ Failed to process node {reservation_id} ({node_index+1}/{total_nodes})")
+
                     return result, reservation_id, node_index
-                    
+
                 except Exception as node_error:
-                    logger.error(f"✗ Exception processing node {reservation_id}: {node_error}")
+                    logger.error(
+                        f"✗ Exception processing node {reservation_id}: {node_error}")
                     return False, reservation_id, node_index
-            
+
             # Execute all nodes in parallel
             success_count = 0
             failed_nodes = []
-            
+
             with ThreadPoolExecutor(max_workers=min(total_nodes, 4)) as executor:
                 # Submit all node processing tasks
                 future_to_node = {
-                    executor.submit(process_single_node, (i, node)): node 
+                    executor.submit(process_single_node, (i, node)): node
                     for i, node in enumerate(nodes)
                 }
-                
+
                 # Collect results as they complete
                 for future in as_completed(future_to_node):
                     success, reservation_id, node_index = future.result()
                     if success:
                         success_count += 1
                     else:
-                        failed_nodes.append(f"{reservation_id} (node {node_index+1})")
-            
+                        failed_nodes.append(
+                            f"{reservation_id} (node {node_index+1})")
+
             # Report results
             if success_count == total_nodes:
-                logger.info(f"✓ Successfully processed all {total_nodes} nodes in parallel for multinode reservation {master_reservation_id}")
+                logger.info(
+                    f"✓ Successfully processed all {total_nodes} nodes in parallel for multinode reservation {master_reservation_id}")
                 return True
             else:
-                logger.error(f"✗ Failed to process all nodes ({success_count}/{total_nodes} succeeded)")
+                logger.error(
+                    f"✗ Failed to process all nodes ({success_count}/{total_nodes} succeeded)")
                 logger.error(f"Failed nodes: {', '.join(failed_nodes)}")
-                fail_all_multinode_reservations(master_reservation_id, f"Partial processing failure ({success_count}/{total_nodes})")
+                fail_all_multinode_reservations(
+                    master_reservation_id, f"Partial processing failure ({success_count}/{total_nodes})")
                 return False
         else:
             # Insufficient resources - queue all nodes together
-            logger.info(f"Insufficient resources for multinode reservation: need {total_gpus_needed}, available {available_gpus}")
-            queue_all_multinode_reservations(master_reservation_id, total_gpus_needed, gpu_type, available_gpus)
+            logger.info(
+                f"Insufficient resources for multinode reservation: need {total_gpus_needed}, available {available_gpus}")
+            queue_all_multinode_reservations(
+                master_reservation_id, total_gpus_needed, gpu_type, available_gpus)
             return True
-            
+
     except Exception as e:
-        logger.error(f"Error coordinating multinode reservation {master_reservation_id}: {str(e)}")
+        logger.error(
+            f"Error coordinating multinode reservation {master_reservation_id}: {str(e)}")
         fail_all_multinode_reservations(master_reservation_id, str(e))
         return False
     finally:
         try:
             release_multinode_lock(master_reservation_id)
         except Exception as lock_release_error:
-            logger.warning(f"Failed to release coordinator lock for {master_reservation_id}: {lock_release_error}")
+            logger.warning(
+                f"Failed to release coordinator lock for {master_reservation_id}: {lock_release_error}")
+
 
 def process_multinode_individual_node(message_body: dict) -> bool:
     """Process an individual node in a multinode reservation (called asynchronously)"""
@@ -1202,47 +1329,58 @@ def process_multinode_individual_node(message_body: dict) -> bool:
         node_index = message_body.get("node_index")
         total_nodes = message_body.get("total_nodes")
         master_reservation_id = message_body.get("master_reservation_id")
-        
-        logger.info(f"Processing individual multinode node {reservation_id} ({node_index+1}/{total_nodes})")
-        
+
+        logger.info(
+            f"Processing individual multinode node {reservation_id} ({node_index+1}/{total_nodes})")
+
         # Get the reservation data
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-        response = reservations_table.get_item(Key={"reservation_id": reservation_id})
-        
+        response = reservations_table.get_item(
+            Key={"reservation_id": reservation_id})
+
         if "Item" not in response:
             logger.error(f"Reservation {reservation_id} not found")
-            update_multinode_pod_status(reservation_id, "not found", node_index, total_nodes)
+            update_multinode_pod_status(
+                reservation_id, "not found", node_index, total_nodes)
             return False
-        
+
         node_data = response["Item"]
-        
+
         # Update status to preparing pod
-        update_multinode_pod_status(reservation_id, "preparing pod", node_index, total_nodes)
-        
+        update_multinode_pod_status(
+            reservation_id, "preparing pod", node_index, total_nodes)
+
         # Create individual reservation for this node
         created_reservation_id = create_reservation(node_data)
         if not created_reservation_id:
-            logger.error(f"Failed to create reservation for node {reservation_id}")
-            update_multinode_pod_status(reservation_id, "failed to create", node_index, total_nodes)
+            logger.error(
+                f"Failed to create reservation for node {reservation_id}")
+            update_multinode_pod_status(
+                reservation_id, "failed to create", node_index, total_nodes)
             return False
-        
+
         # Update status to allocating resources
-        update_multinode_pod_status(reservation_id, "allocating resources", node_index, total_nodes)
-        
+        update_multinode_pod_status(
+            reservation_id, "allocating resources", node_index, total_nodes)
+
         # Allocate GPU resources for this node
         allocate_gpu_resources(created_reservation_id, node_data)
-        
+
         # Don't update status here - the main flow will handle setting to "active"
         # update_multinode_pod_status would override the main flow's status
-        
-        logger.info(f"Successfully processed multinode node {reservation_id} ({node_index+1}/{total_nodes})")
+
+        logger.info(
+            f"Successfully processed multinode node {reservation_id} ({node_index+1}/{total_nodes})")
         return True
-        
+
     except Exception as e:
-        logger.error(f"Error processing individual multinode node {reservation_id}: {str(e)}")
+        logger.error(
+            f"Error processing individual multinode node {reservation_id}: {str(e)}")
         if 'reservation_id' in locals() and 'node_index' in locals() and 'total_nodes' in locals():
-            update_multinode_pod_status(reservation_id, "processing failed", node_index, total_nodes)
+            update_multinode_pod_status(
+                reservation_id, "processing failed", node_index, total_nodes)
         return False
+
 
 def acquire_multinode_lock(master_reservation_id: str, ttl_seconds: int = 300) -> bool:
     """Acquire a best-effort coordination lock using the reservations table.
@@ -1274,6 +1412,7 @@ def acquire_multinode_lock(master_reservation_id: str, ttl_seconds: int = 300) -
         logger.info(f"Could not acquire lock for {master_reservation_id}: {e}")
         return False
 
+
 def release_multinode_lock(master_reservation_id: str) -> None:
     """Release the coordination lock (best-effort)."""
     lock_id = f"lock:{master_reservation_id}"
@@ -1289,7 +1428,7 @@ def update_all_multinode_status(master_reservation_id: str, status: str, failure
     """Update status for all nodes in a multinode reservation"""
     try:
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-        
+
         # Get all nodes
         nodes = scan_dynamodb_paginated(
             reservations_table,
@@ -1299,8 +1438,9 @@ def update_all_multinode_status(master_reservation_id: str, status: str, failure
         for node in nodes:
             reservation_id = node.get("reservation_id")
             if reservation_id:
-                update_reservation_status(reservation_id, status, failure_reason)
-                
+                update_reservation_status(
+                    reservation_id, status, failure_reason)
+
     except Exception as e:
         logger.error(f"Error updating multinode status: {str(e)}")
 
@@ -1313,17 +1453,20 @@ def update_multinode_pod_status(reservation_id: str, pod_status: str, node_index
             detailed_status = f"Pod {node_index + 1}/{total_nodes}: {pod_status}"
         else:
             detailed_status = pod_status
-        
+
         # Use unified status tracking - keep high-level status as "preparing" during pod setup
-        update_reservation_status(reservation_id, "preparing", detailed_status=detailed_status)
-        
+        update_reservation_status(
+            reservation_id, "preparing", detailed_status=detailed_status)
+
     except Exception as e:
-        logger.error(f"Error updating multinode pod status for {reservation_id}: {str(e)}")
+        logger.error(
+            f"Error updating multinode pod status for {reservation_id}: {str(e)}")
 
 
 def fail_all_multinode_reservations(master_reservation_id: str, error_message: str):
     """Mark all nodes in a multinode reservation as failed"""
-    logger.error(f"Failing all nodes in multinode reservation {master_reservation_id}: {error_message}")
+    logger.error(
+        f"Failing all nodes in multinode reservation {master_reservation_id}: {error_message}")
     update_all_multinode_status(master_reservation_id, "failed", error_message)
 
 
@@ -1331,20 +1474,20 @@ def queue_all_multinode_reservations(master_reservation_id: str, total_gpus_need
     """Queue all nodes in a multinode reservation together"""
     try:
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-        
+
         # Get all nodes
         nodes = scan_dynamodb_paginated(
             reservations_table,
             FilterExpression="master_reservation_id = :master_id",
             ExpressionAttributeValues={":master_id": master_reservation_id}
         )
-        
+
         # Calculate queue position for the entire multinode reservation
         # For simplicity, treat it as one large reservation in the queue
         queue_info = calculate_multinode_queue_position_and_wait_time(
             master_reservation_id, total_gpus_needed, gpu_type, available_gpus
         )
-        
+
         # Update all nodes with the same queue information and set status to "queued"
         for node in nodes:
             reservation_id = node.get("reservation_id")
@@ -1356,10 +1499,12 @@ def queue_all_multinode_reservations(master_reservation_id: str, total_gpus_need
                     available_gpus
                 )
                 # CRITICAL: Set status to "queued" so scheduled Lambda can find these reservations
-                update_reservation_status(reservation_id, "queued", queue_info["message"])
-                
-        logger.info(f"Queued multinode reservation {master_reservation_id} at position {queue_info['position']}")
-        
+                update_reservation_status(
+                    reservation_id, "queued", queue_info["message"])
+
+        logger.info(
+            f"Queued multinode reservation {master_reservation_id} at position {queue_info['position']}")
+
     except Exception as e:
         logger.error(f"Error queuing multinode reservation: {str(e)}")
         fail_all_multinode_reservations(master_reservation_id, str(e))
@@ -1370,7 +1515,7 @@ def calculate_multinode_queue_position_and_wait_time(master_reservation_id: str,
     try:
         # For multinode, we need to be more conservative in queue calculations
         # since we need ALL resources to be available at once
-        
+
         # Get current queue for this GPU type
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
         queued_reservations = scan_dynamodb_paginated(
@@ -1382,14 +1527,14 @@ def calculate_multinode_queue_position_and_wait_time(master_reservation_id: str,
                 ":gpu_type": gpu_type
             }
         )
-        
+
         # Group multinode reservations together and sum their GPU requirements
         queue_position = 1
         total_gpus_ahead = 0
-        
+
         multinode_groups = {}
         single_reservations = []
-        
+
         for reservation in queued_reservations:
             if reservation.get("is_multinode"):
                 group_id = reservation.get("master_reservation_id")
@@ -1400,10 +1545,10 @@ def calculate_multinode_queue_position_and_wait_time(master_reservation_id: str,
                     }
             else:
                 single_reservations.append(reservation)
-        
+
         # Sort all reservations by creation time
         all_ahead = []
-        
+
         # Add multinode groups
         for group_id, group_info in multinode_groups.items():
             if group_id != master_reservation_id:  # Don't count ourselves
@@ -1411,30 +1556,31 @@ def calculate_multinode_queue_position_and_wait_time(master_reservation_id: str,
                     "gpus": group_info["total_gpu_count"],
                     "created_at": group_info["created_at"]
                 })
-        
-        # Add single reservations  
+
+        # Add single reservations
         for reservation in single_reservations:
             all_ahead.append({
                 "gpus": reservation.get("gpu_count", 1),
                 "created_at": reservation.get("created_at")
             })
-        
+
         # Sort by creation time
         all_ahead.sort(key=lambda x: x["created_at"])
-        
+
         # Calculate position and GPUs ahead
         for item in all_ahead:
             total_gpus_ahead += item["gpus"]
             queue_position += 1
-        
+
         # Estimate wait time (more conservative for multinode)
         # For multinode, we need to check if active reservations block us
         multinode_buffer = 1.5  # 50% longer for multinode coordination
-        
+
         if total_gpus_ahead > 0:
             # There are reservations ahead in queue
             avg_duration_minutes = 4 * 60  # 4 hours average
-            estimated_wait_minutes = int((total_gpus_ahead / max(available_gpus, 1)) * avg_duration_minutes * multinode_buffer)
+            estimated_wait_minutes = int(
+                (total_gpus_ahead / max(available_gpus, 1)) * avg_duration_minutes * multinode_buffer)
         elif available_gpus >= total_gpus_needed:
             # Enough GPUs available now
             estimated_wait_minutes = 0
@@ -1451,7 +1597,7 @@ def calculate_multinode_queue_position_and_wait_time(master_reservation_id: str,
                         ":gpu_type": gpu_type
                     }
                 )
-                
+
                 # Find earliest expiry time
                 earliest_expiry_minutes = None
                 for reservation in active_reservations:
@@ -1460,30 +1606,37 @@ def calculate_multinode_queue_position_and_wait_time(master_reservation_id: str,
                         try:
                             from datetime import datetime
                             if isinstance(expires_at, str):
-                                expire_time = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                                expire_time = datetime.fromisoformat(
+                                    expires_at.replace('Z', '+00:00'))
                             else:
-                                expire_time = datetime.utcfromtimestamp(expires_at)
-                            
-                            minutes_until_expiry = int((expire_time - datetime.utcnow()).total_seconds() / 60)
+                                expire_time = datetime.utcfromtimestamp(
+                                    expires_at)
+
+                            minutes_until_expiry = int(
+                                (expire_time - datetime.utcnow()).total_seconds() / 60)
                             if minutes_until_expiry > 0:
                                 if earliest_expiry_minutes is None or minutes_until_expiry < earliest_expiry_minutes:
                                     earliest_expiry_minutes = minutes_until_expiry
                         except Exception as time_error:
-                            logger.warning(f"Error parsing expiry time: {time_error}")
-                
-                estimated_wait_minutes = earliest_expiry_minutes or 60  # Default 1 hour if can't calculate
-                logger.info(f"Multinode reservation needs to wait for active reservations to expire: {estimated_wait_minutes} minutes")
-                
+                            logger.warning(
+                                f"Error parsing expiry time: {time_error}")
+
+                # Default 1 hour if can't calculate
+                estimated_wait_minutes = earliest_expiry_minutes or 60
+                logger.info(
+                    f"Multinode reservation needs to wait for active reservations to expire: {estimated_wait_minutes} minutes")
+
             except Exception as active_check_error:
-                logger.warning(f"Error checking active reservations: {active_check_error}")
+                logger.warning(
+                    f"Error checking active reservations: {active_check_error}")
                 estimated_wait_minutes = 60  # Default 1 hour
-        
+
         return {
             "position": queue_position,
             "estimated_wait_minutes": estimated_wait_minutes,
             "message": f"Multinode reservation queued - position {queue_position} ({total_gpus_ahead} GPUs ahead)"
         }
-        
+
     except Exception as e:
         logger.error(f"Error calculating multinode queue position: {str(e)}")
         return {
@@ -1544,8 +1697,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                     initial_record["github_user"] = reservation_request["github_user"]
 
                 # Add Docker options if provided
-                if reservation_request.get("dockerfile_s3_key"):
-                    initial_record["dockerfile_base64_data"] = reservation_request["dockerfile_s3_key"]
+                if reservation_request.get("dockerfile"):
+                    initial_record["dockerfile_base64_data"] = reservation_request["dockerfile"]
                 if reservation_request.get("dockerimage"):
                     initial_record["dockerimage"] = reservation_request["dockerimage"]
 
@@ -1553,7 +1706,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
                 reservations_table.put_item(Item=initial_record)
 
-                logger.info(f"Created initial reservation record: {reservation_id}")
+                logger.info(
+                    f"Created initial reservation record: {reservation_id}")
 
             except Exception as record_error:
                 logger.error(
@@ -1562,7 +1716,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 # Continue processing even if record creation fails
 
         # Validate request
-        is_valid, validation_error = validate_reservation_request(reservation_request)
+        is_valid, validation_error = validate_reservation_request(
+            reservation_request)
         if not is_valid:
             logger.error(f"Validation failed: {validation_error}")
             # Update reservation status with specific error message instead of raising exception
@@ -1581,7 +1736,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         # For multinode reservations, skip individual resource checks
         # The multinode coordinator already validated total resources are available
         if is_multinode:
-            logger.info(f"Multinode node: skipping individual resource check, coordinator already validated resources")
+            logger.info(
+                f"Multinode node: skipping individual resource check, coordinator already validated resources")
             available_gpus = requested_gpus  # Assume coordinator validated
         else:
             available_gpus = check_gpu_availability(gpu_type)
@@ -1638,7 +1794,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                     f"Insufficient resources. Set reservation {reservation_id[:8]} to queued (#{queue_info.get('position', '?')}). Scheduled Lambda will retry."
                 )
             else:
-                logger.warning("Insufficient resources but no reservation_id found")
+                logger.warning(
+                    "Insufficient resources but no reservation_id found")
 
             return True  # Delete message - scheduled Lambda will handle queued reservations
 
@@ -1660,7 +1817,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                     reservation_id, "failed", f"Processing error: {str(e)}"
                 )
         except Exception as status_error:
-            logger.error(f"Failed to update reservation status: {str(status_error)}")
+            logger.error(
+                f"Failed to update reservation status: {str(status_error)}")
 
         # Let processing errors (like JSON parsing) go to DLQ
         raise
@@ -1681,7 +1839,8 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     gpu_type = request.get("gpu_type", "")
 
     # Validate GPU type
-    valid_gpu_types = ["t4", "l4", "t4-small", "a100", "h100", "h200", "b200", "cpu-arm", "cpu-x86"]
+    valid_gpu_types = ["t4", "l4", "t4-small", "a100",
+                       "h100", "h200", "b200", "cpu-arm", "cpu-x86"]
     if gpu_type not in valid_gpu_types:
         error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
         logger.error(error_msg)
@@ -1717,12 +1876,15 @@ def check_gpu_availability(gpu_type: str = None) -> int:
 
         if gpu_type:
             # Check for schedulable nodes with specific GPU type
-            available_gpus = check_schedulable_gpus_for_type(k8s_client, gpu_type)
-            logger.info(f"Schedulable {gpu_type.upper()} GPUs: {available_gpus}")
+            available_gpus = check_schedulable_gpus_for_type(
+                k8s_client, gpu_type)
+            logger.info(
+                f"Schedulable {gpu_type.upper()} GPUs: {available_gpus}")
 
             # Update availability table with real-time data
             try:
-                update_gpu_availability_table(gpu_type, available_gpus, k8s_client)
+                update_gpu_availability_table(
+                    gpu_type, available_gpus, k8s_client)
             except Exception as update_error:
                 logger.warning(
                     f"Failed to update availability table for {gpu_type}: {update_error}"
@@ -1777,7 +1939,8 @@ def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
         return schedulable_gpus
 
     except Exception as e:
-        logger.error(f"Error checking schedulable GPUs for type {gpu_type}: {str(e)}")
+        logger.error(
+            f"Error checking schedulable GPUs for type {gpu_type}: {str(e)}")
         return 0
 
 
@@ -1819,7 +1982,8 @@ def get_available_gpus_on_node(v1_api, node) -> int:
 
         # Get pods running on this node to calculate used GPUs
         field_selector = f"spec.nodeName={node.metadata.name}"
-        pods = v1_api.list_pod_for_all_namespaces(field_selector=field_selector)
+        pods = v1_api.list_pod_for_all_namespaces(
+            field_selector=field_selector)
 
         used_gpus = 0
         for pod in pods.items:
@@ -1902,7 +2066,8 @@ def update_gpu_availability_table(
         )
 
     except Exception as e:
-        logger.error(f"Error updating availability table for {gpu_type}: {str(e)}")
+        logger.error(
+            f"Error updating availability table for {gpu_type}: {str(e)}")
         raise
 
 
@@ -1944,6 +2109,8 @@ def create_reservation(request: dict[str, Any]) -> str:
             reservation["github_user"] = request["github_user"]
         if "version" in request:
             reservation["cli_version"] = request["version"]
+        if "preserve_entrypoint" in request:
+            reservation["preserve_entrypoint"] = request["preserve_entrypoint"]
         # Store Lambda version that processed this reservation
         reservation["lambda_version"] = LAMBDA_VERSION
 
@@ -1966,7 +2133,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         user_id = request.get("user_id")
         recreate_env = request.get("recreate_env", False)
         pod_name = f"gpu-dev-{reservation_id[:8]}"
-        
+
         # Check if this is part of a multinode reservation
         is_multinode = request.get("is_multinode", False)
         node_index = request.get("node_index", 0) if is_multinode else None
@@ -1979,7 +2146,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
         # Update status: Fetching SSH keys (with pod-specific status for multinode)
         if is_multinode:
-            update_multinode_pod_status(reservation_id, "fetching SSH keys", node_index, total_nodes)
+            update_multinode_pod_status(
+                reservation_id, "fetching SSH keys", node_index, total_nodes)
         update_reservation_status(
             reservation_id,
             "preparing",
@@ -1992,19 +2160,24 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         )
 
         # Extract Docker options if provided
-        dockerfile_base64_data = request.get("dockerfile_s3_key")
+        dockerfile_base64_data = request.get("dockerfile")  # CLI/MCP sends base64 data in 'dockerfile' field
         dockerimage = request.get("dockerimage")
+        preserve_entrypoint = request.get("preserve_entrypoint", False)
+        logger.info(
+            f"DEPLOY_CHECK: preserve_entrypoint parameter extracted: {preserve_entrypoint} (type: {type(preserve_entrypoint)})")
 
         # Set up K8s client early for both Docker builds and pod creation
         k8s_client = get_k8s_client()
 
         # Handle Dockerfile build if provided
         if dockerfile_base64_data:
-            logger.info(f"Custom Dockerfile provided for reservation {reservation_id}: {len(dockerfile_base64_data)} bytes base64")
+            logger.info(
+                f"Custom Dockerfile provided for reservation {reservation_id}: {len(dockerfile_base64_data)} bytes base64")
 
             # Update status: Building custom Docker image
             if is_multinode:
-                update_multinode_pod_status(reservation_id, "building custom Docker image", node_index, total_nodes)
+                update_multinode_pod_status(
+                    reservation_id, "building custom Docker image", node_index, total_nodes)
             update_reservation_status(
                 reservation_id,
                 "preparing",
@@ -2013,7 +2186,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
             try:
                 # Create BuildKit job to build the image
-                image_tag = reservation_id[:8]  # Use short reservation ID as tag
+                # Use short reservation ID as tag
+                image_tag = reservation_id[:8]
                 buildkit_job_name = create_buildkit_job(
                     k8s_client,
                     reservation_id,
@@ -2023,7 +2197,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 )
 
                 # Create progress callback to update DynamoDB status (with deduplication)
-                last_progress_message = [None]  # Use list to allow modification in nested function
+                # Use list to allow modification in nested function
+                last_progress_message = [None]
 
                 def progress_callback(progress_message):
                     try:
@@ -2034,14 +2209,17 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                                 "creating_server",
                                 detailed_status=progress_message
                             )
-                            logger.info(f"Updated build progress for {reservation_id}: {progress_message}")
+                            logger.info(
+                                f"Updated build progress for {reservation_id}: {progress_message}")
                             last_progress_message[0] = progress_message
                         # If message hasn't changed, skip the update (no log spam)
                     except Exception as e:
-                        logger.warning(f"Failed to update build progress for {reservation_id}: {str(e)}")
+                        logger.warning(
+                            f"Failed to update build progress for {reservation_id}: {str(e)}")
 
                 # Wait for build to complete
-                logger.info(f"Waiting for Docker build to complete: {buildkit_job_name}")
+                logger.info(
+                    f"Waiting for Docker build to complete: {buildkit_job_name}")
                 build_result = wait_for_buildkit_job(
                     k8s_client,
                     buildkit_job_name,
@@ -2050,14 +2228,17 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 )
 
                 if build_result["success"]:
-                    logger.info(f"Docker build successful for {reservation_id}")
+                    logger.info(
+                        f"Docker build successful for {reservation_id}")
                     # Use the built image
                     dockerimage = f"{ECR_REPOSITORY_URL}:{image_tag}"
                     logger.info(f"Will use built image: {dockerimage}")
                 else:
                     build_logs = build_result.get('logs', 'No logs available')
-                    logger.error(f"Docker build failed for {reservation_id}: {build_result['message']}")
-                    logger.error(f"Build logs for {reservation_id}:\n{build_logs}")
+                    logger.error(
+                        f"Docker build failed for {reservation_id}: {build_result['message']}")
+                    logger.error(
+                        f"Build logs for {reservation_id}:\n{build_logs}")
                     # Update reservation to failed
                     update_reservation_status(
                         reservation_id,
@@ -2068,7 +2249,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     return  # Don't raise exception, we've already marked as failed
 
             except Exception as build_error:
-                logger.error(f"Exception during Docker build process for {reservation_id}: {str(build_error)}")
+                logger.error(
+                    f"Exception during Docker build process for {reservation_id}: {str(build_error)}")
                 logger.error(f"Exception type: {type(build_error).__name__}")
                 import traceback
                 logger.error(f"Full traceback: {traceback.format_exc()}")
@@ -2095,13 +2277,16 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         if no_persistent_disk_requested:
             # User explicitly requested no persistent disk - skip all persistent disk logic
             use_persistent_disk = False
-            logger.info(f"User explicitly requested no persistent disk for reservation {reservation_id} - skipping all disk logic")
+            logger.info(
+                f"User explicitly requested no persistent disk for reservation {reservation_id} - skipping all disk logic")
         elif is_multinode and node_index > 0:
             # For multinode: only node 0 gets persistent disk, others get EFS shared storage
             use_persistent_disk = False  # Only master node gets persistent disk
-            logger.info(f"Multinode node {node_index + 1}/{total_nodes}: using EFS shared storage instead of persistent disk")
+            logger.info(
+                f"Multinode node {node_index + 1}/{total_nodes}: using EFS shared storage instead of persistent disk")
         else:
-            use_persistent_disk = should_use_persistent_disk(user_id, reservation_id)
+            use_persistent_disk = should_use_persistent_disk(
+                user_id, reservation_id)
         persistent_volume_id = None
         device_name = None
         target_az = None  # Initialize target_az for use in connection info update
@@ -2112,9 +2297,12 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         if use_persistent_disk:
             try:
                 # Reserve the volume ID slot in DynamoDB immediately to prevent race conditions
-                update_reservation_fields(reservation_id, ebs_volume_reserved=True)
-                update_reservation_status(reservation_id, "preparing", detailed_status="Reserving persistent disk slot")
-                logger.info(f"Reserved persistent disk slot for reservation {reservation_id}")
+                update_reservation_fields(
+                    reservation_id, ebs_volume_reserved=True)
+                update_reservation_status(
+                    reservation_id, "preparing", detailed_status="Reserving persistent disk slot")
+                logger.info(
+                    f"Reserved persistent disk slot for reservation {reservation_id}")
             except Exception as e:
                 logger.error(f"Failed to reserve persistent disk slot: {e}")
                 use_persistent_disk = False
@@ -2130,18 +2318,22 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                 target_az = get_target_az_for_reservation(gpu_type, gpu_count)
                 if not target_az:
-                    raise ValueError(f"Could not determine target AZ for {gpu_type} GPUs")
+                    raise ValueError(
+                        f"Could not determine target AZ for {gpu_type} GPUs")
 
                 logger.info(f"Target AZ for reservation: {target_az}")
 
                 # Step 2: Check if EBS migration is needed
-                migration_needed, current_volume_id, current_az = needs_ebs_migration(user_id, target_az, reservation_id)
+                migration_needed, current_volume_id, current_az = needs_ebs_migration(
+                    user_id, target_az, reservation_id)
 
                 # Check for multiple volumes and log warning if found
                 multiple_volumes_warning = check_for_multiple_volumes(user_id)
                 if multiple_volumes_warning:
-                    update_reservation_fields(reservation_id, warning=multiple_volumes_warning)
-                    logger.warning(f"Stored multiple volume warning for reservation {reservation_id}: {multiple_volumes_warning}")
+                    update_reservation_fields(
+                        reservation_id, warning=multiple_volumes_warning)
+                    logger.warning(
+                        f"Stored multiple volume warning for reservation {reservation_id}: {multiple_volumes_warning}")
 
                 if migration_needed:
                     # User has existing EBS in different AZ - need to migrate
@@ -2150,16 +2342,19 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         "preparing",
                         f"Migrating persistent disk from {current_az} to {target_az} (2-5 minutes)",
                     )
-                    logger.info(f"Starting EBS migration for user {user_id}: {current_az} -> {target_az}")
+                    logger.info(
+                        f"Starting EBS migration for user {user_id}: {current_az} -> {target_az}")
 
                     # Check if we have a recent snapshot from THIS SPECIFIC VOLUME to avoid version confusion
                     # IMPORTANT: Only use snapshots from the volume being migrated (current_volume_id)
                     # This prevents using snapshots from other volumes which may have stale/different data
-                    latest_snapshot = get_latest_snapshot(user_id, volume_id=current_volume_id, include_pending=True)
+                    latest_snapshot = get_latest_snapshot(
+                        user_id, volume_id=current_volume_id, include_pending=True)
 
                     if latest_snapshot and latest_snapshot['State'] == 'completed':
                         # Use existing completed snapshot for migration
-                        logger.info(f"Using existing completed snapshot {latest_snapshot['SnapshotId']} for migration")
+                        logger.info(
+                            f"Using existing completed snapshot {latest_snapshot['SnapshotId']} for migration")
                         persistent_volume_id = restore_ebs_from_existing_snapshot(
                             latest_snapshot['SnapshotId'], target_az, user_id
                         )
@@ -2168,26 +2363,32 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         # Clean up old volume after successful restoration
                         # NEW: Remove ActiveVolume tag before deletion to maintain single source of truth
                         try:
-                            logger.info(f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
+                            logger.info(
+                                f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
                             ec2_client.delete_tags(
                                 Resources=[current_volume_id],
                                 Tags=[{"Key": "ActiveVolume"}]
                             )
                         except Exception as tag_error:
-                            logger.warning(f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
+                            logger.warning(
+                                f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
 
                         try:
                             logger.info(
                                 f"Deleting old volume {current_volume_id} from {current_az} after snapshot restoration")
-                            ec2_client.delete_volume(VolumeId=current_volume_id)
-                            logger.info(f"Successfully deleted old volume {current_volume_id}")
+                            ec2_client.delete_volume(
+                                VolumeId=current_volume_id)
+                            logger.info(
+                                f"Successfully deleted old volume {current_volume_id}")
                         except Exception as cleanup_error:
-                            logger.warning(f"Failed to delete old volume {current_volume_id}: {cleanup_error}")
+                            logger.warning(
+                                f"Failed to delete old volume {current_volume_id}: {cleanup_error}")
                             # Don't fail the migration if cleanup fails - volume can be cleaned up manually
                     elif latest_snapshot and latest_snapshot['State'] == 'pending':
                         # Wait for existing pending snapshot to complete, then use it
                         snapshot_id = latest_snapshot['SnapshotId']
-                        logger.info(f"Found pending snapshot {snapshot_id}, waiting for completion before migration")
+                        logger.info(
+                            f"Found pending snapshot {snapshot_id}, waiting for completion before migration")
                         update_reservation_status(
                             reservation_id,
                             "preparing",
@@ -2196,9 +2397,11 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                         # Wait for snapshot to complete (up to 10 minutes)
                         waiter = ec2_client.get_waiter('snapshot_completed')
-                        waiter.wait(SnapshotIds=[snapshot_id], WaiterConfig={'Delay': 15, 'MaxAttempts': 40})
+                        waiter.wait(SnapshotIds=[snapshot_id], WaiterConfig={
+                                    'Delay': 15, 'MaxAttempts': 40})
 
-                        logger.info(f"Snapshot {snapshot_id} completed, proceeding with migration")
+                        logger.info(
+                            f"Snapshot {snapshot_id} completed, proceeding with migration")
                         persistent_volume_id = restore_ebs_from_existing_snapshot(
                             snapshot_id, target_az, user_id
                         )
@@ -2206,21 +2409,26 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         # Clean up old volume after successful restoration
                         # NEW: Remove ActiveVolume tag before deletion to maintain single source of truth
                         try:
-                            logger.info(f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
+                            logger.info(
+                                f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
                             ec2_client.delete_tags(
                                 Resources=[current_volume_id],
                                 Tags=[{"Key": "ActiveVolume"}]
                             )
                         except Exception as tag_error:
-                            logger.warning(f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
+                            logger.warning(
+                                f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
 
                         try:
                             logger.info(
                                 f"Deleting old volume {current_volume_id} from {current_az} after snapshot restoration")
-                            ec2_client.delete_volume(VolumeId=current_volume_id)
-                            logger.info(f"Successfully deleted old volume {current_volume_id}")
+                            ec2_client.delete_volume(
+                                VolumeId=current_volume_id)
+                            logger.info(
+                                f"Successfully deleted old volume {current_volume_id}")
                         except Exception as cleanup_error:
-                            logger.warning(f"Failed to delete old volume {current_volume_id}: {cleanup_error}")
+                            logger.warning(
+                                f"Failed to delete old volume {current_volume_id}: {cleanup_error}")
                             # Don't fail the migration if cleanup fails - volume can be cleaned up manually
                     else:
                         # No recent snapshot - do full migration with new snapshot
@@ -2229,13 +2437,15 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         )
 
                     is_new_disk = False  # Migrated disk keeps existing data
-                    logger.info(f"EBS migration completed: {persistent_volume_id} (from snapshot {snapshot_id})")
+                    logger.info(
+                        f"EBS migration completed: {persistent_volume_id} (from snapshot {snapshot_id})")
 
                 else:
                     # Either no existing EBS, or existing EBS is already in target AZ
                     if current_volume_id:
                         # Volume already exists in target AZ - use it directly (no migration needed)
-                        logger.info(f"Volume {current_volume_id} already exists in target AZ {target_az} - using existing volume")
+                        logger.info(
+                            f"Volume {current_volume_id} already exists in target AZ {target_az} - using existing volume")
                         update_reservation_status(
                             reservation_id,
                             "preparing",
@@ -2243,30 +2453,38 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         )
                         persistent_volume_id = current_volume_id
                         is_new_disk = False  # Using existing volume
-                        logger.info(f"Using existing volume {persistent_volume_id} in {target_az}")
+                        logger.info(
+                            f"Using existing volume {persistent_volume_id} in {target_az}")
                     else:
                         # No existing volume - create new one
-                        logger.info(f"No existing volume found for user {user_id}, creating new one")
+                        logger.info(
+                            f"No existing volume found for user {user_id}, creating new one")
                         update_reservation_status(
                             reservation_id,
                             "preparing",
                             "Setting up persistent disk for user data",
                         )
-                        persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(user_id, target_az)
-                        logger.info(f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
+                        persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(
+                            user_id, target_az)
+                        logger.info(
+                            f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
 
                         # Store warning in database if multiple disks were detected
                         if disk_warning:
-                            update_reservation_fields(reservation_id, warning=disk_warning)
-                            logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
+                            update_reservation_fields(
+                                reservation_id, warning=disk_warning)
+                            logger.warning(
+                                f"Stored warning for reservation {reservation_id}: {disk_warning}")
 
                 # Check for any existing snapshots from previous sessions for new volumes only
                 if not current_volume_id:
-                    latest_snapshot = get_latest_snapshot(user_id, volume_id=None, include_pending=False)
+                    latest_snapshot = get_latest_snapshot(
+                        user_id, volume_id=None, include_pending=False)
 
                     if latest_snapshot:
                         # User has previous data in snapshots - restore from latest
-                        logger.info(f"Found existing snapshot {latest_snapshot['SnapshotId']} for user {user_id} - restoring instead of creating empty volume")
+                        logger.info(
+                            f"Found existing snapshot {latest_snapshot['SnapshotId']} for user {user_id} - restoring instead of creating empty volume")
                         update_reservation_status(
                             reservation_id,
                             "preparing",
@@ -2278,7 +2496,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                             latest_snapshot['SnapshotId'], target_az, user_id
                         )
                         is_new_disk = False  # Restored from snapshot with existing data
-                        logger.info(f"Restored volume {persistent_volume_id} from snapshot {latest_snapshot['SnapshotId']} for user {user_id}")
+                        logger.info(
+                            f"Restored volume {persistent_volume_id} from snapshot {latest_snapshot['SnapshotId']} for user {user_id}")
 
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
@@ -2292,10 +2511,12 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     "Persistent disk setup failed - continuing without persistent storage",
                 )
         else:
-            logger.info(f"User {user_id} has existing reservations - no persistent disk")
+            logger.info(
+                f"User {user_id} has existing reservations - no persistent disk")
             # Non-persistent reservations always need shell environment setup
             is_new_disk = True
-            logger.info("Non-persistent reservation - will always set up shell environment (CREATE_SH_ENV=true)")
+            logger.info(
+                "Non-persistent reservation - will always set up shell environment (CREATE_SH_ENV=true)")
 
         # Set up shared EFS storage for user
         efs_filesystem_id = None
@@ -2307,9 +2528,11 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     "Setting up shared storage (/shared) for user collaboration",
                 )
                 efs_filesystem_id = create_or_find_user_efs(user_id)
-                logger.info(f"EFS filesystem {efs_filesystem_id} ready for user {user_id}")
+                logger.info(
+                    f"EFS filesystem {efs_filesystem_id} ready for user {user_id}")
             else:
-                logger.warning("EFS configuration missing - skipping shared storage setup")
+                logger.warning(
+                    "EFS configuration missing - skipping shared storage setup")
         except Exception as efs_error:
             logger.error(f"Failed to set up EFS: {efs_error}")
             # Continue without EFS rather than failing
@@ -2341,11 +2564,14 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             is_multinode=is_multinode,
             dockerfile_base64_data=dockerfile_base64_data,
             dockerimage=dockerimage,
+            target_az=target_az,
+            preserve_entrypoint=preserve_entrypoint,
         )
 
         # Update status: Pod created, waiting for container to start
         if is_multinode:
-            update_multinode_pod_status(reservation_id, "pulling container image", node_index, total_nodes)
+            update_multinode_pod_status(
+                reservation_id, "pulling container image", node_index, total_nodes)
         update_reservation_status(
             reservation_id,
             "preparing",
@@ -2365,16 +2591,21 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             domain_name = generate_unique_name(preferred_name)
 
             # Create DNS record (points to ALB, but we store for reference)
-            dns_success = create_dns_record(domain_name, node_public_ip, node_port)
+            dns_success = create_dns_record(
+                domain_name, node_public_ip, node_port)
             if dns_success:
-                domain_ssh_command = format_ssh_command_with_domain(domain_name, node_port)
+                domain_ssh_command = format_ssh_command_with_domain(
+                    domain_name, node_port)
 
                 # Store domain mapping with PRIVATE IP - WebSocket proxy runs in same VPC
                 duration_hours = float(request.get("duration_hours", 8))
-                expires_timestamp = int(time.time()) + int(duration_hours * 3600)
-                store_domain_mapping(domain_name, node_private_ip or node_public_ip, node_port, reservation_id, expires_timestamp)
+                expires_timestamp = int(time.time()) + \
+                    int(duration_hours * 3600)
+                store_domain_mapping(domain_name, node_private_ip or node_public_ip,
+                                     node_port, reservation_id, expires_timestamp)
 
-                logger.info(f"Created domain name {domain_name} for reservation {reservation_id}")
+                logger.info(
+                    f"Created domain name {domain_name} for reservation {reservation_id}")
 
         # Generate SSH command (use ProxyCommand with domain if available, otherwise fallback to direct IP+port)
         if domain_name:
@@ -2418,23 +2649,28 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             v1 = client.CoreV1Api(k8s_client)
 
             # Try multiple times to find SSH daemon in logs (custom images may take longer)
-            max_retries = 6  # 6 retries = up to 30 seconds total
-            retry_delay = 5  # seconds between retries
+            # For minimal images like ubuntu:latest, apt-get install openssh-server + sudo can take 60+ seconds
+            # 18 retries = up to 180 seconds total (3 minutes)
+            max_retries = 18
+            retry_delay = 10  # seconds between retries
 
             for attempt in range(max_retries):
                 logs = v1.read_namespaced_pod_log(
                     name=pod_name, namespace="gpu-dev", tail_lines=100  # Increased from 50
                 )
                 if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
-                    logger.info(f"SSH daemon confirmed running in pod logs for {pod_name} (attempt {attempt + 1})")
+                    logger.info(
+                        f"SSH daemon confirmed running in pod logs for {pod_name} (attempt {attempt + 1})")
                     ssh_ready = True
                     break
                 else:
                     if attempt < max_retries - 1:
-                        logger.info(f"SSH daemon not yet started, waiting {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        logger.info(
+                            f"SSH daemon not yet started, waiting {retry_delay}s (attempt {attempt + 1}/{max_retries})")
                         time.sleep(retry_delay)
                     else:
-                        logger.warning(f"SSH daemon not detected after {max_retries} attempts, logs preview: {logs[-200:]}")
+                        logger.warning(
+                            f"SSH daemon not detected after {max_retries} attempts, logs preview: {logs[-200:]}")
         except Exception as e:
             logger.warning(f"Could not check SSH daemon logs: {e}")
             # Assume ready if pod is running (NLB will handle routing)
@@ -2451,7 +2687,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             # Create ALB/NLB resources if enabled
             alb_config = None
             if domain_name:
-                logger.info(f"Domain name exists ({domain_name}), checking if ALB is enabled for reservation {reservation_id}")
+                logger.info(
+                    f"Domain name exists ({domain_name}), checking if ALB is enabled for reservation {reservation_id}")
                 try:
                     from shared.alb_utils import (
                         is_alb_enabled,
@@ -2464,10 +2701,12 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     alb_enabled = is_alb_enabled()
                     logger.info(f"ALB enabled check result: {alb_enabled}")
                     if alb_enabled:
-                        logger.info(f"Setting up ALB/NLB for reservation {reservation_id}")
+                        logger.info(
+                            f"Setting up ALB/NLB for reservation {reservation_id}")
 
                         # Get instance ID from pod
-                        instance_id = get_instance_id_from_pod(k8s_client, pod_name)
+                        instance_id = get_instance_id_from_pod(
+                            k8s_client, pod_name)
 
                         if instance_id:
                             # Create Jupyter target group (SSH uses HTTP CONNECT proxy)
@@ -2483,8 +2722,10 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                                 if jupyter_rule_arn:
                                     # Store mapping for cleanup
-                                    duration_hours = float(request.get("duration_hours", 8))
-                                    expires_timestamp = int(time.time()) + int(duration_hours * 3600)
+                                    duration_hours = float(
+                                        request.get("duration_hours", 8))
+                                    expires_timestamp = int(
+                                        time.time()) + int(duration_hours * 3600)
 
                                     store_alb_mapping(
                                         reservation_id,
@@ -2509,9 +2750,11 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                                         "jupyter_rule_arn": jupyter_rule_arn,
                                     }
 
-                                    logger.info(f"ALB setup complete for {reservation_id} (Jupyter HTTPS + SSH proxy)")
+                                    logger.info(
+                                        f"ALB setup complete for {reservation_id} (Jupyter HTTPS + SSH proxy)")
                         else:
-                            logger.warning(f"Could not get instance ID for pod {pod_name}, skipping ALB setup")
+                            logger.warning(
+                                f"Could not get instance ID for pod {pod_name}, skipping ALB setup")
                 except Exception as alb_error:
                     logger.error(f"Failed to setup ALB/NLB: {alb_error}")
                     # Continue with NodePort fallback
@@ -2523,6 +2766,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 pod_name=pod_name,
                 node_port=node_port,
                 node_ip=node_public_ip,
+                # For SSH proxy (VPC-internal)
+                node_private_ip=node_private_ip,
                 jupyter_port=jupyter_port,
                 jupyter_url_base=jupyter_url_base,
                 jupyter_enabled=jupyter_enabled,
@@ -2531,6 +2776,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 ebs_availability_zone=target_az if use_persistent_disk else None,
                 domain_name=domain_name,
                 alb_config=alb_config,
+                preserve_entrypoint=preserve_entrypoint,
             )
 
             # Trigger availability table update after successful reservation
@@ -2540,20 +2786,24 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     "Triggered availability table update after successful reservation"
                 )
             except Exception as update_error:
-                logger.warning(f"Failed to trigger availability update: {update_error}")
+                logger.warning(
+                    f"Failed to trigger availability update: {update_error}")
                 # Don't fail the reservation for this
 
         else:
-            logger.warning(f"MAIN FLOW: SSH connectivity test FAILED for reservation {reservation_id}, checking pod status for errors")
+            logger.warning(
+                f"MAIN FLOW: SSH connectivity test FAILED for reservation {reservation_id}, checking pod status for errors")
             # Check pod status using our consolidated monitoring function
-            pod_info = update_pod_status_and_events(k8s_client, pod_name, reservation_id)
+            pod_info = update_pod_status_and_events(
+                k8s_client, pod_name, reservation_id)
             if pod_info["has_errors"]:
                 update_reservation_status(
                     reservation_id,
                     "failed",
                     f"Pod failed to start properly: {pod_info['display_message']}",
                 )
-                raise RuntimeError(f"Pod failed: {pod_info['display_message']}")
+                raise RuntimeError(
+                    f"Pod failed: {pod_info['display_message']}")
             else:
                 # Pod is running but SSH not ready yet - keep as preparing
                 # Status message already updated by update_pod_status_and_events
@@ -2585,8 +2835,10 @@ def delete_sqs_message(record: dict[str, Any]) -> None:
     try:
         receipt_handle = record.get("receiptHandle")
         if receipt_handle:
-            sqs_client.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle)
-            logger.info(f"Deleted message from queue: {record.get('messageId')}")
+            sqs_client.delete_message(
+                QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle)
+            logger.info(
+                f"Deleted message from queue: {record.get('messageId')}")
         else:
             logger.warning("No receipt handle found for message deletion")
     except Exception as e:
@@ -2596,7 +2848,7 @@ def delete_sqs_message(record: dict[str, Any]) -> None:
 def update_reservation_status(reservation_id: str, status: str, detailed_status: str = None, failure_reason: str = None) -> None:
     """
     Update reservation status with unified status tracking.
-    
+
     Args:
         reservation_id: The reservation ID
         status: High-level status (preparing/active/cancelled/failed)
@@ -2605,35 +2857,37 @@ def update_reservation_status(reservation_id: str, status: str, detailed_status:
     """
     try:
         current_time = datetime.utcnow().isoformat()
-        
+
         # Prepare fields to update
         fields = {
             "status": status
         }
-        
-        # Add detailed status to history if provided  
+
+        # Add detailed status to history if provided
         if detailed_status:
             fields["current_detailed_status"] = detailed_status
-        
+
         # Only set failure_reason when actually failing
         if failure_reason and status == "failed":
             fields["failure_reason"] = failure_reason
-        
+
         # Update regular fields first
         update_reservation_fields(reservation_id, **fields)
-        
+
         # Handle status history append atomically if detailed_status provided
         if detailed_status:
             try:
-                append_status_history(reservation_id, current_time, detailed_status)
+                append_status_history(
+                    reservation_id, current_time, detailed_status)
             except Exception as history_error:
-                logger.warning(f"Could not append to status history: {history_error}")
-        
+                logger.warning(
+                    f"Could not append to status history: {history_error}")
+
         log_msg = f"Updated reservation {reservation_id} status to {status}"
         if detailed_status:
             log_msg += f" - {detailed_status}"
         logger.info(log_msg)
-        
+
     except Exception as e:
         logger.error(f"Error updating reservation status: {str(e)}")
 
@@ -2642,12 +2896,12 @@ def append_status_history(reservation_id: str, timestamp: str, message: str) -> 
     """Atomically append a status entry to the status_history list using DynamoDB LIST_APPEND"""
     try:
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-        
+
         new_entry = {
             "timestamp": timestamp,
             "message": message
         }
-        
+
         # Use LIST_APPEND to atomically append to the status_history list
         # This handles concurrent writes properly
         try:
@@ -2661,7 +2915,8 @@ def append_status_history(reservation_id: str, timestamp: str, message: str) -> 
             )
         except Exception as append_error:
             # If the above fails (rare edge case), fall back to regular SET operation
-            logger.warning(f"LIST_APPEND failed, falling back to SET: {append_error}")
+            logger.warning(
+                f"LIST_APPEND failed, falling back to SET: {append_error}")
             reservations_table.update_item(
                 Key={"reservation_id": reservation_id},
                 UpdateExpression="SET status_history = :history",
@@ -2669,9 +2924,10 @@ def append_status_history(reservation_id: str, timestamp: str, message: str) -> 
                     ":history": [new_entry]
                 }
             )
-        
-        logger.debug(f"Appended status history entry for {reservation_id}: {message}")
-        
+
+        logger.debug(
+            f"Appended status history entry for {reservation_id}: {message}")
+
     except Exception as e:
         logger.error(f"Error appending status history: {str(e)}")
         raise
@@ -2681,11 +2937,13 @@ def update_reservation_fields(reservation_id: str, **fields) -> None:
     """Update arbitrary fields in a reservation record"""
     try:
         if not reservation_id or not fields:
-            logger.warning(f"update_reservation_fields called with empty reservation_id={reservation_id} or fields={fields}")
+            logger.warning(
+                f"update_reservation_fields called with empty reservation_id={reservation_id} or fields={fields}")
             return
 
         if not RESERVATIONS_TABLE:
-            logger.error(f"RESERVATIONS_TABLE environment variable is not set!")
+            logger.error(
+                f"RESERVATIONS_TABLE environment variable is not set!")
             return
 
         if not dynamodb:
@@ -2708,23 +2966,25 @@ def update_reservation_fields(reservation_id: str, **fields) -> None:
                 update_expression += f", {field} = :{field}"
             expression_attribute_values[f":{field}"] = value
 
-        logger.debug(f"Updating reservation {reservation_id} with expression: {update_expression}")
+        logger.debug(
+            f"Updating reservation {reservation_id} with expression: {update_expression}")
         logger.debug(f"Values: {expression_attribute_values}")
-        
+
         # Build update_item parameters - only include ExpressionAttributeNames if needed
         update_params = {
             "Key": {"reservation_id": reservation_id},
             "UpdateExpression": update_expression,
             "ExpressionAttributeValues": expression_attribute_values,
         }
-        
+
         # Only add ExpressionAttributeNames if we have any (don't pass None or empty dict)
         if expression_attribute_names:
             update_params["ExpressionAttributeNames"] = expression_attribute_names
-        
+
         reservations_table.update_item(**update_params)
 
-        logger.info(f"Updated reservation {reservation_id} fields: {list(fields.keys())}")
+        logger.info(
+            f"Updated reservation {reservation_id} fields: {list(fields.keys())}")
     except Exception as e:
         logger.error(f"Error updating reservation fields: {str(e)}")
 
@@ -2749,7 +3009,8 @@ def get_github_public_key(github_username: str, validate: bool = True) -> str:
             keys_data = response.read().decode("utf-8").strip()
 
         if not keys_data:
-            logger.error(f"No public SSH keys found for GitHub user {github_username}")
+            logger.error(
+                f"No public SSH keys found for GitHub user {github_username}")
             return None
 
         if validate:
@@ -2770,13 +3031,15 @@ def get_github_public_key(github_username: str, validate: bool = True) -> str:
                 )
                 return None
 
-            logger.info(f"Found {len(valid_keys)} valid SSH keys for {github_username}")
+            logger.info(
+                f"Found {len(valid_keys)} valid SSH keys for {github_username}")
             return "\n".join(valid_keys)
         else:
             return keys_data
 
     except Exception as e:
-        logger.error(f"Error fetching GitHub key for {github_username}: {str(e)}")
+        logger.error(
+            f"Error fetching GitHub key for {github_username}: {str(e)}")
         return None
 
 
@@ -2795,6 +3058,8 @@ def create_kubernetes_resources(
     is_multinode: bool = False,
     dockerfile_base64_data: str = None,
     dockerimage: str = None,
+    target_az: str = None,
+    preserve_entrypoint: bool = False,
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
@@ -2807,7 +3072,8 @@ def create_kubernetes_resources(
         existing_service_port = None
 
         try:
-            existing_pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
+            existing_pod = v1.read_namespaced_pod(
+                name=pod_name, namespace="gpu-dev")
             pod_exists = True
             pod_phase = existing_pod.status.phase
             logger.info(
@@ -2890,6 +3156,8 @@ def create_kubernetes_resources(
                         is_multinode=is_multinode,
                         dockerfile_base64_data=dockerfile_base64_data,
                         dockerimage=dockerimage,
+                        target_az=target_az,
+                        preserve_entrypoint=preserve_entrypoint,
                     )
                     logger.info(f"Created new pod {pod_name} with Jupyter")
                     update_reservation_status(
@@ -2900,10 +3168,13 @@ def create_kubernetes_resources(
 
                     # Start background monitoring immediately after pod creation
                     if reservation_id not in _monitoring_threads:
-                        logger.info(f"Starting background monitoring for newly created pod {pod_name}")
-                        monitor_stop_event = start_background_pod_monitoring(k8s_client, pod_name, reservation_id)
+                        logger.info(
+                            f"Starting background monitoring for newly created pod {pod_name}")
+                        monitor_stop_event = start_background_pod_monitoring(
+                            k8s_client, pod_name, reservation_id)
                     else:
-                        logger.info(f"Background monitoring already exists for reservation {reservation_id}, skipping duplicate")
+                        logger.info(
+                            f"Background monitoring already exists for reservation {reservation_id}, skipping duplicate")
 
                 # Create SSH service if it doesn't exist
                 if not existing_service_port:
@@ -2916,7 +3187,8 @@ def create_kubernetes_resources(
                 try:
                     create_headless_service(k8s_client, pod_name)
                 except Exception as headless_error:
-                    logger.warning(f"Failed to create headless service: {headless_error}")
+                    logger.warning(
+                        f"Failed to create headless service: {headless_error}")
                     # Don't fail the whole pod creation if headless service fails
 
                 # Create Jupyter service if it doesn't exist
@@ -2961,6 +3233,8 @@ def create_kubernetes_resources(
                         is_multinode=is_multinode,
                         dockerfile_base64_data=dockerfile_base64_data,
                         dockerimage=dockerimage,
+                        target_az=target_az,
+                        preserve_entrypoint=preserve_entrypoint,
                     )
                     logger.info(f"Created new pod {pod_name} without Jupyter")
                     update_reservation_status(
@@ -2980,7 +3254,8 @@ def create_kubernetes_resources(
                 try:
                     create_headless_service(k8s_client, pod_name)
                 except Exception as headless_error:
-                    logger.warning(f"Failed to create headless service: {headless_error}")
+                    logger.warning(
+                        f"Failed to create headless service: {headless_error}")
                     # Don't fail the whole pod creation if headless service fails
 
         # Wait for pod to be ready (regardless of whether it was just created or already existed)
@@ -2991,12 +3266,16 @@ def create_kubernetes_resources(
         # Start background monitoring if not already started (for existing pods)
         # Check global registry to prevent multiple Lambda executions from monitoring the same pod
         if 'monitor_stop_event' not in locals() and reservation_id not in _monitoring_threads:
-            logger.info(f"Starting background monitoring for existing pod {pod_name}")
-            monitor_stop_event = start_background_pod_monitoring(k8s_client, pod_name, reservation_id)
+            logger.info(
+                f"Starting background monitoring for existing pod {pod_name}")
+            monitor_stop_event = start_background_pod_monitoring(
+                k8s_client, pod_name, reservation_id)
         elif reservation_id in _monitoring_threads:
-            logger.info(f"Background monitoring already active for reservation {reservation_id}, skipping duplicate")
+            logger.info(
+                f"Background monitoring already active for reservation {reservation_id}, skipping duplicate")
 
-        wait_for_pod_ready(k8s_client, pod_name)  # Remove reservation_id to avoid blocking
+        # Remove reservation_id to avoid blocking
+        wait_for_pod_ready(k8s_client, pod_name)
         update_reservation_status(
             reservation_id, "preparing", f"Pod is ready, setting up services"
         )
@@ -3081,7 +3360,7 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
                 "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},    # A100
                 "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},    # H100
                 "p5e.48xlarge": {"cpus": 192, "memory_gb": 2048},   # H200
-                "p6-b200.48xlarge": {"cpus": 192, "memory_gb": 2048} # B200
+                "p6-b200.48xlarge": {"cpus": 192, "memory_gb": 2048}  # B200
             }
 
             # Get max GPUs per node for this GPU type
@@ -3104,14 +3383,15 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
             specs = instance_specs.get(instance_type, default_specs)
 
             # Calculate proportional limits (reserve some for system)
-            proportional_cpu = int(specs["cpus"] * gpu_ratio * 0.9)  # 90% to reserve for system
+            # 90% to reserve for system
+            proportional_cpu = int(specs["cpus"] * gpu_ratio * 0.9)
             proportional_memory = int(specs["memory_gb"] * gpu_ratio * 0.9)
 
             limits.update({
                 "cpu": str(proportional_cpu),
                 "memory": f"{proportional_memory}Gi"
             })
-    
+
     # EFA optimization: Only use EFA for full-node multinode deployments
     # This prevents partial-node reservations from competing for limited EFA resources
     max_gpus = gpu_max_per_node.get(gpu_type, 1)
@@ -3121,13 +3401,15 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
         is_multinode and            # Only for multinode deployments
         gpu_count == max_gpus       # Only when using all GPUs per node
     )
-    
+
     if use_efa:
         limits["vpc.amazonaws.com/efa"] = "1"
-        logger.info(f"Using EFA for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
+        logger.info(
+            f"Using EFA for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
     else:
-        logger.info(f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
-    
+        logger.info(
+            f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
+
     return limits
 
 
@@ -3177,17 +3459,19 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
             }
 
             instance_type = instance_type_map.get(gpu_type)
-            specs = instance_specs.get(instance_type, {"cpus": 48, "memory_gb": 192})
+            specs = instance_specs.get(
+                instance_type, {"cpus": 48, "memory_gb": 192})
 
             # More conservative requests (50% of proportional allocation)
             proportional_cpu = max(1, int(specs["cpus"] * gpu_ratio * 0.5))
-            proportional_memory = max(1, int(specs["memory_gb"] * gpu_ratio * 0.5))
+            proportional_memory = max(
+                1, int(specs["memory_gb"] * gpu_ratio * 0.5))
 
             requests.update({
                 "cpu": str(proportional_cpu),
                 "memory": f"{proportional_memory}Gi"
             })
-    
+
     # EFA optimization: Only use EFA for full-node multinode deployments
     # This prevents partial-node reservations from competing for limited EFA resources
     max_gpus = gpu_max_per_node.get(gpu_type, 1)
@@ -3197,10 +3481,10 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
         is_multinode and            # Only for multinode deployments
         gpu_count == max_gpus       # Only when using all GPUs per node
     )
-    
+
     if use_efa:
         requests["vpc.amazonaws.com/efa"] = "1"
-    
+
     return requests
 
 
@@ -3254,6 +3538,8 @@ def create_pod(
     is_multinode: bool = False,
     dockerfile_base64_data: str = None,
     dockerimage: str = None,
+    target_az: str = None,
+    preserve_entrypoint: bool = False,
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
@@ -3271,17 +3557,21 @@ def create_pod(
             container_image = dockerimage
         elif dockerfile_base64_data:
             # This should not happen - Dockerfile should have been built already
-            logger.warning(f"Dockerfile base64 data provided but no built image: {len(dockerfile_base64_data)} bytes")
-            logger.warning("Using default image - Dockerfile should have been built earlier")
+            logger.warning(
+                f"Dockerfile base64 data provided but no built image: {len(dockerfile_base64_data)} bytes")
+            logger.warning(
+                "Using default image - Dockerfile should have been built earlier")
 
-        logger.info(f"Pod {pod_name} will use container image: {container_image}")
+        logger.info(
+            f"Pod {pod_name} will use container image: {container_image}")
 
         # Handle persistent disk setup if provided
         ebs_volume_spec = None
         use_persistent_disk = persistent_volume_id is not None
 
         if use_persistent_disk:
-            logger.info(f"Setting up persistent disk {persistent_volume_id} for pod {pod_name}")
+            logger.info(
+                f"Setting up persistent disk {persistent_volume_id} for pod {pod_name}")
 
             # Get node instance ID where pod will be scheduled
             # For now, we'll handle this in the container startup script
@@ -3290,7 +3580,8 @@ def create_pod(
                 volume_id=persistent_volume_id,
                 fs_type="ext4"
             )
-            logger.info(f"Will use EBS volume {persistent_volume_id} for /home/dev")
+            logger.info(
+                f"Will use EBS volume {persistent_volume_id} for /home/dev")
         else:
             logger.info(f"Using EmptyDir for /home/dev (no persistent disk)")
 
@@ -3308,8 +3599,8 @@ def create_pod(
                         f"""
                         echo "[INIT] Setting up dev user and SSH keys..."
 
-                        # Create dev user with specific UID for consistency (Alpine uses adduser)
-                        adduser -D -u 1000 -s /bin/bash dev
+                        # Create dev user with UID 1081 to avoid conflicts with common base image users (Alpine uses adduser)
+                        adduser -D -u 1081 -s /bin/bash dev
 
                         # Handle persistent disk setup
                         if [ "{use_persistent_disk}" = "True" ]; then
@@ -3323,20 +3614,20 @@ def create_pod(
                                 if [ ! -d "/home/dev/.ssh" ]; then
                                     echo "[INIT] First-time setup - creating SSH directory"
                                     mkdir -p /home/dev/.ssh
-                                    chown 1000:1000 /home/dev/.ssh
+                                    chown 1081:1081 /home/dev/.ssh
                                     chmod 700 /home/dev/.ssh
                                 fi
                             else
                                 echo "[INIT] WARNING: Expected EBS volume not mounted"
                                 # Fallback to regular setup
                                 mkdir -p /home/dev
-                                chown 1000:1000 /home/dev
+                                chown 1081:1081 /home/dev
                             fi
                         else
                             echo "[INIT] No persistent disk - using EmptyDir"
                             # Ensure /home/dev exists for EmptyDir
                             mkdir -p /home/dev
-                            chown 1000:1000 /home/dev
+                            chown 1081:1081 /home/dev
                         fi
 
                         # Set up SSH keys (always refresh)
@@ -3346,7 +3637,7 @@ def create_pod(
                         chmod 600 /home/dev/.ssh/authorized_keys
 
                         # Ensure proper ownership of entire home directory
-                        chown -R 1000:1000 /home/dev
+                        chown -R 1081:1081 /home/dev
 
                         # Create marker file to verify init completed
                         echo "SSH keys initialized at $(date)" > /home/dev/.ssh/init_complete
@@ -3355,7 +3646,8 @@ def create_pod(
                         """,
                     ],
                     volume_mounts=[
-                        client.V1VolumeMount(name="dev-home", mount_path="/home/dev")
+                        client.V1VolumeMount(
+                            name="dev-home", mount_path="/home/dev")
                     ],
                     security_context=client.V1SecurityContext(
                         # Init container always runs as root to set up SSH keys
@@ -3369,10 +3661,11 @@ def create_pod(
                     name="gpu-dev",
                     image=container_image,
                     image_pull_policy="Always",  # Always pull to check if image exists, fail fast if not
-                    command=["/bin/bash"],
-                    args=[
-                        "-c",
-                        f"""
+                    **({
+                        "command": ["/bin/bash"],
+                        "args": [
+                            "-c",
+                            f"""
                         echo "[STARTUP] Starting GPU development container with pre-installed environment..."
 
                         # Debug environment variables
@@ -3380,6 +3673,44 @@ def create_pod(
                         echo "[STARTUP] - CREATE_SH_ENV=$CREATE_SH_ENV"
                         echo "[STARTUP] - JUPYTER_ENABLED=$JUPYTER_ENABLED"
                         echo "[STARTUP] - USE_PERSISTENT_DISK=$USE_PERSISTENT_DISK"
+
+                        # Install sudo if missing (for custom Dockerfiles that don't include it)
+                        echo "[STARTUP] Checking for sudo..."
+                        if ! command -v sudo &>/dev/null; then
+                            echo "[STARTUP] sudo not found - attempting to install..."
+                            if command -v apt-get &>/dev/null; then
+                                apt-get update -qq && apt-get install -y -qq sudo
+                            elif command -v yum &>/dev/null; then
+                                yum install -y -q sudo
+                            elif command -v dnf &>/dev/null; then
+                                dnf install -y -q sudo
+                            elif command -v apk &>/dev/null; then
+                                apk add --no-cache sudo
+                            elif command -v zypper &>/dev/null; then
+                                zypper install -y sudo
+                            elif command -v pacman &>/dev/null; then
+                                pacman -Sy --noconfirm sudo
+                            else
+                                echo "[STARTUP] WARNING: Could not detect package manager to install sudo"
+                            fi
+
+                            if command -v sudo &>/dev/null; then
+                                echo "[STARTUP] sudo installed successfully"
+                            else
+                                echo "[STARTUP] WARNING: sudo installation failed - dev user may not have elevated privileges"
+                            fi
+                        else
+                            echo "[STARTUP] sudo already available"
+                        fi
+
+                        # Configure sudoers for dev user (NOPASSWD)
+                        echo "[STARTUP] Configuring passwordless sudo for dev user..."
+                        mkdir -p /etc/sudoers.d
+                        echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev
+                        echo 'Defaults lecture=never' >> /etc/sudoers.d/dev
+                        echo 'Defaults !lecture' >> /etc/sudoers.d/dev
+                        chmod 0440 /etc/sudoers.d/dev
+                        echo "[STARTUP] Sudoers configuration complete"
 
                         # Install PyTorch for ARM64 CPU instances
                         if [ "{gpu_type}" = "cpu-arm" ]; then
@@ -3401,8 +3732,18 @@ def create_pod(
                         fi
 
                         echo "[STARTUP] Setting up dev user..."
-                        # Create dev user with zsh as default shell (same UID as init container)
-                        id dev &>/dev/null || useradd -u 1000 -m -s /usr/bin/zsh dev
+                        # Create dev user with UID 1081 to avoid conflicts with common base image users (e.g., ubuntu=1000)
+                        # Use zsh as default shell, fallback to bash if not available
+                        if ! id dev &>/dev/null; then
+                            echo "[STARTUP] Creating dev user with UID 1081"
+                            if [ -x "/usr/bin/zsh" ]; then
+                                useradd -u 1081 -m -s /usr/bin/zsh dev || useradd -u 1081 -m -s /bin/bash dev
+                            else
+                                useradd -u 1081 -m -s /bin/bash dev
+                            fi
+                        else
+                            echo "[STARTUP] dev user already exists"
+                        fi
 
                         # Ensure dev user is not locked (useradd creates locked accounts by default)
                         # Use passwd -d to remove password and unlock account for SSH key authentication
@@ -3436,7 +3777,7 @@ def create_pod(
 
                                     # Mark as initialized
                                     echo "Initialized at $(date)" > /home/dev/.disk_initialized
-                                    chown 1000:1000 /home/dev/.disk_initialized
+                                    chown 1081:1081 /home/dev/.disk_initialized
                                 fi
                             else
                                 echo "[STARTUP] Using existing disk configuration (CREATE_SH_ENV=false)"
@@ -3541,7 +3882,7 @@ echo "🔗 Shared storage: /shared (if mounted)"
 echo "📁 Original container files preserved in their original locations"
 EOF_BASHRC
 
-                            chown 1000:1000 /home/dev/.bashrc
+                            chown 1081:1081 /home/dev/.bashrc
                             echo "[STARTUP] ✓ Created basic .bashrc with expiration warnings"
 
                             # Ensure .bashrc is sourced for SSH login shells
@@ -3551,7 +3892,7 @@ if [ -f ~/.bashrc ]; then
     . ~/.bashrc
 fi
 EOF_PROFILE
-                            chown 1000:1000 /home/dev/.bash_profile
+                            chown 1081:1081 /home/dev/.bash_profile
                             echo "[STARTUP] ✓ Created .bash_profile to source .bashrc for SSH sessions"
                         else
                             echo "[STARTUP] CREATE_SH_ENV='$CREATE_SH_ENV' - Using existing shell configuration from persistent disk"
@@ -3609,10 +3950,31 @@ EOFREADME
                                 
                                 # Set up environment variable for backup scripts to use
                                 USER_ID_CLEAN="{user_id.split('@')[0] if user_id else 'default'}"
-                                echo "" >> /home/dev/.bashrc
-                                echo 'export GPU_DEV_USER_ID="{user_id or "dev"}"' >> /home/dev/.bashrc
-                                echo "" >> /home/dev/.zshrc  
-                                echo 'export GPU_DEV_USER_ID="{user_id or "dev"}"' >> /home/dev/.zshrc
+
+                                # Clean up duplicate GPU_DEV_USER_ID exports from previous bug (keep only first occurrence)
+                                for rcfile in /home/dev/.bashrc /home/dev/.zshrc; do
+                                    if [ -f "$rcfile" ]; then
+                                        # Count duplicates
+                                        dup_count=$(grep -c 'export GPU_DEV_USER_ID=' "$rcfile" 2>/dev/null || echo "0")
+                                        if [ "$dup_count" -gt 1 ]; then
+                                            echo "[STARTUP] Cleaning up $dup_count duplicate GPU_DEV_USER_ID exports in $rcfile"
+                                            # Keep only first occurrence, remove rest
+                                            grep -v 'export GPU_DEV_USER_ID=' "$rcfile" > "$rcfile.tmp"
+                                            grep -m1 'export GPU_DEV_USER_ID=' "$rcfile" >> "$rcfile.tmp"
+                                            mv "$rcfile.tmp" "$rcfile"
+                                        fi
+                                    fi
+                                done
+
+                                # Only add GPU_DEV_USER_ID export if not already present (avoid duplicates on persistent disks)
+                                if [ -f /home/dev/.bashrc ] && ! grep -qF 'export GPU_DEV_USER_ID=' /home/dev/.bashrc; then
+                                    echo "" >> /home/dev/.bashrc
+                                    echo 'export GPU_DEV_USER_ID="{user_id or "dev"}"' >> /home/dev/.bashrc
+                                fi
+                                if [ -f /home/dev/.zshrc ] && ! grep -qF 'export GPU_DEV_USER_ID=' /home/dev/.zshrc; then
+                                    echo "" >> /home/dev/.zshrc
+                                    echo 'export GPU_DEV_USER_ID="{user_id or "dev"}"' >> /home/dev/.zshrc
+                                fi
                                 
                                 /usr/local/bin/setup-dotfiles-persistence "$USER_ID_CLEAN" "$USE_PERSISTENT_DISK"
                             else
@@ -3776,7 +4138,7 @@ EOF
 
                         echo "[STARTUP] Setting up dev user home directory..."
                         # Ensure all shell config files have correct ownership
-                        chown -R 1000:1000 /home/dev
+                        chown -R 1081:1081 /home/dev
 
                         # Verify SSH keys were set up by init container
                         if [ -f /home/dev/.ssh/authorized_keys ]; then
@@ -3785,6 +4147,31 @@ EOF
                             chmod 600 /home/dev/.ssh/authorized_keys
                         else
                             echo "[STARTUP] WARNING: No SSH keys found from init container!"
+                        fi
+
+                        # Copy SSH keys to other existing users (ubuntu, etc.) for convenience
+                        echo "[STARTUP] Copying SSH keys to other existing users for multi-user SSH access..."
+                        if [ -f /home/dev/.ssh/authorized_keys ]; then
+                            # Find all users with home directories (excluding dev and system users)
+                            for user_home in /home/* /root; do
+                                if [ -d "$user_home" ] && [ "$user_home" != "/home/dev" ]; then
+                                    username=$(basename "$user_home")
+                                    # Skip if no user exists or if it's a system directory
+                                    if id "$username" >/dev/null 2>&1; then
+                                        echo "[STARTUP] Setting up SSH keys for user: $username"
+                                        mkdir -p "$user_home/.ssh"
+                                        cp /home/dev/.ssh/authorized_keys "$user_home/.ssh/authorized_keys"
+                                        chmod 700 "$user_home/.ssh"
+                                        chmod 600 "$user_home/.ssh/authorized_keys"
+                                        # Set ownership to the actual user
+                                        chown -R $username:$username "$user_home/.ssh" 2>/dev/null || \
+                                        chown -R $(id -u $username):$(id -g $username) "$user_home/.ssh"
+                                        echo "[STARTUP] ✓ SSH keys configured for $username"
+                                    fi
+                                fi
+                            done
+                        else
+                            echo "[STARTUP] No SSH keys available to copy"
                         fi
 
                         echo "[STARTUP] Setting up MOTD with dynamic storage info..."
@@ -3891,12 +4278,12 @@ c.ServerApp.allow_remote_access = True
 c.ServerApp.notebook_dir = '/workspace'
 c.ServerApp.root_dir = '/workspace'
 EOF
-                                chown 1000:1000 /home/dev/.jupyter/jupyter_lab_config.py
+                                chown 1081:1081 /home/dev/.jupyter/jupyter_lab_config.py
                                 echo "[STARTUP] Jupyter Lab configured with security token"
 
                                 # Store Jupyter token in a file for later retrieval
                                 echo "$JUPYTER_TOKEN" > /tmp/jupyter_token
-                                chown 1000:1000 /tmp/jupyter_token
+                                chown 1081:1081 /tmp/jupyter_token
                                 chmod 600 /tmp/jupyter_token
                             else
                                 echo "[STARTUP] Jupyter Lab configuration skipped - no token available"
@@ -3979,7 +4366,8 @@ EOF
                             fi
                         done
                         """,
-                    ],
+                        ]
+                    } if not preserve_entrypoint else {}),
                     ports=[
                         client.V1ContainerPort(container_port=22),
                         client.V1ContainerPort(container_port=8888),
@@ -4005,19 +4393,24 @@ EOF
                         )
                     ] + get_nccl_env_vars(gpu_type),
                     resources=client.V1ResourceRequirements(
-                        limits=get_pod_resource_limits(gpu_count, gpu_type, is_multinode),
-                        requests=get_pod_resource_requests(gpu_count, gpu_type, is_multinode),
+                        limits=get_pod_resource_limits(
+                            gpu_count, gpu_type, is_multinode),
+                        requests=get_pod_resource_requests(
+                            gpu_count, gpu_type, is_multinode),
                     ),
                     volume_mounts=[
-                        client.V1VolumeMount(name="dev-home", mount_path="/home/dev"),
+                        client.V1VolumeMount(
+                            name="dev-home", mount_path="/home/dev"),
                         client.V1VolumeMount(
                             name="shared-workspace", mount_path="/workspace"
                         ),
-                        client.V1VolumeMount(name="dshm", mount_path="/dev/shm"),
+                        client.V1VolumeMount(
+                            name="dshm", mount_path="/dev/shm"),
                     ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
-                            add=["IPC_LOCK", "SYS_ADMIN"]  # SYS_ADMIN required for NVIDIA GPU profiling (ncu, nsys)
+                            # SYS_ADMIN required for NVIDIA GPU profiling (ncu, nsys)
+                            add=["IPC_LOCK", "SYS_ADMIN"]
                         ),
                         # Run as root when using custom Docker images to allow SSH setup
                         run_as_user=0 if dockerimage else None,
@@ -4034,7 +4427,8 @@ EOF
                 ),
                 client.V1Volume(
                     name="shared-workspace",
-                    empty_dir=client.V1EmptyDirVolumeSource(size_limit="500Gi"),
+                    empty_dir=client.V1EmptyDirVolumeSource(
+                        size_limit="500Gi"),
                 ),
                 client.V1Volume(
                     name="dshm",
@@ -4051,13 +4445,17 @@ EOF
                     )
                 )
             ] if efs_filesystem_id else []),
-            node_selector={"GpuType": gpu_type},
+            node_selector={
+                "GpuType": gpu_type,
+                **({} if target_az is None else {"topology.kubernetes.io/zone": target_az})
+            },
             tolerations=[
                 client.V1Toleration(
                     key="nvidia.com/gpu", operator="Exists", effect="NoSchedule"
                 )
             ] if not gpu_type.startswith("cpu-") else [],
-            termination_grace_period_seconds=10,  # Faster pod deletion (default is 30s)
+            # Faster pod deletion (default is 30s)
+            termination_grace_period_seconds=10,
         )
 
         # Create pod metadata
@@ -4108,7 +4506,8 @@ def create_service(k8s_client, pod_name: str, node_port: int):
         )
 
         # Create service
-        service = client.V1Service(metadata=service_metadata, spec=service_spec)
+        service = client.V1Service(
+            metadata=service_metadata, spec=service_spec)
         v1.create_namespaced_service(namespace="gpu-dev", body=service)
 
         logger.info(f"Created service {pod_name}-ssh on port {node_port}")
@@ -4141,13 +4540,16 @@ def create_headless_service(k8s_client, pod_name: str):
         )
 
         # Create service
-        service = client.V1Service(metadata=service_metadata, spec=service_spec)
+        service = client.V1Service(
+            metadata=service_metadata, spec=service_spec)
         v1.create_namespaced_service(namespace="gpu-dev", body=service)
 
-        logger.info(f"Created headless service {pod_name}-headless for multi-node communication")
+        logger.info(
+            f"Created headless service {pod_name}-headless for multi-node communication")
 
     except Exception as e:
-        logger.error(f"Error creating headless service for {pod_name}: {str(e)}")
+        logger.error(
+            f"Error creating headless service for {pod_name}: {str(e)}")
         raise
 
 
@@ -4174,13 +4576,16 @@ def create_jupyter_service(k8s_client, pod_name: str, jupyter_port: int):
         )
 
         # Create service
-        service = client.V1Service(metadata=service_metadata, spec=service_spec)
+        service = client.V1Service(
+            metadata=service_metadata, spec=service_spec)
         v1.create_namespaced_service(namespace="gpu-dev", body=service)
 
-        logger.info(f"Created service {pod_name}-jupyter on port {jupyter_port}")
+        logger.info(
+            f"Created service {pod_name}-jupyter on port {jupyter_port}")
 
     except Exception as e:
-        logger.error(f"Error creating Jupyter service for {pod_name}: {str(e)}")
+        logger.error(
+            f"Error creating Jupyter service for {pod_name}: {str(e)}")
         raise
 
 
@@ -4193,7 +4598,8 @@ def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 600):
 
         while time.time() - start_time < timeout_seconds:
             try:
-                pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
+                pod = v1.read_namespaced_pod(
+                    name=pod_name, namespace="gpu-dev")
 
                 # Check if pod is ready
                 if pod.status.conditions:
@@ -4253,26 +4659,27 @@ def get_pod_node_public_ip(pod_name: str) -> str:
     try:
         k8s_client = get_k8s_client()
         v1 = client.CoreV1Api(k8s_client)
-        
+
         # Get the pod to find which node it's on
         pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
         node_name = pod.spec.node_name
-        
+
         if not node_name:
             logger.warning(f"Pod {pod_name} not scheduled to any node yet")
             return get_node_public_ip()  # Fallback to first available
-        
+
         # Get the specific node's external IP
         node = v1.read_node(name=node_name)
         if node.status.addresses:
             for addr in node.status.addresses:
                 if addr.type == "ExternalIP":
-                    logger.info(f"Pod {pod_name} is on node {node_name} with IP {addr.address}")
+                    logger.info(
+                        f"Pod {pod_name} is on node {node_name} with IP {addr.address}")
                     return addr.address
-        
+
         logger.warning(f"No external IP found for node {node_name}")
         return get_node_public_ip()  # Fallback
-        
+
     except Exception as e:
         logger.error(f"Error getting pod node IP for {pod_name}: {str(e)}")
         return get_node_public_ip()  # Fallback
@@ -4297,14 +4704,16 @@ def get_pod_node_private_ip(pod_name: str) -> str:
         if node.status.addresses:
             for addr in node.status.addresses:
                 if addr.type == "InternalIP":
-                    logger.info(f"Pod {pod_name} is on node {node_name} with private IP {addr.address}")
+                    logger.info(
+                        f"Pod {pod_name} is on node {node_name} with private IP {addr.address}")
                     return addr.address
 
         logger.warning(f"No internal IP found for node {node_name}")
         return None
 
     except Exception as e:
-        logger.error(f"Error getting pod node private IP for {pod_name}: {str(e)}")
+        logger.error(
+            f"Error getting pod node private IP for {pod_name}: {str(e)}")
         return None
 
 
@@ -4337,7 +4746,8 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
         disk_tag_key = "gpu-dev-user"
         disk_tag_value = user_id
 
-        logger.info(f"Looking for existing persistent disk for user {user_id} in AZ {availability_zone}")
+        logger.info(
+            f"Looking for existing persistent disk for user {user_id} in AZ {availability_zone}")
 
         # Check for existing disk with this user tag in the specified AZ
         response = ec2_client.describe_volumes(
@@ -4354,20 +4764,27 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
         # BUG FIX: Detect multiple persistent disks and return warning instead of erroring
         if len(volumes) > 1:
             volume_ids = [vol["VolumeId"] for vol in volumes]
-            volume_info = [(vol["VolumeId"], vol.get("CreateTime", "unknown"), vol["State"]) for vol in volumes]
+            volume_info = [(vol["VolumeId"], vol.get(
+                "CreateTime", "unknown"), vol["State"]) for vol in volumes]
             warning_message = f"⚠️ Multiple persistent disks detected ({len(volumes)} disks: {', '.join(volume_ids)}). Using oldest available. Please contact oncall:pytorch_release_engineering to clean up duplicate disks."
-            logger.error(f"❌ DOUBLE PERSISTENT DISK DETECTED for user {user_id} in AZ {availability_zone}:")
+            logger.error(
+                f"❌ DOUBLE PERSISTENT DISK DETECTED for user {user_id} in AZ {availability_zone}:")
             for vol_id, create_time, state in volume_info:
-                logger.error(f"  - {vol_id}: created {create_time}, state {state}")
-            logger.error(f"This should not happen! User {user_id} should only have ONE persistent disk per AZ.")
-            logger.error(f"Will use OLDEST volume which should have the user's data.")
+                logger.error(
+                    f"  - {vol_id}: created {create_time}, state {state}")
+            logger.error(
+                f"This should not happen! User {user_id} should only have ONE persistent disk per AZ.")
+            logger.error(
+                f"Will use OLDEST volume which should have the user's data.")
 
         if volumes:
             # BUG FIX: Sort by creation time to always use the OLDEST disk (has user data)
-            volumes_sorted = sorted(volumes, key=lambda v: v.get("CreateTime", datetime.min))
+            volumes_sorted = sorted(
+                volumes, key=lambda v: v.get("CreateTime", datetime.min))
 
             # Check if any volumes are available (not in-use)
-            available_volumes = [vol for vol in volumes_sorted if vol["State"] == "available"]
+            available_volumes = [
+                vol for vol in volumes_sorted if vol["State"] == "available"]
 
             if available_volumes:
                 # BUG FIX: Use the oldest available disk
@@ -4376,20 +4793,25 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
                 create_time = oldest_volume.get("CreateTime", "unknown")
 
                 if len(available_volumes) > 1:
-                    logger.warning(f"Multiple available disks found for {user_id}, using oldest: {volume_id} (created {create_time})")
+                    logger.warning(
+                        f"Multiple available disks found for {user_id}, using oldest: {volume_id} (created {create_time})")
                 else:
-                    logger.info(f"Found existing available persistent disk {volume_id} for user {user_id} in {availability_zone}")
+                    logger.info(
+                        f"Found existing available persistent disk {volume_id} for user {user_id} in {availability_zone}")
 
-                return volume_id, False, warning_message  # existing disk, with optional warning
+                # existing disk, with optional warning
+                return volume_id, False, warning_message
             else:
                 # BUG FIX: All volumes are in-use - this is a race condition bug!
                 # DO NOT create a new disk. Instead, return a warning to be stored in the database.
-                in_use_volumes = [vol for vol in volumes_sorted if vol["State"] == "in-use"]
+                in_use_volumes = [
+                    vol for vol in volumes_sorted if vol["State"] == "in-use"]
 
                 if in_use_volumes:
                     oldest_in_use = in_use_volumes[0]
                     in_use_volume_id = oldest_in_use["VolumeId"]
-                    all_in_use_ids = [vol["VolumeId"] for vol in in_use_volumes]
+                    all_in_use_ids = [vol["VolumeId"]
+                                      for vol in in_use_volumes]
 
                     # Create warning message for database (CLI will display this)
                     warning_msg = (
@@ -4397,17 +4819,20 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
                         f"Found {len(in_use_volumes)} in-use disk(s): {', '.join(all_in_use_ids)}. "
                         f"Please contact oncall:pytorch_release_engineering to resolve this issue."
                     )
-                    logger.error(f"❌ DOUBLE PERSISTENT DISK - ALL IN-USE for user {user_id}: {all_in_use_ids}")
+                    logger.error(
+                        f"❌ DOUBLE PERSISTENT DISK - ALL IN-USE for user {user_id}: {all_in_use_ids}")
 
                     # Raise exception to prevent reservation from continuing without persistent disk
                     raise RuntimeError(warning_msg)
                 else:
-                    logger.warning(f"User {user_id} has persistent disk(s) in unexpected state: {[vol['State'] for vol in volumes]}.")
+                    logger.warning(
+                        f"User {user_id} has persistent disk(s) in unexpected state: {[vol['State'] for vol in volumes]}.")
                     # Fall through to create new disk for unexpected states
 
         # Create new 1TB gp3 disk in the specified AZ
         # NEW: Tag with ActiveVolume=true for single source of truth
-        logger.info(f"Creating new 1TB persistent disk for user {user_id} in AZ {availability_zone}")
+        logger.info(
+            f"Creating new 1TB persistent disk for user {user_id} in AZ {availability_zone}")
         create_response = ec2_client.create_volume(
             AvailabilityZone=availability_zone,
             Size=1024,  # 1TB (1024GB)
@@ -4419,11 +4844,13 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
                     "ResourceType": "volume",
                     "Tags": [
                         {"Key": disk_tag_key, "Value": disk_tag_value},
-                        {"Key": "Name", "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
+                        {"Key": "Name",
+                            "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
                         {"Key": "Project", "Value": "gpu-dev-servers"},
                         {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
                         {"Key": "CreatedInAZ", "Value": availability_zone},
-                        {"Key": "ActiveVolume", "Value": "true"},  # NEW: Mark as active volume
+                        # NEW: Mark as active volume
+                        {"Key": "ActiveVolume", "Value": "true"},
                         {"Key": "MigrationVersion", "Value": "v2-single-source"},
                     ],
                 }
@@ -4435,13 +4862,16 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
         # Wait for volume to be available
         logger.info(f"Waiting for volume {volume_id} to become available")
         waiter = ec2_client.get_waiter("volume_available")
-        waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+        waiter.wait(VolumeIds=[volume_id], WaiterConfig={
+                    "Delay": 5, "MaxAttempts": 60})
 
-        logger.info(f"Created new persistent disk {volume_id} for user {user_id} in {availability_zone}")
+        logger.info(
+            f"Created new persistent disk {volume_id} for user {user_id} in {availability_zone}")
         return volume_id, True, None  # new disk, no warning
 
     except Exception as e:
-        logger.error(f"Error creating/finding persistent disk for user {user_id} in AZ {availability_zone}: {str(e)}")
+        logger.error(
+            f"Error creating/finding persistent disk for user {user_id} in AZ {availability_zone}: {str(e)}")
         raise
 
 
@@ -4458,7 +4888,8 @@ def create_or_find_persistent_disk(user_id: str) -> tuple[str, bool]:
         response = ec2_client.describe_volumes(
             Filters=[
                 {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-                {"Name": "availability-zone", "Values": [PRIMARY_AVAILABILITY_ZONE]},
+                {"Name": "availability-zone",
+                    "Values": [PRIMARY_AVAILABILITY_ZONE]},
                 {"Name": "status", "Values": ["available", "in-use"]},
             ]
         )
@@ -4466,19 +4897,24 @@ def create_or_find_persistent_disk(user_id: str) -> tuple[str, bool]:
         volumes = response.get("Volumes", [])
         if volumes:
             # Check if any volumes are available (not in-use)
-            available_volumes = [vol for vol in volumes if vol["State"] == "available"]
+            available_volumes = [
+                vol for vol in volumes if vol["State"] == "available"]
             if available_volumes:
                 volume_id = available_volumes[0]["VolumeId"]
-                logger.info(f"Found existing available persistent disk {volume_id} for user {user_id}")
+                logger.info(
+                    f"Found existing available persistent disk {volume_id} for user {user_id}")
                 return volume_id, False  # existing disk
             else:
                 # All volumes are in-use, log this and create a new one
-                in_use_volumes = [vol for vol in volumes if vol["State"] == "in-use"]
+                in_use_volumes = [
+                    vol for vol in volumes if vol["State"] == "in-use"]
                 if in_use_volumes:
                     in_use_volume_id = in_use_volumes[0]["VolumeId"]
-                    logger.warning(f"User {user_id} has persistent disk {in_use_volume_id} but it's currently in-use by another reservation. Creating new disk instead.")
+                    logger.warning(
+                        f"User {user_id} has persistent disk {in_use_volume_id} but it's currently in-use by another reservation. Creating new disk instead.")
                 else:
-                    logger.warning(f"User {user_id} has persistent disk(s) in unexpected state: {[vol['State'] for vol in volumes]}. Creating new disk.")
+                    logger.warning(
+                        f"User {user_id} has persistent disk(s) in unexpected state: {[vol['State'] for vol in volumes]}. Creating new disk.")
 
         # Create new 1TB gp3 disk
         logger.info(f"Creating new 1TB persistent disk for user {user_id}")
@@ -4493,7 +4929,8 @@ def create_or_find_persistent_disk(user_id: str) -> tuple[str, bool]:
                     "ResourceType": "volume",
                     "Tags": [
                         {"Key": disk_tag_key, "Value": disk_tag_value},
-                        {"Key": "Name", "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
+                        {"Key": "Name",
+                            "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
                         {"Key": "Project", "Value": "gpu-dev-servers"},
                         {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
                     ],
@@ -4506,13 +4943,16 @@ def create_or_find_persistent_disk(user_id: str) -> tuple[str, bool]:
         # Wait for volume to be available
         logger.info(f"Waiting for volume {volume_id} to become available")
         waiter = ec2_client.get_waiter("volume_available")
-        waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+        waiter.wait(VolumeIds=[volume_id], WaiterConfig={
+                    "Delay": 5, "MaxAttempts": 60})
 
-        logger.info(f"Created new persistent disk {volume_id} for user {user_id}")
+        logger.info(
+            f"Created new persistent disk {volume_id} for user {user_id}")
         return volume_id, True  # new disk
 
     except Exception as e:
-        logger.error(f"Error creating/finding persistent disk for user {user_id}: {str(e)}")
+        logger.error(
+            f"Error creating/finding persistent disk for user {user_id}: {str(e)}")
         raise
 
 
@@ -4522,7 +4962,8 @@ def attach_persistent_disk_to_node(volume_id: str, node_instance_id: str) -> str
         # Find available device name (/dev/xvdf, /dev/xvdg, etc.)
         device_name = "/dev/xvdf"  # Start with /dev/xvdf
 
-        logger.info(f"Attaching volume {volume_id} to instance {node_instance_id} as {device_name}")
+        logger.info(
+            f"Attaching volume {volume_id} to instance {node_instance_id} as {device_name}")
 
         attach_response = ec2_client.attach_volume(
             VolumeId=volume_id,
@@ -4532,13 +4973,16 @@ def attach_persistent_disk_to_node(volume_id: str, node_instance_id: str) -> str
 
         # Wait for attachment to complete
         waiter = ec2_client.get_waiter("volume_in_use")
-        waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+        waiter.wait(VolumeIds=[volume_id], WaiterConfig={
+                    "Delay": 5, "MaxAttempts": 60})
 
-        logger.info(f"Successfully attached volume {volume_id} to instance {node_instance_id} as {device_name}")
+        logger.info(
+            f"Successfully attached volume {volume_id} to instance {node_instance_id} as {device_name}")
         return device_name
 
     except Exception as e:
-        logger.error(f"Error attaching volume {volume_id} to instance {node_instance_id}: {str(e)}")
+        logger.error(
+            f"Error attaching volume {volume_id} to instance {node_instance_id}: {str(e)}")
         raise
 
 
@@ -4559,12 +5003,14 @@ def get_node_instance_id_for_pod(k8s_client, pod_name: str) -> str:
         provider_id = node.spec.provider_id
 
         if not provider_id or "aws:///" not in provider_id:
-            raise ValueError(f"Node {node_name} has invalid provider ID: {provider_id}")
+            raise ValueError(
+                f"Node {node_name} has invalid provider ID: {provider_id}")
 
         # Extract instance ID from providerID like "aws:///us-east-2a/i-1234567890abcdef0"
         instance_id = provider_id.split("/")[-1]
 
-        logger.info(f"Pod {pod_name} is scheduled on node {node_name} (instance {instance_id})")
+        logger.info(
+            f"Pod {pod_name} is scheduled on node {node_name} (instance {instance_id})")
         return instance_id
 
     except Exception as e:
@@ -4603,17 +5049,20 @@ def should_use_persistent_disk(user_id: str, current_reservation_id: str) -> boo
 
         # If no other existing reservations have persistent disks, user gets persistent disk
         if not reservations_with_persistent_disk:
-            logger.info(f"User {user_id} has no other reservations with persistent disks - will use persistent disk")
+            logger.info(
+                f"User {user_id} has no other reservations with persistent disks - will use persistent disk")
             return True
         else:
             persistent_res = reservations_with_persistent_disk[0]
-            persistent_res_id = persistent_res.get("reservation_id", "unknown")[:8]
+            persistent_res_id = persistent_res.get(
+                "reservation_id", "unknown")[:8]
             logger.info(
                 f"User {user_id} has existing reservation {persistent_res_id} with persistent disk - no persistent disk for this reservation")
             return False
 
     except Exception as e:
-        logger.error(f"Error checking existing reservations for user {user_id}: {str(e)}")
+        logger.error(
+            f"Error checking existing reservations for user {user_id}: {str(e)}")
         # Default to no persistent disk on error
         return False
 
@@ -4698,7 +5147,8 @@ def get_jupyter_token_from_pod(k8s_client, pod_name: str) -> str:
         return token
 
     except Exception as e:
-        logger.error(f"Error getting Jupyter token from pod {pod_name}: {str(e)}")
+        logger.error(
+            f"Error getting Jupyter token from pod {pod_name}: {str(e)}")
         return None
 
 
@@ -4716,16 +5166,21 @@ def update_reservation_connection_info(
     ebs_availability_zone: str = None,
     domain_name: str = None,
     alb_config: dict = None,
+    node_private_ip: str = None,  # For SSH proxy (VPC-internal routing)
+    # New parameter to indicate if SSH is available
+    preserve_entrypoint: bool = False,
 ):
     """Update reservation with connection details and set proper expiration time"""
-    logger.info(f"MAIN FLOW: Starting to update connection info for reservation {reservation_id} (pod: {pod_name})")
+    logger.info(
+        f"MAIN FLOW: Starting to update connection info for reservation {reservation_id} (pod: {pod_name})")
     try:
         from datetime import datetime, timedelta
 
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
 
         # Get the original reservation to find the duration
-        response = reservations_table.get_item(Key={"reservation_id": reservation_id})
+        response = reservations_table.get_item(
+            Key={"reservation_id": reservation_id})
         if "Item" not in response:
             raise ValueError(f"Reservation {reservation_id} not found")
 
@@ -4743,7 +5198,8 @@ def update_reservation_connection_info(
         # Get instance type and GPU type info
         if k8s_client is None:
             k8s_client = get_k8s_client()
-        instance_type, gpu_type = get_instance_type_and_gpu_info(k8s_client, pod_name)
+        instance_type, gpu_type = get_instance_type_and_gpu_info(
+            k8s_client, pod_name)
 
         # Get Jupyter token from pod and verify Jupyter is actually running
         jupyter_token = get_jupyter_token_from_pod(k8s_client, pod_name)
@@ -4805,10 +5261,7 @@ def update_reservation_connection_info(
 
         # Prepare fields to update
         update_fields = {
-            "ssh_command": ssh_command,
             "pod_name": pod_name,
-            "node_port": node_port,
-            "node_ip": node_ip,
             "expires_at": expires_at,
             "launched_at": launched_at,
             "namespace": "gpu-dev",
@@ -4821,10 +5274,19 @@ def update_reservation_connection_info(
             "status": "active",
         }
 
+        # Only add SSH-related fields if preserve_entrypoint=False (SSH available)
+        if not preserve_entrypoint:
+            update_fields.update({
+                "ssh_command": ssh_command,
+                "node_port": node_port,
+                "node_ip": node_ip,
+            })
+
         # Add EBS persistent disk information if available
         if persistent_volume_id:
             update_fields["ebs_volume_id"] = persistent_volume_id
-            update_fields["ebs_volume_reserved"] = False  # Clear reservation flag once volume is attached
+            # Clear reservation flag once volume is attached
+            update_fields["ebs_volume_reserved"] = False
 
         if ebs_availability_zone:
             update_fields["ebs_availability_zone"] = ebs_availability_zone
@@ -4852,6 +5314,38 @@ def update_reservation_connection_info(
         logger.info(
             f"MAIN FLOW: Successfully updated reservation {reservation_id} with connection info and set status=active, expires_at={expires_at}"
         )
+
+        # Update SSH domain mappings table for WebSocket SSH proxy
+        # Use SHORT name (not full FQDN) as key - SSH proxy server extracts short name from URL
+        # Use PRIVATE IP since SSH proxy runs inside VPC
+        if domain_name:
+            try:
+                ssh_mappings_table = dynamodb.Table(
+                    "pytorch-gpu-dev-ssh-domain-mappings")
+
+                # Use private IP for VPC-internal routing (SSH proxy is in the same VPC)
+                # Fall back to public IP if private IP not available (shouldn't happen)
+                target_ip = node_private_ip if node_private_ip else node_ip
+
+                ssh_mappings_table.put_item(
+                    Item={
+                        "domain_name": domain_name,  # Use short name, not full FQDN
+                        "target_host": target_ip,  # Use private IP for VPC-internal access
+                        "target_port": node_port,
+                        "reservation_id": reservation_id,
+                        "pod_name": pod_name,
+                        "active": True,
+                        "expires_at": expires_at,
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    }
+                )
+                logger.info(
+                    f"Updated SSH domain mapping: {domain_name} -> {target_ip}:{node_port} (private IP for VPC routing)")
+            except Exception as mapping_error:
+                logger.error(
+                    f"Failed to update SSH domain mapping for {domain_name}: {mapping_error}")
+                # Don't fail the whole operation if SSH mapping fails
 
     except Exception as e:
         logger.error(f"Error updating reservation connection info: {str(e)}")
@@ -4881,7 +5375,8 @@ def calculate_queue_position_and_wait_time(
                 IndexName="StatusGpuTypeIndex",
                 KeyConditionExpression="#status = :status AND gpu_type = :gpu_type",
                 ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={":status": status, ":gpu_type": gpu_type},
+                ExpressionAttributeValues={
+                    ":status": status, ":gpu_type": gpu_type},
             )
             queued_reservations.extend(response.get("Items", []))
 
@@ -4902,7 +5397,8 @@ def calculate_queue_position_and_wait_time(
             wait_estimate = gpu_tracker.estimate_wait_time(
                 requested_gpus, active_reservations
             )
-            estimated_wait_minutes = wait_estimate.get("estimated_wait_minutes", 30)
+            estimated_wait_minutes = wait_estimate.get(
+                "estimated_wait_minutes", 30)
         except Exception as e:
             logger.warning(f"Could not get K8s wait estimate: {e}")
             estimated_wait_minutes = (
@@ -4960,14 +5456,16 @@ def start_background_pod_monitoring(k8s_client, pod_name: str, reservation_id: s
 
         while not stop_event.is_set():
             try:
-                pod_status = update_pod_status_and_events(k8s_client, pod_name, reservation_id)
-                
+                pod_status = update_pod_status_and_events(
+                    k8s_client, pod_name, reservation_id)
+
                 # Check if reservation was terminated (cancelled/failed/expired)
                 if pod_status.get("terminated", False):
-                    logger.info(f"Reservation {reservation_id} terminated, stopping monitoring")
+                    logger.info(
+                        f"Reservation {reservation_id} terminated, stopping monitoring")
                     break
 
-                # Wait 1 second or until stop signal  
+                # Wait 1 second or until stop signal
                 if stop_event.wait(1):
                     break
 
@@ -4985,10 +5483,11 @@ def start_background_pod_monitoring(k8s_client, pod_name: str, reservation_id: s
     # Start monitoring thread
     thread = threading.Thread(target=monitor_loop, daemon=True)
     thread.start()
-    
+
     # Register in global registry for cancellation cleanup
     _monitoring_threads[reservation_id] = stop_event
-    logger.info(f"Registered monitoring thread for reservation {reservation_id}")
+    logger.info(
+        f"Registered monitoring thread for reservation {reservation_id}")
 
     return stop_event
 
@@ -5016,10 +5515,12 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                     current_reservation = reservations_table.get_item(
                         Key={"reservation_id": reservation_id}
                     ).get("Item", {})
-                    
-                    current_status = current_reservation.get("status", "unknown")
+
+                    current_status = current_reservation.get(
+                        "status", "unknown")
                     if current_status in ["cancelled", "failed", "expired"]:
-                        logger.info(f"Pod {pod_name} not found, but reservation {reservation_id} is already {current_status} - skipping status update")
+                        logger.info(
+                            f"Pod {pod_name} not found, but reservation {reservation_id} is already {current_status} - skipping status update")
                         return {
                             "phase": "Terminated",
                             "display_message": f"Reservation {current_status}",
@@ -5028,10 +5529,13 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                             "terminated": True
                         }
                 except Exception as status_check_error:
-                    logger.warning(f"Could not check reservation status: {status_check_error}")
-                
-                logger.warning(f"Pod {pod_name} not found yet, setting pending status")
-                update_reservation_status(reservation_id, "preparing", detailed_status="⏳ Pod creation pending")
+                    logger.warning(
+                        f"Could not check reservation status: {status_check_error}")
+
+                logger.warning(
+                    f"Pod {pod_name} not found yet, setting pending status")
+                update_reservation_status(
+                    reservation_id, "preparing", detailed_status="⏳ Pod creation pending")
                 return {
                     "phase": "Pending",
                     "display_message": "⏳ Pod creation pending",
@@ -5069,7 +5573,8 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                     return datetime(1970, 1, 1, tzinfo=timezone.utc)
                 return timestamp
 
-            sorted_events = sorted(events.items, key=get_event_timestamp, reverse=True)
+            sorted_events = sorted(
+                events.items, key=get_event_timestamp, reverse=True)
             logger.info(
                 f"Latest events for {pod_name}: {[(e.reason, e.type, e.message[:50]) for e in sorted_events[:3]]}")
 
@@ -5078,7 +5583,7 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                 if event.reason == "Pulling":
                     event_message = event.message
                     break
-            
+
             # If no pulling event, use latest non-container event
             # Skip normal scheduling events as they're not helpful when there are issues
             if not event_message:
@@ -5092,19 +5597,29 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                     # Add retry counter for FailedAttachVolume errors
                     if event.reason == "FailedAttachVolume":
                         # Count how many FailedAttachVolume events we have
-                        attach_failure_events = [e for e in sorted_events if e.reason == "FailedAttachVolume"]
+                        attach_failure_events = [
+                            e for e in sorted_events if e.reason == "FailedAttachVolume"]
                         retry_count = len(attach_failure_events)
 
                         # Kubernetes retries volumes automatically - typically takes 30-60 seconds
-                        # Show retry status to reassure user
-                        if "Multi-Attach" in event.message or "already attached" in event.message:
-                            event_message = f"⏳ Waiting for disk to detach (retry {retry_count}/∞ - automatic)"
+                        # Limit retries to 3 attempts maximum to prevent infinite loops
+                        if retry_count >= 3:
+                            if "Multi-Attach" in event.message or "already attached" in event.message:
+                                event_message = f"❌ Disk attachment failed after 3 attempts - volume may be stuck attached to another instance"
+                            else:
+                                event_message = f"❌ Disk attachment failed after 3 attempts - check volume availability and AZ matching"
+                            break
                         else:
-                            event_message = f"⏳ Attaching disk (retry {retry_count}/∞ - automatic)"
+                            # Show retry status to reassure user
+                            if "Multi-Attach" in event.message or "already attached" in event.message:
+                                event_message = f"⏳ Waiting for disk to detach (retry {retry_count}/3 - automatic)"
+                            else:
+                                event_message = f"⏳ Attaching disk (retry {retry_count}/3 - automatic)"
 
                     # Detect repeated kube-api-access mount failures (infrastructure issue)
                     if event.reason == "FailedMount" and "kube-api-access" in event.message:
-                        mount_failure_events = [e for e in sorted_events if e.reason == "FailedMount" and "kube-api-access" in e.message]
+                        mount_failure_events = [
+                            e for e in sorted_events if e.reason == "FailedMount" and "kube-api-access" in e.message]
                         retry_count = len(mount_failure_events)
 
                         # Check if we've been stuck for too long
@@ -5118,7 +5633,8 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                             oldest_event = mount_failure_events[-1]
                             oldest_timestamp = oldest_event.last_timestamp or oldest_event.first_timestamp
                             if oldest_timestamp:
-                                time_stuck = (datetime.now(oldest_timestamp.tzinfo) - oldest_timestamp).total_seconds()
+                                time_stuck = (datetime.now(
+                                    oldest_timestamp.tzinfo) - oldest_timestamp).total_seconds()
                                 if time_stuck > 60:
                                     event_message = f"❌ Pod failed to mount API access volume after {int(time_stuck)}s (infrastructure issue - contact admin)"
                                     break
@@ -5127,27 +5643,34 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
 
                     # Handle scheduling failures - convert to queued status with proper queue info
                     if event.reason == "FailedScheduling":
-                        scheduling_events = [e for e in sorted_events if e.reason == "FailedScheduling"]
+                        scheduling_events = [
+                            e for e in sorted_events if e.reason == "FailedScheduling"]
 
                         # If stuck in FailedScheduling for >30 seconds, convert to queued
                         if len(scheduling_events) >= 3:  # Multiple failures
                             oldest_sched = scheduling_events[-1]
                             oldest_ts = oldest_sched.last_timestamp or oldest_sched.first_timestamp
                             if oldest_ts:
-                                time_stuck = (datetime.now(oldest_ts.tzinfo) - oldest_ts).total_seconds()
+                                time_stuck = (datetime.now(
+                                    oldest_ts.tzinfo) - oldest_ts).total_seconds()
                                 if time_stuck > 30:
                                     # Convert to queued status with proper queue calculation
                                     try:
                                         # Get reservation details
-                                        reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                                        res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
-                                        requested_gpus = int(res_item.get("gpu_count", 1))
+                                        reservations_table = dynamodb.Table(
+                                            RESERVATIONS_TABLE)
+                                        res_item = reservations_table.get_item(
+                                            Key={"reservation_id": reservation_id}).get("Item", {})
+                                        requested_gpus = int(
+                                            res_item.get("gpu_count", 1))
                                         gpu_type = res_item.get("gpu_type", "")
 
                                         # Calculate queue info
                                         k8s_client_temp = get_k8s_client()
-                                        gpu_tracker = K8sGPUTracker(k8s_client_temp)
-                                        available_gpus = gpu_tracker.get_available_gpus(gpu_type)
+                                        gpu_tracker = K8sGPUTracker(
+                                            k8s_client_temp)
+                                        available_gpus = gpu_tracker.get_available_gpus(
+                                            gpu_type)
 
                                         queue_info = calculate_queue_position_and_wait_time(
                                             reservation_id, requested_gpus, gpu_type, available_gpus
@@ -5163,30 +5686,38 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
 
                                         # Delete the pod so it doesn't keep trying
                                         v1 = client.CoreV1Api(k8s_client)
-                                        v1.delete_namespaced_pod(name=pod_name, namespace="gpu-dev")
-                                        logger.info(f"Deleted pod {pod_name} and converted to queued status")
+                                        v1.delete_namespaced_pod(
+                                            name=pod_name, namespace="gpu-dev")
+                                        logger.info(
+                                            f"Deleted pod {pod_name} and converted to queued status")
 
                                         # Set queued status with user-friendly message
                                         queue_message = f"⏳ Queued - position #{queue_info['position']} (est. wait: {queue_info['estimated_wait_minutes']}min)"
-                                        update_reservation_status(reservation_id, "queued", queue_message)
+                                        update_reservation_status(
+                                            reservation_id, "queued", queue_message)
 
                                         event_message = queue_message
                                         break
                                     except Exception as queue_err:
-                                        logger.error(f"Failed to convert to queued: {queue_err}")
+                                        logger.error(
+                                            f"Failed to convert to queued: {queue_err}")
 
                         # Show user-friendly scheduling messages while waiting
                         if "Insufficient nvidia.com/gpu" in event.message:
                             # Check if it's a fragmentation issue (GPUs exist but not enough on single node)
                             try:
-                                reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                                res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
-                                requested_gpus = int(res_item.get("gpu_count", 1))
+                                reservations_table = dynamodb.Table(
+                                    RESERVATIONS_TABLE)
+                                res_item = reservations_table.get_item(
+                                    Key={"reservation_id": reservation_id}).get("Item", {})
+                                requested_gpus = int(
+                                    res_item.get("gpu_count", 1))
                                 gpu_type = res_item.get("gpu_type", "")
 
                                 k8s_client_temp = get_k8s_client()
                                 gpu_tracker = K8sGPUTracker(k8s_client_temp)
-                                available_gpus = gpu_tracker.get_available_gpus(gpu_type)
+                                available_gpus = gpu_tracker.get_available_gpus(
+                                    gpu_type)
 
                                 if available_gpus >= requested_gpus:
                                     # GPUs exist but fragmented across nodes
@@ -5199,27 +5730,34 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                         elif "didn't match Pod's node affinity/selector" in event.message:
                             # Check if nodes exist for this GPU type
                             try:
-                                reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                                res_item = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                                reservations_table = dynamodb.Table(
+                                    RESERVATIONS_TABLE)
+                                res_item = reservations_table.get_item(
+                                    Key={"reservation_id": reservation_id}).get("Item", {})
                                 gpu_type = res_item.get("gpu_type", "")
 
                                 k8s_client_temp = get_k8s_client()
                                 v1 = client.CoreV1Api(k8s_client_temp)
-                                nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+                                nodes = v1.list_node(
+                                    label_selector=f"GpuType={gpu_type}")
 
                                 if len(nodes.items) == 0:
                                     # No nodes exist for this GPU type - fail immediately
                                     event_message = f"❌ No {gpu_type.upper()} nodes configured in cluster"
                                     # Mark as failed
-                                    update_reservation_status(reservation_id, "failed", f"GPU type '{gpu_type.upper()}' not available")
+                                    update_reservation_status(
+                                        reservation_id, "failed", f"GPU type '{gpu_type.upper()}' not available")
                                     # Delete pod
-                                    v1.delete_namespaced_pod(name=pod_name, namespace="gpu-dev")
-                                    logger.error(f"No nodes with GpuType={gpu_type}, failing reservation {reservation_id}")
+                                    v1.delete_namespaced_pod(
+                                        name=pod_name, namespace="gpu-dev")
+                                    logger.error(
+                                        f"No nodes with GpuType={gpu_type}, failing reservation {reservation_id}")
                                 else:
                                     # Nodes exist but currently unavailable/full
                                     event_message = f"⏳ Waiting for {gpu_type.upper()} node capacity"
                             except Exception as e:
-                                logger.warning(f"Could not check node availability: {e}")
+                                logger.warning(
+                                    f"Could not check node availability: {e}")
                                 event_message = "⏳ Waiting for node capacity"
                         else:
                             event_message = "⏳ Waiting for resources"
@@ -5247,18 +5785,20 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
 
             lines = logs.split('\n')
             startup_lines = [line for line in lines if "[STARTUP]" in line]
-            
+
             # Debug startup log parsing
             logger.info(f"Startup lines found: {len(startup_lines)}")
             if startup_lines:
                 logger.info(f"Last 5 startup lines: {startup_lines[-5:]}")
 
-            for line in reversed(startup_lines[-5:]):  # Check last 5 startup lines
+            # Check last 5 startup lines
+            for line in reversed(startup_lines[-5:]):
                 for pattern, display in startup_patterns.items():
                     if pattern in line:
                         if "ERROR:" in line or "FAILED" in line:
                             try:
-                                error_part = line.split("[STARTUP]", 1)[1].strip()
+                                error_part = line.split(
+                                    "[STARTUP]", 1)[1].strip()
                                 startup_message = f"❌ Setup error: {error_part[:50]}"
                             except:
                                 startup_message = display
@@ -5294,37 +5834,41 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
             current_reservation = reservations_table.get_item(
                 Key={"reservation_id": reservation_id}
             ).get("Item", {})
-            
+
             current_status = current_reservation.get("status", "")
             current_pod_events = current_reservation.get("pod_events", "")
             current_pod_status = current_reservation.get("pod_status", "")
             status_updated_at = current_reservation.get("status_updated_at")
-            
+
             # CRITICAL: If reservation has been cancelled or failed, don't override it
             # Also check for cancellation markers (cancelled_at field exists)
             cancelled_at = current_reservation.get("cancelled_at")
             if current_status in ["cancelled", "failed"] or cancelled_at:
-                effective_status = current_status if current_status in ["cancelled", "failed"] else "cancelled"
-                logger.info(f"Skipping pod status update for {pod_name} - reservation is {effective_status} (cancelled_at: {cancelled_at})")
-                
+                effective_status = current_status if current_status in [
+                    "cancelled", "failed"] else "cancelled"
+                logger.info(
+                    f"Skipping pod status update for {pod_name} - reservation is {effective_status} (cancelled_at: {cancelled_at})")
+
                 # If status field doesn't match cancellation state, fix it
                 if current_status not in ["cancelled", "failed"] and cancelled_at:
-                    logger.info(f"Correcting status from '{current_status}' to 'cancelled' for reservation {reservation_id}")
-                    update_reservation_fields(reservation_id, status="cancelled")
-                
+                    logger.info(
+                        f"Correcting status from '{current_status}' to 'cancelled' for reservation {reservation_id}")
+                    update_reservation_fields(
+                        reservation_id, status="cancelled")
+
                 return {
                     "phase": pod_phase,
                     "display_message": f"Reservation {effective_status}",
                     "has_errors": False,
                     "is_ready": False
                 }
-            
+
             # Only update if status actually changed
             status_changed = (
-                display_message != current_pod_events or 
+                display_message != current_pod_events or
                 pod_phase != current_pod_status
             )
-            
+
         except Exception as e:
             logger.warning(f"Could not fetch current reservation status: {e}")
             status_changed = True  # Update anyway if we can't check
@@ -5333,69 +5877,105 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
         update_fields = {}
         if logs:
             update_fields["pod_logs"] = logs
-        
+
         if status_changed:
             # Calculate status flags first
             # Don't treat transient kube-api-access issues as errors
             has_errors = "❌" in display_message and "transient" not in display_message
 
-            # Check if SSH is ready (pod running + SSH daemon confirmed in logs)
-            ssh_is_ready = False
-            if pod_phase == "Running" and logs:
-                # Check for SSH daemon startup messages
-                if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
-                    ssh_is_ready = True
-                    logger.info(f"SSH daemon confirmed running in logs for {pod_name} (background monitoring)")
+            # Check if this reservation uses preserve_entrypoint (no SSH needed)
+            try:
+                reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                res = reservations_table.get_item(
+                    Key={"reservation_id": reservation_id}).get("Item", {})
+                preserve_entrypoint = res.get("preserve_entrypoint", False)
+            except Exception as e:
+                logger.warning(
+                    f"Could not check preserve_entrypoint for {reservation_id}: {e}")
+                preserve_entrypoint = False
 
-            # Background monitoring can transition to "active" when SSH is confirmed ready
+            # Check if container is ready (SSH for regular containers, just running for preserve_entrypoint)
+            container_is_ready = False
+            if preserve_entrypoint:
+                # For preserve_entrypoint containers, consider ready when pod is running
+                if pod_phase == "Running":
+                    container_is_ready = True
+                    logger.info(
+                        f"Pod {pod_name} is running with preserve_entrypoint=True - no SSH required")
+            else:
+                # For regular containers, check for SSH daemon startup messages
+                if pod_phase == "Running" and logs:
+                    if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
+                        container_is_ready = True
+                        logger.info(
+                            f"SSH daemon confirmed running in logs for {pod_name} (background monitoring)")
+
+            # Background monitoring can transition to "active" when container is ready
             if current_status == "active":
                 high_level_status = "active"  # Always maintain active status
-                logger.info(f"Reservation {reservation_id} already active - maintaining status")
-            elif ssh_is_ready and not has_errors:
-                # Check if connection info is already set
+                logger.info(
+                    f"Reservation {reservation_id} already active - maintaining status")
+            elif container_is_ready and not has_errors:
+                # Check if connection info is already set (or not needed for preserve_entrypoint)
                 try:
                     reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                    res = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                    res = reservations_table.get_item(
+                        Key={"reservation_id": reservation_id}).get("Item", {})
 
-                    # Only transition if we have the required connection info already set
-                    if res.get("node_port") and res.get("ssh_command"):
-                        # Connection info exists, transition to active
-                        high_level_status = "active"
-                        logger.info(f"Transitioning {reservation_id} to active - SSH confirmed ready and connection info set")
+                    if preserve_entrypoint:
+                        # For preserve_entrypoint containers, just need pod_name to be set
+                        if res.get("pod_name"):
+                            high_level_status = "active"
+                            logger.info(
+                                f"Transitioning {reservation_id} to active - preserve_entrypoint pod is running")
+                        else:
+                            high_level_status = "preparing"
+                            display_message = "✅ Pod running, waiting for connection setup"
+                            logger.warning(
+                                f"Pod {pod_name} running but connection info not set yet - keeping as preparing")
                     else:
-                        # Connection info not set yet - this means main flow exited early
-                        # Keep as preparing and log a clear message
-                        high_level_status = "preparing"
-                        display_message = "✅ SSH ready, waiting for connection setup"
-                        logger.warning(f"Connection info not yet set for {reservation_id}, SSH is ready but main flow incomplete")
+                        # For regular containers, need SSH connection info
+                        if res.get("node_port") and res.get("ssh_command"):
+                            high_level_status = "active"
+                            logger.info(
+                                f"Transitioning {reservation_id} to active - SSH confirmed ready and connection info set")
+                        else:
+                            high_level_status = "preparing"
+                            display_message = "✅ SSH ready, waiting for connection setup"
+                            logger.warning(
+                                f"Connection info not yet set for {reservation_id}, SSH is ready but main flow incomplete")
                 except Exception as e:
-                    logger.warning(f"Could not check connection info for {reservation_id}: {e}")
+                    logger.warning(
+                        f"Could not check connection info for {reservation_id}: {e}")
                     high_level_status = "preparing"
             else:
                 # Still preparing
                 high_level_status = "preparing"
-                logger.info(f"Pod preparation status for {pod_name}: pod_phase={pod_phase}, ssh_ready={ssh_is_ready}")
-            
+                logger.info(
+                    f"Pod preparation status for {pod_name}: pod_phase={pod_phase}, container_ready={container_is_ready}, preserve_entrypoint={preserve_entrypoint}")
+
             failure_reason = None
-            
+
             # Check for failure conditions
             if has_errors or pod_phase == "Failed":
                 high_level_status = "failed"
                 failure_reason = display_message
-                
+
             # Debug the final status decision
-            logger.info(f"Final status decision for {pod_name}: high_level_status={high_level_status}, display_message='{display_message}'")
-                
+            logger.info(
+                f"Final status decision for {pod_name}: high_level_status={high_level_status}, display_message='{display_message}'")
+
             if display_message:
                 # Use unified status tracking
                 update_reservation_status(
-                    reservation_id, 
-                    high_level_status, 
+                    reservation_id,
+                    high_level_status,
                     detailed_status=display_message,
                     failure_reason=failure_reason
                 )
-            
-            logger.info(f"Status changed for {pod_name}: {high_level_status} - {display_message}")
+
+            logger.info(
+                f"Status changed for {pod_name}: {high_level_status} - {display_message}")
         else:
             logger.debug(f"Status unchanged for {pod_name}: {display_message}")
 
@@ -5403,7 +5983,8 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
         if update_fields:
             update_reservation_fields(reservation_id, **update_fields)
             if status_changed:
-                logger.info(f"Successfully updated pod status for {pod_name}: {display_message}")
+                logger.info(
+                    f"Successfully updated pod status for {pod_name}: {display_message}")
         else:
             if status_changed:
                 logger.warning(
@@ -5439,7 +6020,8 @@ def wait_for_ssh_service(
         v1 = client.CoreV1Api(k8s_client)
         start_time = time.time()
 
-        logger.info(f"Waiting up to {timeout_seconds}s for SSH service on {pod_name}")
+        logger.info(
+            f"Waiting up to {timeout_seconds}s for SSH service on {pod_name}")
 
         while time.time() - start_time < timeout_seconds:
             try:
@@ -5456,7 +6038,8 @@ def wait_for_ssh_service(
 
                     # Test actual connectivity
                     try:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock = socket.socket(
+                            socket.AF_INET, socket.SOCK_STREAM)
                         sock.settimeout(10)
                         result = sock.connect_ex((node_ip, node_port))
                         sock.close()
@@ -5465,20 +6048,25 @@ def wait_for_ssh_service(
                             logger.info(
                                 f"SSH service is responding on {node_ip}:{node_port}"
                             )
-                            
+
                             # Trigger dotfiles restore in background (non-blocking)
                             try:
-                                logger.info("Triggering background dotfiles restore...")
+                                logger.info(
+                                    "Triggering background dotfiles restore...")
                                 restore_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p {node_port} dev@{node_ip} 'nohup /usr/local/bin/restore-dotfiles > /tmp/dotfiles-restore.log 2>&1 &'"
                                 import subprocess
-                                subprocess.Popen(restore_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                logger.info("✓ Background dotfiles restore triggered")
+                                subprocess.Popen(
+                                    restore_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                logger.info(
+                                    "✓ Background dotfiles restore triggered")
                             except Exception as restore_error:
-                                logger.warning(f"Could not trigger dotfiles restore: {restore_error}")
-                            
+                                logger.warning(
+                                    f"Could not trigger dotfiles restore: {restore_error}")
+
                             return True
                         else:
-                            logger.info(f"SSH port not yet accessible: {result}")
+                            logger.info(
+                                f"SSH port not yet accessible: {result}")
                     except Exception as e:
                         logger.info(f"SSH connectivity test failed: {e}")
 
@@ -5487,7 +6075,8 @@ def wait_for_ssh_service(
 
             time.sleep(10)
 
-        logger.warning(f"SSH service not ready after {timeout_seconds} seconds")
+        logger.warning(
+            f"SSH service not ready after {timeout_seconds} seconds")
         return False
 
     except Exception as e:
@@ -5578,7 +6167,8 @@ def process_scheduled_queue_management():
         try:
             capacity_info = gpu_tracker.get_gpu_capacity_info()
             available_gpus = capacity_info["available_gpus"]
-            logger.info(f"Current GPU availability: {available_gpus} GPUs available")
+            logger.info(
+                f"Current GPU availability: {available_gpus} GPUs available")
         except Exception as e:
             logger.error(f"Error getting GPU capacity: {e}")
             available_gpus = 0
@@ -5657,18 +6247,19 @@ def process_scheduled_queue_management():
                             f"Allocation error: {str(alloc_error)}",
                         )
                 else:
-                    # Update queue position and ETA for waiting reservations  
+                    # Update queue position and ETA for waiting reservations
                     queue_position = i + 1
-                    
+
                     logger.info(
                         f"Reservation {reservation_id} queued: needs {requested_gpus} {gpu_type.upper()} GPUs, only {type_available_gpus} available"
                     )
 
-                    # Calculate estimated wait time 
+                    # Calculate estimated wait time
                     if type_available_gpus == 0:
                         # No GPUs of this type available - infinite wait or contact oncall
                         estimated_wait_minutes = 999999  # Effectively infinite
-                        logger.warning(f"No {gpu_type.upper()} GPUs available for reservation {reservation_id} - contact oncall:pytorch_release_engineering")
+                        logger.warning(
+                            f"No {gpu_type.upper()} GPUs available for reservation {reservation_id} - contact oncall:pytorch_release_engineering")
                     else:
                         # Some GPUs available, use K8s tracker for normal estimation
                         try:
@@ -5679,7 +6270,8 @@ def process_scheduled_queue_management():
                                 "estimated_wait_minutes", 30
                             )
                         except Exception as e:
-                            logger.warning(f"Could not calculate wait time: {e}")
+                            logger.warning(
+                                f"Could not calculate wait time: {e}")
                             estimated_wait_minutes = (
                                 queue_position * 15
                             )
@@ -5698,10 +6290,10 @@ def process_scheduled_queue_management():
                             status_message = f"In queue position #{queue_position} - No {gpu_type.upper()} GPUs available, contact oncall:pytorch_release_engineering"
                         else:
                             status_message = f"In queue position #{queue_position}"
-                        
+
                         update_reservation_status(
                             reservation_id,
-                            "queued", 
+                            "queued",
                             status_message,
                         )
 
@@ -5764,12 +6356,14 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
             logger.warning(str(e))
             return True
         except Exception as db_error:
-            logger.error(f"Database error processing cancellation for {reservation_id}: {db_error}")
+            logger.error(
+                f"Database error processing cancellation for {reservation_id}: {db_error}")
             return False
 
         current_status = reservation.get("status")
         if current_status not in ["active", "queued", "pending", "preparing"]:
-            logger.warning(f"Cannot cancel reservation {full_reservation_id} in status {current_status}")
+            logger.warning(
+                f"Cannot cancel reservation {full_reservation_id} in status {current_status}")
             return True
 
         logger.info(
@@ -5777,11 +6371,15 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
 
         # CRITICAL: Stop background monitoring to prevent race condition
         if full_reservation_id in _monitoring_threads:
-            logger.info(f"Stopping background monitoring for reservation {full_reservation_id}")
-            _monitoring_threads[full_reservation_id].set()  # Signal thread to stop
-            del _monitoring_threads[full_reservation_id]    # Remove from registry
+            logger.info(
+                f"Stopping background monitoring for reservation {full_reservation_id}")
+            # Signal thread to stop
+            _monitoring_threads[full_reservation_id].set()
+            # Remove from registry
+            del _monitoring_threads[full_reservation_id]
         else:
-            logger.info(f"No monitoring thread found for reservation {full_reservation_id}")
+            logger.info(
+                f"No monitoring thread found for reservation {full_reservation_id}")
 
         try:
             now = datetime.utcnow().isoformat()
@@ -5804,40 +6402,74 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                         v1 = client.CoreV1Api(k8s_client)
 
                         try:
-                            pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+                            pod = v1.read_namespaced_pod(
+                                name=pod_name, namespace=namespace)
                             volume_id = None
 
                             # Check pod annotations for persistent volume info
                             if pod.metadata.annotations:
-                                volume_id = pod.metadata.annotations.get("gpu-dev-volume-id")
+                                volume_id = pod.metadata.annotations.get(
+                                    "gpu-dev-volume-id")
 
                             # Create cancellation snapshot if we have volume info
                             if volume_id:
-                                logger.info(f"Creating cancellation snapshot for user {user_id}, volume {volume_id}")
-                                snapshot_id = create_pod_shutdown_snapshot(volume_id, user_id, "cancellation")
+                                logger.info(
+                                    f"Creating cancellation snapshot for user {user_id}, volume {volume_id}")
+                                snapshot_id = create_pod_shutdown_snapshot(
+                                    volume_id, user_id, "cancellation")
                                 if snapshot_id:
-                                    logger.info(f"Cancellation snapshot {snapshot_id} initiated for {pod_name}")
+                                    logger.info(
+                                        f"Cancellation snapshot {snapshot_id} initiated for {pod_name}")
                                 else:
-                                    logger.warning(f"Failed to create cancellation snapshot for {pod_name}")
+                                    logger.warning(
+                                        f"Failed to create cancellation snapshot for {pod_name}")
                             else:
                                 logger.info(
                                     f"No persistent storage found for pod {pod_name} - skipping cancellation snapshot")
 
                         except Exception as pod_read_error:
-                            logger.warning(f"Could not read pod {pod_name} for snapshot info: {pod_read_error}")
+                            logger.warning(
+                                f"Could not read pod {pod_name} for snapshot info: {pod_read_error}")
 
                         # Now cleanup pod resources
                         cleanup_pod_resources(pod_name, namespace)
-                        logger.info(f"Cleaned up pod resources for cancelled reservation {full_reservation_id}")
+                        logger.info(
+                            f"Cleaned up pod resources for cancelled reservation {full_reservation_id}")
 
                     except Exception as cleanup_error:
-                        logger.error(f"Error cleaning up pod {pod_name}: {cleanup_error}")
+                        logger.error(
+                            f"Error cleaning up pod {pod_name}: {cleanup_error}")
 
-            logger.info(f"Successfully cancelled reservation {full_reservation_id}")
+            # Mark SSH domain mapping as inactive
+            # Use SHORT name (not full FQDN) as key - SSH proxy server extracts short name from URL
+            domain_name = reservation.get("domain_name")
+            if domain_name:
+                try:
+                    ssh_mappings_table = dynamodb.Table(
+                        "pytorch-gpu-dev-ssh-domain-mappings")
+
+                    ssh_mappings_table.update_item(
+                        # Use short name, not full FQDN
+                        Key={"domain_name": domain_name},
+                        UpdateExpression="SET active = :inactive, inactive_at = :timestamp, updated_at = :timestamp",
+                        ExpressionAttributeValues={
+                            ":inactive": False,
+                            ":timestamp": now
+                        }
+                    )
+                    logger.info(
+                        f"Marked SSH domain mapping as inactive for {domain_name}")
+                except Exception as mapping_error:
+                    logger.warning(
+                        f"Failed to update SSH domain mapping on cancellation: {mapping_error}")
+
+            logger.info(
+                f"Successfully cancelled reservation {full_reservation_id}")
             return True
 
         except Exception as db_error:
-            logger.error(f"Database error processing cancellation for {reservation_id}: {db_error}")
+            logger.error(
+                f"Database error processing cancellation for {reservation_id}: {db_error}")
             return False
 
     except Exception as e:
@@ -5875,7 +6507,8 @@ def enable_jupyter_in_pod(
                 return True
 
         except Exception as check_error:
-            logger.info(f"Jupyter check failed, proceeding with start: {check_error}")
+            logger.info(
+                f"Jupyter check failed, proceeding with start: {check_error}")
 
         # Start Jupyter using existing config (config always exists from pod creation)
         start_commands = [
@@ -5937,12 +6570,14 @@ def enable_jupyter_in_pod(
 
                 # Get node IP and token for URL
                 node_public_ip = get_pod_node_public_ip(pod_name)
-                jupyter_token = get_jupyter_token_from_pod(k8s_client, pod_name)
+                jupyter_token = get_jupyter_token_from_pod(
+                    k8s_client, pod_name)
 
                 # Try to use domain name if available
                 from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                reservation_resp = reservations_table.get_item(Key={"reservation_id": reservation_id})
+                reservation_resp = reservations_table.get_item(
+                    Key={"reservation_id": reservation_id})
                 domain_name = None
                 if "Item" in reservation_resp:
                     domain_name = reservation_resp["Item"].get("domain_name")
@@ -5969,7 +6604,8 @@ def enable_jupyter_in_pod(
                 logger.info(f"Jupyter enabled with URL: {jupyter_url}")
 
             except Exception as service_error:
-                logger.error(f"Error creating Jupyter service: {service_error}")
+                logger.error(
+                    f"Error creating Jupyter service: {service_error}")
                 # Still update the enabled status even if service creation fails
                 update_reservation_jupyter_status(reservation_id, True)
 
@@ -6061,9 +6697,11 @@ def disable_jupyter_in_pod(
                 logger.info(f"Deleted Jupyter service for pod {pod_name}")
             except client.exceptions.ApiException as service_error:
                 if service_error.status == 404:
-                    logger.info(f"Jupyter service for {pod_name} already deleted")
+                    logger.info(
+                        f"Jupyter service for {pod_name} already deleted")
                 else:
-                    logger.error(f"Error deleting Jupyter service: {service_error}")
+                    logger.error(
+                        f"Error deleting Jupyter service: {service_error}")
 
             # Update reservation with Jupyter disabled status (remove URL and token)
             reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
@@ -6133,7 +6771,7 @@ def add_user_to_pod(
 EOF
 
             # Set proper ownership
-            chown -R 1000:1000 /home/dev/.ssh
+            chown -R 1081:1081 /home/dev/.ssh
 
             echo "Added $keys_added new SSH keys for {github_username}"
             echo "SSH keys for {github_username} added successfully"
@@ -6201,7 +6839,8 @@ EOF
             return False
 
     except Exception as e:
-        logger.error(f"Error adding user {github_username} to pod {pod_name}: {str(e)}")
+        logger.error(
+            f"Error adding user {github_username} to pod {pod_name}: {str(e)}")
         return False
 
 
@@ -6210,7 +6849,8 @@ def update_reservation_jupyter_status(
 ) -> None:
     """Update the Jupyter enabled status in DynamoDB"""
     try:
-        update_reservation_fields(reservation_id, jupyter_enabled=jupyter_enabled)
+        update_reservation_fields(
+            reservation_id, jupyter_enabled=jupyter_enabled)
     except Exception as e:
         logger.error(
             f"Error updating Jupyter status for reservation {reservation_id}: {str(e)}"
@@ -6226,20 +6866,24 @@ def process_jupyter_action(record: dict[str, Any]) -> bool:
         user_id = message.get("user_id")
 
         if not all([action, reservation_id, user_id]):
-            logger.error(f"Missing required fields in Jupyter action: {message}")
+            logger.error(
+                f"Missing required fields in Jupyter action: {message}")
             return True  # Don't retry malformed messages
 
-        logger.info(f"Processing Jupyter action: {action} for reservation {reservation_id}")
+        logger.info(
+            f"Processing Jupyter action: {action} for reservation {reservation_id}")
 
         try:
             reservation = find_reservation_by_prefix(reservation_id, user_id)
             full_reservation_id = reservation["reservation_id"]
-            logger.info(f"Found reservation {full_reservation_id} (prefix: {reservation_id})")
+            logger.info(
+                f"Found reservation {full_reservation_id} (prefix: {reservation_id})")
         except ValueError as e:
             logger.error(str(e))
             return True
         except Exception as db_error:
-            logger.error(f"Database error looking up reservation {reservation_id}: {db_error}")
+            logger.error(
+                f"Database error looking up reservation {reservation_id}: {db_error}")
             return False
 
         # Verify user owns the reservation and it's active
@@ -6260,7 +6904,8 @@ def process_jupyter_action(record: dict[str, Any]) -> bool:
         namespace = reservation.get("namespace", "gpu-dev")
 
         if not pod_name:
-            logger.error(f"No pod name found for reservation {full_reservation_id}")
+            logger.error(
+                f"No pod name found for reservation {full_reservation_id}")
             return True  # Don't retry - no pod to modify
 
         # Execute Jupyter action in pod using full reservation ID
@@ -6302,20 +6947,24 @@ def process_add_user_action(record: dict[str, Any]) -> bool:
         github_username = message.get("github_username")
 
         if not all([action, reservation_id, user_id, github_username]):
-            logger.error(f"Missing required fields in add user action: {message}")
+            logger.error(
+                f"Missing required fields in add user action: {message}")
             return True  # Don't retry malformed messages
 
-        logger.info(f"Processing add user action: adding {github_username} to reservation {reservation_id}")
+        logger.info(
+            f"Processing add user action: adding {github_username} to reservation {reservation_id}")
 
         try:
             reservation = find_reservation_by_prefix(reservation_id, user_id)
             full_reservation_id = reservation["reservation_id"]
-            logger.info(f"Found reservation {full_reservation_id} (prefix: {reservation_id})")
+            logger.info(
+                f"Found reservation {full_reservation_id} (prefix: {reservation_id})")
         except ValueError as e:
             logger.error(str(e))
             return True
         except Exception as db_error:
-            logger.error(f"Database error looking up reservation {reservation_id}: {db_error}")
+            logger.error(
+                f"Database error looking up reservation {reservation_id}: {db_error}")
             return False
 
         # Verify user owns the reservation and it's active
@@ -6336,7 +6985,8 @@ def process_add_user_action(record: dict[str, Any]) -> bool:
         namespace = reservation.get("namespace", "gpu-dev")
 
         if not pod_name:
-            logger.error(f"No pod name found for reservation {full_reservation_id}")
+            logger.error(
+                f"No pod name found for reservation {full_reservation_id}")
             return True  # Don't retry - no pod to modify
 
         # Add user SSH keys to pod
@@ -6378,7 +7028,8 @@ def cleanup_pod_resources(pod_name: str, namespace: str = "gpu-dev") -> None:
             logger.info(f"Deleted service {service_name}")
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                logger.info(f"Service {service_name} not found (already deleted)")
+                logger.info(
+                    f"Service {service_name} not found (already deleted)")
             else:
                 logger.warning(f"Failed to delete service {service_name}: {e}")
 
@@ -6439,14 +7090,17 @@ def clear_warning_files_from_pod(pod_name: str, namespace: str = "gpu-dev") -> b
         )
 
         if "Warning files cleared" in exec_resp:
-            logger.info(f"Successfully cleared warning files from pod {pod_name}")
+            logger.info(
+                f"Successfully cleared warning files from pod {pod_name}")
             return True
         else:
-            logger.warning(f"Unexpected response clearing warning files from pod {pod_name}: {exec_resp}")
+            logger.warning(
+                f"Unexpected response clearing warning files from pod {pod_name}: {exec_resp}")
             return False
 
     except Exception as e:
-        logger.error(f"Error clearing warning files from pod {pod_name}: {str(e)}")
+        logger.error(
+            f"Error clearing warning files from pod {pod_name}: {str(e)}")
         return False
 
 
@@ -6458,27 +7112,32 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
         extension_hours = message.get("extension_hours")
 
         if not all([reservation_id, extension_hours]):
-            logger.error(f"Missing required fields in extend reservation action: {message}")
+            logger.error(
+                f"Missing required fields in extend reservation action: {message}")
             return True
 
-        logger.info(f"Processing extend reservation: {reservation_id} by {extension_hours} hours")
+        logger.info(
+            f"Processing extend reservation: {reservation_id} by {extension_hours} hours")
 
         try:
             reservation = find_reservation_by_prefix(reservation_id)
             full_reservation_id = reservation["reservation_id"]
-            logger.info(f"Found reservation {full_reservation_id} (prefix: {reservation_id})")
+            logger.info(
+                f"Found reservation {full_reservation_id} (prefix: {reservation_id})")
         except ValueError as e:
             logger.error(str(e))
             return True
         except Exception as db_error:
-            logger.error(f"Database error looking up reservation {reservation_id}: {db_error}")
+            logger.error(
+                f"Database error looking up reservation {reservation_id}: {db_error}")
             return False
 
         current_status = reservation.get("status")
         if current_status not in ["active", "preparing"]:
             error_msg = f"Cannot extend reservation in status {current_status}"
             logger.error(error_msg)
-            update_reservation_error(full_reservation_id, error_msg, "extension_error")
+            update_reservation_error(
+                full_reservation_id, error_msg, "extension_error")
             return True
 
         try:
@@ -6486,23 +7145,50 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
             if not current_expires_at:
                 error_msg = f"No expiration time found for reservation {full_reservation_id}"
                 logger.error(error_msg)
-                update_reservation_error(full_reservation_id, error_msg, "extension_error")
+                update_reservation_error(
+                    full_reservation_id, error_msg, "extension_error")
                 return True
 
             if isinstance(current_expires_at, str):
-                current_expiry = datetime.fromisoformat(current_expires_at.replace('Z', '+00:00'))
+                current_expiry = datetime.fromisoformat(
+                    current_expires_at.replace('Z', '+00:00'))
             else:
                 current_expiry = datetime.fromisoformat(current_expires_at)
 
-            new_expiry = current_expiry + timedelta(hours=float(extension_hours))
+            new_expiry = current_expiry + \
+                timedelta(hours=float(extension_hours))
             new_expires_at = new_expiry.isoformat()
 
-            logger.info(f"Extending reservation {full_reservation_id} from {current_expires_at} to {new_expires_at}")
+            # Check maximum total duration (48 hours from launch time)
+            MAX_TOTAL_HOURS = 48
+            launched_at = reservation.get("launched_at")
+            if launched_at:
+                if isinstance(launched_at, str):
+                    launch_time = datetime.fromisoformat(
+                        launched_at.replace('Z', '+00:00'))
+                else:
+                    launch_time = datetime.fromisoformat(launched_at)
+
+                total_duration = (
+                    new_expiry - launch_time).total_seconds() / 3600
+                if total_duration > MAX_TOTAL_HOURS:
+                    error_msg = f"Cannot extend reservation beyond {MAX_TOTAL_HOURS} hours total. Current total would be {total_duration:.1f} hours (launched at {launched_at})"
+                    logger.error(error_msg)
+                    update_reservation_error(
+                        full_reservation_id, error_msg, "extension_error")
+                    return True
+
+                logger.info(
+                    f"Extension approved: total duration will be {total_duration:.1f}h / {MAX_TOTAL_HOURS}h max")
+
+            logger.info(
+                f"Extending reservation {full_reservation_id} from {current_expires_at} to {new_expires_at}")
 
         except Exception as date_error:
             error_msg = f"Error calculating new expiration time: {str(date_error)}"
             logger.error(error_msg)
-            update_reservation_error(full_reservation_id, error_msg, "extension_error")
+            update_reservation_error(
+                full_reservation_id, error_msg, "extension_error")
             return True
 
         try:
@@ -6528,7 +7214,31 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
                 ExpressionAttributeValues=expression_values
             )
 
-            logger.info(f"Successfully extended reservation {full_reservation_id} by {extension_hours} hours")
+            logger.info(
+                f"Successfully extended reservation {full_reservation_id} by {extension_hours} hours")
+
+            # Update SSH domain mapping expiry time if domain_name exists
+            # Use SHORT name (not full FQDN) as key - SSH proxy server extracts short name from URL
+            domain_name = reservation.get("domain_name")
+            if domain_name:
+                try:
+                    ssh_mappings_table = dynamodb.Table(
+                        "pytorch-gpu-dev-ssh-domain-mappings")
+
+                    ssh_mappings_table.update_item(
+                        # Use short name, not full FQDN
+                        Key={"domain_name": domain_name},
+                        UpdateExpression="SET expires_at = :new_expires, updated_at = :timestamp",
+                        ExpressionAttributeValues={
+                            ":new_expires": new_expires_at,
+                            ":timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    logger.info(
+                        f"Updated SSH domain mapping expiry for {domain_name} to {new_expires_at}")
+                except Exception as mapping_error:
+                    logger.warning(
+                        f"Failed to update SSH domain mapping expiry: {mapping_error}")
 
             # Clear warning files from pod if reservation is active
             if current_status == "active":
@@ -6537,29 +7247,37 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
                     namespace = reservation.get("namespace", "gpu-dev")
 
                     if pod_name:
-                        logger.info(f"Clearing warning files from pod {pod_name}")
+                        logger.info(
+                            f"Clearing warning files from pod {pod_name}")
                         clear_warning_files_from_pod(pod_name, namespace)
-                        logger.info(f"Warning files cleared from pod {pod_name}")
+                        logger.info(
+                            f"Warning files cleared from pod {pod_name}")
                     else:
-                        logger.warning(f"No pod name found for reservation {full_reservation_id}")
+                        logger.warning(
+                            f"No pod name found for reservation {full_reservation_id}")
 
                 except Exception as clear_error:
-                    logger.warning(f"Could not clear warning files from pod: {clear_error}")
+                    logger.warning(
+                        f"Could not clear warning files from pod: {clear_error}")
 
             # Add successful extension to status history
             try:
                 current_time = datetime.utcnow().isoformat()
-                extension_message = f"Extended by {extension_hours} hours (new expiry: {new_expires_at.strftime('%Y-%m-%d %H:%M:%S')})"
-                append_status_history(full_reservation_id, current_time, extension_message)
+                # new_expires_at is already a string from isoformat(), use new_expiry datetime for formatting
+                extension_message = f"Extended by {extension_hours} hours (new expiry: {new_expiry.strftime('%Y-%m-%d %H:%M:%S')})"
+                append_status_history(
+                    full_reservation_id, current_time, extension_message)
             except Exception as history_error:
-                logger.warning(f"Could not add extension to status history: {history_error}")
+                logger.warning(
+                    f"Could not add extension to status history: {history_error}")
 
             return True
 
         except Exception as update_error:
             error_msg = f"Database error during extension: {str(update_error)}"
             logger.error(error_msg)
-            update_reservation_error(full_reservation_id, error_msg, "extension_error")
+            update_reservation_error(
+                full_reservation_id, error_msg, "extension_error")
             return False
 
     except Exception as e:

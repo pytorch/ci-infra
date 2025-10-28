@@ -111,7 +111,15 @@ locals {
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 2  # 2 instances in primary AZ
+          gpus_per_instance   = 4
+          use_placement_group = true
+          architecture        = "x86_64"
+        }
+        "t4-az2" = {
+          instance_type       = "g4dn.12xlarge"
+          instance_types      = null
+          instance_count      = 2  # 2 instances in secondary AZ
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
@@ -121,6 +129,14 @@ locals {
           instance_types      = null
           instance_count      = 1
           gpus_per_instance   = 1
+          use_placement_group = false
+          architecture        = "x86_64"
+        }
+        "a100" = {
+          instance_type       = "p4d.24xlarge"
+          instance_types      = null
+          instance_count      = 2  # 2 A100 instances for testing
+          gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
         }
@@ -245,9 +261,12 @@ locals {
   gpu_subnet_assignments = {
     default = {
       # Test environment - H200 and H100 in us-west-1c (secondary subnet)
+      # T4 nodes in multiple AZs for testing AZ mismatch fix
       h200       = "secondary"
       h100       = "secondary"
-      t4         = "primary"
+      a100       = "primary"    # A100 in us-west-1a (primary AZ)
+      t4         = "primary"    # T4 in us-west-1a (primary AZ)
+      "t4-az2"   = "secondary"  # T4 in us-west-1b (secondary AZ)
       "cpu-arm"  = "primary"
       "cpu-x86"  = "primary"
       "t4-small" = "secondary"

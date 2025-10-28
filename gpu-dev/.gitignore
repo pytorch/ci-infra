@@ -63,3 +63,6 @@ lambda/*/package/
 # Local config
 .env
 .env.local
+
+# Admin output files
+admin/output/

@@ -14,6 +14,10 @@ systemctl stop nodeadm-run.service || true
 # Install NVIDIA driver 580.82.07 directly on host for CUDA 13 support
 # GPU Operator will handle toolkit/device-plugin only
 
+# Configure NVIDIA profiling BEFORE driver installation (driver install auto-loads modules)
+# Required for ncu/nsys GPU profiling tools
+echo "options nvidia NVreg_RestrictProfilingToAdminUsers=0" > /etc/modprobe.d/nvprof.conf
+
 # Install NVIDIA driver
 dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/amzn2023/x86_64/cuda-amzn2023.repo
 dnf install -y nvidia-driver nvidia-driver-cuda
@@ -56,7 +60,7 @@ if [[ "${gpu_type}" == "b200" || "${gpu_type}" == "h200" || "${gpu_type}" == "h1
     echo "Fabric manager setup completed for ${gpu_type} with EFA support"
 fi
 
-# Load NVIDIA modules
+# Load NVIDIA modules (profiling config already set above before driver install)
 modprobe nvidia
 modprobe nvidia_uvm
 
