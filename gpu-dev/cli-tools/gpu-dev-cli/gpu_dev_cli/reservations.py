@@ -174,7 +174,7 @@ def _generate_ssh_config(hostname: str, pod_name: str) -> str:
 
 
 def _check_ssh_config_permission() -> bool:
-    """Check if user has given permission to modify ~/.ssh/config
+    """Check if user has given permission to modify ~/.ssh/config and ~/.cursor/ssh_config
 
     Returns:
         True if permission granted or already set up, False otherwise
@@ -193,33 +193,41 @@ def _check_ssh_config_permission() -> bool:
         except Exception:
             pass
 
-    # Check if Include already exists in ~/.ssh/config
-    ssh_config = Path.home() / ".ssh" / "config"
-    if ssh_config.exists():
-        try:
-            content = ssh_config.read_text()
-            if "Include ~/.gpu-dev/" in content:
-                # Already set up, save permission
-                gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
-                permission_file.write_text("yes")
-                return True
-        except Exception:
-            pass
+    # Check if Include already exists in either ~/.ssh/config or ~/.cursor/ssh_config
+    config_files = [
+        Path.home() / ".ssh" / "config",
+        Path.home() / ".cursor" / "ssh_config",
+    ]
+
+    for ssh_config in config_files:
+        if ssh_config.exists():
+            try:
+                content = ssh_config.read_text()
+                if "Include ~/.gpu-dev/" in content:
+                    # Already set up, save permission
+                    gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
+                    permission_file.write_text("yes")
+                    return True
+            except Exception:
+                pass
 
     # Ask user for permission
     console.print("\n[yellow]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/yellow]")
     console.print("[cyan]🔧 SSH Configuration Setup[/cyan]\n")
-    console.print("To enable easy SSH access and VS Code Remote connections,")
-    console.print("we can add GPU dev server configs to your ~/.ssh/config file.")
-    console.print("\n[dim]This adds one line at the top of ~/.ssh/config:[/dim]")
-    console.print("[dim]  Include ~/.gpu-dev/*-sshconfig[/dim]\n")
+    console.print("To enable easy SSH access and VS Code/Cursor Remote connections,")
+    console.print("we can add GPU dev server configs to your SSH config files.")
+    console.print("\n[dim]This adds one line at the top of:[/dim]")
+    console.print("[dim]  • ~/.ssh/config[/dim]")
+    console.print("[dim]  • ~/.cursor/ssh_config[/dim]")
+    console.print("[dim]Line added: Include ~/.gpu-dev/*-sshconfig[/dim]\n")
     console.print("[green]Benefits:[/green]")
     console.print("  • Simple commands: [green]ssh <pod-name>[/green]")
     console.print("  • VS Code Remote works: [green]code --remote ssh-remote+<pod-name>[/green]")
+    console.print("  • Cursor Remote works: Open Remote SSH in Cursor")
     console.print("\n[dim]Without this, you'll need to use: [green]ssh -F ~/.gpu-dev/<id>-sshconfig <pod-name>[/green][/dim]")
     console.print("[yellow]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/yellow]\n")
 
-    approved = click.confirm("Add Include directive to ~/.ssh/config?", default=True)
+    approved = click.confirm("Add Include directive to SSH config files?", default=True)
 
     # Save response
     gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
@@ -229,7 +237,7 @@ def _check_ssh_config_permission() -> bool:
 
 
 def _ensure_ssh_config_includes_devgpu() -> bool:
-    """Ensure ~/.ssh/config includes ~/.devgpu/* configs for VS Code compatibility
+    """Ensure ~/.ssh/config and ~/.cursor/ssh_config include ~/.devgpu/* configs for VS Code/Cursor compatibility
 
     Returns:
         True if Include was added/exists, False if user declined
@@ -240,30 +248,43 @@ def _ensure_ssh_config_includes_devgpu() -> bool:
     if not _check_ssh_config_permission():
         return False
 
-    ssh_dir = Path.home() / ".ssh"
-    ssh_dir.mkdir(mode=0o700, exist_ok=True)
-
-    ssh_config = ssh_dir / "config"
     include_line = "Include ~/.gpu-dev/*-sshconfig\n"
 
-    try:
-        # Read existing config or create empty
-        if ssh_config.exists():
-            content = ssh_config.read_text()
-        else:
-            content = ""
+    # List of config files to update: ~/.ssh/config and ~/.cursor/ssh_config
+    config_files = [
+        (Path.home() / ".ssh", "config"),
+        (Path.home() / ".cursor", "ssh_config"),
+    ]
 
-        # Check if Include already exists
-        if "Include ~/.gpu-dev/" in content:
-            return True
+    success = False
+    for config_dir, config_name in config_files:
+        try:
+            # Create directory if it doesn't exist
+            config_dir.mkdir(mode=0o700, exist_ok=True)
 
-        # Add Include at the top (must be first in SSH config)
-        new_content = include_line + "\n" + content
-        ssh_config.write_text(new_content)
-        ssh_config.chmod(0o600)
-        return True
-    except Exception:
-        return False
+            config_file = config_dir / config_name
+
+            # Read existing config or create empty
+            if config_file.exists():
+                content = config_file.read_text()
+            else:
+                content = ""
+
+            # Check if Include already exists
+            if "Include ~/.gpu-dev/" in content:
+                success = True
+                continue
+
+            # Add Include at the top (must be first in SSH config)
+            new_content = include_line + "\n" + content
+            config_file.write_text(new_content)
+            config_file.chmod(0o600)
+            success = True
+        except Exception:
+            # If one fails, we still try the other
+            pass
+
+    return success
 
 
 def create_ssh_config_for_reservation(hostname: str, pod_name: str, reservation_id: str, name: Optional[str] = None) -> tuple[Optional[str], bool]:
@@ -2005,7 +2026,7 @@ class ReservationManager:
                                         console.print(
                                             f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh -F {config_path} {pod_name}[/green]")
                                         console.print(
-                                            f"[cyan]💻 VS Code:[/cyan] Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config")
+                                            f"[cyan]💻 VS Code/Cursor:[/cyan] Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config")
                                         console.print(
                                             f"[dim]   Or run: [green]gpu-dev config ssh-include enable[/green][/dim]")
                                 else:

@@ -229,8 +229,8 @@ def _show_single_reservation(connection_info: dict) -> None:
             else:
                 # User declined Include - show commands with -F flag
                 ssh_command_display = f"[green]ssh -F {ssh_config_path} {pod_name}[/green]"
-                vscode_command_display = f"Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config (or: [green]gpu-dev config ssh-include enable[/green])"
-                vscode_info = f"[blue]VS Code:[/blue] {vscode_command_display}\n"
+                vscode_command_display = f"Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config (or: [green]gpu-dev config ssh-include enable[/green])"
+                vscode_info = f"[blue]VS Code/Cursor:[/blue] {vscode_command_display}\n"
         else:
             # Fallback to full commands if SSH config doesn't exist
             ssh_command_display = ssh_with_forwarding
@@ -3067,17 +3067,18 @@ def ssh_include(action: str):
     """Enable or disable SSH config Include directive
 
     This controls whether GPU dev server configs are automatically
-    included in your ~/.ssh/config file.
+    included in your ~/.ssh/config and ~/.cursor/ssh_config files.
 
     \b
     When enabled:
       • Simple SSH commands: ssh <pod-name>
       • VS Code Remote works: code --remote ssh-remote+<pod-name>
+      • Cursor Remote works: Open Remote SSH in Cursor
 
     \b
     When disabled:
       • Need -F flag: ssh -F ~/.gpu-dev/<id>-sshconfig <pod-name>
-      • VS Code requires manual config setup
+      • VS Code/Cursor requires manual config setup
 
     \b
     Examples:
@@ -3095,37 +3096,59 @@ def ssh_include(action: str):
             # Set permission to yes
             permission_file.write_text("yes")
 
-            # Add Include directive if not already present
-            ssh_config = Path.home() / ".ssh" / "config"
-            ssh_dir = Path.home() / ".ssh"
-            ssh_dir.mkdir(mode=0o700, exist_ok=True)
+            # Add Include directive to both config files if not already present
+            config_files = [
+                (Path.home() / ".ssh", "config"),
+                (Path.home() / ".cursor", "ssh_config"),
+            ]
 
             include_line = "Include ~/.gpu-dev/*-sshconfig\n"
+            updated_files = []
+            already_set = []
 
-            if ssh_config.exists():
-                content = ssh_config.read_text()
-            else:
-                content = ""
+            for config_dir, config_name in config_files:
+                try:
+                    config_dir.mkdir(mode=0o700, exist_ok=True)
+                    config_file = config_dir / config_name
 
-            if "Include ~/.gpu-dev/" not in content:
-                # Add Include at the top
-                new_content = include_line + "\n" + content
-                ssh_config.write_text(new_content)
-                ssh_config.chmod(0o600)
+                    if config_file.exists():
+                        content = config_file.read_text()
+                    else:
+                        content = ""
+
+                    if "Include ~/.gpu-dev/" not in content:
+                        # Add Include at the top
+                        new_content = include_line + "\n" + content
+                        config_file.write_text(new_content)
+                        config_file.chmod(0o600)
+                        updated_files.append(str(config_file))
+                    else:
+                        already_set.append(str(config_file))
+                except Exception:
+                    # Continue with other files even if one fails
+                    pass
+
+            if updated_files:
                 rprint("[green]✅ Enabled SSH config Include directive[/green]")
-                rprint(
-                    f"[cyan]Added 'Include ~/.gpu-dev/*-sshconfig' to ~/.ssh/config[/cyan]")
-            else:
-                rprint("[green]✅ SSH config Include already enabled[/green]")
+                for file_path in updated_files:
+                    rprint(f"[cyan]Added 'Include ~/.gpu-dev/*-sshconfig' to {file_path}[/cyan]")
+
+            if already_set:
+                if not updated_files:
+                    rprint("[green]✅ SSH config Include already enabled[/green]")
+                for file_path in already_set:
+                    rprint(f"[dim]Already set in {file_path}[/dim]")
 
         else:  # disable
             # Set permission to no
             permission_file.write_text("no")
             rprint("[yellow]✅ Disabled automatic SSH config Include[/yellow]")
             rprint(
-                "[dim]Note: Existing Include directive in ~/.ssh/config not removed[/dim]")
+                "[dim]Note: Existing Include directives in config files not removed[/dim]")
             rprint(
-                "[dim]You can manually remove the 'Include ~/.gpu-dev/*-sshconfig' line if desired[/dim]")
+                "[dim]You can manually remove the 'Include ~/.gpu-dev/*-sshconfig' lines if desired:[/dim]")
+            rprint("[dim]  • ~/.ssh/config[/dim]")
+            rprint("[dim]  • ~/.cursor/ssh_config[/dim]")
 
     except Exception as e:
         rprint(f"[red]❌ Error updating SSH config setting: {str(e)}[/red]")
