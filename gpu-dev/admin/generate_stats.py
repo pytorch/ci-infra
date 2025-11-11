@@ -4,6 +4,7 @@ GPU Dev Server Usage Analytics
 Generates statistics and visualizations from DynamoDB reservation data
 """
 
+import argparse
 import boto3
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -75,8 +76,9 @@ def parse_reservation_data(reservations):
                 # Numeric timestamp
                 created_at = datetime.fromtimestamp(float(created_at_raw))
 
-            # Parse expires_at (can be ISO string or timestamp)
-            expires_at_raw = res.get('expires_at', '')
+            # Parse expired_at (preferred) or expires_at (fallback)
+            expires_at_raw = res.get(
+                'expired_at', '') or res.get('expires_at', '')
             expires_at = None
             if expires_at_raw:
                 if isinstance(expires_at_raw, str):
@@ -163,18 +165,18 @@ def calculate_statistics(df):
     return stats
 
 
-def plot_daily_active_reservations(df):
-    """Plot daily active reservation counts for last 4 weeks"""
+def plot_daily_active_reservations(df, weeks=4):
+    """Plot daily active reservation counts for last N weeks"""
     print("\nGenerating daily active reservations plot...")
 
-    # Get last 4 weeks
+    # Get last N weeks
     end_date = datetime.now()
-    start_date = end_date - timedelta(weeks=4)
+    start_date = end_date - timedelta(weeks=weeks)
 
-    # Filter to last 4 weeks
+    # Filter to last N weeks
     df_recent = df[df['created_at'] >= start_date].copy()
 
-    # Create date range for last 4 weeks
+    # Create date range for last N weeks
     date_range = pd.date_range(start=start_date, end=end_date, freq='D')
 
     # Count active reservations per day
@@ -190,13 +192,13 @@ def plot_daily_active_reservations(df):
     # Plot
     plt.figure(figsize=(14, 6))
     plt.plot(date_range, daily_active, marker='o', linewidth=2, markersize=4)
-    plt.title('Daily Active Reservations (Last 4 Weeks)',
+    plt.title(f'Daily Active Reservations (Last {weeks} Weeks)',
               fontsize=16, fontweight='bold')
     plt.xlabel('Date', fontsize=12)
     plt.ylabel('Number of Active Reservations', fontsize=12)
     plt.grid(True, alpha=0.3)
     plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-    plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=2))
+    plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=max(1, weeks // 4)))
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.savefig(os.path.join(
@@ -205,18 +207,18 @@ def plot_daily_active_reservations(df):
     plt.close()
 
 
-def plot_hourly_gpu_usage(df):
-    """Plot hourly active GPU count for last 4 weeks"""
+def plot_hourly_gpu_usage(df, weeks=4):
+    """Plot hourly active GPU count for last N weeks"""
     print("\nGenerating hourly GPU usage plot...")
 
-    # Get last 4 weeks
+    # Get last N weeks
     end_date = datetime.now()
-    start_date = end_date - timedelta(weeks=4)
+    start_date = end_date - timedelta(weeks=weeks)
 
-    # Filter to last 4 weeks
+    # Filter to last N weeks
     df_recent = df[df['created_at'] >= start_date].copy()
 
-    # Create hourly range for last 4 weeks
+    # Create hourly range for last N weeks
     hour_range = pd.date_range(start=start_date, end=end_date, freq='H')
 
     # Count active GPUs per hour
@@ -234,13 +236,13 @@ def plot_hourly_gpu_usage(df):
     plt.figure(figsize=(16, 6))
     plt.plot(hour_range, hourly_gpus, linewidth=1, alpha=0.8)
     plt.fill_between(hour_range, hourly_gpus, alpha=0.3)
-    plt.title('Hourly Active GPU Count (Last 4 Weeks)',
+    plt.title(f'Hourly Active GPU Count (Last {weeks} Weeks)',
               fontsize=16, fontweight='bold')
     plt.xlabel('Date', fontsize=12)
     plt.ylabel('Number of Active GPUs', fontsize=12)
     plt.grid(True, alpha=0.3)
     plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-    plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=3))
+    plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=max(1, weeks // 2)))
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, 'hourly_gpu_usage.png'),
@@ -343,12 +345,12 @@ def plot_top_users_by_gpu_hours(df, top_n=10):
     plt.close()
 
 
-def plot_gpu_usage_by_type(df, gpu_availability, target_types=['h200', 'b200']):
+def plot_gpu_usage_by_type(df, gpu_availability, weeks=4, target_types=['h200', 'b200']):
     """Plot hourly usage for specific GPU types against total capacity."""
     print("\nGenerating GPU usage plots by type...")
 
     end_date = datetime.now()
-    start_date = end_date - timedelta(weeks=4)
+    start_date = end_date - timedelta(weeks=weeks)
     hour_range = pd.date_range(start=start_date, end=end_date, freq='H')
     target_types = [t.lower() for t in target_types]
     generated_plots = []
@@ -381,7 +383,7 @@ def plot_gpu_usage_by_type(df, gpu_availability, target_types=['h200', 'b200']):
             plt.axhline(y=max_gpus, color='r', linestyle='--',
                         label=f'Max Capacity ({max_gpus} GPUs)')
 
-        plt.title(f'{gpu_type.upper()} GPU Usage (Last 4 Weeks)',
+        plt.title(f'{gpu_type.upper()} GPU Usage (Last {weeks} Weeks)',
                   fontsize=16, fontweight='bold')
         plt.xlabel('Date', fontsize=12)
         plt.ylabel('Number of Active GPUs', fontsize=12)
@@ -389,7 +391,7 @@ def plot_gpu_usage_by_type(df, gpu_availability, target_types=['h200', 'b200']):
         plt.grid(True, alpha=0.3)
         plt.ylim(bottom=0)
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-        plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=3))
+        plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=max(1, weeks // 2)))
         plt.xticks(rotation=45)
         plt.tight_layout()
 
@@ -401,6 +403,307 @@ def plot_gpu_usage_by_type(df, gpu_availability, target_types=['h200', 'b200']):
         generated_plots.append(filename)
 
     return generated_plots
+
+
+def plot_unique_users_per_day(df, weeks=4):
+    """Plot unique users per day for last N weeks"""
+    print("\nGenerating unique users per day plot...")
+
+    # Get last N weeks
+    end_date = datetime.now()
+    start_date = end_date - timedelta(weeks=weeks)
+
+    # Filter to last N weeks
+    df_recent = df[df['created_at'] >= start_date].copy()
+
+    # Create date range for last N weeks
+    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+
+    # Count unique users per day
+    daily_unique_users = []
+    for date in date_range:
+        # Get reservations that were active on this day
+        active = df_recent[
+            (df_recent['created_at'] <= date) &
+            ((df_recent['expires_at'].isna()) |
+             (df_recent['expires_at'] >= date))
+        ]
+        # Count unique users
+        unique_users = active['user_id'].nunique()
+        daily_unique_users.append(unique_users)
+
+    # Plot
+    plt.figure(figsize=(14, 6))
+    plt.plot(date_range, daily_unique_users, marker='o',
+             linewidth=2, markersize=4, color='#2ecc71')
+    plt.fill_between(date_range, daily_unique_users,
+                     alpha=0.3, color='#2ecc71')
+    plt.title(f'Unique Users Per Day (Last {weeks} Weeks)',
+              fontsize=16, fontweight='bold')
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('Number of Unique Users', fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+    plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=max(1, weeks // 4)))
+    plt.xticks(rotation=45)
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'unique_users_per_day.png'),
+                dpi=300, bbox_inches='tight')
+    print(f"  Saved: {OUTPUT_DIR}/unique_users_per_day.png")
+    plt.close()
+
+
+def plot_unique_users_per_week(df, weeks=4):
+    """Plot unique users per week (users who had at least one reservation that week)"""
+    print("\nGenerating unique users per week plot...")
+
+    # Get last N weeks
+    end_date = datetime.now()
+    start_date = end_date - timedelta(weeks=weeks)
+
+    # Filter to last N weeks
+    df_recent = df[df['created_at'] >= start_date].copy()
+
+    # Create week range
+    week_starts = pd.date_range(start=start_date, end=end_date, freq='W-MON')
+    if len(week_starts) == 0 or week_starts[0] > start_date:
+        week_starts = pd.date_range(
+            start=start_date, periods=weeks+1, freq='W')
+
+    # Count unique users per week
+    weekly_unique_users = []
+    plot_weeks = []
+
+    for i in range(len(week_starts)):
+        week_start = week_starts[i]
+        week_end = week_starts[i+1] if i < len(week_starts)-1 else end_date
+
+        # Get users who created at least one reservation during this week
+        week_reservations = df_recent[
+            (df_recent['created_at'] >= week_start) &
+            (df_recent['created_at'] < week_end)
+        ]
+
+        unique_users = week_reservations['user_id'].nunique()
+        weekly_unique_users.append(unique_users)
+        plot_weeks.append(week_start)
+
+    # Plot
+    plt.figure(figsize=(14, 6))
+    plt.bar(plot_weeks, weekly_unique_users, width=5, color='#3498db',
+            alpha=0.7, edgecolor='#2980b9', linewidth=1.5)
+    plt.title(f'Unique Users Per Week (Last {weeks} Weeks)',
+              fontsize=16, fontweight='bold')
+    plt.xlabel('Week Starting', fontsize=12)
+    plt.ylabel('Number of Unique Users', fontsize=12)
+    plt.grid(True, alpha=0.3, axis='y')
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+    plt.xticks(rotation=45)
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'unique_users_per_week.png'),
+                dpi=300, bbox_inches='tight')
+    print(f"  Saved: {OUTPUT_DIR}/unique_users_per_week.png")
+    plt.close()
+
+
+def plot_gpu_hours_per_day_by_type(df, weeks=4, target_types=['h200', 'b200']):
+    """Plot GPU hours consumed per day for specific GPU types with capacity changes"""
+    print("\nGenerating GPU hours per day by type plot...")
+
+    # Get last N weeks
+    end_date = datetime.now()
+    start_date = end_date - timedelta(weeks=weeks)
+
+    # Filter to last N weeks and exclude failed reservations
+    df_recent = df[
+        (df['created_at'] >= start_date) &
+        (df['status'] != 'failed')
+    ].copy()
+
+    # Create date range
+    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+
+    # Normalize target types
+    target_types = [t.lower() for t in target_types]
+
+    # Calculate GPU hours per day for each GPU type
+    gpu_type_daily_hours = {}
+    for gpu_type in target_types:
+        df_type = df_recent[df_recent['gpu_type'] == gpu_type].copy()
+
+        if df_type.empty:
+            print(f"  No data for {gpu_type}, skipping from plot.")
+            continue
+
+        daily_hours = []
+        for date in date_range:
+            day_start = date
+            day_end = date + timedelta(days=1)
+
+            # Get reservations active during this day
+            active = df_type[
+                (df_type['created_at'] < day_end) &
+                ((df_type['expires_at'].isna()) |
+                 (df_type['expires_at'] >= day_start))
+            ]
+
+            # Calculate GPU hours for this day
+            total_hours = 0
+            for _, res in active.iterrows():
+                # Calculate overlap between reservation and this day
+                res_start = max(res['created_at'], day_start)
+                res_end = min(res['expires_at'] if pd.notna(
+                    res['expires_at']) else day_end, day_end)
+
+                if res_end > res_start:
+                    hours = (res_end - res_start).total_seconds() / 3600
+                    gpu_hours = hours * res['gpu_count']
+                    total_hours += gpu_hours
+
+            daily_hours.append(total_hours)
+
+        gpu_type_daily_hours[gpu_type] = daily_hours
+
+    if not gpu_type_daily_hours:
+        print("  No data for any target GPU types, skipping plot.")
+        return
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(14, 7))
+    colors = {'h200': '#e74c3c', 'b200': '#9b59b6',
+              'h100': '#3498db', 't4': '#2ecc71', 'l4': '#f39c12'}
+
+    # Add weekend shading (Saturday=5, Sunday=6)
+    for date in date_range:
+        if date.weekday() in [5, 6]:  # Saturday or Sunday
+            ax.axvspan(date, date + timedelta(days=1),
+                       color='lightgray', alpha=0.3, zorder=0)
+
+    # Plot GPU hours
+    for gpu_type, hours in gpu_type_daily_hours.items():
+        color = colors.get(gpu_type, '#95a5a6')
+        ax.plot(date_range, hours, marker='o', linewidth=2, markersize=4,
+                label=gpu_type.upper(), color=color, zorder=3)
+        ax.fill_between(date_range, hours, alpha=0.2, color=color, zorder=2)
+
+    # Add three-step capacity line
+    # Phase 1: Before Oct 5 - 16 GPUs
+    # Phase 2: Oct 5 to Oct 12 (7 days) - 32 GPUs
+    # Phase 3: After Oct 12 - 24 GPUs
+    step_date_1 = datetime(2025, 10, 5)
+    step_date_2 = datetime(2025, 10, 12)
+
+    capacity_phase1 = 24 * 16   # 384 GPU-hours/day
+    capacity_phase2 = 24 * 32   # 768 GPU-hours/day
+    capacity_phase3 = 24 * 24   # 576 GPU-hours/day
+
+    # Split date range into three phases
+    dates_phase1 = [d for d in date_range if d < step_date_1]
+    dates_phase2 = [d for d in date_range if step_date_1 <= d < step_date_2]
+    dates_phase3 = [d for d in date_range if d >= step_date_2]
+
+    # Draw capacity lines for each phase
+    if dates_phase1:
+        ax.hlines(y=capacity_phase1, xmin=dates_phase1[0], xmax=step_date_1,
+                  color='red', linestyle='--', linewidth=2, alpha=0.7, zorder=2)
+
+    if dates_phase2:
+        ax.hlines(y=capacity_phase2, xmin=step_date_1, xmax=step_date_2,
+                  color='red', linestyle='--', linewidth=2, alpha=0.7, zorder=2)
+
+    if dates_phase3:
+        ax.hlines(y=capacity_phase3, xmin=step_date_2, xmax=dates_phase3[-1] + timedelta(days=1),
+                  color='red', linestyle='--', linewidth=2, alpha=0.7, zorder=2)
+
+    # Add label showing the capacity changes
+    label_text = f'Max Available GPUs (16→32→24): {capacity_phase1}→{capacity_phase2}→{capacity_phase3} GPU-h/day)'
+    ax.plot([], [], color='red', linestyle='--',
+            linewidth=2, alpha=0.7, label=label_text)
+
+    ax.set_title(f'GPU Hours Per Day by Type (Last {weeks} Weeks)',
+                 fontsize=16, fontweight='bold')
+    ax.set_xlabel('Date', fontsize=12)
+    ax.set_ylabel('GPU Hours', fontsize=12)
+    ax.legend(fontsize=10, loc='upper left')
+    ax.grid(True, alpha=0.3, zorder=1)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, weeks // 4)))
+    plt.xticks(rotation=45)
+    ax.set_ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'gpu_hours_per_day_by_type.png'),
+                dpi=300, bbox_inches='tight')
+    print(f"  Saved: {OUTPUT_DIR}/gpu_hours_per_day_by_type.png")
+    plt.close()
+
+
+def plot_reservations_per_user_over_time(df, weeks=4, top_n=10):
+    """Plot reservations per week for top N users"""
+    print("\nGenerating reservations per user over time plot...")
+
+    # Get last N weeks
+    end_date = datetime.now()
+    start_date = end_date - timedelta(weeks=weeks)
+
+    # Filter to last N weeks
+    df_recent = df[df['created_at'] >= start_date].copy()
+
+    # Get top N users by total reservation count in this period
+    top_users = df_recent['user_id'].value_counts().head(top_n).index.tolist()
+
+    # Create week range
+    week_starts = pd.date_range(start=start_date, end=end_date, freq='W-MON')
+    if len(week_starts) == 0 or week_starts[0] > start_date:
+        week_starts = pd.date_range(
+            start=start_date, periods=weeks+1, freq='W')
+
+    # Count reservations per user per week
+    user_weekly_data = {}
+    for user in top_users:
+        weekly_counts = []
+        user_df = df_recent[df_recent['user_id'] == user]
+
+        for i in range(len(week_starts)):
+            week_start = week_starts[i]
+            week_end = week_starts[i+1] if i < len(week_starts)-1 else end_date
+
+            count = len(user_df[
+                (user_df['created_at'] >= week_start) &
+                (user_df['created_at'] < week_end)
+            ])
+            weekly_counts.append(count)
+
+        user_weekly_data[user] = weekly_counts
+
+    # Adjust week_starts for plotting (use the actual week ranges we calculated)
+    plot_weeks = week_starts[:len(weekly_counts)]
+
+    # Plot
+    plt.figure(figsize=(14, 7))
+    colors = sns.color_palette("tab10", top_n)
+
+    for idx, (user, counts) in enumerate(user_weekly_data.items()):
+        # Shorten username (remove @domain)
+        display_name = user.split('@')[0]
+        plt.plot(plot_weeks, counts, marker='o', linewidth=2,
+                 markersize=6, label=display_name, color=colors[idx])
+
+    plt.title(f'Reservations Per Week - Top {top_n} Users (Last {weeks} Weeks)',
+              fontsize=16, fontweight='bold')
+    plt.xlabel('Week Starting', fontsize=12)
+    plt.ylabel('Number of Reservations', fontsize=12)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+    plt.xticks(rotation=45)
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'reservations_per_user_over_time.png'),
+                dpi=300, bbox_inches='tight')
+    print(f"  Saved: {OUTPUT_DIR}/reservations_per_user_over_time.png")
+    plt.close()
 
 
 def generate_html_dashboard(stats, df, gpu_usage_plots=[]):
@@ -571,12 +874,32 @@ def generate_html_dashboard(stats, df, gpu_usage_plots=[]):
         <div class="charts">
             {gpu_usage_cards}
             <div class="chart-card">
-                <h2 class="chart-title">Daily Active Reservations (Last 4 Weeks)</h2>
+                <h2 class="chart-title">Unique Users Per Day</h2>
+                <img src="unique_users_per_day.png" alt="Unique Users Per Day">
+            </div>
+
+            <div class="chart-card">
+                <h2 class="chart-title">Unique Users Per Week</h2>
+                <img src="unique_users_per_week.png" alt="Unique Users Per Week">
+            </div>
+
+            <div class="chart-card">
+                <h2 class="chart-title">Reservations Per Week - Top 10 Users</h2>
+                <img src="reservations_per_user_over_time.png" alt="Reservations Per User Over Time">
+            </div>
+
+            <div class="chart-card">
+                <h2 class="chart-title">GPU Hours Per Day - H200 & B200</h2>
+                <img src="gpu_hours_per_day_by_type.png" alt="GPU Hours Per Day by Type">
+            </div>
+
+            <div class="chart-card">
+                <h2 class="chart-title">Daily Active Reservations</h2>
                 <img src="daily_active_reservations.png" alt="Daily Active Reservations">
             </div>
 
             <div class="chart-card">
-                <h2 class="chart-title">Hourly Active GPU Count (Last 4 Weeks)</h2>
+                <h2 class="chart-title">Hourly Active GPU Count</h2>
                 <img src="hourly_gpu_usage.png" alt="Hourly GPU Usage">
             </div>
 
@@ -608,8 +931,21 @@ def generate_html_dashboard(stats, df, gpu_usage_plots=[]):
 
 def main():
     """Main execution"""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description='GPU Dev Server Usage Analytics - Generate statistics and visualizations from DynamoDB reservation data'
+    )
+    parser.add_argument(
+        '--weeks',
+        type=int,
+        default=4,
+        help='Number of weeks to analyze (default: 4)'
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("GPU Dev Server Usage Analytics")
+    print(f"Analyzing last {args.weeks} weeks")
     print("=" * 60)
 
     # Fetch data
@@ -643,11 +979,17 @@ def main():
     print("\n" + "=" * 60)
     print("GENERATING VISUALIZATIONS")
     print("=" * 60)
-    plot_daily_active_reservations(df)
-    plot_hourly_gpu_usage(df)
+    plot_unique_users_per_day(df, weeks=args.weeks)
+    plot_unique_users_per_week(df, weeks=args.weeks)
+    plot_reservations_per_user_over_time(df, weeks=args.weeks)
+    plot_gpu_hours_per_day_by_type(
+        df, weeks=args.weeks, target_types=['h200', 'b200'])
+    plot_daily_active_reservations(df, weeks=args.weeks)
+    plot_hourly_gpu_usage(df, weeks=args.weeks)
     plot_gpu_type_distribution(df)
     plot_top_users_by_gpu_hours(df)
-    gpu_usage_plots = plot_gpu_usage_by_type(df, gpu_availability)
+    gpu_usage_plots = plot_gpu_usage_by_type(
+        df, gpu_availability, weeks=args.weeks)
 
     # Generate dashboard
     generate_html_dashboard(stats, df, gpu_usage_plots)

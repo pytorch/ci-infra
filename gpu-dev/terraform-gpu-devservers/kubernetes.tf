@@ -278,7 +278,7 @@ resource "helm_release" "nvidia_gpu_operator" {
 
   set {
     name  = "dcgmExporter.enabled"
-    value = "true"
+    value = "false"
   }
 
   set {
