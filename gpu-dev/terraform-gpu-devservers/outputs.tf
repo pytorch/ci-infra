@@ -40,6 +40,16 @@ output "reservations_table_name" {
   value       = aws_dynamodb_table.gpu_reservations.name
 }
 
+output "disks_table_name" {
+  description = "Name of the DynamoDB disks table (for IAM policies)"
+  value       = aws_dynamodb_table.disks.name
+}
+
+output "disk_contents_bucket_name" {
+  description = "S3 bucket name for disk contents storage (for IAM policies)"
+  value       = aws_s3_bucket.disk_contents.bucket
+}
+
 # Removed servers_table_name output - now using K8s API for GPU tracking
 
 output "reservation_processor_function_name" {

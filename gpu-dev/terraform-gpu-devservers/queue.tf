@@ -109,3 +109,34 @@ resource "aws_dynamodb_table" "gpu_reservations" {
 }
 
 # Note: Removed gpu_servers table - now using K8s API for real-time GPU tracking
+
+# DynamoDB table for disk metadata tracking
+# Replaces expensive EC2 DescribeSnapshots calls with fast DynamoDB queries
+resource "aws_dynamodb_table" "disks" {
+  name           = "${var.prefix}-disks"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "user_id"
+  range_key      = "disk_name"
+
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "disk_name"
+    type = "S"
+  }
+
+  # Enable point-in-time recovery for production data
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = {
+    Name        = "${var.prefix}-disks"
+    Environment = local.current_config.environment
+    Purpose     = "GPU dev server disk metadata tracking"
+    ManagedBy   = "terraform"
+  }
+}
