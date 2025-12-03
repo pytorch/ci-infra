@@ -1839,7 +1839,7 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     gpu_type = request.get("gpu_type", "")
 
     # Validate GPU type
-    valid_gpu_types = ["t4", "l4", "t4-small", "a100",
+    valid_gpu_types = ["t4", "l4", "a10g", "t4-small", "a100",
                        "h100", "h200", "b200", "cpu-arm", "cpu-x86"]
     if gpu_type not in valid_gpu_types:
         error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
@@ -2031,6 +2031,7 @@ def update_gpu_availability_table(
         gpu_type_configs = {
             "t4": {"gpus_per_instance": 4},
             "l4": {"gpus_per_instance": 4},
+            "a10g": {"gpus_per_instance": 4},
             "a100": {"gpus_per_instance": 8},
             "h100": {"gpus_per_instance": 8},
             "h200": {"gpus_per_instance": 8},
@@ -3335,7 +3336,7 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
 
     # Define max GPUs per node for each GPU type
     gpu_max_per_node = {
-        "t4": 4, "l4": 4, "t4-small": 1, "g5g": 2,
+        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
         "a100": 8, "h100": 8, "h200": 8, "b200": 8,
         "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
     }
@@ -3356,6 +3357,7 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
             instance_specs = {
                 "g4dn.12xlarge": {"cpus": 48, "memory_gb": 192},    # T4
                 "g6.12xlarge": {"cpus": 48, "memory_gb": 192},      # L4
+                "g5.12xlarge": {"cpus": 48, "memory_gb": 192},      # A10G
                 "g4dn.2xlarge": {"cpus": 8, "memory_gb": 32},       # T4-small
                 "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},    # A100
                 "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},    # H100
@@ -3374,8 +3376,8 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
 
             # Find instance type from GPU type mapping (approximate)
             instance_type_map = {
-                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "t4-small": "g4dn.2xlarge",
-                "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
+                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "a10g": "g5.12xlarge",
+                "t4-small": "g4dn.2xlarge", "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
                 "h200": "p5e.48xlarge", "b200": "p6-b200.48xlarge"
             }
 
@@ -3421,7 +3423,7 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
 
     # Define max GPUs per node for each GPU type
     gpu_max_per_node = {
-        "t4": 4, "l4": 4, "t4-small": 1, "g5g": 2,
+        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
         "a100": 8, "h100": 8, "h200": 8, "b200": 8,
         "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
     }
@@ -3442,6 +3444,7 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
             instance_specs = {
                 "g4dn.12xlarge": {"cpus": 48, "memory_gb": 192},
                 "g6.12xlarge": {"cpus": 48, "memory_gb": 192},
+                "g5.12xlarge": {"cpus": 48, "memory_gb": 192},
                 "g4dn.2xlarge": {"cpus": 8, "memory_gb": 32},
                 "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},
                 "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},
@@ -3453,8 +3456,8 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
             instance_type_map = {
-                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "t4-small": "g4dn.2xlarge",
-                "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
+                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "a10g": "g5.12xlarge",
+                "t4-small": "g4dn.2xlarge", "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
                 "h200": "p5e.48xlarge", "b200": "p6-b200.48xlarge"
             }
 
@@ -3491,7 +3494,7 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
 def _pod_uses_efa(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> bool:
     """Check if pod will use EFA based on configuration"""
     gpu_max_per_node = {
-        "t4": 4, "l4": 4, "t4-small": 1, "g5g": 2,
+        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
         "a100": 8, "h100": 8, "h200": 8, "b200": 8,
         "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
     }

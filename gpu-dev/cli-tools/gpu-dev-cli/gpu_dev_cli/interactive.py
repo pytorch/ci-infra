@@ -140,7 +140,7 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
         # CPU instances don't have GPUs, but we still need a "count" for nodes
         valid_counts = [0]  # 0 GPUs for CPU-only instances
         multinode_counts = []  # No multinode for CPU instances
-    elif gpu_type in ["t4", "l4"]:
+    elif gpu_type in ["t4", "l4", "a10g"]:
         valid_counts = [1, 2, 4]
         # Add multinode options
         multinode_counts = [8, 12, 16, 20, 24]  # multiples of 4

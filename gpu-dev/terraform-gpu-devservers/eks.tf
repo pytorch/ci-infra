@@ -159,6 +159,7 @@ locals {
     "t4"     = "t4"
     "t4-az2" = "t4"  # Both t4 and t4-az2 should be labeled as "t4" in Kubernetes
     "l4"     = "l4"
+    "a10g"   = "a10g"
     "h100"   = "h100"
     "h200"   = "h200"
     "b200"   = "b200"

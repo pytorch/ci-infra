@@ -140,6 +140,14 @@ locals {
           use_placement_group = false
           architecture        = "x86_64"
         }
+        "a10g" = {
+          instance_type       = "g5.12xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 4 # 4x A10G GPUs
+          use_placement_group = false
+          architecture        = "x86_64"
+        }
       }
     }
     prod = {
@@ -195,6 +203,14 @@ locals {
           instance_types      = null
           instance_count      = 5  # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 4 # 4x L4 GPUs
+          use_placement_group = false
+          architecture        = "x86_64"
+        }
+        "a10g" = {
+          instance_type       = "g5.12xlarge"
+          instance_types      = null
+          instance_count      = 2
+          gpus_per_instance   = 4 # 4x A10G GPUs
           use_placement_group = false
           architecture        = "x86_64"
         }
@@ -270,6 +286,7 @@ locals {
       "cpu-arm"  = "primary"
       "cpu-x86"  = "primary"
       "t4-small" = "secondary"
+      a10g       = "primary"
     }
     prod = {
       # Production environment subnet assignments
@@ -279,6 +296,7 @@ locals {
       a100      = "primary"
       t4        = "primary"
       l4        = "secondary"
+      a10g      = "secondary"
       "cpu-arm" = "primary"
       "cpu-x86" = "primary"
     }

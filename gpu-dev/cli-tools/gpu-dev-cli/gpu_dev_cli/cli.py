@@ -423,9 +423,9 @@ def main(ctx: click.Context) -> None:
     "--gpu-type",
     "-t",
     type=click.Choice(
-        ["b200", "h200", "h100", "a100", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
+        ["b200", "h200", "h100", "a100", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
     ),
-    help="GPU type to reserve (b200/h200/h100/a100/t4/l4/t4-small/cpu-arm/cpu-x86)",
+    help="GPU type to reserve (b200/h200/h100/a100/a10g/t4/l4/t4-small/cpu-arm/cpu-x86)",
 )
 @click.option(
     "--hours",
@@ -544,6 +544,7 @@ def reserve(
         gpu_configs = {
             "t4": {"max_gpus": 4, "instance_type": "g4dn.12xlarge"},
             "l4": {"max_gpus": 4, "instance_type": "g6.12xlarge"},
+            "a10g": {"max_gpus": 4, "instance_type": "g5.12xlarge"},
             "t4-small": {"max_gpus": 1, "instance_type": "g4dn.xlarge"},
             "a100": {"max_gpus": 8, "instance_type": "p4d.24xlarge"},
             "h100": {"max_gpus": 8, "instance_type": "p5.48xlarge"},
@@ -2126,6 +2127,7 @@ def _show_availability() -> None:
                 "h200": "Hopper (sm90)",
                 "h100": "Hopper (sm90)",
                 "a100": "Ampere (sm80)",
+                "a10g": "Ampere (sm80)",
                 "l4": "Ada Lovelace (sm89)",
                 "t4": "Turing (sm75)",
                 "cpu-x86": "CPU (x86_64)",
@@ -2269,6 +2271,7 @@ def _show_availability_watch(interval: int) -> None:
                             "h200": "Hopper (sm90)",
                             "h100": "Hopper (sm90)",
                             "a100": "Ampere (sm80)",
+                            "a10g": "Ampere (sm80)",
                             "l4": "Ada Lovelace (sm89)",
                             "t4": "Turing (sm75)",
                             "cpu-x86": "CPU (x86_64)",
