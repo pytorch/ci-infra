@@ -445,6 +445,11 @@ def main(ctx: click.Context) -> None:
     help="Skip persistent disk warning for multiple reservations",
 )
 @click.option(
+    "--no-persist",
+    is_flag=True,
+    help="Create reservation without persistent disk",
+)
+@click.option(
     "--recreate-env",
     is_flag=True,
     help="Recreate shell environment (bashrc/zshrc/oh-my-zsh) even on existing persistent disk",
@@ -490,6 +495,7 @@ def reserve(
     name: Optional[str],
     jupyter: bool,
     ignore_no_persist: bool,
+    no_persist: bool,
     recreate_env: bool,
     interactive: Optional[bool],
     distributed: bool,
@@ -918,7 +924,8 @@ def reserve(
 
             # Determine if this is multinode and submit appropriate reservation
             # If user confirmed to continue without persistent disk, set flag
-            no_persistent_disk = bool(persistent_reservations)
+            # --no-persist explicitly disables persistent disk
+            no_persistent_disk = no_persist or bool(persistent_reservations)
 
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
             if gpu_count > max_gpus:
