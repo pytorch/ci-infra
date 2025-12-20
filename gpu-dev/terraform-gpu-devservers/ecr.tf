@@ -139,6 +139,26 @@ resource "null_resource" "docker_build_and_push" {
   ]
 }
 
+# Trigger DaemonSet rollout to pull new image on all nodes after Docker rebuild
+resource "null_resource" "rollout_image_prepuller" {
+  # Trigger whenever Docker image is rebuilt
+  triggers = {
+    docker_build_id = null_resource.docker_build_and_push.id
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOF
+      set -e
+      echo "Triggering DaemonSet rollout to pull new image on all GPU nodes..."
+      kubectl rollout restart daemonset gpu-dev-image-prepuller -n kube-system || echo "DaemonSet rollout failed (might not exist yet)"
+    EOF
+  }
+
+  depends_on = [
+    null_resource.docker_build_and_push
+  ]
+}
+
 # Output the image URI for use in other resources
 output "gpu_dev_image_uri" {
   value       = local.full_image_uri

@@ -19,7 +19,9 @@ from shared.snapshot_utils import (
     create_pod_shutdown_snapshot,
     cleanup_old_snapshots,
     safe_create_snapshot,
-    cleanup_all_user_snapshots
+    cleanup_all_user_snapshots,
+    capture_disk_contents,
+    update_disk_snapshot_completed
 )
 from shared.dns_utils import (
     delete_dns_record,
@@ -38,6 +40,7 @@ ec2_client = boto3.client("ec2")
 
 # Environment variables
 RESERVATIONS_TABLE = os.environ["RESERVATIONS_TABLE"]
+DISKS_TABLE = os.environ.get("DISKS_TABLE_NAME", "pytorch-gpu-dev-disks")
 EKS_CLUSTER_NAME = os.environ["EKS_CLUSTER_NAME"]
 REGION = os.environ["REGION"]
 
@@ -94,6 +97,210 @@ GRACE_PERIOD_SECONDS = int(os.environ.get("GRACE_PERIOD_SECONDS", 120))
 
 # Warning levels in minutes (can be easily extended)
 WARNING_LEVELS = [30, 15, 5]
+
+
+def sync_disk_deleted_snapshots() -> int:
+    """
+    Sync DynamoDB disk deletion status to EC2 snapshots.
+    Tags snapshots with delete-date when disks are marked is_deleted=True in DynamoDB.
+    Returns count of snapshots tagged.
+    """
+    tagged_count = 0
+
+    try:
+        disks_table = dynamodb.Table(DISKS_TABLE)
+
+        # Scan for disks marked as deleted in DynamoDB
+        response = disks_table.scan(
+            FilterExpression="is_deleted = :true",
+            ExpressionAttributeValues={":true": True}
+        )
+
+        deleted_disks = response.get('Items', [])
+
+        # Handle pagination
+        while 'LastEvaluatedKey' in response:
+            response = disks_table.scan(
+                FilterExpression="is_deleted = :true",
+                ExpressionAttributeValues={":true": True},
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            deleted_disks.extend(response.get('Items', []))
+
+        if not deleted_disks:
+            logger.debug("No deleted disks found in DynamoDB")
+            return 0
+
+        logger.info(f"Found {len(deleted_disks)} deleted disks in DynamoDB")
+
+        # For each deleted disk, tag its snapshots in EC2
+        for disk in deleted_disks:
+            user_id = disk.get('user_id')
+            disk_name = disk.get('disk_name')
+            delete_date = disk.get('delete_date')
+
+            if not user_id or not disk_name or not delete_date:
+                logger.warning(f"Disk missing required fields: {disk}")
+                continue
+
+            try:
+                # Find all snapshots for this disk
+                snapshot_response = ec2_client.describe_snapshots(
+                    OwnerIds=["self"],
+                    Filters=[
+                        {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                        {"Name": "tag:disk_name", "Values": [disk_name]},
+                    ]
+                )
+
+                snapshots = snapshot_response.get('Snapshots', [])
+                logger.info(f"Found {len(snapshots)} snapshots for deleted disk '{disk_name}' (user: {user_id})")
+
+                # Tag each snapshot that doesn't already have delete-date tag
+                for snapshot in snapshots:
+                    snapshot_id = snapshot['SnapshotId']
+                    tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+
+                    # Skip if already tagged
+                    if 'delete-date' in tags:
+                        logger.debug(f"Snapshot {snapshot_id} already has delete-date tag, skipping")
+                        continue
+
+                    try:
+                        ec2_client.create_tags(
+                            Resources=[snapshot_id],
+                            Tags=[
+                                {"Key": "delete-date", "Value": delete_date},
+                                {"Key": "marked-deleted-at", "Value": disk.get('marked_deleted_at', str(int(time.time())))},
+                            ]
+                        )
+                        logger.info(f"Tagged snapshot {snapshot_id} with delete-date: {delete_date}")
+                        tagged_count += 1
+                    except Exception as tag_error:
+                        logger.error(f"Error tagging snapshot {snapshot_id}: {tag_error}")
+
+            except Exception as disk_error:
+                logger.error(f"Error processing deleted disk '{disk_name}': {disk_error}")
+
+        return tagged_count
+
+    except Exception as e:
+        logger.error(f"Error in sync_disk_deleted_snapshots: {e}")
+        return tagged_count
+
+
+def sync_completed_snapshots() -> int:
+    """
+    Sync completed EC2 snapshots to DynamoDB.
+    Updates disk records when snapshots complete.
+    Returns count of disks updated.
+    """
+    updated_count = 0
+
+    try:
+        # Find all completed snapshots with disk_name tag (created by our system)
+        response = ec2_client.describe_snapshots(
+            OwnerIds=["self"],
+            Filters=[
+                {"Name": "tag-key", "Values": ["disk_name"]},
+                {"Name": "tag-key", "Values": ["gpu-dev-user"]},
+                {"Name": "status", "Values": ["completed"]},
+            ],
+            MaxResults=100  # Limit to avoid timeouts
+        )
+
+        snapshots = response.get('Snapshots', [])
+        logger.info(f"Checking {len(snapshots)} completed snapshots for DynamoDB sync")
+
+        # Check DynamoDB for each snapshot to see if it's already been processed
+        disks_table = dynamodb.Table(DISKS_TABLE)
+
+        for snapshot in snapshots:
+            snapshot_id = snapshot['SnapshotId']
+            tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+            user_id = tags.get('gpu-dev-user')
+            disk_name = tags.get('disk_name')
+            size_gb = snapshot.get('VolumeSize')
+
+            if not user_id or not disk_name:
+                continue
+
+            try:
+                # Check if this snapshot has already been synced to DynamoDB
+                # We track this by checking if the snapshot_count matches the actual count
+                # For now, we'll use a simpler approach: check if disk exists and if pending_snapshot_count > 0
+
+                disk_response = disks_table.get_item(
+                    Key={'user_id': user_id, 'disk_name': disk_name}
+                )
+
+                if 'Item' not in disk_response:
+                    logger.debug(f"Disk '{disk_name}' not found in DynamoDB (user: {user_id}), skipping snapshot sync")
+                    continue
+
+                disk_item = disk_response['Item']
+                pending_count = int(disk_item.get('pending_snapshot_count', 0))
+                is_backing_up = disk_item.get('is_backing_up', False)
+
+                # Update if there are pending snapshots OR if stuck in backing_up state (handles race conditions)
+                if pending_count != 0 or is_backing_up:
+                    logger.info(f"Updating DynamoDB for completed snapshot {snapshot_id} (disk: {disk_name}, user: {user_id}, pending_count: {pending_count}, is_backing_up: {is_backing_up})")
+                    update_disk_snapshot_completed(user_id, disk_name, size_gb)
+                    updated_count += 1
+                else:
+                    logger.debug(f"No pending snapshots for disk '{disk_name}', skipping")
+
+            except Exception as disk_error:
+                logger.warning(f"Error syncing snapshot {snapshot_id} to DynamoDB: {disk_error}")
+
+        return updated_count
+
+    except Exception as e:
+        logger.error(f"Error in sync_completed_snapshots: {e}")
+        return updated_count
+
+
+def cleanup_soft_deleted_snapshots() -> int:
+    """
+    Clean up snapshots marked for deletion whose delete-date has passed.
+    Returns count of deleted snapshots.
+    """
+    from datetime import datetime
+
+    deleted_count = 0
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    try:
+        # Find all snapshots with delete-date tag
+        response = ec2_client.describe_snapshots(
+            OwnerIds=["self"],
+            Filters=[
+                {"Name": "tag-key", "Values": ["delete-date"]},
+            ]
+        )
+
+        snapshots = response.get('Snapshots', [])
+        logger.info(f"Found {len(snapshots)} snapshots with delete-date tag")
+
+        for snapshot in snapshots:
+            snapshot_id = snapshot['SnapshotId']
+            tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+            delete_date = tags.get('delete-date', '')
+
+            # Compare dates (YYYY-MM-DD format)
+            if delete_date and delete_date <= today:
+                try:
+                    ec2_client.delete_snapshot(SnapshotId=snapshot_id)
+                    logger.info(f"Deleted soft-deleted snapshot {snapshot_id} (delete-date: {delete_date})")
+                    deleted_count += 1
+                except Exception as e:
+                    logger.error(f"Error deleting snapshot {snapshot_id}: {e}")
+
+        return deleted_count
+
+    except Exception as e:
+        logger.error(f"Error in cleanup_soft_deleted_snapshots: {e}")
+        return deleted_count
 
 
 def handler(event, context):
@@ -168,6 +375,7 @@ def handler(event, context):
         warned_count = 0
         expired_count = 0
         stale_cancelled_count = 0
+        oom_detected_count = 0
 
         for reservation in preparing_reservations:
             reservation_id = reservation["reservation_id"]
@@ -250,6 +458,15 @@ def handler(event, context):
                 # Check if pod actually exists before trying to clean it up
                 if not check_pod_exists(pod_name):
                     logger.debug(f"Pod {pod_name} for failed reservation {reservation_id[:8]} already deleted")
+                    # Pod gone but disk might still be marked in_use - clean it up
+                    user_id = reservation.get("user_id")
+                    disk_name = reservation.get("disk_name")
+                    if user_id and disk_name:
+                        try:
+                            mark_disk_not_in_use(user_id, disk_name)
+                            logger.info(f"Cleared disk '{disk_name}' in_use flag for failed reservation {reservation_id[:8]} (pod already deleted)")
+                        except Exception as disk_error:
+                            logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
                     continue
 
                 logger.info(
@@ -402,6 +619,15 @@ def handler(event, context):
                 # Check if pod actually exists before trying to clean it up
                 if not check_pod_exists(pod_name):
                     logger.debug(f"Pod {pod_name} for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} already deleted")
+                    # Pod gone but disk might still be marked in_use - clean it up
+                    user_id = reservation.get("user_id")
+                    disk_name = reservation.get("disk_name")
+                    if user_id and disk_name:
+                        try:
+                            mark_disk_not_in_use(user_id, disk_name)
+                            logger.info(f"Cleared disk '{disk_name}' in_use flag for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} (pod already deleted)")
+                        except Exception as disk_error:
+                            logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
                     continue
 
                 logger.info(
@@ -549,6 +775,17 @@ def handler(event, context):
                             f"Failed to send {warning_to_send}-minute warning for reservation {reservation_id}: {e}"
                         )
 
+                # Check for OOM events on active pods
+                if pod_name and not skip_pod_check:
+                    try:
+                        oom_info = check_pod_oom_status(pod_name)
+                        if oom_info["oom_detected"]:
+                            if handle_oom_event(reservation, oom_info):
+                                oom_detected_count += 1
+                                logger.info(f"Recorded OOM event for reservation {reservation_id[:8]}")
+                    except Exception as e:
+                        logger.warning(f"Error checking OOM status for reservation {reservation_id[:8]}: {e}")
+
         # Process stale queued/pending reservations
         for reservation in stale_reservations:
             created_at = reservation.get("created_at", "")
@@ -579,6 +816,30 @@ def handler(event, context):
                 cancel_stale_reservation(reservation)
                 stale_cancelled_count += 1
 
+        # Sync disk deletion status from DynamoDB to EC2 snapshots
+        try:
+            tagged_snapshot_count = sync_disk_deleted_snapshots()
+            logger.info(f"Tagged {tagged_snapshot_count} snapshots for deletion from DynamoDB sync")
+        except Exception as e:
+            logger.error(f"Error syncing disk deletion to snapshots: {e}")
+            tagged_snapshot_count = 0
+
+        # Sync completed snapshots to DynamoDB
+        try:
+            synced_disk_count = sync_completed_snapshots()
+            logger.info(f"Synced {synced_disk_count} completed snapshots to DynamoDB")
+        except Exception as e:
+            logger.error(f"Error syncing completed snapshots: {e}")
+            synced_disk_count = 0
+
+        # Clean up soft-deleted snapshots whose delete-date has passed
+        try:
+            deleted_snapshot_count = cleanup_soft_deleted_snapshots()
+            logger.info(f"Cleaned up {deleted_snapshot_count} soft-deleted snapshots")
+        except Exception as e:
+            logger.error(f"Error cleaning up soft-deleted snapshots: {e}")
+            deleted_snapshot_count = 0
+
         return {
             "statusCode": 200,
             "body": json.dumps(
@@ -587,6 +848,10 @@ def handler(event, context):
                     "warned": warned_count,
                     "expired": expired_count,
                     "stale_cancelled": stale_cancelled_count,
+                    "oom_detected": oom_detected_count,
+                    "deleted_snapshots": deleted_snapshot_count,
+                    "tagged_snapshots": tagged_snapshot_count,
+                    "synced_disks": synced_disk_count,
                 }
             ),
         }
@@ -613,6 +878,205 @@ def check_pod_exists(pod_name: str, namespace: str = "gpu-dev") -> bool:
     except Exception as e:
         logger.warning(f"Error checking pod {pod_name}: {e}")
         return False
+
+
+def check_pod_oom_status(pod_name: str, namespace: str = "gpu-dev") -> dict:
+    """
+    Check if a pod has any OOMKilled containers.
+    Returns dict with:
+      - oom_detected: bool
+      - oom_container: str (name of container that OOMed, if any)
+      - oom_time: str (ISO timestamp of when OOM occurred)
+      - restart_count: int (total restarts due to OOM)
+    """
+    result = {
+        "oom_detected": False,
+        "oom_container": None,
+        "oom_time": None,
+        "restart_count": 0
+    }
+
+    try:
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+
+        pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+
+        if not pod.status or not pod.status.container_statuses:
+            return result
+
+        for container_status in pod.status.container_statuses:
+            # Check last terminated state for OOMKilled
+            if container_status.last_state and container_status.last_state.terminated:
+                terminated = container_status.last_state.terminated
+                if terminated.reason == "OOMKilled":
+                    result["oom_detected"] = True
+                    result["oom_container"] = container_status.name
+                    if terminated.finished_at:
+                        result["oom_time"] = terminated.finished_at.isoformat()
+                    result["restart_count"] = container_status.restart_count
+                    logger.info(f"OOM detected for pod {pod_name}, container {container_status.name}, restarts: {container_status.restart_count}")
+                    return result
+
+            # Also check current state if container is in terminated state
+            if container_status.state and container_status.state.terminated:
+                terminated = container_status.state.terminated
+                if terminated.reason == "OOMKilled":
+                    result["oom_detected"] = True
+                    result["oom_container"] = container_status.name
+                    if terminated.finished_at:
+                        result["oom_time"] = terminated.finished_at.isoformat()
+                    result["restart_count"] = container_status.restart_count
+                    logger.info(f"OOM detected (current state) for pod {pod_name}, container {container_status.name}")
+                    return result
+
+        return result
+
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            logger.debug(f"Pod {pod_name} not found when checking OOM status")
+        else:
+            logger.warning(f"Error checking OOM status for pod {pod_name}: {e}")
+        return result
+    except Exception as e:
+        logger.warning(f"Error checking OOM status for pod {pod_name}: {e}")
+        return result
+
+
+def mark_disk_not_in_use(user_id: str, disk_name: str) -> None:
+    """
+    Mark a disk as not in use in the disks table.
+    Called after volume is deleted during cleanup.
+    """
+    try:
+        disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+        disks_table = dynamodb.Table(disks_table_name)
+
+        disks_table.update_item(
+            Key={'user_id': user_id, 'disk_name': disk_name},
+            UpdateExpression="SET in_use = :in_use, last_used = :last_used REMOVE attached_to_reservation",
+            ExpressionAttributeValues={
+                ":in_use": False,
+                ":last_used": datetime.utcnow().isoformat()
+            }
+        )
+        logger.info(f"Marked disk '{disk_name}' as not in use for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error marking disk as not in use: {e}")
+        raise
+
+
+def handle_oom_event(reservation: dict, oom_info: dict) -> bool:
+    """
+    Handle an OOM event for a reservation.
+    Updates DynamoDB with OOM tracking information.
+    Returns True if update was successful.
+    """
+    try:
+        reservation_id = reservation["reservation_id"]
+        current_time = datetime.utcnow().isoformat()
+
+        # Get current OOM count from reservation
+        current_oom_count = int(reservation.get("oom_count", 0))
+        new_oom_count = current_oom_count + 1
+
+        # Only update if this is a new OOM event (check if oom_time is different)
+        last_recorded_oom = reservation.get("last_oom_at")
+        new_oom_time = oom_info.get("oom_time") or current_time
+
+        # Skip if we already recorded this exact OOM event
+        if last_recorded_oom and last_recorded_oom == new_oom_time:
+            logger.debug(f"OOM event already recorded for reservation {reservation_id[:8]}")
+            return False
+
+        reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+
+        # Update reservation with OOM info
+        update_expression = "SET last_oom_at = :oom_time, oom_count = :oom_count, oom_container = :container"
+        expression_values = {
+            ":oom_time": new_oom_time,
+            ":oom_count": new_oom_count,
+            ":container": oom_info.get("oom_container", "unknown")
+        }
+
+        reservations_table.update_item(
+            Key={"reservation_id": reservation_id},
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_values
+        )
+
+        logger.info(f"Updated OOM tracking for reservation {reservation_id[:8]}: count={new_oom_count}, time={new_oom_time}")
+
+        # Create OOM warning file in the pod
+        pod_name = reservation.get("pod_name")
+        if pod_name:
+            try:
+                create_oom_warning_file(pod_name, oom_info, new_oom_count)
+            except Exception as e:
+                logger.warning(f"Failed to create OOM warning file in pod {pod_name}: {e}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error handling OOM event for reservation {reservation.get('reservation_id')}: {e}")
+        return False
+
+
+def create_oom_warning_file(pod_name: str, oom_info: dict, oom_count: int, namespace: str = "gpu-dev"):
+    """Create a visible OOM warning file in the pod's workspace"""
+    try:
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+
+        container_name = oom_info.get("oom_container", "unknown")
+        oom_time = oom_info.get("oom_time", "unknown")
+
+        warning_content = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔴 OUT OF MEMORY (OOM) DETECTED 🔴
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Your container ran out of memory and was killed by the system.
+
+Container: {container_name}
+OOM Time: {oom_time}
+Total OOM Count: {oom_count}
+
+WHAT HAPPENED:
+- Your process exceeded the allocated memory limit
+- The container was automatically restarted
+
+SUGGESTIONS:
+- Reduce batch size or model size
+- Use gradient checkpointing
+- Enable mixed precision (fp16/bf16)
+- Monitor memory with: nvidia-smi or htop
+- Consider requesting more GPUs for larger memory
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Generated at: {datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")}
+"""
+
+        # Write file to /home/dev
+        file_cmd = f'echo "{warning_content}" > /home/dev/OOM_DETECTED.txt'
+        exec_command = ["bash", "-c", file_cmd]
+
+        stream.stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=exec_command,
+            container="gpu-dev",
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+            _request_timeout=30,
+        )
+        logger.info(f"OOM warning file created in pod {pod_name}")
+
+    except Exception as e:
+        logger.warning(f"Error creating OOM warning file in pod {pod_name}: {e}")
 
 
 def warn_user_expiring(reservation: dict[str, Any], warning_minutes: int) -> None:
@@ -745,6 +1209,16 @@ def expire_stuck_preparing_reservation(reservation: dict[str, Any]) -> None:
                 logger.warning(
                     f"Error cleaning up partial resources for {pod_name}: {cleanup_error}"
                 )
+
+        # Clear disk in_use flag if disk was reserved
+        user_id = reservation.get("user_id")
+        disk_name = reservation.get("disk_name")
+        if user_id and disk_name:
+            try:
+                mark_disk_not_in_use(user_id, disk_name)
+                logger.info(f"Cleared disk '{disk_name}' in_use flag for stuck preparing reservation {reservation_id}")
+            except Exception as disk_error:
+                logger.warning(f"Failed to clear disk in_use flag: {disk_error}")
 
         logger.info(
             f"Successfully marked stuck preparing reservation {reservation_id} as failed"
@@ -928,11 +1402,13 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
         try:
             user_id = None
             volume_id = None
+            disk_name = None
 
-            # Get user_id and volume_id from reservation data if provided
+            # Get user_id, volume_id, and disk_name from reservation data if provided
             if reservation_data:
                 user_id = reservation_data.get('user_id')
                 volume_id = reservation_data.get('ebs_volume_id')
+                disk_name = reservation_data.get('disk_name')
 
             # Quick check - if we have reservation data with EBS info, use it directly
             if user_id and volume_id:
@@ -958,12 +1434,113 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
                 except Exception as pod_read_error:
                     logger.warning(f"Could not read pod {pod_name} for snapshot info: {pod_read_error}")
 
+            # If disk_name not in reservation data, try to get it from volume tags
+            if volume_id and not disk_name:
+                try:
+                    ec2_client = boto3.client('ec2')
+                    vol_response = ec2_client.describe_volumes(VolumeIds=[volume_id])
+                    if vol_response['Volumes']:
+                        tags = {tag['Key']: tag['Value'] for tag in vol_response['Volumes'][0].get('Tags', [])}
+                        disk_name = tags.get('disk_name')
+                        logger.info(f"Retrieved disk_name '{disk_name}' from volume tags")
+                except Exception as tag_error:
+                    logger.warning(f"Could not read volume tags for disk_name: {tag_error}")
+
             # Create shutdown snapshot if we have the necessary info
             if user_id and volume_id:
-                logger.info(f"Creating shutdown snapshot for user {user_id}, volume {volume_id}")
-                snapshot_id = create_pod_shutdown_snapshot(volume_id, user_id)
+                logger.info(f"Creating shutdown snapshot for user {user_id}, volume {volume_id}, disk {disk_name or 'unnamed'}")
+
+                # Step 1: Capture disk contents before creating snapshot
+                content_s3_path = None
+                disk_size = None
+                if disk_name:
+                    try:
+                        logger.info(f"Capturing disk contents for disk '{disk_name}'")
+                        # Create a temporary snapshot ID for the S3 path (we'll update after actual snapshot creation)
+                        temp_snapshot_id = f"pending-{int(time.time())}"
+                        content_s3_path, disk_size = capture_disk_contents(
+                            pod_name=pod_name,
+                            namespace=namespace,
+                            user_id=user_id,
+                            disk_name=disk_name,
+                            snapshot_id=temp_snapshot_id,
+                            k8s_client=get_k8s_client(),
+                            mount_path="/home/dev"
+                        )
+                        if content_s3_path:
+                            logger.info(f"Successfully captured disk contents to {content_s3_path}" + (f" (size: {disk_size})" if disk_size else ""))
+                        else:
+                            logger.warning(f"Failed to capture disk contents for disk '{disk_name}'")
+                    except Exception as capture_error:
+                        logger.warning(f"Error capturing disk contents: {capture_error}")
+                        # Continue with snapshot even if content capture fails
+
+                # Step 2: Create snapshot with disk_name, content_s3_path, and disk_size
+                snapshot_id, was_created = safe_create_snapshot(
+                    volume_id=volume_id,
+                    user_id=user_id,
+                    snapshot_type="shutdown",
+                    disk_name=disk_name,
+                    content_s3_path=content_s3_path,
+                    disk_size=disk_size
+                )
+
                 if snapshot_id:
                     logger.info(f"Shutdown snapshot {snapshot_id} initiated for {pod_name}")
+
+                    # Step 3: Wait for snapshot to complete (with timeout)
+                    try:
+                        logger.info(f"Waiting for snapshot {snapshot_id} to complete...")
+                        ec2_client = boto3.client('ec2')
+                        waiter = ec2_client.get_waiter('snapshot_completed')
+                        waiter.wait(
+                            SnapshotIds=[snapshot_id],
+                            WaiterConfig={
+                                'Delay': 15,  # Check every 15 seconds
+                                'MaxAttempts': 120  # Wait up to 30 minutes (15s * 120 = 1800s)
+                            }
+                        )
+                        logger.info(f"Snapshot {snapshot_id} completed successfully")
+
+                        # Step 3.5: Update DynamoDB to reflect snapshot completion
+                        if disk_name:
+                            try:
+                                # Get snapshot details to get volume size and content S3 path
+                                snapshot_response = ec2_client.describe_snapshots(SnapshotIds=[snapshot_id])
+                                if snapshot_response.get('Snapshots'):
+                                    snapshot = snapshot_response['Snapshots'][0]
+                                    size_gb = snapshot.get('VolumeSize')
+                                    tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+                                    snapshot_content_s3 = tags.get('snapshot_content_s3')
+                                    snapshot_disk_size = tags.get('disk_size')
+                                    logger.info(f"Updating DynamoDB for completed snapshot {snapshot_id} (disk: {disk_name}, size: {size_gb}GB, disk_size: {snapshot_disk_size})")
+                                    update_disk_snapshot_completed(user_id, disk_name, size_gb, snapshot_content_s3, snapshot_disk_size)
+                                    logger.info(f"Successfully updated DynamoDB for disk '{disk_name}'")
+                            except Exception as update_error:
+                                logger.warning(f"Error updating DynamoDB for snapshot completion: {update_error}")
+                                # Don't fail cleanup if DynamoDB update fails
+
+                        # Step 4: Delete the EBS volume after snapshot completes
+                        try:
+                            logger.info(f"Deleting EBS volume {volume_id} after successful snapshot")
+                            ec2_client.delete_volume(VolumeId=volume_id)
+                            logger.info(f"Successfully deleted volume {volume_id}")
+
+                            # Step 5: Mark disk as no longer in use (allows CLI to show as available)
+                            if disk_name:
+                                try:
+                                    mark_disk_not_in_use(user_id, disk_name)
+                                    logger.info(f"Marked disk '{disk_name}' as not in use")
+                                except Exception as mark_error:
+                                    logger.warning(f"Failed to mark disk as not in use: {mark_error}")
+                        except Exception as delete_error:
+                            logger.error(f"Failed to delete volume {volume_id}: {delete_error}")
+                            # Don't fail the whole cleanup if volume deletion fails
+
+                    except Exception as waiter_error:
+                        logger.warning(f"Error waiting for snapshot completion or deleting volume: {waiter_error}")
+                        # Continue with pod deletion even if snapshot wait/delete fails
+
                 else:
                     logger.warning(f"Failed to create shutdown snapshot for {pod_name}")
             else:
@@ -1034,9 +1611,9 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
 
         logger.info(f"Pod cleanup completed successfully for {pod_name}")
 
-        # NOTE: EBS volumes (persistent disks) are NOT deleted here
-        # They automatically detach when the pod is deleted and remain
-        # available for the user's next reservation
+        # NOTE: EBS volumes (persistent disks) are deleted after snapshot creation
+        # Snapshots are used to recreate volumes for the user's next reservation
+        # This ensures clean state and prevents disk attachment conflicts
 
         # Trigger availability table update after pod cleanup
         try:
@@ -1048,12 +1625,36 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
             )
             # Don't fail the expiry for this
 
+        # Final safety: ensure disk is marked as not in use
+        # This handles edge cases where volume deletion failed but pod is gone
+        if reservation_data:
+            final_user_id = reservation_data.get('user_id')
+            final_disk_name = reservation_data.get('disk_name')
+            if final_user_id and final_disk_name:
+                try:
+                    mark_disk_not_in_use(final_user_id, final_disk_name)
+                    logger.info(f"Final cleanup: ensured disk '{final_disk_name}' is marked as not in use")
+                except Exception as final_disk_error:
+                    logger.warning(f"Final disk cleanup failed (non-fatal): {final_disk_error}")
+
     except Exception as e:
         logger.error(f"Error cleaning up pod {pod_name}: {str(e)}")
         logger.error(f"Exception type: {type(e).__name__}")
         import traceback
 
         logger.error(f"Full traceback: {traceback.format_exc()}")
+
+        # Even on error, try to mark disk as not in use to prevent stuck disks
+        if reservation_data:
+            error_user_id = reservation_data.get('user_id')
+            error_disk_name = reservation_data.get('disk_name')
+            if error_user_id and error_disk_name:
+                try:
+                    mark_disk_not_in_use(error_user_id, error_disk_name)
+                    logger.info(f"Error recovery: marked disk '{error_disk_name}' as not in use despite cleanup error")
+                except Exception as recovery_error:
+                    logger.error(f"Failed to mark disk as not in use during error recovery: {recovery_error}")
+
         raise
 
 

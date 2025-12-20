@@ -34,6 +34,7 @@ from .interactive import (
     ask_github_username_interactive,
     ask_extension_hours_interactive,
     check_interactive_support,
+    select_disk_interactive,
 )
 
 console = Console()
@@ -156,8 +157,14 @@ def _show_single_reservation(connection_info: dict) -> None:
     launched_formatted = _format_relative_time(launched_at, "now")
     expires_formatted = _format_relative_time(expires_at, "expires")
 
-    # Format persistent disk status
-    disk_status = "Persistent" if has_persistent_disk else "Temporary"
+    # Format persistent disk status - show disk name if available
+    disk_name = connection_info.get("disk_name")
+    if disk_name:
+        disk_status = f"Persistent (disk: {disk_name})"
+    elif has_persistent_disk:
+        disk_status = "Persistent"
+    else:
+        disk_status = "Temporary"
 
     if status == "active":
         jupyter_info = ""
@@ -243,6 +250,14 @@ def _show_single_reservation(connection_info: dict) -> None:
         if warning_message:
             warning_section = f"\n\n{warning_message}"
 
+        # Check for OOM events
+        oom_count = connection_info.get("oom_count", 0)
+        last_oom_at = connection_info.get("last_oom_at")
+        oom_section = ""
+        if oom_count and int(oom_count) > 0:
+            oom_time_display = format_timestamp(last_oom_at) if last_oom_at else "Unknown"
+            oom_section = f"\n[red]⚠️  OOM Events:[/red] [red]{oom_count} OOM(s) detected (last: {oom_time_display})[/red]"
+
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
             f"[blue]Quick Connect:[/blue] {connect_command}\n"
@@ -256,6 +271,7 @@ def _show_single_reservation(connection_info: dict) -> None:
             + f"[blue]Storage:[/blue] {disk_status}\n"
             f"[blue]Started:[/blue] {launched_formatted}\n"
             f"[blue]Expires:[/blue] {expires_formatted}"
+            + oom_section
             + warning_section
         )
         panel = Panel.fit(panel_content, title="🚀 Active Reservation")
@@ -486,6 +502,11 @@ def main(ctx: click.Context) -> None:
     is_flag=True,
     help="Preserve the original container ENTRYPOINT/CMD instead of overriding with bash script",
 )
+@click.option(
+    "--disk",
+    type=str,
+    help="Named persistent disk to use (e.g., 'pytorch-main'), or 'none' for temporary storage only. Use 'gpu-dev disk list' to see available disks.",
+)
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -503,6 +524,7 @@ def reserve(
     dockerfile: Optional[str],
     dockerimage: Optional[str],
     preserve_entrypoint: bool,
+    disk: Optional[str],
 ) -> None:
     """Reserve GPU development server(s)
 
@@ -535,6 +557,12 @@ def reserve(
     Authentication: Uses your AWS credentials and GitHub SSH keys
     """
     try:
+        # Handle --disk none (case insensitive) to explicitly request no persistent disk
+        explicit_no_disk_from_param = False
+        if disk and disk.lower() == "none":
+            explicit_no_disk_from_param = True
+            disk = None
+
         # Determine if we should use interactive mode
         use_interactive = interactive
         if use_interactive is None:
@@ -559,6 +587,19 @@ def reserve(
             "cpu-arm": {"max_gpus": 0, "instance_type": "c7g.4xlarge"},
             "cpu-x86": {"max_gpus": 0, "instance_type": "c7i.4xlarge"},
         }
+
+        # Early validation of GPU type to extract max_gpus (needed for disk selection)
+        if gpu_type:
+            gpu_type = gpu_type.lower()
+            if gpu_type not in gpu_configs:
+                valid_types = ", ".join(sorted(gpu_configs.keys()))
+                rprint(
+                    f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid_types}[/red]"
+                )
+                return
+            max_gpus = gpu_configs[gpu_type]["max_gpus"]
+        else:
+            max_gpus = None  # Will be set later in interactive mode
 
         if use_interactive:
             # Interactive mode - gather parameters interactively
@@ -643,6 +684,22 @@ def reserve(
             else:
                 gpu_count = int(gpus)
 
+            # Track if user explicitly requests no persistent disk
+            explicit_no_disk = False
+
+            # Interactive disk selection (if not multinode - only master node gets persistent disk)
+            # This comes BEFORE duration so user knows what they're reserving
+            if disk is None and gpu_count <= max_gpus:  # Single node only
+                disk = select_disk_interactive(user_info["user_id"], config)
+                # Check if user cancelled
+                if disk == "__cancelled__":
+                    rprint("[yellow]Reservation cancelled.[/yellow]")
+                    return
+                # Check if user explicitly chose "no disk"
+                if disk == "__no_disk__":
+                    explicit_no_disk = True
+                    disk = None
+
             # Interactive duration selection
             if hours is None:
                 hours = select_duration_interactive()
@@ -679,17 +736,43 @@ def reserve(
 
             gpu_count = int(gpus)
 
+            # Non-interactive disk selection (if not specified via flag)
+            # Only for single-node reservations
+            if disk is None and max_gpus is not None and gpu_count <= max_gpus:
+                # In non-interactive mode, check if terminal supports interactive prompts
+                if check_interactive_support():
+                    # Load config and authenticate if not already done
+                    if 'config' not in locals():
+                        config = load_config()
+                        try:
+                            user_info = authenticate_user(config)
+                        except RuntimeError as e:
+                            rprint(f"[red]❌ {str(e)}[/red]")
+                            return
+                    disk = select_disk_interactive(user_info["user_id"], config)
+                    # Check if user cancelled
+                    if disk == "__cancelled__":
+                        rprint("[yellow]Reservation cancelled.[/yellow]")
+                        return
+                    # Check if user explicitly chose "no disk"
+                    if disk == "__no_disk__":
+                        explicit_no_disk = True
+                        disk = None
+                # Otherwise leave disk as None (no persistent disk)
+
         # Validate GPU type and count (for both modes)
-        gpu_type = gpu_type.lower()  # Normalize to lowercase
-
-        if gpu_type not in gpu_configs:
-            valid_types = ", ".join(sorted(gpu_configs.keys()))
-            rprint(
-                f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid_types}[/red]"
-            )
-            return
-
-        max_gpus = gpu_configs[gpu_type]["max_gpus"]
+        # GPU type already validated earlier, just extract max_gpus if not already set
+        if max_gpus is None:
+            gpu_type = gpu_type.lower()
+            if gpu_type not in gpu_configs:
+                valid_types = ", ".join(sorted(gpu_configs.keys()))
+                rprint(
+                    f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid_types}[/red]"
+                )
+                return
+            max_gpus = gpu_configs[gpu_type]["max_gpus"]
+        elif gpu_type:
+            gpu_type = gpu_type.lower()  # Ensure normalized
 
         # Special validation for CPU-only instances
         if gpu_type.startswith("cpu-"):
@@ -847,14 +930,126 @@ def reserve(
                 if not _validate_ssh_key_or_exit(config, live):
                     return
 
+                # Track if user explicitly requests no persistent disk
+                explicit_no_disk = False
+
+                # Validate disk if specified
+                if disk:
+                    from .disks import list_disks
+                    existing_disks = list_disks(user_info["user_id"], config)
+                    disk_names = [d["name"] for d in existing_disks]
+
+                    if disk not in disk_names:
+                        # Disk doesn't exist, ask for confirmation
+                        live.stop()
+                        rprint(f"\n[yellow]⚠️  Disk '{disk}' does not exist[/yellow]")
+
+                        # Check if we can prompt for confirmation
+                        if check_interactive_support():
+                            from rich.prompt import Confirm
+                            create_disk = Confirm.ask(
+                                f"Do you want to create a new disk named '{disk}'?",
+                                default=False
+                            )
+
+                            if not create_disk:
+                                rprint("[yellow]Reservation cancelled[/yellow]")
+                                return
+
+                            rprint(f"[cyan]✓ Will create new disk '{disk}' during reservation[/cyan]\n")
+                        else:
+                            # Non-interactive mode, cannot prompt
+                            rprint(f"[red]❌ Disk '{disk}' does not exist[/red]")
+                            rprint(f"[yellow]Available disks: {', '.join(disk_names) if disk_names else 'none'}[/yellow]")
+                            rprint(f"[yellow]Create the disk first: gpu-dev disk create {disk}[/yellow]")
+                            return
+
+                        live.start()
+                    else:
+                        # Disk exists, check if it's in use
+                        from .disks import get_disk_in_use_status
+                        disk_info = next((d for d in existing_disks if d['name'] == disk), None)
+
+                        if disk_info and disk_info['in_use']:
+                            live.stop()
+                            res_id = disk_info.get('reservation_id', 'unknown')
+                            rprint(f"\n[yellow]⚠️  Disk '{disk}' is currently in use by reservation {res_id[:8]}[/yellow]")
+
+                            # Check if we can prompt for alternative
+                            if check_interactive_support():
+                                import questionary
+                                from .interactive import custom_style
+
+                                # Build choices
+                                choices = []
+
+                                # Get available disks (exclude in-use and deleted disks)
+                                available_disks = [d for d in existing_disks if not d['in_use'] and not d.get('is_deleted', False)]
+
+                                if available_disks:
+                                    choices.append(questionary.Separator("=== Available Disks ==="))
+                                    for d in available_disks:
+                                        display = f"{d['name']} ({d['size_gb']}GB, {d['snapshot_count']} snapshots)"
+                                        choices.append(questionary.Choice(
+                                            title=display,
+                                            value=("select", d['name'])
+                                        ))
+
+                                choices.append(questionary.Separator("=== Options ==="))
+                                choices.append(questionary.Choice(
+                                    title="Create a new disk",
+                                    value=("create", None)
+                                ))
+                                choices.append(questionary.Choice(
+                                    title="Continue without persistent disk (temporary storage)",
+                                    value=("no_disk", None)
+                                ))
+                                choices.append(questionary.Choice(
+                                    title="Cancel reservation",
+                                    value=("cancel", None)
+                                ))
+
+                                answer = questionary.select(
+                                    "What would you like to do?",
+                                    choices=choices,
+                                    style=custom_style
+                                ).ask()
+
+                                if not answer or answer[0] == "cancel":
+                                    rprint("[yellow]Reservation cancelled[/yellow]")
+                                    return
+
+                                action, value = answer
+
+                                if action == "select":
+                                    disk = value
+                                    rprint(f"[cyan]✓ Using disk '{disk}'[/cyan]\n")
+                                elif action == "create":
+                                    from rich.prompt import Prompt
+                                    new_disk_name = Prompt.ask("Enter new disk name")
+                                    disk = new_disk_name
+                                    rprint(f"[cyan]✓ Will create new disk '{disk}' during reservation[/cyan]\n")
+                                elif action == "no_disk":
+                                    disk = None
+                                    explicit_no_disk = True
+                                    rprint("[cyan]✓ Continuing without persistent disk (temporary storage)[/cyan]\n")
+
+                                live.start()
+                            else:
+                                # Non-interactive mode, cannot prompt
+                                rprint(f"[red]❌ Disk '{disk}' is already in use[/red]")
+                                rprint(f"[yellow]Use a different disk or wait for the reservation to end[/yellow]")
+                                return
+
                 live.update(
                     Spinner("dots", text="📡 Setting up reservation manager...")
                 )
                 reservation_mgr = ReservationManager(config)
 
-            # Check for existing reservations with persistent disks (persistent disk warning)
+            # Submit reservation request
             live.update(
-                Spinner("dots", text="📡 Checking existing reservations..."))
+                Spinner("dots", text="📡 Submitting reservation request...")
+            )
 
             persistent_reservations = []
             if not ignore_no_persist:
@@ -948,6 +1143,7 @@ def reserve(
                     dockerimage=dockerimage,
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
+                    disk_name=disk,
                 )
             else:
                 # Single node reservation
@@ -964,6 +1160,7 @@ def reserve(
                     dockerimage=dockerimage,
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
+                    disk_name=disk,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 
@@ -1317,8 +1514,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         else:
                             queue_info = "Ready"
 
-                    # Format storage indicator
-                    if ebs_volume_id and ebs_volume_id.strip():
+                    # Format storage indicator - show disk name if available
+                    disk_name = reservation.get("disk_name")
+                    if disk_name:
+                        storage_display = f"disk: {disk_name}"
+                    elif ebs_volume_id and ebs_volume_id.strip():
                         storage_display = "persistent"
                     else:
                         storage_display = "temporary"
@@ -1362,6 +1562,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             else:
                                 created_formatted = str(created_at)
 
+                    # Check for OOM events
+                    oom_count = reservation.get("oom_count", 0)
+                    if oom_count:
+                        oom_count = int(oom_count)
+
                     # Add color coding to status and determine if whole row should be dimmed
                     dim_row = False
                     if res_status == "failed":
@@ -1372,7 +1577,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     elif res_status in ["queued", "pending", "preparing"]:
                         status_display = f"[yellow]{res_status}[/yellow]"
                     elif res_status == "active":
-                        status_display = f"[green]{res_status}[/green]"
+                        if oom_count > 0:
+                            # Show OOM indicator for active reservations that have OOMed
+                            status_display = f"[green]{res_status}[/green] [red](OOM x{oom_count})[/red]"
+                        else:
+                            status_display = f"[green]{res_status}[/green]"
                     else:
                         # No color for unknown statuses
                         status_display = str(res_status)
@@ -1564,7 +1773,13 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                         status_display = str(res_status)
 
                                     ebs_volume_id = reservation.get("ebs_volume_id", None)
-                                    storage_display = "persistent" if ebs_volume_id and ebs_volume_id.strip() else "temporary"
+                                    disk_name = reservation.get("disk_name")
+                                    if disk_name:
+                                        storage_display = f"disk: {disk_name}"
+                                    elif ebs_volume_id and ebs_volume_id.strip():
+                                        storage_display = "persistent"
+                                    else:
+                                        storage_display = "temporary"
 
                                     queue_info = ""
                                     if res_status in ["queued", "pending"]:
@@ -3162,6 +3377,286 @@ def ssh_include(action: str):
 
     except Exception as e:
         rprint(f"[red]❌ Error updating SSH config setting: {str(e)}[/red]")
+
+
+@main.group()
+def disk():
+    """Manage persistent disks for GPU reservations
+
+    \b
+    Commands:
+        gpu-dev disk list                      # List all your disks
+        gpu-dev disk create <name>             # Create a new named disk
+        gpu-dev disk list-content <name>       # Show contents of a disk
+    """
+    pass
+
+
+@disk.command("list")
+@click.option("--watch", is_flag=True, help="Continuously refresh disk list every 2 seconds")
+def disk_list(watch: bool):
+    """List all persistent disks"""
+    import time
+    from .disks import list_disks
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        return
+
+    def render_disk_table():
+        """Render disk table (for single display or watch mode)"""
+        try:
+            disks = list_disks(user_id, config)
+
+            if not disks:
+                rprint("[yellow]No disks found.[/yellow]")
+                rprint("[dim]Create a disk with: gpu-dev disk create <name>[/dim]")
+                return
+
+            # Create rich table
+            table = Table(title="Your Persistent Disks", show_header=True, header_style="bold cyan")
+            table.add_column("Disk Name", style="cyan")
+            table.add_column("Size", justify="right")
+            table.add_column("Created", style="dim")
+            table.add_column("Last Used", style="dim")
+            table.add_column("Snapshots", justify="right")
+            table.add_column("Status", justify="center")
+
+            for disk in disks:
+                name = disk['name']
+
+                # Show disk usage if available, otherwise just volume size
+                disk_size = disk.get('disk_size')
+                if disk_size:
+                    size = f"{disk_size} / {disk['size_gb']} GB"
+                else:
+                    size = f"{disk['size_gb']} GB"
+
+                created = _format_relative_time(disk['created_at'].isoformat() if disk['created_at'] else "N/A")
+                last_used = _format_relative_time(disk['last_used'].isoformat() if disk['last_used'] else "N/A")
+
+                snapshot_count = str(disk['snapshot_count'])
+
+                if disk.get('is_deleted', False):
+                    delete_date = disk.get('delete_date', 'unknown')
+                    status = f"[red]Deleted[/red]\n[dim]expires {delete_date}[/dim]"
+                elif disk['in_use']:
+                    res_id = disk['reservation_id'] or "unknown"
+                    status = f"[yellow]In Use[/yellow]\n[dim]{res_id[:8]}[/dim]"
+                elif disk.get('is_backing_up', False):
+                    status = "[blue]Backing up[/blue]\n[dim]snapshot pending[/dim]"
+                else:
+                    status = "[green]Available[/green]"
+
+                table.add_row(name, size, created, last_used, snapshot_count, status)
+
+            console.print(table)
+
+        except Exception as e:
+            rprint(f"[red]❌ Error listing disks: {str(e)}[/red]")
+
+    if watch:
+        # Watch mode: continuously refresh with Live display (no flickering)
+        from datetime import datetime
+        from rich.console import Group
+
+        try:
+            with Live(console=console, refresh_per_second=4) as live:
+                while True:
+                    try:
+                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        disks = list_disks(user_id, config)
+
+                        if not disks:
+                            header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                            no_disks = "[yellow]No disks found.[/yellow]\n[dim]Create a disk with: gpu-dev disk create <name>[/dim]"
+                            display_group = Group(header, "", no_disks)
+                            live.update(display_group)
+                        else:
+                            # Create rich table
+                            table = Table(title="Your Persistent Disks", show_header=True, header_style="bold cyan")
+                            table.add_column("Disk Name", style="cyan")
+                            table.add_column("Size", justify="right")
+                            table.add_column("Created", style="dim")
+                            table.add_column("Last Used", style="dim")
+                            table.add_column("Snapshots", justify="right")
+                            table.add_column("Status", justify="center")
+
+                            for disk in disks:
+                                name = disk['name']
+
+                                # Show disk usage if available, otherwise just volume size
+                                disk_size = disk.get('disk_size')
+                                if disk_size:
+                                    size = f"{disk_size} / {disk['size_gb']} GB"
+                                else:
+                                    size = f"{disk['size_gb']} GB"
+
+                                created = _format_relative_time(disk['created_at'].isoformat() if disk['created_at'] else "N/A")
+                                last_used = _format_relative_time(disk['last_used'].isoformat() if disk['last_used'] else "N/A")
+
+                                snapshot_count = str(disk['snapshot_count'])
+
+                                if disk.get('is_deleted', False):
+                                    delete_date = disk.get('delete_date', 'unknown')
+                                    status = f"[red]Deleted[/red]\n[dim]expires {delete_date}[/dim]"
+                                elif disk['in_use']:
+                                    res_id = disk['reservation_id'] or "unknown"
+                                    status = f"[yellow]In Use[/yellow]\n[dim]{res_id[:8]}[/dim]"
+                                elif disk.get('is_backing_up', False):
+                                    status = "[blue]Backing up[/blue]\n[dim]snapshot pending[/dim]"
+                                else:
+                                    status = "[green]Available[/green]"
+
+                                table.add_row(name, size, created, last_used, snapshot_count, status)
+
+                            header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                            display_group = Group(header, "", table)
+                            live.update(display_group)
+
+                        time.sleep(2)
+
+                    except KeyboardInterrupt:
+                        live.stop()
+                        rprint("\n[yellow]👋 Watch mode stopped[/yellow]")
+                        break
+                    except Exception as e:
+                        error_msg = f"[red]❌ Error: {str(e)}[/red]"
+                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        header = f"[dim]🕒 Last updated: {current_time} (refreshing every 2s) • Press Ctrl+C to exit[/dim]"
+                        display_group = Group(header, "", error_msg)
+                        live.update(display_group)
+                        time.sleep(2)
+        except KeyboardInterrupt:
+            rprint("\n[yellow]👋 Watch mode stopped[/yellow]")
+    else:
+        # Single display
+        render_disk_table()
+
+
+@disk.command("create")
+@click.argument("disk_name")
+def disk_create(disk_name: str):
+    """Create a new named persistent disk"""
+    from .disks import create_disk
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        return
+
+    try:
+        success = create_disk(disk_name, user_id, config)
+        if not success:
+            return
+
+    except Exception as e:
+        rprint(f"[red]❌ Error creating disk: {str(e)}[/red]")
+
+
+@disk.command("list-content")
+@click.argument("disk_name")
+def disk_list_content(disk_name: str):
+    """Show contents of a disk's latest snapshot"""
+    from .disks import list_disk_content
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        return
+
+    try:
+        contents = list_disk_content(disk_name, user_id, config)
+
+        if contents is None:
+            return
+
+        # Display contents in a panel
+        panel = Panel(
+            contents,
+            title=f"Contents of disk '{disk_name}' (latest snapshot)",
+            border_style="cyan",
+            expand=False
+        )
+        console.print(panel)
+
+    except Exception as e:
+        rprint(f"[red]❌ Error listing disk contents: {str(e)}[/red]")
+
+
+@disk.command("delete")
+@click.argument("disk_name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+def disk_delete(disk_name: str, yes: bool):
+    """Delete a disk and all its snapshots"""
+    from .disks import delete_disk
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        return
+
+    # Confirm deletion
+    if not yes:
+        confirmation = input(f"Are you sure you want to delete disk '{disk_name}'? This cannot be undone. (yes/no): ")
+        if confirmation.lower() not in ['yes', 'y']:
+            rprint("[yellow]Deletion cancelled.[/yellow]")
+            return
+
+    try:
+        success = delete_disk(disk_name, user_id, config)
+        if not success:
+            return
+    except Exception as e:
+        rprint(f"[red]❌ Error deleting disk: {str(e)}[/red]")
+        return
+
+
+@disk.command("rename")
+@click.argument("old_name")
+@click.argument("new_name")
+def disk_rename(old_name: str, new_name: str):
+    """Rename a disk"""
+    from .disks import rename_disk
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        return
+
+    try:
+        success = rename_disk(old_name, new_name, user_id, config)
+        if not success:
+            return
+    except Exception as e:
+        rprint(f"[red]❌ Error renaming disk: {str(e)}[/red]")
+        return
 
 
 if __name__ == "__main__":

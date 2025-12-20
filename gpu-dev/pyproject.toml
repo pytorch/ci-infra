@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-dev-cli"
-version = "0.3.2"
+version = "0.3.5"
 description = "CLI tool for PyTorch GPU developer server reservations"
 authors = [{name = "PyTorch Team"}]
 readme = "cli-tools/gpu-dev-cli/README.md"

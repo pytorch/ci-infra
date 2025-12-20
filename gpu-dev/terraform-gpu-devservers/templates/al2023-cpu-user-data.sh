@@ -31,6 +31,14 @@ spec:
     config:
       clusterDNS:
         - 172.20.0.10
+      cpuManagerPolicy: static
+      cpuManagerReconcilePeriod: 10s
+      systemReserved:
+        cpu: "1"
+        memory: "2Gi"
+      kubeReserved:
+        cpu: "1"
+        memory: "2Gi"
     flags:
       - --node-labels=NodeType=${gpu_type}
 EOF

@@ -66,7 +66,8 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
         Resource = [
           aws_dynamodb_table.gpu_reservations.arn,
           "${aws_dynamodb_table.gpu_reservations.arn}/index/*",
-          aws_dynamodb_table.gpu_availability.arn
+          aws_dynamodb_table.gpu_availability.arn,
+          aws_dynamodb_table.disks.arn
         ]
       },
       {
@@ -171,14 +172,16 @@ resource "aws_lambda_function" "reservation_processor" {
       GPU_DEV_CONTAINER_IMAGE            = local.full_image_uri
       EFS_SECURITY_GROUP_ID              = aws_security_group.efs_sg.id
       EFS_SUBNET_IDS                     = join(",", concat([aws_subnet.gpu_dev_subnet.id, aws_subnet.gpu_dev_subnet_secondary.id], length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : []))
+      CCACHE_SHARED_EFS_ID               = aws_efs_file_system.ccache_shared.id
       ECR_REPOSITORY_URL                 = aws_ecr_repository.gpu_dev_custom_images.repository_url
       ECR_PULL_THROUGH_CACHE_DOCKERHUB   = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.current_config.aws_region}.amazonaws.com/dockerhub"
       DOMAIN_NAME                        = local.effective_domain_name
       HOSTED_ZONE_ID                     = local.effective_domain_name != "" ? local.hosted_zone_id : ""
       SSH_DOMAIN_MAPPINGS_TABLE          = local.effective_domain_name != "" ? aws_dynamodb_table.ssh_domain_mappings.name : ""
       SSL_CERTIFICATE_ARN                = local.effective_domain_name != "" ? aws_acm_certificate.wildcard[0].arn : ""
-      LAMBDA_VERSION                     = "0.3.2"
-      MIN_CLI_VERSION                    = "0.3.2"
+      LAMBDA_VERSION                     = "0.3.5"
+      MIN_CLI_VERSION                    = "0.3.5"
+      DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
     }, local.alb_env_vars)
   }
 
@@ -213,7 +216,8 @@ resource "null_resource" "reservation_processor_build" {
     code_hash         = filebase64sha256("${path.module}/lambda/reservation_processor/index.py")
     buildkit_hash     = filebase64sha256("${path.module}/lambda/reservation_processor/buildkit_job.py")
     requirements_hash = filebase64sha256("${path.module}/lambda/reservation_processor/requirements.txt")
-    shared_folder_hash = sha256(join("", [for f in fileset("${path.module}/lambda/shared", "**") : filesha256("${path.module}/lambda/shared/${f}")]))
+    # Exclude Python cache files from hash to avoid spurious rebuilds
+    shared_folder_hash = sha256(join("", [for f in fileset("${path.module}/lambda/shared", "**") : filesha256("${path.module}/lambda/shared/${f}") if !can(regex("__pycache__|[.]pyc$", f))]))
   }
 
   provisioner "local-exec" {

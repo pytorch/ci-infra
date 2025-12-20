@@ -6,6 +6,7 @@ Creates Kubernetes Jobs that build Docker images from Dockerfiles using daemonle
 import logging
 import os
 import re
+import hashlib
 from kubernetes import client
 from typing import Dict, Any
 
@@ -17,25 +18,89 @@ def create_buildkit_job(
     dockerfile_base64_data: str,
     image_tag: str,
     ecr_repository_url: str
-) -> str:
+) -> tuple:
     """
     Create a Kubernetes Job that builds a Docker image using BuildKit
+    Job name is based on build context hash, so identical Dockerfiles reuse the same job/image
 
     Args:
         k8s_client: Kubernetes API client
-        reservation_id: Unique reservation ID
+        reservation_id: Unique reservation ID (for logging only)
         dockerfile_base64_data: Base64 encoded tar.gz build context
-        image_tag: Tag for the built image (e.g., reservation_id[:8])
+        image_tag: Tag for the built image (based on context hash)
         ecr_repository_url: ECR repository URL
 
     Returns:
-        Job name that was created
+        Tuple of (job_name, is_cached) where is_cached=True if image already exists in ECR
     """
 
-    job_name = f"buildkit-{reservation_id[:8]}"
+    # Hash the build context to create deterministic job name
+    # This ensures same Dockerfile = same job = reuse built image
+    context_hash = hashlib.sha256(dockerfile_base64_data.encode()).hexdigest()[:12]
+    job_name = f"buildkit-{context_hash}"
 
-    # Full image URI for the built image
+    logger.info(f"Build context hash: {context_hash}, job name: {job_name}")
+
+    # Use context hash as image tag (ignore provided image_tag based on reservation_id)
+    # This ensures same Dockerfile = same image tag
+    image_tag = context_hash
     full_image_uri = f"{ecr_repository_url}:{image_tag}"
+
+    logger.info(f"Dockerfile build for reservation {reservation_id}: job={job_name}, image={full_image_uri}")
+
+    # First check if image already exists in ECR - if so, skip build entirely
+    import boto3
+    ecr_client = boto3.client('ecr', region_name=os.environ.get('REGION', 'us-east-2'))
+    repository_name = ecr_repository_url.split('/')[-1]
+
+    try:
+        response = ecr_client.describe_images(
+            repositoryName=repository_name,
+            imageIds=[{'imageTag': image_tag}]
+        )
+        if response.get('imageDetails'):
+            logger.info(f"Image {full_image_uri} already exists in ECR, skipping build")
+            return (job_name, True)  # Return job name and cached=True
+    except ecr_client.exceptions.ImageNotFoundException:
+        logger.info(f"Image {image_tag} not found in ECR, will build it")
+    except Exception as e:
+        logger.warning(f"Error checking ECR for existing image: {str(e)}, will proceed with build check")
+
+    # Image doesn't exist - check if job is already building it
+    batch_v1 = client.BatchV1Api(k8s_client)
+    try:
+        existing_job = batch_v1.read_namespaced_job(name=job_name, namespace="gpu-dev")
+
+        # Job exists - check its status
+        if existing_job.status.succeeded:
+            logger.info(f"BuildKit job {job_name} succeeded, image should be in ECR")
+            return (job_name, True)  # Already built = cached
+        elif existing_job.status.active:
+            logger.info(f"BuildKit job {job_name} is already building this image, will wait for it")
+            return (job_name, False)  # Still building, not cached
+        elif existing_job.status.failed:
+            logger.warning(f"BuildKit job {job_name} previously failed, deleting and recreating...")
+            batch_v1.delete_namespaced_job(
+                name=job_name,
+                namespace="gpu-dev",
+                propagation_policy="Background"
+            )
+            import time
+            time.sleep(2)
+        else:
+            logger.warning(f"BuildKit job {job_name} exists with unknown status, deleting and recreating...")
+            batch_v1.delete_namespaced_job(
+                name=job_name,
+                namespace="gpu-dev",
+                propagation_policy="Background"
+            )
+            import time
+            time.sleep(2)
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            logger.info(f"BuildKit job {job_name} does not exist, creating new job...")
+        else:
+            logger.warning(f"Error checking for existing job: {str(e)}")
 
     logger.info(f"Creating BuildKit job {job_name} to build {full_image_uri}")
 
@@ -83,15 +148,16 @@ EOF
             echo "[BUILDKIT] Docker config created"
 
             # Build with BuildKit daemonless mode with registry cache
+            # mode=max caches ALL intermediate layers, not just final result
             CACHE_URI="{ecr_repository_url.split(':')[0]}:cache"
-            echo "[BUILDKIT] Starting BuildKit build with registry cache..."
+            echo "[BUILDKIT] Starting BuildKit build with registry cache (mode=max)..."
             echo "[BUILDKIT] Cache location: $CACHE_URI"
             buildctl-daemonless.sh build \\
                 --frontend dockerfile.v0 \\
                 --local context=/tmp/work \\
                 --local dockerfile=/tmp/work \\
                 --output type=image,name={full_image_uri},push=true \\
-                --export-cache type=registry,ref=$CACHE_URI \\
+                --export-cache type=registry,ref=$CACHE_URI,mode=max \\
                 --import-cache type=registry,ref=$CACHE_URI
 
             echo "[BUILDKIT] Build completed successfully: {full_image_uri}"
@@ -124,7 +190,7 @@ EOF
             metadata=client.V1ObjectMeta(
                 labels={
                     "app": "buildkit",
-                    "reservation-id": reservation_id[:8],
+                    "build-hash": context_hash,
                     "type": "docker-build"
                 }
             ),
@@ -154,19 +220,18 @@ EOF
             namespace="gpu-dev",
             labels={
                 "app": "buildkit",
-                "reservation-id": reservation_id[:8],
+                "build-hash": context_hash,
                 "type": "docker-build"
             }
         ),
         spec=job_spec
     )
 
-    # Create the job
-    batch_v1 = client.BatchV1Api(k8s_client)
+    # Create the job (batch_v1 already created above)
     try:
         batch_v1.create_namespaced_job(namespace="gpu-dev", body=job)
         logger.info(f"Successfully created BuildKit job: {job_name}")
-        return job_name
+        return (job_name, False)  # New build, not cached
     except Exception as e:
         logger.error(f"Failed to create BuildKit job {job_name}: {str(e)}")
         raise

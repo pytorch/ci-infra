@@ -21,7 +21,7 @@ from typing import Any
 import boto3
 
 from shared import K8sGPUTracker, setup_kubernetes_client
-from shared.snapshot_utils import create_pod_shutdown_snapshot, get_latest_snapshot
+from shared.snapshot_utils import create_pod_shutdown_snapshot, get_latest_snapshot, safe_create_snapshot, capture_disk_contents
 from buildkit_job import create_buildkit_job, wait_for_buildkit_job
 from shared.dns_utils import (
     generate_unique_name,
@@ -53,11 +53,89 @@ GPU_DEV_CONTAINER_IMAGE = os.environ.get(
 EFS_SECURITY_GROUP_ID = os.environ.get("EFS_SECURITY_GROUP_ID")
 EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(
     ",") if os.environ.get("EFS_SUBNET_IDS") else []
+CCACHE_SHARED_EFS_ID = os.environ.get("CCACHE_SHARED_EFS_ID")
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 
 # Version validation - injected via Terraform
-LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.2")
-MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.2")
+LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.5")
+MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.5")
+
+# GPU Configuration - single source of truth for all GPU type mappings
+GPU_CONFIG = {
+    "t4": {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
+    "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
+    "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
+    "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1, "cpus": 8, "memory_gb": 32},
+    "g5g": {"instance_type": "g5g.2xlarge", "max_gpus": 2, "cpus": 8, "memory_gb": 32},
+    "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152},
+    "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
+    "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
+    "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
+    "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
+    "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
+}
+GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192}
+
+
+def retry_with_backoff(func, *args, max_retries=5, initial_delay=1, max_delay=32, **kwargs):
+    """
+    Retry AWS API calls with exponential backoff for rate limit errors.
+
+    Args:
+        func: Function to call
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        max_delay: Maximum delay in seconds
+        *args, **kwargs: Arguments to pass to func
+
+    Returns:
+        Function result
+
+    Raises:
+        Last exception if all retries fail
+    """
+    import botocore.exceptions
+
+    delay = initial_delay
+    last_exception = None
+
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError) as e:
+            last_exception = e
+
+            # Check if this is a throttling/rate limit error
+            error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', '')
+            is_throttle = error_code in ['Throttling', 'RequestLimitExceeded', 'TooManyRequestsException', 'ProvisionedThroughputExceededException']
+
+            if not is_throttle:
+                # Not a rate limit error, re-raise immediately
+                raise
+
+            if attempt < max_retries - 1:
+                # Log clear warning about rate limit
+                logger.warning(
+                    f"⚠️  AWS API rate limit hit ({error_code}) for {func.__name__} - "
+                    f"Retry {attempt + 1}/{max_retries} after {delay}s delay"
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, max_delay)  # Exponential backoff with cap
+            else:
+                # Final retry failed
+                logger.error(
+                    f"❌ AWS API rate limit exceeded after {max_retries} retries for {func.__name__}. "
+                    f"This may cause disk connection failures or duplicate resource creation."
+                )
+                raise
+        except Exception as e:
+            # Non-AWS error, re-raise immediately
+            raise
+
+    # Should never reach here, but just in case
+    if last_exception:
+        raise last_exception
+
 
 # AWS clients
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
@@ -205,7 +283,8 @@ def check_for_multiple_volumes(user_id):
     Returns None if user has 0 or 1 volume.
     """
     try:
-        response = ec2_client.describe_volumes(
+        response = retry_with_backoff(
+            ec2_client.describe_volumes,
             Filters=[
                 {"Name": "tag:gpu-dev-user", "Values": [user_id]},
                 {"Name": "status", "Values": ["available", "in-use"]},
@@ -663,7 +742,7 @@ def create_or_find_user_efs(user_id: str) -> str:
 
             # Get tags for this filesystem
             try:
-                tags_response = efs_client.describe_tags(FileSystemId=fs_id)
+                tags_response = retry_with_backoff(efs_client.describe_tags, FileSystemId=fs_id)
                 tags = {tag["Key"]: tag["Value"]
                         for tag in tags_response.get("Tags", [])}
 
@@ -1037,6 +1116,8 @@ def handler(event, context):
                         success = process_add_user_action(record)
                     elif message_body.get("action") == "extend_reservation":
                         success = process_extend_reservation_action(record)
+                    elif message_body.get("action") == "delete_disk":
+                        success = process_delete_disk_action(record)
                     elif message_body.get("action") == "process_multinode_individual":
                         success = process_multinode_individual_node(
                             message_body)
@@ -2134,6 +2215,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         user_id = request.get("user_id")
         recreate_env = request.get("recreate_env", False)
         pod_name = f"gpu-dev-{reservation_id[:8]}"
+        disk_name = request.get("disk_name")  # Named disk identifier (optional)
 
         # Check if this is part of a multinode reservation
         is_multinode = request.get("is_multinode", False)
@@ -2189,7 +2271,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 # Create BuildKit job to build the image
                 # Use short reservation ID as tag
                 image_tag = reservation_id[:8]
-                buildkit_job_name = create_buildkit_job(
+                buildkit_job_name, is_cached = create_buildkit_job(
                     k8s_client,
                     reservation_id,
                     dockerfile_base64_data,
@@ -2197,57 +2279,72 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     ECR_REPOSITORY_URL
                 )
 
-                # Create progress callback to update DynamoDB status (with deduplication)
-                # Use list to allow modification in nested function
-                last_progress_message = [None]
+                # Extract actual image tag from job name (buildkit-{hash})
+                actual_image_tag = buildkit_job_name.replace("buildkit-", "")
 
-                def progress_callback(progress_message):
-                    try:
-                        # Only update if the progress message has actually changed
-                        if progress_message != last_progress_message[0]:
-                            update_reservation_status(
-                                reservation_id,
-                                "creating_server",
-                                detailed_status=progress_message
-                            )
-                            logger.info(
-                                f"Updated build progress for {reservation_id}: {progress_message}")
-                            last_progress_message[0] = progress_message
-                        # If message hasn't changed, skip the update (no log spam)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to update build progress for {reservation_id}: {str(e)}")
-
-                # Wait for build to complete
-                logger.info(
-                    f"Waiting for Docker build to complete: {buildkit_job_name}")
-                build_result = wait_for_buildkit_job(
-                    k8s_client,
-                    buildkit_job_name,
-                    timeout_seconds=900,  # 15 minutes
-                    progress_callback=progress_callback
-                )
-
-                if build_result["success"]:
-                    logger.info(
-                        f"Docker build successful for {reservation_id}")
-                    # Use the built image
-                    dockerimage = f"{ECR_REPOSITORY_URL}:{image_tag}"
-                    logger.info(f"Will use built image: {dockerimage}")
-                else:
-                    build_logs = build_result.get('logs', 'No logs available')
-                    logger.error(
-                        f"Docker build failed for {reservation_id}: {build_result['message']}")
-                    logger.error(
-                        f"Build logs for {reservation_id}:\n{build_logs}")
-                    # Update reservation to failed
+                if is_cached:
+                    # Image already exists in ECR - skip build, just use cached image
+                    logger.info(f"Using cached Docker image for {reservation_id}")
                     update_reservation_status(
                         reservation_id,
-                        "failed",
-                        detailed_status="Docker image build failed",
-                        failure_reason=f"Docker image build failed: {build_result['message']}\nLogs: {build_logs}"
+                        "creating_server",
+                        detailed_status="Using cached Docker image"
                     )
-                    return  # Don't raise exception, we've already marked as failed
+                    dockerimage = f"{ECR_REPOSITORY_URL}:{actual_image_tag}"
+                    logger.info(f"Will use cached image: {dockerimage}")
+                else:
+                    # Need to build or wait for build
+                    # Create progress callback to update DynamoDB status (with deduplication)
+                    # Use list to allow modification in nested function
+                    last_progress_message = [None]
+
+                    def progress_callback(progress_message):
+                        try:
+                            # Only update if the progress message has actually changed
+                            if progress_message != last_progress_message[0]:
+                                update_reservation_status(
+                                    reservation_id,
+                                    "creating_server",
+                                    detailed_status=progress_message
+                                )
+                                logger.info(
+                                    f"Updated build progress for {reservation_id}: {progress_message}")
+                                last_progress_message[0] = progress_message
+                            # If message hasn't changed, skip the update (no log spam)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to update build progress for {reservation_id}: {str(e)}")
+
+                    # Wait for build to complete
+                    logger.info(
+                        f"Waiting for Docker build to complete: {buildkit_job_name}")
+                    build_result = wait_for_buildkit_job(
+                        k8s_client,
+                        buildkit_job_name,
+                        timeout_seconds=900,  # 15 minutes
+                        progress_callback=progress_callback
+                    )
+
+                    if build_result["success"]:
+                        logger.info(
+                            f"Docker build successful for {reservation_id}")
+                        # Use the built image
+                        dockerimage = f"{ECR_REPOSITORY_URL}:{actual_image_tag}"
+                        logger.info(f"Will use built image: {dockerimage}")
+                    else:
+                        build_logs = build_result.get('logs', 'No logs available')
+                        logger.error(
+                            f"Docker build failed for {reservation_id}: {build_result['message']}")
+                        logger.error(
+                            f"Build logs for {reservation_id}:\n{build_logs}")
+                        # Update reservation to failed
+                        update_reservation_status(
+                            reservation_id,
+                            "failed",
+                            detailed_status="Docker image build failed",
+                            failure_reason=f"Docker image build failed: {build_result['message']}\nLogs: {build_logs}"
+                        )
+                        return  # Don't raise exception, we've already marked as failed
 
             except Exception as build_error:
                 logger.error(
@@ -2285,7 +2382,13 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             use_persistent_disk = False  # Only master node gets persistent disk
             logger.info(
                 f"Multinode node {node_index + 1}/{total_nodes}: using EFS shared storage instead of persistent disk")
+        elif disk_name:
+            # NEW: If disk_name is specified, ALWAYS use persistent disk (named disk system allows multiple disks)
+            use_persistent_disk = True
+            logger.info(
+                f"Named disk '{disk_name}' requested for reservation {reservation_id} - will use persistent disk")
         else:
+            # OLD logic: check if user has other active reservations with persistent disks
             use_persistent_disk = should_use_persistent_disk(
                 user_id, reservation_id)
         persistent_volume_id = None
@@ -2310,199 +2413,63 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
         if use_persistent_disk:
             try:
-                # Step 1: Determine target AZ for this reservation
+                # NEW snapshot-first workflow (replaces old migration logic below)
+                # Always recreate volume from latest snapshot or create empty
                 update_reservation_status(
                     reservation_id,
                     "preparing",
-                    detailed_status="Determining optimal availability zone for GPU placement"
+                    detailed_status="Setting up persistent disk" + (f" '{disk_name}'" if disk_name else "")
                 )
 
+                # Determine target AZ for this reservation
                 target_az = get_target_az_for_reservation(gpu_type, gpu_count)
                 if not target_az:
-                    raise ValueError(
-                        f"Could not determine target AZ for {gpu_type} GPUs")
+                    raise ValueError(f"Could not determine target AZ for {gpu_type} GPUs")
 
                 logger.info(f"Target AZ for reservation: {target_az}")
+                logger.info(f"Creating persistent disk for user {user_id}, disk_name={disk_name or 'default'}")
 
-                # Step 2: Check if EBS migration is needed
-                migration_needed, current_volume_id, current_az = needs_ebs_migration(
-                    user_id, target_az, reservation_id)
+                # Use new snapshot-first function
+                persistent_volume_id, is_new_disk, disk_warning = create_disk_from_snapshot_or_empty(
+                    user_id=user_id,
+                    availability_zone=target_az,
+                    disk_name=disk_name,
+                    reservation_id=reservation_id
+                )
 
-                # Check for multiple volumes and log warning if found
-                multiple_volumes_warning = check_for_multiple_volumes(user_id)
-                if multiple_volumes_warning:
-                    update_reservation_fields(
-                        reservation_id, warning=multiple_volumes_warning)
-                    logger.warning(
-                        f"Stored multiple volume warning for reservation {reservation_id}: {multiple_volumes_warning}")
+                logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
 
-                if migration_needed:
-                    # User has existing EBS in different AZ - need to migrate
-                    update_reservation_status(
-                        reservation_id,
-                        "preparing",
-                        f"Migrating persistent disk from {current_az} to {target_az} (2-5 minutes)",
-                    )
-                    logger.info(
-                        f"Starting EBS migration for user {user_id}: {current_az} -> {target_az}")
+                # Mark disk as in_use in disks table (prevents CLI from showing as available)
+                try:
+                    mark_disk_in_use(user_id, disk_name or "default", True, reservation_id)
+                    logger.info(f"Marked disk '{disk_name or 'default'}' as in_use for reservation {reservation_id[:8]}")
+                except Exception as mark_error:
+                    logger.warning(f"Failed to mark disk as in_use: {mark_error}")
 
-                    # Check if we have a recent snapshot from THIS SPECIFIC VOLUME to avoid version confusion
-                    # IMPORTANT: Only use snapshots from the volume being migrated (current_volume_id)
-                    # This prevents using snapshots from other volumes which may have stale/different data
-                    latest_snapshot = get_latest_snapshot(
-                        user_id, volume_id=current_volume_id, include_pending=True)
+                # Store disk_name in DynamoDB for tracking
+                if disk_name:
+                    update_reservation_fields(reservation_id, disk_name=disk_name)
 
-                    if latest_snapshot and latest_snapshot['State'] == 'completed':
-                        # Use existing completed snapshot for migration
-                        logger.info(
-                            f"Using existing completed snapshot {latest_snapshot['SnapshotId']} for migration")
-                        persistent_volume_id = restore_ebs_from_existing_snapshot(
-                            latest_snapshot['SnapshotId'], target_az, user_id
-                        )
-                        snapshot_id = latest_snapshot['SnapshotId']
-
-                        # Clean up old volume after successful restoration
-                        # NEW: Remove ActiveVolume tag before deletion to maintain single source of truth
-                        try:
-                            logger.info(
-                                f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
-                            ec2_client.delete_tags(
-                                Resources=[current_volume_id],
-                                Tags=[{"Key": "ActiveVolume"}]
-                            )
-                        except Exception as tag_error:
-                            logger.warning(
-                                f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
-
-                        try:
-                            logger.info(
-                                f"Deleting old volume {current_volume_id} from {current_az} after snapshot restoration")
-                            ec2_client.delete_volume(
-                                VolumeId=current_volume_id)
-                            logger.info(
-                                f"Successfully deleted old volume {current_volume_id}")
-                        except Exception as cleanup_error:
-                            logger.warning(
-                                f"Failed to delete old volume {current_volume_id}: {cleanup_error}")
-                            # Don't fail the migration if cleanup fails - volume can be cleaned up manually
-                    elif latest_snapshot and latest_snapshot['State'] == 'pending':
-                        # Wait for existing pending snapshot to complete, then use it
-                        snapshot_id = latest_snapshot['SnapshotId']
-                        logger.info(
-                            f"Found pending snapshot {snapshot_id}, waiting for completion before migration")
-                        update_reservation_status(
-                            reservation_id,
-                            "preparing",
-                            f"Migrating disk to other AZ using snapshot {snapshot_id} - snapshot pending (can take 5-10min, please retry on timeout)"
-                        )
-
-                        # Wait for snapshot to complete (up to 10 minutes)
-                        waiter = ec2_client.get_waiter('snapshot_completed')
-                        waiter.wait(SnapshotIds=[snapshot_id], WaiterConfig={
-                                    'Delay': 15, 'MaxAttempts': 40})
-
-                        logger.info(
-                            f"Snapshot {snapshot_id} completed, proceeding with migration")
-                        persistent_volume_id = restore_ebs_from_existing_snapshot(
-                            snapshot_id, target_az, user_id
-                        )
-
-                        # Clean up old volume after successful restoration
-                        # NEW: Remove ActiveVolume tag before deletion to maintain single source of truth
-                        try:
-                            logger.info(
-                                f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
-                            ec2_client.delete_tags(
-                                Resources=[current_volume_id],
-                                Tags=[{"Key": "ActiveVolume"}]
-                            )
-                        except Exception as tag_error:
-                            logger.warning(
-                                f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
-
-                        try:
-                            logger.info(
-                                f"Deleting old volume {current_volume_id} from {current_az} after snapshot restoration")
-                            ec2_client.delete_volume(
-                                VolumeId=current_volume_id)
-                            logger.info(
-                                f"Successfully deleted old volume {current_volume_id}")
-                        except Exception as cleanup_error:
-                            logger.warning(
-                                f"Failed to delete old volume {current_volume_id}: {cleanup_error}")
-                            # Don't fail the migration if cleanup fails - volume can be cleaned up manually
-                    else:
-                        # No recent snapshot - do full migration with new snapshot
-                        persistent_volume_id, snapshot_id = migrate_ebs_across_az(
-                            user_id, current_volume_id, current_az, target_az
-                        )
-
-                    is_new_disk = False  # Migrated disk keeps existing data
-                    logger.info(
-                        f"EBS migration completed: {persistent_volume_id} (from snapshot {snapshot_id})")
-
-                else:
-                    # Either no existing EBS, or existing EBS is already in target AZ
-                    if current_volume_id:
-                        # Volume already exists in target AZ - use it directly (no migration needed)
-                        logger.info(
-                            f"Volume {current_volume_id} already exists in target AZ {target_az} - using existing volume")
-                        update_reservation_status(
-                            reservation_id,
-                            "preparing",
-                            "Using existing persistent disk",
-                        )
-                        persistent_volume_id = current_volume_id
-                        is_new_disk = False  # Using existing volume
-                        logger.info(
-                            f"Using existing volume {persistent_volume_id} in {target_az}")
-                    else:
-                        # No existing volume - create new one
-                        logger.info(
-                            f"No existing volume found for user {user_id}, creating new one")
-                        update_reservation_status(
-                            reservation_id,
-                            "preparing",
-                            "Setting up persistent disk for user data",
-                        )
-                        persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(
-                            user_id, target_az)
-                        logger.info(
-                            f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
-
-                        # Store warning in database if multiple disks were detected
-                        if disk_warning:
-                            update_reservation_fields(
-                                reservation_id, warning=disk_warning)
-                            logger.warning(
-                                f"Stored warning for reservation {reservation_id}: {disk_warning}")
-
-                # Check for any existing snapshots from previous sessions for new volumes only
-                if not current_volume_id:
-                    latest_snapshot = get_latest_snapshot(
-                        user_id, volume_id=None, include_pending=False)
-
-                    if latest_snapshot:
-                        # User has previous data in snapshots - restore from latest
-                        logger.info(
-                            f"Found existing snapshot {latest_snapshot['SnapshotId']} for user {user_id} - restoring instead of creating empty volume")
-                        update_reservation_status(
-                            reservation_id,
-                            "preparing",
-                            f"Restoring persistent disk from previous session snapshot {latest_snapshot['SnapshotId']}",
-                        )
-
-                        # Restore from the latest snapshot
-                        persistent_volume_id = restore_ebs_from_existing_snapshot(
-                            latest_snapshot['SnapshotId'], target_az, user_id
-                        )
-                        is_new_disk = False  # Restored from snapshot with existing data
-                        logger.info(
-                            f"Restored volume {persistent_volume_id} from snapshot {latest_snapshot['SnapshotId']} for user {user_id}")
-
+                # Store warning if any
+                if disk_warning:
+                    update_reservation_fields(reservation_id, warning=disk_warning)
+                    logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
-                # Continue without persistent disk rather than failing
+
+                # Check if this is a "disk in use" error - these should fail the reservation
+                error_msg = str(disk_error)
+                if "is currently in use" in error_msg or "already in use" in error_msg:
+                    # Don't fall back - fail the reservation with clear error
+                    update_reservation_status(
+                        reservation_id,
+                        "failed",
+                        failure_reason=error_msg
+                    )
+                    raise RuntimeError(f"Cannot create reservation: {error_msg}")
+
+                # For other errors, continue without persistent disk (backwards compatibility)
+                logger.warning(f"Falling back to non-persistent storage due to disk error: {disk_error}")
                 use_persistent_disk = False
                 persistent_volume_id = None  # Clear any volume that was set before the error
                 is_new_disk = True  # EmptyDir volume will need shell environment setup
@@ -3330,64 +3297,29 @@ def find_available_node_port(k8s_client) -> int:
 
 def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource limits for pod based on GPU type and deployment mode"""
-    # Convert Decimal to int if coming from DynamoDB
     gpu_count = int(gpu_count)
     limits = {}
+    config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
+    max_gpus = config["max_gpus"]
 
-    # Define max GPUs per node for each GPU type
-    gpu_max_per_node = {
-        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
-        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
-    }
-
-    # Set appropriate resource limits based on instance type and proportional allocation
     if gpu_type.startswith("cpu-"):
         # CPU instances get reasonable limits for dedicated nodes
         limits.update({
-            "cpu": "15",      # Reserve 1 CPU for system on 16-CPU nodes
-            "memory": "30Gi"  # Reserve 2GB for system on 32GB nodes
+            "cpu": str(config["cpus"] - 2),  # Reserve some for system
+            "memory": f"{config['memory_gb'] - 2}Gi"
         })
     else:
         # GPU instances get proportional CPU/memory based on GPU allocation
         if gpu_count > 0:
             limits["nvidia.com/gpu"] = str(gpu_count)
 
-            # Get instance specs for proportional allocation
-            instance_specs = {
-                "g4dn.12xlarge": {"cpus": 48, "memory_gb": 192},    # T4
-                "g6.12xlarge": {"cpus": 48, "memory_gb": 192},      # L4
-                "g5.12xlarge": {"cpus": 48, "memory_gb": 192},      # A10G
-                "g4dn.2xlarge": {"cpus": 8, "memory_gb": 32},       # T4-small
-                "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},    # A100
-                "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},    # H100
-                "p5e.48xlarge": {"cpus": 192, "memory_gb": 2048},   # H200
-                "p6-b200.48xlarge": {"cpus": 192, "memory_gb": 2048}  # B200
-            }
-
-            # Get max GPUs per node for this GPU type
-            max_gpus = gpu_max_per_node.get(gpu_type, 1)
-
-            # Calculate proportional allocation: (requested_gpus / max_gpus) * total_resources
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
-            # Default fallback specs if instance type not found
-            default_specs = {"cpus": 48, "memory_gb": 192}
-
-            # Find instance type from GPU type mapping (approximate)
-            instance_type_map = {
-                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "a10g": "g5.12xlarge",
-                "t4-small": "g4dn.2xlarge", "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
-                "h200": "p5e.48xlarge", "b200": "p6-b200.48xlarge"
-            }
-
-            instance_type = instance_type_map.get(gpu_type)
-            specs = instance_specs.get(instance_type, default_specs)
-
-            # Calculate proportional limits (reserve some for system)
-            # 90% to reserve for system
-            proportional_cpu = int(specs["cpus"] * gpu_ratio * 0.9)
-            proportional_memory = int(specs["memory_gb"] * gpu_ratio * 0.9)
+            # Calculate proportional limits with CPU overprovisioning
+            # Give 1.5x CPU to allow burst capacity, capped at node total
+            fractional_cpu = config["cpus"] * gpu_ratio
+            proportional_cpu = min(config["cpus"], int(fractional_cpu * 1.5))
+            proportional_memory = int(config["memory_gb"] * gpu_ratio)
 
             limits.update({
                 "cpu": str(proportional_cpu),
@@ -3395,96 +3327,53 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
             })
 
     # EFA optimization: Only use EFA for full-node multinode deployments
-    # This prevents partial-node reservations from competing for limited EFA resources
-    max_gpus = gpu_max_per_node.get(gpu_type, 1)
     use_efa = (
-        gpu_type != "t4-small" and  # EFA not supported on t4-small
-        not gpu_type.startswith("cpu-") and  # EFA not needed for CPU instances
-        is_multinode and            # Only for multinode deployments
-        gpu_count == max_gpus       # Only when using all GPUs per node
+        gpu_type != "t4-small" and
+        not gpu_type.startswith("cpu-") and
+        is_multinode and
+        gpu_count == max_gpus
     )
 
     if use_efa:
         limits["vpc.amazonaws.com/efa"] = "1"
-        logger.info(
-            f"Using EFA for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
+        logger.info(f"Using EFA for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
     else:
-        logger.info(
-            f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
+        logger.info(f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
 
     return limits
 
 
 def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource requests for pod based on GPU type and deployment mode"""
-    # Convert Decimal to int if coming from DynamoDB
     gpu_count = int(gpu_count)
     requests = {}
+    config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
+    max_gpus = config["max_gpus"]
 
-    # Define max GPUs per node for each GPU type
-    gpu_max_per_node = {
-        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
-        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
-    }
-
-    # Set appropriate resource requests based on instance type
     if gpu_type.startswith("cpu-"):
-        # CPU instances request reasonable baseline
-        requests.update({
-            "cpu": "2",       # Reasonable baseline request
-            "memory": "4Gi"   # Reasonable baseline request
-        })
+        requests.update({"cpu": "2", "memory": "4Gi"})
     else:
-        # GPU instances get proportional requests (same logic as limits but more conservative)
         if gpu_count > 0:
             requests["nvidia.com/gpu"] = str(gpu_count)
-
-            # Reuse the same calculation logic for consistency
-            instance_specs = {
-                "g4dn.12xlarge": {"cpus": 48, "memory_gb": 192},
-                "g6.12xlarge": {"cpus": 48, "memory_gb": 192},
-                "g5.12xlarge": {"cpus": 48, "memory_gb": 192},
-                "g4dn.2xlarge": {"cpus": 8, "memory_gb": 32},
-                "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},
-                "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},
-                "p5e.48xlarge": {"cpus": 192, "memory_gb": 2048},
-                "p6-b200.48xlarge": {"cpus": 192, "memory_gb": 2048}
-            }
-
-            max_gpus = gpu_max_per_node.get(gpu_type, 1)
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
-            instance_type_map = {
-                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "a10g": "g5.12xlarge",
-                "t4-small": "g4dn.2xlarge", "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
-                "h200": "p5e.48xlarge", "b200": "p6-b200.48xlarge"
-            }
-
-            instance_type = instance_type_map.get(gpu_type)
-            specs = instance_specs.get(
-                instance_type, {"cpus": 48, "memory_gb": 192})
-
-            # More conservative requests (50% of proportional allocation)
-            proportional_cpu = max(1, int(specs["cpus"] * gpu_ratio * 0.5))
-            proportional_memory = max(
-                1, int(specs["memory_gb"] * gpu_ratio * 0.5))
+            # Set requests = limits for Guaranteed QoS (enables CPU pinning)
+            fractional_cpu = config["cpus"] * gpu_ratio
+            proportional_cpu = min(config["cpus"], int(fractional_cpu * 1.5))
+            proportional_memory = int(config["memory_gb"] * gpu_ratio)
 
             requests.update({
                 "cpu": str(proportional_cpu),
                 "memory": f"{proportional_memory}Gi"
             })
 
-    # EFA optimization: Only use EFA for full-node multinode deployments
-    # This prevents partial-node reservations from competing for limited EFA resources
-    max_gpus = gpu_max_per_node.get(gpu_type, 1)
+    # EFA: Only for full-node multinode deployments
     use_efa = (
-        gpu_type != "t4-small" and  # EFA not supported on t4-small
-        not gpu_type.startswith("cpu-") and  # EFA not needed for CPU instances
-        is_multinode and            # Only for multinode deployments
-        gpu_count == max_gpus       # Only when using all GPUs per node
+        gpu_type != "t4-small" and
+        not gpu_type.startswith("cpu-") and
+        is_multinode and
+        gpu_count == max_gpus
     )
-
     if use_efa:
         requests["vpc.amazonaws.com/efa"] = "1"
 
@@ -3493,17 +3382,49 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
 
 def _pod_uses_efa(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> bool:
     """Check if pod will use EFA based on configuration"""
-    gpu_max_per_node = {
-        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
-        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
-    }
-    max_gpus = gpu_max_per_node.get(gpu_type, 1)
+    config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
     return (
-        gpu_type != "t4-small" and  # EFA not supported on t4-small
-        is_multinode and            # Only for multinode deployments
-        gpu_count == max_gpus       # Only when using all GPUs per node
+        gpu_type != "t4-small" and
+        is_multinode and
+        gpu_count == config["max_gpus"]
     )
+
+
+def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:
+    """Get environment variables for CPU thread limiting.
+
+    These ensure that Python's multiprocessing, OpenMP, MKL, and other
+    parallel libraries use the correct number of threads based on the
+    pod's proportional CPU allocation (matching the resource limits).
+    """
+    from kubernetes import client
+
+    gpu_count = int(gpu_count)
+    config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
+    max_gpus = config["max_gpus"]
+
+    if gpu_type.startswith("cpu-"):
+        # CPU instances get all CPUs minus some for system
+        thread_count = max(1, config["cpus"] - 2)
+    elif max_gpus > 0 and gpu_count > 0:
+        # Proportional allocation matching resource limits calculation
+        gpu_ratio = gpu_count / max_gpus
+        fractional_cpu = config["cpus"] * gpu_ratio
+        # Use the same 1.5x factor as resource limits for consistency
+        thread_count = max(1, min(config["cpus"], int(fractional_cpu * 1.5)))
+    else:
+        thread_count = config["cpus"]
+
+    thread_str = str(thread_count)
+
+    return [
+        client.V1EnvVar(name="OMP_NUM_THREADS", value=thread_str),
+        client.V1EnvVar(name="MKL_NUM_THREADS", value=thread_str),
+        client.V1EnvVar(name="NUMEXPR_MAX_THREADS", value=thread_str),
+        client.V1EnvVar(name="OPENBLAS_NUM_THREADS", value=thread_str),
+        client.V1EnvVar(name="GOMAXPROCS", value=thread_str),
+        client.V1EnvVar(name="MAX_JOBS", value=thread_str),  # PyTorch build parallelism
+    ]
 
 
 def get_nccl_env_vars(gpu_type: str) -> list:
@@ -4394,7 +4315,7 @@ EOF
                         client.V1EnvVar(
                             name="NVIDIA_DRIVER_CAPABILITIES", value="compute,utility"
                         )
-                    ] + get_nccl_env_vars(gpu_type),
+                    ] + get_nccl_env_vars(gpu_type) + get_cpu_thread_env_vars(gpu_count, gpu_type),
                     resources=client.V1ResourceRequirements(
                         limits=get_pod_resource_limits(
                             gpu_count, gpu_type, is_multinode),
@@ -4409,6 +4330,8 @@ EOF
                         ),
                         client.V1VolumeMount(
                             name="dshm", mount_path="/dev/shm"),
+                        client.V1VolumeMount(
+                            name="ccache-shared", mount_path="/ccache_shared"),
                     ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
@@ -4437,6 +4360,14 @@ EOF
                     name="dshm",
                     empty_dir=client.V1EmptyDirVolumeSource(
                         medium="Memory", size_limit="8Gi"),  # Increased for NCCL multi-node
+                ),
+                client.V1Volume(
+                    name="ccache-shared",
+                    nfs=client.V1NFSVolumeSource(
+                        server=get_efs_mount_dns(CCACHE_SHARED_EFS_ID),
+                        path="/",
+                        read_only=False
+                    )
                 ),
             ] + ([
                 client.V1Volume(
@@ -4740,6 +4671,253 @@ def get_node_instance_id() -> str:
     except Exception as e:
         logger.error(f"Error getting node instance ID: {str(e)}")
         return None
+
+
+def mark_disk_in_use(user_id: str, disk_name: str, in_use: bool, reservation_id: str = None) -> None:
+    """
+    Update the disks table to mark a disk as in_use or not.
+    This prevents CLI from showing disk as available while cleanup is in progress.
+
+    Args:
+        user_id: User identifier
+        disk_name: Disk name
+        in_use: True to mark as in use, False to mark as available
+        reservation_id: Optional reservation ID that owns the disk
+    """
+    try:
+        disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+        disks_table = dynamodb.Table(disks_table_name)
+
+        update_expr = "SET in_use = :in_use, last_used = :last_used"
+        expr_values = {
+            ":in_use": in_use,
+            ":last_used": datetime.utcnow().isoformat()
+        }
+
+        if in_use and reservation_id:
+            update_expr += ", attached_to_reservation = :reservation_id"
+            expr_values[":reservation_id"] = reservation_id
+        elif not in_use:
+            update_expr += " REMOVE attached_to_reservation"
+
+        disks_table.update_item(
+            Key={'user_id': user_id, 'disk_name': disk_name},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_values
+        )
+        logger.info(f"Updated disk '{disk_name}' in_use={in_use} for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error updating disk in_use status: {e}")
+        raise
+
+
+def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, disk_name: str = None, reservation_id: str = None) -> tuple[str, bool, str]:
+    """
+    NEW snapshot-first workflow: Always recreate disk from latest snapshot or create empty.
+    Returns (volume_id, is_new_disk, warning_message)
+
+    Args:
+        user_id: User identifier
+        availability_zone: Target AZ for volume
+        disk_name: Named disk identifier (optional, for backwards compatibility)
+        reservation_id: Optional reservation ID for status updates
+    """
+    try:
+        from shared.snapshot_utils import get_latest_snapshot
+
+        logger.info(f"Creating disk for user {user_id} in AZ {availability_zone}" + (f", disk_name={disk_name}" if disk_name else ""))
+
+        # Step 1: Check for in-use volumes with matching disk_name (prevent concurrent use)
+        # If volume is in-use, wait for it to be released (cleanup in progress)
+        if disk_name:
+            filters = [
+                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "tag:disk_name", "Values": [disk_name]},
+                {"Name": "status", "Values": ["in-use", "available"]},
+            ]
+
+            # Wait up to 2 minutes for volume to be released (cleanup takes ~30-60 seconds)
+            max_wait_seconds = 120
+            check_interval = 10
+            waited = 0
+
+            while waited < max_wait_seconds:
+                response = ec2_client.describe_volumes(Filters=filters)
+                in_use_volumes = [v for v in response.get("Volumes", []) if v["State"] == "in-use"]
+
+                if not in_use_volumes:
+                    if waited > 0:
+                        logger.info(f"Disk '{disk_name}' is now available after waiting {waited}s")
+                    break
+
+                volume_id = in_use_volumes[0]["VolumeId"]
+
+                if waited == 0:
+                    # First check - update status to show we're waiting
+                    logger.info(f"Disk '{disk_name}' (volume {volume_id}) is in use - waiting for cleanup to complete")
+                    if reservation_id:
+                        update_reservation_status(
+                            reservation_id,
+                            "preparing",
+                            detailed_status=f"Waiting for disk '{disk_name}' to be released from previous reservation"
+                        )
+
+                time.sleep(check_interval)
+                waited += check_interval
+                logger.info(f"Still waiting for disk '{disk_name}' to be released... ({waited}s/{max_wait_seconds}s)")
+
+            # Final check after wait loop
+            response = ec2_client.describe_volumes(Filters=filters)
+            in_use_volumes = [v for v in response.get("Volumes", []) if v["State"] == "in-use"]
+
+            if in_use_volumes:
+                volume_id = in_use_volumes[0]["VolumeId"]
+                error_msg = f"Disk '{disk_name}' is still in use after waiting {max_wait_seconds}s (volume {volume_id}). The previous reservation may not have cleaned up properly."
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+
+        # Step 2: Find latest snapshot for this disk
+        # First check for pending snapshots (from recent reservation expiry)
+        pending_filters = [
+            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+            {"Name": "status", "Values": ["pending"]},
+        ]
+        if disk_name:
+            pending_filters.append({"Name": "tag:disk_name", "Values": [disk_name]})
+
+        pending_response = ec2_client.describe_snapshots(
+            OwnerIds=["self"],
+            Filters=pending_filters
+        )
+
+        pending_snapshots = pending_response.get('Snapshots', [])
+        if pending_snapshots:
+            latest_pending = max(pending_snapshots, key=lambda s: s['StartTime'])
+            snapshot_id = latest_pending['SnapshotId']
+            logger.warning(f"Found pending snapshot {snapshot_id} for disk '{disk_name or 'default'}' - waiting for completion")
+
+            # Update reservation status to show we're waiting
+            if reservation_id:
+                update_reservation_status(
+                    reservation_id,
+                    "preparing",
+                    f"Waiting for disk snapshot to complete (from previous session)"
+                )
+
+            # Wait for pending snapshot to complete (up to 30 minutes)
+            try:
+                waiter = ec2_client.get_waiter('snapshot_completed')
+                waiter.wait(
+                    SnapshotIds=[snapshot_id],
+                    WaiterConfig={
+                        'Delay': 15,
+                        'MaxAttempts': 120  # 30 minutes
+                    }
+                )
+                logger.info(f"Pending snapshot {snapshot_id} completed, proceeding with disk creation")
+            except Exception as wait_error:
+                logger.error(f"Timeout waiting for snapshot {snapshot_id}: {wait_error}")
+                raise RuntimeError(f"Disk '{disk_name or 'default'}' snapshot is still being created from previous session. Please wait a few minutes and try again.")
+
+        # Now find latest completed snapshot
+        snapshot_filters = [
+            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+            {"Name": "status", "Values": ["completed"]},
+        ]
+        if disk_name:
+            snapshot_filters.append({"Name": "tag:disk_name", "Values": [disk_name]})
+
+        snapshot_response = ec2_client.describe_snapshots(
+            OwnerIds=["self"],
+            Filters=snapshot_filters
+        )
+
+        snapshots = snapshot_response.get('Snapshots', [])
+        latest_snapshot = max(snapshots, key=lambda s: s['StartTime']) if snapshots else None
+
+        # Step 3: Create volume from snapshot or empty
+        if latest_snapshot:
+            snapshot_id = latest_snapshot['SnapshotId']
+
+            # Check if this is an initial/empty snapshot (needs shell setup)
+            snapshot_tags = {tag['Key']: tag['Value'] for tag in latest_snapshot.get('Tags', [])}
+            snapshot_type = snapshot_tags.get('SnapshotType', '')
+            is_initial_snapshot = (snapshot_type == 'initial')
+
+            logger.info(f"Found latest snapshot {snapshot_id} (type: {snapshot_type or 'user-data'}), restoring to {availability_zone}")
+
+            create_response = ec2_client.create_volume(
+                AvailabilityZone=availability_zone,
+                SnapshotId=snapshot_id,
+                Size=1024,  # Always create 1TB volumes (expands snapshot if needed)
+                VolumeType="gp3",
+                Iops=3000,
+                Throughput=125,
+                TagSpecifications=[{
+                    "ResourceType": "volume",
+                    "Tags": [
+                        {"Key": "gpu-dev-user", "Value": user_id},
+                        {"Key": "Name", "Value": f"gpu-dev-disk-{user_id.split('@')[0]}" + (f"-{disk_name}" if disk_name else "")},
+                        {"Key": "Project", "Value": "gpu-dev-servers"},
+                        {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
+                        {"Key": "disk_name", "Value": disk_name if disk_name else "default"},
+                        {"Key": "created_at", "Value": str(int(time.time()))},
+                        {"Key": "last_used", "Value": str(int(time.time()))},
+                    ],
+                }]
+            )
+
+            volume_id = create_response["VolumeId"]
+            # Initial snapshots are empty, need shell setup like new disks
+            is_new_disk = is_initial_snapshot
+
+            if is_initial_snapshot:
+                logger.info(f"Initial snapshot detected - will set up shell environment (CREATE_SH_ENV=true)")
+
+            logger.info(f"Waiting for volume {volume_id} to become available...")
+            waiter = ec2_client.get_waiter("volume_available")
+            waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+
+            logger.info(f"Successfully restored volume {volume_id} from snapshot {snapshot_id}")
+            return volume_id, is_new_disk, None
+
+        else:
+            # No snapshot found - create empty 1TB volume (first use)
+            logger.info(f"No snapshot found for disk '{disk_name or 'default'}' - creating empty 1TB volume")
+
+            create_response = ec2_client.create_volume(
+                AvailabilityZone=availability_zone,
+                Size=1024,  # 1TB
+                VolumeType="gp3",
+                Iops=3000,
+                Throughput=125,
+                TagSpecifications=[{
+                    "ResourceType": "volume",
+                    "Tags": [
+                        {"Key": "gpu-dev-user", "Value": user_id},
+                        {"Key": "Name", "Value": f"gpu-dev-disk-{user_id.split('@')[0]}" + (f"-{disk_name}" if disk_name else "")},
+                        {"Key": "Project", "Value": "gpu-dev-servers"},
+                        {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
+                        {"Key": "disk_name", "Value": disk_name if disk_name else "default"},
+                        {"Key": "created_at", "Value": str(int(time.time()))},
+                        {"Key": "last_used", "Value": str(int(time.time()))},
+                    ],
+                }]
+            )
+
+            volume_id = create_response["VolumeId"]
+            is_new_disk = True  # Empty disk, needs environment setup
+
+            logger.info(f"Waiting for volume {volume_id} to become available...")
+            waiter = ec2_client.get_waiter("volume_available")
+            waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+
+            logger.info(f"Successfully created empty volume {volume_id}")
+            return volume_id, is_new_disk, None
+
+    except Exception as e:
+        logger.error(f"Error creating disk for user {user_id}, disk_name={disk_name}: {str(e)}")
+        raise
 
 
 def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -> tuple[str, bool, str]:
@@ -5090,12 +5268,12 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
 
         # Map instance type to GPU type
         gpu_type_mapping = {
-            "g4dn.xlarge": "T4",
-            "g4dn.2xlarge": "T4",
             "g4dn.4xlarge": "T4",
             "g4dn.8xlarge": "T4",
             "g4dn.12xlarge": "T4",
             "g4dn.16xlarge": "T4",
+            "g5.12xlarge": "A10G",
+            "g5g.2xlarge": "G5G",
             "g6.12xlarge": "L4",
             "g6.16xlarge": "L4",
             "g6.24xlarge": "L4",
@@ -5592,7 +5770,7 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
             if not event_message:
                 for event in sorted_events[:5]:
                     # Skip uninteresting events
-                    if event.reason in ["Started", "Created", "Scheduled"]:
+                    if event.reason in ["Started", "Created", "Scheduled", "Pulled"]:
                         continue
 
                     event_message = event.message
@@ -6397,42 +6575,64 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                 pod_name = reservation.get("pod_name")
                 namespace = reservation.get("namespace", "gpu-dev")
                 user_id = reservation.get("user_id")
+                disk_name = reservation.get("disk_name")  # Get disk_name from reservation
 
                 if pod_name and user_id:
                     try:
                         # First, create snapshot if pod has persistent storage
-                        k8s_client = get_k8s_client()
-                        v1 = client.CoreV1Api(k8s_client)
+                        volume_id = reservation.get("ebs_volume_id")
 
-                        try:
-                            pod = v1.read_namespaced_pod(
-                                name=pod_name, namespace=namespace)
-                            volume_id = None
+                        # Create cancellation snapshot if we have volume info (snapshot-first system)
+                        if volume_id:
+                            logger.info(
+                                f"Creating cancellation snapshot for user {user_id}, volume {volume_id}, disk {disk_name or 'unnamed'}")
 
-                            # Check pod annotations for persistent volume info
-                            if pod.metadata.annotations:
-                                volume_id = pod.metadata.annotations.get(
-                                    "gpu-dev-volume-id")
+                            # Step 1: Capture disk contents before creating snapshot
+                            content_s3_path = None
+                            disk_size = None
+                            if disk_name:
+                                try:
+                                    logger.info(f"Capturing disk contents for disk '{disk_name}'")
+                                    # Create a temporary snapshot ID for the S3 path (we'll update after actual snapshot creation)
+                                    temp_snapshot_id = f"pending-{int(time.time())}"
+                                    content_s3_path, disk_size = capture_disk_contents(
+                                        pod_name=pod_name,
+                                        namespace=namespace,
+                                        user_id=user_id,
+                                        disk_name=disk_name,
+                                        snapshot_id=temp_snapshot_id,
+                                        k8s_client=get_k8s_client(),
+                                        mount_path="/home/dev"
+                                    )
+                                    if content_s3_path:
+                                        logger.info(f"Successfully captured disk contents to {content_s3_path}" + (f" (size: {disk_size})" if disk_size else ""))
+                                    else:
+                                        logger.warning(f"Failed to capture disk contents for disk '{disk_name}'")
+                                except Exception as capture_error:
+                                    logger.warning(f"Error capturing disk contents: {capture_error}")
+                                    # Continue with snapshot even if content capture fails
 
-                            # Create cancellation snapshot if we have volume info
-                            if volume_id:
+                            # Step 2: Create snapshot with disk_name and content_s3_path
+                            snapshot_id, was_created = safe_create_snapshot(
+                                volume_id=volume_id,
+                                user_id=user_id,
+                                snapshot_type="cancellation",
+                                disk_name=disk_name,
+                                content_s3_path=content_s3_path,
+                                disk_size=disk_size
+                            )
+
+                            if snapshot_id:
                                 logger.info(
-                                    f"Creating cancellation snapshot for user {user_id}, volume {volume_id}")
-                                snapshot_id = create_pod_shutdown_snapshot(
-                                    volume_id, user_id, "cancellation")
-                                if snapshot_id:
-                                    logger.info(
-                                        f"Cancellation snapshot {snapshot_id} initiated for {pod_name}")
-                                else:
-                                    logger.warning(
-                                        f"Failed to create cancellation snapshot for {pod_name}")
+                                    f"Cancellation snapshot {snapshot_id} initiated for {pod_name} (disk: {disk_name or 'default'})")
                             else:
-                                logger.info(
-                                    f"No persistent storage found for pod {pod_name} - skipping cancellation snapshot")
+                                logger.warning(
+                                    f"Failed to create cancellation snapshot for {pod_name}")
+                        else:
+                            logger.info(
+                                f"No persistent storage found for pod {pod_name} - skipping cancellation snapshot")
 
-                        except Exception as pod_read_error:
-                            logger.warning(
-                                f"Could not read pod {pod_name} for snapshot info: {pod_read_error}")
+                        # Cleanup pod resources (no need to read pod for snapshot info anymore)
 
                         # Now cleanup pod resources
                         cleanup_pod_resources(pod_name, namespace)
@@ -7011,6 +7211,95 @@ def process_add_user_action(record: dict[str, Any]) -> bool:
 
     except Exception as e:
         logger.error(f"Error processing add user action: {str(e)}")
+        return False  # Retry on processing errors
+
+
+def process_delete_disk_action(record: dict[str, Any]) -> bool:
+    """Process disk deletion actions"""
+    try:
+        message = json.loads(record["body"])
+        action = message.get("action")
+        user_id = message.get("user_id")
+        disk_name = message.get("disk_name")
+        delete_date = message.get("delete_date")
+
+        if not all([action, user_id, disk_name, delete_date]):
+            logger.error(f"Missing required fields in delete disk action: {message}")
+            return True  # Don't retry malformed messages
+
+        logger.info(f"Processing delete disk action: marking '{disk_name}' for deletion (user: {user_id})")
+
+        # 1. Update DynamoDB to mark disk as deleted
+        try:
+            disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+            disks_table = dynamodb.Table(disks_table_name)
+
+            marked_deleted_at = message.get('requested_at', str(int(time.time())))
+            disks_table.update_item(
+                Key={'user_id': user_id, 'disk_name': disk_name},
+                UpdateExpression='SET is_deleted = :deleted, delete_date = :date, marked_deleted_at = :timestamp',
+                ExpressionAttributeValues={
+                    ':deleted': True,
+                    ':date': delete_date,
+                    ':timestamp': marked_deleted_at
+                }
+            )
+            logger.info(f"Updated DynamoDB: marked disk '{disk_name}' as deleted")
+
+        except Exception as db_error:
+            logger.error(f"Error updating DynamoDB for disk '{disk_name}': {db_error}")
+            return False  # Retry on DynamoDB errors
+
+        # 2. Tag all snapshots in EC2
+        try:
+            # Find all snapshots for this disk
+            response = ec2_client.describe_snapshots(
+                OwnerIds=["self"],
+                Filters=[
+                    {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                    {"Name": "tag:disk_name", "Values": [disk_name]},
+                ]
+            )
+
+            snapshots = response.get('Snapshots', [])
+            logger.info(f"Found {len(snapshots)} snapshots for disk '{disk_name}'")
+
+            # Tag each snapshot that doesn't already have delete-date tag
+            tagged_count = 0
+            for snapshot in snapshots:
+                snapshot_id = snapshot['SnapshotId']
+                tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+
+                # Skip if already tagged
+                if 'delete-date' in tags:
+                    logger.debug(f"Snapshot {snapshot_id} already has delete-date tag, skipping")
+                    continue
+
+                try:
+                    ec2_client.create_tags(
+                        Resources=[snapshot_id],
+                        Tags=[
+                            {"Key": "delete-date", "Value": delete_date},
+                            {"Key": "marked-deleted-at", "Value": marked_deleted_at},
+                        ]
+                    )
+                    logger.info(f"Tagged snapshot {snapshot_id} with delete-date: {delete_date}")
+                    tagged_count += 1
+                except Exception as tag_error:
+                    logger.error(f"Error tagging snapshot {snapshot_id}: {tag_error}")
+                    # Continue tagging other snapshots
+
+            logger.info(f"Successfully marked disk '{disk_name}' for deletion (tagged {tagged_count} snapshots)")
+            return True
+
+        except Exception as ec2_error:
+            logger.error(f"Error tagging snapshots for disk '{disk_name}': {ec2_error}")
+            # DynamoDB is already updated, so return True to avoid retrying
+            # The expiry Lambda will handle any missed snapshots
+            return True
+
+    except Exception as e:
+        logger.error(f"Error processing delete disk action: {str(e)}")
         return False  # Retry on processing errors
 
 

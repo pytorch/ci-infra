@@ -417,6 +417,7 @@ class ReservationManager:
         no_persistent_disk: bool = False,
         dockerimage: Optional[str] = None,
         preserve_entrypoint: bool = False,
+        disk_name: Optional[str] = None,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
@@ -485,6 +486,10 @@ class ReservationManager:
             # Always include preserve_entrypoint flag (don't make it conditional)
             message["preserve_entrypoint"] = preserve_entrypoint
 
+            # Add disk_name if provided
+            if disk_name:
+                message["disk_name"] = disk_name
+
             queue_url = self.config.get_queue_url()
             self.config.sqs_client.send_message(
                 QueueUrl=queue_url, MessageBody=json.dumps(message)
@@ -510,6 +515,7 @@ class ReservationManager:
         dockerimage: Optional[str] = None,
         no_persistent_disk: bool = False,
         preserve_entrypoint: bool = False,
+        disk_name: Optional[str] = None,
     ) -> Optional[List[str]]:
         """Create multiple GPU reservations for multinode setup"""
         try:
@@ -580,6 +586,10 @@ class ReservationManager:
                     message["dockerimage"] = dockerimage
                 # Always include preserve_entrypoint flag (don't make it conditional)
                 message["preserve_entrypoint"] = preserve_entrypoint
+
+                # Add disk_name if provided (only for master node in multinode setup)
+                if disk_name and node_idx == 0:
+                    message["disk_name"] = disk_name
 
                 # Send to SQS queue
                 queue_url = self.config.get_queue_url()

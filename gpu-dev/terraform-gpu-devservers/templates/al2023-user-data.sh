@@ -22,9 +22,9 @@ echo "options nvidia NVreg_RestrictProfilingToAdminUsers=0" > /etc/modprobe.d/nv
 dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/amzn2023/x86_64/cuda-amzn2023.repo
 dnf install -y nvidia-driver nvidia-driver-cuda
 
-# Install fabric manager for multi-GPU systems (B200, H200, H100)
+# Install fabric manager for multi-GPU NVSwitch systems (A100-SXM4, B200, H200, H100)
 # Fabric manager is required for proper CUDA initialization on these GPUs
-if [[ "${gpu_type}" == "b200" || "${gpu_type}" == "h200" || "${gpu_type}" == "h100" ]]; then
+if [[ "${gpu_type}" == "a100" || "${gpu_type}" == "b200" || "${gpu_type}" == "h200" || "${gpu_type}" == "h100" ]]; then
     echo "Installing fabric manager for multi-GPU system: ${gpu_type}"
 
     # Install InfiniBand tools - EFA hardware is already present and configured
@@ -84,6 +84,14 @@ spec:
     config:
       clusterDNS:
         - 172.20.0.10
+      cpuManagerPolicy: static
+      cpuManagerReconcilePeriod: 10s
+      systemReserved:
+        cpu: "2"
+        memory: "4Gi"
+      kubeReserved:
+        cpu: "2"
+        memory: "4Gi"
     flags:
       - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false
 EOF

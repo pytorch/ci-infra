@@ -74,3 +74,46 @@ output "efs_subnet_ids" {
   description = "All subnet IDs for EFS mount targets (one per AZ)"
   value       = concat([aws_subnet.gpu_dev_subnet.id, aws_subnet.gpu_dev_subnet_secondary.id], length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : [])
 }
+
+# Shared ccache EFS - one filesystem for all users
+resource "aws_efs_file_system" "ccache_shared" {
+  creation_token = "${var.prefix}-ccache-shared"
+  encrypted      = true
+
+  performance_mode = "generalPurpose"
+  throughput_mode  = "bursting"
+
+  lifecycle_policy {
+    transition_to_ia = "AFTER_30_DAYS"
+  }
+
+  tags = {
+    Name        = "${var.prefix}-ccache-shared"
+    Environment = local.current_config.environment
+    Purpose     = "shared-ccache"
+    ManagedBy   = "terraform"
+  }
+}
+
+# Mount targets for ccache EFS in all AZs
+resource "aws_efs_mount_target" "ccache_shared" {
+  count = length(local.all_subnet_ids)
+
+  file_system_id  = aws_efs_file_system.ccache_shared.id
+  subnet_id       = local.all_subnet_ids[count.index]
+  security_groups = [aws_security_group.efs_sg.id]
+}
+
+# Local variable for all subnet IDs
+locals {
+  all_subnet_ids = concat(
+    [aws_subnet.gpu_dev_subnet.id, aws_subnet.gpu_dev_subnet_secondary.id],
+    length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : []
+  )
+}
+
+# Output ccache EFS ID for Lambda to use
+output "ccache_shared_efs_id" {
+  description = "EFS filesystem ID for shared ccache"
+  value       = aws_efs_file_system.ccache_shared.id
+}

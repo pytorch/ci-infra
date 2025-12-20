@@ -372,3 +372,75 @@ resource "helm_release" "nvidia_gpu_operator" {
     value = "nvidia"
   }
 }
+
+# DaemonSet to pre-pull GPU dev container image on all GPU nodes
+# This ensures first user on new node doesn't wait for slow image pull
+# After rebuilding image, trigger re-pull with: kubectl rollout restart daemonset gpu-dev-image-prepuller -n kube-system
+resource "kubernetes_manifest" "image_prepuller_daemonset" {
+  manifest = {
+    apiVersion = "apps/v1"
+    kind       = "DaemonSet"
+    metadata = {
+      name      = "gpu-dev-image-prepuller"
+      namespace = "kube-system"
+      labels = {
+        app = "image-prepuller"
+      }
+    }
+    spec = {
+      selector = {
+        matchLabels = {
+          app = "image-prepuller"
+        }
+      }
+      template = {
+        metadata = {
+          labels = {
+            app = "image-prepuller"
+          }
+        }
+        spec = {
+          nodeSelector = {
+            NodeType                         = "gpu"
+            "kubernetes.io/arch"            = "amd64"
+          }
+          tolerations = [
+            {
+              key      = "nvidia.com/gpu"
+              operator = "Exists"
+              effect   = "NoSchedule"
+            }
+          ]
+          initContainers = [
+            {
+              name            = "pull-gpu-dev-image"
+              image           = local.full_image_uri
+              imagePullPolicy = "Always"
+              command         = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
+            }
+          ]
+          containers = [
+            {
+              name  = "pause"
+              image = "registry.k8s.io/pause:3.10"
+              resources = {
+                requests = {
+                  cpu    = "10m"
+                  memory = "10Mi"
+                }
+                limits = {
+                  cpu    = "10m"
+                  memory = "10Mi"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    null_resource.docker_build_and_push
+  ]
+}

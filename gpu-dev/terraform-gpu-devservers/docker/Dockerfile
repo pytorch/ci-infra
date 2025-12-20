@@ -33,7 +33,9 @@ RUN apt-get install -y --no-install-recommends \
         lsb-release \
         iproute2 \
         tmux \
-        unzip
+        unzip \
+        ccache \
+        tree
 # Install Node.js 20 from NodeSource (required for Claude CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
@@ -146,6 +148,12 @@ RUN chmod +x /usr/local/bin/setup-dotfiles-persistence && \
     chmod +x /usr/local/bin/list-dotfile-versions && \
     chmod +x /usr/local/bin/restore-dotfiles-version && \
     chmod +x /usr/local/bin/dotfiles-shutdown-handler
+
+# Install nproc wrapper to report container CPU allocation instead of node CPUs
+COPY nproc_wrapper /usr/local/bin/nproc_wrapper
+RUN mv /usr/bin/nproc /usr/bin/nproc.real && \
+    cp /usr/local/bin/nproc_wrapper /usr/bin/nproc && \
+    chmod +x /usr/bin/nproc /usr/local/bin/nproc_wrapper
 
 # Disable PAM MOTD and Ubuntu Pro ads
 RUN sed -i 's/session    optional     pam_motd.so/#&/g' /etc/pam.d/sshd 2>/dev/null || true && \
