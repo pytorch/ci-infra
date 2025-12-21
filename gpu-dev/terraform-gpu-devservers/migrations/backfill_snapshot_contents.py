@@ -9,7 +9,8 @@ This script:
 4. Lists disk contents via SSH
 5. Uploads contents to S3
 6. Tags snapshots with snapshot_content_s3
-7. Cleans up temporary volumes
+7. Updates DynamoDB disks table with latest_snapshot_content_s3
+8. Cleans up temporary volumes
 
 Prerequisites:
 - An EC2 instance running in the same region (specify with --instance-id)
@@ -80,6 +81,8 @@ def backfill_snapshot_contents(region='us-east-2', instance_id=None, ssh_key=Non
 
     ec2_client = boto3.client('ec2', region_name=region)
     s3_client = boto3.client('s3', region_name=region)
+    dynamodb_client = boto3.client('dynamodb', region_name=region)
+    disks_table_name = os.environ.get('DISKS_TABLE', 'pytorch-gpu-dev-disks')
 
     if not bucket_name:
         bucket_name = os.environ.get('DISK_CONTENTS_BUCKET', 'pytorch-gpu-dev-disk-contents')
@@ -293,7 +296,28 @@ def backfill_snapshot_contents(region='us-east-2', instance_id=None, ssh_key=Non
                 )
                 print(f"   ✓ Tagged snapshot")
 
-                # Step 6: Detach and delete volume
+                # Step 6: Update DynamoDB disks table (only if entry exists)
+                print(f"   • Updating DynamoDB disks table...")
+                try:
+                    dynamodb_client.update_item(
+                        TableName=disks_table_name,
+                        Key={
+                            'user_id': {'S': user_id},
+                            'disk_name': {'S': disk_name}
+                        },
+                        UpdateExpression='SET latest_snapshot_content_s3 = :s3path',
+                        ExpressionAttributeValues={
+                            ':s3path': {'S': s3_path}
+                        },
+                        ConditionExpression='attribute_exists(user_id)'  # Only update existing entries
+                    )
+                    print(f"   ✓ Updated DynamoDB")
+                except dynamodb_client.exceptions.ConditionalCheckFailedException:
+                    print(f"   ⚠ Disk entry not in DynamoDB (skipped)")
+                except Exception as ddb_error:
+                    print(f"   ⚠ Failed to update DynamoDB: {ddb_error}")
+
+                # Step 7: Detach and delete volume
                 print(f"   • Cleaning up temporary volume...")
                 ec2_client.detach_volume(VolumeId=volume_id)
                 time.sleep(3)

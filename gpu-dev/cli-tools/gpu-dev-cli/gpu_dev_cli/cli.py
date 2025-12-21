@@ -1059,11 +1059,14 @@ def reserve(
                         "active", "preparing", "queued", "pending"],
                 )
 
-                # Find reservations that actually have persistent disks
+                # Find reservations that use the SAME disk as the one selected
+                # (named disk system allows multiple disks, so only block if same disk is in use)
+                selected_disk_name = disk or "default"
                 persistent_reservations = [
                     res
                     for res in existing_reservations
                     if res.get("ebs_volume_id") and res.get("ebs_volume_id").strip()
+                    and res.get("disk_name", "default") == selected_disk_name
                 ]
 
             # Stop spinner before user interaction
@@ -1075,10 +1078,10 @@ def reserve(
                     "reservation_id", "unknown")[:8]
 
                 rprint(
-                    f"\n[yellow]⚠️  Warning: Your persistent disk is currently mounted on reservation {persistent_res_id}[/yellow]"
+                    f"\n[yellow]⚠️  Warning: Disk '{selected_disk_name}' is currently mounted on reservation {persistent_res_id}[/yellow]"
                 )
                 rprint(
-                    "[yellow]This new reservation will NOT have a persistent disk and will start empty.[/yellow]"
+                    f"[yellow]This new reservation will NOT have disk '{selected_disk_name}' and will start empty.[/yellow]"
                 )
                 rprint(
                     "[yellow]Your data will NOT be automatically backed up when it expires.[/yellow]"
@@ -1088,10 +1091,13 @@ def reserve(
                     "1. Continue and make this new reservation without persistent data disk"
                 )
                 rprint(
-                    f"2. Cancel existing reservation with persistent disk: [cyan]gpu-dev cancel {persistent_res_id}[/cyan]"
+                    f"2. Cancel existing reservation: [cyan]gpu-dev cancel {persistent_res_id}[/cyan]"
                 )
                 rprint(
-                    f"3. Use [cyan]--ignore-no-persist[/cyan] flag to skip this warning"
+                    f"3. Use a different disk: [cyan]gpu-dev reserve --disk <other-disk-name>[/cyan]"
+                )
+                rprint(
+                    f"4. Use [cyan]--ignore-no-persist[/cyan] flag to skip this warning"
                 )
 
                 # Ask for confirmation
@@ -1760,6 +1766,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                     else:
                                         gpu_display = str(gpu_count)
 
+                                    # Check for OOM events
+                                    oom_count = reservation.get("oom_count", 0)
+                                    if oom_count:
+                                        oom_count = int(oom_count)
+
                                     # Status display
                                     if res_status == "failed":
                                         status_display = f"[red]{res_status}[/red]"
@@ -1768,7 +1779,10 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                     elif res_status in ["queued", "pending", "preparing"]:
                                         status_display = f"[yellow]{res_status}[/yellow]"
                                     elif res_status == "active":
-                                        status_display = f"[green]{res_status}[/green]"
+                                        if oom_count > 0:
+                                            status_display = f"[green]{res_status}[/green] [red](OOM x{oom_count})[/red]"
+                                        else:
+                                            status_display = f"[green]{res_status}[/green]"
                                     else:
                                         status_display = str(res_status)
 
@@ -3544,8 +3558,9 @@ def disk_list(watch: bool):
 @click.argument("disk_name")
 def disk_create(disk_name: str):
     """Create a new named persistent disk"""
-    from .disks import create_disk
+    from .disks import create_disk, poll_disk_operation
     from .auth import authenticate_user
+    import time
 
     config = load_config()
 
@@ -3557,9 +3572,35 @@ def disk_create(disk_name: str):
         return
 
     try:
-        success = create_disk(disk_name, user_id, config)
-        if not success:
+        # Send create request to SQS
+        operation_id = create_disk(disk_name, user_id, config)
+        if not operation_id:
             return
+
+        # Poll for completion with spinner
+        with Live(console=console, refresh_per_second=4) as live:
+            start_time = time.time()
+            timeout_seconds = 180  # 3 minutes - Lambda may take time to process
+
+            while time.time() - start_time < timeout_seconds:
+                elapsed = int(time.time() - start_time)
+                live.update(f"[cyan]⏳ Creating disk '{disk_name}'... ({elapsed}s)[/cyan]")
+
+                # Check if disk exists now
+                from .disks import list_disks
+                disks = list_disks(user_id, config)
+                disk = next((d for d in disks if d['name'] == disk_name), None)
+
+                if disk is not None:
+                    live.update(f"[green]✓ Disk '{disk_name}' created successfully[/green]")
+                    rprint(f"\n[cyan]💡 Use this disk with: gpu-dev reserve --disk {disk_name}[/cyan]")
+                    return
+
+                time.sleep(2)
+
+            # Timeout
+            rprint(f"[yellow]⚠ Timed out waiting for disk creation. It may still be processing.[/yellow]")
+            rprint(f"[cyan]💡 Check status with: gpu-dev disk list[/cyan]")
 
     except Exception as e:
         rprint(f"[red]❌ Error creating disk: {str(e)}[/red]")
@@ -3605,8 +3646,9 @@ def disk_list_content(disk_name: str):
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 def disk_delete(disk_name: str, yes: bool):
     """Delete a disk and all its snapshots"""
-    from .disks import delete_disk
+    from .disks import delete_disk, list_disks
     from .auth import authenticate_user
+    import time
 
     config = load_config()
 
@@ -3617,17 +3659,58 @@ def disk_delete(disk_name: str, yes: bool):
         rprint(f"[red]❌ {str(e)}[/red]")
         return
 
+    # Get disk info first to show snapshot count
+    try:
+        disks = list_disks(user_id, config)
+        disk = next((d for d in disks if d['name'] == disk_name), None)
+        if disk:
+            snapshot_count = disk.get('snapshot_count', 0)
+            rprint(f"[yellow]This will mark disk '{disk_name}' for deletion ({snapshot_count} snapshot(s)).[/yellow]")
+            rprint(f"[yellow]Snapshots will be permanently deleted in 30 days.[/yellow]")
+    except Exception:
+        pass
+
     # Confirm deletion
     if not yes:
-        confirmation = input(f"Are you sure you want to delete disk '{disk_name}'? This cannot be undone. (yes/no): ")
+        confirmation = input(f"Are you sure you want to delete disk '{disk_name}'? (yes/no): ")
         if confirmation.lower() not in ['yes', 'y']:
             rprint("[yellow]Deletion cancelled.[/yellow]")
             return
 
     try:
-        success = delete_disk(disk_name, user_id, config)
-        if not success:
+        # Send delete request to SQS
+        operation_id = delete_disk(disk_name, user_id, config)
+        if not operation_id:
             return
+
+        # Poll for completion with spinner
+        with Live(console=console, refresh_per_second=4) as live:
+            start_time = time.time()
+            timeout_seconds = 180  # 3 minutes - Lambda may take time to process
+
+            while time.time() - start_time < timeout_seconds:
+                elapsed = int(time.time() - start_time)
+                live.update(f"[cyan]⏳ Deleting disk '{disk_name}'... ({elapsed}s)[/cyan]")
+
+                # Check if disk is marked as deleted
+                disks = list_disks(user_id, config)
+                disk = next((d for d in disks if d['name'] == disk_name), None)
+
+                if disk is None:
+                    live.update(f"[green]✓ Disk '{disk_name}' deleted[/green]")
+                    return
+                elif disk.get('is_deleted', False):
+                    delete_date = disk.get('delete_date', 'in 30 days')
+                    live.update(f"[green]✓ Disk '{disk_name}' marked for deletion[/green]")
+                    rprint(f"\n[cyan]📅 Snapshots will be permanently deleted on {delete_date}[/cyan]")
+                    return
+
+                time.sleep(2)
+
+            # Timeout
+            rprint(f"[yellow]⚠ Timed out waiting for deletion to complete. It may still be processing.[/yellow]")
+            rprint(f"[cyan]💡 Check status with: gpu-dev disk list[/cyan]")
+
     except Exception as e:
         rprint(f"[red]❌ Error deleting disk: {str(e)}[/red]")
         return

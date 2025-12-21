@@ -2,7 +2,7 @@
 import boto3
 from collections import defaultdict
 
-region = 'us-west-1'
+region = 'us-east-2'
 ec2_client = boto3.client('ec2', region_name=region)
 
 print("📸 Querying all snapshots...")

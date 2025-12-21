@@ -663,15 +663,14 @@ def select_disk_interactive(user_id: str, config: Any) -> Optional[str]:
                 if not disk_name:
                     return "__cancelled__"
 
-                # Create the disk
+                # Validate the disk name (actual disk created by Lambda on first use)
                 from .disks import create_disk
-                console.print(f"\n[cyan]Creating new disk '{disk_name}'...[/cyan]")
-
                 success = create_disk(disk_name, user_id, config)
                 if success:
+                    console.print(f"[cyan]✓ Will create disk '{disk_name}' with this reservation[/cyan]")
                     return disk_name
                 else:
-                    console.print("[red]Failed to create disk. Continuing without persistent disk.[/red]")
+                    console.print("[red]Invalid disk name. Continuing without persistent disk.[/red]")
                     return "__cancelled__"
 
             # Return selected disk name

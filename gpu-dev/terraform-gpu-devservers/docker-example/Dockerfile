@@ -1,6 +1,6 @@
 # Test Dockerfile for GPU Dev Server
 # Extends the default PyTorch GPU dev image with enhanced terminal tools
-FROM 308535385114.dkr.ecr.us-west-1.amazonaws.com/pytorch-gpu-dev-gpu-dev-image:latest
+FROM 308535385114.dkr.ecr.us-east-2.amazonaws.com/pytorch-gpu-dev-gpu-dev-image:latest
 
 # Switch to root for package installation
 USER root
@@ -19,7 +19,6 @@ RUN apt-get update && apt-get install -y \
     locales \
     # Additional shell options
     fish \
-    zsh \
     # Cleanup
     && rm -rf /var/lib/apt/lists/*
 

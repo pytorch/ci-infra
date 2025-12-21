@@ -1081,27 +1081,32 @@ def handler(event, context):
                 try:
                     message_body = json.loads(record["body"])
 
-                    # Validate CLI version before processing any request
-                    try:
-                        validate_cli_version(message_body)
-                    except ValueError as version_error:
-                        # Handle version validation errors - update reservation status with error
-                        reservation_id = message_body.get("reservation_id")
-                        if reservation_id:
-                            logger.info(
-                                f"Updating reservation {reservation_id} with version error")
-                            update_reservation_status(
-                                reservation_id=reservation_id,
-                                status="failed",
-                                detailed_status="CLI version validation failed",
-                                failure_reason=str(version_error)
-                            )
-                            # Delete message after updating status
-                            delete_sqs_message(record)
-                        else:
-                            logger.error(
-                                f"Version validation failed but no reservation_id found: {version_error}")
-                        continue
+                    # Skip version validation for disk operations (they don't affect reservations)
+                    action = message_body.get("action")
+                    skip_version_check = action in ["create_disk", "delete_disk"]
+
+                    # Validate CLI version before processing any request (except disk ops)
+                    if not skip_version_check:
+                        try:
+                            validate_cli_version(message_body)
+                        except ValueError as version_error:
+                            # Handle version validation errors - update reservation status with error
+                            reservation_id = message_body.get("reservation_id")
+                            if reservation_id:
+                                logger.info(
+                                    f"Updating reservation {reservation_id} with version error")
+                                update_reservation_status(
+                                    reservation_id=reservation_id,
+                                    status="failed",
+                                    detailed_status="CLI version validation failed",
+                                    failure_reason=str(version_error)
+                                )
+                                # Delete message after updating status
+                                delete_sqs_message(record)
+                            else:
+                                logger.error(
+                                    f"Version validation failed but no reservation_id found: {version_error}")
+                            continue
 
                     message_type = message_body.get("type", "reservation")
 
@@ -1118,6 +1123,8 @@ def handler(event, context):
                         success = process_extend_reservation_action(record)
                     elif message_body.get("action") == "delete_disk":
                         success = process_delete_disk_action(record)
+                    elif message_body.get("action") == "create_disk":
+                        success = process_create_disk_action(record)
                     elif message_body.get("action") == "process_multinode_individual":
                         success = process_multinode_individual_node(
                             message_body)
@@ -3424,6 +3431,8 @@ def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:
         client.V1EnvVar(name="OPENBLAS_NUM_THREADS", value=thread_str),
         client.V1EnvVar(name="GOMAXPROCS", value=thread_str),
         client.V1EnvVar(name="MAX_JOBS", value=thread_str),  # PyTorch build parallelism
+        client.V1EnvVar(name="CMAKE_BUILD_PARALLEL_LEVEL", value=thread_str),  # cmake parallelism
+        client.V1EnvVar(name="MAKEFLAGS", value=f"-j{thread_str}"),  # make parallelism
     ]
 
 
@@ -3510,8 +3519,9 @@ def create_pod(
             logger.info(f"Using EmptyDir for /home/dev (no persistent disk)")
 
         # Create pod spec
+        # Use OnFailure to auto-restart on OOM kills - init container is idempotent
         pod_spec = client.V1PodSpec(
-            restart_policy="Never",
+            restart_policy="OnFailure",
             init_containers=[
                 client.V1Container(
                     name="ssh-setup",
@@ -4676,6 +4686,7 @@ def get_node_instance_id() -> str:
 def mark_disk_in_use(user_id: str, disk_name: str, in_use: bool, reservation_id: str = None) -> None:
     """
     Update the disks table to mark a disk as in_use or not.
+    Creates the disk entry if it doesn't exist (for new disks).
     This prevents CLI from showing disk as available while cleanup is in progress.
 
     Args:
@@ -4688,10 +4699,20 @@ def mark_disk_in_use(user_id: str, disk_name: str, in_use: bool, reservation_id:
         disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
         disks_table = dynamodb.Table(disks_table_name)
 
+        now = datetime.utcnow().isoformat()
+
+        # Use if_not_exists for fields that should only be set on creation
         update_expr = "SET in_use = :in_use, last_used = :last_used"
+        update_expr += ", size_gb = if_not_exists(size_gb, :default_size)"
+        update_expr += ", created_at = if_not_exists(created_at, :now)"
+        update_expr += ", snapshot_count = if_not_exists(snapshot_count, :zero)"
+
         expr_values = {
             ":in_use": in_use,
-            ":last_used": datetime.utcnow().isoformat()
+            ":last_used": now,
+            ":default_size": 1024,
+            ":now": now,
+            ":zero": 0
         }
 
         if in_use and reservation_id:
@@ -6639,6 +6660,14 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                         logger.info(
                             f"Cleaned up pod resources for cancelled reservation {full_reservation_id}")
 
+                        # Clear disk in_use flag after cleanup
+                        if disk_name:
+                            try:
+                                mark_disk_in_use(user_id, disk_name, False)
+                                logger.info(f"Cleared in_use flag for disk '{disk_name}'")
+                            except Exception as disk_flag_error:
+                                logger.warning(f"Failed to clear disk in_use flag: {disk_flag_error}")
+
                     except Exception as cleanup_error:
                         logger.error(
                             f"Error cleaning up pod {pod_name}: {cleanup_error}")
@@ -6665,6 +6694,16 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                 except Exception as mapping_error:
                     logger.warning(
                         f"Failed to update SSH domain mapping on cancellation: {mapping_error}")
+
+            # Clear disk in_use flag for ALL cancelled reservations (not just active)
+            # This handles cases where reservation was cancelled during queued/pending/preparing
+            disk_name = reservation.get("disk_name")
+            if disk_name and current_status != "active":  # Active already handled above
+                try:
+                    mark_disk_in_use(user_id, disk_name, False)
+                    logger.info(f"Cleared in_use flag for disk '{disk_name}' (was {current_status})")
+                except Exception as disk_flag_error:
+                    logger.warning(f"Failed to clear disk in_use flag: {disk_flag_error}")
 
             logger.info(
                 f"Successfully cancelled reservation {full_reservation_id}")
@@ -7300,6 +7339,61 @@ def process_delete_disk_action(record: dict[str, Any]) -> bool:
 
     except Exception as e:
         logger.error(f"Error processing delete disk action: {str(e)}")
+        return False  # Retry on processing errors
+
+
+def process_create_disk_action(record: dict[str, Any]) -> bool:
+    """Process disk creation actions - creates disk entry in DynamoDB"""
+    try:
+        message = json.loads(record["body"])
+        action = message.get("action")
+        user_id = message.get("user_id")
+        disk_name = message.get("disk_name")
+        operation_id = message.get("operation_id")
+
+        if not all([action, user_id, disk_name]):
+            logger.error(f"Missing required fields in create disk action: {message}")
+            return True  # Don't retry malformed messages
+
+        logger.info(f"Processing create disk action: creating '{disk_name}' for user: {user_id}")
+
+        # Create disk entry in DynamoDB
+        try:
+            disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+            disks_table = dynamodb.Table(disks_table_name)
+
+            now = datetime.utcnow().isoformat()
+
+            # Create the disk entry (only if it doesn't exist)
+            disks_table.put_item(
+                Item={
+                    'user_id': user_id,
+                    'disk_name': disk_name,
+                    'size_gb': 1024,  # Default 1TB disk
+                    'created_at': now,
+                    'last_used': now,
+                    'snapshot_count': 0,
+                    'pending_snapshot_count': 0,
+                    'in_use': False,
+                    'is_deleted': False,
+                },
+                ConditionExpression='attribute_not_exists(user_id) AND attribute_not_exists(disk_name)'
+            )
+
+            logger.info(f"Created disk entry '{disk_name}' for user '{user_id}'")
+            return True
+
+        except disks_table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Disk already exists - this is fine, just log and return success
+            logger.info(f"Disk '{disk_name}' already exists for user '{user_id}', skipping creation")
+            return True
+
+        except Exception as db_error:
+            logger.error(f"Error creating disk entry '{disk_name}': {db_error}")
+            return False  # Retry on DynamoDB errors
+
+    except Exception as e:
+        logger.error(f"Error processing create disk action: {str(e)}")
         return False  # Retry on processing errors
 
 

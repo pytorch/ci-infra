@@ -231,95 +231,53 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
     return disks
 
 
-def create_disk(disk_name: str, user_id: str, config: Config) -> bool:
+def create_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
     """
-    Create a new named disk by creating an initial empty snapshot.
-    Returns True on success, False on failure.
+    Create a new disk by sending request to SQS queue.
+    Lambda will create the disk entry in DynamoDB.
+    Returns operation_id on success, None on failure.
     """
-    ec2_client = get_ec2_client(config)
+    import json
+    import uuid
 
     # Check if disk already exists
     existing_disks = list_disks(user_id, config)
     if any(d['name'] == disk_name for d in existing_disks):
         print(f"Error: Disk '{disk_name}' already exists")
-        return False
+        return None
 
     # Validate disk name (alphanumeric + hyphens + underscores)
     if not re.match(r'^[a-zA-Z0-9_-]+$', disk_name):
         print(f"Error: Disk name must contain only letters, numbers, hyphens, and underscores")
-        return False
+        return None
 
-    print(f"Creating new disk '{disk_name}'...")
-    print(f"(Creating initial snapshot - volumes are created from snapshots on first use)")
+    # Generate operation ID for tracking
+    operation_id = str(uuid.uuid4())
 
+    # Send create request to SQS queue
     try:
-        # Create a bootstrap volume for snapshot (AWS requires a volume to create a snapshot)
-        # We need to get an availability zone from the config
-        azs_response = ec2_client.describe_availability_zones(
-            Filters=[{"Name": "state", "Values": ["available"]}]
-        )
-        az = azs_response['AvailabilityZones'][0]['ZoneName']
+        sqs_client = config.session.client('sqs', region_name=config.aws_region)
+        queue_url = config.get_queue_url()
 
-        create_vol_response = ec2_client.create_volume(
-            AvailabilityZone=az,
-            Size=1,  # 1GB bootstrap volume (just for creating snapshot)
-            VolumeType="gp3",
-            TagSpecifications=[{
-                "ResourceType": "volume",
-                "Tags": [
-                    {"Key": "gpu-dev-user", "Value": user_id},
-                    {"Key": "disk_name", "Value": disk_name},
-                    {"Key": "Name", "Value": f"gpu-dev-disk-{user_id.split('@')[0]}-{disk_name}-bootstrap"},
-                ],
-            }]
+        # Create disk creation message
+        message = {
+            'action': 'create_disk',
+            'operation_id': operation_id,
+            'user_id': user_id,
+            'disk_name': disk_name,
+            'requested_at': datetime.now(timezone.utc).isoformat()
+        }
+
+        sqs_client.send_message(
+            QueueUrl=queue_url,
+            MessageBody=json.dumps(message)
         )
 
-        volume_id = create_vol_response["VolumeId"]
-        print(f"Creating bootstrap volume {volume_id}...")
-
-        # Wait for volume to be available
-        waiter = ec2_client.get_waiter("volume_available")
-        waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 2, "MaxAttempts": 30})
-
-        # Create initial snapshot
-        print(f"Creating snapshot...")
-        snapshot_response = ec2_client.create_snapshot(
-            VolumeId=volume_id,
-            Description=f"Initial snapshot for gpu-dev disk '{disk_name}'",
-            TagSpecifications=[{
-                "ResourceType": "snapshot",
-                "Tags": [
-                    {"Key": "gpu-dev-user", "Value": user_id},
-                    {"Key": "disk_name", "Value": disk_name},
-                    {"Key": "Name", "Value": f"gpu-dev-disk-{user_id.split('@')[0]}-{disk_name}-initial"},
-                    {"Key": "SnapshotType", "Value": "initial"},
-                    {"Key": "created_at", "Value": str(int(datetime.now().timestamp()))},
-                ],
-            }]
-        )
-
-        snapshot_id = snapshot_response["SnapshotId"]
-        print(f"Snapshot {snapshot_id} created, waiting for completion...")
-
-        # Wait for snapshot to complete
-        waiter = ec2_client.get_waiter("snapshot_completed")
-        waiter.wait(SnapshotIds=[snapshot_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
-
-        # Delete bootstrap volume (no longer needed)
-        ec2_client.delete_volume(VolumeId=volume_id)
-
-        print(f"✓ Successfully created disk '{disk_name}'")
-        print(f"   On first use, a 1TB volume will be created from this snapshot")
-        return True
+        return operation_id
 
     except Exception as e:
-        print(f"Error creating disk: {e}")
-        # Try to clean up volume if it was created
-        try:
-            ec2_client.delete_volume(VolumeId=volume_id)
-        except:
-            pass
-        return False
+        print(f"Error sending create request: {e}")
+        return None
 
 
 def list_disk_content(disk_name: str, user_id: str, config: Config) -> Optional[str]:
@@ -380,15 +338,14 @@ def list_disk_content(disk_name: str, user_id: str, config: Config) -> Optional[
         return None
 
 
-def delete_disk(disk_name: str, user_id: str, config: Config) -> bool:
+def delete_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
     """
     Soft delete a disk by sending delete request to SQS queue.
     Lambda will handle marking in DynamoDB and tagging snapshots.
-    Returns True on success, False on failure.
+    Returns operation_id on success, None on failure.
     """
-    from datetime import datetime, timedelta
-    import boto3
     import json
+    import uuid
 
     # Check if disk exists
     disks = list_disks(user_id, config)
@@ -396,20 +353,20 @@ def delete_disk(disk_name: str, user_id: str, config: Config) -> bool:
 
     if not disk:
         print(f"Error: Disk '{disk_name}' not found")
-        return False
+        return None
 
     # Check if disk is in use
     if disk['in_use']:
         print(f"Error: Cannot delete disk '{disk_name}' - it is currently in use")
         print(f"Reservation ID: {disk['reservation_id']}")
-        return False
-
-    print(f"Marking disk '{disk_name}' for deletion...")
-    print(f"Snapshots will be deleted in 30 days ({disk['snapshot_count']} snapshot(s))")
+        return None
 
     # Calculate deletion date (30 days from now)
-    delete_date = datetime.now() + timedelta(days=30)
+    delete_date = datetime.now(timezone.utc) + timedelta(days=30)
     delete_date_str = delete_date.strftime('%Y-%m-%d')
+
+    # Generate operation ID for tracking
+    operation_id = str(uuid.uuid4())
 
     # Send delete request to SQS queue
     try:
@@ -419,10 +376,11 @@ def delete_disk(disk_name: str, user_id: str, config: Config) -> bool:
         # Create disk deletion message
         message = {
             'action': 'delete_disk',
+            'operation_id': operation_id,
             'user_id': user_id,
             'disk_name': disk_name,
             'delete_date': delete_date_str,
-            'requested_at': datetime.now().isoformat()
+            'requested_at': datetime.now(timezone.utc).isoformat()
         }
 
         sqs_client.send_message(
@@ -430,14 +388,68 @@ def delete_disk(disk_name: str, user_id: str, config: Config) -> bool:
             MessageBody=json.dumps(message)
         )
 
-        print(f"✓ Successfully queued disk '{disk_name}' for deletion")
-        print(f"   Snapshots will be permanently deleted on {delete_date_str}")
-        print(f"   (Processing will be handled by Lambda)")
-        return True
+        return operation_id
 
     except Exception as e:
         print(f"Error sending delete request: {e}")
-        return False
+        return None
+
+
+def poll_disk_operation(
+    operation_type: str,
+    disk_name: str,
+    user_id: str,
+    config: Config,
+    timeout_seconds: int = 60
+) -> Tuple[bool, str]:
+    """
+    Poll DynamoDB for disk operation completion.
+
+    Args:
+        operation_type: 'create' or 'delete'
+        disk_name: Name of the disk
+        user_id: User ID
+        config: Config object
+        timeout_seconds: Max time to wait
+
+    Returns:
+        Tuple of (success, message)
+    """
+    import time
+
+    start_time = time.time()
+    poll_interval = 2  # seconds
+
+    while time.time() - start_time < timeout_seconds:
+        try:
+            disks = list_disks(user_id, config)
+            disk = next((d for d in disks if d['name'] == disk_name), None)
+
+            if operation_type == 'create':
+                # For create, we're waiting for the disk to appear
+                if disk is not None:
+                    return True, f"Disk '{disk_name}' created successfully"
+
+            elif operation_type == 'delete':
+                # For delete, we're waiting for is_deleted to be True
+                if disk is None:
+                    # Disk no longer in list (shouldn't happen with soft delete)
+                    return True, f"Disk '{disk_name}' deleted successfully"
+                elif disk.get('is_deleted', False):
+                    delete_date = disk.get('delete_date', 'in 30 days')
+                    return True, f"Disk '{disk_name}' marked for deletion. Snapshots will be permanently deleted on {delete_date}"
+
+            time.sleep(poll_interval)
+
+        except Exception as e:
+            # Continue polling on errors
+            time.sleep(poll_interval)
+
+    # Timeout
+    if operation_type == 'create':
+        return False, f"Timed out waiting for disk '{disk_name}' to be created. It may still be processing."
+    else:
+        return False, f"Timed out waiting for disk '{disk_name}' deletion to complete. It may still be processing."
 
 
 def rename_disk(old_name: str, new_name: str, user_id: str, config: Config) -> bool:

@@ -4,7 +4,7 @@ set -e
 # Backfill snapshot contents by spinning up a temporary EC2 instance
 # This script handles the full lifecycle: create instance, run backfill, cleanup
 
-REGION="us-west-1"
+REGION="us-east-2"
 INSTANCE_TYPE="t3.small"
 KEY_NAME="temp-backfill-key-$(date +%s)"
 KEY_FILE="/tmp/${KEY_NAME}.pem"
