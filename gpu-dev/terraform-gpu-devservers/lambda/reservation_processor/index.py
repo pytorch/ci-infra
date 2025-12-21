@@ -3433,6 +3433,8 @@ def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:
         client.V1EnvVar(name="MAX_JOBS", value=thread_str),  # PyTorch build parallelism
         client.V1EnvVar(name="CMAKE_BUILD_PARALLEL_LEVEL", value=thread_str),  # cmake parallelism
         client.V1EnvVar(name="MAKEFLAGS", value=f"-j{thread_str}"),  # make parallelism
+        # Used by startup script to write to /etc/environment for SSH sessions
+        client.V1EnvVar(name="GPU_DEV_THREAD_COUNT", value=thread_str),
     ]
 
 
@@ -3645,6 +3647,42 @@ def create_pod(
                         echo 'Defaults !lecture' >> /etc/sudoers.d/dev
                         chmod 0440 /etc/sudoers.d/dev
                         echo "[STARTUP] Sudoers configuration complete"
+
+                        # Write CPU thread limits for SSH sessions
+                        # Container env vars are not inherited by SSH login shells
+                        # Use /etc/profile.d/ for bash and /etc/zsh/zshenv for zsh
+                        if [ -n "$GPU_DEV_THREAD_COUNT" ]; then
+                            echo "[STARTUP] Writing CPU thread limits for SSH sessions..."
+
+                            # Create profile.d script for bash
+                            cat > /etc/profile.d/cpu-limits.sh << EOF
+export OMP_NUM_THREADS=$GPU_DEV_THREAD_COUNT
+export MKL_NUM_THREADS=$GPU_DEV_THREAD_COUNT
+export NUMEXPR_MAX_THREADS=$GPU_DEV_THREAD_COUNT
+export OPENBLAS_NUM_THREADS=$GPU_DEV_THREAD_COUNT
+export GOMAXPROCS=$GPU_DEV_THREAD_COUNT
+export MAX_JOBS=$GPU_DEV_THREAD_COUNT
+export CMAKE_BUILD_PARALLEL_LEVEL=$GPU_DEV_THREAD_COUNT
+export MAKEFLAGS="-j$GPU_DEV_THREAD_COUNT"
+EOF
+                            chmod 644 /etc/profile.d/cpu-limits.sh
+
+                            # Create zshenv for zsh (sourced for all zsh sessions)
+                            mkdir -p /etc/zsh
+                            cat > /etc/zsh/zshenv << EOF
+export OMP_NUM_THREADS=$GPU_DEV_THREAD_COUNT
+export MKL_NUM_THREADS=$GPU_DEV_THREAD_COUNT
+export NUMEXPR_MAX_THREADS=$GPU_DEV_THREAD_COUNT
+export OPENBLAS_NUM_THREADS=$GPU_DEV_THREAD_COUNT
+export GOMAXPROCS=$GPU_DEV_THREAD_COUNT
+export MAX_JOBS=$GPU_DEV_THREAD_COUNT
+export CMAKE_BUILD_PARALLEL_LEVEL=$GPU_DEV_THREAD_COUNT
+export MAKEFLAGS="-j$GPU_DEV_THREAD_COUNT"
+EOF
+                            chmod 644 /etc/zsh/zshenv
+
+                            echo "[STARTUP] ✓ CPU thread limits configured (threads=$GPU_DEV_THREAD_COUNT)"
+                        fi
 
                         # Install PyTorch for ARM64 CPU instances
                         if [ "{gpu_type}" = "cpu-arm" ]; then
