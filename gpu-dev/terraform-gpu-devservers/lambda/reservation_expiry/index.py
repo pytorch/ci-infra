@@ -199,17 +199,23 @@ def sync_completed_snapshots() -> int:
 
     try:
         # Find all completed snapshots with disk_name tag (created by our system)
-        response = ec2_client.describe_snapshots(
+        # Use paginator to handle large numbers of snapshots
+        paginator = ec2_client.get_paginator('describe_snapshots')
+        page_iterator = paginator.paginate(
             OwnerIds=["self"],
             Filters=[
                 {"Name": "tag-key", "Values": ["disk_name"]},
                 {"Name": "tag-key", "Values": ["gpu-dev-user"]},
                 {"Name": "status", "Values": ["completed"]},
             ],
-            MaxResults=100  # Limit to avoid timeouts
+            PaginationConfig={'PageSize': 100}
         )
 
-        snapshots = response.get('Snapshots', [])
+        # Collect all snapshots from all pages
+        snapshots = []
+        for page in page_iterator:
+            snapshots.extend(page.get('Snapshots', []))
+
         logger.info(f"Checking {len(snapshots)} completed snapshots for DynamoDB sync")
 
         # Check DynamoDB for each snapshot to see if it's already been processed
