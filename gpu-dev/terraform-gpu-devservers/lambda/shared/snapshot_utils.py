@@ -221,16 +221,20 @@ def cleanup_old_snapshots(user_id, keep_count=3, max_age_days=7, max_deletions_p
 
         logger.info(f"Cleaning up old snapshots for user {user_id}")
 
-        # Get all snapshots for this user
-        response = ec2_client.describe_snapshots(
+        # Get all snapshots for this user (with pagination)
+        paginator = ec2_client.get_paginator('describe_snapshots')
+        page_iterator = paginator.paginate(
             OwnerIds=["self"],
             Filters=[
                 {"Name": "tag:gpu-dev-user", "Values": [user_id]},
                 {"Name": "status", "Values": ["completed"]}
-            ]
+            ],
+            PaginationConfig={'PageSize': 100}
         )
 
-        snapshots = response.get('Snapshots', [])
+        snapshots = []
+        for page in page_iterator:
+            snapshots.extend(page.get('Snapshots', []))
         if len(snapshots) <= keep_count:
             logger.debug(f"User {user_id} has {len(snapshots)} snapshots, no cleanup needed")
             return 0
@@ -292,12 +296,17 @@ def get_latest_snapshot(user_id, volume_id=None, include_pending=False):
         if volume_id:
             filters.append({"Name": "volume-id", "Values": [volume_id]})
 
-        response = ec2_client.describe_snapshots(
+        # Use pagination to handle users with many snapshots
+        paginator = ec2_client.get_paginator('describe_snapshots')
+        page_iterator = paginator.paginate(
             OwnerIds=["self"],
-            Filters=filters
+            Filters=filters,
+            PaginationConfig={'PageSize': 100}
         )
 
-        snapshots = response.get('Snapshots', [])
+        snapshots = []
+        for page in page_iterator:
+            snapshots.extend(page.get('Snapshots', []))
         if not snapshots:
             status_desc = "completed or pending" if include_pending else "completed"
             logger.info(f"No {status_desc} snapshots found for user {user_id}")
@@ -323,17 +332,23 @@ def cleanup_all_user_snapshots(max_users_per_run=20):
     try:
         logger.info("Starting scheduled snapshot cleanup for all users")
 
-        # Get all gpu-dev snapshots grouped by user
-        response = ec2_client.describe_snapshots(
+        # Get all gpu-dev snapshots grouped by user (with pagination)
+        paginator = ec2_client.get_paginator('describe_snapshots')
+        page_iterator = paginator.paginate(
             OwnerIds=["self"],
             Filters=[
                 {"Name": "tag-key", "Values": ["gpu-dev-user"]},
-            ]
+            ],
+            PaginationConfig={'PageSize': 100}
         )
+
+        all_snapshots = []
+        for page in page_iterator:
+            all_snapshots.extend(page.get('Snapshots', []))
 
         # Group snapshots by user
         users_snapshots = {}
-        for snapshot in response.get('Snapshots', []):
+        for snapshot in all_snapshots:
             user_tag = next((tag['Value'] for tag in snapshot['Tags'] if tag['Key'] == 'gpu-dev-user'), None)
             if user_tag:
                 if user_tag not in users_snapshots:

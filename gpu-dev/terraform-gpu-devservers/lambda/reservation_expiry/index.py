@@ -277,15 +277,20 @@ def cleanup_soft_deleted_snapshots() -> int:
     today = datetime.now().strftime('%Y-%m-%d')
 
     try:
-        # Find all snapshots with delete-date tag
-        response = ec2_client.describe_snapshots(
+        # Find all snapshots with delete-date tag (with pagination)
+        paginator = ec2_client.get_paginator('describe_snapshots')
+        page_iterator = paginator.paginate(
             OwnerIds=["self"],
             Filters=[
                 {"Name": "tag-key", "Values": ["delete-date"]},
-            ]
+            ],
+            PaginationConfig={'PageSize': 100}
         )
 
-        snapshots = response.get('Snapshots', [])
+        snapshots = []
+        for page in page_iterator:
+            snapshots.extend(page.get('Snapshots', []))
+
         logger.info(f"Found {len(snapshots)} snapshots with delete-date tag")
 
         for snapshot in snapshots:
