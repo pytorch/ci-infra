@@ -307,13 +307,21 @@ def get_latest_snapshot(user_id, volume_id=None, include_pending=False):
         snapshots = []
         for page in page_iterator:
             snapshots.extend(page.get('Snapshots', []))
-        if not snapshots:
+
+        # Filter out soft-deleted snapshots (those with delete-date tag)
+        active_snapshots = []
+        for snap in snapshots:
+            tags = {tag['Key']: tag['Value'] for tag in snap.get('Tags', [])}
+            if 'delete-date' not in tags:
+                active_snapshots.append(snap)
+
+        if not active_snapshots:
             status_desc = "completed or pending" if include_pending else "completed"
             logger.info(f"No {status_desc} snapshots found for user {user_id}")
             return None
 
         # Get most recent snapshot by start time
-        latest_snapshot = max(snapshots, key=lambda s: s['StartTime'])
+        latest_snapshot = max(active_snapshots, key=lambda s: s['StartTime'])
         logger.info(
             f"Found latest snapshot {latest_snapshot['SnapshotId']} ({latest_snapshot['State']}) for user {user_id}")
         return latest_snapshot

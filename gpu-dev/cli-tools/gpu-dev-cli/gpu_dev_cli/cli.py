@@ -3408,7 +3408,8 @@ def disk():
 
 @disk.command("list")
 @click.option("--watch", is_flag=True, help="Continuously refresh disk list every 2 seconds")
-def disk_list(watch: bool):
+@click.option("--user", default=None, help="Impersonate another user (e.g., user@example.com)")
+def disk_list(watch: bool, user: str):
     """List all persistent disks"""
     import time
     from .disks import list_disks
@@ -3416,12 +3417,17 @@ def disk_list(watch: bool):
 
     config = load_config()
 
-    try:
-        user_info = authenticate_user(config)
-        user_id = user_info["user_id"]
-    except RuntimeError as e:
-        rprint(f"[red]❌ {str(e)}[/red]")
-        return
+    if user:
+        # Impersonation mode - use provided user_id directly
+        user_id = user
+        rprint(f"[yellow]⚠️  Impersonating user: {user_id}[/yellow]\n")
+    else:
+        try:
+            user_info = authenticate_user(config)
+            user_id = user_info["user_id"]
+        except RuntimeError as e:
+            rprint(f"[red]❌ {str(e)}[/red]")
+            return
 
     def render_disk_table():
         """Render disk table (for single display or watch mode)"""
@@ -3608,19 +3614,24 @@ def disk_create(disk_name: str):
 
 @disk.command("list-content")
 @click.argument("disk_name")
-def disk_list_content(disk_name: str):
+@click.option("--user", default=None, help="Impersonate another user (e.g., user@example.com)")
+def disk_list_content(disk_name: str, user: str):
     """Show contents of a disk's latest snapshot"""
     from .disks import list_disk_content
     from .auth import authenticate_user
 
     config = load_config()
 
-    try:
-        user_info = authenticate_user(config)
-        user_id = user_info["user_id"]
-    except RuntimeError as e:
-        rprint(f"[red]❌ {str(e)}[/red]")
-        return
+    if user:
+        user_id = user
+        rprint(f"[yellow]⚠️  Impersonating user: {user_id}[/yellow]\n")
+    else:
+        try:
+            user_info = authenticate_user(config)
+            user_id = user_info["user_id"]
+        except RuntimeError as e:
+            rprint(f"[red]❌ {str(e)}[/red]")
+            return
 
     try:
         contents = list_disk_content(disk_name, user_id, config)

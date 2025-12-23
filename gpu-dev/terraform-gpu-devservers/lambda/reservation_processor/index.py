@@ -737,6 +737,9 @@ def create_or_find_user_efs(user_id: str) -> str:
         # Check for existing EFS with user tag
         response = efs_client.describe_file_systems()
 
+        throttle_failures = 0
+        total_filesystems = len(response.get("FileSystems", []))
+
         for fs in response.get("FileSystems", []):
             fs_id = fs["FileSystemId"]
 
@@ -755,9 +758,23 @@ def create_or_find_user_efs(user_id: str) -> str:
                     return fs_id
 
             except Exception as tag_error:
-                logger.warning(
-                    f"Could not get tags for EFS {fs_id}: {tag_error}")
+                error_str = str(tag_error)
+                # Track throttling failures separately
+                if "Throttling" in error_str or "RequestLimitExceeded" in error_str or "TooManyRequests" in error_str:
+                    throttle_failures += 1
+                    logger.warning(
+                        f"EFS DescribeTags throttled for {fs_id} ({throttle_failures}/{total_filesystems}): {tag_error}")
+                else:
+                    logger.warning(
+                        f"Could not get tags for EFS {fs_id}: {tag_error}")
                 continue
+
+        # If we had throttling failures, don't create new EFS - could create duplicates
+        if throttle_failures > 0:
+            raise Exception(
+                f"EFS DescribeTags API throttled ({throttle_failures}/{total_filesystems} filesystems). "
+                f"Cannot safely create new EFS - retry later to avoid duplicates."
+            )
 
         # Create new EFS filesystem
         logger.info(f"Creating new EFS filesystem for user {user_id}")
@@ -3322,15 +3339,15 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
 
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
-            # Calculate proportional limits with CPU overprovisioning
-            # Give 1.5x CPU to allow burst capacity, capped at node total
+            # Calculate proportional limits with CPU overprovisioning for burst capacity
+            # Give 1.5x CPU limit to allow burst, capped at node total
             fractional_cpu = config["cpus"] * gpu_ratio
-            proportional_cpu = min(config["cpus"], int(fractional_cpu * 1.5))
-            proportional_memory = int(config["memory_gb"] * gpu_ratio)
+            proportional_cpu_limit = min(config["cpus"], int(fractional_cpu * 1.5))
+            proportional_memory_limit = int(config["memory_gb"] * gpu_ratio)
 
             limits.update({
-                "cpu": str(proportional_cpu),
-                "memory": f"{proportional_memory}Gi"
+                "cpu": str(proportional_cpu_limit),
+                "memory": f"{proportional_memory_limit}Gi"
             })
 
     # EFA optimization: Only use EFA for full-node multinode deployments
@@ -3364,14 +3381,15 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
             requests["nvidia.com/gpu"] = str(gpu_count)
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
-            # Set requests = limits for Guaranteed QoS (enables CPU pinning)
-            fractional_cpu = config["cpus"] * gpu_ratio
-            proportional_cpu = min(config["cpus"], int(fractional_cpu * 1.5))
-            proportional_memory = int(config["memory_gb"] * gpu_ratio)
+            # Calculate proportional requests (reserve 10% for system overhead)
+            # This ensures requests don't exceed node allocatable resources
+            # Limits can be higher for burst capacity (Burstable QoS)
+            proportional_cpu_request = int(config["cpus"] * gpu_ratio * 0.9)
+            proportional_memory_request = int(config["memory_gb"] * gpu_ratio * 0.9)
 
             requests.update({
-                "cpu": str(proportional_cpu),
-                "memory": f"{proportional_memory}Gi"
+                "cpu": str(proportional_cpu_request),
+                "memory": f"{proportional_memory_request}Gi"
             })
 
     # EFA: Only for full-node multinode deployments
@@ -3435,6 +3453,8 @@ def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:
         client.V1EnvVar(name="MAKEFLAGS", value=f"-j{thread_str}"),  # make parallelism
         # Used by startup script to write to /etc/environment for SSH sessions
         client.V1EnvVar(name="GPU_DEV_THREAD_COUNT", value=thread_str),
+        # ccache configuration for faster C++ compilation
+        client.V1EnvVar(name="CCACHE_DIR", value="/ccache_shared"),
     ]
 
 
@@ -3578,12 +3598,18 @@ def create_pod(
                         # Create marker file to verify init completed
                         echo "SSH keys initialized at $(date)" > /home/dev/.ssh/init_complete
 
+                        # Ensure shared ccache is writable by all users
+                        echo "[INIT] Setting up shared ccache permissions..."
+                        chmod 777 /ccache_shared 2>/dev/null || true
+
                         echo "[INIT] Dev user and SSH key setup complete"
                         """,
                     ],
                     volume_mounts=[
                         client.V1VolumeMount(
-                            name="dev-home", mount_path="/home/dev")
+                            name="dev-home", mount_path="/home/dev"),
+                        client.V1VolumeMount(
+                            name="ccache-shared", mount_path="/ccache_shared"),
                     ],
                     security_context=client.V1SecurityContext(
                         # Init container always runs as root to set up SSH keys
@@ -3664,6 +3690,7 @@ export GOMAXPROCS=$GPU_DEV_THREAD_COUNT
 export MAX_JOBS=$GPU_DEV_THREAD_COUNT
 export CMAKE_BUILD_PARALLEL_LEVEL=$GPU_DEV_THREAD_COUNT
 export MAKEFLAGS="-j$GPU_DEV_THREAD_COUNT"
+export CCACHE_DIR="/ccache_shared"
 EOF
                             chmod 644 /etc/profile.d/cpu-limits.sh
 
@@ -3678,6 +3705,7 @@ export GOMAXPROCS=$GPU_DEV_THREAD_COUNT
 export MAX_JOBS=$GPU_DEV_THREAD_COUNT
 export CMAKE_BUILD_PARALLEL_LEVEL=$GPU_DEV_THREAD_COUNT
 export MAKEFLAGS="-j$GPU_DEV_THREAD_COUNT"
+export CCACHE_DIR="/ccache_shared"
 EOF
                             chmod 644 /etc/zsh/zshenv
 
@@ -4878,7 +4906,7 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 logger.error(f"Timeout waiting for snapshot {snapshot_id}: {wait_error}")
                 raise RuntimeError(f"Disk '{disk_name or 'default'}' snapshot is still being created from previous session. Please wait a few minutes and try again.")
 
-        # Now find latest completed snapshot
+        # Now find latest completed snapshot (excluding soft-deleted ones)
         snapshot_filters = [
             {"Name": "tag:gpu-dev-user", "Values": [user_id]},
             {"Name": "status", "Values": ["completed"]},
@@ -4886,13 +4914,26 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
         if disk_name:
             snapshot_filters.append({"Name": "tag:disk_name", "Values": [disk_name]})
 
-        snapshot_response = ec2_client.describe_snapshots(
+        # Use pagination to handle users with many snapshots
+        paginator = ec2_client.get_paginator('describe_snapshots')
+        page_iterator = paginator.paginate(
             OwnerIds=["self"],
-            Filters=snapshot_filters
+            Filters=snapshot_filters,
+            PaginationConfig={'PageSize': 100}
         )
 
-        snapshots = snapshot_response.get('Snapshots', [])
-        latest_snapshot = max(snapshots, key=lambda s: s['StartTime']) if snapshots else None
+        snapshots = []
+        for page in page_iterator:
+            snapshots.extend(page.get('Snapshots', []))
+
+        # Filter out soft-deleted snapshots (those with delete-date tag)
+        active_snapshots = []
+        for snap in snapshots:
+            tags = {tag['Key']: tag['Value'] for tag in snap.get('Tags', [])}
+            if 'delete-date' not in tags:
+                active_snapshots.append(snap)
+
+        latest_snapshot = max(active_snapshots, key=lambda s: s['StartTime']) if active_snapshots else None
 
         # Step 3: Create volume from snapshot or empty
         if latest_snapshot:

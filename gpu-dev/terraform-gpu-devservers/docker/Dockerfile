@@ -1,6 +1,6 @@
 # Custom PyTorch GPU Development Server Image
-# Based on pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
-FROM pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
+# Based on pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
+FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
 
 # Set environment variables for non-interactive installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -35,6 +35,7 @@ RUN apt-get install -y --no-install-recommends \
         tmux \
         unzip \
         ccache \
+        htop \
         tree
 # Install Node.js 20 from NodeSource (required for Claude CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -52,11 +53,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Set CUDA paths for both versions - 12.9 as default for PyTorch compatibility
-ENV CUDA_12_PATH=/usr/local/cuda-12.9
+# Set CUDA paths for both versions - 12.8 as default for PyTorch compatibility
+ENV CUDA_12_PATH=/usr/local/cuda-12.8
 ENV CUDA_13_PATH=/usr/local/cuda-13.0
-ENV PATH=/usr/local/cuda-12.9/bin:/usr/local/cuda-13.0/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
+ENV PATH=/usr/local/cuda-12.8/bin:/usr/local/cuda-13.0/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
 
 # Install Python packages (Jupyter and common ML packages)
 RUN pip install --no-cache-dir \
