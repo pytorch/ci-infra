@@ -472,6 +472,11 @@ def handler(event, context):
                     # Pod gone but disk might still be marked in_use - clean it up
                     user_id = reservation.get("user_id")
                     disk_name = reservation.get("disk_name")
+
+                    # Fallback: if disk_name not in reservation, look it up from disks table
+                    if user_id and not disk_name:
+                        disk_name = find_disk_by_reservation(user_id, reservation_id)
+
                     if user_id and disk_name:
                         try:
                             mark_disk_not_in_use(user_id, disk_name)
@@ -633,6 +638,11 @@ def handler(event, context):
                     # Pod gone but disk might still be marked in_use - clean it up
                     user_id = reservation.get("user_id")
                     disk_name = reservation.get("disk_name")
+
+                    # Fallback: if disk_name not in reservation, look it up from disks table
+                    if user_id and not disk_name:
+                        disk_name = find_disk_by_reservation(user_id, reservation_id)
+
                     if user_id and disk_name:
                         try:
                             mark_disk_not_in_use(user_id, disk_name)
@@ -977,6 +987,36 @@ def mark_disk_not_in_use(user_id: str, disk_name: str) -> None:
         raise
 
 
+def find_disk_by_reservation(user_id: str, reservation_id: str) -> str | None:
+    """
+    Find a disk attached to a specific reservation.
+    Used as fallback when disk_name is not stored in the reservation record.
+    Returns disk_name if found, None otherwise.
+    """
+    try:
+        disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+        disks_table = dynamodb.Table(disks_table_name)
+
+        # Query disks for this user
+        response = disks_table.query(
+            KeyConditionExpression='user_id = :user_id',
+            ExpressionAttributeValues={':user_id': user_id}
+        )
+
+        for disk in response.get('Items', []):
+            attached_res = disk.get('attached_to_reservation')
+            if attached_res and (attached_res == reservation_id or reservation_id.startswith(attached_res[:8])):
+                disk_name = disk.get('disk_name')
+                logger.info(f"Found disk '{disk_name}' attached to reservation {reservation_id[:8]} via disks table lookup")
+                return disk_name
+
+        logger.info(f"No disk found attached to reservation {reservation_id[:8]} for user {user_id}")
+        return None
+    except Exception as e:
+        logger.warning(f"Error looking up disk by reservation: {e}")
+        return None
+
+
 def handle_oom_event(reservation: dict, oom_info: dict) -> bool:
     """
     Handle an OOM event for a reservation.
@@ -1224,6 +1264,11 @@ def expire_stuck_preparing_reservation(reservation: dict[str, Any]) -> None:
         # Clear disk in_use flag if disk was reserved
         user_id = reservation.get("user_id")
         disk_name = reservation.get("disk_name")
+
+        # Fallback: if disk_name not in reservation, look it up from disks table
+        if user_id and not disk_name:
+            disk_name = find_disk_by_reservation(user_id, reservation_id)
+
         if user_id and disk_name:
             try:
                 mark_disk_not_in_use(user_id, disk_name)
@@ -1641,6 +1686,12 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
         if reservation_data:
             final_user_id = reservation_data.get('user_id')
             final_disk_name = reservation_data.get('disk_name')
+            final_reservation_id = reservation_data.get('reservation_id')
+
+            # Fallback: if disk_name not in reservation, look it up from disks table
+            if final_user_id and not final_disk_name and final_reservation_id:
+                final_disk_name = find_disk_by_reservation(final_user_id, final_reservation_id)
+
             if final_user_id and final_disk_name:
                 try:
                     mark_disk_not_in_use(final_user_id, final_disk_name)
@@ -1659,6 +1710,12 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
         if reservation_data:
             error_user_id = reservation_data.get('user_id')
             error_disk_name = reservation_data.get('disk_name')
+            error_reservation_id = reservation_data.get('reservation_id')
+
+            # Fallback: if disk_name not in reservation, look it up from disks table
+            if error_user_id and not error_disk_name and error_reservation_id:
+                error_disk_name = find_disk_by_reservation(error_user_id, error_reservation_id)
+
             if error_user_id and error_disk_name:
                 try:
                     mark_disk_not_in_use(error_user_id, error_disk_name)

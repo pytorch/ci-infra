@@ -307,12 +307,10 @@ def create_ssh_config_for_reservation(hostname: str, pod_name: str, reservation_
     gpu_dev_dir = Path.home() / ".gpu-dev"
     gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
 
-    # Use name if provided, otherwise use short ID (first 8 chars)
-    if name:
-        filename = f"{name}-sshconfig"
-    else:
-        short_id = reservation_id[:8]
-        filename = f"{short_id}-sshconfig"
+    # Use short ID for filename (always safe, avoids issues with special chars like / in names)
+    # For multinode, names like "16x B200 multinode - Node 1/2" contain / which breaks filenames
+    short_id = reservation_id[:8]
+    filename = f"{short_id}-sshconfig"
 
     config_file = gpu_dev_dir / filename
     config_content = _generate_ssh_config(hostname, pod_name)
@@ -334,19 +332,16 @@ def remove_ssh_config_for_reservation(reservation_id: str, name: Optional[str] =
 
     Args:
         reservation_id: The reservation ID (full or short)
-        name: Optional reservation name to use for filename (falls back to short ID)
+        name: Optional reservation name to use for filename (falls back to short ID, name param kept for backwards compat)
 
     Returns:
         True if successful (or file didn't exist), False on error
     """
     from pathlib import Path
 
-    # Use name if provided, otherwise use short ID (first 8 chars)
-    if name:
-        filename = f"{name}-sshconfig"
-    else:
-        short_id = reservation_id[:8]
-        filename = f"{short_id}-sshconfig"
+    # Always use short ID for filename (consistent with create_ssh_config_for_reservation)
+    short_id = reservation_id[:8]
+    filename = f"{short_id}-sshconfig"
 
     config_file = Path.home() / ".gpu-dev" / filename
 
@@ -380,18 +375,15 @@ def get_ssh_config_path(reservation_id: str, name: Optional[str] = None) -> str:
 
     Args:
         reservation_id: The reservation ID (full or short)
-        name: Optional reservation name to use for filename (falls back to short ID)
+        name: Optional reservation name to use for filename (falls back to short ID, name param kept for backwards compat)
 
     Returns:
         Path to the config file (may not exist)
     """
     from pathlib import Path
-    # Use name if provided, otherwise use short ID (first 8 chars)
-    if name:
-        filename = f"{name}-sshconfig"
-    else:
-        short_id = reservation_id[:8]
-        filename = f"{short_id}-sshconfig"
+    # Always use short ID for filename (consistent with create_ssh_config_for_reservation)
+    short_id = reservation_id[:8]
+    filename = f"{short_id}-sshconfig"
     return str(Path.home() / ".gpu-dev" / filename)
 
 
@@ -418,6 +410,7 @@ class ReservationManager:
         dockerimage: Optional[str] = None,
         preserve_entrypoint: bool = False,
         disk_name: Optional[str] = None,
+        node_labels: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
@@ -490,6 +483,10 @@ class ReservationManager:
             if disk_name:
                 message["disk_name"] = disk_name
 
+            # Add node_labels if provided (for node selection preferences)
+            if node_labels:
+                message["node_labels"] = node_labels
+
             queue_url = self.config.get_queue_url()
             self.config.sqs_client.send_message(
                 QueueUrl=queue_url, MessageBody=json.dumps(message)
@@ -516,6 +513,7 @@ class ReservationManager:
         no_persistent_disk: bool = False,
         preserve_entrypoint: bool = False,
         disk_name: Optional[str] = None,
+        node_labels: Optional[Dict[str, str]] = None,
     ) -> Optional[List[str]]:
         """Create multiple GPU reservations for multinode setup"""
         try:
@@ -590,6 +588,10 @@ class ReservationManager:
                 # Add disk_name if provided (only for master node in multinode setup)
                 if disk_name and node_idx == 0:
                     message["disk_name"] = disk_name
+
+                # Add node_labels if provided (for node selection preferences)
+                if node_labels:
+                    message["node_labels"] = node_labels
 
                 # Send to SQS queue
                 queue_url = self.config.get_queue_url()
@@ -1915,16 +1917,37 @@ class ReservationManager:
                                     console.print(
                                         f"\n[green]✅ Multinode reservation complete! All {total_nodes} nodes are ready.[/green]")
 
-                                    # Show connection info for each node
+                                    # Create SSH config files and show connection info for each node
                                     for node in node_details:
                                         if node["reservation"]:
                                             res = node["reservation"]
-                                            ssh_command = res.get(
-                                                "ssh_command", "ssh user@pending")
-                                            ssh_with_forwarding = _add_agent_forwarding_to_ssh(
-                                                ssh_command)
-                                            console.print(
-                                                f"[cyan]🖥️  Node {node['index']+1}:[/cyan] {ssh_with_forwarding}")
+                                            fqdn = res.get("fqdn")
+                                            pod_name = res.get("pod_name")
+                                            res_id = res.get("reservation_id")
+                                            res_name = res.get("name")
+
+                                            # Create SSH config file for this node
+                                            config_path = None
+                                            use_include = False
+                                            if fqdn and pod_name and res_id:
+                                                try:
+                                                    config_path, use_include = create_ssh_config_for_reservation(
+                                                        fqdn, pod_name, res_id, res_name)
+                                                except Exception as e:
+                                                    console.print(
+                                                        f"[yellow]⚠️  Could not create SSH config for node {node['index']+1}: {str(e)}[/yellow]")
+
+                                            # Show connection info
+                                            if config_path and pod_name and use_include:
+                                                console.print(
+                                                    f"[cyan]🖥️  Node {node['index']+1}:[/cyan] [green]ssh {pod_name}[/green]")
+                                            else:
+                                                ssh_command = res.get(
+                                                    "ssh_command", "ssh user@pending")
+                                                ssh_with_forwarding = _add_agent_forwarding_to_ssh(
+                                                    ssh_command)
+                                                console.print(
+                                                    f"[cyan]🖥️  Node {node['index']+1}:[/cyan] {ssh_with_forwarding}")
 
                                     return all_reservations
                                 else:

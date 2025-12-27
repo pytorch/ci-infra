@@ -113,7 +113,9 @@ RUN mkdir -p /devserver-setup && \
 
 COPY --chown=root:root shell_env /devserver-setup/.shell_env
 COPY --chown=root:root zshrc /devserver-setup/.zshrc
+COPY --chown=root:root zshrc_ext /devserver-setup/.zshrc_ext
 COPY --chown=root:root bashrc /devserver-setup/.bashrc
+COPY --chown=root:root bashrc_ext /devserver-setup/.bashrc_ext
 COPY --chown=root:root bash_profile /devserver-setup/.bash_profile
 COPY --chown=root:root profile /devserver-setup/.profile
 COPY --chown=root:root zprofile /devserver-setup/.zprofile

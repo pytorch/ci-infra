@@ -93,7 +93,7 @@ spec:
         cpu: "2"
         memory: "4Gi"
     flags:
-      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false
+      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false${profiling_dedicated ? ",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false" : ""}
 EOF
 
 /usr/bin/nodeadm init --config-source file:///tmp/nodeadm-config.yaml

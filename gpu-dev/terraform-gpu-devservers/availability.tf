@@ -32,7 +32,11 @@ resource "aws_lambda_function" "availability_updater" {
   environment {
     variables = {
       AVAILABILITY_TABLE  = aws_dynamodb_table.gpu_availability.name
-      SUPPORTED_GPU_TYPES = jsonencode(local.current_config.supported_gpu_types)
+      # Filter out nsight variants - they're counted under base types (h200/b200) via GpuType label mapping
+      SUPPORTED_GPU_TYPES = jsonencode({
+        for k, v in local.current_config.supported_gpu_types : k => v
+        if !endswith(k, "-nsight")
+      })
       EKS_CLUSTER_NAME    = aws_eks_cluster.gpu_dev_cluster.name
       REGION              = local.current_config.aws_region
     }

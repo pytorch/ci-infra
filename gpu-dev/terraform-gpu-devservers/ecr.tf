@@ -76,6 +76,8 @@ locals {
   ecr_repository_url  = aws_ecr_repository.gpu_dev_image.repository_url
   image_tag          = "latest-${substr(local.docker_context_hash, 0, 8)}"
   full_image_uri     = "${local.ecr_repository_url}:${local.image_tag}"
+  # Stable latest tag for pods - survives OOM restarts even if hash-tagged images are cleaned up
+  latest_image_uri   = "${local.ecr_repository_url}:latest"
 }
 
 # Docker build and push using null_resource with proper architecture handling

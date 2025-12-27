@@ -1,20 +1,9 @@
 # Source shared environment
 [ -f ~/.shell_env ] && source ~/.shell_env
 
-# Function to check for GPU reservation expiry warnings
-check_warnings() {
-    for warning_file in /home/dev/WARN_EXPIRES_IN_*MIN.txt; do
-        if [ -f "$warning_file" ]; then
-            # Extract minutes from filename (e.g., WARN_EXPIRES_IN_15MIN.txt -> 15)
-            minutes=$(echo "$warning_file" | sed 's/.*WARN_EXPIRES_IN_\([0-9]*\)MIN.txt/\1/')
-            echo -e "\033[1;31m🚨 URGENT: Server expires in <${minutes} minutes! 🚨\033[0m"
-            return
-        fi
-    done 2>/dev/null
-}
-
-# Run warning check before every command prompt
-PROMPT_COMMAND="check_warnings; $PROMPT_COMMAND"
+# Source GPU dev server extensions (warnings, startup status, etc.)
+# This file is managed by the system and updated on every pod startup
+[ -f ~/.bashrc_ext ] && source ~/.bashrc_ext
 
 # Bash-specific settings
 if [ -f /etc/bash_completion ] && ! shopt -oq posix; then

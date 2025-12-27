@@ -278,8 +278,11 @@ resource "helm_release" "nvidia_gpu_operator" {
 
   set {
     name  = "dcgmExporter.enabled"
-    value = "false"
+    value = "true"
   }
+
+  # Note: DCGM exclusion from profiling-dedicated nodes is handled via node label:
+  # nvidia.com/gpu.deploy.dcgm-exporter=false (set in al2023-user-data.sh for profiling nodes)
 
   set {
     name  = "gfd.enabled"
@@ -377,6 +380,18 @@ resource "helm_release" "nvidia_gpu_operator" {
 # This ensures first user on new node doesn't wait for slow image pull
 # After rebuilding image, trigger re-pull with: kubectl rollout restart daemonset gpu-dev-image-prepuller -n kube-system
 resource "kubernetes_manifest" "image_prepuller_daemonset" {
+  # force_conflicts needed because ecr.tf runs "kubectl rollout restart" after each image push,
+  # which adds an annotation owned by kubectl-rollout that would otherwise conflict with terraform
+  field_manager {
+    force_conflicts = true
+  }
+
+  # Tell provider these fields are server-managed and shouldn't cause drift errors
+  computed_fields = [
+    "metadata.annotations[\"deprecated.daemonset.template.generation\"]",
+    "metadata.annotations[\"kubectl.kubernetes.io/restartedAt\"]",
+  ]
+
   manifest = {
     apiVersion = "apps/v1"
     kind       = "DaemonSet"
@@ -414,7 +429,7 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
           initContainers = [
             {
               name            = "pull-gpu-dev-image"
-              image           = local.full_image_uri
+              image           = local.latest_image_uri  # Use stable 'latest' tag
               imagePullPolicy = "Always"
               command         = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
             }
@@ -442,5 +457,136 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
 
   depends_on = [
     null_resource.docker_build_and_push
+  ]
+}
+
+# GPU types that should have one node labeled for Nsight profiling (no DCGM)
+locals {
+  profiling_gpu_types = {
+    default = ["t4"]           # Test: one T4 node for profiling
+    prod    = ["h200", "b200"] # Prod: one H200 and one B200 node for profiling
+  }
+}
+
+# ServiceAccount for profiling node labeler
+resource "kubernetes_service_account" "profiling_labeler" {
+  metadata {
+    name      = "profiling-node-labeler"
+    namespace = "kube-system"
+  }
+}
+
+# ClusterRole to allow labeling nodes
+resource "kubernetes_cluster_role" "profiling_labeler" {
+  metadata {
+    name = "profiling-node-labeler"
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["nodes"]
+    verbs      = ["get", "list", "patch"]
+  }
+}
+
+# ClusterRoleBinding for profiling labeler
+resource "kubernetes_cluster_role_binding" "profiling_labeler" {
+  metadata {
+    name = "profiling-node-labeler"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role.profiling_labeler.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.profiling_labeler.metadata[0].name
+    namespace = "kube-system"
+  }
+}
+
+# CronJob to ensure one node per GPU type has profiling labels
+resource "kubernetes_cron_job_v1" "profiling_node_labeler" {
+  metadata {
+    name      = "profiling-node-labeler"
+    namespace = "kube-system"
+  }
+
+  spec {
+    schedule                      = "*/5 * * * *" # Every 5 minutes
+    successful_jobs_history_limit = 1
+    failed_jobs_history_limit     = 1
+
+    job_template {
+      metadata {}
+      spec {
+        template {
+          metadata {}
+          spec {
+            service_account_name = kubernetes_service_account.profiling_labeler.metadata[0].name
+            restart_policy       = "OnFailure"
+
+            container {
+              name  = "labeler"
+              image = "bitnami/kubectl:latest"
+
+              command = ["/bin/bash", "-c"]
+              args = [<<-EOT
+                set -e
+                GPU_TYPES="${join(" ", lookup(local.profiling_gpu_types, terraform.workspace, []))}"
+
+                for GPU_TYPE in $GPU_TYPES; do
+                  echo "Checking $GPU_TYPE nodes..."
+
+                  # Check if any node already has the profiling label
+                  EXISTING=$(kubectl get nodes -l GpuType=$GPU_TYPE,gpu.monitoring/profiling-dedicated=true -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+                  if [ -n "$EXISTING" ]; then
+                    echo "$GPU_TYPE: Node $EXISTING already labeled for profiling"
+                    continue
+                  fi
+
+                  # Get first available node of this GPU type
+                  NODE=$(kubectl get nodes -l GpuType=$GPU_TYPE -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+                  if [ -z "$NODE" ]; then
+                    echo "$GPU_TYPE: No nodes found, skipping"
+                    continue
+                  fi
+
+                  # Label the node for profiling
+                  echo "$GPU_TYPE: Labeling $NODE for Nsight profiling..."
+                  kubectl label node "$NODE" \
+                    gpu.monitoring/profiling-dedicated=true \
+                    nvidia.com/gpu.deploy.dcgm-exporter=false \
+                    --overwrite
+
+                  echo "$GPU_TYPE: Successfully labeled $NODE"
+                done
+
+                echo "Profiling node labeling complete"
+              EOT
+              ]
+            }
+
+            # Run on CPU nodes to avoid using GPU resources
+            node_selector = {
+              "kubernetes.io/arch" = "amd64"
+            }
+
+            toleration {
+              operator = "Exists"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    kubernetes_cluster_role_binding.profiling_labeler
   ]
 }

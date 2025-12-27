@@ -98,6 +98,63 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
   - Pod-level: Added Linux capability `SYS_ADMIN` to all GPU pods (required for NVIDIA profiling tools like ncu/nsys)
   - Environment: Set `NVIDIA_DRIVER_CAPABILITIES=compute,utility` (note: `profile` is NOT supported by NVIDIA device plugin)
   - Location: `terraform-gpu-devservers/lambda/reservation_processor/index.py:4000` and `:3984`
+- **GPU Monitoring with Grafana** - Added full GPU monitoring stack:
+  - DCGM Exporter enabled in GPU Operator with anti-affinity for profiling nodes
+  - kube-prometheus-stack deployed with 50GB persistent storage (15-day retention)
+  - Grafana accessible via NodePort 30080 on any node IP
+  - Pre-loaded NVIDIA DCGM dashboard (Grafana ID 12239) + custom GPU Overview dashboard
+  - Configuration: `terraform-gpu-devservers/monitoring.tf`
+
+## GPU Monitoring & Profiling Node Setup (Dec 2025)
+
+**Architecture:**
+- DCGM Exporter runs on ALL GPU nodes EXCEPT profiling-dedicated nodes
+- Profiling-dedicated nodes: ONE H100 and ONE B200 node reserved for Nsight profiling
+- DCGM and Nsight conflict because both need exclusive GPU access
+
+**Profiling Node Labeling (manual, one-time setup after `tf apply`):**
+```bash
+# List H100 nodes and pick ONE for profiling
+kubectl get nodes -l gpu-type=h100
+
+# Label one H100 node as profiling-dedicated (DCGM will NOT run on this node)
+kubectl label node <h100-node-name> gpu.monitoring/profiling-dedicated=true
+
+# List B200 nodes and pick ONE for profiling
+kubectl get nodes -l gpu-type=b200
+
+# Label one B200 node as profiling-dedicated
+kubectl label node <b200-node-name> gpu.monitoring/profiling-dedicated=true
+
+# Verify labels
+kubectl get nodes -l gpu.monitoring/profiling-dedicated=true
+```
+
+**Grafana Access:**
+```bash
+# Get any node IP
+kubectl get nodes -o wide
+
+# Access Grafana at: http://<node-ip>:30080
+# Default credentials: admin / (value of grafana_admin_password variable)
+```
+
+**Available Dashboards:**
+- NVIDIA DCGM Exporter Dashboard (pre-configured from Grafana community)
+- GPU Overview (custom dashboard with utilization, memory, temp, power)
+
+**Troubleshooting:**
+```bash
+# Check DCGM pods are running (should NOT be on profiling nodes)
+kubectl get pods -n gpu-operator -l app=nvidia-dcgm-exporter -o wide
+
+# Verify Prometheus is scraping DCGM
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+# Then open http://localhost:9090 and query: DCGM_FI_DEV_GPU_UTIL
+
+# Check Grafana pods
+kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
+```
 
 ## Recent Fixes (Oct 27, 2025)
 

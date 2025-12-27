@@ -64,5 +64,10 @@ lambda/*/package/
 .env
 .env.local
 
+# Grafana Cloud secrets
+**/grafana-cloud.tfvars
+**/grafana-cloud.auto.tfvars
+**/secrets.auto.tfvars
+
 # Admin output files
 admin/output/

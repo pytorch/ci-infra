@@ -507,6 +507,13 @@ def main(ctx: click.Context) -> None:
     type=str,
     help="Named persistent disk to use (e.g., 'pytorch-main'), or 'none' for temporary storage only. Use 'gpu-dev disk list' to see available disks.",
 )
+@click.option(
+    "--node-label",
+    "-l",
+    type=str,
+    multiple=True,
+    help="Request nodes with specific label (format: key=value). Example: --node-label nsight=true for Nsight profiling nodes",
+)
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -525,6 +532,7 @@ def reserve(
     dockerimage: Optional[str],
     preserve_entrypoint: bool,
     disk: Optional[str],
+    node_label: tuple,
 ) -> None:
     """Reserve GPU development server(s)
 
@@ -1128,6 +1136,15 @@ def reserve(
             # --no-persist explicitly disables persistent disk
             no_persistent_disk = no_persist or bool(persistent_reservations)
 
+            # Parse node labels from --node-label options (format: key=value)
+            node_labels = {}
+            for label in node_label:
+                if "=" in label:
+                    key, value = label.split("=", 1)
+                    node_labels[key.strip()] = value.strip()
+                else:
+                    console.print(f"[yellow]Warning: Invalid node-label format '{label}', expected key=value[/yellow]")
+
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
             if gpu_count > max_gpus:
                 # Multinode reservation
@@ -1150,6 +1167,7 @@ def reserve(
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
                     disk_name=disk,
+                    node_labels=node_labels if node_labels else None,
                 )
             else:
                 # Single node reservation
@@ -1167,6 +1185,7 @@ def reserve(
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
                     disk_name=disk,
+                    node_labels=node_labels if node_labels else None,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 

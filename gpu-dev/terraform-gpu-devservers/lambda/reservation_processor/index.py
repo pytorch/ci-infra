@@ -2273,6 +2273,11 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         logger.info(
             f"DEPLOY_CHECK: preserve_entrypoint parameter extracted: {preserve_entrypoint} (type: {type(preserve_entrypoint)})")
 
+        # Extract node labels for node selection preferences (e.g., nsight=true for profiling nodes)
+        node_labels = request.get("node_labels")
+        if node_labels:
+            logger.info(f"Node label preferences: {node_labels}")
+
         # Set up K8s client early for both Docker builds and pod creation
         k8s_client = get_k8s_client()
 
@@ -2464,15 +2469,17 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
 
                 # Mark disk as in_use in disks table (prevents CLI from showing as available)
+                # Use "default" as fallback when no explicit disk_name provided
+                effective_disk_name = disk_name or "default"
                 try:
-                    mark_disk_in_use(user_id, disk_name or "default", True, reservation_id)
-                    logger.info(f"Marked disk '{disk_name or 'default'}' as in_use for reservation {reservation_id[:8]}")
+                    mark_disk_in_use(user_id, effective_disk_name, True, reservation_id)
+                    logger.info(f"Marked disk '{effective_disk_name}' as in_use for reservation {reservation_id[:8]}")
                 except Exception as mark_error:
                     logger.warning(f"Failed to mark disk as in_use: {mark_error}")
 
-                # Store disk_name in DynamoDB for tracking
-                if disk_name:
-                    update_reservation_fields(reservation_id, disk_name=disk_name)
+                # Store disk_name in DynamoDB for tracking (ALWAYS store, using "default" as fallback)
+                # This is required for expiry cleanup to know which disk to mark as not in use
+                update_reservation_fields(reservation_id, disk_name=effective_disk_name)
 
                 # Store warning if any
                 if disk_warning:
@@ -2558,6 +2565,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             dockerimage=dockerimage,
             target_az=target_az,
             preserve_entrypoint=preserve_entrypoint,
+            node_labels=node_labels,
         )
 
         # Update status: Pod created, waiting for container to start
@@ -3052,6 +3060,7 @@ def create_kubernetes_resources(
     dockerimage: str = None,
     target_az: str = None,
     preserve_entrypoint: bool = False,
+    node_labels: dict = None,
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
@@ -3150,6 +3159,7 @@ def create_kubernetes_resources(
                         dockerimage=dockerimage,
                         target_az=target_az,
                         preserve_entrypoint=preserve_entrypoint,
+                        node_labels=node_labels,
                     )
                     logger.info(f"Created new pod {pod_name} with Jupyter")
                     update_reservation_status(
@@ -3227,6 +3237,7 @@ def create_kubernetes_resources(
                         dockerimage=dockerimage,
                         target_az=target_az,
                         preserve_entrypoint=preserve_entrypoint,
+                        node_labels=node_labels,
                     )
                     logger.info(f"Created new pod {pod_name} without Jupyter")
                     update_reservation_status(
@@ -3495,6 +3506,7 @@ def create_pod(
     dockerimage: str = None,
     target_az: str = None,
     preserve_entrypoint: bool = False,
+    node_labels: dict = None,
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
@@ -3808,7 +3820,7 @@ EOF
                             # Copy pre-built configs from Docker image to persistent disk with error checking
                             echo "[STARTUP] Copying shell configurations from /devserver-setup to /home/dev..."
                             
-                            for file in .shell_env .bashrc .bash_profile .profile .zshrc .zprofile; do
+                            for file in .shell_env .bashrc .bashrc_ext .bash_profile .profile .zshrc .zshrc_ext .zprofile; do
                                 if [ -f "/devserver-setup/$file" ]; then
                                     echo "[STARTUP] Copying $file..."
                                     if cp "/devserver-setup/$file" "/home/dev/$file"; then
@@ -3854,27 +3866,16 @@ EOF
                         elif [ "$CREATE_SH_ENV" = "true" ]; then
                             echo "[STARTUP] CREATE_SH_ENV=true but /devserver-setup not found - creating basic shell configuration"
 
-                            # Create basic bashrc with expiration warning support for custom Docker images
+                            # Create basic bashrc for custom Docker images
                             cat > /home/dev/.bashrc << 'EOF_BASHRC'
 # Basic bashrc for GPU dev servers - Custom Docker image
 
 # Source system bashrc if it exists
 [ -r /etc/bash.bashrc ] && . /etc/bash.bashrc
 
-# Function to check for GPU reservation expiry warnings
-check_warnings() {{
-    for warning_file in /home/dev/WARN_EXPIRES_IN_*MIN.txt; do
-        if [ -f "$warning_file" ]; then
-            # Extract minutes from filename (e.g., WARN_EXPIRES_IN_15MIN.txt -> 15)
-            minutes=$(echo "$warning_file" | sed 's/.*WARN_EXPIRES_IN_\\([0-9]*\\)MIN.txt/\\1/')
-            echo -e "\\033[1;31m🚨 URGENT: Server expires in <${{minutes}} minutes! 🚨\\033[0m"
-            return
-        fi
-    done 2>/dev/null
-}}
-
-# Run warning check before every command prompt
-PROMPT_COMMAND="check_warnings; $PROMPT_COMMAND"
+# Source GPU dev server extensions (warnings, startup status, etc.)
+# This file is managed by the system and updated on every pod startup
+[ -f ~/.bashrc_ext ] && source ~/.bashrc_ext
 
 # Basic info on login
 echo "🚀 GPU Dev Server Ready!"
@@ -3883,7 +3884,7 @@ echo "📁 Original container files preserved in their original locations"
 EOF_BASHRC
 
                             chown 1081:1081 /home/dev/.bashrc
-                            echo "[STARTUP] ✓ Created basic .bashrc with expiration warnings"
+                            echo "[STARTUP] ✓ Created basic .bashrc"
 
                             # Ensure .bashrc is sourced for SSH login shells
                             cat > /home/dev/.bash_profile << 'EOF_PROFILE'
@@ -3899,6 +3900,85 @@ EOF_PROFILE
                             echo "[STARTUP] Current files in /home/dev:"
                             ls -la /home/dev/.??* 2>/dev/null || echo "[STARTUP] No hidden files found in /home/dev"
                         fi
+
+                        # Always write shell extension files (these contain system features like warnings)
+                        # This ensures persistent disks get updates without touching user customizations
+                        echo "[STARTUP] Writing shell extension files..."
+
+                        cat > /home/dev/.bashrc_ext << EOF_BASHRC_EXT
+# GPU Dev Server Extensions (managed by system - do not edit)
+# This file is overwritten on every pod startup to ensure latest features.
+# Put your personal customizations in ~/.bashrc instead.
+
+# User identification
+export GPU_DEV_USER_ID="{user_id or 'dev'}"
+
+# Function to check for GPU reservation expiry warnings and startup script status
+check_warnings() {{
+    # Check for startup script still running
+    if [ -f /home/dev/STARTUP_SCRIPT_RUNNING.txt ]; then
+        echo -e "\\033[1;33m\$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
+    fi
+    # Check for expiry warnings
+    for warning_file in /home/dev/WARN_EXPIRES_IN_*MIN.txt; do
+        if [ -f "\$warning_file" ]; then
+            minutes=\$(echo "\$warning_file" | sed 's/.*WARN_EXPIRES_IN_\\([0-9]*\\)MIN.txt/\\1/')
+            echo -e "\\033[1;31m🚨 URGENT: Server expires in <\${{minutes}} minutes! 🚨\\033[0m"
+            return
+        fi
+    done 2>/dev/null
+}}
+
+# Run warning check before every command prompt
+PROMPT_COMMAND="check_warnings; \$PROMPT_COMMAND"
+EOF_BASHRC_EXT
+
+                        cat > /home/dev/.zshrc_ext << EOF_ZSHRC_EXT
+# GPU Dev Server Extensions (managed by system - do not edit)
+# This file is overwritten on every pod startup to ensure latest features.
+# Put your personal customizations in ~/.zshrc instead.
+
+# User identification
+export GPU_DEV_USER_ID="{user_id or 'dev'}"
+
+# Function to check for GPU reservation expiry warnings and startup script status
+check_warnings() {{
+    # Check for startup script still running
+    if [[ -f /home/dev/STARTUP_SCRIPT_RUNNING.txt ]]; then
+        echo -e "\\033[1;33m\$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
+    fi
+    # Check for expiry warnings
+    setopt NULL_GLOB 2>/dev/null
+    local warning_files=(/home/dev/WARN_EXPIRES_IN_*MIN.txt)
+    if [[ \${{#warning_files[@]}} -gt 0 ]] && [[ -f "\${{warning_files[1]}}" ]]; then
+        local minutes="\${{warning_files[1]:t:r}}"
+        minutes="\${{minutes#WARN_EXPIRES_IN_}}"
+        minutes="\${{minutes%MIN}}"
+        echo -e "\\033[1;31m🚨 URGENT: Server expires in <\${{minutes}} minutes! 🚨\\033[0m"
+    fi
+}}
+
+# Run warning check before every command prompt (zsh hook)
+precmd() {{ check_warnings }}
+EOF_ZSHRC_EXT
+
+                        chown 1081:1081 /home/dev/.bashrc_ext /home/dev/.zshrc_ext
+                        echo "[STARTUP] ✓ Shell extension files written"
+
+                        # Ensure existing rc files source the extensions (for persistent disks with old configs)
+                        for rcfile in /home/dev/.bashrc /home/dev/.zshrc; do
+                            if [ -f "$rcfile" ]; then
+                                ext_file="$(basename $rcfile)_ext"
+                                # Check if correct source line exists (must be ~/$ext_file, not ~/.$ext_file or ~/..ext_file)
+                                if ! grep -qF "~/$ext_file" "$rcfile"; then
+                                    echo "[STARTUP] Adding extension source to $rcfile"
+                                    echo "" >> "$rcfile"
+                                    echo "# Source GPU dev server extensions (warnings, startup status, etc.)" >> "$rcfile"
+                                    echo "[ -f ~/$ext_file ] && source ~/$ext_file" >> "$rcfile"
+                                fi
+                            fi
+                        done
+                        echo "[STARTUP] ✓ Shell extension sourcing configured"
 
                         # Ensure correct ownership
                         chown -R dev:dev /home/dev
@@ -3929,6 +4009,33 @@ EOF_PROFILE
 
 This is your persistent shared storage that survives across reservations.
 
+## Custom Startup Script
+
+You can create a `startup.sh` script in this directory that will run automatically
+on every pod creation. This is useful for:
+- Installing additional packages
+- Setting up environment variables
+- Cloning repositories
+- Any custom initialization
+
+**To use:**
+1. Create `/shared-personal/<your-username>/startup.sh`
+2. On your next reservation, the script will run automatically
+3. Check `/home/dev/startup-output.log` for execution output
+
+**Example startup.sh:**
+```bash
+#!/bin/bash
+# Install additional packages
+pip install my-favorite-package
+
+# Clone a repo
+git clone https://github.com/myuser/myrepo /workspace/myrepo
+
+# Set up aliases
+echo 'alias ll="ls -la"' >> ~/.bashrc
+```
+
 ## Cost Information
 - **Standard storage**: ~$0.30/GB/month for frequently accessed files
 - **Infrequent Access**: ~$0.0125/GB/month for files not accessed in 30+ days
@@ -3947,35 +4054,20 @@ EOFREADME
                             # Set up dotfiles persistence using pre-built scripts from Docker image
                             if [ -f "/usr/local/bin/setup-dotfiles-persistence" ]; then
                                 echo "[STARTUP] Setting up dotfiles persistence..."
-                                
+
                                 # Set up environment variable for backup scripts to use
                                 USER_ID_CLEAN="{user_id.split('@')[0] if user_id else 'default'}"
 
-                                # Clean up duplicate GPU_DEV_USER_ID exports from previous bug (keep only first occurrence)
+                                # Clean up old GPU_DEV_USER_ID exports from bashrc/zshrc (now in _ext files)
                                 for rcfile in /home/dev/.bashrc /home/dev/.zshrc; do
-                                    if [ -f "$rcfile" ]; then
-                                        # Count duplicates
-                                        dup_count=$(grep -c 'export GPU_DEV_USER_ID=' "$rcfile" 2>/dev/null || echo "0")
-                                        if [ "$dup_count" -gt 1 ]; then
-                                            echo "[STARTUP] Cleaning up $dup_count duplicate GPU_DEV_USER_ID exports in $rcfile"
-                                            # Keep only first occurrence, remove rest
-                                            grep -v 'export GPU_DEV_USER_ID=' "$rcfile" > "$rcfile.tmp"
-                                            grep -m1 'export GPU_DEV_USER_ID=' "$rcfile" >> "$rcfile.tmp"
-                                            mv "$rcfile.tmp" "$rcfile"
-                                        fi
+                                    if [ -f "$rcfile" ] && grep -q 'export GPU_DEV_USER_ID=' "$rcfile"; then
+                                        echo "[STARTUP] Removing old GPU_DEV_USER_ID from $rcfile (now in _ext file)"
+                                        grep -v 'export GPU_DEV_USER_ID=' "$rcfile" > "$rcfile.tmp"
+                                        mv "$rcfile.tmp" "$rcfile"
+                                        chown 1081:1081 "$rcfile"
                                     fi
                                 done
 
-                                # Only add GPU_DEV_USER_ID export if not already present (avoid duplicates on persistent disks)
-                                if [ -f /home/dev/.bashrc ] && ! grep -qF 'export GPU_DEV_USER_ID=' /home/dev/.bashrc; then
-                                    echo "" >> /home/dev/.bashrc
-                                    echo 'export GPU_DEV_USER_ID="{user_id or "dev"}"' >> /home/dev/.bashrc
-                                fi
-                                if [ -f /home/dev/.zshrc ] && ! grep -qF 'export GPU_DEV_USER_ID=' /home/dev/.zshrc; then
-                                    echo "" >> /home/dev/.zshrc
-                                    echo 'export GPU_DEV_USER_ID="{user_id or "dev"}"' >> /home/dev/.zshrc
-                                fi
-                                
                                 /usr/local/bin/setup-dotfiles-persistence "$USER_ID_CLEAN" "$USE_PERSISTENT_DISK"
                             else
                                 echo "[STARTUP] Dotfiles persistence scripts not found in container"
@@ -4335,6 +4427,47 @@ EOF
                             echo "[STARTUP] No shared storage - skipping backup setup"
                         fi
 
+                        # Run user's custom startup script if it exists
+                        USER_DIR="{user_id.split('@')[0] if user_id else 'default'}"
+                        STARTUP_SCRIPT="/shared-personal/$USER_DIR/startup.sh"
+                        STARTUP_LOG="/home/dev/startup-output.log"
+                        STARTUP_RUNNING_FILE="/home/dev/STARTUP_SCRIPT_RUNNING.txt"
+
+                        # Clean up old startup files from previous sessions
+                        rm -f "$STARTUP_LOG" "$STARTUP_RUNNING_FILE" 2>/dev/null || true
+
+                        if [ -f "$STARTUP_SCRIPT" ]; then
+                            echo "[STARTUP] Found user startup script at $STARTUP_SCRIPT"
+                            echo "[STARTUP] Running startup.sh in background as dev user..."
+
+                            # Create notification file so user sees it on SSH login
+                            echo "startup.sh is still running - monitor with: tail -f /home/dev/startup-output.log" > "$STARTUP_RUNNING_FILE"
+                            chown 1081:1081 "$STARTUP_RUNNING_FILE"
+
+                            # Initialize the log file
+                            echo "=== startup.sh execution started at $(date) ===" > "$STARTUP_LOG"
+                            echo "Script: $STARTUP_SCRIPT" >> "$STARTUP_LOG"
+                            echo "=========================================" >> "$STARTUP_LOG"
+                            chown 1081:1081 "$STARTUP_LOG"
+
+                            # Run the script in background so it doesn't block SSH availability
+                            (
+                                if su - dev -c "bash '$STARTUP_SCRIPT'" >> "$STARTUP_LOG" 2>&1; then
+                                    echo "" >> "$STARTUP_LOG"
+                                    echo "=== startup.sh completed successfully at $(date) ===" >> "$STARTUP_LOG"
+                                else
+                                    echo "" >> "$STARTUP_LOG"
+                                    echo "=== startup.sh FAILED with exit code $? at $(date) ===" >> "$STARTUP_LOG"
+                                fi
+                                # Remove the running notification file
+                                rm -f /home/dev/STARTUP_SCRIPT_RUNNING.txt
+                            ) &
+
+                            echo "[STARTUP] ✓ startup.sh running in background (check $STARTUP_LOG for progress)"
+                        else
+                            echo "[STARTUP] No user startup script found at $STARTUP_SCRIPT (this is normal)"
+                        fi
+
                         echo "[STARTUP] Starting SSH daemon..."
                         # Test SSH config first
                         if $SSHD_PATH -t; then
@@ -4459,6 +4592,27 @@ EOF
                 "GpuType": gpu_type,
                 **({} if target_az is None else {"topology.kubernetes.io/zone": target_az})
             },
+            # Node affinity for profiling-dedicated preference
+            # If user requests nsight=true, prefer profiling-dedicated nodes
+            # Otherwise, prefer non-profiling-dedicated nodes (DCGM nodes)
+            affinity=client.V1Affinity(
+                node_affinity=client.V1NodeAffinity(
+                    preferred_during_scheduling_ignored_during_execution=[
+                        client.V1PreferredSchedulingTerm(
+                            weight=100,
+                            preference=client.V1NodeSelectorTerm(
+                                match_expressions=[
+                                    client.V1NodeSelectorRequirement(
+                                        key="gpu.monitoring/profiling-dedicated",
+                                        operator="In" if (node_labels and node_labels.get("nsight") == "true") else "NotIn",
+                                        values=["true"]
+                                    )
+                                ]
+                            )
+                        )
+                    ]
+                )
+            ) if not gpu_type.startswith("cpu-") else None,
             tolerations=[
                 client.V1Toleration(
                     key="nvidia.com/gpu", operator="Exists", effect="NoSchedule"

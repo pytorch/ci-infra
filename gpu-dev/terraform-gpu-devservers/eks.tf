@@ -155,18 +155,19 @@ locals {
 
   # Map internal Terraform GPU types to user-facing Kubernetes GPU types
   # This allows multiple AZ node groups to share the same user-facing GPU type
+  # nsight variants map to base type so users see them as regular GPU nodes
   gpu_type_kubernetes_labels = {
-    "t4"     = "t4"
-    "t4-az2" = "t4"  # Both t4 and t4-az2 should be labeled as "t4" in Kubernetes
-    "l4"     = "l4"
-    "a10g"   = "a10g"
-    "h100"   = "h100"
-    "h200"   = "h200"
-    "b200"   = "b200"
-    "a100"   = "a100"
-    "cpu-arm" = "cpu-arm"
-    "cpu-x86" = "cpu-x86"
-    "t4-small" = "t4-small"
+    "t4"         = "t4"
+    "t4-az2"     = "t4"      # Both t4 and t4-az2 should be labeled as "t4" in Kubernetes
+    "l4"         = "l4"
+    "a10g"       = "a10g"
+    "h100"       = "h100"
+    "h200"       = "h200"
+    "b200"       = "b200"
+    "a100"       = "a100"
+    "cpu-arm"    = "cpu-arm"
+    "cpu-x86"    = "cpu-x86"
+    "t4-small"   = "t4-small"
   }
 
   # Flatten capacity reservations to create multiple ASGs when needed
@@ -364,12 +365,13 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
   }
 
   user_data = base64encode(templatefile("${path.module}/templates/al2023-user-data.sh", {
-    cluster_name     = aws_eks_cluster.gpu_dev_cluster.name
-    cluster_endpoint = aws_eks_cluster.gpu_dev_cluster.endpoint
-    cluster_ca       = aws_eks_cluster.gpu_dev_cluster.certificate_authority[0].data
-    cluster_cidr     = var.vpc_cidr
-    region           = local.current_config.aws_region
-    gpu_type         = local.gpu_type_kubernetes_labels[each.value.gpu_type]
+    cluster_name        = aws_eks_cluster.gpu_dev_cluster.name
+    cluster_endpoint    = aws_eks_cluster.gpu_dev_cluster.endpoint
+    cluster_ca          = aws_eks_cluster.gpu_dev_cluster.certificate_authority[0].data
+    cluster_cidr        = var.vpc_cidr
+    region              = local.current_config.aws_region
+    gpu_type            = local.gpu_type_kubernetes_labels[each.value.gpu_type]
+    profiling_dedicated = try(each.value.gpu_config.profiling_dedicated, false)
   }))
 
   tag_specifications {

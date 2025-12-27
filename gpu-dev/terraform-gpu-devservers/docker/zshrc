@@ -1,21 +1,9 @@
 # Source shared environment first
 [ -f ~/.shell_env ] && source ~/.shell_env
 
-# Function to check for GPU reservation expiry warnings
-check_warnings() {
-    setopt NULL_GLOB 2>/dev/null
-    local warning_files=(/home/dev/WARN_EXPIRES_IN_*MIN.txt)
-    if [[ ${#warning_files[@]} -gt 0 ]] && [[ -f "${warning_files[1]}" ]]; then
-        # Extract minutes from filename (e.g., WARN_EXPIRES_IN_15MIN.txt -> 15)
-        local minutes="${warning_files[1]:t:r}"  # Get basename without extension
-        minutes="${minutes#WARN_EXPIRES_IN_}"    # Remove prefix
-        minutes="${minutes%MIN}"                 # Remove suffix
-        echo -e "\033[1;31m🚨 URGENT: Server expires in <${minutes} minutes! 🚨\033[0m"
-    fi
-}
-
-# Run warning check before every command prompt (zsh hook)
-precmd() { check_warnings }
+# Source GPU dev server extensions (warnings, startup status, etc.)
+# This file is managed by the system and updated on every pod startup
+[ -f ~/.zshrc_ext ] && source ~/.zshrc_ext
 
 # Add conda to PATH
 export PATH="/opt/conda/bin:$PATH"

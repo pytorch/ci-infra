@@ -169,7 +169,7 @@ resource "aws_lambda_function" "reservation_processor" {
       QUEUE_URL                          = aws_sqs_queue.gpu_reservation_queue.url
       AVAILABILITY_UPDATER_FUNCTION_NAME = aws_lambda_function.availability_updater.function_name
       PRIMARY_AVAILABILITY_ZONE          = data.aws_availability_zones.available.names[0]
-      GPU_DEV_CONTAINER_IMAGE            = local.full_image_uri
+      GPU_DEV_CONTAINER_IMAGE            = local.latest_image_uri  # Use stable 'latest' tag so pods can restart after OOM
       EFS_SECURITY_GROUP_ID              = aws_security_group.efs_sg.id
       EFS_SUBNET_IDS                     = join(",", concat([aws_subnet.gpu_dev_subnet.id, aws_subnet.gpu_dev_subnet_secondary.id], length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : []))
       CCACHE_SHARED_EFS_ID               = aws_efs_file_system.ccache_shared.id

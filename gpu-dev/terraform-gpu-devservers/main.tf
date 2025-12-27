@@ -132,6 +132,8 @@ locals {
           use_placement_group = false
           architecture        = "x86_64"
         }
+        # Note: Nsight profiling nodes are not separate ASGs - just label existing nodes:
+        # kubectl label node <node-name> gpu.monitoring/profiling-dedicated=true nvidia.com/gpu.deploy.dcgm-exporter=false --overwrite
         "a100" = {
           instance_type       = "p4d.24xlarge"
           instance_types      = null
@@ -182,6 +184,8 @@ locals {
           use_placement_group = false
           architecture        = "x86_64"
         }
+        # Note: Nsight profiling nodes are not separate ASGs - just label existing nodes:
+        # kubectl label node <node-name> gpu.monitoring/profiling-dedicated=true nvidia.com/gpu.deploy.dcgm-exporter=false --overwrite
         "a100" = {
           instance_type       = "p4d.24xlarge"
           instance_types      = null
@@ -278,27 +282,27 @@ locals {
     default = {
       # Test environment - H200 and H100 in us-west-1c (secondary subnet)
       # T4 nodes in multiple AZs for testing AZ mismatch fix
-      h200       = "secondary"
-      h100       = "secondary"
-      a100       = "primary"    # A100 in us-west-1a (primary AZ)
-      t4         = "primary"    # T4 in us-west-1a (primary AZ)
-      "t4-az2"   = "secondary"  # T4 in us-west-1b (secondary AZ)
-      "cpu-arm"  = "primary"
-      "cpu-x86"  = "primary"
-      "t4-small" = "secondary"
-      a10g       = "primary"
+      h200         = "secondary"
+      h100         = "secondary"
+      a100         = "primary"    # A100 in us-west-1a (primary AZ)
+      t4           = "primary"    # T4 in us-west-1a (primary AZ)
+      "t4-az2"     = "secondary"  # T4 in us-west-1b (secondary AZ)
+      "cpu-arm"    = "primary"
+      "cpu-x86"    = "primary"
+      "t4-small"   = "secondary"
+      a10g         = "primary"
     }
     prod = {
       # Production environment subnet assignments
-      b200      = "primary"
-      h200      = "tertiary" # us-east-2c for H200 capacity reservation
-      h100      = "primary"
-      a100      = "primary"
-      t4        = "primary"
-      l4        = "secondary"
-      a10g      = "secondary"
-      "cpu-arm" = "primary"
-      "cpu-x86" = "primary"
+      b200           = "primary"
+      h200           = "tertiary" # us-east-2c for H200 capacity reservation
+      h100           = "primary"
+      a100           = "primary"
+      t4             = "primary"
+      l4             = "secondary"
+      a10g           = "secondary"
+      "cpu-arm"      = "primary"
+      "cpu-x86"      = "primary"
     }
   }
 
