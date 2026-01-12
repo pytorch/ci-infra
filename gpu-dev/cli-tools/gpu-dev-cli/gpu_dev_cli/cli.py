@@ -2910,9 +2910,8 @@ def show() -> None:
         github_user = config.get_github_username()
 
         # Get current environment info
-        env_config = getattr(config, "environment_config", {})
-        current_env = env_config.get("current_environment", "Not set")
-        env_source = "Environment config" if env_config else "Default/ENV vars"
+        current_env = config.get("environment") or "Not set"
+        env_source = "Config file" if config.get("region") else "Default/ENV vars"
 
         config_text = (
             f"[green]Configuration (Zero-Config)[/green]\n\n"
@@ -2922,7 +2921,7 @@ def show() -> None:
             f"[blue]Cluster:[/blue] {config.cluster_name}\n"
             f"[blue]User:[/blue] {identity['arn']}\n"
             f"[blue]Account:[/blue] {identity['account']}\n\n"
-            f"[green]User Settings ({config.config_file})[/green]\n"
+            f"[green]User Settings ({config.CONFIG_FILE})[/green]\n"
             f"[blue]GitHub User:[/blue] {github_user or '[red]Not set - run: gpu-dev config set github_user <username>[/red]'}"
         )
 
@@ -2968,9 +2967,9 @@ def set(key: str, value: str) -> None:
             )
             return
 
-        config.save_user_config(key, value)
+        config.save_config(key, value)
         rprint(f"[green]✅ Set {key} = {value}[/green]")
-        rprint(f"[dim]Saved to {config.config_file}[/dim]")
+        rprint(f"[dim]Saved to {config.CONFIG_FILE}[/dim]")
 
     except Exception as e:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
@@ -2996,46 +2995,18 @@ def environment(env_name: str) -> None:
         test: us-west-1, Terraform workspace 'default'
         prod: us-east-2, Terraform workspace 'prod'
     """
-    import os
-    import json
-    from pathlib import Path
+    from .config import Config
 
     try:
-        # Environment configurations
-        environments = {
-            "test": {
-                "region": "us-west-1",
-                "workspace": "default",
-                "description": "Test environment",
-            },
-            "prod": {
-                "region": "us-east-2",
-                "workspace": "prod",
-                "description": "Production environment",
-            },
-        }
-
-        env_config = environments[env_name]
-
-        # Save environment configuration
-        config_file = Path.home() / ".gpu-dev-environment.json"
-        config_data = {
-            "current_environment": env_name,
-            "region": env_config["region"],
-            "workspace": env_config["workspace"],
-        }
-
-        with open(config_file, "w") as f:
-            json.dump(config_data, f, indent=2)
-
-        # Set environment variable for current session
-        os.environ["AWS_DEFAULT_REGION"] = env_config["region"]
+        # Save using Config's method (creates new instance to save)
+        cfg = Config()
+        env_config = cfg.set_environment(env_name)
 
         rprint(f"[green]✅ Environment set to {env_name}[/green]")
         rprint(f"[blue]Region:[/blue] {env_config['region']}")
         rprint(f"[blue]Workspace:[/blue] {env_config['workspace']}")
         rprint(f"[blue]Description:[/blue] {env_config['description']}")
-        rprint(f"[dim]Configuration saved to {config_file}[/dim]")
+        rprint(f"[dim]Configuration saved to {cfg.CONFIG_FILE}[/dim]")
 
         # Instructions for shell export
         rprint(f"\n[yellow]💡 To apply in your current shell:[/yellow]")

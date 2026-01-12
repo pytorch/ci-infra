@@ -283,6 +283,6 @@ kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
 
 **CLI Tool:**
 
-- Python CLI with config at `~/.gpu-dev-config`
+- Python CLI with config at `~/.config/gpu-dev/config.json`
 - Commands: `reserve`, `list`, `config`
 - Real-time polling until reservation is ready

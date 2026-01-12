@@ -126,7 +126,7 @@ flowchart TB
 
 - **Commands**: `reserve`, `list`, `cancel`, `connect`, `status`, `config`
 - **Authentication**: AWS credentials + GitHub SSH keys
-- **Configuration**: Zero-config approach with `~/.gpu-dev-config`
+- **Configuration**: Zero-config approach with `~/.config/gpu-dev/config.json`
 
 #### 2. **SQS Queue System**
 

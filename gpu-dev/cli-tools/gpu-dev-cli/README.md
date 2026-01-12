@@ -44,7 +44,7 @@ gpu-dev config set github_user your-github-username
 gpu-dev config show
 ```
 
-Configuration is stored at `~/.gpu-dev-config`.
+Configuration is stored at `~/.config/gpu-dev/config.json`.
 
 ### SSH Config Integration
 
