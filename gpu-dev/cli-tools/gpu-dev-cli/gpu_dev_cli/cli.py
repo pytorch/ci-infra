@@ -102,6 +102,58 @@ def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
         return str(timestamp_str)[:19] if len(str(timestamp_str)) > 10 else str(timestamp_str)
 
 
+def _format_expires_with_remaining(expires_at) -> str:
+    """Format expiration time showing both absolute time and remaining time (for list view)"""
+    if not expires_at or expires_at == "N/A":
+        return "N/A"
+
+    try:
+        from datetime import datetime, timezone
+
+        # Parse the timestamp
+        if isinstance(expires_at, str):
+            if expires_at.endswith("Z"):
+                expires_dt_utc = datetime.fromisoformat(
+                    expires_at.replace("Z", "+00:00"))
+            elif "+" in expires_at or expires_at.endswith("00:00"):
+                expires_dt_utc = datetime.fromisoformat(expires_at)
+            else:
+                naive_dt = datetime.fromisoformat(expires_at)
+                expires_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
+        else:
+            # Legacy Unix timestamp
+            expires_dt_utc = datetime.fromtimestamp(expires_at, tz=timezone.utc)
+
+        # Convert to local timezone for display
+        expires_dt = expires_dt_utc.astimezone()
+        time_str = expires_dt.strftime("%H:%M")
+
+        # Calculate remaining time
+        now = datetime.now(timezone.utc)
+        delta = expires_dt_utc - now
+        total_seconds = delta.total_seconds()
+
+        if total_seconds <= 0:
+            return f"{time_str} (expired)"
+
+        # Format remaining time
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+
+        if hours > 0:
+            if minutes > 0:
+                remaining = f"{hours}h{minutes}m left"
+            else:
+                remaining = f"{hours}h left"
+        else:
+            remaining = f"{minutes}m left"
+
+        return f"{time_str} ({remaining})"
+
+    except (ValueError, TypeError):
+        return "Invalid"
+
+
 def _show_single_reservation(connection_info: dict) -> None:
     """Display detailed information for a single reservation"""
     status = connection_info.get("status", "unknown")
@@ -1467,39 +1519,8 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     expires_at = reservation.get("expires_at", "N/A")
 
                     if res_status == "active" and expires_at != "N/A":
-                        from datetime import datetime
-
-                        try:
-                            if isinstance(expires_at, str):
-                                # Handle different ISO format variations
-                                if expires_at.endswith("Z"):
-                                    # Format: 2025-01-11T23:30:00Z
-                                    expires_dt_utc = datetime.fromisoformat(
-                                        expires_at.replace("Z", "+00:00")
-                                    )
-                                elif "+" in expires_at or expires_at.endswith("00:00"):
-                                    # Format: 2025-01-11T23:30:00+00:00
-                                    expires_dt_utc = datetime.fromisoformat(
-                                        expires_at)
-                                else:
-                                    # Format: 2025-01-11T23:30:00 (naive datetime, assume UTC)
-                                    from datetime import timezone
-
-                                    naive_dt = datetime.fromisoformat(
-                                        expires_at)
-                                    expires_dt_utc = naive_dt.replace(
-                                        tzinfo=timezone.utc)
-
-                                expires_dt = (
-                                    expires_dt_utc.astimezone()
-                                )  # Convert to local timezone
-                            else:
-                                # Legacy Unix timestamp (backward compatibility)
-                                expires_dt = datetime.fromtimestamp(expires_at)
-                            expires_formatted = expires_dt.strftime(
-                                "%m-%d %H:%M")
-                        except (ValueError, TypeError):
-                            expires_formatted = "Invalid"
+                        # Use the new helper that shows time + remaining
+                        expires_formatted = _format_expires_with_remaining(expires_at)
                     elif res_status in ["queued", "pending"]:
                         # Show estimated wait time if available
                         estimated_wait = reservation.get(
@@ -1845,31 +1866,17 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
 
                                     # Format expires_at
                                     expires_at = reservation.get("expires_at", "N/A")
-                                    expires_formatted = "N/A"
                                     if res_status == "active" and expires_at != "N/A":
-                                        try:
-                                            if isinstance(expires_at, str):
-                                                if expires_at.endswith("Z"):
-                                                    expires_dt_utc = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-                                                elif "+" in expires_at or expires_at.endswith("00:00"):
-                                                    expires_dt_utc = datetime.fromisoformat(expires_at)
-                                                else:
-                                                    from datetime import timezone
-                                                    naive_dt = datetime.fromisoformat(expires_at)
-                                                    expires_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
-                                                expires_dt = expires_dt_utc.astimezone()
-                                                expires_formatted = expires_dt.strftime("%m-%d %H:%M")
-                                            else:
-                                                expires_dt = datetime.fromtimestamp(expires_at)
-                                                expires_formatted = expires_dt.strftime("%m-%d %H:%M")
-                                        except (ValueError, TypeError):
-                                            expires_formatted = "Invalid"
+                                        # Use the helper that shows time + remaining
+                                        expires_formatted = _format_expires_with_remaining(expires_at)
                                     elif res_status in ["queued", "pending"]:
                                         estimated_wait = reservation.get("estimated_wait_minutes", "?")
                                         if estimated_wait != "?" and estimated_wait is not None:
                                             expires_formatted = f"~{estimated_wait}min"
                                         else:
                                             expires_formatted = "Calculating..."
+                                    else:
+                                        expires_formatted = "N/A"
 
                                     table.add_row(res_id, user_display, gpu_display, status_display,
                                                 storage_display, queue_info, created_formatted, expires_formatted)
