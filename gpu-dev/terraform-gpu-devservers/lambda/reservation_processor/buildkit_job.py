@@ -104,10 +104,11 @@ def create_buildkit_job(
 
     logger.info(f"Creating BuildKit job {job_name} to build {full_image_uri}")
 
-    # BuildKit container - back to working approach
+    # BuildKit container - pinned by digest for security (tags can be moved)
+    # v0.27.0 (2026-01-21)
     buildkit_container = client.V1Container(
         name="buildkit",
-        image="moby/buildkit:master",
+        image="moby/buildkit@sha256:054d632d0d7e94b11cdc6048674773499a5170cf7d8ce0c326daaff6be43c8e0",
         command=["/bin/sh"],
         args=[
             "-c",
