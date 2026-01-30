@@ -6,7 +6,7 @@ module "pytorch_arc_dev_eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 20.37"
 
-  cluster_name    = "lf-arc-dev"
+  cluster_name    = var.arc_dev_environment
   cluster_version = "1.33"
 
   cluster_endpoint_public_access = true
@@ -54,6 +54,6 @@ module "pytorch_arc_dev_eks" {
   subnet_ids = module.arc_runners_vpc.private_subnets
 
   tags = {
-    Environment = var.arc_prod_environment
+    Environment = var.arc_dev_environment
   }
 }
