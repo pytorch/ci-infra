@@ -7,7 +7,7 @@ module "pytorch_arc_dev_eks" {
   version = "~> 20.37"
 
   cluster_name    = var.arc_dev_environment
-  cluster_version = "1.34"
+  cluster_version = "1.35"
 
   cluster_endpoint_public_access = true
   enable_cluster_creator_admin_permissions = false
