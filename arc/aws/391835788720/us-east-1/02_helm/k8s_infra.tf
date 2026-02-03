@@ -65,7 +65,7 @@ resource "helm_release" "ingress_nginx" {
   repository       = "https://kubernetes.github.io/ingress-nginx"
   chart            = "ingress-nginx"
   namespace        = "ingress-nginx"
-  version          = "4.13.2"
+  version          = "4.13.7"
   create_namespace = true
 
   # Load values from dedicated file
