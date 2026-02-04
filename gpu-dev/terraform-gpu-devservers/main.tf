@@ -259,6 +259,7 @@ locals {
         { id = null, instance_count = 1 }                    # A100 on-demand (1 instance)
       ]
       h100 = [
+        { id = "cr-0a7caa7414866615a", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
         { id = null, instance_count = 2 }                    # H100 on-demand (2 instances)
       ]
       h200 = [
@@ -296,7 +297,7 @@ locals {
       # Production environment subnet assignments
       b200           = "primary"
       h200           = "tertiary" # us-east-2c for H200 capacity reservation
-      h100           = "primary"
+      h100           = "tertiary" # us-east-2c for H100 capacity reservation
       a100           = "primary"
       t4             = "primary"
       l4             = "secondary"
@@ -317,6 +318,8 @@ locals {
       # H200 capacity reservations
       "cr-0f6d0766f5d3339e6" = "tertiary"  # us-east-2c (p5e.48xlarge)
       "cr-06c9c978dea756a26" = "tertiary"  # us-east-2c
+      # H100 capacity reservation
+      "cr-0a7caa7414866615a" = "tertiary"  # us-east-2c (p5.48xlarge)
       # A100 capacity reservation
       "cr-01cc0f00f28b095af" = "primary"   # us-east-2a
     }
