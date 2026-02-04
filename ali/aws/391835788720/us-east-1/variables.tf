@@ -38,13 +38,13 @@ variable "aws_canary_vpc_suffixes" {
 variable "ami_filter_linux" {
   description = "AMI for linux"
   type        = list
-  default     = ["al2023-ami-2023.8.*-kernel-6.1-x86_64"]
+  default     = ["al2023-ami-2023.10.*-kernel-6.1-x86_64"]
 }
 
 variable "ami_filter_linux_arm64" {
   description = "AMI for linux"
   type        = list
-  default     = ["al2023-ami-2023.8.*-kernel-6.1-arm64"]
+  default     = ["al2023-ami-2023.10.*-kernel-6.1-arm64"]
 }
 
 variable "ami_filter_windows" {
