@@ -3,7 +3,7 @@ requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gpu-dev-cli"
+name = "gpu-dev"
 version = "0.3.5"
 description = "CLI tool for PyTorch GPU developer server reservations"
 authors = [{name = "PyTorch Team"}]
