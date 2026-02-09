@@ -172,8 +172,7 @@ resource "null_resource" "reservation_expiry_build" {
       rm -rf package *.zip
       mkdir -p package
 
-      # Install dependencies with specific Python version
-      python3 -m pip install --upgrade pip
+      # Install dependencies to package folder (not to venv)
       python3 -m pip install -r requirements.txt --target package/ --force-reinstall
 
       # Copy source code and shared modules

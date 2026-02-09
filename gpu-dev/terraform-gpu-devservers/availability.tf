@@ -226,7 +226,6 @@ resource "null_resource" "availability_updater_build" {
 
       # Install dependencies if requirements.txt exists
       if [ -f requirements.txt ]; then
-        python3 -m pip install --upgrade pip
         python3 -m pip install -r requirements.txt --target package/ --force-reinstall
       fi
 
