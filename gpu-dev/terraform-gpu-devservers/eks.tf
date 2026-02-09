@@ -90,6 +90,14 @@ resource "aws_iam_role_policy" "eks_node_bedrock_policy" {
           "arn:aws:bedrock:*:*:inference-profile/us.anthropic.claude-*",
           "arn:aws:bedrock:*:*:inference-profile/global.anthropic.claude-*"
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe"
+        ]
+        Resource = "*"
       }
     ]
   })
