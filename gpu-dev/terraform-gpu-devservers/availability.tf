@@ -226,7 +226,7 @@ resource "null_resource" "availability_updater_build" {
 
       # Install dependencies if requirements.txt exists
       if [ -f requirements.txt ]; then
-        python3 -m pip install -r requirements.txt --target package/ --force-reinstall
+        python3 -m pip install -r requirements.txt --target package/ --force-reinstall --platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.13
       fi
 
       # Copy source code and shared modules
