@@ -745,11 +745,11 @@ def reserve(
                 gpu_count = int(gpus)
 
             # Track if user explicitly requests no persistent disk
-            explicit_no_disk = False
+            explicit_no_disk = explicit_no_disk_from_param
 
             # Interactive disk selection (if not multinode - only master node gets persistent disk)
             # This comes BEFORE duration so user knows what they're reserving
-            if disk is None and gpu_count <= max_gpus:  # Single node only
+            if disk is None and gpu_count <= max_gpus and not explicit_no_disk_from_param:  # Single node only
                 disk = select_disk_interactive(user_info["user_id"], config)
                 # Check if user cancelled
                 if disk == "__cancelled__":
@@ -798,7 +798,7 @@ def reserve(
 
             # Non-interactive disk selection (if not specified via flag)
             # Only for single-node reservations
-            if disk is None and max_gpus is not None and gpu_count <= max_gpus:
+            if disk is None and max_gpus is not None and gpu_count <= max_gpus and not explicit_no_disk_from_param:
                 # In non-interactive mode, check if terminal supports interactive prompts
                 if check_interactive_support():
                     # Load config and authenticate if not already done
@@ -991,7 +991,7 @@ def reserve(
                     return
 
                 # Track if user explicitly requests no persistent disk
-                explicit_no_disk = False
+                explicit_no_disk = explicit_no_disk_from_param
 
                 # Validate disk if specified
                 if disk:
@@ -1186,7 +1186,7 @@ def reserve(
             # Determine if this is multinode and submit appropriate reservation
             # If user confirmed to continue without persistent disk, set flag
             # --no-persist explicitly disables persistent disk
-            no_persistent_disk = no_persist or bool(persistent_reservations)
+            no_persistent_disk = no_persist or bool(persistent_reservations) or explicit_no_disk or explicit_no_disk_from_param
 
             # Parse node labels from --node-label options (format: key=value)
             node_labels = {}
