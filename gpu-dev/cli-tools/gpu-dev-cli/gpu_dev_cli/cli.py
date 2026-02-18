@@ -434,7 +434,7 @@ def _validate_ssh_key_or_exit(config: Config, live: Live) -> bool:
 
 
 @click.group()
-@click.version_option()
+@click.version_option(package_name="gpu-dev")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """\b
@@ -3399,6 +3399,7 @@ def disk():
         gpu-dev disk list                      # List all your disks
         gpu-dev disk create <name>             # Create a new named disk
         gpu-dev disk list-content <name>       # Show contents of a disk
+        gpu-dev disk unlock <name>             # Unlock a stale in-use lock
     """
     pass
 
@@ -3748,6 +3749,31 @@ def disk_rename(old_name: str, new_name: str):
     except Exception as e:
         rprint(f"[red]❌ Error renaming disk: {str(e)}[/red]")
         return
+
+
+@disk.command("unlock")
+@click.argument("name")
+@click.option("--user", default=None, help="Impersonate another user (e.g., user@example.com)")
+def disk_unlock(name: str, user: str):
+    """Unlock a stale in-use lock on a disk
+
+    Use this when a disk shows as [IN USE] but you have no active reservations.
+    """
+    from .disks import unlock_disk
+    from .auth import authenticate_user
+
+    config = load_config()
+
+    if user:
+        user_id = user
+        rprint(f"[yellow]⚠️  Impersonating user: {user_id}[/yellow]\n")
+    else:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+
+    if unlock_disk(name, user_id, config):
+        rprint(f"[green]✓ Unlock request sent for disk '{name}'[/green]")
+        rprint(f"[dim]The lock will be cleared shortly if no active reservation is using this disk.[/dim]")
 
 
 if __name__ == "__main__":

@@ -338,6 +338,46 @@ def list_disk_content(disk_name: str, user_id: str, config: Config) -> Optional[
         return None
 
 
+def unlock_disk(disk_name: str, user_id: str, config: Config) -> bool:
+    """
+    Unlock a stale in_use lock on a disk by sending request to SQS queue.
+    Lambda will verify no active reservation exists before unlocking.
+    """
+    import json
+    import uuid
+
+    disks = list_disks(user_id, config)
+    disk = next((d for d in disks if d['name'] == disk_name), None)
+
+    if not disk:
+        print(f"Error: Disk '{disk_name}' not found")
+        return False
+
+    if not disk['in_use']:
+        print(f"Disk '{disk_name}' is not locked")
+        return False
+
+    operation_id = str(uuid.uuid4())
+
+    sqs_client = config.session.client('sqs', region_name=config.aws_region)
+    queue_url = config.get_queue_url()
+
+    message = {
+        'action': 'clear_disk_lock',
+        'operation_id': operation_id,
+        'user_id': user_id,
+        'disk_name': disk_name,
+        'requested_at': datetime.now(timezone.utc).isoformat()
+    }
+
+    sqs_client.send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps(message)
+    )
+
+    return True
+
+
 def delete_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
     """
     Soft delete a disk by sending delete request to SQS queue.

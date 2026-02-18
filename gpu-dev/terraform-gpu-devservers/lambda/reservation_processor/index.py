@@ -1138,6 +1138,8 @@ def handler(event, context):
                         success = process_add_user_action(record)
                     elif message_body.get("action") == "extend_reservation":
                         success = process_extend_reservation_action(record)
+                    elif message_body.get("action") == "clear_disk_lock":
+                        success = process_clear_disk_lock_action(record)
                     elif message_body.get("action") == "delete_disk":
                         success = process_delete_disk_action(record)
                     elif message_body.get("action") == "create_disk":
@@ -6886,24 +6888,26 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                             logger.info(
                                 f"No persistent storage found for pod {pod_name} - skipping cancellation snapshot")
 
-                        # Cleanup pod resources (no need to read pod for snapshot info anymore)
-
                         # Now cleanup pod resources
                         cleanup_pod_resources(pod_name, namespace)
                         logger.info(
                             f"Cleaned up pod resources for cancelled reservation {full_reservation_id}")
 
-                        # Clear disk in_use flag after cleanup
-                        if disk_name:
-                            try:
-                                mark_disk_in_use(user_id, disk_name, False)
-                                logger.info(f"Cleared in_use flag for disk '{disk_name}'")
-                            except Exception as disk_flag_error:
-                                logger.warning(f"Failed to clear disk in_use flag: {disk_flag_error}")
-
                     except Exception as cleanup_error:
                         logger.error(
                             f"Error cleaning up pod {pod_name}: {cleanup_error}")
+
+                    # Clear disk in_use flag OUTSIDE the try block so it runs
+                    # even if cleanup_pod_resources or snapshot creation fails.
+                    # New reservations create a new volume from snapshot, so an
+                    # orphaned old volume won't cause multi-attach conflicts —
+                    # but a stuck in_use flag permanently blocks the user.
+                    if disk_name:
+                        try:
+                            mark_disk_in_use(user_id, disk_name, False)
+                            logger.info(f"Cleared in_use flag for disk '{disk_name}'")
+                        except Exception as disk_flag_error:
+                            logger.warning(f"Failed to clear disk in_use flag: {disk_flag_error}")
 
             # Mark SSH domain mapping as inactive
             # Use SHORT name (not full FQDN) as key - SSH proxy server extracts short name from URL
@@ -7484,6 +7488,50 @@ def process_add_user_action(record: dict[str, Any]) -> bool:
     except Exception as e:
         logger.error(f"Error processing add user action: {str(e)}")
         return False  # Retry on processing errors
+
+
+def process_clear_disk_lock_action(record: dict[str, Any]) -> bool:
+    """Clear a stale in_use lock on a disk after verifying no active reservation."""
+    message = json.loads(record["body"])
+    user_id = message.get("user_id")
+    disk_name = message.get("disk_name")
+
+    if not all([user_id, disk_name]):
+        logger.error(f"Missing required fields in clear_disk_lock action: {message}")
+        return True
+
+    logger.info(f"Processing clear_disk_lock for disk '{disk_name}' (user: {user_id})")
+
+    reservations_table = dynamodb.Table(
+        os.environ.get('RESERVATIONS_TABLE_NAME', 'pytorch-gpu-dev-reservations')
+    )
+    active_statuses = {"active", "preparing", "queued", "pending"}
+
+    response = reservations_table.query(
+        IndexName="UserIndex",
+        KeyConditionExpression="user_id = :user_id",
+        FilterExpression="disk_name = :disk_name AND #status IN (:active, :preparing, :queued, :pending)",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={
+            ":user_id": user_id,
+            ":disk_name": disk_name,
+            ":active": "active",
+            ":preparing": "preparing",
+            ":queued": "queued",
+            ":pending": "pending"
+        }
+    )
+
+    if response.get("Items"):
+        res_id = response["Items"][0]["reservation_id"]
+        logger.warning(
+            f"Disk '{disk_name}' is attached to active reservation {res_id}, refusing to clear lock"
+        )
+        return True
+
+    mark_disk_in_use(user_id, disk_name, False)
+    logger.info(f"Cleared stale lock on disk '{disk_name}' for user '{user_id}'")
+    return True
 
 
 def process_delete_disk_action(record: dict[str, Any]) -> bool:
