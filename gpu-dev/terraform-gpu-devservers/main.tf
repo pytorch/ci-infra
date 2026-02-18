@@ -269,7 +269,7 @@ locals {
       ]
       b200 = [
         { id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
-        { id = "cr-0122dff5e01d566dc", instance_count = 2 }, # B200 reservation (2 instances)
+        # cr-0122dff5e01d566dc removed (2 B200) - 0 instances running, CR freed for other use
         { id = "cr-08e7fee0b8dc3de5e", instance_count = 3 }, # B200 reservation (3 instances)
         { id = null, instance_count = 1 }                    # B200 on-demand (1 instance)
       ]

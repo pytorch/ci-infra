@@ -1100,7 +1100,7 @@ def handler(event, context):
 
                     # Skip version validation for disk operations (they don't affect reservations)
                     action = message_body.get("action")
-                    skip_version_check = action in ["create_disk", "delete_disk"]
+                    skip_version_check = action in ["create_disk", "delete_disk", "clear_disk_lock"]
 
                     # Validate CLI version before processing any request (except disk ops)
                     if not skip_version_check:
