@@ -254,27 +254,27 @@ locals {
     }
     prod = {
       # Production environment capacity reservations
+      # NOTE: 'key' must match existing ASG suffix to avoid destroy/recreate.
+      # When removing a CR, delete the entry entirely - keys are stable, not index-based.
       a100 = [
-        { id = "cr-01cc0f00f28b095af", instance_count = 1 }, # A100 reservation (1 instance)
-        { id = null, instance_count = 1 }                    # A100 on-demand (1 instance)
+        { key = "cr0", id = "cr-01cc0f00f28b095af", instance_count = 1 }, # A100 reservation (1 instance)
+        { key = "cr1", id = null, instance_count = 1 },                   # A100 on-demand (1 instance)
       ]
       h100 = [
-        { id = "cr-0a7caa7414866615a", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
-        { id = null, instance_count = 2 }                    # H100 on-demand (2 instances)
+        { key = "cr0", id = "cr-0a7caa7414866615a", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
+        { key = "cr1", id = null, instance_count = 2 },                   # H100 on-demand (2 instances)
       ]
       h200 = [
-        { id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 reservation us-east-2c (p5e.48xlarge)
-        { id = "cr-06c9c978dea756a26", instance_count = 3 }, # H200 reservation (3 instances)
-        { id = null, instance_count = 2 }                    # H200 on-demand (2 instances)
+        { key = "cr0", id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 reservation us-east-2c (p5e.48xlarge)
+        { key = "cr1", id = "cr-06c9c978dea756a26", instance_count = 3 }, # H200 reservation (3 instances)
+        { key = "cr2", id = null, instance_count = 2 },                   # H200 on-demand (2 instances)
       ]
       b200 = [
-        { id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
-        # cr-0122dff5e01d566dc removed (2 B200) - 0 instances running, CR freed for other use
-        { id = "cr-08e7fee0b8dc3de5e", instance_count = 2 }, # B200 reservation (2 of 3 - 1 freed for other use)
-        { id = null, instance_count = 1 }                    # B200 on-demand (1 instance)
+        { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
+        { key = "cr1", id = "cr-08e7fee0b8dc3de5e", instance_count = 3 }, # B200 reservation (3 instances)
+        { key = "cr2", id = null, instance_count = 2 },                   # B200 on-demand (2 instances)
       ]
       # T4 and L4 don't have capacity reservations - managed via supported_gpu_types fallback
-      # This avoids destroying/recreating existing ASGs
     }
   }
 

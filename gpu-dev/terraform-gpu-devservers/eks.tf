@@ -179,13 +179,14 @@ locals {
   }
 
   # Flatten capacity reservations to create multiple ASGs when needed
+  # Each CR entry must have a stable 'key' field so removing entries doesn't shift other ASG keys.
   gpu_capacity_reservations = flatten([
     for gpu_type, gpu_config in local.current_config.supported_gpu_types : [
       for cr_index, cr_config in try(local.capacity_reservations[terraform.workspace][gpu_type], [null]) : {
         gpu_type = gpu_type
         gpu_config = gpu_config
         capacity_reservation_id = cr_config != null ? cr_config.id : null
-        asg_key = cr_config != null ? "${gpu_type}-cr${cr_index}" : gpu_type
+        asg_key = cr_config != null ? "${gpu_type}-${cr_config.key}" : gpu_type
         # Use manual instance count from capacity reservation config, fallback to GPU config default
         instance_count = cr_config != null ? cr_config.instance_count : gpu_config.instance_count
       }
