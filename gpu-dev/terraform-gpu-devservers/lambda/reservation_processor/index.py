@@ -58,7 +58,8 @@ ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 
 # Version validation - injected via Terraform
 LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.5")
-MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.5")
+MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.7")
+OPERATIONS_TABLE = os.environ.get("OPERATIONS_TABLE", "pytorch-gpu-dev-operations")
 
 # GPU Configuration - single source of truth for all GPU type mappings
 GPU_CONFIG = {
@@ -162,7 +163,7 @@ def validate_cli_version(message_body):
     if not cli_version:
         raise ValueError(
             f"Your gpu-dev CLI is outdated and no longer supported. "
-            f"Please upgrade by running: python3 -m pip install --upgrade \"git+https://github.com/wdvr/osdc.git\""
+            f"Please upgrade by running: pip install --upgrade gpu-dev"
         )
 
     def parse_version(version_str):
@@ -179,10 +180,29 @@ def validate_cli_version(message_body):
         raise ValueError(
             f"Your gpu-dev CLI version {cli_version} is outdated. "
             f"Minimum required version is {MIN_CLI_VERSION}. "
-            f"Please upgrade by running: python3 -m pip install --upgrade \"git+https://github.com/wdvr/osdc.git\""
+            f"Please upgrade by running: pip install --upgrade gpu-dev"
         )
 
     logger.info(f"CLI version {cli_version} validated successfully")
+
+
+def write_operation_result(operation_id: str, status: str, error: str = None):
+    """Write operation result to DynamoDB for CLI polling."""
+    if not operation_id:
+        return
+    try:
+        ops_table = dynamodb.Table(OPERATIONS_TABLE)
+        item = {
+            'operation_id': operation_id,
+            'status': status,
+            'updated_at': datetime.utcnow().isoformat(),
+            'ttl': int(time.time()) + 86400,  # auto-delete after 24h
+        }
+        if error:
+            item['error'] = error
+        ops_table.put_item(Item=item)
+    except Exception as e:
+        logger.warning(f"Could not write operation result: {e}")
 
 
 def get_k8s_client():
@@ -1098,32 +1118,26 @@ def handler(event, context):
                 try:
                     message_body = json.loads(record["body"])
 
-                    # Skip version validation for disk operations (they don't affect reservations)
-                    action = message_body.get("action")
-                    skip_version_check = action in ["create_disk", "delete_disk", "clear_disk_lock"]
-
-                    # Validate CLI version before processing any request (except disk ops)
-                    if not skip_version_check:
-                        try:
-                            validate_cli_version(message_body)
-                        except ValueError as version_error:
-                            # Handle version validation errors - update reservation status with error
-                            reservation_id = message_body.get("reservation_id")
-                            if reservation_id:
-                                logger.info(
-                                    f"Updating reservation {reservation_id} with version error")
-                                update_reservation_status(
-                                    reservation_id=reservation_id,
-                                    status="failed",
-                                    detailed_status="CLI version validation failed",
-                                    failure_reason=str(version_error)
-                                )
-                                # Delete message after updating status
-                                delete_sqs_message(record)
-                            else:
-                                logger.error(
-                                    f"Version validation failed but no reservation_id found: {version_error}")
-                            continue
+                    # Validate CLI version for all requests
+                    try:
+                        validate_cli_version(message_body)
+                    except ValueError as version_error:
+                        error_str = str(version_error)
+                        # Write error to operations table (for CLI polling)
+                        operation_id = message_body.get("operation_id")
+                        write_operation_result(operation_id, "failed", error_str)
+                        # Also update reservation status if applicable
+                        reservation_id = message_body.get("reservation_id")
+                        if reservation_id:
+                            update_reservation_status(
+                                reservation_id=reservation_id,
+                                status="failed",
+                                detailed_status="CLI version validation failed",
+                                failure_reason=error_str
+                            )
+                        logger.error(f"Version validation failed: {error_str}")
+                        delete_sqs_message(record)
+                        continue
 
                     message_type = message_body.get("type", "reservation")
 
@@ -1144,6 +1158,8 @@ def handler(event, context):
                         success = process_delete_disk_action(record)
                     elif message_body.get("action") == "create_disk":
                         success = process_create_disk_action(record)
+                    elif message_body.get("action") == "clone_disk":
+                        success = process_clone_disk_action(record)
                     elif message_body.get("action") == "process_multinode_individual":
                         success = process_multinode_individual_node(
                             message_body)
@@ -1965,9 +1981,9 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
         logger.error(error_msg)
         return False, error_msg
 
-    # Validate duration
+    # Validate duration (CPU types have no limit)
     duration_hours = request.get("duration_hours", DEFAULT_TIMEOUT_HOURS)
-    if duration_hours > MAX_RESERVATION_HOURS:
+    if not gpu_type.startswith("cpu-") and duration_hours > MAX_RESERVATION_HOURS:
         error_msg = f"Duration exceeds maximum: {duration_hours} > {MAX_RESERVATION_HOURS} hours"
         logger.error(error_msg)
         return False, error_msg
@@ -5091,6 +5107,28 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
 
         latest_snapshot = max(active_snapshots, key=lambda s: s['StartTime']) if active_snapshots else None
 
+        # Step 2b: If no own snapshots, check DynamoDB for clone_source_snapshot reference
+        if not latest_snapshot and disk_name:
+            try:
+                disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+                disks_table = dynamodb.Table(disks_table_name)
+                disk_item = disks_table.get_item(
+                    Key={'user_id': user_id, 'disk_name': disk_name}
+                ).get('Item', {})
+                clone_source = disk_item.get('clone_source_snapshot')
+                if clone_source:
+                    # Verify the source snapshot still exists and is completed
+                    try:
+                        snap_response = ec2_client.describe_snapshots(SnapshotIds=[clone_source])
+                        snap_list = snap_response.get('Snapshots', [])
+                        if snap_list and snap_list[0]['State'] == 'completed':
+                            latest_snapshot = snap_list[0]
+                            logger.info(f"Using clone source snapshot {clone_source} for disk '{disk_name}'")
+                    except Exception as snap_err:
+                        logger.warning(f"Clone source snapshot {clone_source} not accessible: {snap_err}")
+            except Exception as db_err:
+                logger.warning(f"Could not check clone_source_snapshot for disk '{disk_name}': {db_err}")
+
         # Step 3: Create volume from snapshot or empty
         if latest_snapshot:
             snapshot_id = latest_snapshot['SnapshotId']
@@ -7662,20 +7700,132 @@ def process_create_disk_action(record: dict[str, Any]) -> bool:
             )
 
             logger.info(f"Created disk entry '{disk_name}' for user '{user_id}'")
+            write_operation_result(operation_id, "completed")
             return True
 
         except disks_table.meta.client.exceptions.ConditionalCheckFailedException:
-            # Disk already exists - this is fine, just log and return success
             logger.info(f"Disk '{disk_name}' already exists for user '{user_id}', skipping creation")
+            write_operation_result(operation_id, "completed")
             return True
 
         except Exception as db_error:
             logger.error(f"Error creating disk entry '{disk_name}': {db_error}")
-            return False  # Retry on DynamoDB errors
+            write_operation_result(operation_id, "failed", str(db_error))
+            return False
 
     except Exception as e:
         logger.error(f"Error processing create disk action: {str(e)}")
-        return False  # Retry on processing errors
+        return False
+
+
+def process_clone_disk_action(record: dict[str, Any]) -> bool:
+    """Clone a disk by referencing the source disk's latest snapshot in DynamoDB.
+
+    No EC2 snapshot copy needed - snapshots are immutable so we just store a
+    reference. On first reservation, create_disk_from_snapshot_or_empty will
+    use this reference to create the volume. After that reservation ends, the
+    target disk gets its own snapshot via the normal shutdown flow.
+    """
+    try:
+        message = json.loads(record["body"])
+        user_id = message.get("user_id")
+        source_disk = message.get("source_disk")
+        target_disk = message.get("target_disk")
+        operation_id = message.get("operation_id")
+
+        if not all([user_id, source_disk, target_disk]):
+            logger.error(f"Missing required fields in clone disk action: {message}")
+            return True
+
+        logger.info(f"Processing clone disk: '{source_disk}' -> '{target_disk}' for user {user_id}")
+
+        # Find latest completed snapshot for source disk
+        snapshot_filters = [
+            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+            {"Name": "tag:disk_name", "Values": [source_disk]},
+            {"Name": "status", "Values": ["completed"]},
+        ]
+
+        paginator = ec2_client.get_paginator('describe_snapshots')
+        page_iterator = paginator.paginate(
+            OwnerIds=["self"],
+            Filters=snapshot_filters,
+            PaginationConfig={'PageSize': 100}
+        )
+
+        snapshots = []
+        for page in page_iterator:
+            snapshots.extend(page.get('Snapshots', []))
+
+        # Exclude soft-deleted
+        active_snapshots = [
+            s for s in snapshots
+            if 'delete-date' not in {t['Key']: t['Value'] for t in s.get('Tags', [])}
+        ]
+
+        if not active_snapshots:
+            error_msg = f"No snapshots found for source disk '{source_disk}'. Use the disk in a reservation first."
+            logger.error(error_msg)
+            write_operation_result(operation_id, "failed", error_msg)
+            return True
+
+        source_snapshot = max(active_snapshots, key=lambda s: s['StartTime'])
+        source_snapshot_id = source_snapshot['SnapshotId']
+        logger.info(f"Clone will reference snapshot {source_snapshot_id} from disk '{source_disk}'")
+
+        # Create DynamoDB entry with clone_source_snapshot reference
+        disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+        disks_table = dynamodb.Table(disks_table_name)
+        now = datetime.utcnow().isoformat()
+
+        # Copy S3 content listing and disk_size from source
+        source_s3_path = None
+        source_disk_size = None
+        try:
+            source_disk_item = disks_table.get_item(
+                Key={'user_id': user_id, 'disk_name': source_disk}
+            ).get('Item', {})
+            source_s3_path = source_disk_item.get('latest_snapshot_content_s3')
+            source_disk_size = source_disk_item.get('disk_size')
+        except Exception as e:
+            logger.warning(f"Could not read source disk metadata: {e}")
+
+        item = {
+            'user_id': user_id,
+            'disk_name': target_disk,
+            'size_gb': 1024,
+            'created_at': now,
+            'last_used': now,
+            'snapshot_count': 0,
+            'pending_snapshot_count': 0,
+            'in_use': False,
+            'is_deleted': False,
+            'cloned_from': source_disk,
+            'clone_source_snapshot': source_snapshot_id,
+        }
+        if source_s3_path:
+            item['latest_snapshot_content_s3'] = source_s3_path
+        if source_disk_size:
+            item['disk_size'] = source_disk_size
+
+        try:
+            disks_table.put_item(
+                Item=item,
+                ConditionExpression='attribute_not_exists(user_id) AND attribute_not_exists(disk_name)'
+            )
+        except disks_table.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.info(f"Disk '{target_disk}' already exists for user '{user_id}', skipping creation")
+            write_operation_result(operation_id, "completed")
+            return True
+
+        logger.info(f"Disk clone complete: '{source_disk}' -> '{target_disk}' (references snapshot {source_snapshot_id})")
+        write_operation_result(operation_id, "completed")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error processing clone disk action: {str(e)}")
+        write_operation_result(operation_id, "failed", str(e))
+        return False
 
 
 def cleanup_pod_resources(pod_name: str, namespace: str = "gpu-dev") -> None:

@@ -53,6 +53,7 @@ class Config:
         self.queue_name = f"{self.prefix}-reservation-queue"
         self.reservations_table = f"{self.prefix}-reservations"
         self.disks_table = f"{self.prefix}-disks"
+        self.operations_table = f"{self.prefix}-operations"
         self.availability_table = f"{self.prefix}-gpu-availability"
         self.cluster_name = f"{self.prefix}-cluster"
 

@@ -762,7 +762,7 @@ def reserve(
 
             # Interactive duration selection
             if hours is None:
-                hours = select_duration_interactive()
+                hours = select_duration_interactive(gpu_type=gpu_type)
                 if hours is None:
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
@@ -876,9 +876,10 @@ def reserve(
                     f"\n[cyan]Add --distributed to proceed: gpu-dev reserve -g {gpu_count} --distributed[/cyan]")
                 return
 
-        # Validate parameters
-        if hours > 24:
-            rprint("[red]❌ Maximum reservation time is 24 hours[/red]")
+        # Validate parameters (CPU types have no duration limit)
+        is_cpu_type = gpu_type and gpu_type.startswith("cpu-")
+        if not is_cpu_type and hours > 24:
+            rprint("[red]Maximum reservation time is 24 hours for GPU instances[/red]")
             return
 
         if hours < 0.0833:  # Less than 5 minutes
@@ -3576,38 +3577,25 @@ def disk_create(disk_name: str):
         return
 
     try:
-        # Send create request to SQS
         operation_id = create_disk(disk_name, user_id, config)
         if not operation_id:
             return
 
-        # Poll for completion with spinner
-        with Live(console=console, refresh_per_second=4) as live:
-            start_time = time.time()
-            timeout_seconds = 180  # 3 minutes - Lambda may take time to process
+        from .disks import poll_operation
+        rprint(f"[cyan]Creating disk '{disk_name}'...[/cyan]")
+        status, error = poll_operation(operation_id, config, timeout_seconds=120)
 
-            while time.time() - start_time < timeout_seconds:
-                elapsed = int(time.time() - start_time)
-                live.update(f"[cyan]⏳ Creating disk '{disk_name}'... ({elapsed}s)[/cyan]")
-
-                # Check if disk exists now
-                from .disks import list_disks
-                disks = list_disks(user_id, config)
-                disk = next((d for d in disks if d['name'] == disk_name), None)
-
-                if disk is not None:
-                    live.update(f"[green]✓ Disk '{disk_name}' created successfully[/green]")
-                    rprint(f"\n[cyan]💡 Use this disk with: gpu-dev reserve --disk {disk_name}[/cyan]")
-                    return
-
-                time.sleep(2)
-
-            # Timeout
-            rprint(f"[yellow]⚠ Timed out waiting for disk creation. It may still be processing.[/yellow]")
-            rprint(f"[cyan]💡 Check status with: gpu-dev disk list[/cyan]")
+        if status == "completed":
+            rprint(f"[green]Disk '{disk_name}' created successfully[/green]")
+            rprint(f"[cyan]Use this disk with: gpu-dev reserve --disk {disk_name}[/cyan]")
+        elif status == "failed":
+            rprint(f"[red]Create failed: {error}[/red]")
+        else:
+            rprint(f"[yellow]Timed out waiting for disk creation. It may still be processing.[/yellow]")
+            rprint(f"[cyan]Check status with: gpu-dev disk list[/cyan]")
 
     except Exception as e:
-        rprint(f"[red]❌ Error creating disk: {str(e)}[/red]")
+        rprint(f"[red]Error creating disk: {str(e)}[/red]")
 
 
 @disk.command("list-content")
@@ -3723,6 +3711,51 @@ def disk_delete(disk_name: str, yes: bool):
     except Exception as e:
         rprint(f"[red]❌ Error deleting disk: {str(e)}[/red]")
         return
+
+
+@disk.command("clone")
+@click.argument("source_disk")
+@click.argument("target_disk")
+def disk_clone(source_disk: str, target_disk: str):
+    """Clone a disk by referencing its latest snapshot under a new name
+
+    Creates a new disk that references the source disk's latest snapshot.
+    On first reservation the volume is created from that snapshot.
+    Useful for parallel development/benchmarking with identical environments.
+    """
+    from .disks import clone_disk, list_disks
+    from .auth import authenticate_user
+    import time
+
+    config = load_config()
+
+    try:
+        user_info = authenticate_user(config)
+        user_id = user_info["user_id"]
+    except RuntimeError as e:
+        rprint(f"[red]{str(e)}[/red]")
+        return
+
+    try:
+        operation_id = clone_disk(source_disk, target_disk, user_id, config)
+        if not operation_id:
+            return
+
+        from .disks import poll_operation
+        rprint(f"[cyan]Cloning disk '{source_disk}' -> '{target_disk}'...[/cyan]")
+        status, error = poll_operation(operation_id, config, timeout_seconds=120)
+
+        if status == "completed":
+            rprint(f"[green]Disk '{target_disk}' cloned successfully[/green]")
+            rprint(f"[cyan]Use this disk with: gpu-dev reserve --disk {target_disk}[/cyan]")
+        elif status == "failed":
+            rprint(f"[red]Clone failed: {error}[/red]")
+        else:
+            rprint(f"[yellow]Timed out waiting for clone. It may still be processing.[/yellow]")
+            rprint(f"[cyan]Check status with: gpu-dev disk list[/cyan]")
+
+    except Exception as e:
+        rprint(f"[red]Error cloning disk: {str(e)}[/red]")
 
 
 @disk.command("rename")

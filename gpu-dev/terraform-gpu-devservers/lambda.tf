@@ -67,7 +67,8 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
           aws_dynamodb_table.gpu_reservations.arn,
           "${aws_dynamodb_table.gpu_reservations.arn}/index/*",
           aws_dynamodb_table.gpu_availability.arn,
-          aws_dynamodb_table.disks.arn
+          aws_dynamodb_table.disks.arn,
+          aws_dynamodb_table.operations.arn
         ]
       },
       {
@@ -179,9 +180,10 @@ resource "aws_lambda_function" "reservation_processor" {
       HOSTED_ZONE_ID                     = local.effective_domain_name != "" ? local.hosted_zone_id : ""
       SSH_DOMAIN_MAPPINGS_TABLE          = local.effective_domain_name != "" ? aws_dynamodb_table.ssh_domain_mappings.name : ""
       SSL_CERTIFICATE_ARN                = local.effective_domain_name != "" ? aws_acm_certificate.wildcard[0].arn : ""
-      LAMBDA_VERSION                     = "0.3.5"
-      MIN_CLI_VERSION                    = "0.3.5"
+      LAMBDA_VERSION                     = "0.3.7"
+      MIN_CLI_VERSION                    = "0.3.7"
       DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
+      OPERATIONS_TABLE                   = aws_dynamodb_table.operations.name
     }, local.alb_env_vars)
   }
 

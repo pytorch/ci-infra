@@ -33,7 +33,7 @@
 
 ```bash
 # 1. Install the CLI
-pip install "git+https://github.com/wdvr/osdc.git@release"
+pip install gpu-dev
 
 # 2. Configure your GitHub username (for SSH key authentication)
 gpu-dev config set github_user your-github-username
@@ -54,19 +54,19 @@ gpu-dev connect
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - AWS credentials configured
 - GitHub account with SSH keys
 
 ### Install the CLI
 
 ```bash
-# Install from GitHub (recommended)
-pip install "git+https://github.com/wdvr/osdc.git@release"
+# Install from PyPI (recommended)
+pip install gpu-dev
 
 # Or install from a local clone
-git clone https://github.com/pytorch/odc.git
-cd odc
+git clone https://github.com/wdvr/osdc.git
+cd osdc
 pip install -e .
 ```
 

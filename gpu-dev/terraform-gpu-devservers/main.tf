@@ -95,7 +95,7 @@ locals {
         "cpu-arm" = {
           instance_type       = "c7g.4xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 30
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
@@ -103,7 +103,7 @@ locals {
         "cpu-x86" = {
           instance_type       = "c7i.4xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 30
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
@@ -221,7 +221,7 @@ locals {
         "cpu-arm" = {
           instance_type       = "c7g.8xlarge"
           instance_types      = null
-          instance_count      = 4
+          instance_count      = 30
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
@@ -229,7 +229,7 @@ locals {
         "cpu-x86" = {
           instance_type       = "c7i.8xlarge"
           instance_types      = null
-          instance_count      = 4
+          instance_count      = 30
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
@@ -261,7 +261,7 @@ locals {
         { key = "cr1", id = null, instance_count = 1 },                   # A100 on-demand (1 instance)
       ]
       h100 = [
-        { key = "cr0", id = "cr-0a7caa7414866615a", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
+        { key = "cr0", id = "cr-0a3f49b96fe03ca04", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
         { key = "cr1", id = null, instance_count = 2 },                   # H100 on-demand (2 instances)
       ]
       h200 = [
@@ -319,7 +319,7 @@ locals {
       "cr-0f6d0766f5d3339e6" = "tertiary"  # us-east-2c (p5e.48xlarge)
       "cr-06c9c978dea756a26" = "tertiary"  # us-east-2c
       # H100 capacity reservation
-      "cr-0a7caa7414866615a" = "tertiary"  # us-east-2c (p5.48xlarge)
+      "cr-0a3f49b96fe03ca04" = "tertiary"  # us-east-2c (p5.48xlarge)
       # A100 capacity reservation
       "cr-01cc0f00f28b095af" = "primary"   # us-east-2a
     }

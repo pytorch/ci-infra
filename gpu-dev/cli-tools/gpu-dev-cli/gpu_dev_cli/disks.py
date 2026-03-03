@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from .config import Config
+from .reservations import get_version
 
 
 def get_ec2_client(config: Config):
@@ -259,12 +260,12 @@ def create_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
         sqs_client = config.session.client('sqs', region_name=config.aws_region)
         queue_url = config.get_queue_url()
 
-        # Create disk creation message
         message = {
             'action': 'create_disk',
             'operation_id': operation_id,
             'user_id': user_id,
             'disk_name': disk_name,
+            'version': get_version(),
             'requested_at': datetime.now(timezone.utc).isoformat()
         }
 
@@ -367,6 +368,7 @@ def unlock_disk(disk_name: str, user_id: str, config: Config) -> bool:
         'operation_id': operation_id,
         'user_id': user_id,
         'disk_name': disk_name,
+        'version': get_version(),
         'requested_at': datetime.now(timezone.utc).isoformat()
     }
 
@@ -413,13 +415,13 @@ def delete_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
         sqs_client = config.session.client('sqs', region_name=config.aws_region)
         queue_url = config.get_queue_url()
 
-        # Create disk deletion message
         message = {
             'action': 'delete_disk',
             'operation_id': operation_id,
             'user_id': user_id,
             'disk_name': disk_name,
             'delete_date': delete_date_str,
+            'version': get_version(),
             'requested_at': datetime.now(timezone.utc).isoformat()
         }
 
@@ -490,6 +492,93 @@ def poll_disk_operation(
         return False, f"Timed out waiting for disk '{disk_name}' to be created. It may still be processing."
     else:
         return False, f"Timed out waiting for disk '{disk_name}' deletion to complete. It may still be processing."
+
+
+def clone_disk(source_disk: str, target_disk: str, user_id: str, config: Config) -> Optional[str]:
+    """
+    Clone a disk by sending a clone request to SQS.
+    Lambda copies the latest snapshot and creates a new disk entry.
+    Returns operation_id on success, None on failure.
+    """
+    import json
+    import uuid
+
+    # Check source disk exists
+    existing_disks = list_disks(user_id, config)
+    source = next((d for d in existing_disks if d['name'] == source_disk), None)
+    if not source:
+        print(f"Error: Source disk '{source_disk}' not found")
+        return None
+
+    if source.get('is_deleted'):
+        print(f"Error: Source disk '{source_disk}' is marked for deletion")
+        return None
+
+    if source.get('snapshot_count', 0) == 0:
+        print(f"Error: Source disk '{source_disk}' has no snapshots to clone from")
+        print(f"Use the disk in a reservation first, then cancel/expire to create a snapshot.")
+        return None
+
+    # Check target doesn't exist
+    if any(d['name'] == target_disk for d in existing_disks):
+        print(f"Error: Disk '{target_disk}' already exists")
+        return None
+
+    # Validate target name
+    if not re.match(r'^[a-zA-Z0-9_-]+$', target_disk):
+        print(f"Error: Disk name must contain only letters, numbers, hyphens, and underscores")
+        return None
+
+    operation_id = str(uuid.uuid4())
+
+    try:
+        sqs_client = config.session.client('sqs', region_name=config.aws_region)
+        queue_url = config.get_queue_url()
+
+        message = {
+            'action': 'clone_disk',
+            'operation_id': operation_id,
+            'user_id': user_id,
+            'source_disk': source_disk,
+            'target_disk': target_disk,
+            'version': get_version(),
+            'requested_at': datetime.now(timezone.utc).isoformat()
+        }
+
+        sqs_client.send_message(
+            QueueUrl=queue_url,
+            MessageBody=json.dumps(message)
+        )
+
+        return operation_id
+
+    except Exception as e:
+        print(f"Error sending clone request: {e}")
+        return None
+
+
+def poll_operation(operation_id: str, config: Config, timeout_seconds: int = 60) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Poll the operations table for a result.
+    Returns (status, error) - status is 'completed', 'failed', or None if timeout.
+    """
+    import time
+
+    dynamodb = get_dynamodb_resource(config)
+    ops_table = dynamodb.Table(config.operations_table)
+
+    start_time = time.time()
+    while time.time() - start_time < timeout_seconds:
+        try:
+            response = ops_table.get_item(Key={'operation_id': operation_id})
+            item = response.get('Item')
+            if item:
+                return item.get('status'), item.get('error')
+        except Exception:
+            pass
+        time.sleep(2)
+
+    return None, None
 
 
 def rename_disk(old_name: str, new_name: str, user_id: str, config: Config) -> bool:

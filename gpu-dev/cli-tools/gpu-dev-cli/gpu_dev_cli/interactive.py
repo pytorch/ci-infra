@@ -197,12 +197,14 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
         return None
 
 
-def select_duration_interactive() -> Optional[float]:
-    """Interactive duration selection"""
+def select_duration_interactive(gpu_type: str = None) -> Optional[float]:
+    """Interactive duration selection. CPU types have no duration limit."""
     if not check_interactive_support():
         return None
 
-    # Common duration choices - cleaner labels
+    is_cpu = gpu_type and gpu_type.startswith("cpu-")
+
+    # Common duration choices
     choices = [
         questionary.Choice("15 minutes", 0.25),
         questionary.Choice("30 minutes", 0.5),
@@ -211,9 +213,15 @@ def select_duration_interactive() -> Optional[float]:
         questionary.Choice("4 hours", 4.0),
         questionary.Choice("8 hours (default)", 8.0),
         questionary.Choice("12 hours", 12.0),
-        questionary.Choice("24 hours (max)", 24.0),
-        questionary.Choice("Custom duration", "custom"),
+        questionary.Choice("24 hours" + ("" if is_cpu else " (max)"), 24.0),
     ]
+    if is_cpu:
+        choices.extend([
+            questionary.Choice("48 hours", 48.0),
+            questionary.Choice("7 days", 168.0),
+            questionary.Choice("30 days", 720.0),
+        ])
+    choices.append(questionary.Choice("Custom duration", "custom"))
 
     try:
         answer = questionary.select(
@@ -221,10 +229,10 @@ def select_duration_interactive() -> Optional[float]:
         ).ask()
 
         if answer == "custom":
-            # Ask for custom duration
+            max_label = "no limit" if is_cpu else "max 24"
             custom_duration = questionary.text(
-                "Enter duration in hours (decimal allowed, max 24):",
-                validate=lambda x: _validate_duration(x),
+                f"Enter duration in hours (decimal allowed, {max_label}):",
+                validate=lambda x: _validate_duration(x, unlimited=is_cpu),
                 style=custom_style,
             ).ask()
 
@@ -417,14 +425,14 @@ def select_reservation_interactive(
         return None
 
 
-def _validate_duration(duration_str: str) -> bool:
+def _validate_duration(duration_str: str, unlimited: bool = False) -> bool:
     """Validate duration input"""
     try:
         duration = float(duration_str)
         if duration < 0.0833:  # Less than 5 minutes
             return "Minimum duration is 5 minutes (0.0833 hours)"
-        if duration > 24:
-            return "Maximum duration is 24 hours"
+        if not unlimited and duration > 24:
+            return "Maximum duration is 24 hours for GPU instances"
         return True
     except ValueError:
         return "Please enter a valid number"

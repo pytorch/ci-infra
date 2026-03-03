@@ -140,3 +140,28 @@ resource "aws_dynamodb_table" "disks" {
     ManagedBy   = "terraform"
   }
 }
+
+# DynamoDB table for async operation status tracking
+# CLI sends operation_id with each SQS message, Lambda writes result here
+# CLI polls this table instead of guessing when an operation completed
+resource "aws_dynamodb_table" "operations" {
+  name         = "${var.prefix}-operations"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "operation_id"
+
+  attribute {
+    name = "operation_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name        = "${var.prefix}-operations"
+    Environment = local.current_config.environment
+    ManagedBy   = "terraform"
+  }
+}
