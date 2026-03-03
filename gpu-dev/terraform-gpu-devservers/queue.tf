@@ -154,11 +154,6 @@ resource "aws_dynamodb_table" "operations" {
     type = "S"
   }
 
-  ttl {
-    attribute_name = "ttl"
-    enabled        = true
-  }
-
   tags = {
     Name        = "${var.prefix}-operations"
     Environment = local.current_config.environment

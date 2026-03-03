@@ -196,7 +196,6 @@ def write_operation_result(operation_id: str, status: str, error: str = None):
             'operation_id': operation_id,
             'status': status,
             'updated_at': datetime.utcnow().isoformat(),
-            'ttl': int(time.time()) + 86400,  # auto-delete after 24h
         }
         if error:
             item['error'] = error

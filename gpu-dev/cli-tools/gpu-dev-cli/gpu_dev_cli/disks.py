@@ -574,8 +574,9 @@ def poll_operation(operation_id: str, config: Config, timeout_seconds: int = 60)
             item = response.get('Item')
             if item:
                 return item.get('status'), item.get('error')
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error polling operation: {e}")
+            return "failed", str(e)
         time.sleep(2)
 
     return None, None

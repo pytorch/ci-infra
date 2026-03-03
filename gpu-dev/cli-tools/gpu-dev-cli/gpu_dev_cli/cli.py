@@ -3581,17 +3581,15 @@ def disk_create(disk_name: str):
         if not operation_id:
             return
 
-        from .disks import poll_operation
+        from .disks import poll_disk_operation
         rprint(f"[cyan]Creating disk '{disk_name}'...[/cyan]")
-        status, error = poll_operation(operation_id, config, timeout_seconds=120)
+        success, message = poll_disk_operation("create", disk_name, user_id, config, timeout_seconds=120)
 
-        if status == "completed":
-            rprint(f"[green]Disk '{disk_name}' created successfully[/green]")
+        if success:
+            rprint(f"[green]{message}[/green]")
             rprint(f"[cyan]Use this disk with: gpu-dev reserve --disk {disk_name}[/cyan]")
-        elif status == "failed":
-            rprint(f"[red]Create failed: {error}[/red]")
         else:
-            rprint(f"[yellow]Timed out waiting for disk creation. It may still be processing.[/yellow]")
+            rprint(f"[yellow]{message}[/yellow]")
             rprint(f"[cyan]Check status with: gpu-dev disk list[/cyan]")
 
     except Exception as e:
@@ -3723,9 +3721,8 @@ def disk_clone(source_disk: str, target_disk: str):
     On first reservation the volume is created from that snapshot.
     Useful for parallel development/benchmarking with identical environments.
     """
-    from .disks import clone_disk, list_disks
+    from .disks import clone_disk, poll_disk_operation
     from .auth import authenticate_user
-    import time
 
     config = load_config()
 
@@ -3741,17 +3738,14 @@ def disk_clone(source_disk: str, target_disk: str):
         if not operation_id:
             return
 
-        from .disks import poll_operation
         rprint(f"[cyan]Cloning disk '{source_disk}' -> '{target_disk}'...[/cyan]")
-        status, error = poll_operation(operation_id, config, timeout_seconds=120)
+        success, message = poll_disk_operation("create", target_disk, user_id, config, timeout_seconds=120)
 
-        if status == "completed":
+        if success:
             rprint(f"[green]Disk '{target_disk}' cloned successfully[/green]")
             rprint(f"[cyan]Use this disk with: gpu-dev reserve --disk {target_disk}[/cyan]")
-        elif status == "failed":
-            rprint(f"[red]Clone failed: {error}[/red]")
         else:
-            rprint(f"[yellow]Timed out waiting for clone. It may still be processing.[/yellow]")
+            rprint(f"[yellow]{message}[/yellow]")
             rprint(f"[cyan]Check status with: gpu-dev disk list[/cyan]")
 
     except Exception as e:
