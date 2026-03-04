@@ -758,6 +758,7 @@ def create_or_find_user_efs(user_id: str) -> str:
 
         throttle_failures = 0
         total_filesystems = len(response.get("FileSystems", []))
+        matching_efs = []  # Collect all matching EFS, sorted by creation time
 
         for fs in response.get("FileSystems", []):
             fs_id = fs["FileSystemId"]
@@ -770,11 +771,8 @@ def create_or_find_user_efs(user_id: str) -> str:
 
                 if tags.get("gpu-dev-user") == user_id:
                     logger.info(
-                        f"Found existing EFS {fs_id} for user {user_id}")
-
-                    # Ensure mount target exists
-                    ensure_efs_mount_target(fs_id)
-                    return fs_id
+                        f"Found existing EFS {fs_id} for user {user_id} (created {fs.get('CreationTime')})")
+                    matching_efs.append(fs)
 
             except Exception as tag_error:
                 error_str = str(tag_error)
@@ -794,6 +792,26 @@ def create_or_find_user_efs(user_id: str) -> str:
                 f"EFS DescribeTags API throttled ({throttle_failures}/{total_filesystems} filesystems). "
                 f"Cannot safely create new EFS - retry later to avoid duplicates."
             )
+
+        # If we found matching EFS, return the NEWEST one (by CreationTime)
+        if matching_efs:
+            # Sort by CreationTime descending (newest first)
+            matching_efs.sort(key=lambda x: x.get('CreationTime'), reverse=True)
+            newest_efs = matching_efs[0]
+            fs_id = newest_efs["FileSystemId"]
+
+            if len(matching_efs) > 1:
+                logger.warning(
+                    f"Found {len(matching_efs)} EFS filesystems for user {user_id}! "
+                    f"Using newest: {fs_id} (created {newest_efs.get('CreationTime')}). "
+                    f"Older EFS: {[fs['FileSystemId'] for fs in matching_efs[1:]]}"
+                )
+            else:
+                logger.info(f"Using EFS {fs_id} for user {user_id}")
+
+            # Ensure mount target exists
+            ensure_efs_mount_target(fs_id)
+            return fs_id
 
         # Create new EFS filesystem
         logger.info(f"Creating new EFS filesystem for user {user_id}")
