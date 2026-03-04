@@ -758,34 +758,33 @@ def create_or_find_user_efs(user_id: str) -> str:
 
         throttle_failures = 0
         total_filesystems = len(response.get("FileSystems", []))
-        matching_efs = []  # Collect all matching EFS
-
-        # Optimization: Check filesystem Name tag first (faster than describe_tags)
-        # Format: "gpu-dev-shared-{username}"
-        expected_name = f"gpu-dev-shared-{user_id.split('@')[0]}"
+        matching_efs = []  # Collect all matching EFS, sorted by creation time
 
         for fs in response.get("FileSystems", []):
             fs_id = fs["FileSystemId"]
-            fs_name = fs.get("Name", "")
 
-            # Fast path: if Name matches, check tags to confirm
-            if fs_name == expected_name:
-                try:
-                    tags_response = retry_with_backoff(efs_client.describe_tags, FileSystemId=fs_id)
-                    tags = {tag["Key"]: tag["Value"] for tag in tags_response.get("Tags", [])}
+            # Get tags for this filesystem
+            try:
+                tags_response = retry_with_backoff(efs_client.describe_tags, FileSystemId=fs_id)
+                tags = {tag["Key"]: tag["Value"]
+                        for tag in tags_response.get("Tags", [])}
 
-                    if tags.get("gpu-dev-user") == user_id:
-                        logger.info(f"Found existing EFS {fs_id} for user {user_id} (created {fs.get('CreationTime')})")
-                        matching_efs.append(fs)
+                if tags.get("gpu-dev-user") == user_id:
+                    logger.info(
+                        f"Found existing EFS {fs_id} for user {user_id} (created {fs.get('CreationTime')})")
+                    matching_efs.append(fs)
 
-                except Exception as tag_error:
-                    error_str = str(tag_error)
-                    if "Throttling" in error_str or "RequestLimitExceeded" in error_str or "TooManyRequests" in error_str:
-                        throttle_failures += 1
-                        logger.warning(f"EFS DescribeTags throttled for {fs_id} ({throttle_failures}/{total_filesystems}): {tag_error}")
-                    else:
-                        logger.warning(f"Could not get tags for EFS {fs_id}: {tag_error}")
-                    continue
+            except Exception as tag_error:
+                error_str = str(tag_error)
+                # Track throttling failures separately
+                if "Throttling" in error_str or "RequestLimitExceeded" in error_str or "TooManyRequests" in error_str:
+                    throttle_failures += 1
+                    logger.warning(
+                        f"EFS DescribeTags throttled for {fs_id} ({throttle_failures}/{total_filesystems}): {tag_error}")
+                else:
+                    logger.warning(
+                        f"Could not get tags for EFS {fs_id}: {tag_error}")
+                continue
 
         # If we had throttling failures, don't create new EFS - could create duplicates
         if throttle_failures > 0:
