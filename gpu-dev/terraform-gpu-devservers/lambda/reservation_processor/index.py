@@ -786,14 +786,8 @@ def create_or_find_user_efs(user_id: str) -> str:
                         f"Could not get tags for EFS {fs_id}: {tag_error}")
                 continue
 
-        # If we had throttling failures, don't create new EFS - could create duplicates
-        if throttle_failures > 0:
-            raise Exception(
-                f"EFS DescribeTags API throttled ({throttle_failures}/{total_filesystems} filesystems). "
-                f"Cannot safely create new EFS - retry later to avoid duplicates."
-            )
-
         # If we found matching EFS, return the NEWEST one (by CreationTime)
+        # Do this BEFORE checking throttling - if we found EFS, throttling doesn't matter
         if matching_efs:
             # Sort by CreationTime descending (newest first)
             matching_efs.sort(key=lambda x: x.get('CreationTime'), reverse=True)
@@ -809,9 +803,23 @@ def create_or_find_user_efs(user_id: str) -> str:
             else:
                 logger.info(f"Using EFS {fs_id} for user {user_id}")
 
+            # Log throttling as warning but proceed anyway (we have valid EFS)
+            if throttle_failures > 0:
+                logger.warning(
+                    f"Had {throttle_failures}/{total_filesystems} throttling errors during scan, "
+                    f"but found valid EFS {fs_id} - proceeding"
+                )
+
             # Ensure mount target exists
             ensure_efs_mount_target(fs_id)
             return fs_id
+
+        # No matching EFS found - check if throttling prevented complete scan
+        if throttle_failures > 0:
+            raise Exception(
+                f"EFS DescribeTags API throttled ({throttle_failures}/{total_filesystems} filesystems). "
+                f"Cannot safely create new EFS - retry later to avoid duplicates."
+            )
 
         # Create new EFS filesystem
         logger.info(f"Creating new EFS filesystem for user {user_id}")
