@@ -1,0 +1,6 @@
+{
+  "Exclude": [
+    "osdc/modules/nodepools/scripts/python/generate_nodepools.py",
+    "osdc/modules/arc-runners/scripts/python/generate_runners.py"
+  ]
+}

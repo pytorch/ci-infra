@@ -3,6 +3,7 @@
 # Path configurations
 skip-path:
   - arc
+  - osdc
   - '.github/workflows/arc*'
 
 # Skip INFO and other unresolvable checks

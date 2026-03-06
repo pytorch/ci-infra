@@ -175,8 +175,10 @@ def delete_registry_endpoint(session, harbor_url, registry_id, registry_name):
         log_info(f"  Deleted registry endpoint: {registry_name} (id={registry_id})")
         return True
     else:
-        log_error(f"  Failed to delete registry endpoint {registry_name}: "
-                  f"{resp.status_code} {resp.text}")
+        log_error(
+            f"  Failed to delete registry endpoint {registry_name}: "
+            f"{resp.status_code} {resp.text}"
+        )
         return False
 
 
@@ -229,8 +231,10 @@ def delete_project(session, harbor_url, project_name):
     elif resp.status_code == 404:
         return True  # already gone
     else:
-        log_error(f"  Failed to delete project {project_name}: "
-                  f"{resp.status_code} {resp.text}")
+        log_error(
+            f"  Failed to delete project {project_name}: "
+            f"{resp.status_code} {resp.text}"
+        )
         return False
 
 
@@ -277,8 +281,10 @@ def ensure_registry_endpoint(session, harbor_url, registry, credentials=None):
             log_info(f"  Registry endpoint already exists: {registry['name']}")
             return True
         else:
-            log_error(f"  Failed to create registry endpoint {registry['name']}: "
-                      f"{resp.status_code} {resp.text}")
+            log_error(
+                f"  Failed to create registry endpoint {registry['name']}: "
+                f"{resp.status_code} {resp.text}"
+            )
             return False
     else:
         log_info(f"  Registry endpoint already exists: {registry['name']}")
@@ -316,8 +322,10 @@ def create_proxy_cache_project(session, harbor_url, registry):
         log_info(f"  Proxy cache project already exists: {registry['project_name']}")
         return True
     else:
-        log_error(f"  Failed to create project {registry['project_name']}: "
-                  f"{resp.status_code} {resp.text}")
+        log_error(
+            f"  Failed to create project {registry['project_name']}: "
+            f"{resp.status_code} {resp.text}"
+        )
         return False
 
 
