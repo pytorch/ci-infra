@@ -176,8 +176,8 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
         max_reservable = 0  # Maximum GPUs reservable (considering multinode for high-end GPUs)
         if k8s_client is not None and not is_cpu_type:
             try:
-                from kubernetes import client
-                v1 = client.CoreV1Api(k8s_client)
+                from kubernetes import client as k8s_client_lib
+                v1 = k8s_client_lib.CoreV1Api(k8s_client)
                 nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
 
                 single_node_max = 0  # Max available on any single node
@@ -216,8 +216,9 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                 logger.info(f"Found {full_nodes_available} full nodes available for {gpu_type}, max reservable: {max_reservable} (single node max: {single_node_max})")
             except Exception as e:
                 logger.warning(f"Could not calculate full nodes available for {gpu_type}: {str(e)}")
-                full_nodes_available = 0
-                max_reservable = 0
+                # Fallback: use available_gpus so max_reservable isn't misleadingly 0
+                full_nodes_available = available_gpus // gpus_per_instance if gpus_per_instance > 0 else 0
+                max_reservable = available_gpus
         elif is_cpu_type:
             # For CPU nodes, each node supports 1 reservation
             full_nodes_available = available_gpus  # Each "GPU" represents one CPU node slot
