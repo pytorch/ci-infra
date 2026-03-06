@@ -748,8 +748,17 @@ def restore_ebs_from_existing_snapshot(snapshot_id, target_az, user_id):
         raise
 
 
+_efs_cache = {}  # Module-level cache: user_id -> efs_id (shared across threads in same invocation)
+
+
 def create_or_find_user_efs(user_id: str) -> str:
     """Create or find existing EFS filesystem for user shared storage"""
+    if user_id in _efs_cache:
+        cached_id = _efs_cache[user_id]
+        logger.info(f"Using cached EFS {cached_id} for user {user_id}")
+        ensure_efs_mount_target(cached_id)
+        return cached_id
+
     try:
         logger.info(f"Looking for existing EFS filesystem for user {user_id}")
 
@@ -812,6 +821,7 @@ def create_or_find_user_efs(user_id: str) -> str:
 
             # Ensure mount target exists
             ensure_efs_mount_target(fs_id)
+            _efs_cache[user_id] = fs_id
             return fs_id
 
         # No matching EFS found - check if throttling prevented complete scan
@@ -886,6 +896,7 @@ def create_or_find_user_efs(user_id: str) -> str:
             # Don't fail EFS creation for this
 
         logger.info(f"Created new EFS filesystem {fs_id} for user {user_id}")
+        _efs_cache[user_id] = fs_id
         return fs_id
 
     except Exception as e:
