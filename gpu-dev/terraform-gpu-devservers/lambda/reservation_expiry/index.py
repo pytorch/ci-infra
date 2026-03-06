@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 
 import boto3
+from boto3.dynamodb.conditions import Attr
 from kubernetes import client, stream
 
 from shared import setup_kubernetes_client
@@ -424,262 +425,10 @@ def handler(event, context):
                         f"Failed to expire stuck preparing reservation {reservation_id}: {e}"
                     )
 
-        # Clean up failed reservations that might have orphaned pods
-        try:
-            failed_response = reservations_table.query(
-                IndexName="StatusIndex",
-                KeyConditionExpression="#status = :status",
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={":status": "failed"},
-            )
-            failed_reservations = failed_response.get("Items", [])
-            logger.info(f"Found {len(failed_reservations)} failed reservations")
-
-            # Clean up failed reservations that have pods (created in the last 24 hours to avoid processing old ones)
-            FAILED_CLEANUP_WINDOW = 24 * 3600  # 24 hours
-            failed_cleanup_threshold = current_time - FAILED_CLEANUP_WINDOW
-
-            for reservation in failed_reservations:
-                reservation_id = reservation["reservation_id"]
-                pod_name = reservation.get("pod_name")
-
-                if not pod_name:
-                    continue  # No pod to clean up
-
-                # Check if failed recently (within cleanup window)
-                failed_at = reservation.get(
-                    "failed_at", reservation.get("created_at", "")
-                )
-                try:
-                    if isinstance(failed_at, str):
-                        failed_timestamp = int(
-                            datetime.fromisoformat(
-                                failed_at.replace("Z", "+00:00")
-                            ).timestamp()
-                        )
-                    else:
-                        failed_timestamp = int(failed_at)
-
-                    if failed_timestamp < failed_cleanup_threshold:
-                        continue  # Too old, skip cleanup
-
-                except (ValueError, AttributeError):
-                    continue  # Can't parse timestamp, skip
-
-                # Check if pod actually exists before trying to clean it up
-                if not check_pod_exists(pod_name):
-                    logger.debug(f"Pod {pod_name} for failed reservation {reservation_id[:8]} already deleted")
-                    # Pod gone but disk might still be marked in_use - clean it up
-                    user_id = reservation.get("user_id")
-                    disk_name = reservation.get("disk_name")
-
-                    # Fallback: if disk_name not in reservation, look it up from disks table
-                    if user_id and not disk_name:
-                        disk_name = find_disk_by_reservation(user_id, reservation_id)
-
-                    if user_id and disk_name:
-                        try:
-                            mark_disk_not_in_use(user_id, disk_name)
-                            logger.info(f"Cleared disk '{disk_name}' in_use flag for failed reservation {reservation_id[:8]} (pod already deleted)")
-                        except Exception as disk_error:
-                            logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
-                    continue
-
-                logger.info(
-                    f"Cleaning up failed reservation {reservation_id[:8]} with pod {pod_name}"
-                )
-                try:
-                    cleanup_pod(pod_name, reservation_data=reservation)
-                    logger.info(
-                        f"Successfully cleaned up failed reservation {reservation_id[:8]}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to cleanup failed reservation {reservation_id[:8]}: {e}"
-                    )
-
-        except Exception as e:
-            logger.error(f"Error processing failed reservations: {e}")
-
-        # Pod-centric cleanup: Check all running pods and clean up those with failed/cancelled/expired reservations
-        try:
-            logger.info("Starting pod-centric cleanup - checking all running gpu-dev pods")
-
-            # Get Kubernetes client
-            k8s_client = get_k8s_client()
-            v1 = client.CoreV1Api(k8s_client)
-
-            # List all pods in gpu-dev namespace with gpu-dev- prefix
-            pod_list = v1.list_namespaced_pod(
-                namespace="gpu-dev",
-                label_selector=""  # Get all pods, we'll filter by name
-            )
-
-            gpu_dev_pods = [pod for pod in pod_list.items if pod.metadata.name.startswith("gpu-dev-")]
-            logger.info(f"Found {len(gpu_dev_pods)} gpu-dev pods to check")
-
-            pods_cleaned = 0
-            for pod in gpu_dev_pods:
-                pod_name = pod.metadata.name
-
-                # Extract reservation ID from pod name (format: gpu-dev-{reservation_id})
-                if not pod_name.startswith("gpu-dev-"):
-                    continue
-
-                reservation_id_prefix = pod_name[8:]  # Remove "gpu-dev-" prefix (this is truncated)
-
-                try:
-                    # Look up reservation by prefix using paginated scan (pod names are truncated)
-                    items = []
-                    last_evaluated_key = None
-
-                    # Scan all pages to find the reservation
-                    while True:
-                        if last_evaluated_key:
-                            scan_response = reservations_table.scan(
-                                FilterExpression="begins_with(reservation_id, :prefix)",
-                                ExpressionAttributeValues={":prefix": reservation_id_prefix},
-                                ExclusiveStartKey=last_evaluated_key
-                            )
-                        else:
-                            scan_response = reservations_table.scan(
-                                FilterExpression="begins_with(reservation_id, :prefix)",
-                                ExpressionAttributeValues={":prefix": reservation_id_prefix}
-                            )
-
-                        items.extend(scan_response.get("Items", []))
-
-                        # Check if there are more pages
-                        last_evaluated_key = scan_response.get("LastEvaluatedKey")
-                        if not last_evaluated_key or items:  # Stop if we found items or no more pages
-                            break
-
-                    if not items:
-                        logger.warning(f"Pod {pod_name} has no corresponding reservation in DynamoDB (searched prefix: {reservation_id_prefix}) - keeping pod")
-                        continue
-
-                    # Use the first matching reservation (there should only be one with this prefix)
-                    reservation = items[0]
-                    reservation_id = reservation.get("reservation_id", "")
-                    reservation_status = reservation.get("status", "")
-
-                    # Clean up pod if reservation is in a terminal state
-                    if reservation_status in ["failed", "cancelled", "expired"]:
-                        logger.info(f"Cleaning up pod {pod_name} - reservation status: {reservation_status}")
-                        try:
-                            cleanup_pod(pod_name, reservation_data=reservation)
-                            pods_cleaned += 1
-                            logger.info(f"Successfully cleaned up pod {pod_name} with {reservation_status} reservation")
-                        except Exception as cleanup_error:
-                            logger.error(f"Failed to cleanup pod {pod_name} with {reservation_status} reservation: {cleanup_error}")
-                    else:
-                        logger.debug(f"Pod {pod_name} has active reservation status: {reservation_status}")
-
-                except Exception as e:
-                    logger.error(f"Error checking reservation status for pod {pod_name}: {e}")
-                    continue
-
-            logger.info(f"Pod-centric cleanup completed - cleaned up {pods_cleaned} pods")
-
-        except Exception as e:
-            logger.error(f"Error in pod-centric cleanup: {e}")
-
-        # Also keep the original expired/cancelled reservation cleanup for redundancy
-        try:
-            expired_statuses = ["expired", "cancelled"]
-            expired_cancelled_reservations = []
-
-            for status in expired_statuses:
-                response = reservations_table.query(
-                    IndexName="StatusIndex",
-                    KeyConditionExpression="#status = :status",
-                    ExpressionAttributeNames={"#status": "status"},
-                    ExpressionAttributeValues={":status": status},
-                )
-                expired_cancelled_reservations.extend(response.get("Items", []))
-
-            logger.info(f"Found {len(expired_cancelled_reservations)} expired/cancelled reservations for redundant cleanup")
-
-            # Clean up pods from expired/cancelled reservations (within last 7 days to avoid processing very old ones)
-            EXPIRED_CLEANUP_WINDOW = 7 * 24 * 3600  # 7 days
-            expired_cleanup_threshold = current_time - EXPIRED_CLEANUP_WINDOW
-
-            for reservation in expired_cancelled_reservations:
-                reservation_id = reservation["reservation_id"]
-                pod_name = reservation.get("pod_name")
-
-                if not pod_name:
-                    continue  # No pod to clean up
-
-                # Check if expired/cancelled recently (within cleanup window)
-                expired_at = reservation.get("expired_at", reservation.get("cancelled_at", ""))
-                if not expired_at:
-                    continue  # No expiry/cancel timestamp
-
-                try:
-                    if isinstance(expired_at, str):
-                        expired_timestamp = int(
-                            datetime.fromisoformat(
-                                expired_at.replace("Z", "+00:00")
-                            ).timestamp()
-                        )
-                    else:
-                        expired_timestamp = int(expired_at)
-
-                    if expired_timestamp < expired_cleanup_threshold:
-                        continue  # Too old, skip cleanup
-
-                except (ValueError, AttributeError):
-                    continue  # Can't parse timestamp, skip
-
-                # Check if pod actually exists before trying to clean it up
-                if not check_pod_exists(pod_name):
-                    logger.debug(f"Pod {pod_name} for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} already deleted")
-                    # Pod gone but disk might still be marked in_use - clean it up
-                    user_id = reservation.get("user_id")
-                    disk_name = reservation.get("disk_name")
-
-                    # Fallback: if disk_name not in reservation, look it up from disks table
-                    if user_id and not disk_name:
-                        disk_name = find_disk_by_reservation(user_id, reservation_id)
-
-                    if user_id and disk_name:
-                        try:
-                            mark_disk_not_in_use(user_id, disk_name)
-                            logger.info(f"Cleared disk '{disk_name}' in_use flag for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} (pod already deleted)")
-                        except Exception as disk_error:
-                            logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
-                    continue
-
-                logger.info(
-                    f"Redundant cleanup: {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} with pod {pod_name}"
-                )
-                try:
-                    cleanup_pod(pod_name, reservation_data=reservation)
-                    logger.info(
-                        f"Successfully cleaned up {reservation.get('status', 'unknown')} reservation {reservation_id[:8]}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to cleanup {reservation.get('status', 'unknown')} reservation {reservation_id[:8]}: {e}"
-                    )
-
-        except Exception as e:
-            logger.error(f"Error processing expired/cancelled reservations: {e}")
-
-        # Also check for stale queued/pending reservations
-        stale_statuses = ["queued", "pending"]
-        stale_reservations = []
-        for status in stale_statuses:
-            response = reservations_table.query(
-                IndexName="StatusIndex",
-                KeyConditionExpression="#status = :status",
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={":status": status},
-            )
-            stale_reservations.extend(response.get("Items", []))
-
-        logger.info(f"Found {len(stale_reservations)} queued/pending reservations")
+        # =====================================================================
+        # CRITICAL PATH: Process expiry and warnings FIRST (lightweight)
+        # These must run before heavy cleanup to avoid Lambda timeout
+        # =====================================================================
 
         warning_threshold = current_time + (WARNING_MINUTES * 60)
         stale_threshold = current_time - (
@@ -807,6 +556,20 @@ def handler(event, context):
                     except Exception as e:
                         logger.warning(f"Error checking OOM status for reservation {reservation_id[:8]}: {e}")
 
+        # Check for stale queued/pending reservations
+        stale_statuses = ["queued", "pending"]
+        stale_reservations = []
+        for status in stale_statuses:
+            response = reservations_table.query(
+                IndexName="StatusIndex",
+                KeyConditionExpression="#status = :status",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":status": status},
+            )
+            stale_reservations.extend(response.get("Items", []))
+
+        logger.info(f"Found {len(stale_reservations)} queued/pending reservations")
+
         # Process stale queued/pending reservations
         for reservation in stale_reservations:
             created_at = reservation.get("created_at", "")
@@ -829,13 +592,281 @@ def handler(event, context):
                 )
                 continue
 
-            # Cancel if stale (>5 minutes in queued/pending state)
+            # Cancel if stale (>48 hours in queued/pending state)
             if created_timestamp < stale_threshold:
                 logger.info(
                     f"Cancelling stale {reservation['status']} reservation {reservation_id}"
                 )
                 cancel_stale_reservation(reservation)
                 stale_cancelled_count += 1
+
+        # Sweep stale disk locks (orphaned by terminated reservations)
+        sweep_stale_disk_locks()
+
+        # =====================================================================
+        # HEAVY CLEANUP: These operations can be slow and may not complete
+        # =====================================================================
+
+        # Clean up failed reservations that might have orphaned pods
+        try:
+            failed_response = reservations_table.query(
+                IndexName="StatusIndex",
+                KeyConditionExpression="#status = :status",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":status": "failed"},
+            )
+            failed_reservations = failed_response.get("Items", [])
+            logger.info(f"Found {len(failed_reservations)} failed reservations")
+
+            # Clean up failed reservations that have pods (created in the last 24 hours to avoid processing old ones)
+            FAILED_CLEANUP_WINDOW = 24 * 3600  # 24 hours
+            failed_cleanup_threshold = current_time - FAILED_CLEANUP_WINDOW
+
+            for reservation in failed_reservations:
+                reservation_id = reservation["reservation_id"]
+                pod_name = reservation.get("pod_name")
+
+                if not pod_name:
+                    continue  # No pod to clean up
+
+                # Check if failed recently (within cleanup window)
+                failed_at = reservation.get(
+                    "failed_at", reservation.get("created_at", "")
+                )
+                try:
+                    if isinstance(failed_at, str):
+                        failed_timestamp = int(
+                            datetime.fromisoformat(
+                                failed_at.replace("Z", "+00:00")
+                            ).timestamp()
+                        )
+                    else:
+                        failed_timestamp = int(failed_at)
+
+                    if failed_timestamp < failed_cleanup_threshold:
+                        continue  # Too old, skip cleanup
+
+                except (ValueError, AttributeError):
+                    continue  # Can't parse timestamp, skip
+
+                # Check if pod actually exists before trying to clean it up
+                if not check_pod_exists(pod_name):
+                    logger.debug(f"Pod {pod_name} for failed reservation {reservation_id[:8]} already deleted")
+                    # Pod gone but disk might still be marked in_use - clean it up
+                    user_id = reservation.get("user_id")
+                    disk_name = reservation.get("disk_name")
+
+                    # Fallback: if disk_name not in reservation, look it up from disks table
+                    if user_id and not disk_name:
+                        disk_name = find_disk_by_reservation(user_id, reservation_id)
+
+                    if user_id and disk_name:
+                        try:
+                            mark_disk_not_in_use(user_id, disk_name)
+                            logger.info(f"Cleared disk '{disk_name}' in_use flag for failed reservation {reservation_id[:8]} (pod already deleted)")
+                        except Exception as disk_error:
+                            logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
+                    continue
+
+                logger.info(
+                    f"Cleaning up failed reservation {reservation_id[:8]} with pod {pod_name}"
+                )
+                try:
+                    cleanup_pod(pod_name, reservation_data=reservation)
+                    logger.info(
+                        f"Successfully cleaned up failed reservation {reservation_id[:8]}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to cleanup failed reservation {reservation_id[:8]}: {e}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error processing failed reservations: {e}")
+
+        # Pod-centric cleanup: Check all running pods and clean up those with failed/cancelled/expired reservations
+        try:
+            logger.info("Starting pod-centric cleanup - checking all running gpu-dev pods")
+
+            # Get Kubernetes client
+            k8s_client = get_k8s_client()
+            v1 = client.CoreV1Api(k8s_client)
+
+            # List all pods in gpu-dev namespace with gpu-dev- prefix
+            pod_list = v1.list_namespaced_pod(
+                namespace="gpu-dev",
+                label_selector=""  # Get all pods, we'll filter by name
+            )
+
+            gpu_dev_pods = [pod for pod in pod_list.items if pod.metadata.name.startswith("gpu-dev-")]
+            logger.info(f"Found {len(gpu_dev_pods)} gpu-dev pods to check")
+
+            pods_cleaned = 0
+            for pod in gpu_dev_pods:
+                # Time budget: stop cleanup if less than 2 minutes remaining
+                remaining_ms = context.get_remaining_time_in_millis()
+                if remaining_ms < 120_000:
+                    logger.warning(
+                        f"Time budget exhausted ({remaining_ms}ms remaining) - "
+                        f"stopping pod-centric cleanup after {pods_cleaned} pods cleaned"
+                    )
+                    break
+
+                pod_name = pod.metadata.name
+
+                # Extract reservation ID from pod name (format: gpu-dev-{reservation_id})
+                if not pod_name.startswith("gpu-dev-"):
+                    continue
+
+                reservation_id_prefix = pod_name[8:]  # Remove "gpu-dev-" prefix (this is truncated)
+
+                try:
+                    # Look up reservation by prefix using paginated scan (pod names are truncated)
+                    items = []
+                    last_evaluated_key = None
+
+                    # Scan all pages to find the reservation
+                    while True:
+                        if last_evaluated_key:
+                            scan_response = reservations_table.scan(
+                                FilterExpression="begins_with(reservation_id, :prefix)",
+                                ExpressionAttributeValues={":prefix": reservation_id_prefix},
+                                ExclusiveStartKey=last_evaluated_key
+                            )
+                        else:
+                            scan_response = reservations_table.scan(
+                                FilterExpression="begins_with(reservation_id, :prefix)",
+                                ExpressionAttributeValues={":prefix": reservation_id_prefix}
+                            )
+
+                        items.extend(scan_response.get("Items", []))
+
+                        # Check if there are more pages
+                        last_evaluated_key = scan_response.get("LastEvaluatedKey")
+                        if not last_evaluated_key or items:  # Stop if we found items or no more pages
+                            break
+
+                    if not items:
+                        logger.warning(f"Pod {pod_name} has no corresponding reservation in DynamoDB (searched prefix: {reservation_id_prefix}) - keeping pod")
+                        continue
+
+                    # Use the first matching reservation (there should only be one with this prefix)
+                    reservation = items[0]
+                    reservation_id = reservation.get("reservation_id", "")
+                    reservation_status = reservation.get("status", "")
+
+                    # Clean up pod if reservation is in a terminal state
+                    if reservation_status in ["failed", "cancelled", "expired"]:
+                        logger.info(f"Cleaning up pod {pod_name} - reservation status: {reservation_status}")
+                        try:
+                            cleanup_pod(pod_name, reservation_data=reservation)
+                            pods_cleaned += 1
+                            logger.info(f"Successfully cleaned up pod {pod_name} with {reservation_status} reservation")
+                        except Exception as cleanup_error:
+                            logger.error(f"Failed to cleanup pod {pod_name} with {reservation_status} reservation: {cleanup_error}")
+                    else:
+                        logger.debug(f"Pod {pod_name} has active reservation status: {reservation_status}")
+
+                except Exception as e:
+                    logger.error(f"Error checking reservation status for pod {pod_name}: {e}")
+                    continue
+
+            logger.info(f"Pod-centric cleanup completed - cleaned up {pods_cleaned} pods")
+
+        except Exception as e:
+            logger.error(f"Error in pod-centric cleanup: {e}")
+
+        # Also keep the original expired/cancelled reservation cleanup for redundancy
+        try:
+            expired_statuses = ["expired", "cancelled"]
+            expired_cancelled_reservations = []
+
+            for status in expired_statuses:
+                response = reservations_table.query(
+                    IndexName="StatusIndex",
+                    KeyConditionExpression="#status = :status",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={":status": status},
+                )
+                expired_cancelled_reservations.extend(response.get("Items", []))
+
+            logger.info(f"Found {len(expired_cancelled_reservations)} expired/cancelled reservations for redundant cleanup")
+
+            # Clean up pods from expired/cancelled reservations (within last 7 days to avoid processing very old ones)
+            EXPIRED_CLEANUP_WINDOW = 7 * 24 * 3600  # 7 days
+            expired_cleanup_threshold = current_time - EXPIRED_CLEANUP_WINDOW
+
+            for reservation in expired_cancelled_reservations:
+                # Time budget: stop if less than 2 minutes remaining
+                remaining_ms = context.get_remaining_time_in_millis()
+                if remaining_ms < 120_000:
+                    logger.warning(
+                        f"Time budget exhausted ({remaining_ms}ms remaining) - "
+                        f"stopping redundant cleanup"
+                    )
+                    break
+
+                reservation_id = reservation["reservation_id"]
+                pod_name = reservation.get("pod_name")
+
+                if not pod_name:
+                    continue  # No pod to clean up
+
+                # Check if expired/cancelled recently (within cleanup window)
+                expired_at = reservation.get("expired_at", reservation.get("cancelled_at", ""))
+                if not expired_at:
+                    continue  # No expiry/cancel timestamp
+
+                try:
+                    if isinstance(expired_at, str):
+                        expired_timestamp = int(
+                            datetime.fromisoformat(
+                                expired_at.replace("Z", "+00:00")
+                            ).timestamp()
+                        )
+                    else:
+                        expired_timestamp = int(expired_at)
+
+                    if expired_timestamp < expired_cleanup_threshold:
+                        continue  # Too old, skip cleanup
+
+                except (ValueError, AttributeError):
+                    continue  # Can't parse timestamp, skip
+
+                # Check if pod actually exists before trying to clean it up
+                if not check_pod_exists(pod_name):
+                    logger.debug(f"Pod {pod_name} for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} already deleted")
+                    # Pod gone but disk might still be marked in_use - clean it up
+                    user_id = reservation.get("user_id")
+                    disk_name = reservation.get("disk_name")
+
+                    # Fallback: if disk_name not in reservation, look it up from disks table
+                    if user_id and not disk_name:
+                        disk_name = find_disk_by_reservation(user_id, reservation_id)
+
+                    if user_id and disk_name:
+                        try:
+                            mark_disk_not_in_use(user_id, disk_name)
+                            logger.info(f"Cleared disk '{disk_name}' in_use flag for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} (pod already deleted)")
+                        except Exception as disk_error:
+                            logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
+                    continue
+
+                logger.info(
+                    f"Redundant cleanup: {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} with pod {pod_name}"
+                )
+                try:
+                    cleanup_pod(pod_name, reservation_data=reservation)
+                    logger.info(
+                        f"Successfully cleaned up {reservation.get('status', 'unknown')} reservation {reservation_id[:8]}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to cleanup {reservation.get('status', 'unknown')} reservation {reservation_id[:8]}: {e}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error processing expired/cancelled reservations: {e}")
 
         # Sync disk deletion status from DynamoDB to EC2 snapshots
         try:
@@ -1015,6 +1046,60 @@ def find_disk_by_reservation(user_id: str, reservation_id: str) -> str | None:
     except Exception as e:
         logger.warning(f"Error looking up disk by reservation: {e}")
         return None
+
+
+def sweep_stale_disk_locks():
+    """Sweep disks table for locks orphaned by terminated reservations"""
+    try:
+        disks_table = dynamodb.Table(DISKS_TABLE)
+        response = disks_table.scan(
+            FilterExpression=Attr('in_use').eq(True)
+        )
+        locked_disks = response.get('Items', [])
+
+        while 'LastEvaluatedKey' in response:
+            response = disks_table.scan(
+                FilterExpression=Attr('in_use').eq(True),
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            locked_disks.extend(response.get('Items', []))
+
+        logger.info(f"Found {len(locked_disks)} locked disks to check")
+        cleaned = 0
+
+        reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+
+        for disk in locked_disks:
+            attached_reservation = disk.get('attached_to_reservation')
+            user_id = disk.get('user_id')
+            disk_name = disk.get('disk_name')
+
+            if not attached_reservation or not user_id or not disk_name:
+                continue
+
+            try:
+                res_response = reservations_table.get_item(
+                    Key={'reservation_id': attached_reservation}
+                )
+                reservation = res_response.get('Item')
+
+                if not reservation:
+                    mark_disk_not_in_use(user_id, disk_name)
+                    cleaned += 1
+                    logger.info(f"Cleared orphaned disk lock: '{disk_name}' for user {user_id} (reservation {attached_reservation[:8]} not found)")
+                    continue
+
+                status = reservation.get('status', '')
+                if status in ('expired', 'cancelled', 'failed'):
+                    mark_disk_not_in_use(user_id, disk_name)
+                    cleaned += 1
+                    logger.info(f"Cleared stale disk lock: '{disk_name}' for user {user_id} (reservation {attached_reservation[:8]} is {status})")
+            except Exception as e:
+                logger.warning(f"Error checking reservation for disk '{disk_name}': {e}")
+
+        logger.info(f"Stale disk lock sweep complete: cleaned {cleaned}/{len(locked_disks)} locks")
+    except Exception as e:
+        logger.error(f"Error in stale disk lock sweep: {e}")
 
 
 def handle_oom_event(reservation: dict, oom_info: dict) -> bool:
@@ -1220,6 +1305,18 @@ def expire_reservation_due_to_missing_pod(reservation: dict[str, Any]) -> None:
             f"Successfully marked reservation {reservation_id} as expired due to missing pod"
         )
 
+        # Clear disk lock so persistent disk can be reused
+        user_id = reservation.get("user_id")
+        disk_name = reservation.get("disk_name")
+        if user_id and not disk_name:
+            disk_name = find_disk_by_reservation(user_id, reservation_id)
+        if user_id and disk_name:
+            try:
+                mark_disk_not_in_use(user_id, disk_name)
+                logger.info(f"Cleared disk lock for '{disk_name}' after missing pod expiry of {reservation_id[:8]}")
+            except Exception as e:
+                logger.warning(f"Failed to clear disk lock during missing pod expiry: {e}")
+
     except Exception as e:
         logger.error(
             f"Error marking reservation {reservation.get('reservation_id')} as expired: {str(e)}"
@@ -1381,6 +1478,17 @@ def cancel_stale_reservation(reservation: dict[str, Any]) -> None:
         )
 
         logger.info(f"Successfully cancelled stale reservation {reservation_id}")
+
+        # Clear disk lock so persistent disk can be reused
+        disk_name = reservation.get("disk_name")
+        if user_id and user_id != "unknown" and not disk_name:
+            disk_name = find_disk_by_reservation(user_id, reservation_id)
+        if user_id and user_id != "unknown" and disk_name:
+            try:
+                mark_disk_not_in_use(user_id, disk_name)
+                logger.info(f"Cleared disk lock for '{disk_name}' after stale cancellation of {reservation_id[:8]}")
+            except Exception as e:
+                logger.warning(f"Failed to clear disk lock during stale cancellation: {e}")
 
     except Exception as e:
         logger.error(

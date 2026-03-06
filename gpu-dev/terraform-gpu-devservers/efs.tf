@@ -81,7 +81,7 @@ resource "aws_efs_file_system" "ccache_shared" {
   encrypted      = true
 
   performance_mode = "generalPurpose"
-  throughput_mode  = "bursting"
+  throughput_mode  = "elastic"  # Changed from bursting - auto-scales to 3 GiB/s based on workload
 
   lifecycle_policy {
     transition_to_ia = "AFTER_30_DAYS"

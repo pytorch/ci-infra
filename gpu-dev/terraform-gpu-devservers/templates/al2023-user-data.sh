@@ -64,6 +64,10 @@ fi
 modprobe nvidia
 modprobe nvidia_uvm
 
+# Initialize NVIDIA device files - required for device plugin to detect GPUs
+# This creates /dev/nvidia*, /dev/nvidiactl, /dev/nvidia-uvm etc.
+nvidia-smi -pm 1 || echo "Could not enable persistent mode (device files still created)"
+
 # Install basic monitoring tools
 yum install -y htop wget
 

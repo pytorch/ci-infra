@@ -187,6 +187,16 @@ gpu-dev connect
 gpu-dev connect abc12345
 ```
 
+**Auto-Download SSH Config**: The `connect` command automatically downloads the SSH config file if it's missing. You don't need to manually run `gpu-dev get-ssh-config` anymore.
+
+**Auth Failure Help**: If authentication fails (e.g., you're trying to connect to someone else's reservation), you'll see a helpful error message:
+```
+❌ Authentication failed. You don't have SSH access to this reservation.
+
+Ask the primary user (alice) to add you:
+   gpu-dev edit abc12345 --add-user your-github-username
+```
+
 ### SSH Config Files
 
 Each reservation creates an SSH config file at:
@@ -419,13 +429,46 @@ Each node in a multinode reservation gets:
 
 ### EFA Networking
 
-EFA (Elastic Fabric Adapter) provides:
-- **3200 Gbps** bandwidth on p5.48xlarge (H100) instances
+EFA (Elastic Fabric Adapter) provides high-performance networking for multi-node GPU communication:
+
+**On H100/H200/B200 instances (p5/p5e/p6):**
+- **3200 Gbps** bandwidth (400 GB/s)
 - RDMA (Remote Direct Memory Access) support
 - Kernel bypass for low-latency communication
 - Native integration with NCCL for PyTorch distributed training
+- **30-40x faster** than TCP networking
 
-**Important**: EFA only works within the same Availability Zone. All nodes in a multinode reservation are placed in the same AZ.
+**On other GPU types (T4, A100, etc.):**
+- EFA available but with limited RDMA capabilities
+- Performance improvement over TCP: 1.1-1.5x (minimal)
+- Recommended: Use standard TCP networking for simplicity
+
+**Important**:
+- EFA only works within the same Availability Zone
+- All nodes in a multinode reservation are placed in the same AZ
+- EFA requires same-AZ cluster placement groups (automatically configured)
+
+### Accessing Multi-Node Reservations
+
+**SSH Access**: The `gpu-dev connect` command automatically handles multi-node reservations:
+
+```bash
+# Connect to a multi-node reservation
+gpu-dev connect abc12345
+
+# Shows all nodes and prompts for selection:
+# Node 0 (Master): 8x-h100-multinode-node-0 (8 GPUs)
+# Node 1 (Worker): 8x-h100-multinode-node-1 (8 GPUs)
+# Which node? [0]:
+```
+
+**SSH configs for all nodes** are automatically downloaded. You can also connect directly:
+
+```bash
+# Connect to specific node
+ssh 8x-h100-multinode-node-0  # Master node
+ssh 8x-h100-multinode-node-1  # Worker node
+```
 
 ### Pod Hostnames
 
@@ -710,6 +753,48 @@ nvidia-smi
 
 ---
 
+## Git Clone Acceleration (Opt-In)
+
+ODC includes an in-cluster git cache service for faster PyTorch clones.
+
+### How It Works
+
+The cache service maintains pre-packaged tarballs of:
+- pytorch/pytorch main repository (3.9GB)
+- Top 10 largest submodules (~1.7GB total)
+
+Cache is refreshed hourly with latest commits.
+
+### Usage
+
+**Use the cache (faster):**
+```bash
+# Clone main repo from cache (~36s vs 54s from GitHub)
+git-clone-cached pytorch
+
+# Then clone submodules from GitHub
+cd pytorch
+git submodule update --init --recursive --jobs 16
+```
+
+**Standard git clone (no cache):**
+```bash
+# Clones directly from GitHub
+git clone --recursive https://github.com/pytorch/pytorch.git
+```
+
+### Performance
+
+- **Main repo from cache**: ~36 seconds (33% faster)
+- **Main repo from GitHub**: ~54 seconds
+- **Submodules**: ~135 seconds (from GitHub)
+
+### Why Opt-In?
+
+The cache is opt-in to avoid unexpected behavior and ensure git operations work exactly as documented in PyTorch guides.
+
+---
+
 ## Shared ccache
 
 ccache is a compiler cache that speeds up recompilation.
@@ -963,6 +1048,9 @@ gpu-dev show
 
 # Show specific reservation (8-char prefix works)
 gpu-dev show abc12345
+
+# Show with detailed timing trace
+gpu-dev show abc12345 --trace
 ```
 
 Output includes:
@@ -971,6 +1059,34 @@ Output includes:
 - Pod name and node IP
 - Storage information
 - Queue position (if queued)
+
+### Performance Timing Analysis
+
+Use the `--trace` flag to see detailed timing breakdown of your reservation:
+
+```bash
+gpu-dev show <reservation-id> --trace
+```
+
+**Example output:**
+```
+⏱️  Timing Trace:
+  ✓ CLI → Lambda: 0.084s
+  ✓ Disk restore from snapshot: 6.2s
+  ✓ EBS volume attach + mount: 26.1s
+  ✓ Init containers (SSH setup): 1.3s
+  ✓ Container startup (sudo, SSH, env): 13.4s
+  ✓ Total pod ready wait: 40.2s
+
+  Total reservation time: 47.0s
+```
+
+This helps identify bottlenecks in the provisioning process. Common slow steps:
+- **Disk restore**: First-time snapshot restore (improved with EBS pre-warming)
+- **Volume attach**: EBS attachment and filesystem check
+- **Container startup**: Image pull and initialization
+
+**Tip**: Reservations without persistent disk (`--disk none`) are typically 2-3x faster.
 
 ### Extend a Reservation
 

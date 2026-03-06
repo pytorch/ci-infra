@@ -6,6 +6,18 @@ export CUDA_HOME=/usr/local/cuda
 export PATH="/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 
+# EFA and OpenMPI environment for multi-node GPU communication
+export PATH="/opt/amazon/openmpi/bin:/opt/amazon/efa/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/aws-ofi-nccl/lib:/opt/amazon/openmpi/lib:/opt/amazon/efa/lib:${LD_LIBRARY_PATH:-}"
+
+# NCCL settings for EFA
+export FI_PROVIDER=efa
+export FI_EFA_USE_DEVICE_RDMA=1
+export NCCL_DEBUG=INFO
+export NCCL_NET_PLUGIN=/opt/aws-ofi-nccl/lib/libnccl-net.so
+export NCCL_ALGO=ring,tree
+export NCCL_IB_HCA=^mlx
+
 # Node.js user global packages (for Claude CLI)
 export PATH="$HOME/.npm-global/bin:$PATH"
 

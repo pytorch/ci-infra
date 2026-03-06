@@ -170,10 +170,26 @@ gpu-dev list [OPTIONS]
 Show detailed information for a specific reservation.
 
 ```bash
-gpu-dev show [RESERVATION_ID]
+gpu-dev show [RESERVATION_ID] [OPTIONS]
 ```
 
 If no ID provided, shows details for your active/pending reservation.
+
+| Option | Description |
+|--------|-------------|
+| `--trace` | Show detailed timing breakdown of reservation provisioning |
+
+**Example with trace:**
+```bash
+gpu-dev show abc12345 --trace
+
+# Shows timing breakdown:
+# ✓ CLI → Lambda: 0.084s
+# ✓ Disk restore: 6.2s
+# ✓ Volume attach: 26.1s
+# ✓ Init containers: 1.3s
+# ✓ Container startup: 13.4s
+```
 
 ### `gpu-dev connect`
 

@@ -411,9 +411,13 @@ class ReservationManager:
         preserve_entrypoint: bool = False,
         disk_name: Optional[str] = None,
         node_labels: Optional[Dict[str, str]] = None,
+        trace: bool = False,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
+            import time
+            trace_start = time.time() if trace else None
+
             reservation_id = str(uuid.uuid4())
             created_at = datetime.utcnow().isoformat()
 
@@ -487,10 +491,19 @@ class ReservationManager:
             if node_labels:
                 message["node_labels"] = node_labels
 
+            # Add trace flag and CLI start timestamp
+            if trace:
+                message["trace"] = True
+                message["trace_cli_start"] = trace_start
+
             queue_url = self.config.get_queue_url()
+            sqs_send_start = time.time() if trace else None
             self.config.sqs_client.send_message(
                 QueueUrl=queue_url, MessageBody=json.dumps(message)
             )
+            if trace:
+                sqs_send_duration = time.time() - sqs_send_start
+                console.print(f"[dim]Trace: SQS send_message took {sqs_send_duration:.3f}s[/dim]")
 
             return reservation_id
 
@@ -701,7 +714,10 @@ class ReservationManager:
     def get_connection_info(
         self, reservation_id: str, user_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Get SSH connection information for a reservation"""
+        """Get SSH connection information for a reservation
+
+        For multi-node reservations, returns info for all nodes in the group.
+        """
         try:
             # Query by user first (efficient), then filter by reservation_id prefix
             response = self.reservations_table.query(
@@ -734,7 +750,12 @@ class ReservationManager:
 
             reservation = matching_reservations[0]
 
-            return {
+            # Check if this is part of a multi-node group
+            is_multinode = reservation.get("is_multinode", False)
+            master_reservation_id = reservation.get("master_reservation_id")
+
+            # Build base connection info
+            connection_info = {
                 "ssh_command": reservation.get("ssh_command", "ssh user@pending"),
                 "pod_name": reservation.get("pod_name", "pending"),
                 "namespace": reservation.get("namespace", "default"),
@@ -759,7 +780,38 @@ class ReservationManager:
                 "ebs_volume_id": reservation.get("ebs_volume_id", ""),
                 "secondary_users": reservation.get("secondary_users", []),
                 "warning": reservation.get("warning", ""),
+                "is_multinode": is_multinode,
+                "fqdn": reservation.get("fqdn", ""),
             }
+
+            # If multi-node, fetch all nodes in the group
+            if is_multinode and master_reservation_id:
+                # Find all reservations with the same master_reservation_id
+                multinode_reservations = [
+                    res for res in all_reservations
+                    if res.get("master_reservation_id") == master_reservation_id
+                ]
+
+                # Sort by node_index
+                multinode_reservations.sort(key=lambda r: r.get("node_index", 0))
+
+                # Add multi-node specific info
+                connection_info["total_nodes"] = len(multinode_reservations)
+                connection_info["nodes"] = []
+
+                for node_res in multinode_reservations:
+                    node_info = {
+                        "reservation_id": node_res.get("reservation_id"),
+                        "pod_name": node_res.get("pod_name"),
+                        "ssh_command": node_res.get("ssh_command", "ssh user@pending"),
+                        "node_index": node_res.get("node_index", 0),
+                        "status": node_res.get("status"),
+                        "name": node_res.get("name"),
+                        "fqdn": node_res.get("fqdn"),
+                    }
+                    connection_info["nodes"].append(node_info)
+
+            return connection_info
 
         except Exception as e:
             console.print(
@@ -900,14 +952,17 @@ class ReservationManager:
             ]
 
             initial_expires_at = None
+            full_reservation_id = reservation_id
             if matching_reservations:
                 initial_expires_at = matching_reservations[0].get("expires_at", "")
+                full_reservation_id = matching_reservations[0].get("reservation_id", reservation_id)
 
             # Send message to Lambda to extend reservation
             # Lambda will handle both the expiration timestamp update and any necessary pod updates
             message = {
                 "action": "extend_reservation",
-                "reservation_id": reservation_id,
+                "reservation_id": full_reservation_id,
+                "user_id": user_id,
                 "extension_hours": extension_hours,
                 "version": get_version(),
             }
@@ -975,6 +1030,73 @@ class ReservationManager:
             console.print(
                 f"[red]❌ Error getting GPU availability: {str(e)}[/red]")
             return None
+
+    def display_reservation_trace(self, reservation_id: str) -> None:
+        """Display timing trace for a reservation"""
+        try:
+            from rich.table import Table
+
+            # Get reservation from DynamoDB
+            table = self.config.dynamodb.Table(self.config.reservations_table)
+            response = table.get_item(Key={"reservation_id": reservation_id})
+
+            if "Item" not in response:
+                console.print(f"[red]Could not fetch trace for {reservation_id}[/red]")
+                return
+
+            reservation = response["Item"]
+            trace_data = reservation.get("trace_data", {})
+
+            if not trace_data:
+                console.print("[yellow]No trace data available (trace flag not enabled)[/yellow]")
+                return
+
+            # Build timing table
+            table = Table(title=f"Reservation Timing Trace ({reservation_id[:8]}...)")
+            table.add_column("Step", style="cyan", no_wrap=True)
+            table.add_column("Duration", style="green", justify="right")
+            table.add_column("Cumulative", style="blue", justify="right")
+            table.add_column("Details", style="dim")
+
+            # Sort trace events by timestamp
+            # Handle both Decimal (from DynamoDB) and float/int types
+            from decimal import Decimal
+            events = []
+            for key, value in trace_data.items():
+                if isinstance(value, (int, float, Decimal)):
+                    events.append((key, float(value)))
+
+            events.sort(key=lambda x: x[1])
+
+            # Calculate durations
+            cumulative = 0
+            prev_time = None
+            for i, (step, timestamp) in enumerate(events):
+                if prev_time is not None:
+                    duration = timestamp - prev_time
+                    cumulative += duration
+                    table.add_row(
+                        step,
+                        f"{duration:.3f}s",
+                        f"{cumulative:.3f}s",
+                        ""
+                    )
+                else:
+                    table.add_row(step, "0.000s", "0.000s", "Start")
+                prev_time = timestamp
+
+            # Total duration
+            if events:
+                total_duration = events[-1][1] - events[0][1]
+                table.add_row("", "", "", "")
+                table.add_row("[bold]TOTAL[/bold]", f"[bold]{total_duration:.3f}s[/bold]", "", "")
+
+            console.print("\n")
+            console.print(table)
+            console.print("\n")
+
+        except Exception as e:
+            console.print(f"[red]Error displaying trace: {str(e)}[/red]")
 
     def _get_static_gpu_config(
         self, gpu_type: str, queue_length: int, estimated_wait: int

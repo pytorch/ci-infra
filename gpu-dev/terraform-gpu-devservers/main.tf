@@ -76,26 +76,10 @@ locals {
       use_self_managed_nodes = true
       instance_type          = "g4dn.12xlarge"
       supported_gpu_types = {
-        "h200" = {
-          instance_type       = "p5en.48xlarge" # H200 available in us-west-1
-          instance_types      = ["p5en.48xlarge"]
-          instance_count      = 2
-          gpus_per_instance   = 8
-          use_placement_group = false
-          architecture        = "x86_64"
-        }
-        "h100" = {
-          instance_type       = "p5.48xlarge"
-          instance_types      = null
-          instance_count      = 2
-          gpus_per_instance   = 8
-          use_placement_group = true
-          architecture        = "x86_64"
-        }
         "cpu-arm" = {
           instance_type       = "c7g.4xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 3
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
@@ -103,7 +87,7 @@ locals {
         "cpu-x86" = {
           instance_type       = "c7i.4xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 3
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
@@ -134,22 +118,6 @@ locals {
         }
         # Note: Nsight profiling nodes are not separate ASGs - just label existing nodes:
         # kubectl label node <node-name> gpu.monitoring/profiling-dedicated=true nvidia.com/gpu.deploy.dcgm-exporter=false --overwrite
-        "a100" = {
-          instance_type       = "p4d.24xlarge"
-          instance_types      = null
-          instance_count      = 2  # 2 A100 instances for testing
-          gpus_per_instance   = 8
-          use_placement_group = false
-          architecture        = "x86_64"
-        }
-        "a10g" = {
-          instance_type       = "g5.12xlarge"
-          instance_types      = null
-          instance_count      = 1
-          gpus_per_instance   = 4 # 4x A10G GPUs
-          use_placement_group = false
-          architecture        = "x86_64"
-        }
       }
     }
     prod = {
@@ -281,17 +249,12 @@ locals {
   # Workspace-specific GPU type to subnet mappings
   gpu_subnet_assignments = {
     default = {
-      # Test environment - H200 and H100 in us-west-1c (secondary subnet)
-      # T4 nodes in multiple AZs for testing AZ mismatch fix
-      h200         = "secondary"
-      h100         = "secondary"
-      a100         = "primary"    # A100 in us-west-1a (primary AZ)
+      # Test environment - T4 nodes in multiple AZs for testing
       t4           = "primary"    # T4 in us-west-1a (primary AZ)
       "t4-az2"     = "secondary"  # T4 in us-west-1b (secondary AZ)
       "cpu-arm"    = "primary"
       "cpu-x86"    = "primary"
       "t4-small"   = "secondary"
-      a10g         = "primary"
     }
     prod = {
       # Production environment subnet assignments
