@@ -17,7 +17,7 @@ set dotenv-load := true
 set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
 
 ROOT := justfile_directory()
-UPSTREAM := ROOT                           # Consumer overrides to submodule path
+UPSTREAM := env_var_or_default("OSDC_UPSTREAM", ROOT)
 CLUSTERS_YAML := ROOT / "clusters.yaml"
 SCRIPTS := UPSTREAM / "scripts"
 CFG := SCRIPTS / "cluster-config.py"

@@ -1,7 +1,8 @@
 # Git Cache Warmer DaemonSet
 # Maintains bare git clones of frequently-used repositories on each runner node.
-# Workflow job pods mount the cache read-only and use GIT_ALTERNATE_OBJECT_DIRECTORIES
-# to reuse cached objects during `git fetch`, avoiding re-downloads.
+# Workflow job pods mount the cache read-only and use CHECKOUT_GIT_CACHE_DIR
+# with actions/checkout's reference-repository input to borrow cached objects
+# via git alternates during fetch, avoiding re-downloads.
 #
 # The DaemonSet targets all Karpenter-managed runner nodes (workload-type:
 # github-runner) and tolerates every taint used by runner NodePools.
@@ -200,12 +201,10 @@ data:
     # =========================================================================
     # Pre-create bare repo skeletons (sequential — instant)
     # =========================================================================
-    # Job pods set GIT_ALTERNATE_OBJECT_DIRECTORIES pointing at these paths.
-    # If the directory doesn't exist, git emits "unable to normalize alternate
-    # object path" errors on every operation. By creating a bare repo skeleton
-    # immediately (before the potentially slow initial fetch), we ensure the
-    # objects/ directory exists and git can resolve the path — it just won't
-    # find any cached objects yet, which is fine.
+    # Job pods reference these paths via CHECKOUT_GIT_CACHE_DIR env var.
+    # The checkout action checks if the reference repo exists before using it
+    # and falls back gracefully if missing. We still pre-create skeletons so
+    # the directory structure is ready immediately.
     for repo in $REPOS; do
       repo=$(echo "$repo" | xargs)
       [ -z "$repo" ] && continue

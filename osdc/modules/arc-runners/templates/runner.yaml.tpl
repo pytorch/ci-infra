@@ -111,19 +111,19 @@ data:
 
       containers:
         - name: "$job"
-          # Git object cache: actions/checkout uses git init + fetch (not clone),
-          # so --reference is not applicable. Instead we set GIT_ALTERNATE_OBJECT_DIRECTORIES
-          # which makes git look for objects in the local bare clone cache before
-          # downloading from the remote. This is transparent to workflows — no
-          # changes needed in actions/checkout steps. The DaemonSet git-cache-warmer
+          # Git reference cache: workflow steps use the CHECKOUT_GIT_CACHE_DIR env
+          # var to compose a per-repo reference-repository path for actions/checkout.
+          # Example: reference-repository: $CHECKOUT_GIT_CACHE_DIR/pytorch.git
+          # The checkout action uses git alternates + dissociate to borrow objects
+          # from the local bare clone cache, then repacks locally so the checkout
+          # has no runtime dependency on the cache. The DaemonSet git-cache-warmer
           # keeps the cache warm at /mnt/git-cache on each node.
           #
           # GIT_CONFIG_SYSTEM points to a gitconfig with safe.directory=* so that
-          # git trusts the root-owned cache repos during fetch negotiation (the
-          # for_each_alternate_ref subprocess needs to open them to enumerate refs).
+          # git trusts the root-owned cache repos when resolving alternates.
           env:
-            - name: GIT_ALTERNATE_OBJECT_DIRECTORIES
-              value: "/opt/git-cache/pytorch/pytorch.git/objects:/opt/git-cache/pytorch/test-infra.git/objects"
+            - name: CHECKOUT_GIT_CACHE_DIR
+              value: "/opt/git-cache/pytorch"
             - name: GIT_CONFIG_SYSTEM
               value: "/opt/git-cache/.gitconfig"
           # Workflow container gets the actual compute resources
