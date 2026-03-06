@@ -4,6 +4,7 @@ SSH ProxyCommand helper for tunneling SSH through WebSocket
 Used by ssh with: ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' user@host
 """
 
+import os
 import sys
 import asyncio
 import websockets
@@ -18,6 +19,11 @@ async def tunnel_ssh(target_host: str, target_port: int):
         target_host: Target SSH hostname
         target_port: Target SSH port
     """
+    # Bypass corporate/local HTTP proxies for devservers.io - we connect
+    # directly to our ALB, and proxies can cause WebSocket handshake timeouts
+    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        os.environ.pop(var, None)
+
     # Determine proxy URL based on target host
     if ".test.devservers.io" in target_host:
         proxy_host = "ssh.test.devservers.io"
@@ -31,8 +37,8 @@ async def tunnel_ssh(target_host: str, target_port: int):
     ws_url = f"wss://{proxy_host}/tunnel/{target_host}"
 
     try:
-        # Connect to WebSocket proxy
-        async with websockets.connect(ws_url) as websocket:
+        # Connect to WebSocket proxy (20s timeout, generous for cold DNS/TLS)
+        async with websockets.connect(ws_url, open_timeout=20) as websocket:
             # Set up stdin/stdout for SSH
             loop = asyncio.get_event_loop()
             reader = asyncio.StreamReader()
