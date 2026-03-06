@@ -58,7 +58,7 @@ ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 
 # Version validation - injected via Terraform
 LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.5")
-MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.7")
+MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.8")
 OPERATIONS_TABLE = os.environ.get("OPERATIONS_TABLE", "pytorch-gpu-dev-operations")
 
 # GPU Configuration - single source of truth for all GPU type mappings
