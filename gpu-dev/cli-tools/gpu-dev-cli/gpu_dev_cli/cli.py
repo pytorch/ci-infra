@@ -755,7 +755,7 @@ def reserve(
 
             # Interactive disk selection (if not multinode - only master node gets persistent disk)
             # This comes BEFORE duration so user knows what they're reserving
-            if disk is None and gpu_count <= max_gpus and not explicit_no_disk_from_param:  # Single node only
+            if disk is None and not explicit_no_disk_from_param:
                 disk = select_disk_interactive(user_info["user_id"], config)
                 # Check if user cancelled
                 if disk == "__cancelled__":

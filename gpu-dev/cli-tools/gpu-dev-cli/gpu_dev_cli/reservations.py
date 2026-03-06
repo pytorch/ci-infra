@@ -647,26 +647,36 @@ class ReservationManager:
                     )
                     all_reservations.extend(response.get("Items", []))
             else:
-                # Get all reservations (scan with pagination for admin use)
-                all_reservations = []
-                response = self.reservations_table.scan()
-                all_reservations.extend(response.get("Items", []))
-
-                # Handle pagination
-                while "LastEvaluatedKey" in response:
-                    response = self.reservations_table.scan(
-                        ExclusiveStartKey=response["LastEvaluatedKey"]
+                # Query by status using StatusIndex (much faster than full scan)
+                query_statuses = statuses_to_include or [
+                    "active", "preparing", "queued", "pending",
+                    "failed", "cancelled", "expired",
+                ]
+                for s in query_statuses:
+                    response = self.reservations_table.query(
+                        IndexName="StatusIndex",
+                        KeyConditionExpression="#s = :status",
+                        ExpressionAttributeNames={"#s": "status"},
+                        ExpressionAttributeValues={":status": s},
                     )
                     all_reservations.extend(response.get("Items", []))
+                    while "LastEvaluatedKey" in response:
+                        response = self.reservations_table.query(
+                            IndexName="StatusIndex",
+                            KeyConditionExpression="#s = :status",
+                            ExpressionAttributeNames={"#s": "status"},
+                            ExpressionAttributeValues={":status": s},
+                            ExclusiveStartKey=response["LastEvaluatedKey"],
+                        )
+                        all_reservations.extend(response.get("Items", []))
 
-            # Filter by status if specified
-            if statuses_to_include:
-                filtered_reservations = [
-                    reservation
-                    for reservation in all_reservations
-                    if reservation.get("status") in statuses_to_include
+            # Filter by status if specified (needed for user_filter path;
+            # the else path already queries only requested statuses)
+            if statuses_to_include and user_filter:
+                all_reservations = [
+                    r for r in all_reservations
+                    if r.get("status") in statuses_to_include
                 ]
-                return filtered_reservations
 
             return all_reservations
 
