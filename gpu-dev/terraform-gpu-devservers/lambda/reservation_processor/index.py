@@ -63,19 +63,19 @@ OPERATIONS_TABLE = os.environ.get("OPERATIONS_TABLE", "pytorch-gpu-dev-operation
 
 # GPU Configuration - single source of truth for all GPU type mappings
 GPU_CONFIG = {
-    "t4": {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
-    "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
-    "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
-    "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1, "cpus": 8, "memory_gb": 32},
-    "g5g": {"instance_type": "g5g.2xlarge", "max_gpus": 2, "cpus": 8, "memory_gb": 32},
-    "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152},
-    "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
-    "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
-    "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
-    "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
-    "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
+    "t4": {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 0},
+    "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 1},
+    "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 1},
+    "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1, "cpus": 8, "memory_gb": 32, "efa_count": 0},
+    "g5g": {"instance_type": "g5g.2xlarge", "max_gpus": 2, "cpus": 8, "memory_gb": 32, "efa_count": 0},
+    "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152, "efa_count": 1},
+    "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 1},
+    "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 1},
+    "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 1},
+    "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
+    "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
 }
-GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192}
+GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 0}
 
 
 def retry_with_backoff(func, *args, max_retries=5, initial_delay=1, max_delay=32, **kwargs):
@@ -3494,8 +3494,9 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
     )
 
     if use_efa:
-        limits["vpc.amazonaws.com/efa"] = "1"
-        logger.info(f"Using EFA for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
+        efa_count = config.get("efa_count", 1)
+        limits["vpc.amazonaws.com/efa"] = str(efa_count)
+        logger.info(f"Using EFA ({efa_count} interfaces) for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
     else:
         logger.info(f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
 
@@ -3535,7 +3536,8 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
         gpu_count == max_gpus
     )
     if use_efa:
-        requests["vpc.amazonaws.com/efa"] = "1"
+        efa_count = config.get("efa_count", 1)
+        requests["vpc.amazonaws.com/efa"] = str(efa_count)
 
     return requests
 
@@ -3684,8 +3686,8 @@ def create_pod(
             init_containers=[
                 client.V1Container(
                     name="ssh-setup",
-                    image="alpine:latest",
-                    image_pull_policy="Always",  # Fail fast if image doesn't exist
+                    image="alpine:3.21",
+                    image_pull_policy="IfNotPresent",
                     command=["/bin/sh"],
                     args=[
                         "-c",
