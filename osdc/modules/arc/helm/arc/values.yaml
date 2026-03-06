@@ -1,0 +1,54 @@
+# GitHub ARC Controller - Base Values (New v0.8.0+ API)
+# These values are shared across all environments
+# Install with: helm install arc oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
+
+# Controller settings
+replicaCount: 1
+
+# Controller resources
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Logging level (debug, info, warn, error)
+log:
+  level: info
+  format: text
+
+# Flags for the controller
+flags:
+  # Update listener pods when new runner image is available
+  updateStrategy: "immediate"
+  # Watch namespaces (empty = all namespaces)
+  watchNamespace: ""
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+
+# Metrics
+metrics:
+  controllerManagerAddr: ":8080"
+  listenerAddr: ":8080"
+  listenerEndpoint: "/metrics"
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# CRITICAL: Tolerations to run on base infrastructure nodes
+# The base nodes are tainted with CriticalAddonsOnly=true:NoSchedule
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+
+# Node selector (optional - can specify if base nodes have specific labels)
+nodeSelector: {}

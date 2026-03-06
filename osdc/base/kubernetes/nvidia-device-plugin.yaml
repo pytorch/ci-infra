@@ -1,0 +1,62 @@
+# NVIDIA Device Plugin DaemonSet
+# This enables GPU support in Kubernetes by exposing nvidia.com/gpu resources
+# Documentation: https://github.com/NVIDIA/k8s-device-plugin
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: nvidia-device-plugin-ds
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: nvidia-device-plugin-ds
+    spec:
+      tolerations:
+        # Tolerate base infrastructure node taints
+        - key: CriticalAddonsOnly
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        # Tolerate GPU node taints (device plugin may run on GPU nodes)
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        # Tolerate CPU architecture taints on GPU nodes
+        - key: cpu-type
+          operator: Exists
+          effect: NoSchedule
+        # Tolerate instance-type taints (Karpenter nodepools use this)
+        - key: instance-type
+          operator: Exists
+          effect: NoSchedule
+        # Git cache startup taint (removed by git-cache-warmer after warm-up)
+        - key: git-cache-not-ready
+          operator: Exists
+          effect: NoSchedule
+      priorityClassName: system-node-critical
+      containers:
+        - image: nvcr.io/nvidia/k8s-device-plugin:v0.14.5
+          name: nvidia-device-plugin-ctr
+          args:
+            - "--fail-on-init-error=false"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+      nodeSelector:
+        # Only run on GPU nodes
+        nvidia.com/gpu: "true"

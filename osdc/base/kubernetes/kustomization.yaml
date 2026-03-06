@@ -1,0 +1,16 @@
+# Base Kubernetes resources applied to EVERY cluster.
+# These are cluster-agnostic and required regardless of which modules are enabled.
+#
+# Module-specific resources belong in osdc/<module>/kubernetes/ instead.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - storageclass-gp3.yaml
+  - node-performance-tuning.yaml
+  - nvidia-device-plugin.yaml
+  - harbor-namespace.yaml
+  - git-cache-warmer.yaml
+  - registry-mirror-config.yaml
+  # NOTE: Namespaces for modules (arc-runners, arc-systems, buildkit, etc.)
+  # are created by the module's own kubernetes/ directory, not here.

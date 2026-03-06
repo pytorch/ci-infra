@@ -1,0 +1,86 @@
+# Karpenter Controller - Base Values
+# Install with: helm install karpenter oci://public.ecr.aws/karpenter/karpenter
+
+# Service Account (IRSA)
+serviceAccount:
+  create: true
+  name: karpenter
+  annotations: {}
+  # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/cluster-karpenter-controller
+  # Set via --set in justfile from terraform output
+
+# Controller settings
+replicas: 2
+
+# Controller resources
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+# Settings (set via --set in justfile from terraform outputs)
+settings:
+  clusterName: ""
+  clusterEndpoint: ""
+  interruptionQueue: ""
+  # Feature gates
+  featureGates:
+    spotToSpotConsolidation: true
+
+# Controller configuration
+controller:
+  # Environment variables
+  env:
+    # Use global STS endpoint instead of regional (more reliable)
+    - name: AWS_STS_REGIONAL_ENDPOINTS
+      value: "legacy"
+  # Metrics
+  metrics:
+    port: 8000
+  # Health probes (increased timeouts for slow AWS API responses)
+  healthProbe:
+    port: 8081
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 30
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 30
+    failureThreshold: 3
+
+# CRITICAL: Tolerations to run on base infrastructure nodes
+# The base nodes are tainted with CriticalAddonsOnly=true:NoSchedule
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+
+# Affinity to prefer base nodes
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: role
+              operator: In
+              values:
+                - base-infrastructure
+
+# Pod disruption budget
+# For staging: Allow aggressive node updates by permitting all pods to be disrupted
+# Karpenter can reschedule quickly, so no need for conservative PDBs
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 0 # Allow all pods to be disrupted simultaneously
+
+# Logging
+logLevel: info
+logEncoding: console

@@ -1,0 +1,137 @@
+# Harbor Pull-Through Cache - Base Values
+# Install with: helm install harbor harbor/harbor --version 1.18.2
+
+# ============================================================================
+# Image overrides: each component's image.repository is overridden via --set
+# in the deploy-harbor justfile recipe to pull from ECR mirrors.
+# The chart has no global.imageRegistry; each component must be set individually.
+# ============================================================================
+
+# ============================================================================
+# YAML Anchors for shared configuration
+# ============================================================================
+x-base-tolerations: &base-tolerations
+  - key: CriticalAddonsOnly
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+
+x-base-affinity: &base-affinity
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: role
+              operator: In
+              values:
+                - base-infrastructure
+
+# ============================================================================
+# Expose configuration (NodePort for containerd access)
+# ============================================================================
+expose:
+  type: nodePort
+  nodePort:
+    ports:
+      http:
+        port: 80
+        nodePort: 30002
+  tls:
+    enabled: false
+
+externalURL: http://localhost:30002
+
+# ============================================================================
+# Persistence (S3 for registry, EBS for database/redis)
+# ============================================================================
+persistence:
+  enabled: true
+  imageChartStorage:
+    type: s3
+    s3:
+      # bucket/region overridden per environment
+      bucket: ""
+      region: ""
+      # S3 redirect mode: clients pull layers directly from S3,
+      # offloading bandwidth from Harbor registry pods
+      disableredirect: false
+  persistentVolumeClaim:
+    database:
+      storageClass: gp3
+      size: 10Gi
+    redis:
+      storageClass: gp3
+      size: 5Gi
+
+# ============================================================================
+# Component configuration
+# ============================================================================
+
+# Disable Trivy scanner (cache-only deployment, no scanning needed)
+trivy:
+  enabled: false
+
+# Enable Harbor's built-in cache
+cache:
+  enabled: true
+  expireHours: 24
+
+# ============================================================================
+# Component tolerations and affinity (run on base infrastructure nodes)
+# ============================================================================
+core:
+  tolerations: *base-tolerations
+  affinity: *base-affinity
+
+registry:
+  tolerations: *base-tolerations
+  affinity: *base-affinity
+
+jobservice:
+  tolerations: *base-tolerations
+  affinity: *base-affinity
+
+# Recreate strategy for Deployments with RWO PVCs (jobservice + registry).
+# RollingUpdate causes Multi-Attach errors when old and new pods land on
+# different nodes — EBS volumes can only attach to one node at a time.
+# This is a global chart value (used by jobservice-dpl.yaml and registry-dpl.yaml).
+updateStrategy:
+  type: Recreate
+
+portal:
+  tolerations: *base-tolerations
+  affinity: *base-affinity
+
+nginx:
+  tolerations: *base-tolerations
+  affinity: *base-affinity
+
+database:
+  internal:
+    # password is set at deploy time via --set database.internal.password=...
+    # (auto-generated and stored in K8s secret harbor-db-password)
+    tolerations: *base-tolerations
+    affinity: *base-affinity
+
+redis:
+  internal:
+    tolerations: *base-tolerations
+    affinity: *base-affinity
+
+exporter:
+  tolerations: *base-tolerations
+  affinity: *base-affinity
+
+# ============================================================================
+# Metrics (for future Prometheus scraping)
+# ============================================================================
+metrics:
+  enabled: true
+
+# ============================================================================
+# Harbor admin password
+# ============================================================================
+# The admin password is auto-generated at deploy time by the deploy-harbor
+# recipe and passed via --set harborAdminPassword=... on the helm command line.
+# Do NOT hardcode a password here.

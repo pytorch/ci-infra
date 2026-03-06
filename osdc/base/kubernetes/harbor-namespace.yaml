@@ -1,0 +1,5 @@
+# Harbor namespace — part of base because Harbor is always deployed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: harbor-system

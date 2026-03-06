@@ -1,0 +1,154 @@
+# HAProxy load balancer for BuildKit — least-connections routing.
+#
+# Kubernetes Services use random pod selection (kube-proxy iptables mode),
+# which can stack multiple builds on one buildkitd pod while others sit idle.
+# HAProxy's leastconn algorithm routes each new build to the pod with the
+# fewest active TCP connections, giving proper load distribution.
+#
+# Architecture:
+#   Runner pod → Service (port 1234) → HAProxy (targetPort per-arch) → buildkitd pod
+#   HAProxy discovers buildkitd pods via headless Service DNS resolution.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-lb-config
+  namespace: buildkit
+data:
+  haproxy.cfg.tpl: |
+    global
+      log stdout format raw local0 info
+
+    defaults
+      mode tcp
+      timeout connect 5s
+      timeout client 120m
+      timeout server 120m
+      log global
+      option tcplog
+
+    resolvers k8s
+      nameserver dns __DNS_SERVER__:53
+      resolve_retries 3
+      timeout resolve 1s
+      timeout retry 1s
+      hold valid 5s
+      hold nx 5s
+      hold other 5s
+      accepted_payload_size 8192
+
+    # Stats endpoint for debugging distribution
+    frontend stats
+      bind *:8404
+      mode http
+      stats enable
+      stats uri /stats
+      stats refresh 10s
+
+    # Per-arch frontends: existing Services map port 1234 → these targetPorts
+    frontend ft_arm64
+      bind *:2234
+      default_backend bk_arm64
+
+    frontend ft_amd64
+      bind *:3234
+      default_backend bk_amd64
+
+    # Combined frontend: round-robin-then-leastconn across all arches
+    frontend ft_all
+      bind *:1234
+      default_backend bk_all
+
+    backend bk_arm64
+      balance leastconn
+      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+
+    backend bk_amd64
+      balance leastconn
+      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+
+    backend bk_all
+      balance leastconn
+      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd-lb
+  namespace: buildkit
+  labels:
+    app: buildkitd-lb
+    app.kubernetes.io/name: buildkitd-lb
+    app.kubernetes.io/component: load-balancer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: buildkitd-lb
+  template:
+    metadata:
+      labels:
+        app: buildkitd-lb
+    spec:
+      # Runs on base-infra nodes (CriticalAddonsOnly taint)
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+
+      containers:
+        - name: haproxy
+          image: haproxy:3.1-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              DNS_IP=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
+              sed "s/__DNS_SERVER__/$DNS_IP/" /usr/local/etc/haproxy/haproxy.cfg.tpl > /tmp/haproxy.cfg
+              exec haproxy -f /tmp/haproxy.cfg
+
+          ports:
+            - name: all
+              containerPort: 1234
+              protocol: TCP
+            - name: arm64
+              containerPort: 2234
+              protocol: TCP
+            - name: amd64
+              containerPort: 3234
+              protocol: TCP
+            - name: stats
+              containerPort: 8404
+              protocol: TCP
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          readinessProbe:
+            tcpSocket:
+              port: 1234
+            initialDelaySeconds: 2
+            periodSeconds: 10
+
+          livenessProbe:
+            tcpSocket:
+              port: 1234
+            initialDelaySeconds: 2
+            periodSeconds: 10
+
+          volumeMounts:
+            - name: config
+              mountPath: /usr/local/etc/haproxy
+              readOnly: true
+
+      volumes:
+        - name: config
+          configMap:
+            name: buildkitd-lb-config
+            items:
+              - key: haproxy.cfg.tpl
+                path: haproxy.cfg.tpl

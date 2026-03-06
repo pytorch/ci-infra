@@ -1,0 +1,42 @@
+# mise.toml - Tool version management (repo-wide)
+# https://mise.jdx.dev/
+#
+# All modules share these tool versions.
+# CRITICAL: This project uses OpenTofu (tofu), NOT Terraform.
+
+[tools]
+python = "3.12"
+opentofu = "1.7"
+kubectl = "1.29"
+helm = "3.14"
+awscli = "2"
+packer = "1.10"
+crane = "latest"
+
+# Linting tools
+shellcheck = "latest"
+shfmt = "latest"
+hadolint = "latest"
+
+# Advanced linting tools
+kubeconform = "latest"
+tflint = "latest"
+actionlint = "latest"
+
+# Security scanning tools
+trivy = "latest"
+
+# Python tools
+uv = "latest"
+
+[env]
+PROJECT_NAME = "osdc"
+AWS_REGION = "us-west-2"
+
+VIRTUAL_ENV = "{{config_root}}/.venv"
+PATH = "{{config_root}}/.venv/bin:{{env.PATH}}"
+
+TF_PLUGIN_CACHE_DIR = "{{config_root}}/.terraform.d/plugin-cache"
+
+[settings]
+auto_install = true

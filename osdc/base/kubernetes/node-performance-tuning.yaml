@@ -1,0 +1,490 @@
+# Node Performance Tuning DaemonSet
+# This DaemonSet configures performance settings on all Karpenter-managed nodes:
+# - CPU frequency governor (performance mode)
+# - Kubelet CPU manager (static policy)
+# - Kubelet topology manager (NUMA-aware scheduling)
+# - GPU persistence mode (for GPU nodes)
+#
+# The DaemonSet tolerates all taints used by Karpenter nodepools to ensure
+# it runs on every node type (CPU and GPU instances).
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-performance-tuning-script
+  namespace: kube-system
+data:
+  tune-node.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "=== Node Performance Tuning ==="
+    echo "Node: $(hostname 2>/dev/null || echo 'unknown')"
+    echo "Date: $(date)"
+
+    # =========================================================================
+    # Check if already configured
+    # =========================================================================
+    MARKER_FILE="/var/lib/node-performance-tuning/.configured"
+    
+    if [ -f "$MARKER_FILE" ]; then
+      echo ""
+      echo "ℹ️  Node already configured (marker file exists)"
+      echo "   Verifying current configuration..."
+      
+      # Quick verification checks
+      all_checks_pass=true
+      
+      # Check kubelet config (requires jq)
+      if [ -f /etc/kubernetes/kubelet/kubelet-config.json ] && command -v jq &>/dev/null; then
+        current_cpu_policy=$(jq -r '.cpuManagerPolicy // "none"' /etc/kubernetes/kubelet/kubelet-config.json 2>/dev/null || echo "unknown")
+        current_topo_policy=$(jq -r '.topologyManagerPolicy // "none"' /etc/kubernetes/kubelet/kubelet-config.json 2>/dev/null || echo "unknown")
+        
+        if [ "$current_cpu_policy" != "static" ] || [ "$current_topo_policy" != "single-numa-node" ]; then
+          echo "   ⚠️  Kubelet config drift detected - will reconfigure"
+          all_checks_pass=false
+        else
+          echo "   ✓ Kubelet config correct"
+        fi
+      elif [ ! -f /etc/kubernetes/kubelet/kubelet-config.json ]; then
+        echo "   ⚠️  Kubelet config not found - will configure"
+        all_checks_pass=false
+      fi
+      
+      # Check CPU governor service (optional check)
+      if command -v systemctl &>/dev/null; then
+        if ! systemctl is-enabled cpu-performance.service &>/dev/null; then
+          echo "   ⚠️  CPU performance service not enabled - will reconfigure"
+          all_checks_pass=false
+        else
+          echo "   ✓ CPU performance service enabled"
+        fi
+      else
+        echo "   ⚠️  systemctl not available, skipping service check"
+      fi
+      
+      if [ "$all_checks_pass" = true ]; then
+        echo ""
+        echo "✓ All checks passed - configuration is correct"
+        echo "✓ Skipping reconfiguration to avoid unnecessary kubelet restart"
+        exit 0
+      else
+        echo ""
+        echo "⚠️  Configuration drift detected - proceeding with reconfiguration"
+        rm -f "$MARKER_FILE"
+      fi
+    fi
+
+    # =========================================================================
+    # CPU Performance Governor - OPTIONAL (non-critical)
+    # =========================================================================
+    echo ""
+    echo "[1/4] Configuring CPU frequency governor..."
+    
+    # Check if governors are already set to performance
+    governors_need_update=false
+    cpu_count=0
+    
+    for cpu_governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+      if [ -f "$cpu_governor" ]; then
+        current_governor=$(cat "$cpu_governor" 2>/dev/null || echo "unknown")
+        if [ "$current_governor" != "performance" ]; then
+          governors_need_update=true
+          echo "performance" > "$cpu_governor" 2>/dev/null || true
+        fi
+        cpu_count=$((cpu_count + 1))
+      fi
+    done
+    
+    if [ $cpu_count -gt 0 ]; then
+      if [ "$governors_need_update" = true ]; then
+        echo "✓ Set performance governor for $cpu_count CPUs"
+      else
+        echo "✓ Performance governor already set for $cpu_count CPUs (no changes needed)"
+      fi
+    else
+      echo "⚠ No CPU frequency scaling available (may be VM or unsupported instance - non-critical)"
+    fi
+
+    # Create or update systemd service for persistence across reboots (optional)
+    service_needs_update=false
+    
+    if [ ! -f /etc/systemd/system/cpu-performance.service ]; then
+      service_needs_update=true
+      echo "Creating cpu-performance.service..."
+    elif ! systemctl is-enabled cpu-performance.service &>/dev/null; then
+      service_needs_update=true
+      echo "Service exists but not enabled, will enable..."
+    else
+      echo "✓ CPU performance service already configured"
+    fi
+    
+    if [ "$service_needs_update" = true ]; then
+      # Create systemd service file (using printf to avoid heredoc indentation issues)
+      {
+        echo '[Unit]'
+        echo 'Description=Set CPU governor to performance mode'
+        echo 'After=multi-user.target'
+        echo ''
+        echo '[Service]'
+        echo 'Type=oneshot'
+        echo "ExecStart=/bin/bash -c 'for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > \$gov 2>/dev/null || true; done'"
+        echo 'RemainAfterExit=yes'
+        echo ''
+        echo '[Install]'
+        echo 'WantedBy=multi-user.target'
+      } > /etc/systemd/system/cpu-performance.service 2>/dev/null || { echo "⚠ Failed to create systemd service (non-critical)"; }
+      
+      systemctl daemon-reload 2>/dev/null || true
+      systemctl enable cpu-performance.service 2>/dev/null || true
+      systemctl start cpu-performance.service 2>/dev/null || true
+      echo "✓ CPU performance service enabled"
+    fi
+
+    # =========================================================================
+    # Kubelet Configuration
+    # =========================================================================
+    echo ""
+    echo "[2/4] Configuring kubelet..."
+
+    # Backup existing config if not already backed up
+    if [ -f /etc/kubernetes/kubelet/kubelet-config.json ] && [ ! -f /etc/kubernetes/kubelet/kubelet-config.json.backup ]; then
+      if cp /etc/kubernetes/kubelet/kubelet-config.json /etc/kubernetes/kubelet/kubelet-config.json.backup 2>/dev/null; then
+        echo "✓ Backed up original kubelet config"
+      else
+        echo "⚠ Failed to backup kubelet config (continuing anyway)"
+      fi
+    fi
+
+    # Check if kubelet config exists
+    if [ ! -f /etc/kubernetes/kubelet/kubelet-config.json ]; then
+      echo "⚠ Kubelet config not found at /etc/kubernetes/kubelet/kubelet-config.json"
+      echo "  This may be normal for EKS nodes with different config paths"
+      
+      # Try alternative EKS paths
+      for config_path in /etc/kubernetes/kubelet-config.json /var/lib/kubelet/config.yaml; do
+        if [ -f "$config_path" ]; then
+          echo "✓ Found kubelet config at: $config_path"
+          break
+        fi
+      done
+    fi
+
+    # Update kubelet configuration using jq (for JSON) or yq (for YAML)
+    # This is idempotent - only updates if values are different
+    kubelet_config_updated=false
+
+    # Try JSON config first (AL2023 EKS default)
+    if [ -f /etc/kubernetes/kubelet/kubelet-config.json ]; then
+      current_cpu_policy=$(jq -r '.cpuManagerPolicy // "none"' /etc/kubernetes/kubelet/kubelet-config.json)
+      current_topo_policy=$(jq -r '.topologyManagerPolicy // "none"' /etc/kubernetes/kubelet/kubelet-config.json)
+      
+      if [ "$current_cpu_policy" != "static" ] || [ "$current_topo_policy" != "single-numa-node" ]; then
+        jq '.cpuManagerPolicy = "static" | .topologyManagerPolicy = "single-numa-node" | .topologyManagerScope = "pod"' \
+          /etc/kubernetes/kubelet/kubelet-config.json > /tmp/kubelet-config.json.new
+        mv /tmp/kubelet-config.json.new /etc/kubernetes/kubelet/kubelet-config.json
+        kubelet_config_updated=true
+        echo "✓ Updated kubelet config: cpuManagerPolicy=static, topologyManagerPolicy=single-numa-node"
+      else
+        echo "✓ Kubelet config already optimal (no changes needed)"
+      fi
+    fi
+
+    # =========================================================================
+    # Kubelet State Cleanup (required for CPU manager policy changes)
+    # =========================================================================
+    if [ "$kubelet_config_updated" = true ]; then
+      echo ""
+      echo "[3/4] Cleaning kubelet state for CPU manager..."
+      
+      # Remove CPU manager state file (required when changing cpuManagerPolicy)
+      if [ -f /var/lib/kubelet/cpu_manager_state ]; then
+        rm -f /var/lib/kubelet/cpu_manager_state
+        echo "✓ Removed cpu_manager_state"
+      fi
+      
+      # Remove memory manager state file (if exists)
+      if [ -f /var/lib/kubelet/memory_manager_state ]; then
+        rm -f /var/lib/kubelet/memory_manager_state
+        echo "✓ Removed memory_manager_state"
+      fi
+    else
+      echo ""
+      echo "[3/4] Skipping kubelet state cleanup (no config changes)"
+    fi
+
+    # =========================================================================
+    # Kubelet Reload
+    # =========================================================================
+    echo ""
+    echo "[4/4] Reloading kubelet..."
+    
+    if [ "$kubelet_config_updated" = true ]; then
+      # Restart kubelet to apply new configuration
+      systemctl restart kubelet
+      
+      # Wait for kubelet to be healthy
+      sleep 5
+      
+      if systemctl is-active --quiet kubelet; then
+        echo "✓ Kubelet restarted successfully"
+      else
+        echo "✗ Kubelet failed to restart - rolling back config"
+        if [ -f /etc/kubernetes/kubelet/kubelet-config.json.backup ]; then
+          cp /etc/kubernetes/kubelet/kubelet-config.json.backup /etc/kubernetes/kubelet/kubelet-config.json
+          systemctl restart kubelet
+          echo "✓ Rolled back to original config"
+        fi
+        exit 1
+      fi
+    else
+      echo "✓ Kubelet reload skipped (no config changes)"
+    fi
+
+    # =========================================================================
+    # GPU Configuration (if NVIDIA GPU present) - OPTIONAL
+    # =========================================================================
+    if command -v nvidia-smi &> /dev/null; then
+      echo ""
+      echo "[GPU] Configuring NVIDIA GPU..."
+      
+      # Check current persistence mode (optional, don't fail if error)
+      current_pm=$(nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null | head -1 || echo "Unknown")
+      
+      if [ "$current_pm" = "Enabled" ]; then
+        echo "✓ GPU persistence mode already enabled"
+      else
+        echo "Enabling GPU persistence mode..."
+        if nvidia-smi -pm 1 2>/dev/null; then
+          echo "✓ GPU persistence mode enabled"
+        else
+          echo "⚠ Could not enable GPU persistence mode (non-critical, continuing)"
+        fi
+      fi
+      
+      # Display GPU info (optional)
+      echo "GPU Info:"
+      nvidia-smi --query-gpu=name,driver_version,memory.total,persistence_mode --format=csv,noheader 2>/dev/null || echo "  Could not query GPU info"
+    fi
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+    echo ""
+    echo "=== Performance Tuning Complete ==="
+    echo "Node: $(hostname 2>/dev/null || echo 'unknown')"
+    echo "CPUs: $(nproc 2>/dev/null || echo 'unknown')"
+    echo "Memory: $(free -h 2>/dev/null | awk '/^Mem:/ {print $2}' || echo 'unknown')"
+    
+    if command -v nvidia-smi &> /dev/null; then
+      gpu_count=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -1 || echo '0')
+      echo "GPUs: $gpu_count"
+    fi
+    
+    echo ""
+    echo "✓ All performance tuning applied successfully"
+    
+    # Create marker file to indicate successful configuration
+    mkdir -p /var/lib/node-performance-tuning || true
+    echo "$(date -Iseconds 2>/dev/null || date)" > "$MARKER_FILE" || true
+    if [ -f "$MARKER_FILE" ]; then
+      echo "Configuration timestamp: $(cat $MARKER_FILE)"
+    fi
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-performance-tuning
+  namespace: kube-system
+  labels:
+    app: node-performance-tuning
+    app.kubernetes.io/name: node-performance-tuning
+    app.kubernetes.io/component: node-configuration
+spec:
+  selector:
+    matchLabels:
+      app: node-performance-tuning
+  
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  
+  template:
+    metadata:
+      labels:
+        app: node-performance-tuning
+    
+    spec:
+      # Run on host network to access node configuration
+      hostNetwork: true
+      hostPID: true
+      hostIPC: true
+      
+      # High priority to ensure it runs before workloads
+      priorityClassName: system-node-critical
+      
+      # Tolerate ALL taints used by Karpenter nodepools
+      tolerations:
+        # Karpenter instance-type taints (used by all nodepools)
+        - key: instance-type
+          operator: Exists
+          effect: NoSchedule
+
+        # Git cache startup taint (removed by git-cache-warmer after warm-up)
+        - key: git-cache-not-ready
+          operator: Exists
+          effect: NoSchedule
+
+        # GPU taints
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+        # CPU architecture taints
+        - key: cpu-type
+          operator: Exists
+          effect: NoSchedule
+
+        # Karpenter default taints
+        - key: karpenter.sh/unschedulable
+          operator: Exists
+          effect: NoSchedule
+
+        # System taints
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+        
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoSchedule
+        
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoSchedule
+        
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+        
+        - key: node.kubernetes.io/memory-pressure
+          operator: Exists
+          effect: NoSchedule
+        
+        - key: node.kubernetes.io/pid-pressure
+          operator: Exists
+          effect: NoSchedule
+        
+        - key: node.kubernetes.io/unschedulable
+          operator: Exists
+          effect: NoSchedule
+      
+      # Run on Karpenter-managed runner nodes and buildkit nodes
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - github-runner
+                      - buildkit
+      
+      serviceAccountName: node-performance-tuning
+      
+      initContainers:
+        # Init container runs the tuning script once at pod startup
+        - name: tune-node
+          # Use Amazon Linux 2023 which has systemctl, bash, jq pre-installed
+          # and matches the host OS for better compatibility
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              # Install jq if not present (usually pre-installed in AL2023)
+              if ! command -v jq &> /dev/null; then
+                yum install -y jq
+              fi
+              
+              # Run tuning script directly
+              # Since we're privileged with hostPID/hostNetwork, systemctl commands
+              # will interact with the host's systemd
+              /scripts/tune-node.sh
+          
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN", "NET_ADMIN"]
+          
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: host-root
+              mountPath: /host
+            - name: sys
+              mountPath: /sys
+            - name: etc-kubernetes
+              mountPath: /etc/kubernetes
+            - name: var-lib-kubelet
+              mountPath: /var/lib/kubelet
+            - name: etc-systemd
+              mountPath: /etc/systemd
+      
+      containers:
+        # Main container just sleeps (keeps pod running for logging/debugging)
+        - name: sleep
+          image: public.ecr.aws/docker/library/alpine:3.19
+          command: ["/bin/sh", "-c", "echo 'Node tuning complete. Sleeping...'; sleep infinity"]
+          
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+      
+      volumes:
+        - name: scripts
+          configMap:
+            name: node-performance-tuning-script
+            defaultMode: 0755
+        
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        
+        - name: sys
+          hostPath:
+            path: /sys
+            type: Directory
+        
+        - name: etc-kubernetes
+          hostPath:
+            path: /etc/kubernetes
+            type: DirectoryOrCreate
+        
+        - name: var-lib-kubelet
+          hostPath:
+            path: /var/lib/kubelet
+            type: DirectoryOrCreate
+        
+        - name: etc-systemd
+          hostPath:
+            path: /etc/systemd
+            type: Directory
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-performance-tuning
+  namespace: kube-system
+  labels:
+    app: node-performance-tuning

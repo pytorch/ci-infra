@@ -1,0 +1,9 @@
+# ARC runner definition: pytorch-cpu-large
+# Scheduled on NodePool: c6i-12xlarge (from nodepools module)
+runner:
+  name: pytorch-cpu-large
+  instance_type: c6i.12xlarge
+  disk_size: 100
+  vcpu: 16
+  memory: 32Gi
+  gpu: 0

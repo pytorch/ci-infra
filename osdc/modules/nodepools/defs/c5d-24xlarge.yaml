@@ -1,0 +1,9 @@
+# Karpenter NodePool definition: c5d.24xlarge (CPU compute, NVMe local storage)
+# Used by: a.linux2x.large
+nodepool:
+  name: c5d-24xlarge
+  instance_type: c5d.24xlarge
+  arch: amd64
+  disk_size: 150
+  max_pods_per_node: 10
+  gpu: false

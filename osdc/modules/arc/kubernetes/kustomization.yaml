@@ -1,0 +1,14 @@
+# ARC module — Kubernetes resources for Actions Runner Controller.
+#
+# Applied when 'arc' is in the cluster's module list.
+# Deploys: namespaces, runner serviceaccount, limitrange, hooks configmap.
+# The ARC controller Helm chart is installed by deploy.sh (not kustomize).
+# Registry mirror config is in base/kubernetes/ (all clusters need it, not just ARC).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - runner-serviceaccount.yaml
+  - runner-limitrange.yaml
+  - runner-hooks-configmap.yaml

@@ -1,0 +1,9 @@
+# Karpenter NodePool definition: c6i.12xlarge (CPU compute)
+# Used by: pytorch-cpu-small, pytorch-cpu-medium, pytorch-cpu-large
+nodepool:
+  name: c6i-12xlarge
+  instance_type: c6i.12xlarge
+  arch: amd64
+  disk_size: 100
+  max_pods_per_node: 10
+  gpu: false
