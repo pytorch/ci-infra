@@ -762,43 +762,22 @@ def create_or_find_user_efs(user_id: str) -> str:
     try:
         logger.info(f"Looking for existing EFS filesystem for user {user_id}")
 
-        # Check for existing EFS with user tag
+        # Tags are included inline in describe_file_systems response - no
+        # need for separate describe_tags calls (which get throttled heavily).
+        matching_efs = []
         response = efs_client.describe_file_systems()
-
-        throttle_failures = 0
-        total_filesystems = len(response.get("FileSystems", []))
-        matching_efs = []  # Collect all matching EFS, sorted by creation time
-
-        for fs in response.get("FileSystems", []):
-            fs_id = fs["FileSystemId"]
-
-            # Get tags for this filesystem
-            try:
-                tags_response = retry_with_backoff(efs_client.describe_tags, FileSystemId=fs_id)
-                tags = {tag["Key"]: tag["Value"]
-                        for tag in tags_response.get("Tags", [])}
-
+        while True:
+            for fs in response.get("FileSystems", []):
+                tags = {tag["Key"]: tag["Value"] for tag in fs.get("Tags", [])}
                 if tags.get("gpu-dev-user") == user_id:
                     logger.info(
-                        f"Found existing EFS {fs_id} for user {user_id} (created {fs.get('CreationTime')})")
+                        f"Found existing EFS {fs['FileSystemId']} for user {user_id} (created {fs.get('CreationTime')})")
                     matching_efs.append(fs)
+            if "NextMarker" not in response:
+                break
+            response = efs_client.describe_file_systems(Marker=response["NextMarker"])
 
-            except Exception as tag_error:
-                error_str = str(tag_error)
-                # Track throttling failures separately
-                if "Throttling" in error_str or "RequestLimitExceeded" in error_str or "TooManyRequests" in error_str:
-                    throttle_failures += 1
-                    logger.warning(
-                        f"EFS DescribeTags throttled for {fs_id} ({throttle_failures}/{total_filesystems}): {tag_error}")
-                else:
-                    logger.warning(
-                        f"Could not get tags for EFS {fs_id}: {tag_error}")
-                continue
-
-        # If we found matching EFS, return the NEWEST one (by CreationTime)
-        # Do this BEFORE checking throttling - if we found EFS, throttling doesn't matter
         if matching_efs:
-            # Sort by CreationTime descending (newest first)
             matching_efs.sort(key=lambda x: x.get('CreationTime'), reverse=True)
             newest_efs = matching_efs[0]
             fs_id = newest_efs["FileSystemId"]
@@ -812,24 +791,9 @@ def create_or_find_user_efs(user_id: str) -> str:
             else:
                 logger.info(f"Using EFS {fs_id} for user {user_id}")
 
-            # Log throttling as warning but proceed anyway (we have valid EFS)
-            if throttle_failures > 0:
-                logger.warning(
-                    f"Had {throttle_failures}/{total_filesystems} throttling errors during scan, "
-                    f"but found valid EFS {fs_id} - proceeding"
-                )
-
-            # Ensure mount target exists
             ensure_efs_mount_target(fs_id)
             _efs_cache[user_id] = fs_id
             return fs_id
-
-        # No matching EFS found - check if throttling prevented complete scan
-        if throttle_failures > 0:
-            raise Exception(
-                f"EFS DescribeTags API throttled ({throttle_failures}/{total_filesystems} filesystems). "
-                f"Cannot safely create new EFS - retry later to avoid duplicates."
-            )
 
         # Create new EFS filesystem
         logger.info(f"Creating new EFS filesystem for user {user_id}")
