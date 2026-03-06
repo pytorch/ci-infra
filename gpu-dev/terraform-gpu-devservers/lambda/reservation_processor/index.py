@@ -4285,7 +4285,7 @@ EOFREADME
                         cat > /usr/local/bin/git-clone-cached << 'GITCACHESCRIPT'
 #!/bin/bash
 # Clones from bare .git tarball if available in cache (10x faster than git protocol)
-CACHE_URL="http://git-cache.gpu-controlplane.svc.cluster.local:8080"
+CACHE_URL="http://git-cache.management.svc.cluster.local:8080"
 GIT="/usr/bin/git"
 GITHUB_URL="${{1}}"
 DEST="${{2}}"

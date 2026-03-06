@@ -3,10 +3,21 @@
 # User pods get a transparent git wrapper that clones from cache,
 # then sets origin to GitHub — all subsequent git ops go to GitHub directly.
 
+# Management namespace for infrastructure services (git-cache, monitoring, etc.)
+resource "kubernetes_namespace" "management" {
+  metadata {
+    name = "management"
+    labels = {
+      name = "management"
+    }
+  }
+}
+
 resource "kubernetes_persistent_volume_claim" "git_cache" {
+  depends_on = [kubernetes_namespace.management]
   metadata {
     name      = "git-cache"
-    namespace = "gpu-controlplane"
+    namespace = "management"
   }
 
   spec {
@@ -28,7 +39,7 @@ resource "kubernetes_persistent_volume_claim" "git_cache" {
 resource "kubernetes_deployment" "git_cache" {
   metadata {
     name      = "git-cache"
-    namespace = "gpu-controlplane"
+    namespace = "management"
     labels = {
       app = "git-cache"
     }
@@ -279,7 +290,7 @@ NGINXCONF
 resource "kubernetes_service" "git_cache" {
   metadata {
     name      = "git-cache"
-    namespace = "gpu-controlplane"
+    namespace = "management"
     labels = {
       app = "git-cache"
     }
