@@ -1,0 +1,118 @@
+# clusters.yaml - Central cluster configuration
+#
+# Defines every cluster and which modules are installed on each.
+# The justfile reads this (via scripts/cluster-config.py) to drive deployments.
+#
+# Deploy flow per cluster:
+#   1. base     — tofu apply (VPC, EKS, Harbor S3/IAM)
+#                 mirror bootstrap images, deploy Harbor, base k8s resources
+#   2. modules  — each module deployed in listed order
+#
+# Module deploy contract:
+#   Each module may have:
+#     terraform/  — independent tofu root (applied separately, gets cluster outputs as -var)
+#     kubernetes/ — manifests applied via kubectl/kustomize
+#     helm/       — values files for external OCI charts
+#     scripts/    — deploy helpers
+#
+# The base always includes: VPC, EKS, Harbor,
+# base k8s resources, git-cache DaemonSet, NVIDIA device plugin, docker images.
+# Harbor is NOT optional — every cluster gets a pull-through cache.
+
+defaults:
+  # --- Terraform / base infra ---
+  base_node_count: 5
+  base_node_instance_type: m5.xlarge
+  base_node_max_unavailable_percentage: 33
+  eks_version: "1.35"
+  single_nat_gateway: false
+
+  # --- Base component tuning ---
+  harbor:
+    core_replicas: 2
+    registry_replicas: 2
+
+  # --- Module defaults ---
+  karpenter:
+    replicas: 2
+    log_level: info
+    pdb_enabled: true
+    pdb_min_available: 1
+  arc:
+    replica_count: 1
+    log_level: info
+  buildkit:
+    replicas_per_arch: 4
+
+clusters:
+  arc-staging:
+    region: us-west-1
+    cluster_name: pytorch-arc-staging
+    state_bucket: ciforge-tfstate-arc-staging
+    base:
+      base_node_count: 3
+      base_node_instance_type: m5.xlarge
+      base_node_max_unavailable_percentage: 100  # all-at-once for staging
+      single_nat_gateway: true       # cost optimization for staging
+      vpc_cidr: "10.0.0.0/16"
+    harbor:
+      core_replicas: 1
+      registry_replicas: 1
+    karpenter:
+      replicas: 1
+      log_level: debug
+      pdb_enabled: false
+    arc:
+      replica_count: 1
+      log_level: debug
+    arc-runners:
+      github_config_url: "https://github.com/pytorch/pytorch-canary"
+      github_secret_name: pytorch-arc-staging
+      runner_name_prefix: "c."
+    buildkit:
+      replicas_per_arch: 2
+    modules:
+      - karpenter
+      - arc
+      - nodepools
+      - arc-runners
+      - buildkit
+
+  arc-production:
+    cluster_name: pytorch-arc-production
+    region: us-west-2
+    state_bucket: ciforge-tfstate-arc-production
+    base:
+      vpc_cidr: "10.1.0.0/16"
+      base_node_instance_type: m5.xlarge
+    arc-runners:
+      github_config_url: "https://github.com/pytorch"
+      github_secret_name: pytorch-arc-production
+      runner_name_prefix: ""
+    modules:
+      - karpenter
+      - arc
+      - nodepools
+      - arc-runners
+      - buildkit
+
+  # -- Future clusters (uncomment when ready) --
+  #
+  # devgpu-prod:
+  #   region: us-east-1
+  #   cluster_name: pytorch-devgpu-production
+  #   state_bucket: ciforge-tfstate-devgpu-prod
+  #   base:
+  #     vpc_cidr: "10.2.0.0/16"
+  #   modules:
+  #     - devgpu          # Project 1: dev GPU pod allocation
+  #
+  # remoteexec-prod:
+  #   region: us-east-1
+  #   cluster_name: pytorch-remoteexec-production
+  #   state_bucket: ciforge-tfstate-remoteexec-prod
+  #   base:
+  #     vpc_cidr: "10.3.0.0/16"
+  #   modules:
+  #     - nodepools        # compute provisioning only (no ARC needed)
+  #     - remoteexec       # Project 2: remote job execution

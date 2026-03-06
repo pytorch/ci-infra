@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: buildkit
+data:
+  buildkitd.toml: |
+    # BuildKit daemon configuration
+    # https://github.com/moby/buildkit/blob/master/docs/buildkitd.toml.md
+
+    debug = false
+
+    [worker.oci]
+      enabled = true
+      # One build at a time per pod — dedicated resources, no contention
+      max-parallelism = 1
+      gc = true
+      # NVMe instance storage provides ~2.8TB (arm64) or ~3.6TB (x86)
+      # Keep 500GB reserved, allow up to 80% usage
+      reservedSpace = "500GB"
+      maxUsedSpace = "80%"
+      minFreeSpace = "200GB"
+
+    [worker.containerd]
+      enabled = false
+
+    # Harbor in-cluster endpoint (HTTP, no TLS).
+    # Used when pushing images to Harbor directly.
+    [registry."harbor.harbor-system.svc.cluster.local"]
+      http = true
+
+    # Registry mirrors — route FROM image pulls through Harbor pull-through cache.
+    # BuildKit supports path prefixes in mirror strings (since v0.12.0):
+    # "host/path" is split into host + path, and /v2 is prepended automatically.
+    # e.g., "harbor.harbor-system.svc.cluster.local/dockerhub-cache" becomes
+    #   http://harbor.harbor-system.svc.cluster.local/v2/dockerhub-cache/<image>/...
+    # Images from public.ecr.aws are not mirrored (no rate limits on AWS).
+    [registry."docker.io"]
+      mirrors = ["harbor.harbor-system.svc.cluster.local/dockerhub-cache"]
+    [registry."ghcr.io"]
+      mirrors = ["harbor.harbor-system.svc.cluster.local/ghcr-cache"]
+    [registry."nvcr.io"]
+      mirrors = ["harbor.harbor-system.svc.cluster.local/nvcr-cache"]
+    [registry."registry.k8s.io"]
+      mirrors = ["harbor.harbor-system.svc.cluster.local/k8s-cache"]
+    [registry."quay.io"]
+      mirrors = ["harbor.harbor-system.svc.cluster.local/quay-cache"]

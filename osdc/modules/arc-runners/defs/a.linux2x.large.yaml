@@ -1,0 +1,9 @@
+# ARC runner definition: a.linux2x.large
+# Scheduled on NodePool: c5d-24xlarge (from nodepools module)
+runner:
+  name: a.linux2x.large
+  instance_type: c5d.24xlarge
+  disk_size: 150
+  vcpu: 8
+  memory: 16Gi
+  gpu: 0

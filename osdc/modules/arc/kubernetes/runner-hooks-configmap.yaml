@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runner-hooks
+  namespace: arc-runners
+data:
+  pre-job.sh: |
+    #!/usr/bin/env bash
+    # Pre-job hook - runs before each job starts on the runner
+
+    set -euo pipefail
+
+    echo "Running pre-job hook at $(date)"
+
+    # Clean up workspace
+    if [ -d "${GITHUB_WORKSPACE:-}" ]; then
+        echo "Cleaning workspace: ${GITHUB_WORKSPACE}"
+        rm -rf "${GITHUB_WORKSPACE:?}"/* 2>/dev/null || true
+    fi
+
+    # Clean Docker resources
+    if command -v docker &> /dev/null; then
+        echo "Cleaning Docker resources..."
+        docker system prune -f --volumes || true
+    fi
+
+    # Reset ccache stats if available
+    if command -v ccache &> /dev/null; then
+        echo "Resetting ccache stats..."
+        ccache -z || true
+    fi
+
+    # Display GPU status if available
+    if command -v nvidia-smi &> /dev/null; then
+        echo "GPU Status:"
+        nvidia-smi
+    fi
+
+    echo "Pre-job hook completed at $(date)"
+
+  post-job.sh: |
+    #!/usr/bin/env bash
+    # Post-job hook - runs after each job completes on the runner
+
+    set -euo pipefail
+
+    echo "Running post-job hook at $(date)"
+
+    # Display ccache stats if available
+    if command -v ccache &> /dev/null; then
+        echo "ccache statistics:"
+        ccache -s || true
+    fi
+
+    # Display disk usage
+    echo "Disk usage:"
+    df -h
+
+    # Display memory usage
+    echo "Memory usage:"
+    free -h
+
+    # Clean up large temporary files
+    echo "Cleaning up temporary files..."
+    find /tmp -type f -size +100M -mtime +1 -delete 2>/dev/null || true
+
+    # Docker cleanup
+    if command -v docker &> /dev/null; then
+        echo "Docker disk usage:"
+        docker system df || true
+
+        # Remove dangling images and stopped containers
+        docker container prune -f || true
+        docker image prune -f || true
+    fi
+
+    echo "Post-job hook completed at $(date)"

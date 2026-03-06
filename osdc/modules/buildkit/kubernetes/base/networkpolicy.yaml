@@ -1,0 +1,51 @@
+# Network policies for BuildKit namespace.
+#
+# Traffic flow:
+#   arc-runners pods → HAProxy (buildkitd-lb) → buildkitd pods
+
+# Allow runner job pods to reach HAProxy (the load balancer entry point)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: buildkitd-lb-ingress
+  namespace: buildkit
+spec:
+  podSelector:
+    matchLabels:
+      app: buildkitd-lb
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: arc-runners
+      ports:
+        - protocol: TCP
+          port: 1234
+        - protocol: TCP
+          port: 2234
+        - protocol: TCP
+          port: 3234
+
+---
+# Allow HAProxy to reach buildkitd pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: buildkitd-ingress
+  namespace: buildkit
+spec:
+  podSelector:
+    matchLabels:
+      app: buildkitd
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: buildkitd-lb
+      ports:
+        - protocol: TCP
+          port: 1234

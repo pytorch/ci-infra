@@ -1,0 +1,263 @@
+# Registry Mirror Configuration DaemonSet
+# Configures containerd on ALL nodes to use Harbor as a pull-through cache.
+# Each upstream registry gets a hosts.toml pointing to Harbor first, with
+# the upstream as fallback. If Harbor is down, containerd falls through
+# to upstream automatically (connection refused -> next host).
+#
+# Unlike node-performance-tuning (which targets workload-type: github-runner),
+# this runs on ALL nodes including base infrastructure nodes.
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-mirror-config-script
+  namespace: kube-system
+data:
+  configure-mirrors.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "=== Registry Mirror Configuration ==="
+    echo "Node: $(hostname 2>/dev/null || echo 'unknown')"
+    echo "Date: $(date)"
+
+    # =========================================================================
+    # Check if already configured
+    # =========================================================================
+    MARKER_FILE="/var/lib/registry-mirror-config/.configured"
+    HARBOR_PORT="${HARBOR_PORT:-30002}"
+
+    if [ -f "$MARKER_FILE" ]; then
+      echo ""
+      echo "Node already configured (marker file exists)"
+      echo "Verifying current configuration..."
+
+      all_checks_pass=true
+      for registry in docker.io ghcr.io public.ecr.aws nvcr.io registry.k8s.io quay.io; do
+        if [ ! -f "/etc/containerd/certs.d/${registry}/hosts.toml" ]; then
+          echo "  Missing hosts.toml for ${registry} - will reconfigure"
+          all_checks_pass=false
+          break
+        fi
+      done
+
+      if [ "$all_checks_pass" = true ]; then
+        echo "All mirror configs present - skipping reconfiguration"
+        exit 0
+      else
+        echo "Configuration drift detected - proceeding with reconfiguration"
+        rm -f "$MARKER_FILE"
+      fi
+    fi
+
+    # =========================================================================
+    # Registry-to-Harbor project mapping
+    # =========================================================================
+    # Registry            | Harbor Project
+    # --------------------|----------------
+    # docker.io           | dockerhub-cache
+    # ghcr.io             | ghcr-cache
+    # public.ecr.aws      | ecr-public-cache
+    # nvcr.io             | nvcr-cache
+    # registry.k8s.io     | k8s-cache
+    # quay.io             | quay-cache
+
+    echo ""
+    echo "[1/6] Configuring docker.io mirror..."
+    mkdir -p /etc/containerd/certs.d/docker.io
+    cat > /etc/containerd/certs.d/docker.io/hosts.toml <<TOML
+    server = "https://docker.io"
+
+    [host."http://localhost:${HARBOR_PORT}/v2/dockerhub-cache"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+      override_path = true
+
+    [host."https://docker.io"]
+      capabilities = ["pull", "resolve"]
+    TOML
+
+    echo "[2/6] Configuring ghcr.io mirror..."
+    mkdir -p /etc/containerd/certs.d/ghcr.io
+    cat > /etc/containerd/certs.d/ghcr.io/hosts.toml <<TOML
+    server = "https://ghcr.io"
+
+    [host."http://localhost:${HARBOR_PORT}/v2/ghcr-cache"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+      override_path = true
+
+    [host."https://ghcr.io"]
+      capabilities = ["pull", "resolve"]
+    TOML
+
+    echo "[3/6] Configuring public.ecr.aws mirror..."
+    mkdir -p /etc/containerd/certs.d/public.ecr.aws
+    cat > /etc/containerd/certs.d/public.ecr.aws/hosts.toml <<TOML
+    server = "https://public.ecr.aws"
+
+    [host."http://localhost:${HARBOR_PORT}/v2/ecr-public-cache"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+      override_path = true
+
+    [host."https://public.ecr.aws"]
+      capabilities = ["pull", "resolve"]
+    TOML
+
+    echo "[4/6] Configuring nvcr.io mirror..."
+    mkdir -p /etc/containerd/certs.d/nvcr.io
+    cat > /etc/containerd/certs.d/nvcr.io/hosts.toml <<TOML
+    server = "https://nvcr.io"
+
+    [host."http://localhost:${HARBOR_PORT}/v2/nvcr-cache"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+      override_path = true
+
+    [host."https://nvcr.io"]
+      capabilities = ["pull", "resolve"]
+    TOML
+
+    echo "[5/6] Configuring registry.k8s.io mirror..."
+    mkdir -p /etc/containerd/certs.d/registry.k8s.io
+    cat > /etc/containerd/certs.d/registry.k8s.io/hosts.toml <<TOML
+    server = "https://registry.k8s.io"
+
+    [host."http://localhost:${HARBOR_PORT}/v2/k8s-cache"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+      override_path = true
+
+    [host."https://registry.k8s.io"]
+      capabilities = ["pull", "resolve"]
+    TOML
+
+    echo "[6/6] Configuring quay.io mirror..."
+    mkdir -p /etc/containerd/certs.d/quay.io
+    cat > /etc/containerd/certs.d/quay.io/hosts.toml <<TOML
+    server = "https://quay.io"
+
+    [host."http://localhost:${HARBOR_PORT}/v2/quay-cache"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+      override_path = true
+
+    [host."https://quay.io"]
+      capabilities = ["pull", "resolve"]
+    TOML
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+    echo ""
+    echo "=== Registry Mirror Configuration Complete ==="
+    echo "Harbor endpoint: http://localhost:${HARBOR_PORT}"
+    echo "Configured mirrors for: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io"
+    echo ""
+    echo "Note: containerd 1.6+ dynamically watches certs.d/ - no restart needed"
+
+    # Create marker file
+    mkdir -p /var/lib/registry-mirror-config || true
+    echo "$(date -Iseconds 2>/dev/null || date)" > "$MARKER_FILE" || true
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: registry-mirror-config
+  namespace: kube-system
+  labels:
+    app: registry-mirror-config
+    app.kubernetes.io/name: registry-mirror-config
+    app.kubernetes.io/component: node-configuration
+spec:
+  selector:
+    matchLabels:
+      app: registry-mirror-config
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+  template:
+    metadata:
+      labels:
+        app: registry-mirror-config
+
+    spec:
+      hostNetwork: true
+      hostPID: true
+
+      priorityClassName: system-node-critical
+
+      # Run on ALL nodes (base infra + Karpenter-managed)
+      tolerations:
+        - operator: Exists
+
+      # NO nodeSelector - must run on every node in the cluster
+
+      serviceAccountName: registry-mirror-config
+
+      initContainers:
+        - name: configure-mirrors
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          command: ["/bin/bash", "-c"]
+          args:
+            - /scripts/configure-mirrors.sh
+
+          env:
+            - name: HARBOR_PORT
+              value: "30002"
+
+          securityContext:
+            privileged: true
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: etc-containerd
+              mountPath: /etc/containerd
+            - name: var-lib-registry-mirror-config
+              mountPath: /var/lib/registry-mirror-config
+
+      containers:
+        - name: sleep
+          image: public.ecr.aws/docker/library/alpine:3.19
+          command: ["/bin/sh", "-c", "echo 'Registry mirror config complete. Sleeping...'; sleep infinity"]
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: registry-mirror-config-script
+            defaultMode: 0755
+
+        - name: etc-containerd
+          hostPath:
+            path: /etc/containerd
+            type: DirectoryOrCreate
+
+        - name: var-lib-registry-mirror-config
+          hostPath:
+            path: /var/lib/registry-mirror-config
+            type: DirectoryOrCreate
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: registry-mirror-config
+  namespace: kube-system
+  labels:
+    app: registry-mirror-config

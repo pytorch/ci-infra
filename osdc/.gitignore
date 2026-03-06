@@ -1,0 +1,19 @@
+# OpenTofu / Terraform
+.terraform/
+.terraform.d/
+*.tfplan
+tfplan
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Generated module outputs
+modules/*/generated/
+
+# OS
+.DS_Store

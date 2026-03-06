@@ -1,0 +1,516 @@
+# justfile - Orchestrator for OSDC (Open Source Dev Cloud)
+# https://just.systems/
+#
+# Reads clusters.yaml to determine what to deploy where.
+# Each module under modules/ is independent and deployed in order.
+#
+# Working directory: osdc/
+#
+# Usage:
+#   just list                          # show clusters and their modules
+#   just deploy arc-staging            # full deploy (base + all modules)
+#   just deploy-base arc-staging       # base infra only
+#   just deploy-module arc-staging arc # single module
+#   just lint                           # lint all code
+
+set dotenv-load := true
+set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
+
+ROOT := justfile_directory()
+SCRIPTS := ROOT / "scripts"
+CFG := SCRIPTS / "cluster-config.py"
+
+# ============================================================================
+# SETUP
+# ============================================================================
+
+# Install Python dependencies
+setup:
+    @echo "Installing Python dependencies..."
+    @uv pip install -r {{ROOT}}/requirements.txt
+    @echo "Setup complete."
+
+# ============================================================================
+# INFO
+# ============================================================================
+
+# List all clusters and their modules
+list:
+    @echo "Clusters defined in clusters.yaml:"
+    @echo ""
+    @for cid in $(uv run {{CFG}} --list); do \
+        region=$(uv run {{CFG}} "$cid" region); \
+        cname=$(uv run {{CFG}} "$cid" cluster_name); \
+        modules=$(uv run {{CFG}} "$cid" modules | tr '\n' ' '); \
+        echo "  $cid ($cname @ $region)"; \
+        echo "    modules: $modules"; \
+        echo ""; \
+    done
+
+# Show what would be deployed for a cluster (dry run)
+show cluster:
+    @echo "Cluster: {{cluster}}"
+    @echo "  Name:    $(uv run {{CFG}} {{cluster}} cluster_name)"
+    @echo "  Region:  $(uv run {{CFG}} {{cluster}} region)"
+    @echo "  Bucket:  $(uv run {{CFG}} {{cluster}} state_bucket)"
+    @echo "  Modules:"
+    @uv run {{CFG}} {{cluster}} modules | sed 's/^/    - /'
+    @echo ""
+    @echo "  Tofu vars:"
+    @uv run {{CFG}} {{cluster}} tfvars | tr ' ' '\n' | sed 's/^/    /'
+
+# ============================================================================
+# BOOTSTRAP
+# ============================================================================
+
+# Bootstrap S3 state bucket + DynamoDB lock table for a cluster
+bootstrap cluster:
+    @{{SCRIPTS}}/bootstrap-state.sh {{cluster}}
+
+# Bootstrap all clusters
+bootstrap-all:
+    @{{SCRIPTS}}/bootstrap-state.sh --all
+
+# ============================================================================
+# DEPLOY
+# ============================================================================
+
+# Full deploy: base infra + all modules in order
+deploy cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{ROOT}}/scripts/mise-activate.sh"
+    CLUSTER="{{cluster}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "FULL DEPLOYMENT: $CLUSTER ($CNAME)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "Modules:"
+    uv run {{CFG}} "$CLUSTER" modules | sed 's/^/  - /'
+    echo ""
+    read -p "Continue? [y/N] " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
+
+    just deploy-base "$CLUSTER"
+
+    for module in $(uv run {{CFG}} "$CLUSTER" modules); do
+        just deploy-module "$CLUSTER" "$module"
+    done
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "DEPLOYMENT COMPLETE: $CLUSTER"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Deploy base infrastructure (tofu + harbor + base k8s)
+deploy-base cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{ROOT}}/scripts/mise-activate.sh"
+    CLUSTER="{{cluster}}"
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
+    TFVARS=$(uv run {{CFG}} "$CLUSTER" tfvars)
+    STATE_REGION="us-west-2"  # state buckets always in us-west-2
+
+    # Preflight: check state bucket exists
+    if ! aws s3api head-bucket --bucket "${BUCKET}" --region "${STATE_REGION}" 2>/dev/null; then
+        echo ""
+        echo "ERROR: State bucket '${BUCKET}' does not exist."
+        echo ""
+        echo "Run bootstrap first:"
+        echo "  just bootstrap ${CLUSTER}"
+        echo ""
+        exit 1
+    fi
+
+    echo ""
+    echo "━━━ BASE: Terraform ━━━"
+    cd {{ROOT}}/modules/eks/terraform
+    tofu init -reconfigure \
+        -backend-config="bucket=${BUCKET}" \
+        -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
+        -backend-config="region=${STATE_REGION}" \
+        -backend-config="dynamodb_table=ciforge-terraform-locks"
+
+    set +e
+    eval tofu plan $TFVARS -out=tfplan -detailed-exitcode
+    PLAN_EXIT=$?
+    set -e
+
+    if [[ $PLAN_EXIT -eq 0 ]]; then
+        echo "No changes. Skipping apply."
+        rm -f tfplan
+    elif [[ $PLAN_EXIT -eq 2 ]]; then
+        echo ""
+        read -p "Apply this plan? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            rm -f tfplan
+            echo "Cancelled."
+            exit 1
+        fi
+        tofu apply tfplan
+        rm -f tfplan
+    else
+        rm -f tfplan
+        echo "Tofu plan failed."
+        exit 1
+    fi
+
+    echo ""
+    echo "Updating kubeconfig..."
+    aws eks update-kubeconfig --name "${CNAME}" --region "${REGION}"
+
+    echo ""
+    echo "━━━ BASE: Mirror bootstrap images ━━━"
+    {{ROOT}}/modules/eks/scripts/mirror-images.sh "$CLUSTER"
+
+    echo ""
+    echo "━━━ BASE: Deploy Harbor ━━━"
+    just _deploy-harbor "$CLUSTER"
+
+    echo ""
+    echo "━━━ BASE: Kubernetes resources ━━━"
+    kubectl apply -k {{ROOT}}/base/kubernetes/
+
+    echo ""
+    echo "Base deployment complete."
+
+# Deploy a single module to a cluster
+deploy-module cluster module:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{ROOT}}/scripts/mise-activate.sh"
+    CLUSTER="{{cluster}}"
+    MODULE="{{module}}"
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+
+    echo ""
+    echo "━━━ MODULE: $MODULE ━━━"
+
+    # Check module is enabled for this cluster
+    if ! uv run {{CFG}} "$CLUSTER" has-module "$MODULE"; then
+        echo "Module '$MODULE' is not enabled for cluster '$CLUSTER'. Skipping."
+        exit 0
+    fi
+
+    MODULE_DIR="{{ROOT}}/modules/$MODULE"
+    if [[ ! -d "$MODULE_DIR" ]]; then
+        echo "Error: module directory '$MODULE_DIR' does not exist."
+        exit 1
+    fi
+
+    # Phase 1: Terraform (if module has its own)
+    if [[ -f "$MODULE_DIR/terraform/main.tf" ]]; then
+        echo "  Applying terraform for $MODULE..."
+        BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
+        cd "$MODULE_DIR/terraform"
+        tofu init -reconfigure \
+            -backend-config="bucket=${BUCKET}" \
+            -backend-config="key=${CLUSTER}/${MODULE}/terraform.tfstate" \
+            -backend-config="region=us-west-2" \
+            -backend-config="dynamodb_table=ciforge-terraform-locks"
+
+        # Modules get cluster_name and aws_region as minimum vars
+        set +e
+        tofu plan \
+            -var="cluster_name=${CNAME}" \
+            -var="aws_region=${REGION}" \
+            -var="state_bucket=${BUCKET}" \
+            -var="cluster_id=${CLUSTER}" \
+            -out=tfplan -detailed-exitcode
+        PLAN_EXIT=$?
+        set -e
+
+        if [[ $PLAN_EXIT -eq 0 ]]; then
+            echo "  No changes. Skipping apply."
+            rm -f tfplan
+        elif [[ $PLAN_EXIT -eq 2 ]]; then
+            tofu apply tfplan
+            rm -f tfplan
+        else
+            rm -f tfplan
+            echo "  Tofu plan failed."
+            exit 1
+        fi
+        cd -
+    fi
+
+    # Phase 2: Kubernetes resources (if module has them)
+    if [[ -f "$MODULE_DIR/kubernetes/kustomization.yaml" ]]; then
+        echo "  Applying kubernetes resources for $MODULE..."
+        kubectl apply -k "$MODULE_DIR/kubernetes/"
+    fi
+
+    # Phase 3: Module-specific deploy script (if exists)
+    if [[ -x "$MODULE_DIR/deploy.sh" ]]; then
+        echo "  Running $MODULE deploy script..."
+        "$MODULE_DIR/deploy.sh" "$CLUSTER" "$CNAME" "$REGION"
+    fi
+
+    echo "  Module $MODULE deployed."
+
+# ============================================================================
+# INTERNAL: Base sub-deploys
+# ============================================================================
+
+# Deploy Harbor (called from deploy-base)
+_deploy-harbor cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{ROOT}}/scripts/mise-activate.sh"
+    CLUSTER="{{cluster}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "⎈  Harbor Pull-Through Cache - ${CLUSTER}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # Harbor is the first k8s workload deployed — wait for base nodes
+    echo "Waiting for base nodes to be ready..."
+    kubectl wait --for=condition=Ready nodes -l role=base-infrastructure --timeout=10m
+    echo ""
+
+    # Get Terraform outputs (init with cluster-specific backend)
+    cd {{ROOT}}/modules/eks/terraform
+    tofu init -reconfigure \
+        -backend-config="bucket=${BUCKET}" \
+        -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
+        -backend-config="region=us-west-2" \
+        -backend-config="dynamodb_table=ciforge-terraform-locks" \
+        >/dev/null 2>&1
+    HARBOR_ROLE=$(tofu output -raw harbor_role_arn)
+    HARBOR_BUCKET=$(tofu output -raw harbor_s3_bucket)
+    HARBOR_S3_KEY=$(tofu output -raw harbor_s3_access_key_id)
+    HARBOR_S3_SECRET=$(tofu output -raw harbor_s3_secret_access_key)
+    AWS_REGION=$(tofu output -raw aws_region 2>/dev/null || echo "us-west-2")
+    AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+    cd - >/dev/null
+    echo ""
+
+    ECR_REGISTRY="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+    # Create namespace (needed before creating secrets/service accounts)
+    kubectl create namespace harbor-system 2>/dev/null || true
+
+    # Create ServiceAccount for Harbor registry (IRSA)
+    # The Harbor chart only sets serviceAccountName on the pod spec but does NOT create the SA.
+    echo "Creating harbor-registry ServiceAccount..."
+    kubectl apply -f - <<EOF
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: harbor-registry
+      namespace: harbor-system
+      annotations:
+        eks.amazonaws.com/role-arn: "${HARBOR_ROLE}"
+    EOF
+
+    # Create S3 credentials secret for Harbor registry
+    # The goharbor/distribution S3 driver does not support IRSA (web identity tokens),
+    # so we provide static IAM credentials via a Kubernetes Secret.
+    echo "Creating Harbor S3 credentials secret..."
+    kubectl create secret generic harbor-s3-credentials \
+        --namespace harbor-system \
+        --from-literal=REGISTRY_STORAGE_S3_ACCESSKEY="${HARBOR_S3_KEY}" \
+        --from-literal=REGISTRY_STORAGE_S3_SECRETKEY="${HARBOR_S3_SECRET}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    echo ""
+
+    # Auto-generate Harbor admin password (once, on first deploy)
+    if ! kubectl get secret harbor-admin-password -n harbor-system >/dev/null 2>&1; then
+        echo "Generating Harbor admin password..."
+        HARBOR_ADMIN_PW=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+        kubectl create secret generic harbor-admin-password \
+            --namespace harbor-system \
+            --from-literal=password="${HARBOR_ADMIN_PW}"
+    else
+        echo "Harbor admin password secret already exists, reusing..."
+    fi
+    HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \
+        -o jsonpath='{.data.password}' | base64 -d)
+
+    # Auto-generate Harbor internal DB password (once, on first deploy)
+    if ! kubectl get secret harbor-db-password -n harbor-system >/dev/null 2>&1; then
+        echo "Generating Harbor DB password..."
+        HARBOR_DB_PW=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+        kubectl create secret generic harbor-db-password \
+            --namespace harbor-system \
+            --from-literal=password="${HARBOR_DB_PW}"
+    else
+        echo "Harbor DB password secret already exists, reusing..."
+    fi
+    HARBOR_DB_PW=$(kubectl get secret harbor-db-password -n harbor-system \
+        -o jsonpath='{.data.password}' | base64 -d)
+    echo ""
+
+    # Read per-cluster Harbor config
+    HARBOR_CORE_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.core_replicas 2)
+    HARBOR_REGISTRY_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.registry_replicas 2)
+
+    # Install Harbor (using traditional Helm repo to avoid ghcr.io auth/rate-limit issues)
+    echo "Installing Harbor..."
+    helm repo add harbor https://helm.goharbor.io 2>/dev/null || true
+    helm repo update harbor
+    # Override each component's image to use ECR mirror
+    # (Harbor chart has no global.imageRegistry; each component sets image.repository individually)
+    ECR_HARBOR="${ECR_REGISTRY}/mirror/goharbor"
+    HELM_MAX_RETRIES=3
+    for attempt in $(seq 1 $HELM_MAX_RETRIES); do
+        if helm upgrade --install harbor \
+            --namespace harbor-system \
+            --create-namespace \
+            -f {{ROOT}}/base/helm/harbor/values.yaml \
+            --set core.image.repository="${ECR_HARBOR}/harbor-core" \
+            --set jobservice.image.repository="${ECR_HARBOR}/harbor-jobservice" \
+            --set portal.image.repository="${ECR_HARBOR}/harbor-portal" \
+            --set registry.registry.image.repository="${ECR_HARBOR}/registry-photon" \
+            --set registry.controller.image.repository="${ECR_HARBOR}/harbor-registryctl" \
+            --set database.internal.image.repository="${ECR_HARBOR}/harbor-db" \
+            --set redis.internal.image.repository="${ECR_HARBOR}/redis-photon" \
+            --set nginx.image.repository="${ECR_HARBOR}/nginx-photon" \
+            --set exporter.image.repository="${ECR_HARBOR}/harbor-exporter" \
+            --set persistence.imageChartStorage.s3.bucket="${HARBOR_BUCKET}" \
+            --set persistence.imageChartStorage.s3.region="${AWS_REGION}" \
+            --set persistence.imageChartStorage.s3.existingSecret=harbor-s3-credentials \
+            --set registry.serviceAccountName=harbor-registry \
+            --set registry.automountServiceAccountToken=true \
+            --set harborAdminPassword="${HARBOR_ADMIN_PW}" \
+            --set database.internal.password="${HARBOR_DB_PW}" \
+            --set core.replicas="${HARBOR_CORE_REPLICAS}" \
+            --set registry.replicas="${HARBOR_REGISTRY_REPLICAS}" \
+            --timeout 15m \
+            --wait \
+            --burst-limit 500 \
+            --qps 50 \
+            harbor/harbor \
+            --version 1.18.2; then
+            break
+        fi
+        if [ "$attempt" -eq "$HELM_MAX_RETRIES" ]; then
+            echo "Helm upgrade failed after $HELM_MAX_RETRIES attempts"
+            exit 1
+        fi
+        echo "  Helm upgrade attempt $attempt/$HELM_MAX_RETRIES failed, retrying in 30s..."
+        sleep 30
+    done
+    echo ""
+
+    # Ensure Harbor admin password matches the K8s secret.
+    # harborAdminPassword only takes effect on first install; on upgrades the
+    # DB may still hold the old default. Always attempt migration — it's
+    # idempotent (401 = already migrated, 200 = just migrated).
+    echo "Ensuring Harbor admin password is up to date..."
+    kubectl port-forward -n harbor-system svc/harbor 8090:80 &
+    PW_PF_PID=$!
+    sleep 5
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X PUT "http://localhost:8090/api/v2.0/users/1/password" \
+        -u "admin:Harbor12345" \
+        -H "Content-Type: application/json" \
+        -d "{\"old_password\":\"Harbor12345\",\"new_password\":\"${HARBOR_ADMIN_PW}\"}")
+    kill $PW_PF_PID 2>/dev/null || true
+    if [ "$HTTP_CODE" = "200" ]; then
+        echo "  Admin password migrated from default"
+    elif [ "$HTTP_CODE" = "401" ]; then
+        echo "  Password already up to date"
+    else
+        echo "  Warning: password migration returned HTTP $HTTP_CODE"
+    fi
+    echo ""
+
+    # Configure proxy cache projects
+    echo "Configuring proxy cache projects..."
+    just _configure-harbor-projects
+    echo ""
+    echo "Harbor deployed."
+
+# Configure Harbor proxy cache projects via REST API (called from _deploy-harbor)
+_configure-harbor-projects:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{ROOT}}/scripts/mise-activate.sh"
+    echo "Configuring Harbor proxy cache projects..."
+
+    # Read admin password from Kubernetes secret
+    HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \
+        -o jsonpath='{.data.password}' | base64 -d)
+
+    # Read upstream registry credentials (optional — secrets may not exist)
+    CRED_ARGS=""
+    if kubectl get secret harbor-dockerhub-credentials -n harbor-system >/dev/null 2>&1; then
+        DH_USER=$(kubectl get secret harbor-dockerhub-credentials -n harbor-system \
+            -o jsonpath='{.data.username}' | base64 -d)
+        DH_TOKEN=$(kubectl get secret harbor-dockerhub-credentials -n harbor-system \
+            -o jsonpath='{.data.token}' | base64 -d)
+        CRED_ARGS="${CRED_ARGS} --dockerhub-username ${DH_USER} --dockerhub-token ${DH_TOKEN}"
+        echo "  Docker Hub credentials found"
+    fi
+    if kubectl get secret harbor-github-credentials -n harbor-system >/dev/null 2>&1; then
+        GH_USER=$(kubectl get secret harbor-github-credentials -n harbor-system \
+            -o jsonpath='{.data.username}' | base64 -d)
+        GH_TOKEN=$(kubectl get secret harbor-github-credentials -n harbor-system \
+            -o jsonpath='{.data.token}' | base64 -d)
+        CRED_ARGS="${CRED_ARGS} --github-username ${GH_USER} --github-token ${GH_TOKEN}"
+        echo "  GitHub credentials found"
+    fi
+
+    # Port-forward to Harbor for API access
+    kubectl port-forward -n harbor-system svc/harbor 8080:80 &
+    PF_PID=$!
+    trap "kill $PF_PID 2>/dev/null || true" EXIT
+    sleep 5
+
+    uv run {{SCRIPTS}}/python/configure_harbor_projects.py \
+        --harbor-url http://localhost:8080 \
+        --admin-password "${HARBOR_ADMIN_PW}" \
+        ${CRED_ARGS}
+
+    kill $PF_PID 2>/dev/null || true
+
+# ============================================================================
+# LINTING
+# ============================================================================
+
+# Lint all code
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{ROOT}}/scripts/mise-activate.sh"
+    ERRORS=0
+
+    echo "Linting terraform..."
+    tofu fmt -check -recursive modules/ || ERRORS=$((ERRORS + 1))
+
+    echo "Linting shell scripts..."
+    if command -v shellcheck &>/dev/null; then
+        find {{ROOT}}/base/scripts {{ROOT}}/modules -name '*.sh' -print0 \
+            | xargs -0 shellcheck || ERRORS=$((ERRORS + 1))
+    else
+        echo "  shellcheck not found, skipping"
+    fi
+
+    echo "Linting YAML..."
+    if command -v yamllint &>/dev/null; then
+        yamllint {{ROOT}}/base/kubernetes/ {{ROOT}}/base/helm/ \
+            {{ROOT}}/modules/*/kubernetes/ {{ROOT}}/modules/*/helm/ \
+            {{ROOT}}/clusters.yaml || ERRORS=$((ERRORS + 1))
+    else
+        echo "  yamllint not found, skipping"
+    fi
+
+    if [[ $ERRORS -gt 0 ]]; then
+        echo ""
+        echo "Lint FAILED with $ERRORS error(s)."
+        exit 1
+    fi
+    echo "Lint complete."

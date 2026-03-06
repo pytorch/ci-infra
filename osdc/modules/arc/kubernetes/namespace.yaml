@@ -1,0 +1,10 @@
+# ARC namespaces — only created when arc module is enabled.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arc-systems
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arc-runners

@@ -1,0 +1,28 @@
+# LimitRange: Default resource specs for containers without explicit resources
+#
+# runner-container-hooks creates an "fs-init" init container in job pods
+# WITHOUT resource requests/limits. This breaks Guaranteed QoS class,
+# which is required for kubelet's static CPU manager to assign exclusive
+# cpusets to workflow containers.
+#
+# This LimitRange injects default resources into any container that lacks
+# them (like fs-init), without affecting containers that already have
+# explicit resources (like the $job workflow container).
+#
+# With all containers having requests == limits, the pod qualifies for
+# Guaranteed QoS, enabling CPU pinning via the static CPU manager.
+
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: guaranteed-qos-defaults
+  namespace: arc-runners
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "100m"
+        memory: "128Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
