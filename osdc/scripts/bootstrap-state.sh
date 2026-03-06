@@ -15,7 +15,7 @@ set -euo pipefail
 # Idempotent: safe to run multiple times.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="${OSDC_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 source "$SCRIPT_DIR/mise-activate.sh"
 CONFIG_PY="$SCRIPT_DIR/cluster-config.py"
 

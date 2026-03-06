@@ -10,7 +10,11 @@
 # Requires: crane, aws CLI, tofu, uv
 
 set -euo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" && pwd)/mise-activate.sh"
+if [[ -n "${OSDC_UPSTREAM:-}" ]]; then
+    source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
+else
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" && pwd)/mise-activate.sh"
+fi
 
 # Colors
 RED='\033[0;31m'
@@ -31,7 +35,11 @@ fi
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGES_FILE="$SCRIPT_DIR/../images.yaml"
-CLUSTER_CONFIG="$SCRIPT_DIR/../../../scripts/cluster-config.py"
+if [[ -n "${OSDC_UPSTREAM:-}" ]]; then
+    CLUSTER_CONFIG="$OSDC_UPSTREAM/scripts/cluster-config.py"
+else
+    CLUSTER_CONFIG="$SCRIPT_DIR/../../../scripts/cluster-config.py"
+fi
 
 if [[ ! -f "$IMAGES_FILE" ]]; then
     log_error "images.yaml not found at $IMAGES_FILE"

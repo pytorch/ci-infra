@@ -12,7 +12,8 @@ CLUSTER="$1"
 CNAME="$2"
 REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$MODULE_DIR/../../scripts/mise-activate.sh"
+UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$MODULE_DIR/../.." && pwd)}"
+source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 
 # --- Step 1: Generate NodePools from definitions ---
 echo "Generating Karpenter NodePools from definitions..."

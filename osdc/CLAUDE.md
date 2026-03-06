@@ -52,6 +52,46 @@ osdc/
 └── docs/                   # Architecture and operations docs
 ```
 
+## Using as a Submodule
+
+This OSDC platform can be used standalone (clone, add clusters.yaml, deploy) or as a git submodule in another repo. The submodule pattern allows consumers to maintain their own `clusters.yaml` and custom modules while pulling upstream updates.
+
+### Consumer repo structure
+
+```
+your-repo/osdc/
+├── upstream/              # git submodule -> pytorch/ci-infra
+├── clusters.yaml          # your cluster definitions
+├── modules/               # your custom modules (checked before upstream)
+│   └── re-devgpu/
+├── justfile               # thin wrapper that imports upstream
+└── mise.toml              # your tool versions
+```
+
+### Consumer justfile
+
+```just
+set dotenv-load := true
+set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
+
+ROOT := justfile_directory()
+UPSTREAM := ROOT / "upstream" / "osdc"
+CLUSTERS_YAML := ROOT / "clusters.yaml"
+
+import 'upstream/osdc/justfile'
+```
+
+Key variables: `ROOT` = consumer directory (where `clusters.yaml` lives), `UPSTREAM` = upstream `osdc/` (where `base/`, `modules/`, `scripts/` live). Module resolution checks `ROOT/modules/` first, falls back to `UPSTREAM/modules/`.
+
+### Environment variables
+
+Deploy scripts accept these env vars (set automatically by the justfile):
+- `OSDC_ROOT` — consumer's osdc/ directory
+- `OSDC_UPSTREAM` — upstream's osdc/ directory
+- `CLUSTERS_YAML` — path to clusters.yaml
+
+When running standalone, all three default to the local directory.
+
 ## Key Tools
 
 - **OpenTofu** (`tofu`): Infrastructure as code. See warning above — never use `terraform`.

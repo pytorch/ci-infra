@@ -30,7 +30,7 @@ trivy = "latest"
 uv = "latest"
 
 [env]
-PROJECT_NAME = "ciforge"
+PROJECT_NAME = "osdc"
 AWS_REGION = "us-west-2"
 
 VIRTUAL_ENV = "{{config_root}}/.venv"

@@ -16,6 +16,7 @@ All per-installation config (GitHub URL, secret, prefix)
 comes from clusters.yaml — no separate env-values.yaml.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -165,7 +166,7 @@ def main():
 
     script_dir = Path(__file__).parent
     module_dir = script_dir.parent.parent
-    repo_root = module_dir.parent.parent
+    repo_root = Path(os.environ["OSDC_ROOT"]) if "OSDC_ROOT" in os.environ else module_dir.parent.parent
     defs_dir = module_dir / 'defs'
     template_file = module_dir / 'templates' / 'runner.yaml.tpl'
     output_dir = module_dir / 'generated'

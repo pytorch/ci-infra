@@ -12,9 +12,10 @@ CLUSTER="$1"
 CNAME="$2"
 REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$MODULE_DIR/../.." && pwd)"
-source "$REPO_ROOT/scripts/mise-activate.sh"
-CFG="$REPO_ROOT/scripts/cluster-config.py"
+REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
+UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
+source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
+CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 BUCKET=$(uv run "$CFG" "$CLUSTER" state_bucket)
 STATE_REGION="us-west-2"
@@ -32,7 +33,7 @@ QUEUE_NAME=$(tofu output -raw queue_name)
 cd - >/dev/null
 
 # Read base terraform outputs (cluster endpoint)
-cd "$REPO_ROOT/modules/eks/terraform"
+cd "$UPSTREAM_ROOT/modules/eks/terraform"
 tofu init -reconfigure \
     -backend-config="bucket=${BUCKET}" \
     -backend-config="key=${CLUSTER}/base/terraform.tfstate" \

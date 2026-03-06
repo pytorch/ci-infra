@@ -17,7 +17,9 @@ set dotenv-load := true
 set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
 
 ROOT := justfile_directory()
-SCRIPTS := ROOT / "scripts"
+UPSTREAM := ROOT                           # Consumer overrides to submodule path
+CLUSTERS_YAML := ROOT / "clusters.yaml"
+SCRIPTS := UPSTREAM / "scripts"
 CFG := SCRIPTS / "cluster-config.py"
 
 # ============================================================================
@@ -27,7 +29,7 @@ CFG := SCRIPTS / "cluster-config.py"
 # Install Python dependencies
 setup:
     @echo "Installing Python dependencies..."
-    @uv pip install -r {{ROOT}}/requirements.txt
+    @uv pip install -r {{UPSTREAM}}/requirements.txt
     @echo "Setup complete."
 
 # ============================================================================
@@ -79,7 +81,10 @@ bootstrap-all:
 deploy cluster:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{ROOT}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
 
@@ -109,7 +114,10 @@ deploy cluster:
 deploy-base cluster:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{ROOT}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     REGION=$(uv run {{CFG}} "$CLUSTER" region)
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
@@ -130,7 +138,7 @@ deploy-base cluster:
 
     echo ""
     echo "━━━ BASE: Terraform ━━━"
-    cd {{ROOT}}/modules/eks/terraform
+    cd {{UPSTREAM}}/modules/eks/terraform
     tofu init -reconfigure \
         -backend-config="bucket=${BUCKET}" \
         -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
@@ -168,7 +176,7 @@ deploy-base cluster:
 
     echo ""
     echo "━━━ BASE: Mirror bootstrap images ━━━"
-    {{ROOT}}/modules/eks/scripts/mirror-images.sh "$CLUSTER"
+    {{UPSTREAM}}/modules/eks/scripts/mirror-images.sh "$CLUSTER"
 
     echo ""
     echo "━━━ BASE: Deploy Harbor ━━━"
@@ -176,7 +184,7 @@ deploy-base cluster:
 
     echo ""
     echo "━━━ BASE: Kubernetes resources ━━━"
-    kubectl apply -k {{ROOT}}/base/kubernetes/
+    kubectl apply -k {{UPSTREAM}}/base/kubernetes/
 
     echo ""
     echo "Base deployment complete."
@@ -185,7 +193,10 @@ deploy-base cluster:
 deploy-module cluster module:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{ROOT}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     MODULE="{{module}}"
     REGION=$(uv run {{CFG}} "$CLUSTER" region)
@@ -200,9 +211,13 @@ deploy-module cluster module:
         exit 0
     fi
 
-    MODULE_DIR="{{ROOT}}/modules/$MODULE"
-    if [[ ! -d "$MODULE_DIR" ]]; then
-        echo "Error: module directory '$MODULE_DIR' does not exist."
+    # Module resolution: local modules override upstream
+    if [[ -d "{{ROOT}}/modules/$MODULE" ]]; then
+        MODULE_DIR="{{ROOT}}/modules/$MODULE"
+    elif [[ -d "{{UPSTREAM}}/modules/$MODULE" ]]; then
+        MODULE_DIR="{{UPSTREAM}}/modules/$MODULE"
+    else
+        echo "Error: module '$MODULE' not found in modules/ or upstream."
         exit 1
     fi
 
@@ -264,7 +279,10 @@ deploy-module cluster module:
 _deploy-harbor cluster:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{ROOT}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
     REGION=$(uv run {{CFG}} "$CLUSTER" region)
@@ -281,7 +299,7 @@ _deploy-harbor cluster:
     echo ""
 
     # Get Terraform outputs (init with cluster-specific backend)
-    cd {{ROOT}}/modules/eks/terraform
+    cd {{UPSTREAM}}/modules/eks/terraform
     tofu init -reconfigure \
         -backend-config="bucket=${BUCKET}" \
         -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
@@ -369,7 +387,7 @@ _deploy-harbor cluster:
         if helm upgrade --install harbor \
             --namespace harbor-system \
             --create-namespace \
-            -f {{ROOT}}/base/helm/harbor/values.yaml \
+            -f {{UPSTREAM}}/base/helm/harbor/values.yaml \
             --set core.image.repository="${ECR_HARBOR}/harbor-core" \
             --set jobservice.image.repository="${ECR_HARBOR}/harbor-jobservice" \
             --set portal.image.repository="${ECR_HARBOR}/harbor-portal" \
@@ -438,7 +456,10 @@ _deploy-harbor cluster:
 _configure-harbor-projects:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{ROOT}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     echo "Configuring Harbor proxy cache projects..."
 
     # Read admin password from Kubernetes secret
@@ -485,25 +506,35 @@ _configure-harbor-projects:
 lint:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{ROOT}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     ERRORS=0
 
     echo "Linting terraform..."
-    tofu fmt -check -recursive modules/ || ERRORS=$((ERRORS + 1))
+    tofu fmt -check -recursive "{{UPSTREAM}}/modules/" || ERRORS=$((ERRORS + 1))
+    if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
+        tofu fmt -check -recursive "{{ROOT}}/modules/" || ERRORS=$((ERRORS + 1))
+    fi
 
     echo "Linting shell scripts..."
     if command -v shellcheck &>/dev/null; then
-        find {{ROOT}}/base/scripts {{ROOT}}/modules -name '*.sh' -print0 \
+        find "{{UPSTREAM}}/base/scripts" "{{UPSTREAM}}/modules" -name '*.sh' -print0 \
             | xargs -0 shellcheck || ERRORS=$((ERRORS + 1))
+        if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
+            find "{{ROOT}}/modules" -name '*.sh' -print0 \
+                | xargs -0 shellcheck 2>/dev/null || ERRORS=$((ERRORS + 1))
+        fi
     else
         echo "  shellcheck not found, skipping"
     fi
 
     echo "Linting YAML..."
     if command -v yamllint &>/dev/null; then
-        yamllint {{ROOT}}/base/kubernetes/ {{ROOT}}/base/helm/ \
-            {{ROOT}}/modules/*/kubernetes/ {{ROOT}}/modules/*/helm/ \
-            {{ROOT}}/clusters.yaml || ERRORS=$((ERRORS + 1))
+        yamllint "{{UPSTREAM}}/base/kubernetes/" "{{UPSTREAM}}/base/helm/" \
+            "{{UPSTREAM}}/modules/*/kubernetes/" "{{UPSTREAM}}/modules/*/helm/" \
+            "{{CLUSTERS_YAML}}" || ERRORS=$((ERRORS + 1))
     else
         echo "  yamllint not found, skipping"
     fi

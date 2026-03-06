@@ -12,9 +12,10 @@ CLUSTER="$1"
 CNAME="$2"
 REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$MODULE_DIR/../.." && pwd)"
-source "$REPO_ROOT/scripts/mise-activate.sh"
-CFG="$REPO_ROOT/scripts/cluster-config.py"
+REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
+UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
+source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
+CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # Read per-installation ARC config (with defaults)
 ARC_REPLICAS=$(uv run "$CFG" "$CLUSTER" arc.replica_count 1)

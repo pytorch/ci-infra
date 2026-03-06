@@ -9,7 +9,7 @@
 # Usage (from standalone script):
 #   source "$(dirname "$0")/../../scripts/mise-activate.sh"
 if command -v mise &>/dev/null; then
-    _MISE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    _MISE_ROOT="${OSDC_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
     eval "$(mise env -s bash -C "$_MISE_ROOT" 2>/dev/null)" || true
     unset _MISE_ROOT
 fi
