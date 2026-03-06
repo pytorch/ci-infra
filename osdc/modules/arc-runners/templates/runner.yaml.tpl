@@ -113,10 +113,12 @@ data:
         - name: "$job"
           # Git reference cache: workflow steps use the CHECKOUT_GIT_CACHE_DIR env
           # var to compose a per-repo reference-repository path for actions/checkout.
-          # Example: reference-repository: $CHECKOUT_GIT_CACHE_DIR/pytorch.git
+          # Examples:
+          #   reference-repository: $CHECKOUT_GIT_CACHE_DIR/pytorch      (non-bare, has submodules)
+          #   reference-repository: $CHECKOUT_GIT_CACHE_DIR/test-infra.git  (bare)
           # The checkout action uses git alternates + dissociate to borrow objects
-          # from the local bare clone cache, then repacks locally so the checkout
-          # has no runtime dependency on the cache. The DaemonSet git-cache-warmer
+          # from the local cache, then repacks locally so the checkout has no
+          # runtime dependency on the cache. The DaemonSet git-cache-warmer
           # keeps the cache warm at /mnt/git-cache on each node.
           #
           # GIT_CONFIG_SYSTEM points to a gitconfig with safe.directory=* so that

@@ -1,8 +1,14 @@
 # Git Cache Warmer DaemonSet
-# Maintains bare git clones of frequently-used repositories on each runner node.
+# Maintains local clones of frequently-used repositories on each runner node.
 # Workflow job pods mount the cache read-only and use CHECKOUT_GIT_CACHE_DIR
 # with actions/checkout's reference-repository input to borrow cached objects
 # via git alternates during fetch, avoiding re-downloads.
+#
+# Two clone modes:
+#   - "full" (non-bare + submodules): for repos where submodule alternates
+#     are needed (e.g. pytorch). Provides .git/modules/<name>/objects/ so
+#     submodule.alternateLocation=superproject can find cached submodule objects.
+#   - "bare": for repos without submodules (e.g. test-infra). Lightweight.
 #
 # The DaemonSet targets all Karpenter-managed runner nodes (workload-type:
 # github-runner) and tolerates every taint used by runner NodePools.
@@ -26,9 +32,15 @@ data:
     FETCH_INTERVAL="${FETCH_INTERVAL:-300}"
     TAINT_KEY="git-cache-not-ready"
 
-    # Repositories to cache (org/repo pairs)
-    REPOS="
+    # Repos with submodules — cloned non-bare with --recurse-submodules.
+    # The checkout action needs .git/modules/<name>/objects/ to resolve
+    # submodule alternates via submodule.alternateLocation=superproject.
+    REPOS_FULL="
     pytorch/pytorch
+    "
+
+    # Repos without submodules — cloned bare (lightweight).
+    REPOS_BARE="
     pytorch/test-infra
     "
 
@@ -49,10 +61,9 @@ data:
     # Create a git system config that marks the cache as a safe directory.
     # The DaemonSet runs as root so all cache files are owned by UID 0, but
     # job pods run as UID 1000. Without this, git's safe.directory ownership
-    # check silently blocks `for_each_alternate_ref()` from enumerating refs
-    # in the cache — which means fetch negotiation sends zero `have` lines
-    # and the server ships every object as if the cache didn't exist.
-    # Job pods mount this file via GIT_CONFIG_SYSTEM env var.
+    # check silently blocks alternates resolution — fetch negotiation sends
+    # zero `have` lines and the server ships every object as if the cache
+    # didn't exist. Job pods mount this file via GIT_CONFIG_SYSTEM env var.
     # =========================================================================
     cat > "${CACHE_DIR}/.gitconfig" <<GITEOF
     [safe]
@@ -126,7 +137,7 @@ data:
     # =========================================================================
     # Helper: ensure bare repo skeleton exists
     # =========================================================================
-    ensure_skeleton() {
+    ensure_bare_skeleton() {
       _repo="$1"
       _org=$(echo "$_repo" | cut -d/ -f1)
       _name=$(echo "$_repo" | cut -d/ -f2)
@@ -141,28 +152,61 @@ data:
     }
 
     # =========================================================================
-    # Helper: fetch a single repo (safe to run as a background job)
+    # Helper: initial clone of a full (non-bare + submodules) repo
     # =========================================================================
-    # Handles its own retries and always returns 0 so that a single repo
-    # failure doesn't kill the script (set -e + wait).
-    fetch_repo() {
+    # Uses --recurse-submodules --jobs=4 for parallel submodule fetching.
+    # The resulting layout has .git/modules/<name>/objects/ which is needed
+    # for submodule.alternateLocation=superproject to work in job pods.
+    clone_full_repo() {
+      _repo="$1"
+      _org=$(echo "$_repo" | cut -d/ -f1)
+      _name=$(echo "$_repo" | cut -d/ -f2)
+      _repo_dir="${CACHE_DIR}/${_org}/${_name}"
+
+      if [ -d "${_repo_dir}/.git" ]; then
+        log "Cache hit: ${_repo} (full clone already exists)"
+        return 0
+      fi
+
+      log "Cache miss: ${_repo} — cloning with submodules..."
+      mkdir -p "${CACHE_DIR}/${_org}"
+      _attempt=0
+      _max=3
+      while [ $_attempt -lt $_max ]; do
+        _attempt=$((_attempt + 1))
+        if git clone --recurse-submodules --jobs=4 \
+            "https://github.com/${_repo}.git" "${_repo_dir}" 2>&1; then
+          log "Cloned ${_repo} with submodules (attempt ${_attempt})"
+          return 0
+        fi
+        log "Clone attempt ${_attempt}/${_max} failed for ${_repo}"
+        rm -rf "${_repo_dir}"
+        [ $_attempt -lt $_max ] && sleep 10
+      done
+
+      log "ERROR: Failed to clone ${_repo} after ${_max} attempts"
+      return 0
+    }
+
+    # =========================================================================
+    # Helper: initial fetch of a bare repo
+    # =========================================================================
+    fetch_bare_repo() {
       _repo="$1"
       _org=$(echo "$_repo" | cut -d/ -f1)
       _name=$(echo "$_repo" | cut -d/ -f2)
       _repo_dir="${CACHE_DIR}/${_org}/${_name}.git"
 
-      # Ensure remote is configured
       if ! git -C "${_repo_dir}" remote get-url origin >/dev/null 2>&1; then
         git -C "${_repo_dir}" remote add origin "https://github.com/${_repo}.git"
       fi
 
-      # Already populated?
       if git -C "${_repo_dir}" show-ref --quiet 2>/dev/null; then
         log "Cache hit: ${_repo} (already populated)"
         return 0
       fi
 
-      log "Cache miss: ${_repo} — fetching objects..."
+      log "Cache miss: ${_repo} — fetching..."
       _attempt=0
       _max=3
       while [ $_attempt -lt $_max ]; do
@@ -176,19 +220,48 @@ data:
       done
 
       log "ERROR: Failed to fetch ${_repo} after ${_max} attempts"
-      return 0  # don't propagate failure to wait
+      return 0
     }
 
     # =========================================================================
-    # Helper: refresh a single repo (periodic fetch, background-safe)
+    # Helper: refresh a full (non-bare) repo with submodules
     # =========================================================================
-    refresh_repo() {
+    refresh_full_repo() {
+      _repo="$1"
+      _org=$(echo "$_repo" | cut -d/ -f1)
+      _name=$(echo "$_repo" | cut -d/ -f2)
+      _repo_dir="${CACHE_DIR}/${_org}/${_name}"
+
+      if [ ! -d "${_repo_dir}/.git" ]; then
+        clone_full_repo "$_repo"
+        return 0
+      fi
+
+      if git -C "${_repo_dir}" fetch origin --prune --tags 2>&1; then
+        log "Fetched ${_repo}"
+      else
+        log "WARN: fetch failed for ${_repo} (will retry next cycle)"
+        return 0
+      fi
+
+      if git -C "${_repo_dir}" submodule update --init --recursive --jobs=4 2>&1; then
+        log "Updated submodules for ${_repo}"
+      else
+        log "WARN: submodule update failed for ${_repo} (will retry next cycle)"
+      fi
+      return 0
+    }
+
+    # =========================================================================
+    # Helper: refresh a bare repo
+    # =========================================================================
+    refresh_bare_repo() {
       _repo="$1"
       _org=$(echo "$_repo" | cut -d/ -f1)
       _name=$(echo "$_repo" | cut -d/ -f2)
       _repo_dir="${CACHE_DIR}/${_org}/${_name}.git"
 
-      ensure_skeleton "$_repo"
+      ensure_bare_skeleton "$_repo"
 
       if git -C "${_repo_dir}" fetch origin --prune --tags 2>&1; then
         log "Fetched ${_repo}"
@@ -199,26 +272,30 @@ data:
     }
 
     # =========================================================================
-    # Pre-create bare repo skeletons (sequential — instant)
+    # Pre-create skeletons for bare repos (sequential — instant)
     # =========================================================================
-    # Job pods reference these paths via CHECKOUT_GIT_CACHE_DIR env var.
     # The checkout action checks if the reference repo exists before using it
-    # and falls back gracefully if missing. We still pre-create skeletons so
+    # and falls back gracefully if missing. We pre-create bare skeletons so
     # the directory structure is ready immediately.
-    for repo in $REPOS; do
+    for repo in $REPOS_BARE; do
       repo=$(echo "$repo" | xargs)
       [ -z "$repo" ] && continue
-      ensure_skeleton "$repo"
+      ensure_bare_skeleton "$repo"
     done
 
     # =========================================================================
-    # Initial fetch — all repos in parallel
+    # Initial population — all repos in parallel
     # =========================================================================
-    log "Starting initial fetch for all repos in parallel..."
-    for repo in $REPOS; do
+    log "Starting initial cache warm-up..."
+    for repo in $REPOS_FULL; do
       repo=$(echo "$repo" | xargs)
       [ -z "$repo" ] && continue
-      fetch_repo "$repo" &
+      clone_full_repo "$repo" &
+    done
+    for repo in $REPOS_BARE; do
+      repo=$(echo "$repo" | xargs)
+      [ -z "$repo" ] && continue
+      fetch_bare_repo "$repo" &
     done
     wait
     log "Initial cache warm-up complete"
@@ -227,16 +304,21 @@ data:
     remove_startup_taint
 
     # =========================================================================
-    # Periodic fetch loop — all repos in parallel each cycle
+    # Periodic refresh loop — all repos in parallel each cycle
     # =========================================================================
     while true; do
       sleep "${FETCH_INTERVAL}"
       log "Starting periodic fetch cycle..."
 
-      for repo in $REPOS; do
+      for repo in $REPOS_FULL; do
         repo=$(echo "$repo" | xargs)
         [ -z "$repo" ] && continue
-        refresh_repo "$repo" &
+        refresh_full_repo "$repo" &
+      done
+      for repo in $REPOS_BARE; do
+        repo=$(echo "$repo" | xargs)
+        [ -z "$repo" ] && continue
+        refresh_bare_repo "$repo" &
       done
       wait
       log "Periodic fetch cycle complete"
