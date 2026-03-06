@@ -3767,7 +3767,7 @@ def create_pod(
                 client.V1Container(
                     name="gpu-dev",
                     image=container_image,
-                    image_pull_policy="Always",  # Always pull to check if image exists, fail fast if not
+                    image_pull_policy="IfNotPresent",
                     **({
                         "command": ["/bin/bash"],
                         "args": [
