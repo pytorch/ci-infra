@@ -76,8 +76,8 @@ def generate_nodepool_yaml(nodepool_def):
         ami_family_block = '  amiFamily: AL2023'
         ami_selector_block = """  amiSelectorTerms:
     - name: "amazon-eks-node-al2023-x86_64-nvidia-*\""""
-        consolidation_policy = 'WhenEmpty'
-        consolidation_after = '5m'
+        consolidation_policy = 'WhenEmptyOrUnderutilized'
+        consolidation_after = '3h'
         disruption_budget = '0'
         iops = 5000
         throughput = 250
@@ -97,7 +97,7 @@ def generate_nodepool_yaml(nodepool_def):
         ami_selector_block = """  amiSelectorTerms:
     - alias: al2023@latest"""
         consolidation_policy = 'WhenEmptyOrUnderutilized'
-        consolidation_after = '30s'
+        consolidation_after = '3h'
         disruption_budget = '10%'
         iops = 3000
         throughput = 125
