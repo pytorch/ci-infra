@@ -5080,7 +5080,7 @@ def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 600):
             except Exception as e:
                 logger.warning(f"Error checking pod status: {str(e)}")
 
-            time.sleep(10)
+            time.sleep(2)
 
         raise TimeoutError(
             f"Pod {pod_name} did not become ready within {timeout_seconds} seconds"
