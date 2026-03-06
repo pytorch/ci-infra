@@ -117,4 +117,10 @@ net.core.wmem_max=262144000
 EOF
 sysctl --system
 
+# Pre-pull GPU dev container image and refresh every 30 minutes
+# ECR credentials are handled by kubelet's credential provider
+ECR_IMAGE="${container_image}"
+crictl pull "$ECR_IMAGE" || echo "Initial image pre-pull failed (node may not be ready yet)"
+echo "*/30 * * * * ECR_LOGIN=\$(aws ecr get-login-password --region ${region}) && echo \$ECR_LOGIN | crictl pull --creds AWS:\$ECR_LOGIN $ECR_IMAGE 2>&1 | logger -t gpu-dev-image-pull" | crontab -
+
 echo "Amazon Linux 2023 EKS GPU node setup completed"

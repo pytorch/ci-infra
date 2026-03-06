@@ -344,14 +344,29 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
     }
   }
 
-  # Network interface (EFA enabled for supported instance types only)
+  # Primary network interface (card 0) - EFA+ENA for GPU instances, regular for CPU/T4-small
   network_interfaces {
+    network_card_index          = 0
+    device_index                = 0
     associate_public_ip_address = true
     security_groups             = [aws_security_group.gpu_dev_sg.id]
     subnet_id                   = each.value.gpu_config.use_placement_group ? null : (local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? aws_subnet.gpu_dev_subnet_secondary.id : aws_subnet.gpu_dev_subnet.id)
-    # EFA is not supported on g4dn.2xlarge (t4-small) and CPU instances
-    interface_type              = (each.value.gpu_type == "t4-small" || each.value.gpu_config.gpus_per_instance == 0) ? "interface" : "efa"
+    interface_type              = try(each.value.gpu_config.efa_network_cards, 0) > 0 ? "efa" : "interface"
     delete_on_termination       = true
+  }
+
+  # Additional EFA-only interfaces (cards 1-N) for multi-card instances (p5, p5e, p6, p4d)
+  dynamic "network_interfaces" {
+    for_each = try(each.value.gpu_config.efa_network_cards, 0) > 1 ? range(1, each.value.gpu_config.efa_network_cards) : []
+    content {
+      network_card_index          = network_interfaces.value
+      device_index                = 1
+      associate_public_ip_address = false
+      security_groups             = [aws_security_group.gpu_dev_sg.id]
+      subnet_id                   = each.value.gpu_config.use_placement_group ? null : (local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? aws_subnet.gpu_dev_subnet_secondary.id : aws_subnet.gpu_dev_subnet.id)
+      interface_type              = "efa-only"
+      delete_on_termination       = true
+    }
   }
 
   # Conditionally add instance_market_options for capacity block instances (only when capacity reservation exists)
@@ -381,6 +396,7 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
     region              = local.current_config.aws_region
     gpu_type            = local.gpu_type_kubernetes_labels[each.value.gpu_type]
     profiling_dedicated = try(each.value.gpu_config.profiling_dedicated, false)
+    container_image     = local.latest_image_uri
   }))
 
   tag_specifications {
