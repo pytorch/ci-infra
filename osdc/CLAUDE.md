@@ -259,22 +259,25 @@ RUN --mount=type=bind,from=gitcache,source=pytorch/pytorch.git/objects,target=/t
 
 ## Git Clone Cache
 
-A DaemonSet (`git-cache-warmer`) maintains bare git clones on each runner node. Workflow job pods mount the cache read-only and `GIT_ALTERNATE_OBJECT_DIRECTORIES` tells git to check the local cache before downloading objects from GitHub. This dramatically speeds up full clones of large repositories.
+Two-tier centralized git cache with atomic double-buffer distribution:
+
+- **`git-cache-server`** (StatefulSet, 1 replica on base node): Clones/fetches from GitHub once, serves via rsyncd on port 873. Uses 200Gi EBS PVC with two buffers (`cache-a`/`cache-b`) and an atomic symlink swap.
+- **`git-cache-warmer`** (DaemonSet on runner/buildkit nodes): Rsyncs from the central server every 60s instead of fetching from GitHub. Uses the same double-buffer + atomic symlink swap on the host at `/mnt/git-cache`.
+
+Runner/BuildKit pods mount `/mnt/git-cache` read-only at `/opt/git-cache`. The symlink is resolved at bind-mount time — pods see a consistent snapshot even during swaps.
 
 ### Key files
 
 | File | What to change |
 |------|---------------|
-| `base/kubernetes/git-cache-warmer.yaml` | `REPOS` variable — list of `org/repo` to cache |
-| `modules/arc-runners/templates/runner.yaml.tpl` | `GIT_ALTERNATE_OBJECT_DIRECTORIES` env value — colon-separated objects paths |
+| `base/kubernetes/git-cache-server.yaml` | `REPOS_FULL` / `REPOS_BARE` variables — list of repos to cache centrally |
+| `base/kubernetes/git-cache-warmer.yaml` | Sync interval, rsync target (normally unchanged) |
+| `modules/arc-runners/templates/runner.yaml.tpl` | `CHECKOUT_GIT_CACHE_DIR` env value — cache path prefix |
 
 ### Adding a new cached repository
 
-1. Append `org/repo` to the `REPOS` variable in `base/kubernetes/git-cache-warmer.yaml`
-2. Append `/opt/git-cache/org/repo.git/objects` to the `GIT_ALTERNATE_OBJECT_DIRECTORIES` value in `modules/arc-runners/templates/runner.yaml.tpl`
-3. Redeploy: `just deploy-base <cluster>` (DaemonSet) + `just deploy-module <cluster> arc-runners` (runner hook template)
-
-The DaemonSet fetches all repos in parallel, so adding more repos only increases warm-up time by the duration of the largest new repo (not the sum).
+1. Add the repo to `REPOS_FULL` (with submodules) or `REPOS_BARE` (bare) in `base/kubernetes/git-cache-server.yaml`
+2. Redeploy: `just deploy-base <cluster>` — the server clones it, DaemonSets pick it up via rsync automatically
 
 ## External Knowledge Base
 
@@ -375,7 +378,8 @@ tofu state list              # All managed resources
 | `modules/eks/terraform/main.tf` | Parameterized infra (VPC, EKS, Harbor) |
 | `modules/eks/terraform/variables.tf` | All variables driven from clusters.yaml |
 | `modules/eks/images.yaml` | Harbor bootstrap images to mirror to ECR |
-| `base/kubernetes/git-cache-warmer.yaml` | Git clone cache DaemonSet (repos list) |
+| `base/kubernetes/git-cache-server.yaml` | Central git cache server (StatefulSet, repo list, rsyncd) |
+| `base/kubernetes/git-cache-warmer.yaml` | Node-local git cache sync (DaemonSet, rsync from server) |
 | `modules/karpenter/deploy.sh` | Karpenter controller + AWS infra (IAM, SQS, Helm install) |
 | `modules/nodepools/defs/*.yaml` | NodePool definitions (instance type, arch, disk, gpu flag) |
 | `modules/nodepools/deploy.sh` | Generate + apply Karpenter NodePools |

@@ -1,20 +1,17 @@
-# Git Cache Warmer DaemonSet
-# Maintains local clones of frequently-used repositories on each runner node.
-# Workflow job pods mount the cache read-only and use CHECKOUT_GIT_CACHE_DIR
-# with actions/checkout's reference-repository input to borrow cached objects
-# via git alternates during fetch, avoiding re-downloads.
+# Git Cache Warmer DaemonSet — Node-local git cache via rsync from central server
+# Syncs git repository caches from the centralized git-cache-server (StatefulSet)
+# to each runner/buildkit node using rsync over the cluster network.
 #
-# Two clone modes:
-#   - "full" (non-bare + submodules): for repos where submodule alternates
-#     are needed (e.g. pytorch). Provides .git/modules/<name>/objects/ so
-#     submodule.alternateLocation=superproject can find cached submodule objects.
-#   - "bare": for repos without submodules (e.g. test-infra). Lightweight.
+# Uses double-buffer pattern:
+#   /mnt/git-cache-a/  and  /mnt/git-cache-b/  — two physical directories
+#   /mnt/git-cache → a or b                     — symlink, swapped via ln -sfn
 #
-# The DaemonSet targets all Karpenter-managed runner nodes (workload-type:
-# github-runner) and tolerates every taint used by runner NodePools.
+# Runner/BuildKit pods mount /mnt/git-cache read-only (resolves symlink at
+# bind-mount time). The DaemonSet syncs into the inactive buffer, then swaps
+# the symlink. Running pods keep their bind mount to the old directory.
 #
 # On fresh nodes, Karpenter applies a `git-cache-not-ready` startupTaint.
-# Once the initial fetch completes, this DaemonSet removes the taint so that
+# Once the initial sync completes, this DaemonSet removes the taint so that
 # workflow job pods (which do NOT tolerate it) can schedule.
 
 ---
@@ -28,54 +25,27 @@ data:
     #!/bin/sh
     set -eu
 
-    CACHE_DIR="/mnt/git-cache"
-    FETCH_INTERVAL="${FETCH_INTERVAL:-300}"
-    TAINT_KEY="git-cache-not-ready"
-
-    # Repos with submodules — cloned non-bare with --recurse-submodules.
-    # The checkout action needs .git/modules/<name>/objects/ to resolve
-    # submodule alternates via submodule.alternateLocation=superproject.
-    REPOS_FULL="
-    pytorch/pytorch
-    "
-
-    # Repos without submodules — cloned bare (lightweight).
-    REPOS_BARE="
-    pytorch/test-infra
-    "
+    CACHE_A="/mnt/git-cache-a"
+    CACHE_B="/mnt/git-cache-b"
+    PUBLISHED="/mnt/git-cache"
+    SYNC_INTERVAL="${FETCH_INTERVAL:-60}"
+    RSYNC_TARGET="rsync://git-cache-server.kube-system:873/git-cache"
 
     log() {
       echo "[$(date -Iseconds 2>/dev/null || date)] $*"
     }
 
-    # Install dependencies (alpine)
+    # Install dependencies (alpine) — only rsync needed, no git
     log "Installing dependencies..."
-    apk add --no-cache git curl jq >/dev/null 2>&1
+    apk add --no-cache rsync curl jq >/dev/null 2>&1
 
-    log "Git version: $(git --version)"
-    log "Cache directory: ${CACHE_DIR}"
-    log "Fetch interval: ${FETCH_INTERVAL}s"
+    log "Sync interval: ${SYNC_INTERVAL}s"
+    log "Rsync target: ${RSYNC_TARGET}"
     log "Node: ${NODE_NAME:-unknown}"
 
-    # =========================================================================
-    # Create a git system config that marks the cache as a safe directory.
-    # The DaemonSet runs as root so all cache files are owned by UID 0, but
-    # job pods run as UID 1000. Without this, git's safe.directory ownership
-    # check silently blocks alternates resolution — fetch negotiation sends
-    # zero `have` lines and the server ships every object as if the cache
-    # didn't exist. Job pods mount this file via GIT_CONFIG_SYSTEM env var.
-    # =========================================================================
-    cat > "${CACHE_DIR}/.gitconfig" <<GITEOF
-    [safe]
-    	directory = *
-    GITEOF
-    log "Created ${CACHE_DIR}/.gitconfig (safe.directory = *)"
-
-    # =========================================================================
-    # Helper: remove the git-cache-not-ready startup taint from this node.
+    # --- Remove the git-cache-not-ready startup taint ---
     # Karpenter adds this taint to fresh nodes; job pods don't tolerate it,
     # so they stay Pending until we remove it (i.e., until the cache is warm).
-    # =========================================================================
     remove_startup_taint() {
       if [ -z "${NODE_NAME:-}" ]; then
         log "WARN: NODE_NAME not set, cannot remove startup taint"
@@ -102,7 +72,7 @@ data:
       }
 
       # Check if our taint exists
-      _has_taint=$(echo "$_node_json" | jq --arg key "$TAINT_KEY" \
+      _has_taint=$(echo "$_node_json" | jq --arg key "git-cache-not-ready" \
         '[.spec.taints // [] | .[] | select(.key == $key)] | length')
 
       if [ "$_has_taint" = "0" ]; then
@@ -111,7 +81,7 @@ data:
       fi
 
       # Build new taints list without our taint
-      _new_taints=$(echo "$_node_json" | jq --arg key "$TAINT_KEY" \
+      _new_taints=$(echo "$_node_json" | jq --arg key "git-cache-not-ready" \
         '[.spec.taints // [] | .[] | select(.key != $key)]')
 
       # If empty, set to null to remove the field entirely
@@ -128,200 +98,71 @@ data:
         -d "$_patch")
 
       if [ "$_status" = "200" ]; then
-        log "Removed ${TAINT_KEY} taint from node ${NODE_NAME}"
+        log "Removed git-cache-not-ready taint from node ${NODE_NAME}"
       else
         log "WARN: Failed to remove taint (HTTP ${_status})"
       fi
     }
 
-    # =========================================================================
-    # Helper: ensure bare repo skeleton exists
-    # =========================================================================
-    ensure_bare_skeleton() {
-      _repo="$1"
-      _org=$(echo "$_repo" | cut -d/ -f1)
-      _name=$(echo "$_repo" | cut -d/ -f2)
-      _repo_dir="${CACHE_DIR}/${_org}/${_name}.git"
+    # --- Double-buffer initialization ---
+    # Handle migration: if /mnt/git-cache is a real directory (not symlink),
+    # it's from the old DaemonSet. Adopt it as buffer-a.
+    if [ -d "$PUBLISHED" ] && [ ! -L "$PUBLISHED" ]; then
+        log "Migration: adopting existing ${PUBLISHED} as buffer-a"
+        mv "$PUBLISHED" "$CACHE_A"
+        mkdir -p "$CACHE_B"
+        ln -s "$CACHE_A" "$PUBLISHED"
+    elif [ ! -L "$PUBLISHED" ]; then
+        # Fresh node: create both buffers and symlink
+        log "Fresh node: initializing double-buffer"
+        mkdir -p "$CACHE_A" "$CACHE_B"
+        ln -s "$CACHE_A" "$PUBLISHED"
+    fi
 
-      if [ ! -d "${_repo_dir}/objects" ]; then
-        log "Pre-creating bare repo skeleton: ${_repo_dir}"
-        mkdir -p "${CACHE_DIR}/${_org}"
-        git init --bare "${_repo_dir}" >/dev/null 2>&1
-        git -C "${_repo_dir}" remote add origin "https://github.com/${_repo}.git" 2>/dev/null || true
-      fi
-    }
-
-    # =========================================================================
-    # Helper: initial clone of a full (non-bare + submodules) repo
-    # =========================================================================
-    # Uses --recurse-submodules --jobs=4 for parallel submodule fetching.
-    # The resulting layout has .git/modules/<name>/objects/ which is needed
-    # for submodule.alternateLocation=superproject to work in job pods.
-    clone_full_repo() {
-      _repo="$1"
-      _org=$(echo "$_repo" | cut -d/ -f1)
-      _name=$(echo "$_repo" | cut -d/ -f2)
-      _repo_dir="${CACHE_DIR}/${_org}/${_name}"
-
-      if [ -d "${_repo_dir}/.git" ]; then
-        log "Cache hit: ${_repo} (full clone already exists)"
-        return 0
-      fi
-
-      log "Cache miss: ${_repo} — cloning with submodules..."
-      mkdir -p "${CACHE_DIR}/${_org}"
-      _attempt=0
-      _max=3
-      while [ $_attempt -lt $_max ]; do
-        _attempt=$((_attempt + 1))
-        if git clone --recurse-submodules --jobs=4 \
-            "https://github.com/${_repo}.git" "${_repo_dir}" 2>&1; then
-          log "Cloned ${_repo} with submodules (attempt ${_attempt})"
-          return 0
-        fi
-        log "Clone attempt ${_attempt}/${_max} failed for ${_repo}"
-        rm -rf "${_repo_dir}"
-        [ $_attempt -lt $_max ] && sleep 10
-      done
-
-      log "ERROR: Failed to clone ${_repo} after ${_max} attempts"
-      return 0
-    }
-
-    # =========================================================================
-    # Helper: initial fetch of a bare repo
-    # =========================================================================
-    fetch_bare_repo() {
-      _repo="$1"
-      _org=$(echo "$_repo" | cut -d/ -f1)
-      _name=$(echo "$_repo" | cut -d/ -f2)
-      _repo_dir="${CACHE_DIR}/${_org}/${_name}.git"
-
-      if ! git -C "${_repo_dir}" remote get-url origin >/dev/null 2>&1; then
-        git -C "${_repo_dir}" remote add origin "https://github.com/${_repo}.git"
-      fi
-
-      if git -C "${_repo_dir}" show-ref --quiet 2>/dev/null; then
-        log "Cache hit: ${_repo} (already populated)"
-        return 0
-      fi
-
-      log "Cache miss: ${_repo} — fetching..."
-      _attempt=0
-      _max=3
-      while [ $_attempt -lt $_max ]; do
-        _attempt=$((_attempt + 1))
-        if git -C "${_repo_dir}" fetch origin 2>&1; then
-          log "Fetched ${_repo} successfully (attempt ${_attempt})"
-          return 0
-        fi
-        log "Fetch attempt ${_attempt}/${_max} failed for ${_repo}"
-        [ $_attempt -lt $_max ] && sleep 10
-      done
-
-      log "ERROR: Failed to fetch ${_repo} after ${_max} attempts"
-      return 0
-    }
-
-    # =========================================================================
-    # Helper: refresh a full (non-bare) repo with submodules
-    # =========================================================================
-    refresh_full_repo() {
-      _repo="$1"
-      _org=$(echo "$_repo" | cut -d/ -f1)
-      _name=$(echo "$_repo" | cut -d/ -f2)
-      _repo_dir="${CACHE_DIR}/${_org}/${_name}"
-
-      if [ ! -d "${_repo_dir}/.git" ]; then
-        clone_full_repo "$_repo"
-        return 0
-      fi
-
-      if git -C "${_repo_dir}" fetch origin --prune --tags 2>&1; then
-        log "Fetched ${_repo}"
-      else
-        log "WARN: fetch failed for ${_repo} (will retry next cycle)"
-        return 0
-      fi
-
-      if git -C "${_repo_dir}" submodule update --init --recursive --jobs=4 2>&1; then
-        log "Updated submodules for ${_repo}"
-      else
-        log "WARN: submodule update failed for ${_repo} (will retry next cycle)"
-      fi
-      return 0
-    }
-
-    # =========================================================================
-    # Helper: refresh a bare repo
-    # =========================================================================
-    refresh_bare_repo() {
-      _repo="$1"
-      _org=$(echo "$_repo" | cut -d/ -f1)
-      _name=$(echo "$_repo" | cut -d/ -f2)
-      _repo_dir="${CACHE_DIR}/${_org}/${_name}.git"
-
-      ensure_bare_skeleton "$_repo"
-
-      if git -C "${_repo_dir}" fetch origin --prune --tags 2>&1; then
-        log "Fetched ${_repo}"
-      else
-        log "WARN: fetch failed for ${_repo} (will retry next cycle)"
-      fi
-      return 0
-    }
-
-    # =========================================================================
-    # Pre-create skeletons for bare repos (sequential — instant)
-    # =========================================================================
-    # The checkout action checks if the reference repo exists before using it
-    # and falls back gracefully if missing. We pre-create bare skeletons so
-    # the directory structure is ready immediately.
-    for repo in $REPOS_BARE; do
-      repo=$(echo "$repo" | xargs)
-      [ -z "$repo" ] && continue
-      ensure_bare_skeleton "$repo"
+    # --- Wait for central server ---
+    log "Waiting for git-cache-server..."
+    until rsync --list-only "${RSYNC_TARGET}/" >/dev/null 2>&1; do
+        sleep 5
     done
+    log "git-cache-server is reachable"
 
-    # =========================================================================
-    # Initial population — all repos in parallel
-    # =========================================================================
-    log "Starting initial cache warm-up..."
-    for repo in $REPOS_FULL; do
-      repo=$(echo "$repo" | xargs)
-      [ -z "$repo" ] && continue
-      clone_full_repo "$repo" &
-    done
-    for repo in $REPOS_BARE; do
-      repo=$(echo "$repo" | xargs)
-      [ -z "$repo" ] && continue
-      fetch_bare_repo "$repo" &
-    done
-    wait
-    log "Initial cache warm-up complete"
+    # --- Initial sync ---
+    ACTIVE=$(readlink "$PUBLISHED")
+    if [ "$ACTIVE" = "$CACHE_A" ]; then INACTIVE="$CACHE_B"; else INACTIVE="$CACHE_A"; fi
 
-    # Remove the startup taint so job pods can schedule on this node
+    log "Initial sync into ${INACTIVE}..."
+    rsync -a --delete --no-compress "${RSYNC_TARGET}/" "${INACTIVE}/"
+
+    # Write .gitconfig into synced buffer
+    cat > "${INACTIVE}/.gitconfig" <<'GITEOF'
+    [safe]
+    	directory = *
+    GITEOF
+
+    # Swap symlink (ln -sfn: -n prevents following existing symlink-to-dir)
+    ln -sfn "$INACTIVE" "$PUBLISHED"
+    log "Initial sync complete — published: ${INACTIVE}"
+
+    # Remove startup taint — runners can now schedule
     remove_startup_taint
 
-    # =========================================================================
-    # Periodic refresh loop — all repos in parallel each cycle
-    # =========================================================================
+    # --- Periodic sync loop ---
     while true; do
-      sleep "${FETCH_INTERVAL}"
-      log "Starting periodic fetch cycle..."
+        sleep "$SYNC_INTERVAL"
 
-      for repo in $REPOS_FULL; do
-        repo=$(echo "$repo" | xargs)
-        [ -z "$repo" ] && continue
-        refresh_full_repo "$repo" &
-      done
-      for repo in $REPOS_BARE; do
-        repo=$(echo "$repo" | xargs)
-        [ -z "$repo" ] && continue
-        refresh_bare_repo "$repo" &
-      done
-      wait
-      log "Periodic fetch cycle complete"
+        ACTIVE=$(readlink "$PUBLISHED")
+        if [ "$ACTIVE" = "$CACHE_A" ]; then INACTIVE="$CACHE_B"; else INACTIVE="$CACHE_A"; fi
+
+        if rsync -a --delete --no-compress "${RSYNC_TARGET}/" "${INACTIVE}/"; then
+            cat > "${INACTIVE}/.gitconfig" <<'GITEOF'
+    [safe]
+    	directory = *
+    GITEOF
+            ln -sfn "$INACTIVE" "$PUBLISHED"
+            log "Sync complete — swapped to ${INACTIVE}"
+        else
+            log "WARN: rsync failed, will retry next cycle"
+        fi
     done
 
 ---
@@ -424,12 +265,12 @@ spec:
 
       containers:
         - name: git-cache
-          image: public.ecr.aws/docker/library/alpine:3.19
+          image: public.ecr.aws/docker/library/alpine:3.21
           command: ["/bin/sh", "/scripts/warm-cache.sh"]
 
           env:
             - name: FETCH_INTERVAL
-              value: "300"
+              value: "60"
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -447,8 +288,8 @@ spec:
             - name: scripts
               mountPath: /scripts
               readOnly: true
-            - name: git-cache
-              mountPath: /mnt/git-cache
+            - name: host-mnt
+              mountPath: /mnt
 
       volumes:
         - name: scripts
@@ -456,10 +297,10 @@ spec:
             name: git-cache-warmer-script
             defaultMode: 0755
 
-        - name: git-cache
+        - name: host-mnt
           hostPath:
-            path: /mnt/git-cache
-            type: DirectoryOrCreate
+            path: /mnt
+            type: Directory
 
 ---
 apiVersion: v1
