@@ -55,7 +55,9 @@ module "vpc" {
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
   })
 
-  private_subnet_tags = {}
+  private_subnet_tags = {
+    "karpenter.sh/discovery" = var.cluster_name
+  }
 }
 
 # --- EKS ---

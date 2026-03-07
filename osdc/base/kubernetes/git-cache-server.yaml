@@ -1,0 +1,323 @@
+# Git Cache Server — Centralized git cache with atomic double-buffer distribution
+# A single StatefulSet that clones/fetches from GitHub once and serves the cache
+# over the cluster network via rsync daemon. Node DaemonSets (git-cache-warmer)
+# rsync from this server instead of fetching from GitHub independently.
+#
+# Architecture:
+#   - Two physical cache directories (cache-a, cache-b) on a persistent EBS volume
+#   - A symlink (/data/published) that alternates between them (atomic swap)
+#   - rsyncd serves through the symlink; each client connection resolves it independently
+#   - Fetch loop updates the inactive buffer, then atomically swaps the symlink
+#
+# This eliminates N concurrent GitHub fetches (one per node) and replaces them
+# with a single GitHub fetch + fast LAN rsync distribution.
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: git-cache-server-script
+  namespace: kube-system
+data:
+  server.sh: |
+    #!/bin/sh
+    set -eu
+
+    CACHE_A="/data/cache-a"
+    CACHE_B="/data/cache-b"
+    PUBLISHED="/data/published"
+    FETCH_INTERVAL="${FETCH_INTERVAL:-300}"
+
+    # Same repo lists as the DaemonSet previously maintained
+    REPOS_FULL="pytorch/pytorch"
+    REPOS_BARE="pytorch/test-infra"
+
+    log() {
+      echo "[$(date -Iseconds 2>/dev/null || date)] $*"
+    }
+
+    # Install dependencies (alpine)
+    log "Installing dependencies..."
+    apk add --no-cache git rsync >/dev/null 2>&1
+    log "Git version: $(git --version)"
+
+    # Disable auto-gc — prevents packfile rewriting while rsyncd is serving
+    git config --global gc.auto 0
+
+    # --- Initial setup (first boot or recovery from crashed attempt) ---
+    if [ ! -L "$PUBLISHED" ]; then
+        log "No published symlink — performing initial clone..."
+        # Clean up any partial state from a previous crashed attempt
+        rm -rf "$CACHE_A" "$CACHE_B"
+        mkdir -p "$CACHE_A" "$CACHE_B"
+
+        # Clone full repos (with submodules) into cache-a
+        for repo in $REPOS_FULL; do
+            repo=$(echo "$repo" | xargs)
+            [ -z "$repo" ] && continue
+            org=$(echo "$repo" | cut -d/ -f1)
+            name=$(echo "$repo" | cut -d/ -f2)
+            repo_dir="${CACHE_A}/${org}/${name}"
+            mkdir -p "${CACHE_A}/${org}"
+            log "Cloning ${repo} (full, with submodules)..."
+            attempt=0
+            max=3
+            while [ $attempt -lt $max ]; do
+                attempt=$((attempt + 1))
+                if git clone --recurse-submodules --jobs=4 \
+                    "https://github.com/${repo}.git" "${repo_dir}" 2>&1; then
+                    log "Cloned ${repo} successfully (attempt ${attempt})"
+                    break
+                fi
+                log "Clone attempt ${attempt}/${max} failed for ${repo}"
+                rm -rf "${repo_dir}"
+                [ $attempt -lt $max ] && sleep 10
+            done
+            if [ $attempt -eq $max ]; then
+                log "ERROR: Failed to clone ${repo} after ${max} attempts"
+            fi
+        done
+
+        # Clone bare repos into cache-a
+        for repo in $REPOS_BARE; do
+            repo=$(echo "$repo" | xargs)
+            [ -z "$repo" ] && continue
+            org=$(echo "$repo" | cut -d/ -f1)
+            name=$(echo "$repo" | cut -d/ -f2)
+            repo_dir="${CACHE_A}/${org}/${name}.git"
+            mkdir -p "${CACHE_A}/${org}"
+            log "Cloning ${repo} (bare)..."
+            git init --bare "${repo_dir}" >/dev/null 2>&1
+            git -C "${repo_dir}" remote add origin "https://github.com/${repo}.git" 2>/dev/null || true
+            attempt=0
+            max=3
+            while [ $attempt -lt $max ]; do
+                attempt=$((attempt + 1))
+                if git -C "${repo_dir}" fetch origin --prune --tags 2>&1; then
+                    log "Fetched ${repo} successfully (attempt ${attempt})"
+                    break
+                fi
+                log "Fetch attempt ${attempt}/${max} failed for ${repo}"
+                [ $attempt -lt $max ] && sleep 10
+            done
+            if [ $attempt -eq $max ]; then
+                log "ERROR: Failed to clone ${repo} after ${max} attempts"
+            fi
+        done
+
+        # Hardlink-copy to cache-b (instant, near-zero extra disk space)
+        # Git objects are immutable, so hardlinks are safe
+        log "Creating hardlink copy for second buffer..."
+        cp -al "${CACHE_A}/." "${CACHE_B}/"
+
+        # Create initial symlink
+        ln -s "$CACHE_A" "$PUBLISHED"
+        log "Initial setup complete — published: ${CACHE_A}"
+    fi
+
+    # Write .gitconfig (safe.directory = *) into both buffers
+    # Needed because DaemonSet serves this file to runner pods
+    for dir in "$CACHE_A" "$CACHE_B"; do
+        cat > "${dir}/.gitconfig" <<'GITEOF'
+    [safe]
+    	directory = *
+    GITEOF
+    done
+
+    # --- Start rsyncd ---
+    log "Starting rsyncd on port 873..."
+    cat > /tmp/rsyncd.conf <<'RSYNCEOF'
+    [git-cache]
+    path = /data/published
+    read only = yes
+    use chroot = no
+    RSYNCEOF
+
+    rsync --daemon --config=/tmp/rsyncd.conf --no-detach &
+    RSYNCD_PID=$!
+    log "rsyncd started (PID ${RSYNCD_PID})"
+
+    # --- Fetch loop ---
+    while true; do
+        sleep "$FETCH_INTERVAL"
+        log "Starting fetch cycle..."
+
+        # Determine inactive buffer
+        ACTIVE=$(readlink "$PUBLISHED")
+        if [ "$ACTIVE" = "$CACHE_A" ]; then
+            INACTIVE="$CACHE_B"
+        else
+            INACTIVE="$CACHE_A"
+        fi
+        log "Active: ${ACTIVE}, updating inactive: ${INACTIVE}"
+
+        # Fetch into inactive buffer — serialize fetch+submodule per repo,
+        # parallelize across repos
+        for repo in $REPOS_FULL; do
+            repo=$(echo "$repo" | xargs)
+            [ -z "$repo" ] && continue
+            org=$(echo "$repo" | cut -d/ -f1)
+            name=$(echo "$repo" | cut -d/ -f2)
+            repo_dir="${INACTIVE}/${org}/${name}"
+            (
+                if git -C "${repo_dir}" fetch origin --prune --tags 2>&1; then
+                    log "Fetched ${repo}"
+                    git -C "${repo_dir}" submodule update --init --recursive --jobs=4 2>&1 || \
+                        log "WARN: submodule update failed for ${repo}"
+                else
+                    log "WARN: fetch failed for ${repo}"
+                fi
+            ) &
+        done
+        for repo in $REPOS_BARE; do
+            repo=$(echo "$repo" | xargs)
+            [ -z "$repo" ] && continue
+            org=$(echo "$repo" | cut -d/ -f1)
+            name=$(echo "$repo" | cut -d/ -f2)
+            repo_dir="${INACTIVE}/${org}/${name}.git"
+            (
+                if git -C "${repo_dir}" fetch origin --prune --tags 2>&1; then
+                    log "Fetched ${repo}"
+                else
+                    log "WARN: fetch failed for ${repo}"
+                fi
+            ) &
+        done
+        wait
+
+        # Write .gitconfig into inactive buffer before swap
+        cat > "${INACTIVE}/.gitconfig" <<'GITEOF'
+    [safe]
+    	directory = *
+    GITEOF
+
+        # Swap symlink (ln -sfn: -n prevents following existing symlink-to-dir)
+        ln -sfn "$INACTIVE" "$PUBLISHED"
+        log "Fetch cycle complete — swapped to ${INACTIVE}"
+    done
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: git-cache-server
+  namespace: kube-system
+  labels:
+    app: git-cache-server
+    app.kubernetes.io/name: git-cache-server
+    app.kubernetes.io/component: git-cache
+spec:
+  serviceName: git-cache-server
+  replicas: 1
+  selector:
+    matchLabels:
+      app: git-cache-server
+  template:
+    metadata:
+      labels:
+        app: git-cache-server
+    spec:
+      nodeSelector:
+        role: base-infrastructure
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      serviceAccountName: git-cache-server
+      containers:
+        - name: git-cache-server
+          image: public.ecr.aws/docker/library/alpine:3.21
+          command: ["/bin/sh", "/scripts/server.sh"]
+          ports:
+            - containerPort: 873
+              name: rsync
+          env:
+            - name: FETCH_INTERVAL
+              value: "300"
+          # Startup: give initial clone up to 60 minutes before considering it stuck
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "rsync --list-only rsync://localhost:873/git-cache/ >/dev/null 2>&1"
+            periodSeconds: 30
+            failureThreshold: 120
+          # Liveness: verify rsyncd stays responsive during steady-state
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "rsync --list-only rsync://localhost:873/git-cache/ >/dev/null 2>&1"
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          # Readiness: gates Service traffic until rsyncd is serving
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "rsync --list-only rsync://localhost:873/git-cache/ >/dev/null 2>&1"
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: git-cache-server-script
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 200Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-cache-server
+  namespace: kube-system
+  labels:
+    app: git-cache-server
+    app.kubernetes.io/name: git-cache-server
+    app.kubernetes.io/component: git-cache
+spec:
+  type: ClusterIP
+  selector:
+    app: git-cache-server
+  ports:
+    - port: 873
+      targetPort: 873
+      name: rsync
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: git-cache-server
+  namespace: kube-system
+  labels:
+    app: git-cache-server
+    app.kubernetes.io/name: git-cache-server
+    app.kubernetes.io/component: git-cache

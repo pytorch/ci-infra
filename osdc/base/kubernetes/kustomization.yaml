@@ -10,6 +10,7 @@ resources:
   - node-performance-tuning.yaml
   - nvidia-device-plugin.yaml
   - harbor-namespace.yaml
+  - git-cache-server.yaml
   - git-cache-warmer.yaml
   - registry-mirror-config.yaml
   # NOTE: Namespaces for modules (arc-runners, arc-systems, buildkit, etc.)

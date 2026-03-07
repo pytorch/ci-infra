@@ -6,7 +6,7 @@ Everything here is deployed to **every** cluster. If it's optional, it belongs i
 
 | Directory | Contents |
 |-----------|----------|
-| `kubernetes/` | Base k8s resources: gp3 StorageClass, NVIDIA device plugin, git-cache-warmer DaemonSet, Harbor namespace, node performance tuning |
+| `kubernetes/` | Base k8s resources: gp3 StorageClass, NVIDIA device plugin, git-cache-server StatefulSet, git-cache-warmer DaemonSet, Harbor namespace, node performance tuning |
 | `helm/harbor/` | Harbor Helm values. Component images overridden via `--set` (no `global.imageRegistry` in chart). |
 | `docker/runner-base/` | Base container image for runner pods |
 | `scripts/bootstrap/` | EKS node bootstrap (registry mirrors, sysctl tuning) |
