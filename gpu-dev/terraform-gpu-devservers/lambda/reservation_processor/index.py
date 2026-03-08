@@ -5031,8 +5031,13 @@ def create_jupyter_service(k8s_client, pod_name: str, jupyter_port: int):
         raise
 
 
-def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 600):
-    """Wait for pod to be ready - simplified since background monitoring handles status updates"""
+def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 840):
+    """Wait for pod to be ready.
+
+    Default timeout is 840s (14 min) to accommodate large Docker image pulls
+    while staying within the Lambda's 900s (15 min) execution limit.
+    The remaining 60s buffer allows for Lambda overhead and cleanup.
+    """
     try:
         v1 = client.CoreV1Api(k8s_client)
         start_time = time.time()
