@@ -71,6 +71,7 @@ clusters:
       runner_name_prefix: "c."
     buildkit:
       replicas_per_arch: 2
+      arm64_instance_type: m7gd.16xlarge  # m8gd not available in us-west-1
     modules:
       - karpenter
       - arc

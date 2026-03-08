@@ -5,7 +5,6 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - configmap.yaml
-  - deployment.yaml
   - haproxy.yaml
   - service.yaml
   - networkpolicy.yaml

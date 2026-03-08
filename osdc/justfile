@@ -40,7 +40,8 @@ setup:
 list:
     @echo "Clusters defined in clusters.yaml:"
     @echo ""
-    @for cid in $(uv run {{CFG}} --list); do \
+    @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    for cid in $(uv run {{CFG}} --list); do \
         region=$(uv run {{CFG}} "$cid" region); \
         cname=$(uv run {{CFG}} "$cid" cluster_name); \
         modules=$(uv run {{CFG}} "$cid" modules | tr '\n' ' '); \
@@ -51,15 +52,16 @@ list:
 
 # Show what would be deployed for a cluster (dry run)
 show cluster:
-    @echo "Cluster: {{cluster}}"
-    @echo "  Name:    $(uv run {{CFG}} {{cluster}} cluster_name)"
-    @echo "  Region:  $(uv run {{CFG}} {{cluster}} region)"
-    @echo "  Bucket:  $(uv run {{CFG}} {{cluster}} state_bucket)"
-    @echo "  Modules:"
-    @uv run {{CFG}} {{cluster}} modules | sed 's/^/    - /'
-    @echo ""
-    @echo "  Tofu vars:"
-    @uv run {{CFG}} {{cluster}} tfvars | tr ' ' '\n' | sed 's/^/    /'
+    @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    echo "Cluster: {{cluster}}"; \
+    echo "  Name:    $(uv run {{CFG}} {{cluster}} cluster_name)"; \
+    echo "  Region:  $(uv run {{CFG}} {{cluster}} region)"; \
+    echo "  Bucket:  $(uv run {{CFG}} {{cluster}} state_bucket)"; \
+    echo "  Modules:"; \
+    uv run {{CFG}} {{cluster}} modules | sed 's/^/    - /'; \
+    echo ""; \
+    echo "  Tofu vars:"; \
+    uv run {{CFG}} {{cluster}} tfvars | tr ' ' '\n' | sed 's/^/    /'
 
 # ============================================================================
 # BOOTSTRAP
@@ -67,11 +69,11 @@ show cluster:
 
 # Bootstrap S3 state bucket + DynamoDB lock table for a cluster
 bootstrap cluster:
-    @{{SCRIPTS}}/bootstrap-state.sh {{cluster}}
+    @OSDC_ROOT="{{ROOT}}" OSDC_UPSTREAM="{{UPSTREAM}}" CLUSTERS_YAML="{{CLUSTERS_YAML}}" {{SCRIPTS}}/bootstrap-state.sh {{cluster}}
 
 # Bootstrap all clusters
 bootstrap-all:
-    @{{SCRIPTS}}/bootstrap-state.sh --all
+    @OSDC_ROOT="{{ROOT}}" OSDC_UPSTREAM="{{UPSTREAM}}" CLUSTERS_YAML="{{CLUSTERS_YAML}}" {{SCRIPTS}}/bootstrap-state.sh --all
 
 # ============================================================================
 # DEPLOY
@@ -180,6 +182,7 @@ deploy-base cluster:
 
     echo ""
     echo "━━━ BASE: Deploy Harbor ━━━"
+    cd "{{ROOT}}"
     just _deploy-harbor "$CLUSTER"
 
     echo ""
