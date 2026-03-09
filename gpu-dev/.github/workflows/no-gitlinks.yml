@@ -1,0 +1,22 @@
+name: Validate repository structure
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  no-gitlinks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Ensure no gitlinks are tracked
+        run: |
+          gitlinks=$(git ls-files -s | awk "$1 == 160000 {print}")
+          if [ -n "$gitlinks" ]; then
+            echo "Unexpected gitlinks found:"
+            echo "$gitlinks"
+            exit 1
+          fi
