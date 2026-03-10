@@ -1,9 +1,9 @@
 # Karpenter NodePool definition: g5.48xlarge
 # Consolidated pool for GPU G5 workloads
+# Node disk: worst case 8x 150Gi pods + 100Gi OS = 1300Gi
 nodepool:
   name: g5-48xlarge
   instance_type: g5.48xlarge
   arch: amd64
-  disk_size: 150
-  max_pods_per_node: 8
+  node_disk_size: 1300
   gpu: true

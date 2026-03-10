@@ -1,0 +1,142 @@
+# Git cache warmer DaemonSet.
+# Rsyncs the git cache from the central pod to local NVMe on each
+# runner/buildkit node. Removes the git-cache-not-ready startup taint
+# after the initial sync so workflow job pods can schedule.
+#
+# Consumer mount path unchanged: hostPath /mnt/git-cache at /opt/git-cache.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: git-cache-warmer
+  namespace: kube-system
+  labels:
+    app: git-cache-warmer
+    app.kubernetes.io/name: git-cache-warmer
+    app.kubernetes.io/component: node-configuration
+spec:
+  selector:
+    matchLabels:
+      app: git-cache-warmer
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "25%"
+
+  template:
+    metadata:
+      labels:
+        app: git-cache-warmer
+
+    spec:
+      priorityClassName: system-node-critical
+
+      # Tolerate ALL taints used by Karpenter nodepools
+      tolerations:
+        # Karpenter instance-type taints (used by all nodepools)
+        - key: instance-type
+          operator: Exists
+          effect: NoSchedule
+
+        # Git cache startup taint (we remove this after warm-up)
+        - key: git-cache-not-ready
+          operator: Exists
+          effect: NoSchedule
+
+        # GPU taints
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+        # CPU architecture taints
+        - key: cpu-type
+          operator: Exists
+          effect: NoSchedule
+
+        # Karpenter default taints
+        - key: karpenter.sh/unschedulable
+          operator: Exists
+          effect: NoSchedule
+
+        # System taints
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/memory-pressure
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/pid-pressure
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/unschedulable
+          operator: Exists
+          effect: NoSchedule
+
+      # Run on Karpenter-managed runner nodes and buildkit nodes
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - github-runner
+                      - buildkit
+
+      serviceAccountName: git-cache-warmer
+
+      containers:
+        - name: git-cache
+          image: public.ecr.aws/docker/library/python:3.12-alpine
+          command: ["python3", "/scripts/daemonset.py"]
+
+          env:
+            - name: FETCH_INTERVAL
+              value: "300"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: host-mnt
+              mountPath: /mnt
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: git-cache-warmer-script
+            defaultMode: 0755
+
+        # Mount the host's /mnt so we can manage symlinks and slots
+        - name: host-mnt
+          hostPath:
+            path: /mnt
+            type: DirectoryOrCreate

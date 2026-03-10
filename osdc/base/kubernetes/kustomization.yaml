@@ -10,7 +10,7 @@ resources:
   - node-performance-tuning.yaml
   - nvidia-device-plugin.yaml
   - harbor-namespace.yaml
-  - git-cache-warmer.yaml
+  - git-cache/
   - registry-mirror-config.yaml
   # NOTE: Namespaces for modules (arc-runners, arc-systems, buildkit, etc.)
   # are created by the module's own kubernetes/ directory, not here.

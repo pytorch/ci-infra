@@ -17,6 +17,7 @@ comes from clusters.yaml — no separate env-values.yaml.
 """
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -189,7 +190,10 @@ def main():
         log_error(f"No 'arc-runners.github_config_url' configured for cluster '{cluster_id}' in clusters.yaml")
         return 1
 
-    output_dir.mkdir(exist_ok=True)
+    # Clean output dir so removed defs don't leave stale generated files
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir()
 
     template_content = template_file.read_text()
 

@@ -1,9 +1,0 @@
-# Karpenter NodePool definition: r7g.metal
-# Consolidated pool for ARM64 CPU workloads
-nodepool:
-  name: r7g-metal
-  instance_type: r7g.metal
-  arch: arm64
-  disk_size: 256
-  max_pods_per_node: 8
-  gpu: false

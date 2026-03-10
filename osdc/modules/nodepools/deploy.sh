@@ -29,14 +29,66 @@ NODEPOOLS_DEFS_DIR="$DEFS_DIR" \
 NODEPOOLS_OUTPUT_DIR="$OUTPUT_DIR" \
     uv run "$MODULE_DIR/scripts/python/generate_nodepools.py"
 
-# --- Step 2: Apply NodePools ---
-echo "Applying Karpenter NodePools..."
-for nodepool in "$OUTPUT_DIR/"*.yaml; do
-    if [[ -f "$nodepool" ]]; then
-        echo "  → $(basename "$nodepool")"
-        sed "s/CLUSTER_NAME_PLACEHOLDER/${CNAME}/g" "$nodepool" | kubectl apply -f -
+# --- Step 2: Apply NodePools (parallel) ---
+MAX_PARALLEL="${NODEPOOLS_MAX_PARALLEL:-10}"
+echo "Applying Karpenter NodePools (max ${MAX_PARALLEL} parallel)..."
+
+LOGDIR=$(mktemp -d)
+PIDS=()
+NAMES=()
+
+cleanup() {
+    for pid in "${PIDS[@]:-}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+    rm -rf "$LOGDIR"
+}
+trap cleanup EXIT
+
+shopt -s nullglob
+_generated=("$OUTPUT_DIR/"*.yaml)
+shopt -u nullglob
+if (( ${#_generated[@]} == 0 )); then
+    echo "ERROR: No generated NodePool YAML files in $OUTPUT_DIR"
+    exit 1
+fi
+
+for nodepool in "${_generated[@]}"; do
+    name=$(basename "$nodepool")
+    echo "  → ${name}"
+    (
+        sed "s/CLUSTER_NAME_PLACEHOLDER/${CNAME}/g" "$nodepool" \
+            | kubectl apply -f - \
+            > "$LOGDIR/${name}.log" 2>&1
+    ) &
+    PIDS+=($!)
+    NAMES+=("$name")
+
+    # Concurrency limiter: wait for a slot if at max
+    while (( $(jobs -rp | wc -l) >= MAX_PARALLEL )); do
+        sleep 0.2
+    done
+done
+
+# Wait for all and collect failures
+FAILED=()
+for i in "${!PIDS[@]}"; do
+    if ! wait "${PIDS[$i]}"; then
+        FAILED+=("${NAMES[$i]}")
     fi
 done
+
+# Print logs for any failures
+if (( ${#FAILED[@]} > 0 )); then
+    echo ""
+    echo "ERROR: ${#FAILED[@]} NodePool(s) failed to apply:"
+    for name in "${FAILED[@]}"; do
+        echo "  ✗ ${name}"
+        cat "$LOGDIR/${name}.log" | sed 's/^/    /'
+    done
+    exit 1
+fi
 
 echo ""
 echo "NodePools deployed."

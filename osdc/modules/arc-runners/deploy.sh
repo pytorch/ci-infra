@@ -49,24 +49,43 @@ echo "Validating runner configurations..."
 ARC_RUNNERS_OUTPUT_DIR="$OUTPUT_DIR" \
     "$MODULE_DIR/scripts/validate-runner-qos.sh"
 
-# --- Step 3: Apply ARC runner scale sets ---
+# --- Step 3: Apply ARC runner scale sets (parallel) ---
+MAX_PARALLEL="${ARC_RUNNERS_MAX_PARALLEL:-10}"
 echo ""
-echo "Deploying ARC runner scale sets..."
-for runner_config in "$OUTPUT_DIR/"*.yaml; do
-    if [[ -f "$runner_config" ]]; then
-        runner_name=$(basename "$runner_config" .yaml)
-        echo "  → ${runner_name}"
+echo "Deploying ARC runner scale sets (max ${MAX_PARALLEL} parallel)..."
 
+LOGDIR=$(mktemp -d)
+PIDS=()
+NAMES=()
+
+cleanup() {
+    for pid in "${PIDS[@]:-}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+    rm -rf "$LOGDIR"
+}
+trap cleanup EXIT
+
+# Ensure namespace exists before parallel helm installs
+kubectl create namespace arc-runners 2>/dev/null || true
+
+deploy_one_runner() {
+    local runner_config="$1"
+    local runner_name
+    runner_name=$(basename "$runner_config" .yaml)
+    local logfile="$LOGDIR/${runner_name}.log"
+
+    {
         # Apply ConfigMap (second YAML doc — job pod hook template)
         awk '/^---$/,0' "$runner_config" | kubectl apply -f -
 
         # Install Helm chart (first YAML doc — ARC scale set values)
-        tmpfile="/tmp/${runner_name}-values.yaml"
+        local tmpfile="/tmp/${runner_name}-values-$$.yaml"
         awk 'BEGIN{doc=0} /^---$/{doc++} doc==0' "$runner_config" > "$tmpfile"
 
         helm upgrade --install "arc-${runner_name}" \
             --namespace arc-runners \
-            --create-namespace \
             -f "$tmpfile" \
             --set template.spec.securityContext.runAsUser=1000 \
             --set template.spec.securityContext.runAsGroup=1000 \
@@ -76,8 +95,49 @@ for runner_config in "$OUTPUT_DIR/"*.yaml; do
             --wait
 
         rm -f "$tmpfile"
+    } > "$logfile" 2>&1
+}
+
+shopt -s nullglob
+_generated=("$OUTPUT_DIR/"*.yaml)
+shopt -u nullglob
+if (( ${#_generated[@]} == 0 )); then
+    echo "ERROR: No generated runner YAML files in $OUTPUT_DIR"
+    exit 1
+fi
+
+for runner_config in "${_generated[@]}"; do
+    runner_name=$(basename "$runner_config" .yaml)
+    echo "  → ${runner_name}"
+
+    deploy_one_runner "$runner_config" &
+    PIDS+=($!)
+    NAMES+=("$runner_name")
+
+    # Concurrency limiter: wait for a slot if at max
+    while (( $(jobs -rp | wc -l) >= MAX_PARALLEL )); do
+        sleep 0.5
+    done
+done
+
+# Wait for all and collect failures
+FAILED=()
+for i in "${!PIDS[@]}"; do
+    if ! wait "${PIDS[$i]}"; then
+        FAILED+=("${NAMES[$i]}")
     fi
 done
+
+# Print logs for any failures
+if (( ${#FAILED[@]} > 0 )); then
+    echo ""
+    echo "ERROR: ${#FAILED[@]} runner(s) failed to deploy:"
+    for name in "${FAILED[@]}"; do
+        echo "  ✗ ${name}"
+        cat "$LOGDIR/${name}.log" | sed 's/^/    /'
+    done
+    exit 1
+fi
 
 echo ""
 echo "ARC runners deployed."

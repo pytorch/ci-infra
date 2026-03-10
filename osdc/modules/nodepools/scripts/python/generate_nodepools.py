@@ -14,6 +14,7 @@ deploy.sh does sed replacement at apply time with the actual cluster name.
 """
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -46,18 +47,21 @@ def _detect_arch(instance_type, arch_hint):
     return 'amd64'
 
 
-def _compute_node_disk_size(instance_type, per_pod_disk, max_pods):
-    """Compute EBS volume size for a node based on worst-case pod packing.
+def _get_node_disk_size(nodepool_def):
+    """Return the EBS volume size for a node.
 
-    The node disk must hold ephemeral storage for all concurrent pods,
-    plus ~100Gi overhead for the OS, container images, and kubelet.
-
-    max_pods comes from the nodepool def — it's the expected max concurrent
-    pods per node based on actual runner sizing (CPU/memory/GPU constraints).
-    For GPU pools this is typically the GPU count; for CPU pools it depends
-    on the smallest runner that targets this pool.
+    Uses `node_disk_size` from the def directly. This value should be
+    pre-computed as the worst-case total: max concurrent pods (determined
+    by CPU/memory/GPU constraints) × largest per-pod disk + OS overhead.
     """
+    node_disk = nodepool_def.get('node_disk_size')
+    if node_disk:
+        return node_disk
+
+    # Legacy fallback: compute from max_pods_per_node * disk_size + 100
     os_overhead = 100  # Gi
+    max_pods = nodepool_def.get('max_pods_per_node', 10)
+    per_pod_disk = nodepool_def.get('disk_size', 100)
     return max_pods * per_pod_disk + os_overhead
 
 
@@ -66,11 +70,9 @@ def generate_nodepool_yaml(nodepool_def):
     name = nodepool_def['name']
     instance_type = nodepool_def['instance_type']
     arch = _detect_arch(instance_type, nodepool_def.get('arch'))
-    disk_size = nodepool_def.get('disk_size', 100)
     is_gpu = nodepool_def.get('gpu', False)
 
-    max_pods = nodepool_def.get('max_pods_per_node', 10)
-    node_disk_size = _compute_node_disk_size(instance_type, disk_size, max_pods)
+    node_disk_size = _get_node_disk_size(nodepool_def)
 
     # ----- Capacity block / reservation support -----
     capacity_type = nodepool_def.get('capacity_type', 'on-demand')
@@ -308,7 +310,10 @@ def main():
     defs_dir = Path(os.environ['NODEPOOLS_DEFS_DIR']) if 'NODEPOOLS_DEFS_DIR' in os.environ else module_dir / 'defs'
     output_dir = Path(os.environ['NODEPOOLS_OUTPUT_DIR']) if 'NODEPOOLS_OUTPUT_DIR' in os.environ else module_dir / 'generated'
 
-    output_dir.mkdir(exist_ok=True)
+    # Clean output dir so removed defs don't leave stale generated files
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir()
 
     def_files = sorted(defs_dir.glob('*.yaml'))
     if not def_files:
@@ -336,9 +341,8 @@ def main():
                 continue
 
             is_gpu = nodepool_def.get('gpu', False)
-            max_pods = nodepool_def.get('max_pods_per_node', 10)
-            node_disk = _compute_node_disk_size(instance_type, nodepool_def.get('disk_size', 100), max_pods)
-            log_info(f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, {nodepool_def.get('arch', 'amd64')}, pod={nodepool_def.get('disk_size', 100)}Gi, node={node_disk}Gi)")
+            node_disk = _get_node_disk_size(nodepool_def)
+            log_info(f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, {nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi)")
 
             content = generate_nodepool_yaml(nodepool_def)
             out_path = output_dir / f"{name}.yaml"

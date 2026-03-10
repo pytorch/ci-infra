@@ -1,0 +1,317 @@
+# Central git cache pod configuration.
+# Contains the rsyncd config and the Python script that manages
+# git clones on EBS and serves them via rsync to DaemonSet pods.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: git-cache-central-config
+  namespace: kube-system
+  labels:
+    app: git-cache-central
+data:
+  rsyncd.conf: |
+    uid = root
+    gid = root
+    use chroot = no
+    max connections = 50
+    timeout = 600
+    read only = yes
+    [git-cache]
+    path = /data/current
+
+  central.py: |
+    #!/usr/bin/env python3
+    """Central git cache manager.
+
+    Clones repositories from GitHub into an EBS PVC with dual-slot rotation
+    (cache-a / cache-b) and serves them via rsyncd on port 873.
+
+    Slot rotation ensures DaemonSet rsync clients always read from a
+    consistent snapshot while the central pod updates the other slot.
+    """
+
+    import logging
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        stream=sys.stdout,
+    )
+    log = logging.getLogger("central")
+
+    DATA_DIR = Path("/data")
+    SLOT_A = DATA_DIR / "cache-a"
+    SLOT_B = DATA_DIR / "cache-b"
+    CURRENT_LINK = DATA_DIR / "current"
+    RSYNCD_CONF = Path("/config/rsyncd.conf")
+    FETCH_INTERVAL = int(os.environ.get("FETCH_INTERVAL", "300"))
+
+    # Repos with submodules — cloned non-bare with --recurse-submodules.
+    # The checkout action needs .git/modules/<name>/objects/ to resolve
+    # submodule alternates via submodule.alternateLocation=superproject.
+    REPOS_FULL = [
+        "pytorch/pytorch",
+    ]
+
+    # Repos without submodules — cloned bare (lightweight).
+    REPOS_BARE = [
+        "pytorch/test-infra",
+    ]
+
+
+    def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        """Run a command, logging it and raising on failure unless check=False."""
+        log.info("$ %s", " ".join(cmd))
+        kwargs.setdefault("check", True)
+        return subprocess.run(cmd, **kwargs)
+
+
+    def install_deps() -> None:
+        """Install git and rsync via apk."""
+        log.info("Installing dependencies...")
+        run(["apk", "add", "--no-cache", "git", "rsync"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = run(["git", "--version"], capture_output=True, text=True)
+        log.info("Git version: %s", result.stdout.strip())
+
+
+    def active_slot() -> Path | None:
+        """Return the currently active slot, or None if no valid link."""
+        if CURRENT_LINK.is_symlink():
+            target = CURRENT_LINK.resolve()
+            if target == SLOT_A.resolve() or target == SLOT_B.resolve():
+                return target
+        return None
+
+
+    def staging_slot() -> Path:
+        """Return the slot NOT currently active (for updates)."""
+        current = active_slot()
+        if current and current == SLOT_A.resolve():
+            return SLOT_B
+        return SLOT_A
+
+
+    def slot_is_valid(slot: Path) -> bool:
+        """Check if a slot contains a populated cache."""
+        # Check for at least one full or bare repo
+        for repo in REPOS_FULL:
+            org, name = repo.split("/")
+            if (slot / org / name / ".git").is_dir():
+                return True
+        for repo in REPOS_BARE:
+            org, name = repo.split("/")
+            if (slot / org / f"{name}.git" / "objects").is_dir():
+                return True
+        return False
+
+
+    def write_gitconfig(slot: Path) -> None:
+        """Write .gitconfig with safe.directory=* for job pods."""
+        gitconfig = slot / ".gitconfig"
+        gitconfig.write_text("[safe]\n\tdirectory = *\n")
+        log.info("Wrote %s", gitconfig)
+
+
+    def clone_full_repo(slot: Path, repo: str) -> None:
+        """Clone a repo with submodules into the slot."""
+        org, name = repo.split("/")
+        repo_dir = slot / org / name
+        if (repo_dir / ".git").is_dir():
+            log.info("Already cloned: %s", repo)
+            return
+
+        log.info("Cloning %s with submodules...", repo)
+        (slot / org).mkdir(parents=True, exist_ok=True)
+        for attempt in range(1, 4):
+            try:
+                run(["git", "clone", "--recurse-submodules", "--jobs=4",
+                     f"https://github.com/{repo}.git", str(repo_dir)])
+                log.info("Cloned %s (attempt %d)", repo, attempt)
+                return
+            except subprocess.CalledProcessError:
+                log.warning("Clone attempt %d/3 failed for %s", attempt, repo)
+                if repo_dir.exists():
+                    shutil.rmtree(repo_dir)
+                if attempt < 3:
+                    time.sleep(10)
+        log.error("Failed to clone %s after 3 attempts", repo)
+
+
+    def clone_bare_repo(slot: Path, repo: str) -> None:
+        """Clone a repo as a bare repo into the slot."""
+        org, name = repo.split("/")
+        repo_dir = slot / org / f"{name}.git"
+        if (repo_dir / "objects").is_dir() and _bare_has_refs(repo_dir):
+            log.info("Already cloned: %s (bare)", repo)
+            return
+
+        log.info("Cloning %s (bare)...", repo)
+        (slot / org).mkdir(parents=True, exist_ok=True)
+        if not (repo_dir / "objects").is_dir():
+            run(["git", "init", "--bare", str(repo_dir)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run(["git", "-C", str(repo_dir), "remote", "add", "origin",
+                 f"https://github.com/{repo}.git"], check=False)
+
+        for attempt in range(1, 4):
+            try:
+                run(["git", "-C", str(repo_dir), "fetch", "origin"])
+                log.info("Fetched %s (bare, attempt %d)", repo, attempt)
+                return
+            except subprocess.CalledProcessError:
+                log.warning("Fetch attempt %d/3 failed for %s", attempt, repo)
+                if attempt < 3:
+                    time.sleep(10)
+        log.error("Failed to fetch %s after 3 attempts", repo)
+
+
+    def _bare_has_refs(repo_dir: Path) -> bool:
+        """Check if a bare repo has any refs."""
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "show-ref", "--quiet"],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+
+    def populate_slot(slot: Path) -> None:
+        """Clone all repos into a slot."""
+        slot.mkdir(parents=True, exist_ok=True)
+        for repo in REPOS_FULL:
+            clone_full_repo(slot, repo)
+        for repo in REPOS_BARE:
+            clone_bare_repo(slot, repo)
+        write_gitconfig(slot)
+
+
+    def set_current(slot: Path) -> None:
+        """Atomically swap the /data/current symlink to point to slot."""
+        tmp_link = DATA_DIR / "current.tmp"
+        tmp_link.unlink(missing_ok=True)
+        tmp_link.symlink_to(slot)
+        tmp_link.rename(CURRENT_LINK)
+        log.info("Symlink /data/current -> %s", slot)
+
+
+    def fetch_full_repo(repo_dir: Path, repo: str) -> None:
+        """Fetch updates for a full (non-bare) repo with submodules."""
+        if not (repo_dir / ".git").is_dir():
+            return
+        try:
+            run(["git", "-C", str(repo_dir), "fetch", "origin",
+                 "--prune", "--tags"])
+            log.info("Fetched %s", repo)
+        except subprocess.CalledProcessError:
+            log.warning("Fetch failed for %s (will retry next cycle)", repo)
+            return
+
+        try:
+            run(["git", "-C", str(repo_dir), "submodule", "update",
+                 "--init", "--recursive", "--jobs=4"])
+            log.info("Updated submodules for %s", repo)
+        except subprocess.CalledProcessError:
+            log.warning("Submodule update failed for %s (will retry next cycle)", repo)
+
+
+    def fetch_bare_repo_update(repo_dir: Path, repo: str) -> None:
+        """Fetch updates for a bare repo."""
+        if not (repo_dir / "objects").is_dir():
+            return
+        try:
+            run(["git", "-C", str(repo_dir), "fetch", "origin",
+                 "--prune", "--tags"])
+            log.info("Fetched %s", repo)
+        except subprocess.CalledProcessError:
+            log.warning("Fetch failed for %s (will retry next cycle)", repo)
+
+
+    def rsync_slot(src: Path, dst: Path) -> None:
+        """Rsync from src slot to dst slot (local copy)."""
+        dst.mkdir(parents=True, exist_ok=True)
+        run(["rsync", "-a", "--delete", f"{src}/", f"{dst}/"])
+        log.info("Rsynced %s -> %s", src, dst)
+
+
+    def start_rsyncd() -> subprocess.Popen:
+        """Start rsync daemon in the background."""
+        log.info("Starting rsyncd on port 873...")
+        # stdout/stderr inherit from parent so rsyncd logs appear in kubectl logs.
+        # Do NOT use subprocess.PIPE — nobody reads it, so the 64KB pipe buffer
+        # fills and rsyncd blocks (deadlock).
+        proc = subprocess.Popen(
+            ["rsync", "--daemon", "--no-detach", f"--config={RSYNCD_CONF}"],
+        )
+        log.info("rsyncd started (pid %d)", proc.pid)
+        return proc
+
+
+    def main() -> None:
+        install_deps()
+
+        log.info("Data directory: %s", DATA_DIR)
+        log.info("Fetch interval: %ds", FETCH_INTERVAL)
+
+        # Phase 1: Ensure we have a valid active slot
+        current = active_slot()
+        if current and slot_is_valid(current):
+            log.info("Existing cache found at %s", current)
+        else:
+            # No valid cache — clone from GitHub into slot-a
+            log.info("No valid cache found, cloning from GitHub...")
+            populate_slot(SLOT_A)
+            set_current(SLOT_A)
+
+        # Phase 2: Start rsyncd to serve the cache
+        rsyncd = start_rsyncd()
+
+        # Phase 3: Periodic update loop
+        # Rsync active -> staging, git fetch in staging, swap symlink
+        while True:
+            time.sleep(FETCH_INTERVAL)
+            log.info("Starting periodic update cycle...")
+
+            # Check rsyncd is still alive
+            if rsyncd.poll() is not None:
+                log.warning("rsyncd died (rc=%d), restarting...", rsyncd.returncode)
+                rsyncd = start_rsyncd()
+
+            src = active_slot() or SLOT_A
+            dst = staging_slot()
+
+            # Copy current -> staging
+            rsync_slot(src, dst)
+
+            # Fetch updates in staging slot
+            for repo in REPOS_FULL:
+                org, name = repo.split("/")
+                repo_dir = dst / org / name
+                if (repo_dir / ".git").is_dir():
+                    fetch_full_repo(repo_dir, repo)
+                else:
+                    clone_full_repo(dst, repo)
+
+            for repo in REPOS_BARE:
+                org, name = repo.split("/")
+                repo_dir = dst / org / f"{name}.git"
+                if (repo_dir / "objects").is_dir():
+                    fetch_bare_repo_update(repo_dir, repo)
+                else:
+                    clone_bare_repo(dst, repo)
+
+            write_gitconfig(dst)
+
+            # Atomic swap
+            set_current(dst)
+            log.info("Update cycle complete — active slot: %s", dst)
+
+
+    if __name__ == "__main__":
+        main()

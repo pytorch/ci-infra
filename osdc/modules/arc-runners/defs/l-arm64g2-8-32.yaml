@@ -1,9 +1,0 @@
-# ARC runner definition: l-arm64g2-8-32
-# Instance type: r7g.metal (pool: arm-cpu)
-runner:
-  name: l-arm64g2-8-32
-  instance_type: r7g.metal
-  disk_size: 256
-  vcpu: 7
-  memory: 29Gi
-  gpu: 0

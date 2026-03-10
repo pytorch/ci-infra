@@ -1,0 +1,16 @@
+# PodDisruptionBudget for the central git cache pod.
+# Prevents voluntary disruptions (node drains, cluster upgrades) from
+# killing the single-replica central pod, which would block all DaemonSet
+# syncs and leave new nodes stuck with the git-cache-not-ready taint.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: git-cache-central
+  namespace: kube-system
+  labels:
+    app: git-cache-central
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: git-cache-central

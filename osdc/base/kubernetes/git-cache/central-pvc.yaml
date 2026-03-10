@@ -1,0 +1,17 @@
+# Persistent storage for the central git cache pod.
+# Stores all cached repositories so they survive pod restarts.
+# Uses gp3 EBS (ReadWriteOnce) — requires Recreate deployment strategy.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: git-cache-central-data
+  namespace: kube-system
+  labels:
+    app: git-cache-central
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 50Gi

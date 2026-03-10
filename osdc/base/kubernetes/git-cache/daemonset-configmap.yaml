@@ -1,0 +1,279 @@
+# DaemonSet script for the git cache warmer.
+# Rsyncs from the central pod to local NVMe with dual-slot rotation,
+# then removes the git-cache-not-ready startup taint.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: git-cache-warmer-script
+  namespace: kube-system
+  labels:
+    app: git-cache-warmer
+data:
+  daemonset.py: |
+    #!/usr/bin/env python3
+    """Git cache DaemonSet agent.
+
+    Rsyncs the git cache from the central pod to local NVMe storage with
+    dual-slot rotation (cache-a / cache-b). After the initial sync,
+    removes the git-cache-not-ready startup taint from the node so that
+    workflow job pods can schedule.
+
+    Handles migration from the old single-directory layout: if /mnt/git-cache
+    is a plain directory (not a symlink), its contents are moved into slot-a
+    and replaced with a symlink.
+    """
+
+    import json
+    import logging
+    import os
+    import shutil
+    import socket
+    import subprocess
+    import sys
+    import time
+    import urllib.request
+    from pathlib import Path
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        stream=sys.stdout,
+    )
+    log = logging.getLogger("daemonset")
+
+    # Mount points — /mnt is the host's /mnt via hostPath
+    MNT = Path("/mnt")
+    SLOT_A = MNT / "git-cache-a"
+    SLOT_B = MNT / "git-cache-b"
+    CACHE_LINK = MNT / "git-cache"
+
+    RSYNC_SOURCE = "rsync://git-cache-central.kube-system.svc.cluster.local/git-cache/"
+    CENTRAL_HOST = "git-cache-central.kube-system.svc.cluster.local"
+    CENTRAL_PORT = 873
+
+    FETCH_INTERVAL = int(os.environ.get("FETCH_INTERVAL", "300"))
+    TAINT_KEY = "git-cache-not-ready"
+    NODE_NAME = os.environ.get("NODE_NAME", "")
+
+    # Kubernetes API for taint removal
+    K8S_API = "https://kubernetes.default.svc"
+    TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+
+    def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        """Run a command, logging it and raising on failure unless check=False."""
+        log.info("$ %s", " ".join(cmd))
+        kwargs.setdefault("check", True)
+        return subprocess.run(cmd, **kwargs)
+
+
+    def install_deps() -> None:
+        """Install rsync via apk."""
+        log.info("Installing dependencies...")
+        run(["apk", "add", "--no-cache", "rsync"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+    def wait_for_central(timeout: int = 600) -> None:
+        """Wait for the central pod's rsyncd to accept TCP connections."""
+        log.info("Waiting for central pod at %s:%d...", CENTRAL_HOST, CENTRAL_PORT)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                sock = socket.create_connection((CENTRAL_HOST, CENTRAL_PORT), timeout=5)
+                sock.close()
+                log.info("Central pod is ready")
+                return
+            except (socket.timeout, ConnectionRefusedError, OSError):
+                time.sleep(5)
+        log.error("Central pod not ready after %ds, proceeding anyway", timeout)
+
+
+    def active_slot() -> Path | None:
+        """Return the currently active slot via the symlink, or None."""
+        if CACHE_LINK.is_symlink():
+            target = CACHE_LINK.resolve()
+            if target == SLOT_A.resolve() or target == SLOT_B.resolve():
+                return target
+        return None
+
+
+    def staging_slot() -> Path:
+        """Return the slot NOT currently active."""
+        current = active_slot()
+        if current and current == SLOT_A.resolve():
+            return SLOT_B
+        return SLOT_A
+
+
+    def set_current(slot: Path) -> None:
+        """Atomically swap the /mnt/git-cache symlink to point to slot."""
+        tmp_link = MNT / "git-cache.tmp"
+        tmp_link.unlink(missing_ok=True)
+        tmp_link.symlink_to(slot)
+        tmp_link.rename(CACHE_LINK)
+        log.info("Symlink /mnt/git-cache -> %s", slot)
+
+
+    def migrate_old_cache() -> None:
+        """Migrate old single-directory cache to slot-a.
+
+        If /mnt/git-cache is a plain directory (old layout), copy its
+        contents into slot-a, then replace the directory with a symlink.
+        Uses a two-phase approach: copy first, verify, then remove old dir.
+        """
+        if CACHE_LINK.is_symlink():
+            return  # Already migrated
+        if not CACHE_LINK.is_dir():
+            return  # Nothing to migrate
+
+        log.info("Migrating old cache directory to slot-a...")
+        SLOT_A.mkdir(parents=True, exist_ok=True)
+
+        # Phase 1: Copy old cache into slot-a (preserves original on failure)
+        run(["rsync", "-a", f"{CACHE_LINK}/", f"{SLOT_A}/"])
+
+        # Phase 2: Remove old directory and replace with symlink
+        shutil.rmtree(CACHE_LINK)
+        set_current(SLOT_A)
+        log.info("Migration complete: /mnt/git-cache -> %s", SLOT_A)
+
+
+    def rsync_from_central(dst: Path) -> bool:
+        """Rsync from the central pod to a local slot. Returns True on success."""
+        dst.mkdir(parents=True, exist_ok=True)
+        try:
+            run(["rsync", "-a", "--delete", RSYNC_SOURCE, f"{dst}/"])
+            log.info("Rsynced from central -> %s", dst)
+            return True
+        except subprocess.CalledProcessError:
+            log.warning("Rsync from central failed")
+            return False
+
+
+    def remove_startup_taint() -> None:
+        """Remove the git-cache-not-ready taint from this node via the K8s API.
+
+        Uses JSON Patch (RFC 6902) to remove only our specific taint, avoiding
+        race conditions with other taint managers (Karpenter, kubelet, etc.)
+        that could occur with a merge patch replacing the entire taints array.
+        """
+        import ssl
+
+        if not NODE_NAME:
+            log.warning("NODE_NAME not set, cannot remove startup taint")
+            return
+
+        if not TOKEN_PATH.exists():
+            log.warning("ServiceAccount token not found, cannot remove startup taint")
+            return
+
+        token = TOKEN_PATH.read_text().strip()
+        ctx = ssl.create_default_context(cafile=CA_PATH)
+
+        # Get current node state
+        try:
+            req = urllib.request.Request(
+                f"{K8S_API}/api/v1/nodes/{NODE_NAME}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urllib.request.urlopen(req, context=ctx) as resp:
+                node = json.loads(resp.read())
+        except Exception as exc:
+            log.warning("Failed to GET node %s: %s", NODE_NAME, exc)
+            return
+
+        taints = node.get("spec", {}).get("taints") or []
+
+        # Find the index of our taint for a targeted JSON Patch removal
+        taint_index = None
+        for i, t in enumerate(taints):
+            if t.get("key") == TAINT_KEY:
+                taint_index = i
+                break
+
+        if taint_index is None:
+            log.info("Startup taint already absent from %s", NODE_NAME)
+            return
+
+        # Use JSON Patch to remove only our taint by index — does not
+        # interfere with taints added/removed by other controllers.
+        patch_body = json.dumps([
+            {"op": "test", "path": f"/spec/taints/{taint_index}/key",
+             "value": TAINT_KEY},
+            {"op": "remove", "path": f"/spec/taints/{taint_index}"},
+        ]).encode()
+
+        try:
+            req = urllib.request.Request(
+                f"{K8S_API}/api/v1/nodes/{NODE_NAME}",
+                data=patch_body,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json-patch+json",
+                },
+                method="PATCH",
+            )
+            with urllib.request.urlopen(req, context=ctx) as resp:
+                if resp.status == 200:
+                    log.info("Removed %s taint from node %s", TAINT_KEY, NODE_NAME)
+                else:
+                    log.warning("Failed to remove taint (HTTP %d)", resp.status)
+        except Exception as exc:
+            log.warning("Failed to PATCH node %s: %s", NODE_NAME, exc)
+
+
+    def main() -> None:
+        install_deps()
+
+        log.info("Node: %s", NODE_NAME or "unknown")
+        log.info("Fetch interval: %ds", FETCH_INTERVAL)
+
+        # Phase 1: Wait for central pod
+        wait_for_central()
+
+        # Phase 2: Handle migration from old layout
+        migrate_old_cache()
+
+        # Phase 3: Initial sync — retry until we have a valid cache.
+        # Do NOT remove the startup taint until a successful sync, otherwise
+        # runner pods schedule onto a node with an empty/broken cache.
+        has_cache = active_slot() is not None
+        if not has_cache:
+            retry_delay = 30
+            while True:
+                dst = staging_slot()
+                if rsync_from_central(dst):
+                    set_current(dst)
+                    has_cache = True
+                    break
+                log.warning(
+                    "Initial sync failed, retrying in %ds...", retry_delay
+                )
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, FETCH_INTERVAL)
+        else:
+            # Already have a cache (migration or previous run) — sync in background
+            dst = staging_slot()
+            if rsync_from_central(dst):
+                set_current(dst)
+
+        # Phase 4: Remove startup taint (only reached after successful sync)
+        remove_startup_taint()
+
+        # Phase 5: Periodic refresh loop
+        while True:
+            time.sleep(FETCH_INTERVAL)
+            log.info("Starting periodic sync cycle...")
+
+            dst = staging_slot()
+            if rsync_from_central(dst):
+                set_current(dst)
+
+            log.info("Sync cycle complete")
+
+
+    if __name__ == "__main__":
+        main()
