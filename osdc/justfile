@@ -181,13 +181,13 @@ deploy-base cluster:
     {{UPSTREAM}}/modules/eks/scripts/mirror-images.sh "$CLUSTER"
 
     echo ""
+    echo "━━━ BASE: Kubernetes resources ━━━"
+    kubectl apply -k {{UPSTREAM}}/base/kubernetes/
+
+    echo ""
     echo "━━━ BASE: Deploy Harbor ━━━"
     cd "{{ROOT}}"
     just _deploy-harbor "$CLUSTER"
-
-    echo ""
-    echo "━━━ BASE: Kubernetes resources ━━━"
-    kubectl apply -k {{UPSTREAM}}/base/kubernetes/
 
     echo ""
     echo "Base deployment complete."
@@ -411,8 +411,8 @@ _deploy-harbor cluster:
             --set registry.replicas="${HARBOR_REGISTRY_REPLICAS}" \
             --timeout 15m \
             --wait \
-            --burst-limit 500 \
-            --qps 50 \
+            --burst-limit 10000 \
+            --qps 500 \
             harbor/harbor \
             --version 1.18.2; then
             break
