@@ -167,9 +167,9 @@ def main():
     script_dir = Path(__file__).parent
     module_dir = script_dir.parent.parent
     repo_root = Path(os.environ["OSDC_ROOT"]) if "OSDC_ROOT" in os.environ else module_dir.parent.parent
-    defs_dir = module_dir / 'defs'
-    template_file = module_dir / 'templates' / 'runner.yaml.tpl'
-    output_dir = module_dir / 'generated'
+    defs_dir = Path(os.environ['ARC_RUNNERS_DEFS_DIR']) if 'ARC_RUNNERS_DEFS_DIR' in os.environ else module_dir / 'defs'
+    template_file = Path(os.environ['ARC_RUNNERS_TEMPLATE']) if 'ARC_RUNNERS_TEMPLATE' in os.environ else module_dir / 'templates' / 'runner.yaml.tpl'
+    output_dir = Path(os.environ['ARC_RUNNERS_OUTPUT_DIR']) if 'ARC_RUNNERS_OUTPUT_DIR' in os.environ else module_dir / 'generated'
 
     if not template_file.exists():
         log_error(f"Template not found: {template_file}")

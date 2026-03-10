@@ -13,6 +13,7 @@ CLUSTER_NAME_PLACEHOLDER is used everywhere a cluster name would go —
 deploy.sh does sed replacement at apply time with the actual cluster name.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -71,6 +72,10 @@ def generate_nodepool_yaml(nodepool_def):
     max_pods = nodepool_def.get('max_pods_per_node', 10)
     node_disk_size = _compute_node_disk_size(instance_type, disk_size, max_pods)
 
+    # ----- Capacity block / reservation support -----
+    capacity_type = nodepool_def.get('capacity_type', 'on-demand')
+    capacity_reservation_ids = nodepool_def.get('capacity_reservation_ids', [])
+
     # ----- GPU vs CPU settings -----
     if is_gpu:
         ami_family_block = '  amiFamily: AL2023'
@@ -107,6 +112,16 @@ def generate_nodepool_yaml(nodepool_def):
         gpu_setup = ''
         gpu_tags = ''
 
+    # ----- Capacity reservation block (EC2NodeClass) -----
+    if capacity_reservation_ids:
+        cr_lines = '\n'.join(f'    - id: "{cr_id}"' for cr_id in capacity_reservation_ids)
+        capacity_reservation_block = f"""
+  capacityReservationSelectorTerms:
+{cr_lines}
+"""
+    else:
+        capacity_reservation_block = '\n'
+
     # ----- Build YAML -----
     yaml_content = f"""# Karpenter NodePool + EC2NodeClass: {instance_type}
 # Auto-generated from defs/{name}.yaml — do not edit by hand.
@@ -138,7 +153,7 @@ spec:
           values: ["linux"]
         - key: karpenter.sh/capacity-type
           operator: In
-          values: ["on-demand"]
+          values: ["{capacity_type}"]
         - key: node.kubernetes.io/instance-type
           operator: In
           values:
@@ -177,7 +192,7 @@ spec:
         karpenter.sh/discovery: "CLUSTER_NAME_PLACEHOLDER"
 
   role: "CLUSTER_NAME_PLACEHOLDER-node-role"
-
+{capacity_reservation_block}\
   userData: |
     MIME-Version: 1.0
     Content-Type: multipart/mixed; boundary="==BOUNDARY=="
@@ -290,8 +305,8 @@ spec:
 def main():
     script_dir = Path(__file__).parent
     module_dir = script_dir.parent.parent
-    defs_dir = module_dir / 'defs'
-    output_dir = module_dir / 'generated'
+    defs_dir = Path(os.environ['NODEPOOLS_DEFS_DIR']) if 'NODEPOOLS_DEFS_DIR' in os.environ else module_dir / 'defs'
+    output_dir = Path(os.environ['NODEPOOLS_OUTPUT_DIR']) if 'NODEPOOLS_OUTPUT_DIR' in os.environ else module_dir / 'generated'
 
     output_dir.mkdir(exist_ok=True)
 

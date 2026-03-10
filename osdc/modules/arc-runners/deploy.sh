@@ -8,6 +8,11 @@ set -euo pipefail
 # Requires: 'arc' module must be deployed first (ARC controller).
 # Generates ARC runner scale set configs from defs + template,
 # then installs each as a Helm release.
+#
+# Environment (optional — consumers can override to use local defs):
+#   ARC_RUNNERS_DEFS_DIR    — directory containing runner definitions
+#   ARC_RUNNERS_OUTPUT_DIR  — directory for generated runner configs
+#   ARC_RUNNERS_TEMPLATE    — path to runner.yaml.tpl template
 
 CLUSTER="$1"
 CNAME="$2"
@@ -17,6 +22,11 @@ REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
+
+# Allow consumers to override defs, output, and template paths
+DEFS_DIR="${ARC_RUNNERS_DEFS_DIR:-$MODULE_DIR/defs}"
+OUTPUT_DIR="${ARC_RUNNERS_OUTPUT_DIR:-$MODULE_DIR/generated}"
+TEMPLATE="${ARC_RUNNERS_TEMPLATE:-$MODULE_DIR/templates/runner.yaml.tpl}"
 
 # --- Preflight: ARC module must be enabled ---
 if ! uv run "$CFG" "$CLUSTER" has-module arc; then
@@ -28,17 +38,21 @@ fi
 
 # --- Step 1: Generate ARC runner configs ---
 echo "Generating ARC runner configs from definitions..."
-uv run "$MODULE_DIR/scripts/python/generate_runners.py" "$CLUSTER"
+ARC_RUNNERS_DEFS_DIR="$DEFS_DIR" \
+ARC_RUNNERS_OUTPUT_DIR="$OUTPUT_DIR" \
+ARC_RUNNERS_TEMPLATE="$TEMPLATE" \
+    uv run "$MODULE_DIR/scripts/python/generate_runners.py" "$CLUSTER"
 
 # --- Step 2: Validate runner configs (Guaranteed QoS) ---
 echo ""
 echo "Validating runner configurations..."
-"$MODULE_DIR/scripts/validate-runner-qos.sh"
+ARC_RUNNERS_OUTPUT_DIR="$OUTPUT_DIR" \
+    "$MODULE_DIR/scripts/validate-runner-qos.sh"
 
 # --- Step 3: Apply ARC runner scale sets ---
 echo ""
 echo "Deploying ARC runner scale sets..."
-for runner_config in "$MODULE_DIR/generated/"*.yaml; do
+for runner_config in "$OUTPUT_DIR/"*.yaml; do
     if [[ -f "$runner_config" ]]; then
         runner_name=$(basename "$runner_config" .yaml)
         echo "  → ${runner_name}"
