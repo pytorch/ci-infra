@@ -1,0 +1,9 @@
+# ARC runner definition: l-x86aavx2-16-64-a10g
+# Instance type: g5.48xlarge (pool: x86-a10g)
+runner:
+  name: l-x86aavx2-16-64-a10g
+  instance_type: g5.48xlarge
+  disk_size: 150
+  vcpu: 16
+  memory: 64Gi
+  gpu: 1

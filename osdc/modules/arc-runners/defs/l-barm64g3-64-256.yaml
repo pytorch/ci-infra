@@ -1,0 +1,9 @@
+# ARC runner definition: l-barm64g3-64-256
+# Instance type: r7g.metal (pool: arm-cpu)
+runner:
+  name: l-barm64g3-64-256
+  instance_type: r7g.metal
+  disk_size: 256
+  vcpu: 63
+  memory: 253Gi
+  gpu: 0

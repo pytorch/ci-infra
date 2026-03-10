@@ -1,0 +1,9 @@
+# ARC runner definition: l-x86iavx512-16-64-t4
+# Instance type: g4dn.metal (pool: x86-t4)
+runner:
+  name: l-x86iavx512-16-64-t4
+  instance_type: g4dn.metal
+  disk_size: 150
+  vcpu: 16
+  memory: 64Gi
+  gpu: 1

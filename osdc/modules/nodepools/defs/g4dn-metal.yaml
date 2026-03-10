@@ -1,0 +1,9 @@
+# Karpenter NodePool definition: g4dn.metal
+# Consolidated pool for GPU G4DN workloads
+nodepool:
+  name: g4dn-metal
+  instance_type: g4dn.metal
+  arch: amd64
+  disk_size: 150
+  max_pods_per_node: 8
+  gpu: true

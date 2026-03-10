@@ -1,0 +1,9 @@
+# ARC runner definition: l-bx86iavx512-96-384-t4-8
+# Instance type: g4dn.metal (pool: x86-t4)
+runner:
+  name: l-bx86iavx512-96-384-t4-8
+  instance_type: g4dn.metal
+  disk_size: 150
+  vcpu: 95
+  memory: 366Gi
+  gpu: 8

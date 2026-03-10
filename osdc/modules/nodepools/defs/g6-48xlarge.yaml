@@ -1,0 +1,9 @@
+# Karpenter NodePool definition: g6.48xlarge
+# Consolidated pool for GPU G6 workloads
+nodepool:
+  name: g6-48xlarge
+  instance_type: g6.48xlarge
+  arch: amd64
+  disk_size: 150
+  max_pods_per_node: 8
+  gpu: true
