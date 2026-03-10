@@ -1,0 +1,9 @@
+# Karpenter NodePool definition: r5.24xlarge
+# Consolidated pool for AMD64 CPU workloads
+# Node disk: worst case 12x 200Gi pods + 100Gi OS = 2500Gi
+nodepool:
+  name: r5-24xlarge
+  instance_type: r5.24xlarge
+  arch: amd64
+  node_disk_size: 2500
+  gpu: false

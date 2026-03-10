@@ -1,9 +1,0 @@
-# ARC runner definition: pytorch-gpu-t4
-# Scheduled on NodePool: g4dn-12xlarge (from nodepools module)
-runner:
-  name: pytorch-gpu-t4
-  instance_type: g4dn.12xlarge
-  disk_size: 200
-  vcpu: 8
-  memory: 32Gi
-  gpu: 1

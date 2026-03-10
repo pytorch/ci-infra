@@ -1,0 +1,38 @@
+# RBAC for git-cache-warmer: allows DaemonSet to read and patch nodes
+# to remove the git-cache-not-ready startup taint after warm-up.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: git-cache-warmer
+  namespace: kube-system
+  labels:
+    app: git-cache-warmer
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: git-cache-warmer
+  labels:
+    app: git-cache-warmer
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: git-cache-warmer
+  labels:
+    app: git-cache-warmer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: git-cache-warmer
+subjects:
+  - kind: ServiceAccount
+    name: git-cache-warmer
+    namespace: kube-system

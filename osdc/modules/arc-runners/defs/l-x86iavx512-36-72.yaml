@@ -1,0 +1,9 @@
+# ARC runner definition: l-x86iavx512-36-72
+# Instance type: r5.24xlarge (pool: x86-cpu)
+runner:
+  name: l-x86iavx512-36-72
+  instance_type: r5.24xlarge
+  disk_size: 200
+  vcpu: 36
+  memory: 72Gi
+  gpu: 0

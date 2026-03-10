@@ -188,7 +188,7 @@ Single parameterized root at `modules/eks/terraform/`. No per-environment direct
 Base nodes: `CriticalAddonsOnly=true:NoSchedule`. All base workloads (Harbor, DaemonSets, Karpenter, control plane) must tolerate this.
 
 GPU nodes: `nvidia.com/gpu` + `instance-type` taints.
-BuildKit nodes: `instance-type` taints (c7gd.16xlarge arm64, m6id.24xlarge amd64).
+BuildKit nodes: `instance-type` taints (instance type varies per cluster, see `clusters.yaml` buildkit config).
 
 Always verify tolerations match the target nodes' taints when adding new workloads.
 
@@ -213,11 +213,12 @@ All self-hosted runner pods run with `ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER=true`
 BuildKit (`moby/buildkit:v0.27.1`) runs as two Deployments in the `buildkit` namespace — one per architecture. Runner job pods invoke `buildctl` — no Kubernetes API access required.
 
 - **Architecture**: Dual-arch fleet with per-arch Deployments and Services
-  - `buildkitd-arm64` — c7gd.16xlarge (Graviton3), Service: `buildkitd-arm64.buildkit:1234`
-  - `buildkitd-amd64` — m6id.24xlarge (Intel), Service: `buildkitd-amd64.buildkit:1234`
+  - `buildkitd-arm64` — Graviton (default: m8gd.24xlarge), Service: `buildkitd-arm64.buildkit:1234`
+  - `buildkitd-amd64` — Intel (default: m6id.24xlarge), Service: `buildkitd-amd64.buildkit:1234`
   - `buildkitd` — combined Service (round-robin across both arches, for arch-agnostic builds)
-- **Sizing**: 47 vCPU + 188Gi per amd64 pod, 30 vCPU + 60Gi per arm64 pod (Guaranteed QoS, static CPU pinning), `max-parallelism=1` (one build at a time per pod), 2 pods per node
-- **Scaling**: Staging 2+2 pods (1 node per arch), Production 4+4 pods (2 nodes per arch)
+- **Sizing**: Dynamically computed by `modules/buildkit/scripts/python/generate_buildkit.py` from instance specs. Guaranteed QoS (requests == limits), static CPU pinning, `max-parallelism=1` (one build at a time per pod), 2 pods per node
+- **Instance types**: Configurable via `clusters.yaml` (`buildkit.arm64_instance_type`, `buildkit.amd64_instance_type`)
+- **Scaling**: Configurable via `clusters.yaml` (`buildkit.replicas_per_arch`, default 4)
 - **Storage**: NVMe instance storage (RAID0) for build cache + git object cache
 - **Registry mirrors**: `buildkitd.toml` routes `FROM` image pulls through Harbor (same as containerd on runner nodes)
 - **Network access**: NetworkPolicy restricts ingress to pods from `arc-runners` namespace only

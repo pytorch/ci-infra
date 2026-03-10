@@ -1,0 +1,9 @@
+# ARC runner definition: l-arm64g2-6-32
+# Instance type: r7g.16xlarge (pool: arm-cpu)
+runner:
+  name: l-arm64g2-6-32
+  instance_type: r7g.16xlarge
+  disk_size: 256
+  vcpu: 6
+  memory: 29Gi
+  gpu: 0

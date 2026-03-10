@@ -1,9 +1,9 @@
-# Karpenter NodePool definition: g4dn.12xlarge (GPU compute, 4x T4)
-# Used by: pytorch-gpu-t4
+# Karpenter NodePool definition: g4dn.12xlarge
+# Consolidated pool for x86 T4 GPU workloads (1-4 GPUs)
+# Node disk: worst case 3x 150Gi pods + 100Gi OS = 550Gi
 nodepool:
   name: g4dn-12xlarge
   instance_type: g4dn.12xlarge
   arch: amd64
-  disk_size: 200
-  max_pods_per_node: 4
+  node_disk_size: 550
   gpu: true

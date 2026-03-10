@@ -89,7 +89,8 @@ resource "aws_iam_policy" "karpenter_controller" {
           "arn:aws:ec2:${var.aws_region}::image/*",
           "arn:aws:ec2:${var.aws_region}::snapshot/*",
           "arn:aws:ec2:${var.aws_region}:*:subnet/*",
-          "arn:aws:ec2:${var.aws_region}:*:spot-instances-request/*"
+          "arn:aws:ec2:${var.aws_region}:*:spot-instances-request/*",
+          "arn:aws:ec2:${var.aws_region}:*:capacity-reservation/*"
         ]
       },
       {
@@ -183,6 +184,7 @@ resource "aws_iam_policy" "karpenter_controller" {
         Effect = "Allow"
         Action = [
           "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeCapacityReservations",
           "ec2:DescribeImages",
           "ec2:DescribeInstances",
           "ec2:DescribeInstanceTypeOfferings",

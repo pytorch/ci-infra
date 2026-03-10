@@ -1,0 +1,9 @@
+# Karpenter NodePool definition: r7g.16xlarge
+# Consolidated pool for ARM64 CPU workloads
+# Node disk: worst case 10x 256Gi pods + 100Gi OS = 2660Gi
+nodepool:
+  name: r7g-16xlarge
+  instance_type: r7g.16xlarge
+  arch: arm64
+  node_disk_size: 2660
+  gpu: false

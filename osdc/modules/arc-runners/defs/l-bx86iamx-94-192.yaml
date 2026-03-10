@@ -1,0 +1,9 @@
+# ARC runner definition: l-bx86iamx-94-192
+# Instance type: r5.24xlarge (pool: x86-cpu)
+runner:
+  name: l-bx86iamx-94-192
+  instance_type: r5.24xlarge
+  disk_size: 200
+  vcpu: 94
+  memory: 192Gi
+  gpu: 0

@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-GENERATED_DIR="$MODULE_DIR/generated"
+GENERATED_DIR="${ARC_RUNNERS_OUTPUT_DIR:-$MODULE_DIR/generated}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

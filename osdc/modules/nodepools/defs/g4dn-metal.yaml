@@ -1,0 +1,9 @@
+# Karpenter NodePool definition: g4dn.metal
+# Only for 8xT4 GPU workloads (no non-metal alternative with 8 GPUs)
+# Node disk: worst case 1x 150Gi pod + 100Gi OS = 250Gi
+nodepool:
+  name: g4dn-metal
+  instance_type: g4dn.metal
+  arch: amd64
+  node_disk_size: 250
+  gpu: true
