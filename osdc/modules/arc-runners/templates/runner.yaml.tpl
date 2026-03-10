@@ -90,6 +90,8 @@ kind: ConfigMap
 metadata:
   name: arc-runner-hook-{{RUNNER_NAME_NORMALIZED}}
   namespace: arc-runners
+  labels:
+    osdc.io/module: {{MODULE_NAME}}
 data:
   job-pod.yaml: |
     spec:

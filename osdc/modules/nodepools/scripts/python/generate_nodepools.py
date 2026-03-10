@@ -65,7 +65,7 @@ def _get_node_disk_size(nodepool_def):
     return max_pods * per_pod_disk + os_overhead
 
 
-def generate_nodepool_yaml(nodepool_def):
+def generate_nodepool_yaml(nodepool_def, module_name):
     """Generate a combined NodePool + EC2NodeClass YAML string."""
     name = nodepool_def['name']
     instance_type = nodepool_def['instance_type']
@@ -132,6 +132,8 @@ apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
   name: {name}
+  labels:
+    osdc.io/module: {module_name}
 spec:
   disruption:
     consolidationPolicy: {consolidation_policy}
@@ -181,6 +183,8 @@ apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
   name: {name}
+  labels:
+    osdc.io/module: {module_name}
 spec:
 {ami_family_block + chr(10) if ami_family_block else ""}\
 {ami_selector_block}
@@ -309,6 +313,7 @@ def main():
     module_dir = script_dir.parent.parent
     defs_dir = Path(os.environ['NODEPOOLS_DEFS_DIR']) if 'NODEPOOLS_DEFS_DIR' in os.environ else module_dir / 'defs'
     output_dir = Path(os.environ['NODEPOOLS_OUTPUT_DIR']) if 'NODEPOOLS_OUTPUT_DIR' in os.environ else module_dir / 'generated'
+    module_name = os.environ.get('NODEPOOLS_MODULE_NAME', 'nodepools')
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():
@@ -344,7 +349,7 @@ def main():
             node_disk = _get_node_disk_size(nodepool_def)
             log_info(f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, {nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi)")
 
-            content = generate_nodepool_yaml(nodepool_def)
+            content = generate_nodepool_yaml(nodepool_def, module_name)
             out_path = output_dir / f"{name}.yaml"
             out_path.write_text(content)
             generated += 1
