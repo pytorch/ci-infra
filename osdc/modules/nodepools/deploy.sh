@@ -25,11 +25,24 @@ DEFS_DIR="${NODEPOOLS_DEFS_DIR:-$MODULE_DIR/defs}"
 OUTPUT_DIR="${NODEPOOLS_OUTPUT_DIR:-$MODULE_DIR/generated}"
 MODULE_NAME="${NODEPOOLS_MODULE_NAME:-nodepools}"
 
+# --- Read cluster-specific nodepools config ---
+CLUSTER_CONFIG="$UPSTREAM_ROOT/scripts/cluster-config.py"
+GPU_DISRUPTION_BUDGET=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.gpu_disruption_budget "100%")
+GPU_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.gpu_consolidate_after "3h")
+CPU_DISRUPTION_BUDGET=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_disruption_budget "10%")
+CPU_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_consolidate_after "3h")
+COMPACTOR_ENABLED=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.enabled "false")
+
 # --- Step 1: Generate NodePools from definitions ---
 echo "Generating Karpenter NodePools from definitions..."
 NODEPOOLS_DEFS_DIR="$DEFS_DIR" \
 NODEPOOLS_OUTPUT_DIR="$OUTPUT_DIR" \
 NODEPOOLS_MODULE_NAME="$MODULE_NAME" \
+NODEPOOLS_GPU_DISRUPTION_BUDGET="$GPU_DISRUPTION_BUDGET" \
+NODEPOOLS_GPU_CONSOLIDATE_AFTER="$GPU_CONSOLIDATE_AFTER" \
+NODEPOOLS_CPU_DISRUPTION_BUDGET="$CPU_DISRUPTION_BUDGET" \
+NODEPOOLS_CPU_CONSOLIDATE_AFTER="$CPU_CONSOLIDATE_AFTER" \
+NODEPOOLS_COMPACTOR_ENABLED="$COMPACTOR_ENABLED" \
     uv run "$MODULE_DIR/scripts/python/generate_nodepools.py"
 
 # --- Step 2: Apply NodePools (parallel) ---

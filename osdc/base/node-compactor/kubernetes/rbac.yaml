@@ -1,0 +1,35 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-compactor
+  labels:
+    app.kubernetes.io/name: node-compactor
+    app.kubernetes.io/component: controller
+rules:
+  # Read nodes and pods across all namespaces
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  # Discover managed NodePools
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-compactor
+  labels:
+    app.kubernetes.io/name: node-compactor
+    app.kubernetes.io/component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-compactor
+subjects:
+  - kind: ServiceAccount
+    name: node-compactor
+    namespace: kube-system

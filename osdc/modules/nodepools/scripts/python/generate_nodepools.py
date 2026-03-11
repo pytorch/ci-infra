@@ -78,14 +78,36 @@ def generate_nodepool_yaml(nodepool_def, module_name):
     capacity_type = nodepool_def.get('capacity_type', 'on-demand')
     capacity_reservation_ids = nodepool_def.get('capacity_reservation_ids', [])
 
+    # ----- Node compactor opt-in -----
+    # NodePools labeled osdc.io/node-compactor are managed by the compactor
+    # controller, which handles consolidation via NoSchedule taints instead
+    # of Karpenter's disruptive consolidation.
+    # Default comes from cluster-level config (via env var), not per-def hardcode
+    cluster_compactor_enabled = os.environ.get('NODEPOOLS_COMPACTOR_ENABLED', 'false').lower() == 'true'
+    compactor_enabled = nodepool_def.get('node_compactor', cluster_compactor_enabled)
+
+    if compactor_enabled:
+        # Compactor handles underutilized case; Karpenter only handles empty
+        consolidation_policy = 'WhenEmpty'
+        consolidation_after = '2m'
+        compactor_label = '    osdc.io/node-compactor: "true"\n'
+    else:
+        consolidation_policy = 'WhenEmptyOrUnderutilized'
+        consolidation_after = '3h'
+        compactor_label = ''
+
     # ----- GPU vs CPU settings -----
     if is_gpu:
         ami_family_block = '  amiFamily: AL2023'
         ami_selector_block = """  amiSelectorTerms:
     - name: "amazon-eks-node-al2023-x86_64-nvidia-*\""""
-        consolidation_policy = 'WhenEmptyOrUnderutilized'
-        consolidation_after = '3h'
-        disruption_budget = '0'
+        if compactor_enabled:
+            disruption_budget = os.environ.get('NODEPOOLS_GPU_DISRUPTION_BUDGET', '100%')
+            consolidation_after = os.environ.get('NODEPOOLS_GPU_CONSOLIDATE_AFTER', '2m')
+        else:
+            disruption_budget = '0'
+            consolidation_policy = 'WhenEmptyOrUnderutilized'
+            consolidation_after = os.environ.get('NODEPOOLS_GPU_CONSOLIDATE_AFTER', '3h')
         iops = 5000
         throughput = 250
 
@@ -103,9 +125,13 @@ def generate_nodepool_yaml(nodepool_def, module_name):
         ami_family_block = ''
         ami_selector_block = """  amiSelectorTerms:
     - alias: al2023@latest"""
-        consolidation_policy = 'WhenEmptyOrUnderutilized'
-        consolidation_after = '3h'
-        disruption_budget = '10%'
+        if compactor_enabled:
+            # Compactor-managed: all empty nodes can be cleaned simultaneously
+            disruption_budget = os.environ.get('NODEPOOLS_CPU_DISRUPTION_BUDGET', '100%')
+        else:
+            consolidation_policy = 'WhenEmptyOrUnderutilized'
+            consolidation_after = os.environ.get('NODEPOOLS_CPU_CONSOLIDATE_AFTER', '3h')
+            disruption_budget = os.environ.get('NODEPOOLS_CPU_DISRUPTION_BUDGET', '10%')
         iops = 3000
         throughput = 125
 
@@ -134,6 +160,7 @@ metadata:
   name: {name}
   labels:
     osdc.io/module: {module_name}
+{compactor_label}\
 spec:
   disruption:
     consolidationPolicy: {consolidation_policy}

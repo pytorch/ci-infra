@@ -11,7 +11,8 @@
 #   just deploy arc-staging            # full deploy (base + all modules)
 #   just deploy-base arc-staging       # base infra only
 #   just deploy-module arc-staging arc # single module
-#   just lint                           # lint all code
+#   just test                            # run all tests
+#   just lint                            # lint all code
 
 set dotenv-load := true
 set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
@@ -62,6 +63,14 @@ show cluster:
     echo ""; \
     echo "  Tofu vars:"; \
     uv run {{CFG}} {{cluster}} tfvars | tr ' ' '\n' | sed 's/^/    /'
+
+# Update kubeconfig for a cluster (aws eks update-kubeconfig)
+kubeconfig cluster:
+    @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    CNAME=$(uv run {{CFG}} {{cluster}} cluster_name); \
+    REGION=$(uv run {{CFG}} {{cluster}} region); \
+    echo "Updating kubeconfig for $CNAME ($REGION)..."; \
+    aws eks update-kubeconfig --name "$CNAME" --region "$REGION"
 
 # ============================================================================
 # BOOTSTRAP
@@ -188,6 +197,10 @@ deploy-base cluster:
     echo "━━━ BASE: Deploy Harbor ━━━"
     cd "{{ROOT}}"
     just _deploy-harbor "$CLUSTER"
+
+    echo ""
+    echo "━━━ BASE: Deploy Node Compactor ━━━"
+    {{UPSTREAM}}/base/node-compactor/deploy.sh "$CLUSTER"
 
     echo ""
     echo "Base deployment complete."
@@ -502,6 +515,41 @@ _configure-harbor-projects:
     kill $PF_PID 2>/dev/null || true
 
 # ============================================================================
+# TESTING
+# ============================================================================
+
+# Run all tests across the project
+test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    ERRORS=0
+
+    # Find all directories containing test_*.py files
+    TEST_DIRS=$(find "{{UPSTREAM}}" -name 'test_*.py' -exec dirname {} \; | sort -u)
+    if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
+        TEST_DIRS="$TEST_DIRS $(find "{{ROOT}}" -path "{{UPSTREAM}}" -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)"
+    fi
+
+    if [[ -z "$TEST_DIRS" ]]; then
+        echo "No test files found."
+        exit 0
+    fi
+
+    for dir in $TEST_DIRS; do
+        echo "━━━ Testing: ${dir#{{UPSTREAM}}/} ━━━"
+        # Install test dependencies inline (script deps handled by uv)
+        (cd "$dir" && uv run --with pytest --with pytest-cov pytest --tb=short -q) || ERRORS=$((ERRORS + 1))
+        echo ""
+    done
+
+    if [[ $ERRORS -gt 0 ]]; then
+        echo "Tests FAILED in $ERRORS directory(ies)."
+        exit 1
+    fi
+    echo "All tests passed."
+
+# ============================================================================
 # LINTING
 # ============================================================================
 
@@ -523,7 +571,7 @@ lint:
 
     echo "Linting shell scripts..."
     if command -v shellcheck &>/dev/null; then
-        find "{{UPSTREAM}}/base/scripts" "{{UPSTREAM}}/modules" -name '*.sh' -print0 \
+        find "{{UPSTREAM}}/base" "{{UPSTREAM}}/modules" -name '*.sh' -print0 \
             | xargs -0 shellcheck || ERRORS=$((ERRORS + 1))
         if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
             find "{{ROOT}}/modules" -name '*.sh' -print0 \
@@ -533,9 +581,31 @@ lint:
         echo "  shellcheck not found, skipping"
     fi
 
+    echo "Linting Python..."
+    if command -v ruff &>/dev/null; then
+        ruff check "{{UPSTREAM}}/base" "{{UPSTREAM}}/modules" "{{UPSTREAM}}/scripts" || ERRORS=$((ERRORS + 1))
+        if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
+            ruff check "{{ROOT}}/modules" 2>/dev/null || ERRORS=$((ERRORS + 1))
+        fi
+    else
+        echo "  ruff not found, skipping"
+    fi
+
+    echo "Linting Dockerfiles..."
+    if command -v hadolint &>/dev/null; then
+        find "{{UPSTREAM}}/base" "{{UPSTREAM}}/modules" -name 'Dockerfile' -print0 \
+            | xargs -0 -I{} hadolint {} || ERRORS=$((ERRORS + 1))
+        if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
+            find "{{ROOT}}/modules" -name 'Dockerfile' -print0 \
+                | xargs -0 -I{} hadolint {} 2>/dev/null || ERRORS=$((ERRORS + 1))
+        fi
+    else
+        echo "  hadolint not found, skipping"
+    fi
+
     echo "Linting YAML..."
     if command -v yamllint &>/dev/null; then
-        yamllint "{{UPSTREAM}}/base/kubernetes/" "{{UPSTREAM}}/base/helm/" \
+        yamllint "{{UPSTREAM}}/base/kubernetes/" "{{UPSTREAM}}/base/node-compactor/kubernetes/" "{{UPSTREAM}}/base/helm/" \
             "{{UPSTREAM}}/modules/*/kubernetes/" "{{UPSTREAM}}/modules/*/helm/" \
             "{{CLUSTERS_YAML}}" || ERRORS=$((ERRORS + 1))
     else
