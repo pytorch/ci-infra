@@ -11,8 +11,10 @@
 
 set -euo pipefail
 if [[ -n "${OSDC_UPSTREAM:-}" ]]; then
+    # shellcheck source=/dev/null
     source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
 else
+    # shellcheck source=/dev/null
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" && pwd)/mise-activate.sh"
 fi
 

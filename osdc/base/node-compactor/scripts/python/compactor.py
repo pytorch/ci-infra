@@ -23,12 +23,12 @@ import signal
 import sys
 import time
 
-from lightkube import ApiError, Client
-
 from discovery import build_node_states, discover_managed_nodes
+from lightkube import ApiError, Client
 from models import Config
 from packing import compute_taints
 from taints import apply_taint, check_pending_pods, cleanup_stale_taints, remove_taint
+
 
 log = logging.getLogger("compactor")
 

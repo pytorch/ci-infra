@@ -1,11 +1,10 @@
 """Node discovery and state building for the Node Compactor."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Node, Pod
-
 from models import (
     Config,
     NodeState,
@@ -16,6 +15,7 @@ from models import (
     pod_cpu_request,
     pod_memory_request,
 )
+
 
 log = logging.getLogger("compactor")
 
@@ -31,11 +31,11 @@ def discover_managed_nodes(client: Client, cfg: Config) -> list[str]:
     from lightkube.generic_resource import create_global_resource
 
     try:
-        NodePool = create_global_resource(
+        nodepool_resource = create_global_resource(
             group="karpenter.sh", version="v1", kind="NodePool", plural="nodepools"
         )
         managed_pools: set[str] = set()
-        for np in client.list(NodePool):
+        for np in client.list(nodepool_resource):
             labels = (np.metadata and np.metadata.labels) or {}
             if labels.get(cfg.nodepool_label) == "true":
                 managed_pools.add(np.metadata.name)
@@ -84,7 +84,7 @@ def build_node_states(
         alloc = node.status.allocatable or {} if node.status else {}
         creation = node.metadata.creationTimestamp if node.metadata else None
         if not creation:
-            creation = datetime.now(timezone.utc)
+            creation = datetime.now(UTC)
 
         taints = node.spec.taints or [] if node.spec else []
         is_tainted = any(t.key == cfg.taint_key for t in taints)

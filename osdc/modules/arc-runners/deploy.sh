@@ -16,11 +16,12 @@ set -euo pipefail
 #   ARC_RUNNERS_MODULE_NAME — label value for osdc.io/module (default: "arc-runners")
 
 CLUSTER="$1"
-CNAME="$2"
-REGION="$3"
+export CNAME="$2"
+export REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
+# shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 

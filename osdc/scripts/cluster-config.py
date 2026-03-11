@@ -24,8 +24,10 @@ Usage:
 
 import os
 import sys
-import yaml
 from pathlib import Path
+
+import yaml
+
 
 CONFIG_PATH = Path(
     os.environ.get("CLUSTERS_YAML", Path(__file__).resolve().parent.parent / "clusters.yaml")

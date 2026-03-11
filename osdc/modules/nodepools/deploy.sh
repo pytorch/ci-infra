@@ -15,9 +15,10 @@ set -euo pipefail
 
 CLUSTER="$1"
 CNAME="$2"
-REGION="$3"
+export REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$MODULE_DIR/../.." && pwd)}"
+# shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 
 # Allow consumers to override defs, output, and module name

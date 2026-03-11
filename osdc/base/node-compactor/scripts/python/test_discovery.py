@@ -1,19 +1,19 @@
 """Unit tests for node discovery and state building."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-from lightkube import ApiError
-
 from discovery import build_node_states, discover_managed_nodes
+from lightkube import ApiError
 from models import Config
+
 
 # ============================================================================
 # Helpers
 # ============================================================================
 
-NOW = datetime.now(timezone.utc)
+NOW = datetime.now(UTC)
 GiB = 1024**3
 
 
@@ -529,7 +529,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pending_pod]]
 
-        states, pending = build_node_states(client, cfg, ["node-1"])
+        _states, pending = build_node_states(client, cfg, ["node-1"])
 
         assert len(pending) == 0
 
@@ -613,9 +613,9 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         states, _ = build_node_states(client, cfg, ["node-1"])
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         ct = states["node-1"].creation_time
         assert before <= ct <= after

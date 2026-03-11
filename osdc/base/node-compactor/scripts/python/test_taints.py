@@ -1,13 +1,12 @@
 """Tests for taints.py — taint management and pending pod detection."""
 
 import unittest
-from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, call, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 from lightkube import ApiError
 from lightkube.resources.core_v1 import Node
 from lightkube.types import PatchType
-
 from models import Config, NodeState, PodInfo
 from taints import (
     _pod_matches_node,
@@ -17,7 +16,8 @@ from taints import (
     remove_taint,
 )
 
-NOW = datetime.now(timezone.utc)
+
+NOW = datetime.now(UTC)
 GiB = 1024**3
 
 
@@ -326,9 +326,7 @@ class TestCheckPendingPods(unittest.TestCase):
 
         def controlled_match(p, node, taints):
             call_count["n"] += 1
-            if call_count["n"] == 1:
-                return True
-            return False
+            return call_count["n"] == 1
 
         with patch("taints._pod_matches_node", side_effect=controlled_match):
             result = check_pending_pods(cfg, {"node-a": ns_a}, [pod])

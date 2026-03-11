@@ -5,6 +5,7 @@ from collections import defaultdict
 
 from models import Config, NodeState, PodInfo
 
+
 log = logging.getLogger("compactor")
 
 
@@ -101,7 +102,7 @@ def compute_taints(
     to_taint: set[str] = set()
     to_untaint: set[str] = set()
 
-    for pool_name, pool_nodes in pools.items():
+    for _pool_name, pool_nodes in pools.items():
         all_workload_pods = []
         for node in pool_nodes:
             all_workload_pods.extend(node.workload_pods)

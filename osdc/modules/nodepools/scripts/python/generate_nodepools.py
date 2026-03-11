@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+
 # ANSI colors
 GREEN = '\033[0;32m'
 RED = '\033[0;31m'
@@ -52,7 +53,7 @@ def _get_node_disk_size(nodepool_def):
 
     Uses `node_disk_size` from the def directly. This value should be
     pre-computed as the worst-case total: max concurrent pods (determined
-    by CPU/memory/GPU constraints) × largest per-pod disk + OS overhead.
+    by CPU/memory/GPU constraints) x largest per-pod disk + OS overhead.
     """
     node_disk = nodepool_def.get('node_disk_size')
     if node_disk:

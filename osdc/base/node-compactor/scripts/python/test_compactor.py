@@ -1,10 +1,14 @@
 """Unit tests for the node compactor controller."""
 
 import math
-from datetime import datetime, timedelta, timezone
+import signal
+import time
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
-
+from compactor import main, reconcile
+from lightkube import ApiError
 from models import Config, NodeState, PodInfo, parse_cpu, parse_memory
 from packing import _pods_fit_on_nodes, bin_pack_min_nodes, compute_taints
 
@@ -13,7 +17,7 @@ from packing import _pods_fit_on_nodes, bin_pack_min_nodes, compute_taints
 # Helpers
 # ============================================================================
 
-NOW = datetime.now(timezone.utc)
+NOW = datetime.now(UTC)
 GiB = 1024**3
 
 
@@ -452,7 +456,7 @@ class TestComputeTaints:
             n = make_node(f"n{i}", cpu=16.0)
             nodes[f"n{i}"] = n
         # No pods -> bin_pack returns 0, but min_nodes=3 -> surplus = 1
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         assert len(to_taint) == 1
 
     def test_old_nodes_tainted_first(self):
@@ -465,7 +469,7 @@ class TestComputeTaints:
         )
         nodes = {"old": old_node, "young": young_node}
         # No pods -> both surplus, but min_nodes=1, surplus=1
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         assert "old" in to_taint
         assert "young" not in to_taint
 
@@ -481,7 +485,7 @@ class TestComputeTaints:
         # 3 nodes, all pods fit on 2 -> surplus=1 (after max with min_nodes=1)
         # Actually bin_pack: total 22 CPU in pods, 16 CPU per node -> need 2
         # surplus = 1, n2 has lowest util -> tainted
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         assert "n2" in to_taint
 
     def test_already_tainted_surplus_stays_tainted(self):
@@ -490,7 +494,7 @@ class TestComputeTaints:
         n2 = make_node("n2", cpu=16.0, is_tainted=True)
         nodes = {"n1": n1, "n2": n2}
         # No pods, surplus = 1 -> one node tainted
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         assert len(to_taint) == 1
 
     def test_sole_candidate_safety(self):
@@ -503,7 +507,7 @@ class TestComputeTaints:
         n2.pods = [make_pod("p2", cpu=10.0, node_name="n2")]
         nodes = {"n1": n1, "n2": n2}
         # bin_pack: 2 pods * 10 CPU = 20, need 2 nodes -> surplus=0 -> untaint
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         assert len(to_taint) == 0
 
     def test_safety_check_prevents_taint_when_pods_cant_move(self):
@@ -522,7 +526,7 @@ class TestComputeTaints:
         # bin_pack: 3 pods * 9 CPU = 27, nodes have 16 each -> need 2
         # surplus = 1, but safety check: taint candidate's pod (9 CPU) can't fit
         # on remaining 2 nodes (each has only 7 CPU free). Skip the taint.
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         assert len(to_taint) == 0
 
     def test_multiple_pools_independent(self):
@@ -533,7 +537,7 @@ class TestComputeTaints:
         n4 = make_node("n4", nodepool="pool-b", cpu=16.0)
         nodes = {"n1": n1, "n2": n2, "n3": n3, "n4": n4}
         # No pods in either pool -> surplus=1 per pool (min_nodes=1)
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         pool_a_tainted = to_taint & {"n1", "n2"}
         pool_b_tainted = to_taint & {"n3", "n4"}
         assert len(pool_a_tainted) == 1
@@ -561,7 +565,7 @@ class TestComputeTaints:
         # bin_pack: 3 pods * 14 = 42 CPU. 16 per node -> need 3. surplus=1
         # n0 is the candidate (empty, lowest util). It has no workload pods,
         # so no safety check needed -> tainted.
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         assert "n0" in to_taint
         assert len(to_taint) == 1
 
@@ -759,7 +763,7 @@ class TestComputeTaintsSafetySkipUntaint:
         #
         # surplus reached.
 
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint = compute_taints(nodes, cfg)
         assert "n4" in to_taint
         assert "n2" in to_taint
         assert len(to_taint) == 2
@@ -799,14 +803,6 @@ class TestComputeTaintsSafetySkipUntaint:
 # reconcile() tests
 # ============================================================================
 
-
-import signal
-import time
-from unittest.mock import MagicMock, patch
-
-from lightkube import ApiError
-
-from compactor import reconcile, main
 
 
 def _make_api_error(code: int) -> ApiError:

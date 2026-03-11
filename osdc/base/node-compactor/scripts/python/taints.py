@@ -5,8 +5,8 @@ import logging
 from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Node
 from lightkube.types import PatchType
-
 from models import Config, NodeState, pod_cpu_request, pod_memory_request
+
 
 log = logging.getLogger("compactor")
 

@@ -4,9 +4,10 @@ import logging
 import math
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from lightkube.resources.core_v1 import Pod
+
 
 log = logging.getLogger("compactor")
 
@@ -139,7 +140,7 @@ class NodeState:
 
     @property
     def uptime_hours(self) -> float:
-        delta = datetime.now(timezone.utc) - self.creation_time
+        delta = datetime.now(UTC) - self.creation_time
         return delta.total_seconds() / 3600
 
     @property
@@ -149,7 +150,7 @@ class NodeState:
         Nodes whose youngest pod is oldest are closer to draining naturally.
         Returns inf if no workload pods (empty nodes drain immediately).
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ages = []
         for p in self.workload_pods:
             if p.start_time:

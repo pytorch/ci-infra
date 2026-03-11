@@ -26,6 +26,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+
 # ANSI colors
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -393,9 +394,8 @@ def main():
     session = create_session(args.harbor_url, args.admin_password)
 
     # Wait for Harbor to be ready
-    if not args.no_wait:
-        if not wait_for_harbor(session, args.harbor_url):
-            return 1
+    if not args.no_wait and not wait_for_harbor(session, args.harbor_url):
+        return 1
 
     # Harbor 2.x requires CSRF token for POST/PUT/DELETE requests
     fetch_csrf_token(session, args.harbor_url)

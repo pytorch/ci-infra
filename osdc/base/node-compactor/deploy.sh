@@ -12,6 +12,7 @@ set -euo pipefail
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+# shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 
 CLUSTER_CONFIG="$UPSTREAM_ROOT/scripts/cluster-config.py"
