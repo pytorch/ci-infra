@@ -92,7 +92,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "http://localhost:8081/api/v2.0/projects" \
     --netrc-file "$NETRC_FILE" \
     -H "Content-Type: application/json" \
-    -d '{"project_name":"osdc","public":false}')
+    -d '{"project_name":"osdc","public":true}')
 if [[ "$HTTP_CODE" == "201" ]]; then
     echo "  Created Harbor project 'osdc'"
 elif [[ "$HTTP_CODE" == "409" ]]; then
@@ -101,10 +101,12 @@ else
     echo "  Warning: Harbor project creation returned HTTP $HTTP_CODE"
 fi
 
-# Login, tag, and push via port-forward
-echo "$HARBOR_ADMIN_PW" | docker login localhost:8081 -u admin --password-stdin
-docker tag "node-compactor:${TAG}" "localhost:8081/osdc/node-compactor:${TAG}"
-docker push "localhost:8081/osdc/node-compactor:${TAG}"
+# Push image to Harbor via crane (supports --insecure, avoids docker-login HTTPS issues)
+crane auth login localhost:8081 -u admin -p "$HARBOR_ADMIN_PW" --insecure
+IMAGE_TAR=$(mktemp)
+docker save "node-compactor:${TAG}" -o "$IMAGE_TAR"
+crane push "$IMAGE_TAR" "localhost:8081/osdc/node-compactor:${TAG}" --insecure
+rm -f "$IMAGE_TAR"
 
 # Kill port-forward now that push is done
 kill "$PF_PID" 2>/dev/null || true
@@ -119,10 +121,10 @@ echo "Applying node-compactor manifests..."
 kubectl apply -k "$COMPACTOR_DIR/kubernetes/" --dry-run=client -o yaml \
     | sed \
         -e "s|NODE_COMPACTOR_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|g" \
-        -e "s|COMPACTOR_INTERVAL_PLACEHOLDER|${INTERVAL}|g" \
-        -e "s|COMPACTOR_MAX_UPTIME_HOURS_PLACEHOLDER|${MAX_UPTIME}|g" \
-        -e "s|COMPACTOR_DRY_RUN_PLACEHOLDER|${DRY_RUN}|g" \
-        -e "s|COMPACTOR_MIN_NODES_PLACEHOLDER|${MIN_NODES}|g" \
+        -e "s|COMPACTOR_INTERVAL_PLACEHOLDER|\"${INTERVAL}\"|g" \
+        -e "s|COMPACTOR_MAX_UPTIME_HOURS_PLACEHOLDER|\"${MAX_UPTIME}\"|g" \
+        -e "s|COMPACTOR_DRY_RUN_PLACEHOLDER|\"${DRY_RUN}\"|g" \
+        -e "s|COMPACTOR_MIN_NODES_PLACEHOLDER|\"${MIN_NODES}\"|g" \
     | kubectl apply -f -
 
 echo "Node compactor deployed."

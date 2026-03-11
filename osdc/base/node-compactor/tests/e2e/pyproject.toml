@@ -1,0 +1,9 @@
+[project]
+name = "node-compactor-e2e"
+version = "0.1.0"
+description = "End-to-end tests for the node-compactor controller"
+requires-python = ">=3.12"
+dependencies = [
+    "lightkube==0.15.5",
+    "pytest>=8.0",
+]

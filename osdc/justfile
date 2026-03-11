@@ -525,8 +525,8 @@ test:
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
     ERRORS=0
 
-    # Find all directories containing test_*.py files
-    TEST_DIRS=$(find "{{UPSTREAM}}" -name 'test_*.py' -exec dirname {} \; | sort -u)
+    # Find all directories containing test_*.py files (exclude e2e tests)
+    TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/tests/e2e' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
     if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
         TEST_DIRS="$TEST_DIRS $(find "{{ROOT}}" -path "{{UPSTREAM}}" -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)"
     fi
@@ -548,6 +548,15 @@ test:
         exit 1
     fi
     echo "All tests passed."
+
+# Run node-compactor e2e tests against a live cluster
+test-compactor cluster:
+    @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    export OSDC_ROOT="{{ROOT}}"; \
+    export OSDC_UPSTREAM="{{UPSTREAM}}"; \
+    cd {{UPSTREAM}}/base/node-compactor/tests/e2e && \
+    uv run --with pytest pytest test_e2e.py -v --tb=long -x \
+        --cluster-id="{{cluster}}"
 
 # ============================================================================
 # LINTING

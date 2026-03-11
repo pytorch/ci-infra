@@ -17,6 +17,7 @@ This achieves cost savings without disrupting running CI jobs.
 | `docker/Dockerfile` | Container image (python:3.12.9-slim + lightkube) |
 | `docker/pyproject.toml` | Python dependencies |
 | `deploy.sh` | Build image, push to Harbor, apply manifests |
+| `tests/e2e/` | End-to-end tests against live cluster (`just test-compactor <cluster>`) |
 
 ## Configuration
 
