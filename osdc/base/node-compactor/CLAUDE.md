@@ -10,7 +10,13 @@ This achieves cost savings without disrupting running CI jobs.
 |------|---------|
 | `scripts/python/compactor.py` | Main controller loop |
 | `scripts/python/models.py` | Data models and config parsing |
-| `scripts/python/test_compactor.py` | Unit tests |
+| `scripts/python/discovery.py` | NodePool and node discovery logic |
+| `scripts/python/packing.py` | Bin-packing algorithm for node consolidation |
+| `scripts/python/taints.py` | Taint management (apply, remove, SIGTERM cleanup) |
+| `scripts/python/test_compactor.py` | Unit tests for main controller |
+| `scripts/python/test_discovery.py` | Unit tests for discovery module |
+| `scripts/python/test_taints.py` | Unit tests for taint management |
+| `scripts/python/test_models_pod_helpers.py` | Unit tests for pod helper functions |
 | `kubernetes/deployment.yaml` | Deployment manifest (runs in `kube-system`) |
 | `kubernetes/rbac.yaml` | RBAC — node get/list/patch, pod list, NodePool list |
 | `kubernetes/serviceaccount.yaml` | ServiceAccount |
