@@ -59,6 +59,7 @@ resource "aws_lb" "jupyter_alb" {
     length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : []
   )
 
+  idle_timeout               = 300
   enable_deletion_protection = false
   enable_http2               = true
 

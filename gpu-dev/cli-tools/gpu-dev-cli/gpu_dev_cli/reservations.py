@@ -623,66 +623,95 @@ class ReservationManager:
         self,
         user_filter: Optional[str] = None,
         statuses_to_include: Optional[List[str]] = None,
+        created_after: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """List GPU reservations with flexible filtering"""
+        """List GPU reservations with flexible filtering.
+
+        Uses UserStatusIndex (user_id + status composite) when filtering by user,
+        falling back to StatusIndex + FilterExpression if the GSI doesn't exist.
+        Queries run in parallel per status for speed.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
         try:
             all_reservations = []
+            query_statuses = statuses_to_include or [
+                "active", "preparing", "queued", "pending",
+                "failed", "cancelled", "expired",
+            ]
 
-            if user_filter:
-                # Query by specific user with pagination
-                response = self.reservations_table.query(
-                    IndexName="UserIndex",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_filter},
-                )
-                all_reservations = response.get("Items", [])
+            def query_status(s):
+                items = []
+                # Try UserStatusIndex (composite GSI) for user+status queries
+                if user_filter:
+                    try:
+                        return self._query_user_status_index(
+                            user_filter, s, created_after)
+                    except self.reservations_table.meta.client.exceptions.ClientError:
+                        pass  # GSI doesn't exist yet, fall back
 
-                # Handle pagination for UserIndex query
+                # Fallback: StatusIndex with optional FilterExpression
+                names = {"#s": "status"}
+                values = {":status": s}
+                filters = []
+                if user_filter:
+                    filters.append("user_id = :uid")
+                    values[":uid"] = user_filter
+                if created_after:
+                    filters.append("created_at >= :after")
+                    values[":after"] = created_after
+                query_kwargs = {
+                    "IndexName": "StatusIndex",
+                    "KeyConditionExpression": "#s = :status",
+                    "ExpressionAttributeNames": names,
+                    "ExpressionAttributeValues": values,
+                }
+                if filters:
+                    query_kwargs["FilterExpression"] = " AND ".join(filters)
+                response = self.reservations_table.query(**query_kwargs)
+                items.extend(response.get("Items", []))
                 while "LastEvaluatedKey" in response:
-                    response = self.reservations_table.query(
-                        IndexName="UserIndex",
-                        KeyConditionExpression="user_id = :user_id",
-                        ExpressionAttributeValues={":user_id": user_filter},
-                        ExclusiveStartKey=response["LastEvaluatedKey"]
-                    )
-                    all_reservations.extend(response.get("Items", []))
-            else:
-                # Query by status using StatusIndex (much faster than full scan)
-                query_statuses = statuses_to_include or [
-                    "active", "preparing", "queued", "pending",
-                    "failed", "cancelled", "expired",
-                ]
-                for s in query_statuses:
-                    response = self.reservations_table.query(
-                        IndexName="StatusIndex",
-                        KeyConditionExpression="#s = :status",
-                        ExpressionAttributeNames={"#s": "status"},
-                        ExpressionAttributeValues={":status": s},
-                    )
-                    all_reservations.extend(response.get("Items", []))
-                    while "LastEvaluatedKey" in response:
-                        response = self.reservations_table.query(
-                            IndexName="StatusIndex",
-                            KeyConditionExpression="#s = :status",
-                            ExpressionAttributeNames={"#s": "status"},
-                            ExpressionAttributeValues={":status": s},
-                            ExclusiveStartKey=response["LastEvaluatedKey"],
-                        )
-                        all_reservations.extend(response.get("Items", []))
+                    query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+                    response = self.reservations_table.query(**query_kwargs)
+                    items.extend(response.get("Items", []))
+                return items
 
-            # Filter by status if specified (needed for user_filter path;
-            # the else path already queries only requested statuses)
-            if statuses_to_include and user_filter:
-                all_reservations = [
-                    r for r in all_reservations
-                    if r.get("status") in statuses_to_include
-                ]
+            with ThreadPoolExecutor(max_workers=len(query_statuses)) as executor:
+                results = executor.map(query_status, query_statuses)
+            for items in results:
+                all_reservations.extend(items)
 
             return all_reservations
 
         except Exception as e:
             console.print(f"[red]❌ Error listing reservations: {str(e)}[/red]")
             return []
+
+    def _query_user_status_index(
+        self, user_id: str, status: str, created_after: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Query UserStatusIndex composite GSI (user_id HASH + status RANGE)"""
+        items = []
+        values = {":uid": user_id, ":status": status}
+        filters = []
+        if created_after:
+            filters.append("created_at >= :after")
+            values[":after"] = created_after
+        query_kwargs = {
+            "IndexName": "UserStatusIndex",
+            "KeyConditionExpression": "user_id = :uid AND #s = :status",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": values,
+        }
+        if filters:
+            query_kwargs["FilterExpression"] = " AND ".join(filters)
+        response = self.reservations_table.query(**query_kwargs)
+        items.extend(response.get("Items", []))
+        while "LastEvaluatedKey" in response:
+            query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+            response = self.reservations_table.query(**query_kwargs)
+            items.extend(response.get("Items", []))
+        return items
 
     def cancel_reservation(self, reservation_id: str, user_id: str) -> bool:
         """Cancel a GPU reservation by sending cancellation message to queue"""
@@ -791,6 +820,7 @@ class ReservationManager:
                 "secondary_users": reservation.get("secondary_users", []),
                 "warning": reservation.get("warning", ""),
                 "is_multinode": is_multinode,
+                "pod_ip": reservation.get("pod_ip", ""),
                 "fqdn": reservation.get("fqdn", ""),
             }
 
@@ -1032,6 +1062,8 @@ class ReservationManager:
                     "running_instances": int(item.get("running_instances", 0)),
                     "desired_capacity": int(item.get("desired_capacity", 0)),
                     "last_updated": item.get("last_updated_timestamp", 0),
+                    "maintenance": bool(item.get("maintenance", False)),
+                    "maintenance_reason": item.get("maintenance_reason", ""),
                 }
 
             return availability_info

@@ -68,14 +68,18 @@ GPU_CONFIG = {
     "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 1},
     "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1, "cpus": 8, "memory_gb": 32, "efa_count": 0},
     "g5g": {"instance_type": "g5g.2xlarge", "max_gpus": 2, "cpus": 8, "memory_gb": 32, "efa_count": 0},
-    "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152, "efa_count": 1},
-    "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 1},
-    "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 1},
-    "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 1},
+    "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152, "efa_count": 4},
+    "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
+    "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
+    "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
     "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
     "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
 }
 GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 0}
+
+# GPU types under maintenance - only whitelisted users can reserve
+# Set to {} to disable maintenance mode for all types
+GPU_MAINTENANCE = {}
 
 
 def retry_with_backoff(func, *args, max_retries=5, initial_delay=1, max_delay=32, **kwargs):
@@ -1438,6 +1442,14 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
             if success_count == total_nodes:
                 logger.info(
                     f"✓ Successfully processed all {total_nodes} nodes in parallel for multinode reservation {master_reservation_id}")
+
+                # Set up passwordless SSH between all multinode pods for MPI
+                try:
+                    pod_names = [f"gpu-dev-{node.get('reservation_id')[:8]}" for node in nodes]
+                    setup_multinode_ssh(pod_names, gpus_per_node)
+                except Exception as ssh_setup_error:
+                    logger.warning(f"Multinode SSH setup failed (non-fatal): {ssh_setup_error}")
+
                 return True
             else:
                 logger.error(
@@ -1791,6 +1803,123 @@ def calculate_multinode_queue_position_and_wait_time(master_reservation_id: str,
         }
 
 
+def setup_multinode_ssh(pod_names: list, gpus_per_node: int):
+    """Set up passwordless SSH between all multinode pods for MPI communication.
+
+    After all pods are running, this function:
+    1. Generates a shared ED25519 key pair on the first pod
+    2. Distributes the key pair to all pods
+    3. Adds the public key to authorized_keys on all pods
+    4. Creates SSH config for passwordless pod-to-pod communication
+    5. Writes an MPI hostfile with all pod IPs and GPU slot counts
+    """
+    k8s_client = get_k8s_client()
+    v1 = client.CoreV1Api(k8s_client)
+
+    logger.info(f"Setting up multinode SSH for {len(pod_names)} pods: {pod_names}")
+
+    def exec_in_pod(pod_name: str, command: str) -> str:
+        """Execute a command in a pod and return stdout"""
+        return stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            "gpu-dev",
+            command=["/bin/bash", "-c", command],
+            container="gpu-dev",
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+
+    # Get pod IPs (hostNetwork pods use host IP)
+    pod_ips = []
+    for pod_name in pod_names:
+        try:
+            pod = v1.read_namespaced_pod(pod_name, "gpu-dev")
+            ip = pod.status.pod_ip or pod.status.host_ip
+            pod_ips.append(ip)
+            logger.info(f"Pod {pod_name} IP: {ip}")
+        except Exception as e:
+            logger.error(f"Could not get IP for pod {pod_name}: {e}")
+            raise
+
+    # Step 1: Generate SSH key pair on first pod
+    logger.info(f"Generating SSH key pair on {pod_names[0]}...")
+    exec_in_pod(pod_names[0],
+                "ssh-keygen -t ed25519 -f /home/dev/.ssh/id_ed25519 -N '' -q 2>/dev/null; "
+                "chown dev:dev /home/dev/.ssh/id_ed25519 /home/dev/.ssh/id_ed25519.pub")
+
+    # Step 2: Read keys (base64 encode private key to preserve newlines)
+    private_key_b64 = exec_in_pod(pod_names[0],
+                                  "base64 -w0 /home/dev/.ssh/id_ed25519").strip()
+    public_key = exec_in_pod(pod_names[0],
+                             "cat /home/dev/.ssh/id_ed25519.pub").strip()
+
+    # Step 3: Build MPI hostfile
+    hostfile_lines = [f"{ip} slots={gpus_per_node}" for ip in pod_ips]
+    hostfile_content = "\\n".join(hostfile_lines)
+
+    # Step 4: Distribute keys, SSH config, and hostfile to all pods
+    for i, pod_name in enumerate(pod_names):
+        logger.info(f"Configuring SSH on {pod_name} ({i+1}/{len(pod_names)})...")
+
+        setup_script = (
+            "set -e\n"
+            # Write private key (base64 decode)
+            f"echo '{private_key_b64}' | base64 -d > /home/dev/.ssh/id_ed25519\n"
+            "chmod 600 /home/dev/.ssh/id_ed25519\n"
+            # Write public key
+            f"echo '{public_key}' > /home/dev/.ssh/id_ed25519.pub\n"
+            "chmod 644 /home/dev/.ssh/id_ed25519.pub\n"
+            # Add public key to authorized_keys for pod-to-pod SSH
+            f"grep -qF '{public_key}' /home/dev/.ssh/authorized_keys 2>/dev/null || "
+            f"echo '{public_key}' >> /home/dev/.ssh/authorized_keys\n"
+            "chmod 600 /home/dev/.ssh/authorized_keys\n"
+            # SSH config for passwordless pod-to-pod communication (EFA pods use port 2222)
+            "cat > /home/dev/.ssh/config << 'SSHCFG'\n"
+            "Host *\n"
+            "    StrictHostKeyChecking no\n"
+            "    UserKnownHostsFile /dev/null\n"
+            "    Port 2222\n"
+            "SSHCFG\n"
+            "chmod 600 /home/dev/.ssh/config\n"
+            # Write MPI hostfile
+            f"echo -e '{hostfile_content}' > /home/dev/hostfile\n"
+            # Fix ownership
+            "chown dev:dev /home/dev/.ssh/id_ed25519 /home/dev/.ssh/id_ed25519.pub "
+            "/home/dev/.ssh/config /home/dev/.ssh/authorized_keys /home/dev/hostfile\n"
+            "echo 'Multinode SSH setup complete'"
+        )
+
+        result = exec_in_pod(pod_name, setup_script)
+        logger.info(f"SSH setup for {pod_name}: {result.strip()}")
+
+    # Step 5: Append multinode cluster info to MOTD on each pod
+    for i, pod_name in enumerate(pod_names):
+        my_ip = pod_ips[i]
+        peer_lines = []
+        for j, (pn, ip) in enumerate(zip(pod_names, pod_ips)):
+            marker = " (this node)" if j == i else ""
+            peer_lines.append(f"  Node {j}: {ip} ({pn}){marker}")
+        peers_block = "\\n".join(peer_lines)
+        motd_script = (
+            f"echo '' >> /etc/motd\n"
+            f"echo '━━━ Multinode Cluster ━━━' >> /etc/motd\n"
+            f"echo 'This node IP: {my_ip}  (Node {i})' >> /etc/motd\n"
+            f"echo 'Cluster nodes:' >> /etc/motd\n"
+            f"echo -e '{peers_block}' >> /etc/motd\n"
+            f"echo 'Hostfile: ~/hostfile' >> /etc/motd\n"
+            f"echo '' >> /etc/motd\n"
+        )
+        try:
+            exec_in_pod(pod_name, motd_script)
+        except Exception as e:
+            logger.warning(f"Could not update MOTD on {pod_name}: {e}")
+
+    logger.info(f"✓ Multinode SSH setup complete for {len(pod_names)} pods")
+
+
 def process_reservation_request(record: dict[str, Any]) -> bool:
     """Process individual reservation request"""
     try:
@@ -2012,6 +2141,16 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
         logger.error(error_msg)
         return False, error_msg
 
+    # Check GPU maintenance mode
+    if gpu_type in GPU_MAINTENANCE:
+        maintenance = GPU_MAINTENANCE[gpu_type]
+        user_id = request.get("user_id", "")
+        if user_id not in maintenance.get("allowed_users", []):
+            reason = maintenance.get("reason", "under maintenance")
+            error_msg = f"GPU type {gpu_type.upper()} is currently unavailable: {reason}"
+            logger.warning(f"User {user_id} blocked from {gpu_type}: maintenance mode")
+            return False, error_msg
+
     # Validate GPU count based on type
     if gpu_type.startswith("cpu-") and gpu_count == 0:
         pass  # Valid CPU-only instance
@@ -2215,16 +2354,17 @@ def update_gpu_availability_table(
         )
         availability_table = dynamodb.Table(availability_table_name)
 
-        availability_table.put_item(
-            Item={
-                "gpu_type": gpu_type,
-                "total_gpus": total_gpus,
-                "available_gpus": available_gpus,
-                "running_instances": running_instances,
-                "desired_capacity": running_instances,  # For EKS, running = desired typically
-                "gpus_per_instance": gpus_per_instance,
-                "last_updated": "reservation-processor",
-                "last_updated_timestamp": int(time.time()),
+        availability_table.update_item(
+            Key={"gpu_type": gpu_type},
+            UpdateExpression="SET total_gpus = :total, available_gpus = :avail, running_instances = :running, desired_capacity = :desired, gpus_per_instance = :gpi, last_updated = :lu, last_updated_timestamp = :ts",
+            ExpressionAttributeValues={
+                ":total": total_gpus,
+                ":avail": available_gpus,
+                ":running": running_instances,
+                ":desired": running_instances,
+                ":gpi": gpus_per_instance,
+                ":lu": "reservation-processor",
+                ":ts": int(time.time()),
             }
         )
 
@@ -2264,6 +2404,13 @@ def create_reservation(request: dict[str, Any]) -> str:
             "namespace": "gpu-dev",
             # ssh_command will be set when NodePort service is created with real external access
         }
+
+        # Add multinode fields
+        if request.get("is_multinode"):
+            reservation["is_multinode"] = True
+            reservation["master_reservation_id"] = request.get("master_reservation_id", "")
+            reservation["node_index"] = request.get("node_index", 0)
+            reservation["total_nodes"] = request.get("total_nodes", 1)
 
         # Add optional fields
         if "name" in request:
@@ -2664,6 +2811,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         record_trace_event(trace_data, "node_ip_fetch_start")
         node_public_ip = get_pod_node_public_ip(pod_name)
         node_private_ip = get_pod_node_private_ip(pod_name)
+        # Get pod internal IP (used for multinode mpirun hostfile)
+        pod_ip = get_pod_internal_ip(pod_name)
         record_trace_event(trace_data, "node_ip_fetch_end")
 
         # Generate domain name if DNS is enabled
@@ -2736,10 +2885,11 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             v1 = client.CoreV1Api(k8s_client)
 
             # Try multiple times to find SSH daemon in logs (custom images may take longer)
-            # For minimal images like ubuntu:latest, apt-get install openssh-server + sudo can take 60+ seconds
-            # 18 retries = up to 180 seconds total (3 minutes)
-            max_retries = 18
-            retry_delay = 10  # seconds between retries
+            # Default image has openssh-server pre-installed so SSH starts in ~2-5s
+            # Custom/minimal images may need apt-get install which takes longer
+            # 60 retries * 3s = 180 seconds total (3 minutes) - same max but much faster detection
+            max_retries = 60
+            retry_delay = 3  # seconds between retries
 
             for attempt in range(max_retries):
                 logs = v1.read_namespaced_pod_log(
@@ -2859,6 +3009,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                 node_ip=node_public_ip,
                 # For SSH proxy (VPC-internal)
                 node_private_ip=node_private_ip,
+                pod_ip=pod_ip,
                 jupyter_port=jupyter_port,
                 jupyter_url_base=jupyter_url_base,
                 jupyter_enabled=jupyter_enabled,
@@ -3292,10 +3443,11 @@ def create_kubernetes_resources(
                 # Create SSH service if it doesn't exist
                 if not existing_service_port:
                     record_trace_event(trace_data, "k8s_ssh_service_create_start")
-                    create_service(k8s_client, pod_name, node_port)
+                    ssh_port = 2222 if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else 22
+                    create_service(k8s_client, pod_name, node_port, ssh_port=ssh_port)
                     record_trace_event(trace_data, "k8s_ssh_service_create_end")
                     logger.info(
-                        f"Created new service {pod_name}-ssh on port {node_port}"
+                        f"Created new service {pod_name}-ssh on port {node_port} (target={ssh_port})"
                     )
 
                 # Create headless service for multi-node communication
@@ -3367,10 +3519,11 @@ def create_kubernetes_resources(
                 # Create SSH service if it doesn't exist
                 if not existing_service_port:
                     record_trace_event(trace_data, "k8s_ssh_service_create_start_2")
-                    create_service(k8s_client, pod_name, node_port)
+                    ssh_port = 2222 if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else 22
+                    create_service(k8s_client, pod_name, node_port, ssh_port=ssh_port)
                     record_trace_event(trace_data, "k8s_ssh_service_create_end_2")
                     logger.info(
-                        f"Created new service {pod_name}-ssh on port {node_port}"
+                        f"Created new service {pod_name}-ssh on port {node_port} (target={ssh_port})"
                     )
 
                 # Create headless service for multi-node communication
@@ -3496,6 +3649,7 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
     if use_efa:
         efa_count = config.get("efa_count", 1)
         limits["vpc.amazonaws.com/efa"] = str(efa_count)
+        limits["hugepages-2Mi"] = "5120Mi"
         logger.info(f"Using EFA ({efa_count} interfaces) for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
     else:
         logger.info(f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
@@ -3538,6 +3692,7 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
     if use_efa:
         efa_count = config.get("efa_count", 1)
         requests["vpc.amazonaws.com/efa"] = str(efa_count)
+        requests["hugepages-2Mi"] = "5120Mi"
 
     return requests
 
@@ -3603,13 +3758,20 @@ def get_nccl_env_vars(gpu_type: str) -> list:
         # Basic NCCL configuration
         client.V1EnvVar(name="NCCL_DEBUG", value="INFO"),
         client.V1EnvVar(name="NCCL_ASYNC_ERROR_HANDLING", value="1"),
-        client.V1EnvVar(name="NCCL_SOCKET_IFNAME", value="eth0"),
-        # EFA-specific configuration for all GPUs
+        # Exclude loopback/docker - let NCCL auto-detect the right interface
+        # (hostNetwork pods use enp* interfaces, not eth0)
+        client.V1EnvVar(name="NCCL_SOCKET_IFNAME", value="^lo,docker"),
+        # EFA-specific configuration
         client.V1EnvVar(name="FI_PROVIDER", value="efa"),
         client.V1EnvVar(name="NCCL_IB_PCI_RELAXED_ORDERING", value="1"),
         client.V1EnvVar(name="NCCL_CROSS_NIC", value="1"),
-        # Use single EFA adapter by default (works for all instance types)
-        client.V1EnvVar(name="NCCL_IB_HCA", value="efa0"),
+        # Enable GPUDirect RDMA via efa-nv-peermem (EFA 3.0 + NVIDIA 595)
+        client.V1EnvVar(name="FI_EFA_USE_DEVICE_RDMA", value="1"),
+        client.V1EnvVar(name="NCCL_NET_GDR_LEVEL", value="SYS"),
+        # Exclude Mellanox HCAs (not present on EFA instances)
+        client.V1EnvVar(name="NCCL_IB_HCA", value="^mlx"),
+        # Allow both ring and tree algorithms (tree is faster for large messages)
+        client.V1EnvVar(name="NCCL_ALGO", value="ring,tree"),
     ]
 
     return env_vars
@@ -3855,6 +4017,71 @@ EOF
                             chmod 644 /etc/zsh/zshenv
 
                             echo "[STARTUP] ✓ CPU thread limits configured (threads=$GPU_DEV_THREAD_COUNT)"
+                        fi
+
+                        # Write EFA/OpenMPI/NCCL paths for SSH sessions (multinode pods)
+                        if [ "$SUPPORTS_EFA" = "true" ]; then
+                            echo "[STARTUP] Writing EFA/OpenMPI/NCCL paths for SSH sessions..."
+
+                            cat > /etc/profile.d/efa-paths.sh << 'EFAEOF'
+# EFA/OpenMPI/NCCL paths for multinode communication
+export PATH=/opt/amazon/efa/bin:/opt/amazon/openmpi/bin:$PATH
+export LD_LIBRARY_PATH=/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/opt/amazon/ofi-nccl/lib:${{LD_LIBRARY_PATH:-}}
+
+# NCCL/EFA environment for GPUDirect RDMA multinode communication
+export FI_PROVIDER=efa
+export FI_EFA_USE_DEVICE_RDMA=1
+export NCCL_NET_GDR_LEVEL=SYS
+export NCCL_ALGO=ring,tree
+export NCCL_SOCKET_IFNAME=^lo,docker
+export NCCL_DEBUG=INFO
+export NCCL_IB_HCA=^mlx
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_IB_PCI_RELAXED_ORDERING=1
+export NCCL_CROSS_NIC=1
+EFAEOF
+                            chmod 644 /etc/profile.d/efa-paths.sh
+
+                            mkdir -p /etc/zsh
+                            cat >> /etc/zsh/zshenv << 'EFAEOF'
+# EFA/OpenMPI/NCCL paths for multinode communication
+export PATH=/opt/amazon/efa/bin:/opt/amazon/openmpi/bin:$PATH
+export LD_LIBRARY_PATH=/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/opt/amazon/ofi-nccl/lib:${{LD_LIBRARY_PATH:-}}
+
+# NCCL/EFA environment for GPUDirect RDMA multinode communication
+export FI_PROVIDER=efa
+export FI_EFA_USE_DEVICE_RDMA=1
+export NCCL_NET_GDR_LEVEL=SYS
+export NCCL_ALGO=ring,tree
+export NCCL_SOCKET_IFNAME=^lo,docker
+export NCCL_DEBUG=INFO
+export NCCL_IB_HCA=^mlx
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_IB_PCI_RELAXED_ORDERING=1
+export NCCL_CROSS_NIC=1
+EFAEOF
+
+                            # Also append to .shell_env since it resets PATH (sourced by .zshrc)
+                            cat >> /home/dev/.shell_env << 'EFAEOF'
+
+# EFA/OpenMPI/NCCL paths for multinode communication
+export PATH="/opt/amazon/efa/bin:/opt/amazon/openmpi/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/opt/amazon/ofi-nccl/lib:${{LD_LIBRARY_PATH:-}}"
+
+# NCCL/EFA environment for GPUDirect RDMA multinode communication
+export FI_PROVIDER=efa
+export FI_EFA_USE_DEVICE_RDMA=1
+export NCCL_NET_GDR_LEVEL=SYS
+export NCCL_ALGO=ring,tree
+export NCCL_SOCKET_IFNAME=^lo,docker
+export NCCL_DEBUG=INFO
+export NCCL_IB_HCA=^mlx
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_IB_PCI_RELAXED_ORDERING=1
+export NCCL_CROSS_NIC=1
+EFAEOF
+
+                            echo "[STARTUP] ✓ EFA/OpenMPI/NCCL paths configured"
                         fi
 
                         # Install PyTorch for ARM64 CPU instances
@@ -4406,8 +4633,14 @@ GITCACHESCRIPT
                                 SFTP_SERVER="/usr/lib/openssh/sftp-server"  # fallback
                             fi
 
+                            # EFA pods use hostNetwork, port 22 conflicts with host sshd
+                            if [ "$SUPPORTS_EFA" = "true" ]; then
+                                SSH_PORT=2222
+                            else
+                                SSH_PORT=22
+                            fi
                             cat > /etc/ssh/sshd_config << EOF
-Port 22
+Port $SSH_PORT
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
@@ -4752,7 +4985,8 @@ EOF
                             name="dshm", mount_path="/dev/shm"),
                         client.V1VolumeMount(
                             name="ccache-shared", mount_path="/ccache_shared"),
-                    ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else []),
+                    ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else [])
+                    + ([client.V1VolumeMount(name="hugepages-2mi", mount_path="/dev/hugepages")] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
                             # SYS_ADMIN required for NVIDIA GPU profiling (ncu, nsys)
@@ -4863,7 +5097,13 @@ EOF
                         read_only=False
                     )
                 )
-            ] if efs_filesystem_id else []),
+            ] if efs_filesystem_id else [])
+            + ([
+                client.V1Volume(
+                    name="hugepages-2mi",
+                    empty_dir=client.V1EmptyDirVolumeSource(medium="HugePages-2Mi")
+                )
+            ] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else []),
             node_selector={
                 "GpuType": gpu_type,
                 **({} if target_az is None else {"topology.kubernetes.io/zone": target_az})
@@ -4896,6 +5136,11 @@ EOF
             ] if not gpu_type.startswith("cpu-") else [],
             # Faster pod deletion (default is 30s)
             termination_grace_period_seconds=10,
+            # EFA requires host network namespace for RDMA access to efa0 interface
+            **({
+                "host_network": True,
+                "dns_policy": "ClusterFirstWithHostNet",
+            } if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else {}),
         )
 
         # Create pod metadata
@@ -4925,17 +5170,18 @@ EOF
         raise
 
 
-def create_service(k8s_client, pod_name: str, node_port: int):
+def create_service(k8s_client, pod_name: str, node_port: int, ssh_port: int = 22):
     """Create NodePort service for SSH access"""
     try:
         v1 = client.CoreV1Api(k8s_client)
 
         # Create service spec with Local traffic policy for node-specific access
+        # EFA pods use hostNetwork with sshd on port 2222 to avoid host conflict
         service_spec = client.V1ServiceSpec(
             type="NodePort",
             ports=[
                 client.V1ServicePort(
-                    port=22, target_port=22, node_port=node_port, protocol="TCP"
+                    port=22, target_port=ssh_port, node_port=node_port, protocol="TCP"
                 )
             ],
             selector={"reservation": pod_name},
@@ -5161,6 +5407,20 @@ def get_pod_node_private_ip(pod_name: str) -> str:
     except Exception as e:
         logger.error(
             f"Error getting pod node private IP for {pod_name}: {str(e)}")
+        return None
+
+
+def get_pod_internal_ip(pod_name: str) -> str:
+    """Get pod's internal IP (for multinode MPI hostfile display)"""
+    try:
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+        pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
+        ip = pod.status.pod_ip or pod.status.host_ip
+        logger.info(f"Pod {pod_name} internal IP: {ip}")
+        return ip
+    except Exception as e:
+        logger.error(f"Error getting pod internal IP for {pod_name}: {e}")
         return None
 
 
@@ -5907,6 +6167,7 @@ def update_reservation_connection_info(
     domain_name: str = None,
     alb_config: dict = None,
     node_private_ip: str = None,  # For SSH proxy (VPC-internal routing)
+    pod_ip: str = None,  # Pod internal IP (for multinode MPI hostfile)
     # New parameter to indicate if SSH is available
     preserve_entrypoint: bool = False,
 ):
@@ -6021,6 +6282,10 @@ def update_reservation_connection_info(
                 "node_port": node_port,
                 "node_ip": node_ip,
             })
+
+        # Store pod internal IP (useful for multinode MPI hostfile)
+        if pod_ip:
+            update_fields["pod_ip"] = pod_ip
 
         # Add EBS persistent disk information if available
         if persistent_volume_id:
@@ -6580,17 +6845,17 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
             current_pod_status = current_reservation.get("pod_status", "")
             status_updated_at = current_reservation.get("status_updated_at")
 
-            # CRITICAL: If reservation has been cancelled or failed, don't override it
+            # CRITICAL: If reservation has been cancelled, failed, or expired, don't override it
             # Also check for cancellation markers (cancelled_at field exists)
             cancelled_at = current_reservation.get("cancelled_at")
-            if current_status in ["cancelled", "failed"] or cancelled_at:
+            if current_status in ["cancelled", "failed", "expired"] or cancelled_at:
                 effective_status = current_status if current_status in [
-                    "cancelled", "failed"] else "cancelled"
+                    "cancelled", "failed", "expired"] else "cancelled"
                 logger.info(
                     f"Skipping pod status update for {pod_name} - reservation is {effective_status} (cancelled_at: {cancelled_at})")
 
                 # If status field doesn't match cancellation state, fix it
-                if current_status not in ["cancelled", "failed"] and cancelled_at:
+                if current_status not in ["cancelled", "failed", "expired"] and cancelled_at:
                     logger.info(
                         f"Correcting status from '{current_status}' to 'cancelled' for reservation {reservation_id}")
                     update_reservation_fields(
@@ -6600,7 +6865,8 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                     "phase": pod_phase,
                     "display_message": f"Reservation {effective_status}",
                     "has_errors": False,
-                    "is_ready": False
+                    "is_ready": False,
+                    "terminated": True
                 }
 
             # Only update if status actually changed
@@ -7275,6 +7541,7 @@ def enable_jupyter_in_pod(
                 v1.connect_get_namespaced_pod_exec,
                 pod_name,
                 namespace,
+                container="gpu-dev",
                 command=check_command,
                 stderr=True,
                 stdin=False,
@@ -7321,6 +7588,7 @@ def enable_jupyter_in_pod(
             v1.connect_get_namespaced_pod_exec,
             pod_name,
             namespace,
+            container="gpu-dev",
             command=start_commands,
             stderr=True,
             stdin=False,
@@ -7452,6 +7720,7 @@ def disable_jupyter_in_pod(
             v1.connect_get_namespaced_pod_exec,
             pod_name,
             namespace,
+            container="gpu-dev",
             command=kill_commands,
             stderr=True,
             stdin=False,
@@ -7564,6 +7833,7 @@ EOF
             v1.connect_get_namespaced_pod_exec,
             pod_name,
             namespace,
+            container="gpu-dev",
             command=add_keys_commands,
             stderr=True,
             stdin=False,
@@ -8164,6 +8434,7 @@ def clear_warning_files_from_pod(pod_name: str, namespace: str = "gpu-dev") -> b
             v1.connect_get_namespaced_pod_exec,
             pod_name,
             namespace,
+            container="gpu-dev",
             command=clear_warning_commands,
             stderr=True,
             stdin=False,

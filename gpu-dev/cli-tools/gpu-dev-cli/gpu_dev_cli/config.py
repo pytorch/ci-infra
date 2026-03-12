@@ -67,15 +67,15 @@ class Config:
 
     def _create_aws_session(self):
         """Create AWS session with profile support"""
-        try:
-            # Try to use 'gpu-dev' profile if it exists
-            session = boto3.Session(profile_name="gpu-dev")
-            # Test if profile works by checking credentials
-            session.get_credentials()
-            return session
-        except Exception:
-            # Fall back to default credentials (environment, default profile, IAM role, etc.)
-            return boto3.Session()
+        available_profiles = boto3.Session().available_profiles
+        if "gpu-dev" in available_profiles:
+            try:
+                session = boto3.Session(profile_name="gpu-dev")
+                session.get_credentials()
+                return session
+            except Exception:
+                pass
+        return boto3.Session()
 
     @property
     def sts_client(self):

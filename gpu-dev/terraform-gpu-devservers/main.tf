@@ -83,6 +83,7 @@ locals {
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
+          efa_network_cards   = 0
         }
         "cpu-x86" = {
           instance_type       = "c7i.4xlarge"
@@ -91,22 +92,34 @@ locals {
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 0
         }
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 2  # 2 instances in primary AZ
+          instance_count      = 2 # 2 instances in primary AZ
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
+          efa_network_cards   = 0
         }
         "t4-az2" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 2  # 2 instances in secondary AZ
+          instance_count      = 2 # 2 instances in secondary AZ
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
+          efa_network_cards   = 0
+        }
+        "h100" = {
+          instance_type       = "p5.48xlarge"
+          instance_types      = null
+          instance_count      = 2 # Fallback default (not used when capacity_reservations defined)
+          gpus_per_instance   = 8
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 32
         }
         "t4-small" = {
           instance_type       = "g4dn.2xlarge"
@@ -115,6 +128,7 @@ locals {
           gpus_per_instance   = 1
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 0
         }
         # Note: Nsight profiling nodes are not separate ASGs - just label existing nodes:
         # kubectl label node <node-name> gpu.monitoring/profiling-dedicated=true nvidia.com/gpu.deploy.dcgm-exporter=false --overwrite
@@ -131,52 +145,58 @@ locals {
         "b200" = {
           instance_type       = "p6-b200.48xlarge"
           instance_types      = null
-          instance_count      = 2  # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 2 # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 8 # p6-b200.48xlarge supports max 8 network cards
         }
         "h200" = {
           instance_type       = "p5e.48xlarge" # Match capacity reservation type
           instance_types      = ["p5e.48xlarge", "p5en.48xlarge"]
-          instance_count      = 4  # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 4 # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 32
         }
         "h100" = {
           instance_type       = "p5.48xlarge"
           instance_types      = null
-          instance_count      = 2  # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 2 # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 32
         }
         # Note: Nsight profiling nodes are not separate ASGs - just label existing nodes:
         # kubectl label node <node-name> gpu.monitoring/profiling-dedicated=true nvidia.com/gpu.deploy.dcgm-exporter=false --overwrite
         "a100" = {
           instance_type       = "p4d.24xlarge"
           instance_types      = null
-          instance_count      = 2  # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 2 # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 4
         }
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 5  # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 5 # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
+          efa_network_cards   = 0
         }
         "l4" = {
           instance_type       = "g6.12xlarge"
           instance_types      = null
-          instance_count      = 5  # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 5 # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 4 # 4x L4 GPUs
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 1
         }
         "a10g" = {
           instance_type       = "g5.12xlarge"
@@ -185,6 +205,7 @@ locals {
           gpus_per_instance   = 4 # 4x A10G GPUs
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 1
         }
         "cpu-arm" = {
           instance_type       = "c7g.8xlarge"
@@ -193,6 +214,7 @@ locals {
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
+          efa_network_cards   = 0
         }
         "cpu-x86" = {
           instance_type       = "c7i.8xlarge"
@@ -201,6 +223,7 @@ locals {
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
+          efa_network_cards   = 0
         }
       }
     }
@@ -219,6 +242,9 @@ locals {
       # h200 = [
       #   { id = "cr-0c0a6073304dd5d03", instance_count = 1 }  # Expired - commented out
       # ]
+      h100 = [
+        { key = "cr0", id = "cr-04d3d1d84e127a562", instance_count = 2 }, # H100 reservation us-west-1c (starts Wed)
+      ]
     }
     prod = {
       # Production environment capacity reservations
@@ -230,12 +256,10 @@ locals {
       ]
       h100 = [
         { key = "cr0", id = "cr-0a3f49b96fe03ca04", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
-        { key = "cr1", id = null, instance_count = 2 },                   # H100 on-demand (2 instances)
       ]
       h200 = [
-        { key = "cr0", id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 reservation us-east-2c (p5e.48xlarge)
+        # cr0 removed: cr-0f6d0766f5d3339e6 expired/deleted
         { key = "cr1", id = "cr-06c9c978dea756a26", instance_count = 3 }, # H200 reservation (3 instances)
-        { key = "cr2", id = null, instance_count = 2 },                   # H200 on-demand (2 instances)
       ]
       b200 = [
         { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
@@ -250,41 +274,44 @@ locals {
   gpu_subnet_assignments = {
     default = {
       # Test environment - T4 nodes in multiple AZs for testing
-      t4           = "primary"    # T4 in us-west-1a (primary AZ)
-      "t4-az2"     = "secondary"  # T4 in us-west-1b (secondary AZ)
-      "cpu-arm"    = "primary"
-      "cpu-x86"    = "primary"
-      "t4-small"   = "secondary"
+      t4         = "primary"   # T4 in us-west-1a (primary AZ)
+      "t4-az2"   = "secondary" # T4 in us-west-1b (secondary AZ)
+      "cpu-arm"  = "primary"
+      "cpu-x86"  = "primary"
+      "t4-small" = "secondary"
+      h100       = "secondary" # us-west-1c for H100 capacity reservation
     }
     prod = {
       # Production environment subnet assignments
-      b200           = "primary"
-      h200           = "tertiary" # us-east-2c for H200 capacity reservation
-      h100           = "tertiary" # us-east-2c for H100 capacity reservation
-      a100           = "primary"
-      t4             = "primary"
-      l4             = "secondary"
-      a10g           = "secondary"
-      "cpu-arm"      = "primary"
-      "cpu-x86"      = "primary"
+      b200      = "primary"
+      h200      = "tertiary" # us-east-2c for H200 capacity reservation
+      h100      = "tertiary" # us-east-2c for H100 capacity reservation
+      a100      = "primary"
+      t4        = "primary"
+      l4        = "secondary"
+      a10g      = "secondary"
+      "cpu-arm" = "primary"
+      "cpu-x86" = "primary"
     }
   }
 
   # Per-capacity-reservation AZ mappings (overrides gpu_subnet_assignments when CR is used)
   capacity_reservation_azs = {
-    default = {}
+    default = {
+      "cr-04d3d1d84e127a562" = "secondary" # us-west-1c
+    }
     prod = {
       # B200 capacity reservations
       "cr-0c366fb8339a10f69" = "primary"   # us-east-2a
       "cr-0122dff5e01d566dc" = "secondary" # us-east-2b
       "cr-08e7fee0b8dc3de5e" = "secondary" # us-east-2b
       # H200 capacity reservations
-      "cr-0f6d0766f5d3339e6" = "tertiary"  # us-east-2c (p5e.48xlarge)
-      "cr-06c9c978dea756a26" = "tertiary"  # us-east-2c
+      # cr-0f6d0766f5d3339e6 removed (expired)
+      "cr-06c9c978dea756a26" = "tertiary" # us-east-2c
       # H100 capacity reservation
-      "cr-0a3f49b96fe03ca04" = "tertiary"  # us-east-2c (p5.48xlarge)
+      "cr-0a3f49b96fe03ca04" = "tertiary" # us-east-2c (p5.48xlarge)
       # A100 capacity reservation
-      "cr-01cc0f00f28b095af" = "primary"   # us-east-2a
+      "cr-01cc0f00f28b095af" = "primary" # us-east-2a
     }
   }
 }
@@ -389,6 +416,103 @@ resource "aws_route_table_association" "gpu_dev_rta_tertiary" {
   route_table_id = aws_route_table.gpu_dev_rt.id
 }
 
+# --- Private subnets + NAT Gateway for multi-EFA instances ---
+# Instances with 32 EFA interfaces can't have associate_public_ip_address in the
+# launch template, so they go in private subnets and use NAT for internet access.
+
+resource "aws_eip" "nat" {
+  domain = "vpc"
+
+  tags = {
+    Name        = "${var.prefix}-nat-eip"
+    Environment = local.current_config.environment
+  }
+}
+
+resource "aws_nat_gateway" "gpu_dev_nat" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.gpu_dev_subnet_secondary.id # NAT GW lives in public secondary subnet (primary is full)
+
+  tags = {
+    Name        = "${var.prefix}-nat-gw"
+    Environment = local.current_config.environment
+  }
+
+  depends_on = [aws_internet_gateway.gpu_dev_igw]
+}
+
+# Private route table: internet via NAT Gateway
+resource "aws_route_table" "gpu_dev_private_rt" {
+  vpc_id = aws_vpc.gpu_dev_vpc.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.gpu_dev_nat.id
+  }
+
+  tags = {
+    Name        = "${var.prefix}-gpu-dev-private-rt"
+    Environment = local.current_config.environment
+  }
+}
+
+# Private subnets mirroring the public ones (one per AZ)
+resource "aws_subnet" "gpu_dev_private_subnet" {
+  vpc_id                  = aws_vpc.gpu_dev_vpc.id
+  cidr_block              = "10.0.48.0/20"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = false
+
+  tags = {
+    Name                                          = "${var.prefix}-gpu-dev-private-subnet"
+    Environment                                   = local.current_config.environment
+    "kubernetes.io/cluster/${var.prefix}-cluster" = "shared"
+  }
+}
+
+resource "aws_subnet" "gpu_dev_private_subnet_secondary" {
+  vpc_id                  = aws_vpc.gpu_dev_vpc.id
+  cidr_block              = "10.0.64.0/20"
+  availability_zone       = data.aws_availability_zones.available.names[1]
+  map_public_ip_on_launch = false
+
+  tags = {
+    Name                                          = "${var.prefix}-gpu-dev-private-subnet-secondary"
+    Environment                                   = local.current_config.environment
+    "kubernetes.io/cluster/${var.prefix}-cluster" = "shared"
+  }
+}
+
+resource "aws_subnet" "gpu_dev_private_subnet_tertiary" {
+  count                   = length(data.aws_availability_zones.available.names) >= 3 ? 1 : 0
+  vpc_id                  = aws_vpc.gpu_dev_vpc.id
+  cidr_block              = "10.0.80.0/20"
+  availability_zone       = data.aws_availability_zones.available.names[2]
+  map_public_ip_on_launch = false
+
+  tags = {
+    Name                                          = "${var.prefix}-gpu-dev-private-subnet-tertiary"
+    Environment                                   = local.current_config.environment
+    "kubernetes.io/cluster/${var.prefix}-cluster" = "shared"
+  }
+}
+
+resource "aws_route_table_association" "gpu_dev_private_rta" {
+  subnet_id      = aws_subnet.gpu_dev_private_subnet.id
+  route_table_id = aws_route_table.gpu_dev_private_rt.id
+}
+
+resource "aws_route_table_association" "gpu_dev_private_rta_secondary" {
+  subnet_id      = aws_subnet.gpu_dev_private_subnet_secondary.id
+  route_table_id = aws_route_table.gpu_dev_private_rt.id
+}
+
+resource "aws_route_table_association" "gpu_dev_private_rta_tertiary" {
+  count          = length(aws_subnet.gpu_dev_private_subnet_tertiary)
+  subnet_id      = aws_subnet.gpu_dev_private_subnet_tertiary[0].id
+  route_table_id = aws_route_table.gpu_dev_private_rt.id
+}
+
 # Security Groups
 
 # Control plane security group
@@ -462,11 +586,11 @@ resource "aws_security_group" "gpu_dev_sg" {
     description = "DNS UDP access within VPC"
   }
 
-  # All traffic within VPC for EFA
+  # All traffic within security group for EFA (RDMA requires protocol -1, not just TCP)
   ingress {
     from_port = 0
-    to_port   = 65535
-    protocol  = "tcp"
+    to_port   = 0
+    protocol  = "-1"
     self      = true
   }
 
@@ -500,6 +624,15 @@ resource "aws_security_group" "gpu_dev_sg" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # EFA RDMA requires self-referencing egress (EFA-only interfaces have no IP,
+  # so the CIDR-based rule above can't match their outbound traffic)
+  egress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    self      = true
   }
 
   tags = {

@@ -310,6 +310,12 @@ def _show_single_reservation(connection_info: dict) -> None:
             oom_time_display = format_timestamp(last_oom_at) if last_oom_at else "Unknown"
             oom_section = f"\n[red]⚠️  OOM Events:[/red] [red]{oom_count} OOM(s) detected (last: {oom_time_display})[/red]"
 
+        # Show pod internal IP for multinode reservations
+        pod_ip_info = ""
+        pod_ip = connection_info.get("pod_ip")
+        if pod_ip and connection_info.get("is_multinode"):
+            pod_ip_info = f"[blue]Internal IP:[/blue] {pod_ip}\n"
+
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
             f"[blue]Quick Connect:[/blue] {connect_command}\n"
@@ -317,7 +323,8 @@ def _show_single_reservation(connection_info: dict) -> None:
             + vscode_info
             + jupyter_info
             + f"[blue]Pod Name:[/blue] {connection_info['pod_name']}\n"
-            f"[blue]GPUs:[/blue] {gpu_info}\n"
+            + pod_ip_info
+            + f"[blue]GPUs:[/blue] {gpu_info}\n"
             f"[blue]Instance Type:[/blue] {instance_type}\n"
             + secondary_users_info
             + f"[blue]Storage:[/blue] {disk_status}\n"
@@ -1408,59 +1415,42 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
 
                         statuses_to_include = requested_statuses
                 else:
-                    # Default: in-progress + recent failures (last hour)
+                    # Default: active statuses only (fast path)
+                    # failed/cancelled are fetched separately and filtered to last hour
                     statuses_to_include = [
-                        "active", "preparing", "queued", "pending", "failed", "cancelled"]
+                        "active", "preparing", "queued", "pending"]
 
-                reservations = reservation_mgr.list_reservations(
-                    user_filter=user_filter, statuses_to_include=statuses_to_include
-                )
+                # For default view, fetch active statuses + recent failures in parallel
+                if not status:
+                    from datetime import datetime, timezone, timedelta
+                    from concurrent.futures import ThreadPoolExecutor
+                    one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+                    def fetch_active():
+                        return reservation_mgr.list_reservations(
+                            user_filter=user_filter, statuses_to_include=statuses_to_include)
+
+                    def fetch_recent_failures():
+                        return reservation_mgr.list_reservations(
+                            user_filter=user_filter,
+                            statuses_to_include=["failed", "cancelled"],
+                            created_after=one_hour_ago)
+
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        active_future = executor.submit(fetch_active)
+                        failures_future = executor.submit(fetch_recent_failures)
+                        reservations = active_future.result() + failures_future.result()
+                else:
+                    reservations = reservation_mgr.list_reservations(
+                        user_filter=user_filter, statuses_to_include=statuses_to_include
+                    )
             except RuntimeError as e:
                 rprint(f"[red]❌ {str(e)}[/red]")
                 return False
 
             # Filter failed/cancelled reservations to only show recent ones (last hour)
             if not status or "all" not in (status.split(",") if status else []):
-                # Only apply time filtering when using default filters (not when user specifies --status)
-                from datetime import datetime, timezone, timedelta
-                now = datetime.now(timezone.utc)
-                one_hour_ago = now - timedelta(hours=1)
-
-                filtered_reservations = []
-                for reservation in reservations:
-                    reservation_status = reservation.get("status", "unknown")
-                    if reservation_status in ["active", "preparing", "queued", "pending"]:
-                        # Always show active/pending reservations
-                        filtered_reservations.append(reservation)
-                    elif reservation_status in ["failed", "cancelled"]:
-                        # Only show failed/cancelled from last hour
-                        created_at = reservation.get("created_at")
-                        if created_at:
-                            try:
-                                if isinstance(created_at, str):
-                                    if created_at.endswith("Z"):
-                                        created_dt = datetime.fromisoformat(
-                                            created_at.replace("Z", "+00:00"))
-                                    elif "+" in created_at or created_at.endswith("00:00"):
-                                        created_dt = datetime.fromisoformat(
-                                            created_at)
-                                    else:
-                                        naive_dt = datetime.fromisoformat(
-                                            created_at)
-                                        created_dt = naive_dt.replace(
-                                            tzinfo=timezone.utc)
-                                else:
-                                    created_dt = datetime.fromtimestamp(
-                                        created_at, tz=timezone.utc)
-
-                                if created_dt >= one_hour_ago:
-                                    filtered_reservations.append(reservation)
-                            except (ValueError, TypeError):
-                                # If timestamp parsing fails, include it to be safe
-                                filtered_reservations.append(reservation)
-                    else:
-                        # Include other statuses as-is
-                        filtered_reservations.append(reservation)
+                filtered_reservations = reservations
 
                 reservations = filtered_reservations
 
@@ -1556,20 +1546,25 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         else:
                             queue_info = "Calculating..."
                     elif res_status == "active":
-                        # Show SSH connection hint for active reservations
-                        ssh_command = reservation.get("ssh_command", "")
-                        if ssh_command and "dev@" in ssh_command:
-                            try:
-                                node_info = (
-                                    ssh_command.split("dev@")[1].split()[0]
-                                    if "dev@" in ssh_command
-                                    else "Ready"
-                                )
-                                queue_info = f"Ready: {node_info}"
-                            except (IndexError, AttributeError):
-                                queue_info = "Ready"
+                        # Show pod IP for multinode, SSH hint for single-node
+                        pod_ip = reservation.get("pod_ip", "")
+                        is_multinode = reservation.get("is_multinode", False)
+                        if is_multinode and pod_ip:
+                            queue_info = f"IP: {pod_ip}"
                         else:
-                            queue_info = "Ready"
+                            ssh_command = reservation.get("ssh_command", "")
+                            if ssh_command and "dev@" in ssh_command:
+                                try:
+                                    node_info = (
+                                        ssh_command.split("dev@")[1].split()[0]
+                                        if "dev@" in ssh_command
+                                        else "Ready"
+                                    )
+                                    queue_info = f"Ready: {node_info}"
+                                except (IndexError, AttributeError):
+                                    queue_info = "Ready"
+                            else:
+                                queue_info = "Ready"
 
                     # Format storage indicator - show disk name if available
                     disk_name = reservation.get("disk_name")
@@ -2471,11 +2466,14 @@ def _show_availability() -> None:
                     else:
                         wait_display = f"{hours}h {minutes}min"
 
-                # Color code availability based on full nodes available
-                # Red: 0 GPUs available
-                # Yellow: Some GPUs available but no full node
-                # Green: At least one full node available
-                if available == 0:
+                # Check maintenance mode
+                is_maintenance = info.get("maintenance", False)
+                maintenance_reason = info.get("maintenance_reason", "")
+
+                if is_maintenance:
+                    available_display = f"[red]MAINTENANCE[/red]"
+                    wait_display = maintenance_reason or "Under maintenance"
+                elif available == 0:
                     available_display = f"[red]{available}[/red]"
                 elif full_nodes_available > 0:
                     available_display = f"[green]{available}[/green]"
@@ -2485,9 +2483,9 @@ def _show_availability() -> None:
                 table.add_row(
                     gpu_type.upper(),
                     available_display,
-                    str(max_reservable),
+                    str(max_reservable) if not is_maintenance else "-",
                     str(total),
-                    str(queue_length),
+                    str(queue_length) if not is_maintenance else "-",
                     arch,
                     wait_display,
                 )
@@ -2576,6 +2574,7 @@ def _show_availability_watch(interval: int) -> None:
                             title="GPU Availability by Type (numbers are GPUs, not nodes)")
                         table.add_column("GPU Type", style="cyan")
                         table.add_column("Available", style="green")
+                        table.add_column("Max Reservable", style="blue")
                         table.add_column("Total", style="blue")
                         table.add_column("Queue Length", style="yellow")
                         table.add_column("Architecture", style="dim")
@@ -2588,11 +2587,13 @@ def _show_availability_watch(interval: int) -> None:
                             # Add separator before CPU section
                             if last_arch and not last_arch.startswith("CPU") and arch.startswith("CPU"):
                                 table.add_row("---", "---", "---",
-                                              "---", "---", "---")
+                                              "---", "---", "---", "---")
 
                             last_arch = arch
                             available = info.get("available", 0)
+                            max_reservable = info.get("max_reservable", 0)
                             total = info.get("total", 0)
+                            full_nodes_available = info.get("full_nodes_available", 0)
                             queue_length = info.get("queue_length", 0)
                             est_wait = info.get("estimated_wait_minutes", 0)
 
@@ -2611,17 +2612,26 @@ def _show_availability_watch(interval: int) -> None:
                                 else:
                                     wait_display = f"{hours}h {minutes}min"
 
-                            # Color code availability
-                            if available > 0:
+                            # Check maintenance mode
+                            is_maintenance = info.get("maintenance", False)
+                            maintenance_reason = info.get("maintenance_reason", "")
+
+                            if is_maintenance:
+                                available_display = f"[red]MAINTENANCE[/red]"
+                                wait_display = maintenance_reason or "Under maintenance"
+                            elif available == 0:
+                                available_display = f"[red]{available}[/red]"
+                            elif full_nodes_available > 0:
                                 available_display = f"[green]{available}[/green]"
                             else:
-                                available_display = f"[red]{available}[/red]"
+                                available_display = f"[yellow]{available}[/yellow]"
 
                             table.add_row(
                                 gpu_type.upper(),
                                 available_display,
+                                str(max_reservable) if not is_maintenance else "-",
                                 str(total),
-                                str(queue_length),
+                                str(queue_length) if not is_maintenance else "-",
                                 arch,
                                 wait_display,
                             )

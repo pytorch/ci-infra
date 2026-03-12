@@ -92,8 +92,14 @@ def select_gpu_type_interactive(
                 wait_display = f"{hours}h {minutes}min"
             status_indicator = "⏳"
 
-        # Color code availability
-        if available > 0:
+        # Check maintenance mode
+        is_maintenance = info.get("maintenance", False)
+        maintenance_reason = info.get("maintenance_reason", "")
+
+        if is_maintenance:
+            available_display = f"[red]MAINTENANCE[/red]"
+            wait_display = maintenance_reason or "Under maintenance"
+        elif available > 0:
             available_display = f"[green]{available}[/green]"
         else:
             available_display = f"[red]{available}[/red]"
@@ -102,18 +108,25 @@ def select_gpu_type_interactive(
             gpu_type.upper(),
             available_display,
             str(total),
-            str(queue_length),
+            str(queue_length) if not is_maintenance else "-",
             wait_display,
         )
 
-        # Create choice label with status
-        choice_label = (
-            f"{status_indicator} {gpu_type.upper()} ({available}/{total} available)"
-        )
-        if queue_length > 0:
-            choice_label += f" - {queue_length} in queue"
+        if is_maintenance:
+            choices.append(questionary.Choice(
+                title=f"🔧 {gpu_type.upper()} - MAINTENANCE: {maintenance_reason}",
+                value=gpu_type,
+                disabled="Under maintenance",
+            ))
+        else:
+            # Create choice label with status
+            choice_label = (
+                f"{status_indicator} {gpu_type.upper()} ({available}/{total} available)"
+            )
+            if queue_length > 0:
+                choice_label += f" - {queue_length} in queue"
 
-        choices.append(questionary.Choice(title=choice_label, value=gpu_type))
+            choices.append(questionary.Choice(title=choice_label, value=gpu_type))
 
     console.print(table)
     console.print()

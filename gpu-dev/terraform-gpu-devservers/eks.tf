@@ -111,11 +111,15 @@ resource "aws_eks_cluster" "gpu_dev_cluster" {
   vpc_config {
     subnet_ids = concat([
       aws_subnet.gpu_dev_subnet.id,
-      aws_subnet.gpu_dev_subnet_secondary.id
-    ], length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : [])
-    security_group_ids         = [aws_security_group.eks_control_plane_sg.id]
-    endpoint_private_access    = true
-    endpoint_public_access     = true
+      aws_subnet.gpu_dev_subnet_secondary.id,
+      aws_subnet.gpu_dev_private_subnet.id,
+      aws_subnet.gpu_dev_private_subnet_secondary.id
+      ],
+      length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : [],
+    length(aws_subnet.gpu_dev_private_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_private_subnet_tertiary[0].id] : [])
+    security_group_ids      = [aws_security_group.eks_control_plane_sg.id]
+    endpoint_private_access = true
+    endpoint_public_access  = true
   }
 
   depends_on = [
@@ -161,21 +165,33 @@ locals {
     "arm64"  = data.aws_ami.eks_gpu_ami_arm64.id
   }
 
+  # Subnet maps: public (for single-EFA instances) and private (for multi-EFA instances)
+  public_subnet_map = {
+    "primary"   = aws_subnet.gpu_dev_subnet.id
+    "secondary" = aws_subnet.gpu_dev_subnet_secondary.id
+    "tertiary"  = length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? aws_subnet.gpu_dev_subnet_tertiary[0].id : aws_subnet.gpu_dev_subnet.id
+  }
+  private_subnet_map = {
+    "primary"   = aws_subnet.gpu_dev_private_subnet.id
+    "secondary" = aws_subnet.gpu_dev_private_subnet_secondary.id
+    "tertiary"  = length(aws_subnet.gpu_dev_private_subnet_tertiary) > 0 ? aws_subnet.gpu_dev_private_subnet_tertiary[0].id : aws_subnet.gpu_dev_private_subnet.id
+  }
+
   # Map internal Terraform GPU types to user-facing Kubernetes GPU types
   # This allows multiple AZ node groups to share the same user-facing GPU type
   # nsight variants map to base type so users see them as regular GPU nodes
   gpu_type_kubernetes_labels = {
-    "t4"         = "t4"
-    "t4-az2"     = "t4"      # Both t4 and t4-az2 should be labeled as "t4" in Kubernetes
-    "l4"         = "l4"
-    "a10g"       = "a10g"
-    "h100"       = "h100"
-    "h200"       = "h200"
-    "b200"       = "b200"
-    "a100"       = "a100"
-    "cpu-arm"    = "cpu-arm"
-    "cpu-x86"    = "cpu-x86"
-    "t4-small"   = "t4-small"
+    "t4"       = "t4"
+    "t4-az2"   = "t4" # Both t4 and t4-az2 should be labeled as "t4" in Kubernetes
+    "l4"       = "l4"
+    "a10g"     = "a10g"
+    "h100"     = "h100"
+    "h200"     = "h200"
+    "b200"     = "b200"
+    "a100"     = "a100"
+    "cpu-arm"  = "cpu-arm"
+    "cpu-x86"  = "cpu-x86"
+    "t4-small" = "t4-small"
   }
 
   # Flatten capacity reservations to create multiple ASGs when needed
@@ -183,12 +199,20 @@ locals {
   gpu_capacity_reservations = flatten([
     for gpu_type, gpu_config in local.current_config.supported_gpu_types : [
       for cr_index, cr_config in try(local.capacity_reservations[terraform.workspace][gpu_type], [null]) : {
-        gpu_type = gpu_type
-        gpu_config = gpu_config
+        gpu_type                = gpu_type
+        gpu_config              = gpu_config
         capacity_reservation_id = cr_config != null ? cr_config.id : null
-        asg_key = cr_config != null ? "${gpu_type}-${cr_config.key}" : gpu_type
+        asg_key                 = cr_config != null ? "${gpu_type}-${cr_config.key}" : gpu_type
         # Use manual instance count from capacity reservation config, fallback to GPU config default
         instance_count = cr_config != null ? cr_config.instance_count : gpu_config.instance_count
+        # Resolve which AZ bucket this ASG belongs to: CR-specific → GPU type → default "primary"
+        subnet_az = (
+          cr_config != null && cr_config.id != null
+          ? lookup(local.capacity_reservation_azs[terraform.workspace], cr_config.id, local.gpu_subnet_assignments[terraform.workspace][gpu_type])
+          : local.gpu_subnet_assignments[terraform.workspace][gpu_type]
+        )
+        # Multi-EFA instances (>1 network card) must use private subnets (no public IP in launch template)
+        use_private_subnet = try(gpu_config.efa_network_cards, 0) > 1
       }
     ]
   ])
@@ -203,27 +227,13 @@ locals {
 resource "aws_autoscaling_group" "gpu_dev_nodes" {
   for_each = local.gpu_asg_configs
 
-  name                      = "${var.prefix}-gpu-nodes-${each.key}"
-  vpc_zone_identifier       = (
-    # Use per-CR AZ mapping if capacity reservation is used and has a mapping
-    each.value.capacity_reservation_id != null ? (
-      lookup(local.capacity_reservation_azs[terraform.workspace], each.value.capacity_reservation_id, null) != null ? (
-        local.capacity_reservation_azs[terraform.workspace][each.value.capacity_reservation_id] == "secondary" ? [aws_subnet.gpu_dev_subnet_secondary.id] :
-        local.capacity_reservation_azs[terraform.workspace][each.value.capacity_reservation_id] == "tertiary" && length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] :
-        [aws_subnet.gpu_dev_subnet.id]
-      ) : (
-        # CR exists but no mapping - fall back to GPU type mapping
-        local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? [aws_subnet.gpu_dev_subnet_secondary.id] :
-        local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "tertiary" && length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] :
-        [aws_subnet.gpu_dev_subnet.id]
-      )
-    ) : (
-      # No CR - use GPU type mapping
-      local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? [aws_subnet.gpu_dev_subnet_secondary.id] :
-      local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "tertiary" && length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] :
-      [aws_subnet.gpu_dev_subnet.id]
-    )
-  )
+  name = "${var.prefix}-gpu-nodes-${each.key}"
+  # Multi-EFA instances use private subnets (NAT GW for internet), others use public
+  vpc_zone_identifier = [
+    each.value.use_private_subnet
+    ? local.private_subnet_map[each.value.subnet_az]
+    : local.public_subnet_map[each.value.subnet_az]
+  ]
   target_group_arns         = []
   health_check_type         = "EC2"
   health_check_grace_period = 300
@@ -344,28 +354,44 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
     }
   }
 
-  # Primary network interface (card 0) - EFA+ENA for GPU instances, regular for CPU/T4-small
-  network_interfaces {
-    network_card_index          = 0
-    device_index                = 0
-    associate_public_ip_address = true
-    security_groups             = [aws_security_group.gpu_dev_sg.id]
-    subnet_id                   = each.value.gpu_config.use_placement_group ? null : (local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? aws_subnet.gpu_dev_subnet_secondary.id : aws_subnet.gpu_dev_subnet.id)
-    interface_type              = try(each.value.gpu_config.efa_network_cards, 0) > 0 ? "efa" : "interface"
-    delete_on_termination       = true
+  # Single-EFA instances: public subnet with public IP (standard networking)
+  dynamic "network_interfaces" {
+    for_each = !each.value.use_private_subnet ? [0] : []
+    content {
+      device_index                = 0
+      associate_public_ip_address = true
+      security_groups             = [aws_security_group.gpu_dev_sg.id]
+      subnet_id                   = each.value.gpu_config.use_placement_group ? null : local.public_subnet_map[each.value.subnet_az]
+      interface_type              = try(each.value.gpu_config.efa_network_cards, 0) > 0 ? "efa" : "interface"
+      delete_on_termination       = true
+    }
   }
 
-  # Additional EFA-only interfaces (cards 1-N) for multi-card instances (p5, p5e, p6, p4d)
+  # Multi-EFA instances: private subnet, no public IP, card 0 = EFA (IP + RDMA)
   dynamic "network_interfaces" {
-    for_each = try(each.value.gpu_config.efa_network_cards, 0) > 1 ? range(1, each.value.gpu_config.efa_network_cards) : []
+    for_each = each.value.use_private_subnet ? [0] : []
     content {
-      network_card_index          = network_interfaces.value
-      device_index                = 1
+      device_index                = 0
       associate_public_ip_address = false
       security_groups             = [aws_security_group.gpu_dev_sg.id]
-      subnet_id                   = each.value.gpu_config.use_placement_group ? null : (local.gpu_subnet_assignments[terraform.workspace][each.value.gpu_type] == "secondary" ? aws_subnet.gpu_dev_subnet_secondary.id : aws_subnet.gpu_dev_subnet.id)
-      interface_type              = "efa-only"
+      subnet_id                   = each.value.gpu_config.use_placement_group ? null : local.private_subnet_map[each.value.subnet_az]
+      interface_type              = "efa"
+      network_card_index          = 0
       delete_on_termination       = true
+    }
+  }
+
+  # Multi-EFA: cards 1..N-1 = efa-only (RDMA only, no IP)
+  # Each network card supports 2 device indices (0 and 1); device_index must be 0
+  # since this is the only interface on each card
+  dynamic "network_interfaces" {
+    for_each = each.value.use_private_subnet ? range(1, try(each.value.gpu_config.efa_network_cards, 1)) : []
+    content {
+      device_index          = 0
+      interface_type        = "efa-only"
+      network_card_index    = network_interfaces.value
+      security_groups       = [aws_security_group.gpu_dev_sg.id]
+      delete_on_termination = true
     }
   }
 
@@ -402,17 +428,17 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name               = "${var.prefix}-gpu-instance-${each.key}"
-      Environment        = local.current_config.environment
-      GpuType           = each.value.gpu_type
+      Name                = "${var.prefix}-gpu-instance-${each.key}"
+      Environment         = local.current_config.environment
+      GpuType             = each.value.gpu_type
       CapacityReservation = each.value.capacity_reservation_id != null ? each.value.capacity_reservation_id : "none"
     }
   }
 
   tags = {
-    Name               = "${var.prefix}-gpu-launch-template-${each.key}"
-    Environment        = local.current_config.environment
-    GpuType           = each.value.gpu_type
+    Name                = "${var.prefix}-gpu-launch-template-${each.key}"
+    Environment         = local.current_config.environment
+    GpuType             = each.value.gpu_type
     CapacityReservation = each.value.capacity_reservation_id != null ? each.value.capacity_reservation_id : "none"
   }
 }
@@ -488,9 +514,9 @@ data "aws_ami" "deep_learning_gpu_ami" {
 
 # CPU Launch template and Auto Scaling Group (consistent with GPU nodes)
 resource "aws_launch_template" "cpu_launch_template" {
-  name_prefix = "${var.prefix}-cpu-"
-  image_id    = data.aws_ami.eks_gpu_ami_x86_64.id
-  key_name    = var.key_pair_name
+  name_prefix   = "${var.prefix}-cpu-"
+  image_id      = data.aws_ami.eks_gpu_ami_x86_64.id
+  key_name      = var.key_pair_name
   instance_type = "c5.4xlarge"
 
   vpc_security_group_ids = [aws_security_group.gpu_dev_sg.id]
@@ -535,10 +561,10 @@ resource "aws_launch_template" "cpu_launch_template" {
 }
 
 resource "aws_autoscaling_group" "cpu_nodes" {
-  name                = "${var.prefix}-cpu-nodes"
-  vpc_zone_identifier = [aws_subnet.gpu_dev_subnet.id, aws_subnet.gpu_dev_subnet_secondary.id]
-  target_group_arns   = []
-  health_check_type   = "EC2"
+  name                      = "${var.prefix}-cpu-nodes"
+  vpc_zone_identifier       = [aws_subnet.gpu_dev_subnet.id, aws_subnet.gpu_dev_subnet_secondary.id]
+  target_group_arns         = []
+  health_check_type         = "EC2"
   health_check_grace_period = 300
 
   min_size         = 1

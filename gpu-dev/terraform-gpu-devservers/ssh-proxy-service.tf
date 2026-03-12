@@ -271,7 +271,7 @@ resource "aws_lb_target_group" "ssh_proxy_ws" {
     matcher             = "200"
   }
 
-  deregistration_delay = 30
+  deregistration_delay = 60
 
   tags = {
     Name        = "${var.prefix}-ssh-proxy-ws-tg"

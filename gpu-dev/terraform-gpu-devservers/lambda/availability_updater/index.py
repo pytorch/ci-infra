@@ -224,24 +224,29 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             full_nodes_available = available_gpus  # Each "GPU" represents one CPU node slot
             max_reservable = 1 if available_gpus > 0 else 0  # Max 1 CPU node per reservation
 
-        # Update DynamoDB table
+        # Update DynamoDB table (update_item preserves maintenance fields set manually)
         table = dynamodb.Table(AVAILABILITY_TABLE)
+        last_updated = context.aws_request_id if "context" in locals() else "unknown"
+        last_updated_ts = int(time.time()) if "time" in dir() else 0
 
-        table.put_item(
-            Item={
-                "gpu_type": gpu_type,
-                "total_gpus": total_gpus,
-                "available_gpus": available_gpus,
-                "max_reservable": max_reservable,
-                "full_nodes_available": full_nodes_available,
-                "running_instances": running_instances,
-                "desired_capacity": desired_capacity,
-                "gpus_per_instance": gpus_per_instance,
-                "last_updated": context.aws_request_id
-                if "context" in locals()
-                else "unknown",
-                "last_updated_timestamp": int(time.time()) if "time" in dir() else 0,
-            }
+        table.update_item(
+            Key={"gpu_type": gpu_type},
+            UpdateExpression=(
+                "SET total_gpus = :tg, available_gpus = :ag, max_reservable = :mr, "
+                "full_nodes_available = :fn, running_instances = :ri, desired_capacity = :dc, "
+                "gpus_per_instance = :gpi, last_updated = :lu, last_updated_timestamp = :lut"
+            ),
+            ExpressionAttributeValues={
+                ":tg": total_gpus,
+                ":ag": available_gpus,
+                ":mr": max_reservable,
+                ":fn": full_nodes_available,
+                ":ri": running_instances,
+                ":dc": desired_capacity,
+                ":gpi": gpus_per_instance,
+                ":lu": last_updated,
+                ":lut": last_updated_ts,
+            },
         )
 
         logger.info(

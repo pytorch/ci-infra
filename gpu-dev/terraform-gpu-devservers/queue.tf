@@ -101,6 +101,13 @@ resource "aws_dynamodb_table" "gpu_reservations" {
     projection_type = "ALL"
   }
 
+  # Composite index for fast per-user status queries (avoids scanning all user history)
+  global_secondary_index {
+    name            = "UserStatusIndex"
+    hash_key        = "user_id"
+    range_key       = "status"
+    projection_type = "ALL"
+  }
 
   tags = {
     Name        = "${var.prefix}-reservations"

@@ -8,6 +8,8 @@ This will help both you, the agent, but also other agents down the road that sha
 - NEVER run `terraform apply` or any destructive terraform commands
 - You can run read-only terraform commands like `terraform plan`, `terraform state show`, etc.
 - You can run AWS CLI commands for read-only resource fetching and analysis
+- NEVER run destructive AWS CLI commands: `aws ec2 terminate-instances`, `aws ec2 stop-instances`, `aws autoscaling set-desired-capacity` (to 0), `aws ec2 delete-*`, `aws dynamodb delete-table`, etc. On 2026-03-09 an agent accidentally terminated 10 EC2 instances including 6 pet H100 instances from another team's capacity reservations. This must never happen again.
+- NEVER run `kubectl delete node`, `kubectl drain`, `kubectl cordon`, or any command that removes/disrupts running workloads
 - User will handle all infrastructure deployments themselves
 - Note: We use OpenTofu, so user runs `opentofu apply` or `tf apply` locally (tf is aliased to opentofu)
 - we use k for kubectl and have kubens configured to namespace gpu-dev
@@ -72,6 +74,31 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
 - Single AZ placement group recommended for best performance
 
 **K8s Decision:** EKS with GPU-optimized EC2 node groups (Fargate has no GPU support)
+
+## Multi-Node NCCL Communication (Mar 2026)
+
+**Working Configuration (SENDRECV protocol):**
+- Protocol: `OFI_NCCL_PROTOCOL=SENDRECV` (host-staged EFA, avoids RDMA mr_regattr failures)
+- GDR disabled: `FI_EFA_USE_DEVICE_RDMA=0`, `NCCL_NET_GDR_LEVEL=0`
+- Socket interface: `NCCL_SOCKET_IFNAME=^lo,docker` (H100 nodes use enp71s0/enp72s0, NOT eth0)
+- Algorithm: `NCCL_ALGO=ring,tree` (NCCL auto-selects tree for large messages, ~2x faster)
+- Exclude Mellanox: `NCCL_IB_HCA=^mlx`
+- OpenMPI lib path: `/opt/amazon/openmpi/lib` (NOT lib64 — EFA installer puts it in lib)
+
+**Benchmark Results (2x p5.48xlarge, 16 GPUs):**
+- Ring algorithm: ~9.5 GB/s avg bus bandwidth, ~13.4 GB/s peak
+- Tree algorithm: ~21.4 GB/s avg bus bandwidth, ~33.6 GB/s peak
+- Ring+tree combined: ~21.0 GB/s avg (NCCL auto-selects tree for large msgs)
+- Single-node NVLink: ~34 GB/s (for reference)
+
+**GDR Status (NOT working — future optimization):**
+- EFA RDMA protocol fails: `fi_mr_regattr` returns EFAULT for flush buffer (even host memory)
+- EFA device version: 6 (above aws-ofi-nccl blocklist threshold of 1-3)
+- EFA kernel driver: 2.17.2a (need 2.17.3+ which has "Support P2P with NVIDIA 580 drivers")
+- nvidia-peermem: NOT available (module not found for kernel 6.12.68)
+- efa-nv-peermem: NOT installed (available in amzn-drivers repo, works with open NVIDIA drivers)
+- To enable GDR in future: install efa-nv-peermem module on host nodes, or update EFA kernel driver
+- Expected GDR improvement: ~300-370 GB/s bus bandwidth (vs ~33 GB/s current)
 
 ## Implementation Status (Jan 11, 2025)
 

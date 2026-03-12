@@ -27,7 +27,7 @@ variable "vpc_cidr" {
 variable "subnet_cidr" {
   description = "CIDR block for subnet"
   type        = string
-  default     = "10.0.0.0/20"  # Expanded to /20 (4096 IPs for future-proofing)
+  default     = "10.0.0.0/20" # Expanded to /20 (4096 IPs for future-proofing)
 }
 
 variable "gpu_instance_count" {
@@ -109,13 +109,14 @@ variable "max_reservation_hours" {
 variable "supported_gpu_types" {
   description = "Map of supported GPU types to their instance configurations"
   type = map(object({
-    instance_type        = string
-    instance_types       = optional(list(string)) # Multiple instance types for same GPU type
-    instance_count       = number
-    gpus_per_instance    = number
-    use_placement_group  = bool
-    architecture         = optional(string, "x86_64")
-    profiling_dedicated  = optional(bool, false) # Node dedicated for nsight profiling (no DCGM)
+    instance_type       = string
+    instance_types      = optional(list(string)) # Multiple instance types for same GPU type
+    instance_count      = number
+    gpus_per_instance   = number
+    use_placement_group = bool
+    architecture        = optional(string, "x86_64")
+    profiling_dedicated = optional(bool, false) # Node dedicated for nsight profiling (no DCGM)
+    efa_network_cards   = optional(number, 0)   # Number of EFA network interfaces (32 for p5/p5e/p6, 4 for p4d)
   }))
   default = {
     # Test environment default - only T4
@@ -140,7 +141,7 @@ variable "domain_name" {
   default     = null # Will use workspace config if not overridden
 
   validation {
-    condition = var.domain_name == null || var.domain_name == "" || can(regex("^[a-z0-9.-]+\\.[a-z]{2,}$", var.domain_name))
+    condition     = var.domain_name == null || var.domain_name == "" || can(regex("^[a-z0-9.-]+\\.[a-z]{2,}$", var.domain_name))
     error_message = "Domain name must be a valid DNS name (e.g., devservers.io or test.devservers.io)."
   }
 }
@@ -149,14 +150,14 @@ variable "grafana_admin_password" {
   description = "Admin password for Grafana dashboard"
   type        = string
   sensitive   = true
-  default     = "admin"  # Change in tfvars for production
+  default     = "admin" # Change in tfvars for production
 }
 
 # Grafana Cloud remote write configuration (all in gitignored tfvars)
 variable "grafana_cloud_prometheus_url" {
   description = "Grafana Cloud Prometheus remote write URL"
   type        = string
-  default     = ""  # Empty = disabled
+  default     = "" # Empty = disabled
 }
 
 variable "grafana_cloud_prometheus_username" {

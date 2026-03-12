@@ -200,7 +200,10 @@ async def run_websocket_server():
     """Run WebSocket server on port 8081"""
     logger.info("Starting WebSocket SSH proxy server on port 8081")
 
-    async with serve(handle_connection, "0.0.0.0", 8081):
+    async with serve(
+        handle_connection, "0.0.0.0", 8081,
+        ping_interval=30, ping_timeout=10,
+    ):
         logger.info("WebSocket server ready")
         await asyncio.Future()  # Run forever
 
