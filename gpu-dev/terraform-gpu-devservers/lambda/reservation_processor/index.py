@@ -2712,9 +2712,22 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
 
-                # Check if this is a "disk in use" error - these should fail the reservation
                 error_msg = str(disk_error)
-                if "is currently in use" in error_msg or "already in use" in error_msg:
+
+                # If user explicitly requested a named disk, NEVER silently fall back to temporary.
+                # Any disk error (in use, timeout, creation failure) should fail the reservation
+                # so the user knows what happened instead of getting surprise temporary storage.
+                if disk_name:
+                    logger.error(f"Named disk '{disk_name}' was explicitly requested but setup failed - failing reservation")
+                    update_reservation_status(
+                        reservation_id,
+                        "failed",
+                        failure_reason=f"Persistent disk '{disk_name}' setup failed: {error_msg}"
+                    )
+                    raise RuntimeError(f"Cannot create reservation: disk '{disk_name}' setup failed: {error_msg}")
+
+                # Check if this is a "disk in use" error - these should fail the reservation
+                if "in use" in error_msg.lower():
                     # Don't fall back - fail the reservation with clear error
                     update_reservation_status(
                         reservation_id,
@@ -2723,7 +2736,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                     )
                     raise RuntimeError(f"Cannot create reservation: {error_msg}")
 
-                # For other errors, continue without persistent disk (backwards compatibility)
+                # For other errors without explicit disk_name, continue without persistent disk (backwards compatibility)
                 logger.warning(f"Falling back to non-persistent storage due to disk error: {disk_error}")
                 use_persistent_disk = False
                 persistent_volume_id = None  # Clear any volume that was set before the error
