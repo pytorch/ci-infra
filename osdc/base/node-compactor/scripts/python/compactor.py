@@ -49,6 +49,11 @@ def reconcile(
         taint_times: Mutable dict tracking when each node was last tainted.
             Updated in-place when nodes are tainted.
     """
+    # Touch healthcheck file at the start of every cycle so the liveness
+    # probe passes even when there are no managed nodes (controller is
+    # healthy, just idle).
+    pathlib.Path("/tmp/healthy").touch()
+
     managed_names = discover_managed_nodes(client, cfg)
     if not managed_names:
         log.debug("No managed nodes found (no NodePools with label %s)", cfg.nodepool_label)
@@ -70,17 +75,20 @@ def reconcile(
     # Check for pending pods first -- untaint before tainting
     burst_untaint = check_pending_pods(cfg, node_states, pending_pods)
 
-    desired_taint, desired_untaint = compute_taints(node_states, cfg)
+    desired_taint, desired_untaint, mandatory_untaint = compute_taints(node_states, cfg)
 
     # Merge burst untaint
     desired_untaint |= burst_untaint
     desired_taint -= burst_untaint
 
-    # Apply cooldown: don't untaint nodes that were recently tainted
-    # (burst untaint bypasses cooldown -- urgent need overrides hysteresis)
+    # Apply cooldown: don't untaint nodes that were recently tainted.
+    # Bypass cooldown for:
+    #   - burst untaint (urgent need overrides hysteresis)
+    #   - mandatory untaint (min_nodes enforcement is a safety invariant)
+    cooldown_exempt = burst_untaint | mandatory_untaint
     now = time.time()
     cooldown_blocked: set[str] = set()
-    for node_name in desired_untaint - burst_untaint:
+    for node_name in desired_untaint - cooldown_exempt:
         last_tainted = taint_times.get(node_name, 0)
         if now - last_tainted < cfg.taint_cooldown:
             log.debug(
@@ -125,9 +133,6 @@ def reconcile(
         log.info("Applied %d taint change(s)", changes)
     else:
         log.debug("No taint changes needed")
-
-    # Touch healthcheck file for liveness probe
-    pathlib.Path("/tmp/healthy").touch()
 
 
 def main() -> int:

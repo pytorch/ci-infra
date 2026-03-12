@@ -357,8 +357,12 @@ class TestPhase6GracefulShutdownCleanup(_CompactorE2EBase):
         log.info("Phase 6: Deleting compactor pod (SIGTERM)...")
         restart_compactor_pod(self.client)
 
-        # After restart, all compactor taints should be cleared
-        tainted = get_tainted_nodes(self.client, self.pool)
-        assert len(tainted) == 0, (
-            f"Expected 0 tainted after graceful shutdown, got {len(tainted)}: {tainted}"
+        # The old pod's SIGTERM handler calls cleanup_stale_taints() which
+        # removes all compactor taints. This happens asynchronously during
+        # pod termination, so poll until the taints are cleared.
+        wait_for(
+            "all compactor taints cleared after graceful shutdown",
+            lambda: len(get_tainted_nodes(self.client, self.pool)) == 0,
+            timeout_s=TAINT_TIMEOUT,
+            poll_s=5,
         )

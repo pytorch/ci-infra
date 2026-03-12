@@ -87,13 +87,17 @@ def _pods_fit_on_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> bool:
 
 def compute_taints(
     node_states: dict[str, NodeState], cfg: Config
-) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], set[str], set[str]]:
     """Decide which nodes to taint and which to untaint.
 
-    Returns (nodes_to_taint, nodes_to_untaint).
+    Returns (nodes_to_taint, nodes_to_untaint, mandatory_untaint).
+
+    mandatory_untaint is a subset of nodes_to_untaint that must be
+    untainted regardless of cooldown — these are min_nodes enforcement
+    untaints (a safety invariant, not a preference).
     """
     if not node_states:
-        return set(), set()
+        return set(), set(), set()
 
     pools: dict[str, list[NodeState]] = defaultdict(list)
     for ns in node_states.values():
@@ -101,6 +105,7 @@ def compute_taints(
 
     to_taint: set[str] = set()
     to_untaint: set[str] = set()
+    mandatory_untaint: set[str] = set()
 
     for _pool_name, pool_nodes in pools.items():
         all_workload_pods = []
@@ -112,9 +117,12 @@ def compute_taints(
 
         surplus = len(pool_nodes) - min_needed
         if surplus <= 0:
+            # All nodes are needed — untaint any that are tainted.
+            # This is a min_nodes enforcement: mandatory.
             for node in pool_nodes:
                 if node.is_tainted:
                     to_untaint.add(node.name)
+                    mandatory_untaint.add(node.name)
             continue
 
         # Priority: old nodes first, then lowest utilization, then youngest
@@ -140,9 +148,11 @@ def compute_taints(
         taint_count = 0
         for node in candidates:
             if taint_count >= surplus:
-                # Already past surplus -- this node stays untainted
+                # Already past surplus -- this node stays untainted.
+                # This is min_nodes enforcement: mandatory.
                 if node.is_tainted:
                     to_untaint.add(node.name)
+                    mandatory_untaint.add(node.name)
                 continue
 
             # This node is a taint candidate -- check safety
@@ -162,4 +172,4 @@ def compute_taints(
             to_taint.add(node.name)
             taint_count += 1
 
-    return to_taint, to_untaint
+    return to_taint, to_untaint, mandatory_untaint

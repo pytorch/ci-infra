@@ -421,9 +421,10 @@ class TestPodsFitOnNodes:
 class TestComputeTaints:
     def test_empty_states(self):
         cfg = make_config()
-        to_taint, to_untaint = compute_taints({}, cfg)
+        to_taint, to_untaint, mandatory = compute_taints({}, cfg)
         assert to_taint == set()
         assert to_untaint == set()
+        assert mandatory == set()
 
     def test_no_surplus_untaints_all(self):
         cfg = make_config(min_nodes=2)
@@ -433,9 +434,10 @@ class TestComputeTaints:
         }
         for n in nodes.values():
             n.pods = [make_pod(f"p-{n.name}", cpu=8.0, node_name=n.name)]
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, to_untaint, mandatory = compute_taints(nodes, cfg)
         assert to_taint == set()
         assert to_untaint == {"n1", "n2"}
+        assert mandatory == {"n1", "n2"}
 
     def test_surplus_taints_correct_count(self):
         cfg = make_config(min_nodes=1)
@@ -445,7 +447,7 @@ class TestComputeTaints:
             nodes[f"n{i}"] = n
         # 1 pod total -> needs 1 node -> surplus 3
         nodes["n0"].pods = [make_pod("p1", cpu=4.0, node_name="n0")]
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert len(to_taint) == 3
         assert len(to_taint) + len(to_untaint.intersection(set(nodes.keys()) - to_taint)) >= 0
 
@@ -456,7 +458,7 @@ class TestComputeTaints:
             n = make_node(f"n{i}", cpu=16.0)
             nodes[f"n{i}"] = n
         # No pods -> bin_pack returns 0, but min_nodes=3 -> surplus = 1
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert len(to_taint) == 1
 
     def test_old_nodes_tainted_first(self):
@@ -469,7 +471,7 @@ class TestComputeTaints:
         )
         nodes = {"old": old_node, "young": young_node}
         # No pods -> both surplus, but min_nodes=1, surplus=1
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert "old" in to_taint
         assert "young" not in to_taint
 
@@ -485,7 +487,7 @@ class TestComputeTaints:
         # 3 nodes, all pods fit on 2 -> surplus=1 (after max with min_nodes=1)
         # Actually bin_pack: total 22 CPU in pods, 16 CPU per node -> need 2
         # surplus = 1, n2 has lowest util -> tainted
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert "n2" in to_taint
 
     def test_already_tainted_surplus_stays_tainted(self):
@@ -494,7 +496,7 @@ class TestComputeTaints:
         n2 = make_node("n2", cpu=16.0, is_tainted=True)
         nodes = {"n1": n1, "n2": n2}
         # No pods, surplus = 1 -> one node tainted
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert len(to_taint) == 1
 
     def test_sole_candidate_safety(self):
@@ -507,7 +509,7 @@ class TestComputeTaints:
         n2.pods = [make_pod("p2", cpu=10.0, node_name="n2")]
         nodes = {"n1": n1, "n2": n2}
         # bin_pack: 2 pods * 10 CPU = 20, need 2 nodes -> surplus=0 -> untaint
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert len(to_taint) == 0
 
     def test_safety_check_prevents_taint_when_pods_cant_move(self):
@@ -526,7 +528,7 @@ class TestComputeTaints:
         # bin_pack: 3 pods * 9 CPU = 27, nodes have 16 each -> need 2
         # surplus = 1, but safety check: taint candidate's pod (9 CPU) can't fit
         # on remaining 2 nodes (each has only 7 CPU free). Skip the taint.
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert len(to_taint) == 0
 
     def test_multiple_pools_independent(self):
@@ -537,7 +539,7 @@ class TestComputeTaints:
         n4 = make_node("n4", nodepool="pool-b", cpu=16.0)
         nodes = {"n1": n1, "n2": n2, "n3": n3, "n4": n4}
         # No pods in either pool -> surplus=1 per pool (min_nodes=1)
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         pool_a_tainted = to_taint & {"n1", "n2"}
         pool_b_tainted = to_taint & {"n3", "n4"}
         assert len(pool_a_tainted) == 1
@@ -565,7 +567,7 @@ class TestComputeTaints:
         # bin_pack: 3 pods * 14 = 42 CPU. 16 per node -> need 3. surplus=1
         # n0 is the candidate (empty, lowest util). It has no workload pods,
         # so no safety check needed -> tainted.
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert "n0" in to_taint
         assert len(to_taint) == 1
 
@@ -721,7 +723,7 @@ class TestComputeTaintsSafetySkipUntaint:
 
         nodes = {"n0": n0, "n1": n1, "n2": n2, "n3": n3}
 
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert "n0" in to_taint, "Empty node should be tainted"
         assert "n1" in to_untaint, "Already-tainted node whose pods can't fit should be untainted"
         assert "n1" not in to_taint, "n1 should NOT be tainted (safety check failed)"
@@ -763,7 +765,7 @@ class TestComputeTaintsSafetySkipUntaint:
         #
         # surplus reached.
 
-        to_taint, _to_untaint = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert "n4" in to_taint
         assert "n2" in to_taint
         assert len(to_taint) == 2
@@ -793,7 +795,7 @@ class TestComputeTaintsSafetySkipUntaint:
 
         nodes = {"n0": n0, "n1": n1, "n2": n2, "n3": n3}
 
-        to_taint, to_untaint = compute_taints(nodes, cfg)
+        to_taint, to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert "n0" in to_taint
         # n1 fails safety check but is NOT tainted, so should not be in to_untaint
         assert "n1" not in to_untaint
@@ -880,7 +882,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1", "n2"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n2"}, {"n1"})
+        mock_compute.return_value = ({"n2"}, {"n1"}, set())
 
         reconcile(client, cfg, taint_times)
 
@@ -912,7 +914,7 @@ class TestReconcile:
         mock_build.return_value = (node_states, [])
         # burst_untaint includes n1 -- should bypass cooldown
         mock_check.return_value = {"n1"}
-        mock_compute.return_value = (set(), set())
+        mock_compute.return_value = (set(), set(), set())
 
         reconcile(client, cfg, taint_times)
 
@@ -941,12 +943,43 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()  # no burst untaint
-        mock_compute.return_value = (set(), {"n1"})  # compute says untaint n1
+        mock_compute.return_value = (set(), {"n1"}, set())  # compute says untaint n1
 
         reconcile(client, cfg, taint_times)
 
         # n1 should NOT be untainted because cooldown blocks it
         mock_remove.assert_not_called()
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_mandatory_untaint_overrides_cooldown(
+        self, mock_discover, mock_build, mock_check, mock_compute,
+        mock_apply, mock_remove, mock_touch,
+    ):
+        """mandatory_untaint (min_nodes enforcement) bypasses cooldown."""
+        client = MagicMock()
+        cfg = make_config(taint_cooldown=300)
+        # Node was tainted very recently -- within cooldown
+        taint_times = {"n1": time.time() - 10}
+
+        n1 = make_node("n1", is_tainted=True)
+        node_states = {"n1": n1}
+
+        mock_discover.return_value = {"n1"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()  # no burst untaint
+        # compute says untaint n1, and it's mandatory (min_nodes)
+        mock_compute.return_value = (set(), {"n1"}, {"n1"})
+
+        reconcile(client, cfg, taint_times)
+
+        # n1 should be untainted despite being within cooldown
+        mock_remove.assert_called_once_with(client, "n1", cfg.taint_key, cfg.dry_run)
 
     @patch("compactor.pathlib.Path.touch")
     @patch("compactor.remove_taint")
@@ -970,7 +1003,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1"})
+        mock_compute.return_value = (set(), {"n1"}, set())
 
         reconcile(client, cfg, taint_times)
 
@@ -997,7 +1030,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1", "n2"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1", "n2"})
+        mock_compute.return_value = (set(), {"n1", "n2"}, set())
 
         # First untaint raises 404, second succeeds
         mock_remove.side_effect = [_make_api_error(404), None]
@@ -1028,7 +1061,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set())
+        mock_compute.return_value = ({"n1"}, set(), set())
 
         mock_apply.side_effect = _make_api_error(404)
 
@@ -1060,7 +1093,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set())
+        mock_compute.return_value = ({"n1"}, set(), set())
 
         mock_apply.side_effect = _make_api_error(409)
 
@@ -1090,7 +1123,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1"})
+        mock_compute.return_value = (set(), {"n1"}, set())
 
         mock_remove.side_effect = RuntimeError("connection lost")
 
@@ -1119,7 +1152,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set())
+        mock_compute.return_value = ({"n1"}, set(), set())
 
         mock_apply.side_effect = RuntimeError("timeout")
 
@@ -1151,7 +1184,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set())
+        mock_compute.return_value = ({"n1"}, set(), set())
 
         before = time.time()
         reconcile(client, cfg, taint_times)
@@ -1181,7 +1214,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1"})
+        mock_compute.return_value = (set(), {"n1"}, set())
 
         reconcile(client, cfg, {})
 
@@ -1208,7 +1241,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set())
+        mock_compute.return_value = ({"n1"}, set(), set())
 
         reconcile(client, cfg, {})
 
@@ -1234,7 +1267,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), set())
+        mock_compute.return_value = (set(), set(), set())
 
         reconcile(client, cfg, {})
 
@@ -1262,7 +1295,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = {"n1"}  # burst wants untaint
-        mock_compute.return_value = ({"n1"}, set())  # compute wants taint
+        mock_compute.return_value = ({"n1"}, set(), set())  # compute wants taint
 
         reconcile(client, cfg, {})
 
@@ -1290,7 +1323,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1"})
+        mock_compute.return_value = (set(), {"n1"}, set())
 
         mock_remove.side_effect = _make_api_error(500)
 

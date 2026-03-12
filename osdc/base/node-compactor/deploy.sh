@@ -118,7 +118,7 @@ echo "Pushed ${IMAGE}:${TAG}"
 
 # --- Apply Kubernetes manifests with config substitution ---
 echo "Applying node-compactor manifests..."
-kubectl apply -k "$COMPACTOR_DIR/kubernetes/" --dry-run=client -o yaml \
+kubectl kustomize "$COMPACTOR_DIR/kubernetes/" \
     | sed \
         -e "s|NODE_COMPACTOR_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|g" \
         -e "s|COMPACTOR_INTERVAL_PLACEHOLDER|\"${INTERVAL}\"|g" \
