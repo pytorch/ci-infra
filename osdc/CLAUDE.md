@@ -1,5 +1,7 @@
 # CLAUDE.md — OSDC (Open Source Dev Cloud)
 
+project-doc: enabled
+
 ## What This Is
 
 Modular Kubernetes infrastructure platform on AWS EKS. A shared `base/` provides the cluster (VPC, EKS, Harbor, git cache, GPU plugins), and optional `modules/` layer services on top (ARC, runners, BuildKit, future projects). One codebase drives multiple clusters across regions via `clusters.yaml`.
