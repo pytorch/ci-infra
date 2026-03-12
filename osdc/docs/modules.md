@@ -127,6 +127,14 @@ fi
 
 ## Existing modules
 
+### eks
+
+Base AWS infrastructure. Always deployed as part of `deploy-base`, not as an optional module.
+
+- **terraform/**: VPC (public/private subnets, NAT gateways), EKS cluster (OIDC, addons), Harbor S3 bucket + IAM
+- **images.yaml**: Bootstrap images mirrored to ECR (Harbor components that can't cache themselves)
+- **deploy.sh**: Image mirroring via `crane`
+
 ### arc
 
 ARC controller for GitHub Actions self-hosted runners.
@@ -134,6 +142,13 @@ ARC controller for GitHub Actions self-hosted runners.
 - **kubernetes/**: `arc-systems` + `arc-runners` namespaces, runner ServiceAccount, LimitRange, hooks ConfigMap, registry mirror config
 - **helm/arc/**: ARC controller Helm values
 - **deploy.sh**: `helm upgrade --install` for the ARC controller chart
+
+### karpenter
+
+Karpenter autoscaler controller and supporting AWS infrastructure.
+
+- **terraform/**: IAM roles, SQS interruption queue, EventBridge rules for spot/rebalance/health events
+- **deploy.sh**: `tofu apply` for AWS resources, `helm upgrade --install` for Karpenter chart, configures node class defaults
 
 ### nodepools
 
@@ -157,9 +172,9 @@ ARC runner scale sets for GitHub Actions self-hosted runners. Requires `arc` (co
 
 ### buildkit
 
-Dual-architecture container build service.
+Dual-architecture container build service with HAProxy load balancing.
 
-- **kubernetes/**: BuildKit namespace, Deployments (arm64 + amd64), Services, HAProxy LB, NetworkPolicy
-- **nodepool.yaml.tpl**: Karpenter NodePool template expanded per arch
-- **node-setup.sh**: NVMe RAID0, registry mirrors, CPU tuning for build nodes
-- **deploy.sh**: Expands NodePool templates, applies k8s resources, waits for rollout
+- **kubernetes/base/**: BuildKit namespace, Deployments (arm64 + amd64), Services, HAProxy (least-connections LB), NetworkPolicy
+- **scripts/python/generate_buildkit.py**: Generates Deployments + NodePools from instance type specs and `clusters.yaml` config
+- **scripts/node-setup.sh**: NVMe RAID0, registry mirrors, CPU tuning for build nodes
+- **deploy.sh**: Generates manifests, applies k8s resources, deploys Karpenter NodePools, waits for rollout

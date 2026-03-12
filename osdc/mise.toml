@@ -28,6 +28,7 @@ trivy = "latest"
 
 # Python tools
 uv = "latest"
+ruff = "latest"
 
 [env]
 PROJECT_NAME = "osdc"

@@ -41,6 +41,17 @@ defaults:
   arc:
     replica_count: 1
     log_level: info
+  node_compactor:
+    enabled: true
+    interval_seconds: 20
+    max_uptime_hours: 48
+    min_nodes: 1
+    dry_run: false
+  nodepools:
+    gpu_disruption_budget: "100%"
+    gpu_consolidate_after: "3h"
+    cpu_disruption_budget: "100%"
+    cpu_consolidate_after: "3h"
   buildkit:
     replicas_per_arch: 4
 
@@ -65,6 +76,10 @@ clusters:
     arc:
       replica_count: 1
       log_level: debug
+    node_compactor:
+      dry_run: true
+    nodepools:
+      gpu_consolidate_after: "10s"
     arc-runners:
       github_config_url: "https://github.com/pytorch/pytorch-canary"
       github_secret_name: pytorch-arc-staging

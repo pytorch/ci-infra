@@ -27,12 +27,13 @@ if systemctl is-active --quiet containerd; then
 		"nvcr.io nvcr-cache https://nvcr.io" \
 		"registry.k8s.io k8s-cache https://registry.k8s.io" \
 		"quay.io quay-cache https://quay.io"; do
+		# shellcheck disable=SC2086  # intentional word splitting
 		set -- $registry_project
 		registry=$1
 		project=$2
 		upstream=$3
-		mkdir -p /etc/containerd/certs.d/$registry
-		cat >/etc/containerd/certs.d/$registry/hosts.toml <<-MIRRORS
+		mkdir -p "/etc/containerd/certs.d/$registry"
+		cat >"/etc/containerd/certs.d/$registry/hosts.toml" <<-MIRRORS
 			server = "$upstream"
 
 			[host."http://localhost:$HARBOR_PORT/v2/$project"]

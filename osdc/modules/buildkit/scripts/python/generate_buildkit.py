@@ -21,6 +21,7 @@ import math
 import sys
 from pathlib import Path
 
+
 # ANSI colors
 GREEN = '\033[0;32m'
 RED = '\033[0;31m'
@@ -131,8 +132,6 @@ def generate_deployment_yaml(
     arm64_res = compute_pod_resources(arm64_instance, pods_per_node)
     amd64_res = compute_pod_resources(amd64_instance, pods_per_node)
 
-    arm64_spec = INSTANCE_SPECS[arm64_instance]
-    amd64_spec = INSTANCE_SPECS[amd64_instance]
 
     log_info(f"arm64 ({arm64_instance}): {arm64_res['cpu']} vCPU, {arm64_res['memory_gi']}Gi per pod "
              f"(allocatable: {arm64_res['allocatable_cpu_m']}m CPU, {arm64_res['allocatable_mem_mi']}Mi mem)")
@@ -463,7 +462,7 @@ def main():
         return 1
     node_setup_script = node_setup_path.read_text()
 
-    log_info(f"Generating BuildKit manifests for:")
+    log_info("Generating BuildKit manifests for:")
     log_info(f"  arm64: {args.arm64_instance_type}, amd64: {args.amd64_instance_type}")
     log_info(f"  replicas: {args.replicas}, pods_per_node: {args.pods_per_node}")
 
