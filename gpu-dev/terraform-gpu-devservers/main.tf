@@ -256,10 +256,12 @@ locals {
       ]
       h100 = [
         { key = "cr0", id = "cr-0a3f49b96fe03ca04", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
+        { key = "cr1", id = null, instance_count = 2 },                   # H100 on-demand (2 instances)
       ]
       h200 = [
-        # cr0 removed: cr-0f6d0766f5d3339e6 expired/deleted
+        { key = "cr0", id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 capacity block (may be expired - keep to prevent ASG destroy)
         { key = "cr1", id = "cr-06c9c978dea756a26", instance_count = 3 }, # H200 reservation (3 instances)
+        { key = "cr2", id = null, instance_count = 2 },                   # H200 on-demand (2 instances)
       ]
       b200 = [
         { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
@@ -306,8 +308,8 @@ locals {
       "cr-0122dff5e01d566dc" = "secondary" # us-east-2b
       "cr-08e7fee0b8dc3de5e" = "secondary" # us-east-2b
       # H200 capacity reservations
-      # cr-0f6d0766f5d3339e6 removed (expired)
-      "cr-06c9c978dea756a26" = "tertiary" # us-east-2c
+      "cr-0f6d0766f5d3339e6" = "tertiary" # us-east-2c (may be expired - kept to prevent ASG destroy)
+      "cr-06c9c978dea756a26" = "tertiary"  # us-east-2c
       # H100 capacity reservation
       "cr-0a3f49b96fe03ca04" = "tertiary" # us-east-2c (p5.48xlarge)
       # A100 capacity reservation
