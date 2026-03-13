@@ -280,7 +280,7 @@ RUN --mount=type=bind,from=gitcache,source=pytorch/pytorch.git/objects,target=/t
 The `monitoring` module deploys a two-tier metrics pipeline. Helm charts used:
 
 - **[kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)** v82.10.3 — bundles Prometheus, Grafana, AlertManager, Prometheus Operator, node-exporter, and kube-state-metrics.
-- **[Grafana Alloy](https://github.com/grafana/alloy)** (Helm chart `grafana/alloy`) — optional push agent for Grafana Cloud. Only installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace AND `monitoring.grafana_cloud_url` is set in `clusters.yaml`.
+- **[Grafana Alloy](https://github.com/grafana/alloy)** (Helm chart `grafana/alloy`) — optional push agent for Grafana Cloud. Only installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace.
 - **[DCGM Exporter](https://github.com/NVIDIA/dcgm-exporter)** (`nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless`) — DaemonSet for GPU metrics, runs only on GPU nodes.
 
 ### Architecture
@@ -313,7 +313,7 @@ monitoring:
   storage_size: 50Gi              # PVC size per Prometheus replica
   grafana_enabled: true           # Deploy Grafana
   alertmanager_enabled: true      # Deploy AlertManager
-  grafana_cloud_url: ""           # Mimir endpoint (empty = no Alloy)
+  grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
 ```
 
 ### Deploy order (deploy.sh)
@@ -321,7 +321,7 @@ monitoring:
 1. Create `monitoring` namespace (via kustomization)
 2. `helm upgrade --install kube-prometheus-stack` — installs CRDs + all components
 3. `kubectl apply -k kubernetes/monitors/` — ServiceMonitors/PodMonitors (depends on CRDs from step 2)
-4. Conditionally: `helm upgrade --install alloy` — if secret exists and URL is set
+4. Conditionally: `helm upgrade --install alloy` — if `grafana-cloud-credentials` secret exists
 
 ### CRD ordering gotcha
 

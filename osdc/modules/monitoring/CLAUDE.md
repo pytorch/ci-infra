@@ -23,16 +23,16 @@ Prometheus, Grafana, and AlertManager are **not installed locally** — all metr
 defaults:
   monitoring:
     namespace: monitoring          # Kubernetes namespace
-    grafana_cloud_url: ""          # Grafana Cloud Mimir push endpoint
+    grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
 ```
 
 ## Metrics pipeline
 
 **Grafana Alloy** is the primary (and only) metrics pipeline. It discovers ServiceMonitor/PodMonitor CRDs, scrapes targets, and pushes to Grafana Cloud via `prometheus.remote_write`.
 
-Alloy is installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace and `grafana_cloud_url` is set in clusters.yaml.
+Alloy is installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace.
 
-To enable: create the secret, set `grafana_cloud_url`, redeploy.
+To enable: create the secret and redeploy.
 To disable: delete the secret and `helm uninstall alloy -n monitoring`.
 
 ## What kube-prometheus-stack provides
@@ -50,7 +50,7 @@ Prometheus, Grafana, and AlertManager are all `enabled: false`.
 1. Justfile applies `kubernetes/kustomization.yaml` (namespace + DCGM DaemonSet)
 2. `deploy.sh` installs kube-prometheus-stack (CRDs + exporters)
 3. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors + PodMonitors — requires CRDs from step 2)
-4. `deploy.sh` conditionally installs Alloy (requires grafana-cloud-credentials secret)
+4. `deploy.sh` conditionally installs Alloy (if `grafana-cloud-credentials` secret exists)
 
 ## Dependencies
 

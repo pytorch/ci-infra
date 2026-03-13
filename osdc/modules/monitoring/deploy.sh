@@ -62,16 +62,13 @@ kubectl apply -k "$MODULE_DIR/kubernetes/monitors/"
 # and pushes metrics to Grafana Cloud — fully decoupled from Prometheus.
 if kubectl get secret grafana-cloud-credentials -n "$NAMESPACE" &>/dev/null; then
     GRAFANA_CLOUD_URL=$(uv run "$CFG" "$CLUSTER" monitoring.grafana_cloud_url "")
-    if [[ -z "$GRAFANA_CLOUD_URL" ]]; then
-        echo "WARNING: grafana-cloud-credentials secret found but no grafana_cloud_url in clusters.yaml. Skipping Alloy."
-    else
-        echo "Installing Alloy (pushing to ${GRAFANA_CLOUD_URL})..."
-        helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
-        helm repo update grafana
+    echo "Installing Alloy (pushing to ${GRAFANA_CLOUD_URL})..."
+    helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+    helm repo update grafana
 
-        # Build a temporary override with per-cluster env vars
-        ALLOY_OVERRIDE=$(mktemp)
-        cat > "$ALLOY_OVERRIDE" <<EOF
+    # Build a temporary override with per-cluster env vars
+    ALLOY_OVERRIDE=$(mktemp)
+    cat > "$ALLOY_OVERRIDE" <<EOF
 alloy:
   extraEnv:
     - name: GCLOUD_RW_API_USER
@@ -90,16 +87,15 @@ alloy:
       value: "${CNAME}"
 EOF
 
-        helm upgrade --install alloy grafana/alloy \
-            --namespace "$NAMESPACE" \
-            -f "$MODULE_DIR/helm/alloy-values.yaml" \
-            -f "$ALLOY_OVERRIDE" \
-            --timeout 5m \
-            --wait
+    helm upgrade --install alloy grafana/alloy \
+        --namespace "$NAMESPACE" \
+        -f "$MODULE_DIR/helm/alloy-values.yaml" \
+        -f "$ALLOY_OVERRIDE" \
+        --timeout 5m \
+        --wait
 
-        rm -f "$ALLOY_OVERRIDE"
-        echo "Alloy installed — pushing metrics to Grafana Cloud."
-    fi
+    rm -f "$ALLOY_OVERRIDE"
+    echo "Alloy installed — pushing metrics to Grafana Cloud."
 else
     echo "No grafana-cloud-credentials secret found, skipping Alloy (no remote metrics push)."
 fi
