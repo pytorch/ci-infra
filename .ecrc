@@ -1,6 +1,10 @@
 {
   "Exclude": [
     "osdc/modules/nodepools/scripts/python/generate_nodepools.py",
-    "osdc/modules/arc-runners/scripts/python/generate_runners.py"
+    "osdc/modules/arc-runners/scripts/python/generate_runners.py",
+    "osdc/modules/buildkit/scripts/python/generate_buildkit.py",
+    "osdc/base/node-compactor/scripts/python/test_compactor.py",
+    "osdc/base/node-compactor/scripts/python/test_models_pod_helpers.py",
+    "osdc/base/node-compactor/tests/e2e/test_e2e.py"
   ]
 }

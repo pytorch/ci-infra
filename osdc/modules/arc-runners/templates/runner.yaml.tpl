@@ -31,6 +31,9 @@ listenerTemplate:
             memory: "128Mi"
 
 template:
+  metadata:
+    annotations:
+      karpenter.sh/do-not-disrupt: "true"
   spec:
     serviceAccountName: arc-runner
 
@@ -94,6 +97,9 @@ metadata:
     osdc.io/module: {{MODULE_NAME}}
 data:
   job-pod.yaml: |
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       # Job pods run untrusted user code — no Kubernetes API access
       serviceAccountName: arc-workflow
