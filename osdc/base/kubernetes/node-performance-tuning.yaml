@@ -40,8 +40,9 @@ data:
       if [ -f /etc/kubernetes/kubelet/kubelet-config.json ] && command -v jq &>/dev/null; then
         current_cpu_policy=$(jq -r '.cpuManagerPolicy // "none"' /etc/kubernetes/kubelet/kubelet-config.json 2>/dev/null || echo "unknown")
         current_topo_policy=$(jq -r '.topologyManagerPolicy // "none"' /etc/kubernetes/kubelet/kubelet-config.json 2>/dev/null || echo "unknown")
-        
-        if [ "$current_cpu_policy" != "static" ] || [ "$current_topo_policy" != "single-numa-node" ]; then
+        current_topo_scope=$(jq -r '.topologyManagerScope // "none"' /etc/kubernetes/kubelet/kubelet-config.json 2>/dev/null || echo "unknown")
+
+        if [ "$current_cpu_policy" != "static" ] || [ "$current_topo_policy" != "restricted" ] || [ "$current_topo_scope" != "container" ]; then
           echo "   ⚠️  Kubelet config drift detected - will reconfigure"
           all_checks_pass=false
         else
@@ -179,13 +180,14 @@ data:
     if [ -f /etc/kubernetes/kubelet/kubelet-config.json ]; then
       current_cpu_policy=$(jq -r '.cpuManagerPolicy // "none"' /etc/kubernetes/kubelet/kubelet-config.json)
       current_topo_policy=$(jq -r '.topologyManagerPolicy // "none"' /etc/kubernetes/kubelet/kubelet-config.json)
-      
-      if [ "$current_cpu_policy" != "static" ] || [ "$current_topo_policy" != "single-numa-node" ]; then
-        jq '.cpuManagerPolicy = "static" | .topologyManagerPolicy = "single-numa-node" | .topologyManagerScope = "pod"' \
+      current_topo_scope=$(jq -r '.topologyManagerScope // "none"' /etc/kubernetes/kubelet/kubelet-config.json)
+
+      if [ "$current_cpu_policy" != "static" ] || [ "$current_topo_policy" != "restricted" ] || [ "$current_topo_scope" != "container" ]; then
+        jq '.cpuManagerPolicy = "static" | .topologyManagerPolicy = "restricted" | .topologyManagerScope = "container" | .topologyManagerPolicyOptions = {"prefer-closest-numa-nodes": "true"}' \
           /etc/kubernetes/kubelet/kubelet-config.json > /tmp/kubelet-config.json.new
         mv /tmp/kubelet-config.json.new /etc/kubernetes/kubelet/kubelet-config.json
         kubelet_config_updated=true
-        echo "✓ Updated kubelet config: cpuManagerPolicy=static, topologyManagerPolicy=single-numa-node"
+        echo "✓ Updated kubelet config: cpuManagerPolicy=static, topologyManagerPolicy=restricted"
       else
         echo "✓ Kubelet config already optimal (no changes needed)"
       fi
