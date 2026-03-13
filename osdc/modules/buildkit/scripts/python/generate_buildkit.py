@@ -381,8 +381,10 @@ spec:
       kubelet:
         config:
           cpuManagerPolicy: static
-          topologyManagerPolicy: single-numa-node
-          topologyManagerScope: pod
+          topologyManagerPolicy: restricted
+          topologyManagerScope: container
+          topologyManagerPolicyOptions:
+            prefer-closest-numa-nodes: "true"
 
       instance:
         localUserData: |
