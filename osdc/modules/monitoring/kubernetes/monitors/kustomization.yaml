@@ -6,13 +6,13 @@ kind: Kustomization
 
 resources:
   # ServiceMonitors
-  - ../servicemonitors/arc-controller.yaml
-  - ../servicemonitors/harbor.yaml
-  - ../servicemonitors/karpenter.yaml
-  - ../servicemonitors/node-compactor.yaml
-  - ../servicemonitors/git-cache-central.yaml
+  - servicemonitors/arc-controller.yaml
+  - servicemonitors/harbor.yaml
+  - servicemonitors/karpenter.yaml
+  - servicemonitors/node-compactor.yaml
+  - servicemonitors/git-cache-central.yaml
   # PodMonitors
-  - ../podmonitors/git-cache-daemonset.yaml
-  - ../podmonitors/arc-listeners.yaml
-  # DCGM ServiceMonitor (the DaemonSet itself is in the parent kustomization)
-  - ../dcgm-exporter/servicemonitor.yaml
+  - podmonitors/git-cache-daemonset.yaml
+  - podmonitors/arc-listeners.yaml
+  # DCGM ServiceMonitor (DaemonSet is in parent kustomization)
+  - dcgm-servicemonitor.yaml

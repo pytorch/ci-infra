@@ -1,18 +1,21 @@
 # modules/monitoring/ — Cluster Monitoring
 
-Deploys kube-prometheus-stack (Prometheus, Grafana, AlertManager, node-exporter, kube-state-metrics) plus custom ServiceMonitors/PodMonitors for OSDC components and a DCGM exporter DaemonSet for GPU metrics.
+Deploys monitoring infrastructure: kube-prometheus-stack for CRDs and exporters (node-exporter, kube-state-metrics), custom ServiceMonitors/PodMonitors for OSDC components, a DCGM exporter DaemonSet for GPU metrics, and Grafana Alloy to push metrics to Grafana Cloud.
+
+Prometheus, Grafana, and AlertManager are **not installed locally** — all metrics go to Grafana Cloud via Alloy.
 
 ## What's here
 
 | Path | Purpose |
 |------|---------|
-| `deploy.sh` | Reads config, applies k8s resources, `helm upgrade --install` for kube-prometheus-stack, conditionally installs Alloy |
-| `helm/values.yaml` | kube-prometheus-stack Helm values (node placement, auto-discovery, storage class) |
-| `helm/alloy-values.yaml` | Grafana Alloy Helm values (controller type, Alloy config for ServiceMonitor/PodMonitor discovery + remote_write) |
+| `deploy.sh` | Installs kube-prometheus-stack (CRDs + exporters), applies monitors, conditionally installs Alloy |
+| `helm/values.yaml` | kube-prometheus-stack values — Prometheus/Grafana/AlertManager disabled, exporters + operator enabled |
+| `helm/alloy-values.yaml` | Grafana Alloy values — ServiceMonitor/PodMonitor discovery + remote_write to Grafana Cloud |
 | `kubernetes/namespace.yaml` | Monitoring namespace |
-| `kubernetes/servicemonitors/` | ServiceMonitors for node-compactor, git-cache-central, Harbor exporter, ARC controller, Karpenter |
-| `kubernetes/podmonitors/` | PodMonitors for git-cache DaemonSet, ARC listeners |
-| `kubernetes/dcgm-exporter/` | DCGM exporter DaemonSet + headless Service + ServiceMonitor for GPU metrics |
+| `kubernetes/monitors/` | CRD-dependent resources applied by deploy.sh after Helm install |
+| `kubernetes/monitors/servicemonitors/` | ServiceMonitors for node-compactor, git-cache-central, Harbor, ARC controller, Karpenter |
+| `kubernetes/monitors/podmonitors/` | PodMonitors for git-cache DaemonSet, ARC listeners |
+| `kubernetes/dcgm-exporter/` | DCGM exporter DaemonSet + headless Service (ServiceMonitor is in monitors/) |
 
 ## Configuration (clusters.yaml)
 
@@ -20,18 +23,34 @@ Deploys kube-prometheus-stack (Prometheus, Grafana, AlertManager, node-exporter,
 defaults:
   monitoring:
     namespace: monitoring          # Kubernetes namespace
-    retention_days: 15             # Prometheus data retention
-    storage_size: 50Gi             # PVC size per Prometheus replica
-    grafana_enabled: true          # Deploy Grafana
-    alertmanager_enabled: true     # Deploy AlertManager
+    grafana_cloud_url: ""          # Grafana Cloud Mimir push endpoint
 ```
 
-## Grafana Cloud push (optional)
+## Metrics pipeline
 
-If a `grafana-cloud-credentials` secret exists in the monitoring namespace, deploy.sh automatically installs **Grafana Alloy** to push metrics to Grafana Cloud. Alloy independently discovers ServiceMonitor/PodMonitor CRDs, scrapes the same targets as Prometheus, and pushes via `prometheus.remote_write`. The `grafana_cloud_url` in clusters.yaml provides the Mimir endpoint.
+**Grafana Alloy** is the primary (and only) metrics pipeline. It discovers ServiceMonitor/PodMonitor CRDs, scrapes targets, and pushes to Grafana Cloud via `prometheus.remote_write`.
 
-To enable: create the secret, set `grafana_cloud_url` in clusters.yaml, redeploy.
+Alloy is installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace and `grafana_cloud_url` is set in clusters.yaml.
+
+To enable: create the secret, set `grafana_cloud_url`, redeploy.
 To disable: delete the secret and `helm uninstall alloy -n monitoring`.
+
+## What kube-prometheus-stack provides
+
+The chart is used only as a CRD + exporter bundle:
+- **CRDs**: `monitoring.coreos.com` (ServiceMonitor, PodMonitor, PrometheusRule, etc.)
+- **Prometheus Operator**: Manages CRD lifecycle
+- **node-exporter**: DaemonSet on every node (system metrics)
+- **kube-state-metrics**: Kubernetes object metrics
+
+Prometheus, Grafana, and AlertManager are all `enabled: false`.
+
+## Deploy ordering
+
+1. Justfile applies `kubernetes/kustomization.yaml` (namespace + DCGM DaemonSet)
+2. `deploy.sh` installs kube-prometheus-stack (CRDs + exporters)
+3. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors + PodMonitors — requires CRDs from step 2)
+4. `deploy.sh` conditionally installs Alloy (requires grafana-cloud-credentials secret)
 
 ## Dependencies
 
@@ -41,8 +60,7 @@ To disable: delete the secret and `helm uninstall alloy -n monitoring`.
 
 ## Key details
 
-- Prometheus runs as an HA pair (2 replicas) on base infrastructure nodes
 - node-exporter tolerates ALL taints to run on every node
 - All other components run on base infrastructure nodes (tolerate `CriticalAddonsOnly`)
-- Auto-discovers all ServiceMonitors/PodMonitors across all namespaces (`serviceMonitorSelectorNilUsesHelmValues: false`)
 - DCGM exporter runs only on GPU nodes (nodeAffinity on `nvidia.com/gpu.present`)
+- Alloy runs as 2 replicas with clustering for dedup

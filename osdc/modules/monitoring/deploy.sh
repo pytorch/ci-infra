@@ -7,10 +7,11 @@ set -euo pipefail
 #
 # Deploys:
 #   1. Monitoring namespace
-#   2. kube-prometheus-stack Helm chart (Prometheus, Grafana, AlertManager,
-#      node-exporter, kube-state-metrics) — provides monitoring.coreos.com CRDs
+#   2. kube-prometheus-stack Helm chart — CRDs, node-exporter, kube-state-metrics,
+#      Prometheus Operator (Prometheus/Grafana/AlertManager are DISABLED)
 #   3. Custom ServiceMonitors/PodMonitors + DCGM exporter DaemonSet
-#   4. Grafana Alloy (if grafana-cloud-credentials secret exists)
+#   4. Grafana Alloy (if grafana-cloud-credentials secret exists) — primary
+#      metrics pipeline, scrapes targets and pushes to Grafana Cloud
 
 CLUSTER="$1"
 export CNAME="$2"
@@ -24,39 +25,28 @@ CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # --- Read per-installation monitoring config ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" monitoring.namespace monitoring)
-RETENTION_DAYS=$(uv run "$CFG" "$CLUSTER" monitoring.retention_days 15)
-STORAGE_SIZE=$(uv run "$CFG" "$CLUSTER" monitoring.storage_size 50Gi)
-GRAFANA_ENABLED=$(uv run "$CFG" "$CLUSTER" monitoring.grafana_enabled true)
-ALERTMANAGER_ENABLED=$(uv run "$CFG" "$CLUSTER" monitoring.alertmanager_enabled true)
+
 # --- Create namespace ---
 echo "Ensuring namespace '${NAMESPACE}' exists..."
 kubectl create namespace "$NAMESPACE" 2>/dev/null || true
 
-# --- Install kube-prometheus-stack ---
-# Must be installed BEFORE applying ServiceMonitors/PodMonitors because the
-# Helm chart provides the monitoring.coreos.com CRDs they depend on.
-echo "Installing kube-prometheus-stack (retention=${RETENTION_DAYS}d, storage=${STORAGE_SIZE}, grafana=${GRAFANA_ENABLED}, alertmanager=${ALERTMANAGER_ENABLED})..."
+# --- Install kube-prometheus-stack (CRDs + exporters only) ---
+# Prometheus, Grafana, and AlertManager are disabled in values.yaml.
+# This chart provides: monitoring.coreos.com CRDs, node-exporter,
+# kube-state-metrics, and the Prometheus Operator for CRD lifecycle.
+echo "Installing kube-prometheus-stack (CRDs + exporters)..."
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 helm repo update prometheus-community
 
-HELM_ARGS=(
-    --version 82.10.3
-    --namespace "$NAMESPACE"
-    -f "$MODULE_DIR/helm/values.yaml"
-    --set prometheus.prometheusSpec.retention="${RETENTION_DAYS}d"
-    --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage="$STORAGE_SIZE"
-    --set prometheus.prometheusSpec.externalLabels.cluster="$CNAME"
-    --set grafana.enabled="$GRAFANA_ENABLED"
-    --set alertmanager.enabled="$ALERTMANAGER_ENABLED"
-    --timeout 10m
-    --wait
-)
-
 helm upgrade --install kube-prometheus-stack \
     prometheus-community/kube-prometheus-stack \
-    "${HELM_ARGS[@]}"
+    --version 82.10.3 \
+    --namespace "$NAMESPACE" \
+    -f "$MODULE_DIR/helm/values.yaml" \
+    --timeout 10m \
+    --wait
 
-echo "kube-prometheus-stack installed."
+echo "kube-prometheus-stack installed (CRDs + exporters)."
 
 # --- Apply ServiceMonitors, PodMonitors, and DCGM ServiceMonitor ---
 # Applied AFTER kube-prometheus-stack because it provides the
@@ -111,7 +101,7 @@ EOF
         echo "Alloy installed — pushing metrics to Grafana Cloud."
     fi
 else
-    echo "No grafana-cloud-credentials secret found, skipping Alloy (metrics stay in-cluster)."
+    echo "No grafana-cloud-credentials secret found, skipping Alloy (no remote metrics push)."
 fi
 
 echo "Monitoring module deployed."
