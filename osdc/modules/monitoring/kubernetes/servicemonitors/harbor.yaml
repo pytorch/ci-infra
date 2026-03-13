@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: harbor
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - harbor-system
+  selector:
+    matchLabels:
+      app: harbor
+      component: exporter
+  endpoints:
+    - port: metrics
+      interval: 30s

@@ -1,0 +1,90 @@
+# kube-prometheus-stack Helm values for OSDC.
+#
+# Per-installation overrides (replicas, retention, storage, scrapeInterval)
+# are applied via --set in deploy.sh from clusters.yaml config.
+
+# --- Prometheus ---
+prometheus:
+  prometheusSpec:
+    # HA pair on base infrastructure nodes (overridden by deploy.sh)
+    replicas: 2
+    retention: 15d
+    scrapeInterval: 30s
+
+    # Run on base infrastructure nodes
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+    nodeSelector:
+      role: base-infrastructure
+
+    # Storage — gp3 EBS volumes
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 100Gi
+
+    externalLabels:
+      cluster: "PLACEHOLDER"
+
+    # Auto-discover ALL ServiceMonitors/PodMonitors across namespaces.
+    # Without these, Prometheus only discovers monitors in its own namespace
+    # or those matching the Helm release labels.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    podMonitorNamespaceSelector: {}
+    serviceMonitorSelector: {}
+    podMonitorSelector: {}
+
+# --- Grafana ---
+grafana:
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  nodeSelector:
+    role: base-infrastructure
+
+  # Dashboard sidecar auto-loads ConfigMaps with label grafana_dashboard: "1"
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+
+# --- AlertManager ---
+alertmanager:
+  alertmanagerSpec:
+    replicas: 2
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+    nodeSelector:
+      role: base-infrastructure
+
+# --- node-exporter (DaemonSet — runs on ALL nodes) ---
+nodeExporter:
+  tolerations:
+    - operator: Exists  # tolerate ALL taints — must run on every node
+
+# --- kube-state-metrics ---
+kube-state-metrics:
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  nodeSelector:
+    role: base-infrastructure

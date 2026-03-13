@@ -73,6 +73,12 @@ resource "aws_subnet" "private" {
     }
   )
 
+  lifecycle {
+    ignore_changes = [
+      tags["karpenter.sh/discovery"],
+    ]
+  }
+
   # Force sequential creation to avoid AWS eventual consistency issues
   depends_on = [aws_vpc.this, aws_internet_gateway.this]
 }

@@ -20,13 +20,15 @@ from models import (
 log = logging.getLogger("compactor")
 
 
-def discover_managed_nodes(client: Client, cfg: Config) -> list[str]:
-    """Find node names belonging to NodePools labeled for compaction.
+def discover_managed_nodes(client: Client, cfg: Config) -> dict[str, str]:
+    """Find nodes belonging to NodePools labeled for compaction.
 
     Karpenter labels nodes with karpenter.sh/nodepool=<name>. We list
     NodePools with our label, then find nodes belonging to those pools.
 
-    Returns an empty list if Karpenter CRDs are not installed.
+    Returns:
+        dict mapping node_name -> pool_name. Empty dict if Karpenter
+        CRDs are not installed or no managed pools exist.
     """
     from lightkube.generic_resource import create_global_resource
 
@@ -45,26 +47,30 @@ def discover_managed_nodes(client: Client, cfg: Config) -> list[str]:
                 "Karpenter CRDs not found (NodePool resource not registered). "
                 "Ensure Karpenter is installed. No nodes will be managed."
             )
-            return []
+            return {}
         raise
 
     if not managed_pools:
-        return []
+        return {}
 
-    managed_nodes = []
+    managed_nodes: dict[str, str] = {}
     for node in client.list(Node):
         labels = (node.metadata and node.metadata.labels) or {}
         pool = labels.get("karpenter.sh/nodepool", "")
         if pool in managed_pools:
-            managed_nodes.append(node.metadata.name)
+            managed_nodes[node.metadata.name] = pool
 
     return managed_nodes
 
 
 def build_node_states(
-    client: Client, cfg: Config, managed_node_names: list[str]
+    client: Client, cfg: Config, managed_node_names: dict[str, str]
 ) -> tuple[dict[str, NodeState], list]:
     """Build NodeState for each managed node with its pods.
+
+    Args:
+        managed_node_names: dict mapping node_name -> pool_name from
+            discover_managed_nodes().
 
     Also returns raw pending pod objects (unschedulable) for burst
     absorption checks, avoiding a redundant API call.

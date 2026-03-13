@@ -30,8 +30,10 @@ data:
     import socket
     import subprocess
     import sys
+    import threading
     import time
     import urllib.request
+    from http.server import HTTPServer, BaseHTTPRequestHandler
     from pathlib import Path
 
     logging.basicConfig(
@@ -55,11 +57,135 @@ data:
     FETCH_INTERVAL = int(os.environ.get("FETCH_INTERVAL", "300"))
     TAINT_KEY = "git-cache-not-ready"
     NODE_NAME = os.environ.get("NODE_NAME", "")
+    METRICS_PORT = 9102
 
     # Kubernetes API for taint removal
     K8S_API = "https://kubernetes.default.svc"
     TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
     CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+
+    # ---------------------------------------------------------------------------
+    # Prometheus metrics server (stdlib only, no pip dependencies)
+    # ---------------------------------------------------------------------------
+
+    class MetricsServer:
+        """Thread-safe Prometheus metrics with an HTTP endpoint on /metrics."""
+
+        # Metric definitions: (name, type, help)
+        _METRIC_DEFS = [
+            ("git_cache_node_sync_duration_seconds", "gauge",
+             "Duration of last rsync from central"),
+            ("git_cache_node_sync_success_total", "counter",
+             "Successful sync count"),
+            ("git_cache_node_sync_errors_total", "counter",
+             "Failed sync count"),
+            ("git_cache_node_last_sync_timestamp", "gauge",
+             "Unix timestamp of last successful sync"),
+            ("git_cache_node_cache_age_seconds", "gauge",
+             "Seconds since last successful sync"),
+            ("git_cache_node_active_slot", "gauge",
+             "Current active slot (0=a, 1=b)"),
+            ("git_cache_node_initial_sync_duration_seconds", "gauge",
+             "Time from pod start to first successful sync"),
+            ("git_cache_node_taint_removed", "gauge",
+             "1 if startup taint was successfully removed, 0 otherwise"),
+            ("git_cache_node_central_wait_seconds", "gauge",
+             "Time spent waiting for central rsyncd on startup"),
+            ("git_cache_node_cache_size_bytes", "gauge",
+             "Total size of the local git cache on disk"),
+        ]
+
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._values: dict[str, float] = {}
+            # Build a lookup for type/help by metric name
+            self._types: dict[str, str] = {}
+            self._helps: dict[str, str] = {}
+            for name, mtype, mhelp in self._METRIC_DEFS:
+                self._types[name] = mtype
+                self._helps[name] = mhelp
+                self._values[name] = 0.0
+
+        def set(self, name: str, value: float) -> None:
+            with self._lock:
+                self._values[name] = value
+
+        def inc(self, name: str, delta: float = 1.0) -> None:
+            with self._lock:
+                self._values[name] = self._values.get(name, 0.0) + delta
+
+        def format(self) -> str:
+            lines: list[str] = []
+            with self._lock:
+                snapshot = dict(self._values)
+            for name, mtype, mhelp in self._METRIC_DEFS:
+                value = snapshot.get(name, 0.0)
+                # cache_age_seconds is computed dynamically
+                if name == "git_cache_node_cache_age_seconds":
+                    last_ts = snapshot.get(
+                        "git_cache_node_last_sync_timestamp", 0.0
+                    )
+                    value = time.time() - last_ts if last_ts > 0 else 0.0
+                lines.append(f"# HELP {name} {mhelp}")
+                lines.append(f"# TYPE {name} {mtype}")
+                lines.append(f"{name} {value}")
+            lines.append("")  # trailing newline
+            return "\n".join(lines)
+
+        def start(self) -> None:
+            """Start the HTTP server in a daemon thread."""
+            metrics_ref = self
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(self) -> None:
+                    if self.path == "/metrics":
+                        body = metrics_ref.format().encode()
+                        self.send_response(200)
+                        self.send_header(
+                            "Content-Type",
+                            "text/plain; version=0.0.4; charset=utf-8",
+                        )
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+
+                def log_message(self, fmt, *args) -> None:  # noqa: ARG002
+                    # Silence per-request access logs
+                    pass
+
+            server = HTTPServer(("0.0.0.0", METRICS_PORT), Handler)
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            log.info("Metrics server listening on :%d/metrics", METRICS_PORT)
+
+
+    # Global metrics instance (initialised before main runs)
+    metrics = MetricsServer()
+
+
+    def _dir_size_bytes(path: Path) -> int:
+        """Return total size in bytes of all files under path."""
+        total = 0
+        try:
+            for f in path.rglob("*"):
+                if f.is_file():
+                    total += f.stat().st_size
+        except OSError:
+            pass
+        return total
+
+
+    def record_cache_size() -> None:
+        """Measure and record the total size of the active git cache slot."""
+        current = active_slot()
+        if current is not None:
+            size = _dir_size_bytes(current)
+            metrics.set("git_cache_node_cache_size_bytes", size)
+            log.info("Cache size: %.1f MiB", size / (1024 * 1024))
 
 
     def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -79,15 +205,21 @@ data:
     def wait_for_central(timeout: int = 600) -> None:
         """Wait for the central pod's rsyncd to accept TCP connections."""
         log.info("Waiting for central pod at %s:%d...", CENTRAL_HOST, CENTRAL_PORT)
-        deadline = time.monotonic() + timeout
+        t0 = time.monotonic()
+        deadline = t0 + timeout
         while time.monotonic() < deadline:
             try:
                 sock = socket.create_connection((CENTRAL_HOST, CENTRAL_PORT), timeout=5)
                 sock.close()
                 log.info("Central pod is ready")
+                metrics.set(
+                    "git_cache_node_central_wait_seconds",
+                    time.monotonic() - t0,
+                )
                 return
             except (socket.timeout, ConnectionRefusedError, OSError):
                 time.sleep(5)
+        metrics.set("git_cache_node_central_wait_seconds", time.monotonic() - t0)
         log.error("Central pod not ready after %ds, proceeding anyway", timeout)
 
 
@@ -115,6 +247,10 @@ data:
         tmp_link.symlink_to(slot)
         tmp_link.rename(CACHE_LINK)
         log.info("Symlink /mnt/git-cache -> %s", slot)
+        metrics.set(
+            "git_cache_node_active_slot",
+            0.0 if slot.resolve() == SLOT_A.resolve() else 1.0,
+        )
 
 
     def migrate_old_cache() -> None:
@@ -144,12 +280,20 @@ data:
     def rsync_from_central(dst: Path) -> bool:
         """Rsync from the central pod to a local slot. Returns True on success."""
         dst.mkdir(parents=True, exist_ok=True)
+        t0 = time.monotonic()
         try:
             run(["rsync", "-a", "--delete", RSYNC_SOURCE, f"{dst}/"])
+            duration = time.monotonic() - t0
             log.info("Rsynced from central -> %s", dst)
+            metrics.set("git_cache_node_sync_duration_seconds", duration)
+            metrics.inc("git_cache_node_sync_success_total")
+            metrics.set("git_cache_node_last_sync_timestamp", time.time())
             return True
         except subprocess.CalledProcessError:
+            duration = time.monotonic() - t0
             log.warning("Rsync from central failed")
+            metrics.set("git_cache_node_sync_duration_seconds", duration)
+            metrics.inc("git_cache_node_sync_errors_total")
             return False
 
 
@@ -196,6 +340,7 @@ data:
 
         if taint_index is None:
             log.info("Startup taint already absent from %s", NODE_NAME)
+            metrics.set("git_cache_node_taint_removed", 1.0)
             return
 
         # Use JSON Patch to remove only our taint by index — does not
@@ -219,6 +364,7 @@ data:
             with urllib.request.urlopen(req, context=ctx) as resp:
                 if resp.status == 200:
                     log.info("Removed %s taint from node %s", TAINT_KEY, NODE_NAME)
+                    metrics.set("git_cache_node_taint_removed", 1.0)
                 else:
                     log.warning("Failed to remove taint (HTTP %d)", resp.status)
         except Exception as exc:
@@ -226,7 +372,13 @@ data:
 
 
     def main() -> None:
+        pod_start = time.monotonic()
+
         install_deps()
+
+        # Start the Prometheus metrics endpoint early so liveness probes
+        # and scrapers can reach it during the (potentially long) first sync.
+        metrics.start()
 
         log.info("Node: %s", NODE_NAME or "unknown")
         log.info("Fetch interval: %ds", FETCH_INTERVAL)
@@ -247,6 +399,7 @@ data:
                 dst = staging_slot()
                 if rsync_from_central(dst):
                     set_current(dst)
+                    record_cache_size()
                     has_cache = True
                     break
                 log.warning(
@@ -259,6 +412,13 @@ data:
             dst = staging_slot()
             if rsync_from_central(dst):
                 set_current(dst)
+                record_cache_size()
+
+        # Record how long the initial sync took (pod start -> cache ready)
+        metrics.set(
+            "git_cache_node_initial_sync_duration_seconds",
+            time.monotonic() - pod_start,
+        )
 
         # Phase 4: Remove startup taint (only reached after successful sync)
         remove_startup_taint()
@@ -271,6 +431,7 @@ data:
             dst = staging_slot()
             if rsync_from_central(dst):
                 set_current(dst)
+                record_cache_size()
 
             log.info("Sync cycle complete")
 

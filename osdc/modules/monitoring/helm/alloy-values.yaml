@@ -1,0 +1,54 @@
+# Grafana Alloy Helm values for OSDC.
+#
+# Alloy pushes metrics to Grafana Cloud by independently discovering
+# ServiceMonitor/PodMonitor CRDs and scraping the same targets as Prometheus.
+# Only installed when the grafana-cloud-credentials secret exists.
+#
+# Dynamic values (GCLOUD_RW_URL, CLUSTER_NAME) are injected by deploy.sh
+# via a temporary override file.
+
+controller:
+  type: deployment
+  replicas: 2
+
+  # Run on base infrastructure nodes
+  nodeSelector:
+    role: base-infrastructure
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+
+alloy:
+  configMap:
+    content: |-
+      // Discover and scrape all ServiceMonitor targets across namespaces.
+      prometheus.operator.servicemonitors "default" {
+        forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+        clustering {
+          enabled = true
+        }
+      }
+
+      // Discover and scrape all PodMonitor targets across namespaces.
+      prometheus.operator.podmonitors "default" {
+        forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+        clustering {
+          enabled = true
+        }
+      }
+
+      // Push metrics to Grafana Cloud Mimir.
+      prometheus.remote_write "grafana_cloud" {
+        external_labels = {
+          cluster = env("CLUSTER_NAME"),
+        }
+        endpoint {
+          url = env("GCLOUD_RW_URL")
+          basic_auth {
+            username = env("GCLOUD_RW_API_USER")
+            password = env("GCLOUD_RW_API_KEY")
+          }
+        }
+      }

@@ -54,6 +54,13 @@ defaults:
     cpu_consolidate_after: "3h"
   buildkit:
     replicas_per_arch: 4
+  monitoring:
+    namespace: monitoring
+    retention_days: 15
+    storage_size: 50Gi
+    grafana_enabled: true
+    alertmanager_enabled: true
+    grafana_cloud_url: ""  # set to enable remote_write (requires grafana-cloud-credentials secret)
 
 clusters:
   arc-staging:
@@ -87,12 +94,16 @@ clusters:
     buildkit:
       replicas_per_arch: 2
       arm64_instance_type: m7gd.16xlarge
+    monitoring:
+      retention_days: 7
+      storage_size: 20Gi
     modules:
       - karpenter
       - arc
       - nodepools
       - arc-runners
       - buildkit
+      - monitoring
 
   arc-production:
     cluster_name: pytorch-arc-production
@@ -111,3 +122,4 @@ clusters:
       - nodepools
       - arc-runners
       - buildkit
+      - monitoring
