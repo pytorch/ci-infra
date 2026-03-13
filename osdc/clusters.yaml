@@ -56,10 +56,6 @@ defaults:
     replicas_per_arch: 4
   monitoring:
     namespace: monitoring
-    retention_days: 15
-    storage_size: 50Gi
-    grafana_enabled: true
-    alertmanager_enabled: true
     grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
 
 clusters:
