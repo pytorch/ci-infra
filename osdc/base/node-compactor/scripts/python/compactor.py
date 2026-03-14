@@ -60,20 +60,26 @@ def reconcile(
     managed_names = discover_managed_nodes(client, cfg)
     if not managed_names:
         log.debug("No managed nodes found (no NodePools with label %s)", cfg.nodepool_label)
+        m.refresh_gauge(m.managed_nodes, {})
+        m.refresh_gauge(m.node_utilization_ratio, {})
+        m.refresh_gauge(m.workload_pods, {})
+        m.refresh_gauge(m.tainted_nodes, {})
         return
 
     # Instrumentation point 1: managed nodes per nodepool
     pool_node_counts: dict[str, int] = {}
     for node_name, pool_name in managed_names.items():
         pool_node_counts[pool_name] = pool_node_counts.get(pool_name, 0) + 1
-    # Reset gauges then set current values to handle removed pools
-    m.managed_nodes._metrics.clear()
-    for pool_name, count in pool_node_counts.items():
-        m.managed_nodes.labels(nodepool=pool_name).set(count)
+    m.refresh_gauge(m.managed_nodes, {
+        (pool_name,): count for pool_name, count in pool_node_counts.items()
+    })
 
     node_states, pending_pods = build_node_states(client, cfg, managed_names)
     if not node_states:
         log.debug("No node states built")
+        m.refresh_gauge(m.node_utilization_ratio, {})
+        m.refresh_gauge(m.workload_pods, {})
+        m.refresh_gauge(m.tainted_nodes, {})
         return
 
     total_pods = sum(ns.workload_pod_count for ns in node_states.values())
@@ -86,21 +92,18 @@ def reconcile(
 
     # Instrumentation point 2: workload pods and utilization per nodepool/node
     pool_pod_counts: dict[str, int] = {}
-    m.node_utilization_ratio._metrics.clear()
+    utilization: dict[tuple[str, ...], float] = {}
     for node_name, ns in node_states.items():
         pool = managed_names.get(node_name, "unknown")
         pool_pod_counts[pool] = pool_pod_counts.get(pool, 0) + ns.workload_pod_count
         if ns.allocatable_cpu > 0:
-            m.node_utilization_ratio.labels(
-                node=node_name, nodepool=pool, resource="cpu"
-            ).set(ns.total_cpu_used / ns.allocatable_cpu)
+            utilization[(node_name, pool, "cpu")] = ns.total_cpu_used / ns.allocatable_cpu
         if ns.allocatable_memory > 0:
-            m.node_utilization_ratio.labels(
-                node=node_name, nodepool=pool, resource="memory"
-            ).set(ns.total_memory_used / ns.allocatable_memory)
-    m.workload_pods._metrics.clear()
-    for pool_name, count in pool_pod_counts.items():
-        m.workload_pods.labels(nodepool=pool_name).set(count)
+            utilization[(node_name, pool, "memory")] = ns.total_memory_used / ns.allocatable_memory
+    m.refresh_gauge(m.node_utilization_ratio, utilization)
+    m.refresh_gauge(m.workload_pods, {
+        (pool_name,): count for pool_name, count in pool_pod_counts.items()
+    })
 
     # Instrumentation point 3: pending pods
     burst_untaint = check_pending_pods(cfg, node_states, pending_pods)
@@ -119,9 +122,9 @@ def reconcile(
         will_be_tainted = (ns.is_tainted or node_name in desired_taint) and node_name not in desired_untaint
         if will_be_tainted:
             pool_taint_counts[pool] = pool_taint_counts.get(pool, 0) + 1
-    m.tainted_nodes._metrics.clear()
-    for pool_name, count in pool_taint_counts.items():
-        m.tainted_nodes.labels(nodepool=pool_name).set(count)
+    m.refresh_gauge(m.tainted_nodes, {
+        (pool_name,): count for pool_name, count in pool_taint_counts.items()
+    })
 
     # Apply cooldown: don't untaint nodes that were recently tainted.
     # Bypass cooldown for:

@@ -2,6 +2,28 @@
 
 from prometheus_client import Counter, Gauge, Histogram, Info
 
+# Track known label-value tuples per gauge so we can remove stale series
+# without touching prometheus_client internals.
+_known_labels: dict[str, set[tuple[str, ...]]] = {}
+
+
+def refresh_gauge(gauge: Gauge, current: dict[tuple[str, ...], float]) -> None:
+    """Update a labeled gauge: set current values, remove stale label sets.
+
+    Args:
+        gauge: A prometheus_client Gauge with labels.
+        current: Mapping of label-value tuples to metric values.
+            Keys must match the gauge's label order.
+    """
+    name = gauge._name
+    previous = _known_labels.get(name, set())
+    stale = previous - set(current.keys())
+    for label_values in stale:
+        gauge.remove(*label_values)
+    for label_values, value in current.items():
+        gauge.labels(*label_values).set(value)
+    _known_labels[name] = set(current.keys())
+
 # --- Gauges (current state) ---
 
 managed_nodes = Gauge(
