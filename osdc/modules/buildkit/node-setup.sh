@@ -6,15 +6,15 @@ retry() {
   local max_attempts=3
   local attempt=1
   local backoff
-  while [ $attempt -le $max_attempts ]; do
+  while [ "$attempt" -le "$max_attempts" ]; do
     if "$@"; then return 0; fi
-    if [ $attempt -eq $max_attempts ]; then
+    if [ "$attempt" -eq "$max_attempts" ]; then
       echo "FATAL: Command failed after $max_attempts attempts: $*" >&2
       return 1
     fi
     backoff=$((attempt == 1 ? 30 : 90))
     echo "WARN: Attempt $attempt/$max_attempts failed, retrying in ${backoff}s: $*" >&2
-    sleep $backoff
+    sleep "$backoff"
     attempt=$((attempt + 1))
   done
 }

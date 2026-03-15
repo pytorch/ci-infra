@@ -67,14 +67,8 @@ def resolve_value(cluster_cfg, defaults, dotpath):
     val = cluster_cfg
     dval = defaults
     for part in parts:
-        if isinstance(val, dict):
-            val = val.get(part)
-        else:
-            val = None
-        if isinstance(dval, dict):
-            dval = dval.get(part)
-        else:
-            dval = None
+        val = val.get(part) if isinstance(val, dict) else None
+        dval = dval.get(part) if isinstance(dval, dict) else None
     if val is not None:
         return val
     return dval

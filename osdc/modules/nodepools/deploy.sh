@@ -102,7 +102,7 @@ if ((${#FAILED[@]} > 0)); then
   echo "ERROR: ${#FAILED[@]} NodePool(s) failed to apply:"
   for name in "${FAILED[@]}"; do
     echo "  ✗ ${name}"
-    cat "$LOGDIR/${name}.log" | sed 's/^/    /'
+    sed 's/^/    /' <"$LOGDIR/${name}.log"
   done
   exit 1
 fi

@@ -64,7 +64,7 @@ def reconcile(client: Client, cfg: Config, taint_times: dict[str, float]) -> Non
 
     # Instrumentation point 1: managed nodes per nodepool
     pool_node_counts: dict[str, int] = {}
-    for node_name, pool_name in managed_names.items():
+    for _node_name, pool_name in managed_names.items():
         pool_node_counts[pool_name] = pool_node_counts.get(pool_name, 0) + 1
     m.refresh_gauge(m.managed_nodes, {(pool_name,): count for pool_name, count in pool_node_counts.items()})
 

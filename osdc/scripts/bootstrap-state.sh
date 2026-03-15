@@ -15,7 +15,6 @@ set -euo pipefail
 # Idempotent: safe to run multiple times.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="${OSDC_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 source "$SCRIPT_DIR/mise-activate.sh"
 CONFIG_PY="$SCRIPT_DIR/cluster-config.py"
 
@@ -27,8 +26,6 @@ bootstrap_cluster() {
   local cluster_id="$1"
   local bucket
   bucket=$(uv run "$CONFIG_PY" "$cluster_id" state_bucket)
-  local region
-  region=$(uv run "$CONFIG_PY" "$cluster_id" region)
 
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "Bootstrapping state for: $cluster_id"

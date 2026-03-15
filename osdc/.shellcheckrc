@@ -9,8 +9,10 @@ enable=all
 
 # Disable overly noisy checks:
 # SC2250: prefer ${var} over $var — too noisy, not a real issue
+# SC2292: prefer [[ ]] over [ ] — style preference, [ ] is POSIX and fine
+# SC2310: function in if/&& disables set -e — intentional pattern (retry in if)
 # SC2312: consider invoking separately to check exit code — noisy in pipelines
-disable=SC2250,SC2312
+disable=SC2250,SC2292,SC2310,SC2312
 
 # Follow sourced files relative to script location
 source-path=SCRIPTDIR

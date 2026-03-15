@@ -749,6 +749,7 @@ lint:
     for dir in $(_src_dirs base) $(_src_dirs modules); do
         trivy config --severity HIGH,CRITICAL --exit-code 1 \
             --misconfig-scanners terraform,dockerfile,kubernetes \
+            --ignorefile "{{UPSTREAM}}/.trivyignore" \
             "$dir" || ERRORS=$((ERRORS + 1))
     done
 
