@@ -1,3 +1,0 @@
-pyyaml>=6.0
-requests>=2.31
-yamllint>=1.35

@@ -36,7 +36,7 @@ osdc/
 ├── clusters.yaml           # THE source of truth — clusters + module lists
 ├── justfile                # All operations (deploy, lint, test, setup)
 ├── mise.toml               # Tool versions (tofu, kubectl, helm, crane, ruff, etc.)
-├── requirements.txt        # Python deps (pyyaml, requests)
+├── pyproject.toml          # Python deps + dev deps (managed by uv)
 ├── scripts/                # Orchestration helpers
 │   ├── cluster-config.py   # Reads clusters.yaml, outputs values for just/shell
 │   ├── bootstrap-state.sh  # Creates S3 + DynamoDB for tofu state
@@ -456,7 +456,7 @@ tofu state list              # All managed resources
 | `clusters.yaml` | Defines all clusters, modules, and per-installation config (replicas, log levels, runner limits, etc.) |
 | `justfile` | All operations (deploy, lint, test, setup, kubeconfig) |
 | `mise.toml` | Tool versions (tofu, kubectl, helm, crane, ruff, shellcheck, etc.) + env vars |
-| `requirements.txt` | Top-level Python dependencies (pyyaml, requests) |
+| `pyproject.toml` | Python dependencies + dev deps, managed by uv |
 | `scripts/cluster-config.py` | Reads clusters.yaml for justfile/shell consumption |
 | `scripts/bootstrap-state.sh` | Creates S3 bucket + DynamoDB for tofu state |
 | `scripts/mise-activate.sh` | Sourceable helper — adds mise tools to PATH for shebang recipes |

@@ -30,7 +30,7 @@ CFG := SCRIPTS / "cluster-config.py"
 # Install Python dependencies
 setup:
     @echo "Installing Python dependencies..."
-    @uv pip install -r {{UPSTREAM}}/requirements.txt
+    @cd {{UPSTREAM}} && uv sync
     @echo "Setup complete."
 
 # ============================================================================
@@ -576,7 +576,7 @@ test:
     for dir in $TEST_DIRS; do
         echo "━━━ Testing: ${dir#{{UPSTREAM}}/} ━━━"
         # Install test dependencies inline (script deps handled by uv)
-        (cd "$dir" && uv run --with pytest --with pytest-cov pytest --tb=short -q) || ERRORS=$((ERRORS + 1))
+        (cd "$dir" && uv run pytest --tb=short -q) || ERRORS=$((ERRORS + 1))
         echo ""
     done
 
@@ -592,7 +592,7 @@ test-compactor cluster:
     export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
     cd {{UPSTREAM}}/base/node-compactor/tests/e2e && \
-    uv run --with pytest pytest test_e2e.py -v --tb=long -x \
+    uv run pytest test_e2e.py -v --tb=long -x \
         --cluster-id="{{cluster}}"
 
 # ============================================================================

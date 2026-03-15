@@ -1,0 +1,15 @@
+[project]
+name = "osdc"
+version = "0.0.0"
+description = "Open Source Dev Cloud — modular Kubernetes infrastructure platform"
+requires-python = ">=3.12"
+dependencies = [
+  "pyyaml>=6.0",
+  "requests>=2.31",
+  "yamllint>=1.35",
+  "lightkube==0.15.5",
+  "prometheus_client>=0.21.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
