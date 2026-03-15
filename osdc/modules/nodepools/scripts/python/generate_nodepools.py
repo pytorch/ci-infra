@@ -20,14 +20,15 @@ from pathlib import Path
 
 import yaml
 
-
 # ANSI colors
-GREEN = '\033[0;32m'
-RED = '\033[0;31m'
-NC = '\033[0m'
+GREEN = "\033[0;32m"
+RED = "\033[0;31m"
+NC = "\033[0m"
+
 
 def log_info(msg):
     print(f"{GREEN}\u2192{NC} {msg}")
+
 
 def log_error(msg):
     print(f"{RED}\u2717{NC} {msg}")
@@ -42,10 +43,10 @@ def _detect_arch(instance_type, arch_hint):
     if arch_hint:
         return arch_hint
     # Graviton instance families contain 'g' after the generation number.
-    family = instance_type.split('.')[0]
-    if 'g' in family[2:]:
-        return 'arm64'
-    return 'amd64'
+    family = instance_type.split(".")[0]
+    if "g" in family[2:]:
+        return "arm64"
+    return "amd64"
 
 
 def _get_node_disk_size(nodepool_def):
@@ -55,14 +56,14 @@ def _get_node_disk_size(nodepool_def):
     pre-computed as the worst-case total: max concurrent pods (determined
     by CPU/memory/GPU constraints) x largest per-pod disk + OS overhead.
     """
-    node_disk = nodepool_def.get('node_disk_size')
+    node_disk = nodepool_def.get("node_disk_size")
     if node_disk:
         return node_disk
 
     # Legacy fallback: compute from max_pods_per_node * disk_size + 100
     os_overhead = 100  # Gi
-    max_pods = nodepool_def.get('max_pods_per_node', 10)
-    per_pod_disk = nodepool_def.get('disk_size', 100)
+    max_pods = nodepool_def.get("max_pods_per_node", 10)
+    per_pod_disk = nodepool_def.get("disk_size", 100)
     return max_pods * per_pod_disk + os_overhead
 
 
@@ -99,16 +100,16 @@ def _user_data_script_mime_part(indented_script):
 
 def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     """Generate a combined NodePool + EC2NodeClass YAML string."""
-    name = nodepool_def['name']
-    instance_type = nodepool_def['instance_type']
-    arch = _detect_arch(instance_type, nodepool_def.get('arch'))
-    is_gpu = nodepool_def.get('gpu', False)
-    has_nvme = nodepool_def.get('has_nvme', False)
-    user_data_script_path = nodepool_def.get('user_data_script')
+    name = nodepool_def["name"]
+    instance_type = nodepool_def["instance_type"]
+    arch = _detect_arch(instance_type, nodepool_def.get("arch"))
+    is_gpu = nodepool_def.get("gpu", False)
+    has_nvme = nodepool_def.get("has_nvme", False)
+    user_data_script_path = nodepool_def.get("user_data_script")
 
     # Per-def kubelet topology overrides (e.g. B200 needs single-numa-node/pod)
-    topology_policy = nodepool_def.get('topology_manager_policy', 'restricted')
-    topology_scope = nodepool_def.get('topology_manager_scope', 'container')
+    topology_policy = nodepool_def.get("topology_manager_policy", "restricted")
+    topology_scope = nodepool_def.get("topology_manager_scope", "container")
 
     # Read optional user data script for embedding as a MIME part
     indented_userdata = _read_user_data_script(user_data_script_path, defs_dir) if defs_dir else None
@@ -116,39 +117,39 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     node_disk_size = _get_node_disk_size(nodepool_def)
 
     # ----- Capacity block / reservation support -----
-    capacity_type = nodepool_def.get('capacity_type', 'on-demand')
-    capacity_reservation_ids = nodepool_def.get('capacity_reservation_ids', [])
+    capacity_type = nodepool_def.get("capacity_type", "on-demand")
+    capacity_reservation_ids = nodepool_def.get("capacity_reservation_ids", [])
 
     # ----- Node compactor opt-in -----
     # NodePools labeled osdc.io/node-compactor are managed by the compactor
     # controller, which handles consolidation via NoSchedule taints instead
     # of Karpenter's disruptive consolidation.
     # Default comes from cluster-level config (via env var), not per-def hardcode
-    cluster_compactor_enabled = os.environ.get('NODEPOOLS_COMPACTOR_ENABLED', 'false').lower() == 'true'
-    compactor_enabled = nodepool_def.get('node_compactor', cluster_compactor_enabled)
+    cluster_compactor_enabled = os.environ.get("NODEPOOLS_COMPACTOR_ENABLED", "false").lower() == "true"
+    compactor_enabled = nodepool_def.get("node_compactor", cluster_compactor_enabled)
 
     if compactor_enabled:
         # Compactor handles underutilized case; Karpenter only handles empty
-        consolidation_policy = 'WhenEmpty'
-        consolidation_after = '2m'
+        consolidation_policy = "WhenEmpty"
+        consolidation_after = "2m"
         compactor_label = '    osdc.io/node-compactor: "true"\n'
     else:
-        consolidation_policy = 'WhenEmptyOrUnderutilized'
-        consolidation_after = '3h'
-        compactor_label = ''
+        consolidation_policy = "WhenEmptyOrUnderutilized"
+        consolidation_after = "3h"
+        compactor_label = ""
 
     # ----- GPU vs CPU settings -----
     if is_gpu:
-        ami_family_block = '  amiFamily: AL2023'
+        ami_family_block = "  amiFamily: AL2023"
         ami_selector_block = """  amiSelectorTerms:
     - name: "amazon-eks-node-al2023-x86_64-nvidia-*\""""
         if compactor_enabled:
-            disruption_budget = os.environ.get('NODEPOOLS_GPU_DISRUPTION_BUDGET', '100%')
-            consolidation_after = os.environ.get('NODEPOOLS_GPU_CONSOLIDATE_AFTER', '2m')
+            disruption_budget = os.environ.get("NODEPOOLS_GPU_DISRUPTION_BUDGET", "100%")
+            consolidation_after = os.environ.get("NODEPOOLS_GPU_CONSOLIDATE_AFTER", "2m")
         else:
-            disruption_budget = '0'
-            consolidation_policy = 'WhenEmptyOrUnderutilized'
-            consolidation_after = os.environ.get('NODEPOOLS_GPU_CONSOLIDATE_AFTER', '3h')
+            disruption_budget = "0"
+            consolidation_policy = "WhenEmptyOrUnderutilized"
+            consolidation_after = os.environ.get("NODEPOOLS_GPU_CONSOLIDATE_AFTER", "3h")
         iops = 5000
         throughput = 250
 
@@ -159,32 +160,32 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
 """
         gpu_tags = '    GPU: "nvidia"\n'
     else:
-        ami_family_block = ''
+        ami_family_block = ""
         ami_selector_block = """  amiSelectorTerms:
     - alias: al2023@latest"""
         if compactor_enabled:
             # Compactor-managed: all empty nodes can be cleaned simultaneously
-            disruption_budget = os.environ.get('NODEPOOLS_CPU_DISRUPTION_BUDGET', '100%')
+            disruption_budget = os.environ.get("NODEPOOLS_CPU_DISRUPTION_BUDGET", "100%")
         else:
-            consolidation_policy = 'WhenEmptyOrUnderutilized'
-            consolidation_after = os.environ.get('NODEPOOLS_CPU_CONSOLIDATE_AFTER', '3h')
-            disruption_budget = os.environ.get('NODEPOOLS_CPU_DISRUPTION_BUDGET', '10%')
+            consolidation_policy = "WhenEmptyOrUnderutilized"
+            consolidation_after = os.environ.get("NODEPOOLS_CPU_CONSOLIDATE_AFTER", "3h")
+            disruption_budget = os.environ.get("NODEPOOLS_CPU_DISRUPTION_BUDGET", "10%")
         iops = 3000
         throughput = 125
 
-        gpu_labels = ''
-        gpu_taints = ''
-        gpu_tags = ''
+        gpu_labels = ""
+        gpu_taints = ""
+        gpu_tags = ""
 
     # ----- Capacity reservation block (EC2NodeClass) -----
     if capacity_reservation_ids:
-        cr_lines = '\n'.join(f'    - id: "{cr_id}"' for cr_id in capacity_reservation_ids)
+        cr_lines = "\n".join(f'    - id: "{cr_id}"' for cr_id in capacity_reservation_ids)
         capacity_reservation_block = f"""
   capacityReservationSelectorTerms:
 {cr_lines}
 """
     else:
-        capacity_reservation_block = '\n'
+        capacity_reservation_block = "\n"
 
     # ----- Build YAML -----
     yaml_content = f"""# Karpenter NodePool + EC2NodeClass: {instance_type}
@@ -279,7 +280,7 @@ spec:
           cpuManagerPolicy: static
           topologyManagerPolicy: {topology_policy}
           topologyManagerScope: {topology_scope}
-{"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' if topology_policy in ('restricted', 'best-effort') else ""}
+{"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' if topology_policy in ("restricted", "best-effort") else ""}
 {_user_data_script_mime_part(indented_userdata)}
     --==BOUNDARY==--
 
@@ -312,16 +313,18 @@ spec:
 def main():
     script_dir = Path(__file__).parent
     module_dir = script_dir.parent.parent
-    defs_dir = Path(os.environ['NODEPOOLS_DEFS_DIR']) if 'NODEPOOLS_DEFS_DIR' in os.environ else module_dir / 'defs'
-    output_dir = Path(os.environ['NODEPOOLS_OUTPUT_DIR']) if 'NODEPOOLS_OUTPUT_DIR' in os.environ else module_dir / 'generated'
-    module_name = os.environ.get('NODEPOOLS_MODULE_NAME', 'nodepools')
+    defs_dir = Path(os.environ["NODEPOOLS_DEFS_DIR"]) if "NODEPOOLS_DEFS_DIR" in os.environ else module_dir / "defs"
+    output_dir = (
+        Path(os.environ["NODEPOOLS_OUTPUT_DIR"]) if "NODEPOOLS_OUTPUT_DIR" in os.environ else module_dir / "generated"
+    )
+    module_name = os.environ.get("NODEPOOLS_MODULE_NAME", "nodepools")
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir()
 
-    def_files = sorted(defs_dir.glob('*.yaml'))
+    def_files = sorted(defs_dir.glob("*.yaml"))
     if not def_files:
         log_error(f"No definition files found in {defs_dir}")
         return 1
@@ -334,22 +337,24 @@ def main():
             with open(def_file) as f:
                 data = yaml.safe_load(f)
 
-            if not data or 'nodepool' not in data:
+            if not data or "nodepool" not in data:
                 log_error(f"Skipping {def_file.name}: missing 'nodepool' key")
                 continue
 
-            nodepool_def = data['nodepool']
-            name = nodepool_def.get('name')
-            instance_type = nodepool_def.get('instance_type')
+            nodepool_def = data["nodepool"]
+            name = nodepool_def.get("name")
+            instance_type = nodepool_def.get("instance_type")
 
             if not name or not instance_type:
                 log_error(f"Skipping {def_file.name}: missing 'name' or 'instance_type'")
                 continue
 
-            is_gpu = nodepool_def.get('gpu', False)
-            has_nvme = nodepool_def.get('has_nvme', False)
+            is_gpu = nodepool_def.get("gpu", False)
+            has_nvme = nodepool_def.get("has_nvme", False)
             node_disk = _get_node_disk_size(nodepool_def)
-            log_info(f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, {nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi{', NVMe' if has_nvme else ''})")
+            log_info(
+                f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, {nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi{', NVMe' if has_nvme else ''})"
+            )
 
             content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
             out_path = output_dir / f"{name}.yaml"
@@ -364,5 +369,5 @@ def main():
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

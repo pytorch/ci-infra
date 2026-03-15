@@ -12,7 +12,6 @@ from lightkube import ApiError
 from models import Config, NodeState, PodInfo, parse_cpu, parse_memory
 from packing import _pods_fit_on_nodes, bin_pack_min_nodes, compute_taints
 
-
 # ============================================================================
 # Helpers
 # ============================================================================
@@ -463,12 +462,8 @@ class TestComputeTaints:
 
     def test_old_nodes_tainted_first(self):
         cfg = make_config(max_uptime_hours=24)
-        old_node = make_node(
-            "old", cpu=16.0, creation_time=NOW - timedelta(hours=50)
-        )
-        young_node = make_node(
-            "young", cpu=16.0, creation_time=NOW - timedelta(hours=2)
-        )
+        old_node = make_node("old", cpu=16.0, creation_time=NOW - timedelta(hours=50))
+        young_node = make_node("young", cpu=16.0, creation_time=NOW - timedelta(hours=2))
         nodes = {"old": old_node, "young": young_node}
         # No pods -> both surplus, but min_nodes=1, surplus=1
         to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
@@ -588,9 +583,12 @@ class TestConfig:
 
     def test_from_env_defaults_clean_env(self, monkeypatch):
         for key in (
-            "COMPACTOR_INTERVAL", "COMPACTOR_MAX_UPTIME_HOURS",
-            "COMPACTOR_NODEPOOL_LABEL", "COMPACTOR_TAINT_KEY",
-            "COMPACTOR_MIN_NODES", "COMPACTOR_DRY_RUN",
+            "COMPACTOR_INTERVAL",
+            "COMPACTOR_MAX_UPTIME_HOURS",
+            "COMPACTOR_NODEPOOL_LABEL",
+            "COMPACTOR_TAINT_KEY",
+            "COMPACTOR_MIN_NODES",
+            "COMPACTOR_DRY_RUN",
             "COMPACTOR_TAINT_COOLDOWN",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -806,7 +804,6 @@ class TestComputeTaintsSafetySkipUntaint:
 # ============================================================================
 
 
-
 def _make_api_error(code: int) -> ApiError:
     """Create a mock ApiError with the given status code."""
     resp = MagicMock()
@@ -825,8 +822,13 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_no_managed_nodes_returns_early(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
     ):
         mock_discover.return_value = {}
         client = MagicMock()
@@ -846,8 +848,13 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_no_node_states_returns_early(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
     ):
         mock_discover.return_value = {"node-1": "pool"}
         mock_build.return_value = ({}, [])
@@ -868,8 +875,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_normal_flow_untaint_and_taint(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -899,8 +912,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_burst_untaint_overrides_cooldown(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config(taint_cooldown=300)
@@ -929,8 +948,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_cooldown_blocks_non_burst_untaint(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config(taint_cooldown=300)
@@ -958,8 +983,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_mandatory_untaint_overrides_cooldown(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         """mandatory_untaint (min_nodes enforcement) bypasses cooldown."""
         client = MagicMock()
@@ -989,8 +1020,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_cooldown_expired_allows_untaint(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config(taint_cooldown=300)
@@ -1017,8 +1054,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_404_on_untaint_logs_and_continues(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1049,8 +1092,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_404_on_taint_logs_and_continues(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1081,8 +1130,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_non_404_api_error_on_taint_logs_and_continues(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1111,8 +1166,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_generic_exception_on_untaint_continues(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1140,8 +1201,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_generic_exception_on_taint_continues(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1171,8 +1238,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_taint_times_updated_on_successful_taint(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1201,8 +1274,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_untaint_only_when_is_tainted_true(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1228,8 +1307,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_taint_only_when_is_tainted_false(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1255,8 +1340,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_healthcheck_file_touched(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1281,8 +1372,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_burst_untaint_removed_from_desired_taint(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         """If burst_untaint includes a node that compute_taints wants to taint,
         the burst wins -- node should be untainted, not tainted."""
@@ -1311,8 +1408,14 @@ class TestReconcile:
     @patch("compactor.build_node_states")
     @patch("compactor.discover_managed_nodes")
     def test_non_404_api_error_on_untaint_logs_and_continues(
-        self, mock_discover, mock_build, mock_check, mock_compute,
-        mock_apply, mock_remove, mock_touch,
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
     ):
         client = MagicMock()
         cfg = make_config()
@@ -1349,8 +1452,14 @@ class TestMain:
     @patch("compactor.signal.signal")
     @patch("compactor.time.sleep")
     def test_main_calls_reconcile_and_cleanup(
-        self, mock_sleep, mock_signal_fn, mock_from_env, mock_client_cls,
-        mock_reconcile, mock_cleanup, _mock_http_server,
+        self,
+        mock_sleep,
+        mock_signal_fn,
+        mock_from_env,
+        mock_client_cls,
+        mock_reconcile,
+        mock_cleanup,
+        _mock_http_server,
     ):
         cfg = make_config()
         mock_from_env.return_value = cfg
@@ -1387,8 +1496,14 @@ class TestMain:
     @patch("compactor.signal.signal")
     @patch("compactor.time.sleep")
     def test_main_registers_signal_handlers(
-        self, mock_sleep, mock_signal_fn, mock_from_env, mock_client_cls,
-        mock_reconcile, mock_cleanup, _mock_http_server,
+        self,
+        mock_sleep,
+        mock_signal_fn,
+        mock_from_env,
+        mock_client_cls,
+        mock_reconcile,
+        mock_cleanup,
+        _mock_http_server,
     ):
         mock_from_env.return_value = make_config()
         mock_client_cls.return_value = MagicMock()
@@ -1415,8 +1530,14 @@ class TestMain:
     @patch("compactor.signal.signal")
     @patch("compactor.time.sleep")
     def test_main_reconcile_exception_does_not_crash(
-        self, mock_sleep, mock_signal_fn, mock_from_env, mock_client_cls,
-        mock_reconcile, mock_cleanup, _mock_http_server,
+        self,
+        mock_sleep,
+        mock_signal_fn,
+        mock_from_env,
+        mock_client_cls,
+        mock_reconcile,
+        mock_cleanup,
+        _mock_http_server,
     ):
         mock_from_env.return_value = make_config()
         mock_client_cls.return_value = MagicMock()
@@ -1447,8 +1568,14 @@ class TestMain:
     @patch("compactor.signal.signal")
     @patch("compactor.time.sleep")
     def test_main_cleanup_exception_does_not_crash(
-        self, mock_sleep, mock_signal_fn, mock_from_env, mock_client_cls,
-        mock_reconcile, mock_cleanup, _mock_http_server,
+        self,
+        mock_sleep,
+        mock_signal_fn,
+        mock_from_env,
+        mock_client_cls,
+        mock_reconcile,
+        mock_cleanup,
+        _mock_http_server,
     ):
         mock_from_env.return_value = make_config()
         mock_client_cls.return_value = MagicMock()

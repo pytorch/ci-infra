@@ -25,7 +25,6 @@ from lightkube.generic_resource import create_global_resource
 from lightkube.models.meta_v1 import ObjectMeta
 from lightkube.resources.core_v1 import Namespace
 
-
 log = logging.getLogger("e2e")
 logging.basicConfig(
     level=logging.INFO,
@@ -91,12 +90,7 @@ def target_nodepool(client: Client) -> tuple[str, str]:
         name = np["metadata"]["name"]
         # Extract instance type from NodePool spec
         itype = ""
-        reqs = (
-            np.get("spec", {})
-            .get("template", {})
-            .get("spec", {})
-            .get("requirements", [])
-        )
+        reqs = np.get("spec", {}).get("template", {}).get("spec", {}).get("requirements", [])
         for req in reqs:
             if req.get("key") == "node.kubernetes.io/instance-type":
                 values = req.get("values", [])

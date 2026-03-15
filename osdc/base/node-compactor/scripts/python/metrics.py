@@ -24,6 +24,7 @@ def refresh_gauge(gauge: Gauge, current: dict[tuple[str, ...], float]) -> None:
         gauge.labels(*label_values).set(value)
     _known_labels[name] = set(current.keys())
 
+
 # --- Gauges (current state) ---
 
 managed_nodes = Gauge(

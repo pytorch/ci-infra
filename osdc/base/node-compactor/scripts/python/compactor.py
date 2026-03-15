@@ -23,15 +23,13 @@ import signal
 import sys
 import time
 
+import metrics as m
 from discovery import build_node_states, discover_managed_nodes
 from lightkube import ApiError, Client
 from models import Config
 from packing import compute_taints
 from prometheus_client import start_http_server
 from taints import apply_taint, check_pending_pods, cleanup_stale_taints, remove_taint
-
-import metrics as m
-
 
 log = logging.getLogger("compactor")
 
@@ -41,9 +39,7 @@ log = logging.getLogger("compactor")
 # ============================================================================
 
 
-def reconcile(
-    client: Client, cfg: Config, taint_times: dict[str, float]
-) -> None:
+def reconcile(client: Client, cfg: Config, taint_times: dict[str, float]) -> None:
     """Single reconciliation cycle.
 
     Args:
@@ -70,9 +66,7 @@ def reconcile(
     pool_node_counts: dict[str, int] = {}
     for node_name, pool_name in managed_names.items():
         pool_node_counts[pool_name] = pool_node_counts.get(pool_name, 0) + 1
-    m.refresh_gauge(m.managed_nodes, {
-        (pool_name,): count for pool_name, count in pool_node_counts.items()
-    })
+    m.refresh_gauge(m.managed_nodes, {(pool_name,): count for pool_name, count in pool_node_counts.items()})
 
     node_states, pending_pods = build_node_states(client, cfg, managed_names)
     if not node_states:
@@ -87,7 +81,9 @@ def reconcile(
     tainted = sum(1 for ns in node_states.values() if ns.is_tainted)
     log.info(
         "Reconciling: %d nodes (%d tainted), %d workload pods",
-        total_nodes, tainted, total_pods,
+        total_nodes,
+        tainted,
+        total_pods,
     )
 
     # Instrumentation point 2: workload pods and utilization per nodepool/node
@@ -101,9 +97,7 @@ def reconcile(
         if ns.allocatable_memory > 0:
             utilization[(node_name, pool, "memory")] = ns.total_memory_used / ns.allocatable_memory
     m.refresh_gauge(m.node_utilization_ratio, utilization)
-    m.refresh_gauge(m.workload_pods, {
-        (pool_name,): count for pool_name, count in pool_pod_counts.items()
-    })
+    m.refresh_gauge(m.workload_pods, {(pool_name,): count for pool_name, count in pool_pod_counts.items()})
 
     # Instrumentation point 3: pending pods
     burst_untaint = check_pending_pods(cfg, node_states, pending_pods)
@@ -122,9 +116,7 @@ def reconcile(
         will_be_tainted = (ns.is_tainted or node_name in desired_taint) and node_name not in desired_untaint
         if will_be_tainted:
             pool_taint_counts[pool] = pool_taint_counts.get(pool, 0) + 1
-    m.refresh_gauge(m.tainted_nodes, {
-        (pool_name,): count for pool_name, count in pool_taint_counts.items()
-    })
+    m.refresh_gauge(m.tainted_nodes, {(pool_name,): count for pool_name, count in pool_taint_counts.items()})
 
     # Apply cooldown: don't untaint nodes that were recently tainted.
     # Bypass cooldown for:
@@ -207,25 +199,29 @@ def main() -> int:
     cfg = Config.from_env()
     log.info("Node Compactor starting")
     log.info(
-        "Config: interval=%ds, max_uptime=%dh, min_nodes=%d, "
-        "taint_cooldown=%ds, dry_run=%s",
-        cfg.interval, cfg.max_uptime_hours, cfg.min_nodes,
-        cfg.taint_cooldown, cfg.dry_run,
+        "Config: interval=%ds, max_uptime=%dh, min_nodes=%d, taint_cooldown=%ds, dry_run=%s",
+        cfg.interval,
+        cfg.max_uptime_hours,
+        cfg.min_nodes,
+        cfg.taint_cooldown,
+        cfg.dry_run,
     )
 
     # Expose Prometheus metrics on :8080/metrics
     start_http_server(8080)
     log.info("Prometheus metrics server started on :8080")
 
-    m.config_info.info({
-        "interval": str(cfg.interval),
-        "max_uptime_hours": str(cfg.max_uptime_hours),
-        "min_nodes": str(cfg.min_nodes),
-        "taint_cooldown": str(cfg.taint_cooldown),
-        "dry_run": str(cfg.dry_run),
-        "taint_key": cfg.taint_key,
-        "nodepool_label": cfg.nodepool_label,
-    })
+    m.config_info.info(
+        {
+            "interval": str(cfg.interval),
+            "max_uptime_hours": str(cfg.max_uptime_hours),
+            "min_nodes": str(cfg.min_nodes),
+            "taint_cooldown": str(cfg.taint_cooldown),
+            "dry_run": str(cfg.dry_run),
+            "taint_key": cfg.taint_key,
+            "nodepool_label": cfg.nodepool_label,
+        }
+    )
 
     client = Client()
     shutdown = False

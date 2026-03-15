@@ -5,7 +5,6 @@ from collections import defaultdict
 
 from models import Config, NodeState, PodInfo
 
-
 log = logging.getLogger("compactor")
 
 
@@ -25,10 +24,12 @@ def bin_pack_min_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> int:
 
     bins: list[dict] = []
     for node in sorted(nodes, key=lambda n: n.allocatable_cpu, reverse=True):
-        bins.append({
-            "cpu_remaining": node.allocatable_cpu - node.daemonset_cpu,
-            "mem_remaining": node.allocatable_memory - node.daemonset_memory,
-        })
+        bins.append(
+            {
+                "cpu_remaining": node.allocatable_cpu - node.daemonset_cpu,
+                "mem_remaining": node.allocatable_memory - node.daemonset_memory,
+            }
+        )
 
     nodes_used = 0
     for pod in sorted_pods:
@@ -66,10 +67,12 @@ def _pods_fit_on_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> bool:
     # ALL pods (workload + DaemonSet) currently running
     bins = []
     for node in nodes:
-        bins.append({
-            "cpu_remaining": node.allocatable_cpu - node.total_cpu_used,
-            "mem_remaining": node.allocatable_memory - node.total_memory_used,
-        })
+        bins.append(
+            {
+                "cpu_remaining": node.allocatable_cpu - node.total_cpu_used,
+                "mem_remaining": node.allocatable_memory - node.total_memory_used,
+            }
+        )
 
     sorted_pods = sorted(pods, key=lambda p: p.cpu_request, reverse=True)
     for pod in sorted_pods:
@@ -85,9 +88,7 @@ def _pods_fit_on_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> bool:
     return True
 
 
-def compute_taints(
-    node_states: dict[str, NodeState], cfg: Config
-) -> tuple[set[str], set[str], set[str]]:
+def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[str], set[str], set[str]]:
     """Decide which nodes to taint and which to untaint.
 
     Returns (nodes_to_taint, nodes_to_untaint, mandatory_untaint).
@@ -157,9 +158,7 @@ def compute_taints(
 
             # This node is a taint candidate -- check safety
             all_remaining = definitely_remaining + conditionally_remaining
-            if node.workload_pods and not _pods_fit_on_nodes(
-                node.workload_pods, all_remaining
-            ):
+            if node.workload_pods and not _pods_fit_on_nodes(node.workload_pods, all_remaining):
                 log.info(
                     "Skipping taint of %s: pods cannot fit on remaining nodes",
                     node.name,

@@ -1,0 +1,13 @@
+# KubeLinter configuration
+# https://docs.kubelinter.io/
+
+checks:
+  doNotAutoAddDefaults: false
+  exclude:
+    # Karpenter handles resource-based scheduling via NodePools
+    - "unset-cpu-requirements"
+    - "unset-memory-requirements"
+    # Many infra containers legitimately need writable root
+    - "no-read-only-root-fs"
+    # Base infra doesn't always use liveness probes (Harbor, git-cache, etc.)
+    - "no-liveness-probe"

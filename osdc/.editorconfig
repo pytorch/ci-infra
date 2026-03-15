@@ -1,0 +1,46 @@
+# EditorConfig — https://editorconfig.org
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+trim_trailing_whitespace = true
+
+[*.{sh,bash}]
+indent_style = space
+indent_size = 2
+shell_variant = bash
+binary_next_line = true
+switch_case_indent = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{yaml,yml}]
+indent_style = space
+indent_size = 2
+
+[*.{tf,tfvars}]
+indent_style = space
+indent_size = 2
+
+[*.toml]
+indent_style = space
+indent_size = 2
+
+[*.{json,jsonnet}]
+indent_style = space
+indent_size = 2
+
+[justfile]
+indent_style = space
+indent_size = 4
+
+[Dockerfile*]
+indent_style = space
+indent_size = 4
+
+[Makefile]
+indent_style = tab

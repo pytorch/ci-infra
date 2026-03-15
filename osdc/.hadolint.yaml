@@ -1,0 +1,15 @@
+# Hadolint configuration
+# https://github.com/hadolint/hadolint
+
+no-fail: false
+
+# We use ECR and Harbor — not untrusted registries
+trusted-registries:
+  - public.ecr.aws
+  - "*.dkr.ecr.*.amazonaws.com"
+
+ignored:
+  # DL3008: Pin versions in apt-get install — impractical for CI base images
+  - DL3008
+  # DL3013: Pin versions in pip install — handled by requirements.txt/uv
+  - DL3013

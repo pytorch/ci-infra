@@ -16,7 +16,6 @@ from taints import (
     remove_taint,
 )
 
-
 NOW = datetime.now(UTC)
 GiB = 1024**3
 
@@ -130,13 +129,9 @@ class TestPodMatchesNode(unittest.TestCase):
         """Toleration effect doesn't match taint effect; should continue to next toleration."""
         taint = make_taint(key="k1", value="v1", effect="NoSchedule")
         # First toleration: right key but wrong effect
-        tol_wrong_effect = make_toleration(
-            key="k1", operator="Equal", value="v1", effect="NoExecute"
-        )
+        tol_wrong_effect = make_toleration(key="k1", operator="Equal", value="v1", effect="NoExecute")
         # Second toleration: right key, right effect
-        tol_correct = make_toleration(
-            key="k1", operator="Equal", value="v1", effect="NoSchedule"
-        )
+        tol_correct = make_toleration(key="k1", operator="Equal", value="v1", effect="NoSchedule")
         pod = make_pod(tolerations=[tol_wrong_effect, tol_correct])
         self.assertTrue(_pod_matches_node(pod, self.node, [taint]))
 
@@ -205,9 +200,7 @@ class TestCheckPendingPods(unittest.TestCase):
     def test_pending_pods_dont_match_tainted_nodes(self):
         """Pending pods have taints they can't tolerate."""
         other_taint = make_taint(key="special", value="yes", effect="NoSchedule")
-        compactor_taint = make_taint(
-            key=self.cfg.taint_key, value="true", effect="NoSchedule"
-        )
+        compactor_taint = make_taint(key=self.cfg.taint_key, value="true", effect="NoSchedule")
         ns = make_node_state(
             is_tainted=True,
             node_taints=[compactor_taint, other_taint],
@@ -217,9 +210,7 @@ class TestCheckPendingPods(unittest.TestCase):
         self.assertEqual(result, set())
 
     def test_compatible_pending_one_node_enough(self):
-        compactor_taint = make_taint(
-            key=self.cfg.taint_key, value="true", effect="NoSchedule"
-        )
+        compactor_taint = make_taint(key=self.cfg.taint_key, value="true", effect="NoSchedule")
         ns = make_node_state(
             name="node-a",
             is_tainted=True,
@@ -233,9 +224,7 @@ class TestCheckPendingPods(unittest.TestCase):
         self.assertEqual(result, {"node-a"})
 
     def test_multiple_pending_need_multiple_nodes(self):
-        compactor_taint = make_taint(
-            key=self.cfg.taint_key, value="true", effect="NoSchedule"
-        )
+        compactor_taint = make_taint(key=self.cfg.taint_key, value="true", effect="NoSchedule")
         # Node A: 2 CPU free, 4 GiB free
         ns_a = make_node_state(
             name="node-a",
@@ -263,16 +252,12 @@ class TestCheckPendingPods(unittest.TestCase):
             make_pod(cpu="2", memory="4Gi"),
             make_pod(cpu="1", memory="2Gi"),
         ]
-        result = check_pending_pods(
-            self.cfg, {"node-a": ns_a, "node-b": ns_b}, pods
-        )
+        result = check_pending_pods(self.cfg, {"node-a": ns_a, "node-b": ns_b}, pods)
         self.assertEqual(result, {"node-a", "node-b"})
 
     def test_sort_by_utilization_highest_first(self):
         """Highest utilization nodes should be untainted first."""
-        compactor_taint = make_taint(
-            key=self.cfg.taint_key, value="true", effect="NoSchedule"
-        )
+        compactor_taint = make_taint(key=self.cfg.taint_key, value="true", effect="NoSchedule")
         # Node A: low utilization (25% CPU used)
         ns_a = make_node_state(
             name="node-a",
@@ -293,9 +278,7 @@ class TestCheckPendingPods(unittest.TestCase):
         )
         # Small demand: 1 CPU -- only need 1 node
         pod = make_pod(cpu="1", memory="1Gi")
-        result = check_pending_pods(
-            self.cfg, {"node-a": ns_a, "node-b": ns_b}, [pod]
-        )
+        result = check_pending_pods(self.cfg, {"node-a": ns_a, "node-b": ns_b}, [pod])
         # Should pick node-b (higher utilization = least wasteful)
         self.assertEqual(result, {"node-b"})
 
@@ -307,9 +290,7 @@ class TestCheckPendingPods(unittest.TestCase):
         finds a match, but the second pass (filtering compatible_tainted) does not.
         """
         cfg = make_config()
-        compactor_taint = make_taint(
-            key=cfg.taint_key, value="true", effect="NoSchedule"
-        )
+        compactor_taint = make_taint(key=cfg.taint_key, value="true", effect="NoSchedule")
 
         ns_a = make_node_state(
             name="node-a",
@@ -453,9 +434,7 @@ class TestRemoveTaint(unittest.TestCase):
         client.patch.side_effect = err
 
         with self.assertRaises(ApiError):
-            remove_taint(
-                client, "node-1", "compactor-taint", dry_run=False, max_retries=2
-            )
+            remove_taint(client, "node-1", "compactor-taint", dry_run=False, max_retries=2)
         self.assertEqual(client.patch.call_count, 2)
 
     def test_non_409_error_raises_immediately(self):
@@ -471,9 +450,7 @@ class TestRemoveTaint(unittest.TestCase):
         client.patch.side_effect = err
 
         with self.assertRaises(ApiError):
-            remove_taint(
-                client, "node-1", "compactor-taint", dry_run=False, max_retries=3
-            )
+            remove_taint(client, "node-1", "compactor-taint", dry_run=False, max_retries=3)
         # Should raise on first attempt, not retry
         self.assertEqual(client.patch.call_count, 1)
 

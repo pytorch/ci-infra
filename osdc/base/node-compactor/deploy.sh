@@ -23,17 +23,17 @@ PF_PID=""
 BUILD_CONTEXT=""
 NETRC_FILE=""
 cleanup() {
-    [[ -n "$PF_PID" ]] && kill "$PF_PID" 2>/dev/null || true
-    [[ -n "$BUILD_CONTEXT" ]] && rm -rf "$BUILD_CONTEXT" 2>/dev/null || true
-    [[ -n "$NETRC_FILE" ]] && rm -f "$NETRC_FILE" 2>/dev/null || true
+  [[ -n "$PF_PID" ]] && kill "$PF_PID" 2>/dev/null || true
+  [[ -n "$BUILD_CONTEXT" ]] && rm -rf "$BUILD_CONTEXT" 2>/dev/null || true
+  [[ -n "$NETRC_FILE" ]] && rm -f "$NETRC_FILE" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 # --- Read cluster-specific compactor config ---
 ENABLED=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.enabled "true")
 if [[ "$ENABLED" != "true" ]]; then
-    echo "Node compactor disabled for cluster $CLUSTER, skipping."
-    exit 0
+  echo "Node compactor disabled for cluster $CLUSTER, skipping."
+  exit 0
 fi
 
 INTERVAL=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.interval_seconds "20")
@@ -53,20 +53,20 @@ cp "$COMPACTOR_DIR/scripts/python/"*.py "$BUILD_CONTEXT/"
 rm -f "$BUILD_CONTEXT/test_"*.py
 
 docker build --platform linux/amd64 \
-    -t "node-compactor:${TAG}" \
-    -t "node-compactor:latest" \
-    "$BUILD_CONTEXT"
+  -t "node-compactor:${TAG}" \
+  -t "node-compactor:latest" \
+  "$BUILD_CONTEXT"
 
 # --- Push to Harbor ---
 echo "Pushing image to Harbor..."
 
 HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \
-    -o jsonpath='{.data.password}' | base64 -d)
+  -o jsonpath='{.data.password}' | base64 -d)
 
 # Create netrc file for credential-safe curl calls
 NETRC_FILE=$(mktemp)
 chmod 600 "$NETRC_FILE"
-cat > "$NETRC_FILE" <<EOF
+cat >"$NETRC_FILE" <<EOF
 machine localhost
 login admin
 password ${HARBOR_ADMIN_PW}
@@ -77,28 +77,28 @@ PF_PID=$!
 
 # Wait for port-forward to be ready
 for i in $(seq 1 30); do
-    if curl -s -o /dev/null -w "" "http://localhost:8081/api/v2.0/health" 2>/dev/null; then
-        break
-    fi
-    if [ "$i" -eq 30 ]; then
-        echo "ERROR: Harbor port-forward not ready after 30s"
-        exit 1
-    fi
-    sleep 1
+  if curl -s -o /dev/null -w "" "http://localhost:8081/api/v2.0/health" 2>/dev/null; then
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "ERROR: Harbor port-forward not ready after 30s"
+    exit 1
+  fi
+  sleep 1
 done
 
 # Create Harbor project "osdc" if it doesn't exist (409 = already exists)
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X POST "http://localhost:8081/api/v2.0/projects" \
-    --netrc-file "$NETRC_FILE" \
-    -H "Content-Type: application/json" \
-    -d '{"project_name":"osdc","public":true}')
+  -X POST "http://localhost:8081/api/v2.0/projects" \
+  --netrc-file "$NETRC_FILE" \
+  -H "Content-Type: application/json" \
+  -d '{"project_name":"osdc","public":true}')
 if [[ "$HTTP_CODE" == "201" ]]; then
-    echo "  Created Harbor project 'osdc'"
+  echo "  Created Harbor project 'osdc'"
 elif [[ "$HTTP_CODE" == "409" ]]; then
-    echo "  Harbor project 'osdc' already exists"
+  echo "  Harbor project 'osdc' already exists"
 else
-    echo "  Warning: Harbor project creation returned HTTP $HTTP_CODE"
+  echo "  Warning: Harbor project creation returned HTTP $HTTP_CODE"
 fi
 
 # Push image to Harbor via crane (supports --insecure, avoids docker-login HTTPS issues)
@@ -119,12 +119,12 @@ echo "Pushed ${IMAGE}:${TAG}"
 # --- Apply Kubernetes manifests with config substitution ---
 echo "Applying node-compactor manifests..."
 kubectl kustomize "$COMPACTOR_DIR/kubernetes/" \
-    | sed \
-        -e "s|NODE_COMPACTOR_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|g" \
-        -e "s|COMPACTOR_INTERVAL_PLACEHOLDER|\"${INTERVAL}\"|g" \
-        -e "s|COMPACTOR_MAX_UPTIME_HOURS_PLACEHOLDER|\"${MAX_UPTIME}\"|g" \
-        -e "s|COMPACTOR_DRY_RUN_PLACEHOLDER|\"${DRY_RUN}\"|g" \
-        -e "s|COMPACTOR_MIN_NODES_PLACEHOLDER|\"${MIN_NODES}\"|g" \
-    | kubectl apply -f -
+  | sed \
+    -e "s|NODE_COMPACTOR_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|g" \
+    -e "s|COMPACTOR_INTERVAL_PLACEHOLDER|\"${INTERVAL}\"|g" \
+    -e "s|COMPACTOR_MAX_UPTIME_HOURS_PLACEHOLDER|\"${MAX_UPTIME}\"|g" \
+    -e "s|COMPACTOR_DRY_RUN_PLACEHOLDER|\"${DRY_RUN}\"|g" \
+    -e "s|COMPACTOR_MIN_NODES_PLACEHOLDER|\"${MIN_NODES}\"|g" \
+  | kubectl apply -f -
 
 echo "Node compactor deployed."

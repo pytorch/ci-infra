@@ -7,7 +7,6 @@ from lightkube.resources.core_v1 import Node
 from lightkube.types import PatchType
 from models import Config, NodeState, pod_cpu_request, pod_memory_request
 
-
 log = logging.getLogger("compactor")
 
 
@@ -47,9 +46,7 @@ def _pod_matches_node(pod, node: NodeState, node_taints: list) -> bool:
     return True
 
 
-def check_pending_pods(
-    cfg: Config, node_states: dict[str, NodeState], pending_pods: list
-) -> set[str]:
+def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_pods: list) -> set[str]:
     """Check for unschedulable pending pods; return nodes to untaint.
 
     If pending pods exist that could run on tainted nodes, untaint enough
@@ -69,9 +66,7 @@ def check_pending_pods(
     # Build taint map from node_states (excluding our compactor taint)
     node_taints_map: dict[str, list] = {}
     for tnode in tainted_nodes:
-        node_taints_map[tnode.name] = [
-            t for t in tnode.node_taints if t.key != cfg.taint_key
-        ]
+        node_taints_map[tnode.name] = [t for t in tnode.node_taints if t.key != cfg.taint_key]
 
     # Only count demand from pods that actually match compatible tainted nodes
     compatible_pending = []
@@ -118,8 +113,7 @@ def check_pending_pods(
             break
 
     log.info(
-        "Found %d compatible pending pod(s) (%.1f CPU, %d MiB), "
-        "untainting %d node(s) to absorb: %s",
+        "Found %d compatible pending pod(s) (%.1f CPU, %d MiB), untainting %d node(s) to absorb: %s",
         len(compatible_pending),
         total_cpu_demand,
         total_mem_demand // (1024 * 1024),
@@ -133,11 +127,13 @@ def apply_taint(client: Client, node_name: str, taint_key: str, dry_run: bool) -
     """Add NoSchedule taint to a node."""
     patch = {
         "spec": {
-            "taints": [{
-                "key": taint_key,
-                "value": "true",
-                "effect": "NoSchedule",
-            }]
+            "taints": [
+                {
+                    "key": taint_key,
+                    "value": "true",
+                    "effect": "NoSchedule",
+                }
+            ]
         }
     }
     if dry_run:
@@ -148,9 +144,7 @@ def apply_taint(client: Client, node_name: str, taint_key: str, dry_run: bool) -
     log.info("Tainted node %s", node_name)
 
 
-def remove_taint(
-    client: Client, node_name: str, taint_key: str, dry_run: bool, max_retries: int = 3
-) -> None:
+def remove_taint(client: Client, node_name: str, taint_key: str, dry_run: bool, max_retries: int = 3) -> None:
     """Remove our compactor taint from a node.
 
     Uses optimistic concurrency via resourceVersion in a JSON merge patch.
@@ -181,7 +175,9 @@ def remove_taint(
             if e.status.code == 409 and attempt < max_retries - 1:
                 log.warning(
                     "Conflict untainting %s (attempt %d/%d), retrying",
-                    node_name, attempt + 1, max_retries,
+                    node_name,
+                    attempt + 1,
+                    max_retries,
                 )
                 continue
             raise

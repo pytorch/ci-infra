@@ -28,10 +28,7 @@ from pathlib import Path
 
 import yaml
 
-
-CONFIG_PATH = Path(
-    os.environ.get("CLUSTERS_YAML", Path(__file__).resolve().parent.parent / "clusters.yaml")
-)
+CONFIG_PATH = Path(os.environ.get("CLUSTERS_YAML", Path(__file__).resolve().parent.parent / "clusters.yaml"))
 
 
 def load_config():
