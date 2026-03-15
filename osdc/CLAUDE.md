@@ -437,6 +437,17 @@ tofu output                  # Output values
 tofu state list              # All managed resources
 ```
 
+## Before Declaring Work Complete (MANDATORY)
+
+Before declaring any code change complete, you MUST run both of these and they MUST pass clean:
+
+```bash
+just lint    # All 11 linters must pass with zero errors
+just test    # All unit tests must pass
+```
+
+If either fails, fix the issues before finishing. Do not defer lint or test failures — they block CI and break other contributors.
+
 ## Don't Do
 
 - **NEVER run `terraform`** — use `tofu` or `just` recipes (terraform will corrupt state)
