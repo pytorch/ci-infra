@@ -1,5 +1,7 @@
 # CLAUDE.md — OSDC (Open Source Dev Cloud)
 
+project-doc: enabled
+
 ## What This Is
 
 Modular Kubernetes infrastructure platform on AWS EKS. A shared `base/` provides the cluster (VPC, EKS, Harbor, git cache, GPU plugins), and optional `modules/` layer services on top (ARC, runners, BuildKit, future projects). One codebase drives multiple clusters across regions via `clusters.yaml`.
@@ -54,7 +56,8 @@ osdc/
 │   ├── arc/                # ARC controller (GitHub Actions)
 │   ├── nodepools/          # Karpenter NodePools (pure compute provisioning)
 │   ├── arc-runners/        # ARC runner scale sets (requires arc + nodepools)
-│   └── buildkit/           # BuildKit build service (arm64 + amd64, HAProxy LB)
+│   ├── buildkit/           # BuildKit build service (arm64 + amd64, HAProxy LB)
+│   └── monitoring/         # Prometheus, Grafana, AlertManager, DCGM exporter, Alloy
 └── docs/                   # Architecture and operations docs
 ```
 
@@ -194,6 +197,7 @@ Single parameterized root at `modules/eks/terraform/`. No per-environment direct
 - **Compute split: nodepools + arc-runners** — `nodepools` deploys pure Karpenter NodePools (compute provisioning). `arc-runners` deploys ARC runner scale sets (requires both `arc` and `nodepools`). Non-ARC clusters can use `nodepools` alone for compute.
 - **One terraform root, many clusters** — no code duplication per environment.
 - **Modules are independent** — each has its own terraform state, k8s resources, deploy script. No cross-module imports.
+- **Monitoring is a module** — not baked into base. Clusters opt-in by listing `monitoring` in their modules. In-cluster Prometheus provides local storage and Grafana dashboards; Grafana Cloud push via Alloy is optional and secret-gated.
 
 ## EKS Node Taints
 
@@ -271,6 +275,62 @@ RUN --mount=type=bind,from=gitcache,source=pytorch/pytorch.git/objects,target=/t
     git clone https://github.com/pytorch/pytorch /workspace
 ```
 
+## Monitoring (kube-prometheus-stack + Grafana Alloy)
+
+The `monitoring` module deploys a two-tier metrics pipeline. Helm charts used:
+
+- **[kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)** v82.10.3 — bundles Prometheus, Grafana, AlertManager, Prometheus Operator, node-exporter, and kube-state-metrics.
+- **[Grafana Alloy](https://github.com/grafana/alloy)** (Helm chart `grafana/alloy`) — optional push agent for Grafana Cloud. Only installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace.
+- **[DCGM Exporter](https://github.com/NVIDIA/dcgm-exporter)** (`nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless`) — DaemonSet for GPU metrics, runs only on GPU nodes.
+
+### Architecture
+
+**Tier 1 — In-cluster Prometheus**: HA pair (2 replicas) on base infrastructure nodes with gp3 EBS PVCs. Auto-discovers all ServiceMonitors/PodMonitors across all namespaces. Grafana (optional, enabled by default) auto-loads dashboards from ConfigMaps labeled `grafana_dashboard: "1"`. AlertManager (optional, enabled by default) runs as HA pair.
+
+**Tier 2 — Grafana Cloud push via Alloy** (conditional): Alloy independently discovers ServiceMonitor/PodMonitor CRDs, scrapes the same targets as Prometheus, and pushes via `prometheus.remote_write` to Grafana Cloud Mimir. Clustering enabled for HA target distribution across 2 replicas.
+
+### What's scraped
+
+| Type | Name | Target Namespace | What it monitors |
+|------|------|-----------------|-----------------|
+| ServiceMonitor | arc-controller | arc-systems | ARC controller metrics |
+| ServiceMonitor | harbor | harbor-system | Harbor exporter metrics |
+| ServiceMonitor | karpenter | karpenter | Karpenter controller metrics |
+| ServiceMonitor | node-compactor | kube-system | Node compactor metrics |
+| ServiceMonitor | git-cache-central | kube-system | Git cache central pod metrics |
+| ServiceMonitor | dcgm-exporter | monitoring | NVIDIA GPU metrics (DCGM) |
+| PodMonitor | git-cache-daemonset | kube-system | Git cache DaemonSet metrics |
+| PodMonitor | arc-listeners | arc-runners | ARC listener pods metrics |
+
+node-exporter (from kube-prometheus-stack) runs on every node — it tolerates ALL taints. kube-state-metrics runs on base nodes.
+
+### Configuration (clusters.yaml)
+
+```yaml
+monitoring:
+  namespace: monitoring           # Kubernetes namespace
+  retention_days: 15              # Prometheus data retention
+  storage_size: 50Gi              # PVC size per Prometheus replica
+  grafana_enabled: true           # Deploy Grafana
+  alertmanager_enabled: true      # Deploy AlertManager
+  grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
+```
+
+### Deploy order (deploy.sh)
+
+1. Create `monitoring` namespace (via kustomization)
+2. `helm upgrade --install kube-prometheus-stack` — installs CRDs + all components
+3. `kubectl apply -k kubernetes/monitors/` — ServiceMonitors/PodMonitors (depends on CRDs from step 2)
+4. Conditionally: `helm upgrade --install alloy` — if `grafana-cloud-credentials` secret exists
+
+### CRD ordering gotcha
+
+The justfile applies `kubernetes/kustomization.yaml` (Phase 2) before running `deploy.sh` (Phase 3). ServiceMonitor/PodMonitor CRDs don't exist until kube-prometheus-stack installs in step 2 of deploy.sh. That's why monitors live in a separate `kubernetes/monitors/` kustomization applied by deploy.sh after Helm install — not in the main kustomization.
+
+### Admission webhook gotcha
+
+The kube-prometheus-stack Helm chart's admission webhook pre-install job has no tolerations by default. On OSDC clusters where ALL base nodes are tainted with `CriticalAddonsOnly`, the job stays Pending forever. The Helm values must include tolerations + nodeSelector for `prometheusOperator.admissionWebhooks.patch`. If the job gets stuck, you must delete the failed Helm release and the stuck job before retrying.
+
 ## Git Clone Cache
 
 A two-tier caching system speeds up git clones of large repositories on runner and BuildKit nodes.
@@ -297,15 +357,22 @@ A two-tier caching system speeds up git clones of large repositories on runner a
 
 ## External Knowledge Base
 
-The directory `../../actions-knowledge-base/` (relative to `osdc/`) contains source code, documentation, and detailed reference material for many of the open-source projects and tools used by this project — including Actions Runner Controller, Harbor, the Harbor Helm chart, the GitHub Actions runner, runner images, cloud-provider credential actions, and more. Each project lives as a git submodule under `repos/` and the knowledge base's own `AGENTS.md` indexes every included repository with summaries and key paths.
+The `actions-knowledge-base/` directory contains source code, documentation, and detailed reference material for many of the open-source projects and tools used by this project — including Actions Runner Controller, Harbor, the Harbor Helm chart, the GitHub Actions runner, runner images, cloud-provider credential actions, and more. Each project lives as a git submodule under `repos/` and the knowledge base's own `AGENTS.md` indexes every included repository with summaries and key paths.
+
+**Finding it**: The directory is named `actions-knowledge-base` and lives somewhere above or beside this project. Walk upward from the current working directory, checking each ancestor and its children, until you find a directory named `actions-knowledge-base`. It is typically a sibling of the top-level repo (e.g., beside `ciforge/`), but the exact location depends on the checkout layout. Do not hardcode a relative path — search for it.
+
+The knowledge base has two key directories:
+- **`actions-knowledge-base/repos/`** — Read-only upstream source code and docs (git submodules). Managed via `sync.py`.
+- **`actions-knowledge-base/docs/`** — Our own findings, workarounds, and gotchas discovered during development and operations (e.g., BuildKit OTEL crash, Grafana Alloy setup, CRD ordering issues, deploy phase ordering).
 
 **You should consult this knowledge base** whenever you need to:
 - Understand how a dependency works (e.g., ARC Helm chart values, Harbor configuration, runner lifecycle)
 - Clarify configuration quirks, edge cases, or undocumented behavior
 - Look up default values, API surfaces, or internal implementation details
 - Verify correct usage of upstream Helm charts, container images, or action inputs
+- Review operational learnings and previously discovered issues (`docs/`)
 
-In most cases, reading the relevant source or docs in `../../actions-knowledge-base/` first will produce more accurate results than guessing or relying on general knowledge alone. Treat it as a first-class resource.
+In most cases, reading the relevant source or docs in the knowledge base first will produce more accurate results than guessing or relying on general knowledge alone. Treat it as a first-class resource.
 
 ## Read-Only CLI Debugging (Encouraged)
 
@@ -405,3 +472,8 @@ tofu state list              # All managed resources
 | `modules/arc-runners/defs/*.yaml` | Runner definitions (instance type, CPU, memory, GPU, max runners) |
 | `modules/arc-runners/deploy.sh` | Generate + install ARC runner scale sets (requires arc module) |
 | `modules/buildkit/deploy.sh` | Generate + deploy BuildKit (Deployments, HAProxy, NodePools) |
+| `modules/monitoring/deploy.sh` | Deploy kube-prometheus-stack + monitors + conditionally Alloy |
+| `modules/monitoring/helm/values.yaml` | kube-prometheus-stack Helm values (node placement, storage, auto-discovery) |
+| `modules/monitoring/helm/alloy-values.yaml` | Grafana Alloy Helm values (ServiceMonitor/PodMonitor discovery, remote_write) |
+| `modules/monitoring/kubernetes/monitors/` | ServiceMonitors + PodMonitors for OSDC components (ARC, Harbor, Karpenter, etc.) |
+| `modules/monitoring/kubernetes/dcgm-exporter/` | DCGM GPU exporter DaemonSet + headless Service (GPU nodes only) |

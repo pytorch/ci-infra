@@ -828,7 +828,7 @@ class TestReconcile:
         self, mock_discover, mock_build, mock_check, mock_compute,
         mock_apply, mock_remove,
     ):
-        mock_discover.return_value = set()
+        mock_discover.return_value = {}
         client = MagicMock()
         cfg = make_config()
 
@@ -849,7 +849,7 @@ class TestReconcile:
         self, mock_discover, mock_build, mock_check, mock_compute,
         mock_apply, mock_remove,
     ):
-        mock_discover.return_value = {"node-1"}
+        mock_discover.return_value = {"node-1": "pool"}
         mock_build.return_value = ({}, [])
         client = MagicMock()
         cfg = make_config()
@@ -879,7 +879,7 @@ class TestReconcile:
         n2 = make_node("n2", is_tainted=False)
         node_states = {"n1": n1, "n2": n2}
 
-        mock_discover.return_value = {"n1", "n2"}
+        mock_discover.return_value = {"n1": "default", "n2": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n2"}, {"n1"}, set())
@@ -910,7 +910,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         # burst_untaint includes n1 -- should bypass cooldown
         mock_check.return_value = {"n1"}
@@ -940,7 +940,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()  # no burst untaint
         mock_compute.return_value = (set(), {"n1"}, set())  # compute says untaint n1
@@ -970,7 +970,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()  # no burst untaint
         # compute says untaint n1, and it's mandatory (min_nodes)
@@ -1000,7 +1000,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1"}, set())
@@ -1027,7 +1027,7 @@ class TestReconcile:
         n2 = make_node("n2", is_tainted=True)
         node_states = {"n1": n1, "n2": n2}
 
-        mock_discover.return_value = {"n1", "n2"}
+        mock_discover.return_value = {"n1": "default", "n2": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1", "n2"}, set())
@@ -1058,7 +1058,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set())
@@ -1090,7 +1090,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set())
@@ -1120,7 +1120,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1"}, set())
@@ -1149,7 +1149,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set())
@@ -1181,7 +1181,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set())
@@ -1211,7 +1211,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1"}, set())
@@ -1238,7 +1238,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set())
@@ -1264,7 +1264,7 @@ class TestReconcile:
         n1 = make_node("n1")
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), set(), set())
@@ -1292,7 +1292,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = {"n1"}  # burst wants untaint
         mock_compute.return_value = ({"n1"}, set(), set())  # compute wants taint
@@ -1320,7 +1320,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1"}
+        mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1"}, set())
@@ -1338,6 +1338,7 @@ class TestReconcile:
 # ============================================================================
 
 
+@patch("compactor.start_http_server")
 class TestMain:
     """Tests for the main() entry point."""
 
@@ -1349,7 +1350,7 @@ class TestMain:
     @patch("compactor.time.sleep")
     def test_main_calls_reconcile_and_cleanup(
         self, mock_sleep, mock_signal_fn, mock_from_env, mock_client_cls,
-        mock_reconcile, mock_cleanup,
+        mock_reconcile, mock_cleanup, _mock_http_server,
     ):
         cfg = make_config()
         mock_from_env.return_value = cfg
@@ -1387,7 +1388,7 @@ class TestMain:
     @patch("compactor.time.sleep")
     def test_main_registers_signal_handlers(
         self, mock_sleep, mock_signal_fn, mock_from_env, mock_client_cls,
-        mock_reconcile, mock_cleanup,
+        mock_reconcile, mock_cleanup, _mock_http_server,
     ):
         mock_from_env.return_value = make_config()
         mock_client_cls.return_value = MagicMock()
@@ -1415,7 +1416,7 @@ class TestMain:
     @patch("compactor.time.sleep")
     def test_main_reconcile_exception_does_not_crash(
         self, mock_sleep, mock_signal_fn, mock_from_env, mock_client_cls,
-        mock_reconcile, mock_cleanup,
+        mock_reconcile, mock_cleanup, _mock_http_server,
     ):
         mock_from_env.return_value = make_config()
         mock_client_cls.return_value = MagicMock()
@@ -1447,7 +1448,7 @@ class TestMain:
     @patch("compactor.time.sleep")
     def test_main_cleanup_exception_does_not_crash(
         self, mock_sleep, mock_signal_fn, mock_from_env, mock_client_cls,
-        mock_reconcile, mock_cleanup,
+        mock_reconcile, mock_cleanup, _mock_http_server,
     ):
         mock_from_env.return_value = make_config()
         mock_client_cls.return_value = MagicMock()

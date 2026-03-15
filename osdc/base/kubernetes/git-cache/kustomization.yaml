@@ -9,6 +9,7 @@ resources:
   - central-configmap.yaml
   - central-deployment.yaml
   - central-service.yaml
+  - central-metrics-service.yaml
   - central-pdb.yaml
   - daemonset-configmap.yaml
   - daemonset.yaml

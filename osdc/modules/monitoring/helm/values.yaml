@@ -1,0 +1,56 @@
+# kube-prometheus-stack Helm values for OSDC.
+#
+# This chart is used ONLY as a CRD + exporter provider:
+#   - Installs monitoring.coreos.com CRDs (ServiceMonitor, PodMonitor, etc.)
+#   - Runs node-exporter and kube-state-metrics to expose system metrics
+#   - Runs Prometheus Operator to manage CRD lifecycle
+#
+# Prometheus, Grafana, and AlertManager are DISABLED.
+# Metrics collection and push is handled by Grafana Alloy (see alloy-values.yaml).
+
+# --- Prometheus (DISABLED — Alloy handles scraping + push) ---
+prometheus:
+  enabled: false
+
+# --- Grafana (DISABLED — use Grafana Cloud) ---
+grafana:
+  enabled: false
+
+# --- AlertManager (DISABLED — use Grafana Cloud alerting) ---
+alertmanager:
+  enabled: false
+
+# --- node-exporter (DaemonSet — runs on ALL nodes) ---
+nodeExporter:
+  tolerations:
+    - operator: Exists  # tolerate ALL taints — must run on every node
+
+# --- kube-state-metrics ---
+kube-state-metrics:
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  nodeSelector:
+    role: base-infrastructure
+
+# --- Prometheus Operator (manages CRD lifecycle) ---
+prometheusOperator:
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  nodeSelector:
+    role: base-infrastructure
+  # Admission webhook (pre-install/pre-upgrade hook jobs)
+  admissionWebhooks:
+    patch:
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      nodeSelector:
+        role: base-infrastructure

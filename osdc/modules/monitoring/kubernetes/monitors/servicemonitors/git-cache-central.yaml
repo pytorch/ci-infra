@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: git-cache-central
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app: git-cache-central
+  endpoints:
+    - port: metrics
+      interval: 30s

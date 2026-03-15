@@ -135,7 +135,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert result == []
+        assert result == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_nodepools_with_label_returns_matching_nodes(self, mock_create_resource):
@@ -166,7 +166,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert sorted(result) == ["node-1", "node-3"]
+        assert result == {"node-1": "managed-pool", "node-3": "managed-pool"}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_nodes_not_in_managed_pools_excluded(self, mock_create_resource):
@@ -189,11 +189,11 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert result == []
+        assert result == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_karpenter_crd_404_returns_empty(self, mock_create_resource):
-        """404 ApiError (CRD not installed) returns empty list gracefully."""
+        """404 ApiError (CRD not installed) returns empty dict gracefully."""
         cfg = make_config()
         client = MagicMock()
 
@@ -203,7 +203,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert result == []
+        assert result == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_non_404_api_error_re_raises(self, mock_create_resource):
@@ -233,7 +233,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert result == []
+        assert result == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_multiple_managed_pools(self, mock_create_resource):
@@ -258,7 +258,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert sorted(result) == ["n1", "n2"]
+        assert result == {"n1": "pool-a", "n2": "pool-b"}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_nodepool_metadata_none(self, mock_create_resource):
@@ -275,7 +275,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert result == []
+        assert result == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_nodepool_metadata_labels_none(self, mock_create_resource):
@@ -293,7 +293,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert result == []
+        assert result == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_node_without_nodepool_label(self, mock_create_resource):
@@ -313,7 +313,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert result == []
+        assert result == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_node_metadata_labels_none_in_discover(self, mock_create_resource):
@@ -334,7 +334,7 @@ class TestDiscoverManagedNodes:
 
         result = discover_managed_nodes(client, cfg)
 
-        assert result == []
+        assert result == {}
 
 
 # ============================================================================
@@ -350,7 +350,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node_states, pending = build_node_states(client, cfg, [])
+        node_states, pending = build_node_states(client, cfg, {})
 
         assert node_states == {}
         assert pending == []
@@ -373,7 +373,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]  # Nodes, then Pods
 
-        states, pending = build_node_states(client, cfg, ["node-1"])
+        states, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert "node-1" in states
         ns = states["node-1"]
@@ -402,7 +402,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node1, node2], [pod1, pod2]]
 
-        states, _ = build_node_states(client, cfg, ["node-1", "node-2"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool", "node-2": "pool"})
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "pod-a"
@@ -423,7 +423,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node1], [pod_managed, pod_other]]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "pod-m"
@@ -447,7 +447,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod_ok, pod_done, pod_fail]]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "pod-running"
@@ -466,7 +466,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].is_tainted is True
 
@@ -484,7 +484,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].is_tainted is False
 
@@ -508,7 +508,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pending_pod]]
 
-        states, pending = build_node_states(client, cfg, ["node-1"])
+        states, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(pending) == 1
         assert pending[0].metadata.name == "pending-pod"
@@ -529,7 +529,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pending_pod]]
 
-        _states, pending = build_node_states(client, cfg, ["node-1"])
+        _states, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(pending) == 0
 
@@ -551,7 +551,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [ds_pod, regular_pod]]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         pods = states["node-1"].pods
         assert len(pods) == 2
@@ -575,7 +575,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(states["node-1"].pods) == 0
 
@@ -594,7 +594,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(states["node-1"].pods) == 0
 
@@ -614,7 +614,7 @@ class TestBuildNodeStates:
         client.list.side_effect = [[node], []]
 
         before = datetime.now(UTC)
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
         after = datetime.now(UTC)
 
         ct = states["node-1"].creation_time
@@ -634,7 +634,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node1, node2], []]
 
-        states, _ = build_node_states(client, cfg, ["node-managed"])
+        states, _ = build_node_states(client, cfg, {"node-managed": "pool"})
 
         assert "node-managed" in states
         assert "node-other" not in states
@@ -648,7 +648,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].nodepool == "unknown"
 
@@ -665,7 +665,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].pods[0].start_time == st
 
@@ -684,7 +684,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(states["node-1"].node_taints) == 2
 
@@ -700,7 +700,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].allocatable_cpu == 0.0
         assert states["node-1"].allocatable_memory == 0
@@ -717,7 +717,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].is_tainted is False
         assert states["node-1"].node_taints == []
@@ -732,7 +732,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].nodepool == "unknown"
 
@@ -748,7 +748,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], []]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].allocatable_cpu == 0.0
         assert states["node-1"].allocatable_memory == 0
@@ -767,7 +767,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].start_time is None
@@ -785,7 +785,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        states, _ = build_node_states(client, cfg, ["node-1"])
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].pods[0].start_time is None
 
@@ -803,7 +803,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        _, pending = build_node_states(client, cfg, ["node-1"])
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(pending) == 0
 
@@ -825,7 +825,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        _, pending = build_node_states(client, cfg, ["node-1"])
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(pending) == 0
 
@@ -847,7 +847,7 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        _, pending = build_node_states(client, cfg, ["node-1"])
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(pending) == 0
 
@@ -869,6 +869,6 @@ class TestBuildNodeStates:
 
         client.list.side_effect = [[node], [pod]]
 
-        _, pending = build_node_states(client, cfg, ["node-1"])
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert len(pending) == 0

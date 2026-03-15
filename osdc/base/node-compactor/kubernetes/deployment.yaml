@@ -35,6 +35,10 @@ spec:
       containers:
         - name: compactor
           image: NODE_COMPACTOR_IMAGE_PLACEHOLDER
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
           env:
             - name: COMPACTOR_INTERVAL
               value: "COMPACTOR_INTERVAL_PLACEHOLDER"

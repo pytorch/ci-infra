@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: arc-listeners
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - arc-runners
+  selector:
+    matchLabels:
+      actions.github.com/scale-set-namespace: arc-runners
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s

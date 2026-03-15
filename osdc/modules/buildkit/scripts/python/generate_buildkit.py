@@ -188,7 +188,6 @@ spec:
             - name: buildkit
               containerPort: 1234
               protocol: TCP
-
           # Guaranteed QoS: requests == limits for static CPU pinning
           # {cpu} vCPU + {memory_gi}Gi = {pods_per_node} pods per {instance_type}
           resources:

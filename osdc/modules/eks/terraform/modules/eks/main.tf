@@ -90,6 +90,14 @@ resource "aws_eks_cluster" "this" {
     }
   )
 
+  lifecycle {
+    ignore_changes = [
+      # Karpenter's deploy script adds this tag out-of-band via `aws eks tag-resource`.
+      # Without ignoring it, every tofu plan shows drift.
+      tags["karpenter.sh/discovery"],
+    ]
+  }
+
   depends_on = [
     aws_iam_role_policy_attachment.cluster_policy,
     aws_iam_role_policy_attachment.vpc_resource_controller,
