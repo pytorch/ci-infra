@@ -116,6 +116,14 @@ deploy cluster:
         just deploy-module "$CLUSTER" "$module"
     done
 
+    # Recycle Karpenter nodes if configured (e.g., staging — ensures fresh userData/AMI)
+    RECYCLE=$(uv run {{CFG}} "$CLUSTER" recycle_karpenter_nodes false)
+    if [ "$RECYCLE" = "true" ]; then
+        echo ""
+        echo "── Recycling Karpenter nodes (recycle_karpenter_nodes=true) ──"
+        just recycle-nodes "$CLUSTER"
+    fi
+
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "DEPLOYMENT COMPLETE: $CLUSTER"
@@ -286,6 +294,35 @@ deploy-module cluster module:
     fi
 
     echo "  Module $MODULE deployed."
+
+# Terminate all Karpenter-managed nodes (they will be reprovisioned on demand)
+recycle-nodes cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+
+    echo "Recycling all Karpenter nodes for $CLUSTER ($CNAME)..."
+
+    # Preflight: verify kubectl can reach the cluster
+    if ! kubectl cluster-info &>/dev/null; then
+        echo "ERROR: kubectl cannot reach the cluster. Run 'just kubeconfig $CLUSTER' first."
+        exit 1
+    fi
+
+    NODECLAIM_COUNT=$(kubectl get nodeclaims --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$NODECLAIM_COUNT" = "0" ]; then
+        echo "  No Karpenter NodeClaims found — nothing to recycle."
+        exit 0
+    fi
+
+    echo "  Deleting $NODECLAIM_COUNT NodeClaim(s)..."
+    kubectl delete nodeclaims --all --wait=false
+    echo "  NodeClaims deleted. Karpenter will reprovision when pods need scheduling."
 
 # ============================================================================
 # INTERNAL: Base sub-deploys

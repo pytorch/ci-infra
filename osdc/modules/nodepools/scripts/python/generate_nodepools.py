@@ -66,12 +66,52 @@ def _get_node_disk_size(nodepool_def):
     return max_pods * per_pod_disk + os_overhead
 
 
-def generate_nodepool_yaml(nodepool_def, module_name):
+def _read_user_data_script(script_path, defs_dir):
+    """Read and indent a user data script for embedding in YAML userData.
+
+    The script_path is relative to the module directory (parent of defs/).
+    Returns the indented script content ready for MIME embedding, or None.
+    """
+    if not script_path:
+        return None
+
+    module_dir = defs_dir.parent
+    full_path = module_dir / script_path
+    if not full_path.exists():
+        raise FileNotFoundError(f"user_data_script not found: {full_path}")
+
+    script_content = full_path.read_text()
+    # Indent 4 spaces for YAML embedding inside the userData MIME block
+    return "\n".join("    " + line if line.strip() else "" for line in script_content.splitlines())
+
+
+def _user_data_script_mime_part(indented_script):
+    """Return the text/x-shellscript MIME part, or empty string if no script."""
+    if not indented_script:
+        return ""
+    return f"""
+    --==BOUNDARY==
+    Content-Type: text/x-shellscript; charset="us-ascii"
+
+{indented_script}
+"""
+
+
+def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     """Generate a combined NodePool + EC2NodeClass YAML string."""
     name = nodepool_def['name']
     instance_type = nodepool_def['instance_type']
     arch = _detect_arch(instance_type, nodepool_def.get('arch'))
     is_gpu = nodepool_def.get('gpu', False)
+    has_nvme = nodepool_def.get('has_nvme', False)
+    user_data_script_path = nodepool_def.get('user_data_script')
+
+    # Per-def kubelet topology overrides (e.g. B200 needs single-numa-node/pod)
+    topology_policy = nodepool_def.get('topology_manager_policy', 'restricted')
+    topology_scope = nodepool_def.get('topology_manager_scope', 'container')
+
+    # Read optional user data script for embedding as a MIME part
+    indented_userdata = _read_user_data_script(user_data_script_path, defs_dir) if defs_dir else None
 
     node_disk_size = _get_node_disk_size(nodepool_def)
 
@@ -117,10 +157,6 @@ def generate_nodepool_yaml(nodepool_def, module_name):
           value: "true"
           effect: NoSchedule
 """
-        gpu_setup = """
-          # Enable GPU persistence mode for consistent performance
-          nvidia-smi -pm 1 || true
-"""
         gpu_tags = '    GPU: "nvidia"\n'
     else:
         ami_family_block = ''
@@ -138,7 +174,6 @@ def generate_nodepool_yaml(nodepool_def, module_name):
 
         gpu_labels = ''
         gpu_taints = ''
-        gpu_setup = ''
         gpu_tags = ''
 
     # ----- Capacity reservation block (EC2NodeClass) -----
@@ -226,6 +261,7 @@ spec:
         karpenter.sh/discovery: "CLUSTER_NAME_PLACEHOLDER"
 
   role: "CLUSTER_NAME_PLACEHOLDER-node-role"
+{"  instanceStorePolicy: RAID0" + chr(10) if has_nvme else ""}\
 {capacity_reservation_block}\
   userData: |
     MIME-Version: 1.0
@@ -241,75 +277,10 @@ spec:
       kubelet:
         config:
           cpuManagerPolicy: static
-          topologyManagerPolicy: restricted
-          topologyManagerScope: container
-          topologyManagerPolicyOptions:
-            prefer-closest-numa-nodes: "true"
-
-      instance:
-        localUserData: |
-          #!/bin/bash
-          set -euo pipefail
-
-          # ---- Registry mirror configuration (Harbor pull-through cache) ----
-          echo "Post-bootstrap: Configuring registry mirrors..."
-          HARBOR_PORT=30002
-
-          for registry_project in \\
-            "docker.io dockerhub-cache https://docker.io" \\
-            "ghcr.io ghcr-cache https://ghcr.io" \\
-            "public.ecr.aws ecr-public-cache https://public.ecr.aws" \\
-            "nvcr.io nvcr-cache https://nvcr.io" \\
-            "registry.k8s.io k8s-cache https://registry.k8s.io" \\
-            "quay.io quay-cache https://quay.io"; do
-            set -- $registry_project
-            registry=$1; project=$2; upstream=$3
-            mkdir -p /etc/containerd/certs.d/$registry
-            cat > /etc/containerd/certs.d/$registry/hosts.toml <<MIRRORS
-          server = "$upstream"
-
-          [host."http://localhost:$HARBOR_PORT/v2/$project"]
-            capabilities = ["pull", "resolve"]
-            skip_verify = true
-            override_path = true
-
-          [host."$upstream"]
-            capabilities = ["pull", "resolve"]
-          MIRRORS
-          done
-          echo "Registry mirrors configured for 6 registries"
-
-          # ---- CPU performance tuning ----
-          echo "Post-bootstrap: Configuring performance settings for {instance_type}..."
-
-          for cpu_governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-            if [ -f "$cpu_governor" ]; then
-              echo "performance" > "$cpu_governor" || true
-            fi
-          done
-
-          cat > /etc/systemd/system/cpu-performance.service <<'EOFS'
-          [Unit]
-          Description=Set CPU governor to performance mode
-          After=multi-user.target
-
-          [Service]
-          Type=oneshot
-          ExecStart=/bin/bash -c \\
-            'for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; \\
-            do echo performance > $gov 2>/dev/null || true; done'
-          RemainAfterExit=yes
-
-          [Install]
-          WantedBy=multi-user.target
-          EOFS
-
-          systemctl daemon-reload
-          systemctl enable cpu-performance.service
-          systemctl start cpu-performance.service
-{gpu_setup}\
-          echo "Performance configuration complete for {instance_type}"
-
+          topologyManagerPolicy: {topology_policy}
+          topologyManagerScope: {topology_scope}
+{"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' if topology_policy in ('restricted', 'best-effort') else ""}
+{_user_data_script_mime_part(indented_userdata)}
     --==BOUNDARY==--
 
   blockDeviceMappings:
@@ -376,10 +347,11 @@ def main():
                 continue
 
             is_gpu = nodepool_def.get('gpu', False)
+            has_nvme = nodepool_def.get('has_nvme', False)
             node_disk = _get_node_disk_size(nodepool_def)
-            log_info(f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, {nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi)")
+            log_info(f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, {nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi{', NVMe' if has_nvme else ''})")
 
-            content = generate_nodepool_yaml(nodepool_def, module_name)
+            content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
             out_path = output_dir / f"{name}.yaml"
             out_path.write_text(content)
             generated += 1

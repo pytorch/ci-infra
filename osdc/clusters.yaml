@@ -62,6 +62,7 @@ clusters:
   arc-staging:
     region: us-west-1
     cluster_name: pytorch-arc-staging
+    recycle_karpenter_nodes: true
     state_bucket: ciforge-tfstate-arc-staging
     base:
       base_node_count: 3

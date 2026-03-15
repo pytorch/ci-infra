@@ -44,8 +44,14 @@ data:
     )
     log = logging.getLogger("daemonset")
 
-    # Mount points — /mnt is the host's /mnt via hostPath
-    MNT = Path("/mnt")
+    # Mount points — /mnt is the host's /mnt via hostPath.
+    # nodeadm's instanceStorePolicy: RAID0 mounts NVMe at /mnt/k8s-disks/0/.
+    # Legacy nodes (or nodes without NVMe) use /mnt directly.
+    _NODEADM_MNT = Path("/mnt/k8s-disks/0")
+    # Use .resolve() so that if /mnt/k8s-disks/0 is a symlink to /mnt (BuildKit
+    # legacy fallback), MNT resolves to /mnt and the compatibility symlink in
+    # set_current() is correctly skipped (avoids circular symlinks).
+    MNT = _NODEADM_MNT.resolve() if _NODEADM_MNT.exists() else Path("/mnt")
     SLOT_A = MNT / "git-cache-a"
     SLOT_B = MNT / "git-cache-b"
     CACHE_LINK = MNT / "git-cache"
@@ -246,7 +252,13 @@ data:
         tmp_link.unlink(missing_ok=True)
         tmp_link.symlink_to(slot)
         tmp_link.rename(CACHE_LINK)
-        log.info("Symlink /mnt/git-cache -> %s", slot)
+        log.info("Symlink %s -> %s", CACHE_LINK, slot)
+        # When NVMe is at /mnt/k8s-disks/0/, runner pods still mount /mnt/git-cache
+        # via hostPath. Create a top-level symlink so that path resolves.
+        top_level_link = Path("/mnt/git-cache")
+        if MNT != Path("/mnt") and not top_level_link.exists():
+            top_level_link.symlink_to(CACHE_LINK)
+            log.info("Created compatibility symlink: /mnt/git-cache -> %s", CACHE_LINK)
         metrics.set(
             "git_cache_node_active_slot",
             0.0 if slot.resolve() == SLOT_A.resolve() else 1.0,

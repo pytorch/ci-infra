@@ -240,15 +240,15 @@ spec:
         - name: config
           configMap:
             name: buildkitd-config
-        # NVMe-backed build cache (formatted and mounted by userData)
+        # NVMe-backed build cache (nodeadm localStorage or userData fallback)
         - name: buildkit-cache
           hostPath:
-            path: /mnt/buildkit-cache
+            path: /mnt/k8s-disks/0/buildkit-cache
             type: DirectoryOrCreate
         # Git object cache (maintained by git-cache-warmer DaemonSet)
         - name: git-cache
           hostPath:
-            path: /mnt/git-cache
+            path: /mnt/k8s-disks/0/git-cache
             type: DirectoryOrCreate"""
 
     arm64_block = _deployment_block("arm64", arm64_instance, arm64_res["cpu"], arm64_res["memory_gi"])
@@ -384,8 +384,9 @@ spec:
           topologyManagerPolicyOptions:
             prefer-closest-numa-nodes: "true"
 
-      instance:
-        localUserData: |
+    --==BOUNDARY==
+    Content-Type: text/x-shellscript; charset="us-ascii"
+
 {userdata}
 
     --==BOUNDARY==--
@@ -413,8 +414,9 @@ spec:
     InstanceType: "{instance_type}"
     Architecture: "{arch}\""""
 
-    # Indent node-setup.sh for embedding in YAML userData
-    indented_userdata = "\n".join("          " + line for line in node_setup_script.splitlines())
+    # Indent node-setup.sh for embedding as a MIME part within YAML userData.
+    # 4 spaces = same level as other MIME content inside the userData block.
+    indented_userdata = "\n".join("    " + line if line.strip() else "" for line in node_setup_script.splitlines())
 
     arm64_cpu_limit, arm64_mem_limit = _nodepool_limits(arm64_instance, replicas, pods_per_node)
     amd64_cpu_limit, amd64_mem_limit = _nodepool_limits(amd64_instance, replicas, pods_per_node)
