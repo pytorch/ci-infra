@@ -78,6 +78,12 @@ variable "authentication_mode" {
   default     = "CONFIG_MAP"
 }
 
+variable "bootstrap_cluster_creator_admin_permissions" {
+  description = "Whether to grant cluster creator admin permissions (immutable after creation)"
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)
