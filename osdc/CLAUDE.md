@@ -117,6 +117,17 @@ The justfile uses `set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail
 
 For recipes that need mise tools, use non-shebang style (line-by-line with `@` prefix) so they run through `mise exec`. If a shebang recipe is required, call subscripts via `mise exec -- ./script.sh` explicitly.
 
+## Justfile Kubeconfig Convention (MANDATORY)
+
+**Every just recipe that interacts with a live cluster MUST call `aws eks update-kubeconfig` before doing any kubectl/helm work.** This prevents operators from accidentally running commands against the wrong cluster.
+
+The pattern (in shebang recipes):
+```bash
+aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME" >/dev/null
+```
+
+This applies to: `deploy-base`, `deploy-module`, `smoke`, `test-compactor`, `recycle-nodes`, and any future recipe that calls kubectl, helm, or deploy scripts. When adding a new recipe that touches a cluster, always include the kubeconfig step.
+
 ## Automation Hierarchy
 
 **Required order of preference for new automation:**
@@ -128,6 +139,31 @@ For recipes that need mise tools, use non-shebang style (line-by-line with `@` p
 **DO NOT create bash scripts if a Python solution is reasonable.** Python provides better error handling, testability, and maintainability.
 
 **ALWAYS use `uv` for Python dependencies** (`uv pip install`, `uv venv`, `uv run`). NEVER use pip, conda, poetry, or other package managers.
+
+## Unit Tests (MANDATORY)
+
+**Every new Python script with testable logic MUST have co-located unit tests.** When adding or modifying functionality in ANY script, you MUST check for existing tests and update them to cover the changes. When adding new functionality, add corresponding tests. No code change is complete without verifying its test coverage.
+
+- **Co-located tests**: Test files live next to the script they test (e.g., `scripts/python/foo.py` → `scripts/python/test_foo.py`)
+- **Pure-logic extraction**: Separate testable logic (data transforms, validation, comparisons) from side effects (subprocess calls, kubectl, helm). Test the pure logic; mock the side effects only when necessary.
+- **Run before declaring done**: `just test` must pass clean. No skipped tests, no xfails for new code.
+- **Coverage expectation**: Test happy paths, edge cases (empty inputs, missing keys), and any cross-module interaction scenarios (e.g., multi-module namespace sharing).
+
+## Smoke Tests (MANDATORY)
+
+Post-deploy validation that a cluster is actually healthy. Run via `just smoke <cluster>` or automatically at the end of `just deploy` (controlled by `OSDC_SMOKE=yes|no|ask`).
+
+Smoke tests verify that what was deployed is actually working: Helm releases are deployed, pods are Running, DaemonSets have all pods ready, required secrets and service accounts exist, AWS resources (IAM roles, SQS queues) are present, and Karpenter NodePools / ARC runner scale sets match their definition files. They do NOT test application-level behavior — just that the deployment landed correctly.
+
+**Architecture**: Each module owns its own smoke tests, co-located at `<module>/tests/smoke/`. A root `tests/smoke/conftest.py` provides shared fixtures (batch-fetched cluster state, cluster config, CLI helpers) that all module tests inherit via pytest's conftest discovery. `just smoke <cluster>` reads `clusters.yaml`, finds enabled modules, collects their `tests/smoke/` directories, and runs pytest across all of them. Adding a module with smoke tests = they're discovered automatically. Moving a module = its tests move with it.
+
+**When changing ANY module or base component, you MUST update its smoke tests to cover the change.** If the component doesn't have smoke tests yet, add them. Smoke tests are the safety net that catches deployment regressions — they only work if they stay current.
+
+- Smoke test files live in `<component>/tests/smoke/test_*.py`
+- Shared helpers and retry logic are in `tests/smoke/helpers.py`
+- Each module's `tests/smoke/conftest.py` re-exports the root conftest: `from smoke_conftest import *`
+- Readiness checks for Deployments and DaemonSets use retry helpers (`assert_deployment_ready`, `assert_daemonset_ready`) that tolerate transient mismatches during node rotation
+- Consumer modules can have their own `tests/smoke/` — they're discovered the same way
 
 ## How Deployment Works
 

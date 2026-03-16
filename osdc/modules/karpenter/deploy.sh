@@ -54,6 +54,7 @@ echo "Installing Karpenter..."
 helm upgrade --install karpenter \
   --namespace karpenter \
   --create-namespace \
+  --history-max 3 \
   -f "$MODULE_DIR/helm/values.yaml" \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="${KARPENTER_ROLE}" \
   --set settings.clusterName="${CNAME}" \

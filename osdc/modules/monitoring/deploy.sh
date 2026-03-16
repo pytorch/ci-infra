@@ -42,6 +42,7 @@ helm upgrade --install kube-prometheus-stack \
   prometheus-community/kube-prometheus-stack \
   --version 82.10.3 \
   --namespace "$NAMESPACE" \
+  --history-max 3 \
   -f "$MODULE_DIR/helm/values.yaml" \
   --timeout 10m \
   --wait
@@ -89,6 +90,7 @@ EOF
 
   helm upgrade --install alloy grafana/alloy \
     --namespace "$NAMESPACE" \
+    --history-max 3 \
     -f "$MODULE_DIR/helm/alloy-values.yaml" \
     -f "$ALLOY_OVERRIDE" \
     --timeout 5m \
