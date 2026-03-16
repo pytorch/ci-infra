@@ -2,7 +2,6 @@
 
 import math
 import sys
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -259,26 +258,24 @@ class TestGenerateDeploymentYaml:
 class TestGenerateNodepoolsYaml:
     """Tests for generate_nodepools_yaml — NodePool + EC2NodeClass YAML."""
 
-    FAKE_USERDATA = "#!/bin/bash\necho hello"
-
     def _parse_nodepools(self, yaml_text: str) -> list[dict]:
         return parse_all_yaml(yaml_text)
 
     def test_produces_four_documents(self):
         """Two arches x (NodePool + EC2NodeClass) = 4 docs."""
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, self.FAKE_USERDATA)
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
         docs = self._parse_nodepools(output)
         assert len(docs) == 4
 
     def test_document_kinds(self):
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, self.FAKE_USERDATA)
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
         docs = self._parse_nodepools(output)
         kinds = [d["kind"] for d in docs]
         assert kinds.count("NodePool") == 2
         assert kinds.count("EC2NodeClass") == 2
 
     def test_instance_types_in_nodepool(self):
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, self.FAKE_USERDATA)
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
         docs = self._parse_nodepools(output)
         nodepools = [d for d in docs if d["kind"] == "NodePool"]
         for np in nodepools:
@@ -289,7 +286,7 @@ class TestGenerateNodepoolsYaml:
             assert instance_type in INSTANCE_SPECS
 
     def test_cpu_manager_policy_in_userdata(self):
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, self.FAKE_USERDATA)
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
         docs = self._parse_nodepools(output)
         ec2_classes = [d for d in docs if d["kind"] == "EC2NodeClass"]
         for ec2 in ec2_classes:
@@ -301,7 +298,7 @@ class TestGenerateNodepoolsYaml:
         """NodePool CPU/memory limits = 2x nodes_needed * instance capacity."""
         replicas = 4
         pods_per_node = 2
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", replicas, pods_per_node, self.FAKE_USERDATA)
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", replicas, pods_per_node)
         docs = self._parse_nodepools(output)
         nodepools = [d for d in docs if d["kind"] == "NodePool"]
         for np in nodepools:
@@ -314,15 +311,28 @@ class TestGenerateNodepoolsYaml:
             assert np["spec"]["limits"]["cpu"] == expected_cpu
             assert np["spec"]["limits"]["memory"] == expected_mem
 
-    def test_userdata_embedded(self):
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, self.FAKE_USERDATA)
+    def test_instance_store_policy(self):
+        """Every EC2NodeClass must have instanceStorePolicy: RAID0."""
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
+        docs = self._parse_nodepools(output)
+        ec2_classes = [d for d in docs if d["kind"] == "EC2NodeClass"]
+        assert len(ec2_classes) == 2
+        for ec2 in ec2_classes:
+            assert ec2["spec"]["instanceStorePolicy"] == "RAID0", (
+                f"EC2NodeClass {ec2['metadata']['name']} missing instanceStorePolicy: RAID0"
+            )
+
+    def test_no_shellscript_mime_part(self):
+        """userData must NOT contain text/x-shellscript MIME parts."""
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
         docs = self._parse_nodepools(output)
         ec2_classes = [d for d in docs if d["kind"] == "EC2NodeClass"]
         for ec2 in ec2_classes:
-            assert "echo hello" in ec2["spec"]["userData"]
+            userdata = ec2["spec"]["userData"]
+            assert "text/x-shellscript" not in userdata
 
     def test_taints_present(self):
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, self.FAKE_USERDATA)
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
         docs = self._parse_nodepools(output)
         nodepools = [d for d in docs if d["kind"] == "NodePool"]
         for np in nodepools:
@@ -331,7 +341,7 @@ class TestGenerateNodepoolsYaml:
             assert "instance-type" in taint_keys
 
     def test_startup_taints(self):
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, self.FAKE_USERDATA)
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
         docs = self._parse_nodepools(output)
         nodepools = [d for d in docs if d["kind"] == "NodePool"]
         for np in nodepools:
@@ -347,24 +357,8 @@ class TestGenerateNodepoolsYaml:
 class TestMain:
     """Integration tests for main() with CLI args and file I/O."""
 
-    def _create_node_setup(self, tmp_path: Path) -> Path:
-        """Create a fake module directory structure with node-setup.sh."""
-        # main() resolves: Path(__file__).parent.parent.parent / "node-setup.sh"
-        # We need to fake __file__ so that resolution lands in tmp_path.
-        # Instead, we create the structure and patch __file__ via monkeypatch on sys.argv.
-        module_dir = tmp_path / "modules" / "buildkit"
-        module_dir.mkdir(parents=True)
-        scripts_dir = module_dir / "scripts" / "python"
-        scripts_dir.mkdir(parents=True)
-        node_setup = module_dir / "node-setup.sh"
-        node_setup.write_text("#!/bin/bash\necho 'node setup'\n")
-        return scripts_dir, module_dir
-
     def test_creates_output_files(self, tmp_path):
-        scripts_dir, _module_dir = self._create_node_setup(tmp_path)
         output_dir = tmp_path / "output"
-        fake_script = scripts_dir / "generate_buildkit.py"
-        fake_script.write_text("")
 
         import generate_buildkit
 
@@ -381,10 +375,7 @@ class TestMain:
             "--output-dir",
             str(output_dir),
         ]
-        with (
-            patch.object(sys, "argv", test_args),
-            patch.dict(generate_buildkit.__dict__, {"__file__": str(fake_script)}),
-        ):
+        with patch.object(sys, "argv", test_args):
             result = generate_buildkit.main()
 
         assert result == 0
@@ -392,10 +383,7 @@ class TestMain:
         assert (output_dir / "nodepools.yaml").exists()
 
     def test_deployment_yaml_parseable(self, tmp_path):
-        scripts_dir, _module_dir = self._create_node_setup(tmp_path)
         output_dir = tmp_path / "output"
-        fake_script = scripts_dir / "generate_buildkit.py"
-        fake_script.write_text("")
 
         import generate_buildkit
 
@@ -412,10 +400,7 @@ class TestMain:
             "--output-dir",
             str(output_dir),
         ]
-        with (
-            patch.object(sys, "argv", test_args),
-            patch.dict(generate_buildkit.__dict__, {"__file__": str(fake_script)}),
-        ):
+        with patch.object(sys, "argv", test_args):
             result = generate_buildkit.main()
 
         assert result == 0

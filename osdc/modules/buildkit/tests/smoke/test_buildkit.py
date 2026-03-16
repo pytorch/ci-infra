@@ -107,3 +107,23 @@ class TestBuildKitNodePools:
             or np.get("metadata", {}).get("labels", {}).get("osdc.io/module") == "buildkit"
         ]
         assert len(buildkit_pools) >= 1, "Expected at least 1 Karpenter NodePool for BuildKit"
+
+
+# ============================================================================
+# EC2NodeClass — instanceStorePolicy
+# ============================================================================
+
+
+class TestBuildKitEC2NodeClass:
+    """Verify EC2NodeClass resources for BuildKit have instanceStorePolicy: RAID0."""
+
+    def test_instance_store_policy(self) -> None:
+        """BuildKit EC2NodeClasses must have instanceStorePolicy: RAID0."""
+        result = run_kubectl(["get", "ec2nodeclasses.karpenter.k8s.aws", "-o", "json"])
+        items = result.get("items", [])
+        buildkit_classes = [ec2 for ec2 in items if "buildkit" in ec2.get("metadata", {}).get("name", "")]
+        assert len(buildkit_classes) >= 1, "Expected at least 1 EC2NodeClass for BuildKit"
+        for ec2 in buildkit_classes:
+            policy = ec2.get("spec", {}).get("instanceStorePolicy")
+            name = ec2["metadata"]["name"]
+            assert policy == "RAID0", f"EC2NodeClass '{name}' has instanceStorePolicy={policy!r}, expected 'RAID0'"
