@@ -1,0 +1,41 @@
+# yamllint configuration
+# https://yamllint.readthedocs.io/en/stable/configuration.html
+
+extends: default
+
+ignore: |
+  .venv/
+  .terraform/
+  **/generated/
+  **/charts/
+
+rules:
+  line-length:
+    max: 200
+    level: warning
+  indentation:
+    spaces: 2
+    indent-sequences: true
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no']
+    check-keys: false
+  comments:
+    require-starting-space: true
+    min-spaces-from-content: 1
+  document-start: disable
+  document-end: disable
+  empty-lines:
+    max: 2
+  trailing-spaces: {}
+  new-line-at-end-of-file: {}
+  brackets:
+    min-spaces-inside: 0
+    max-spaces-inside: 0
+  colons:
+    max-spaces-before: 0
+    max-spaces-after: 1
+  commas:
+    max-spaces-before: 0
+    min-spaces-after: 1
+  hyphens:
+    max-spaces-after: 1

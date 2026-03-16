@@ -6,6 +6,61 @@ minRunners: 0
 
 runnerGroup: "default"
 
+# Listener metrics cardinality control
+# Exclude high-cardinality labels (job_name, event_name, job_workflow_ref,
+# job_workflow_target) that create unbounded series. Keep labels useful for
+# dashboards and alerting: repository, organization, enterprise, job_workflow_name.
+listenerMetrics:
+  counters:
+    gha_started_jobs_total:
+      labels:
+        - repository
+        - organization
+        - enterprise
+        - job_workflow_name
+    gha_completed_jobs_total:
+      labels:
+        - repository
+        - organization
+        - enterprise
+        - job_result
+        - job_workflow_name
+  gauges:
+    gha_assigned_jobs:
+      labels: ["name", "namespace", "repository", "organization", "enterprise"]
+    gha_running_jobs:
+      labels: ["name", "namespace", "repository", "organization", "enterprise"]
+    gha_registered_runners:
+      labels: ["name", "namespace", "repository", "organization", "enterprise"]
+    gha_busy_runners:
+      labels: ["name", "namespace", "repository", "organization", "enterprise"]
+    gha_min_runners:
+      labels: ["name", "namespace", "repository", "organization", "enterprise"]
+    gha_max_runners:
+      labels: ["name", "namespace", "repository", "organization", "enterprise"]
+    gha_desired_runners:
+      labels: ["name", "namespace", "repository", "organization", "enterprise"]
+    gha_idle_runners:
+      labels: ["name", "namespace", "repository", "organization", "enterprise"]
+  histograms:
+    gha_job_startup_duration_seconds:
+      labels:
+        - repository
+        - organization
+        - enterprise
+        - job_workflow_name
+      buckets:
+        [5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
+    gha_job_execution_duration_seconds:
+      labels:
+        - repository
+        - organization
+        - enterprise
+        - job_result
+        - job_workflow_name
+      buckets:
+        [5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
+
 containerMode:
   type: "kubernetes-novolume"
 
@@ -31,6 +86,9 @@ listenerTemplate:
             memory: "128Mi"
 
 template:
+  metadata:
+    annotations:
+      karpenter.sh/do-not-disrupt: "true"
   spec:
     serviceAccountName: arc-runner
 
@@ -94,6 +152,9 @@ metadata:
     osdc.io/module: {{MODULE_NAME}}
 data:
   job-pod.yaml: |
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       # Job pods run untrusted user code — no Kubernetes API access
       serviceAccountName: arc-workflow

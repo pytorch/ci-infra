@@ -1,0 +1,35 @@
+# KubeLinter configuration
+# https://docs.kubelinter.io/
+
+checks:
+  doNotAutoAddDefaults: false
+  exclude:
+    # Karpenter handles resource-based scheduling via NodePools
+    - "unset-cpu-requirements"
+    - "unset-memory-requirements"
+    # Many infra containers legitimately need writable root
+    - "no-read-only-root-fs"
+    # Base infra doesn't always use liveness probes (Harbor, git-cache, etc.)
+    - "no-liveness-probe"
+    # Infrastructure DaemonSets (node tuning, registry config, git cache, NVIDIA plugin,
+    # DCGM exporter) and controllers (node-compactor, HAProxy) run as root
+    - "run-as-non-root"
+    # Node-tuning and registry-config DaemonSets are privileged to modify host settings
+    - "privileged-container"
+    - "privilege-escalation-container"
+    # Node-tuning needs hostIPC/hostNetwork/hostPID; registry-config needs hostNetwork/hostPID
+    - "host-ipc"
+    - "host-network"
+    - "host-pid"
+    # Node-tuning mounts / and /sys to configure CPU governor and sysfs
+    - "sensitive-host-mounts"
+    # Privileged containers and DCGM exporter: dropping NET_RAW is meaningless or incompatible
+    - "drop-net-raw-capability"
+    # BuildKit pod services reference generated Deployments not in the static kustomization
+    - "dangling-service"
+    # node-compactor uses placeholder image replaced at deploy time
+    - "latest-tag"
+    # git-cache-central PDB: single replica with minAvailable=1 is intentional (never disrupt)
+    - "pdb-min-available"
+    # Default unhealthy pod eviction policy is correct for critical single-replica pods
+    - "pdb-unhealthy-pod-eviction-policy"

@@ -1,5 +1,7 @@
 # CLAUDE.md — OSDC (Open Source Dev Cloud)
 
+project-doc: enabled
+
 ## What This Is
 
 Modular Kubernetes infrastructure platform on AWS EKS. A shared `base/` provides the cluster (VPC, EKS, Harbor, git cache, GPU plugins), and optional `modules/` layer services on top (ARC, runners, BuildKit, future projects). One codebase drives multiple clusters across regions via `clusters.yaml`.
@@ -32,23 +34,30 @@ This project uses **OpenTofu** (`tofu`), NOT Terraform. Running `terraform` comm
 ```
 osdc/
 ├── clusters.yaml           # THE source of truth — clusters + module lists
-├── justfile                # All operations (deploy, lint)
-├── mise.toml               # Tool versions (tofu, kubectl, helm, etc.)
+├── justfile                # All operations (deploy, lint, test, setup)
+├── mise.toml               # Tool versions (tofu, kubectl, helm, crane, ruff, etc.)
+├── pyproject.toml          # Python deps + dev deps (managed by uv)
 ├── scripts/                # Orchestration helpers
 │   ├── cluster-config.py   # Reads clusters.yaml, outputs values for just/shell
-│   └── bootstrap-state.sh  # Creates S3 + DynamoDB for tofu state
+│   ├── bootstrap-state.sh  # Creates S3 + DynamoDB for tofu state
+│   ├── mise-activate.sh    # Sourceable helper for shebang recipes needing mise tools
+│   └── python/
+│       └── configure_harbor_projects.py  # Harbor proxy cache project setup
 ├── base/                   # Deployed to EVERY cluster
-│   ├── kubernetes/         # StorageClass, NVIDIA plugin, git-cache, Harbor NS
+│   ├── kubernetes/         # StorageClass, NVIDIA plugin, git-cache, Harbor NS, perf tuning
+│   │   └── git-cache/      # Two-tier git cache (central Deployment + rsync DaemonSet)
 │   ├── helm/               # Harbor values
 │   ├── docker/             # Container images (runner-base)
-│   └── scripts/            # Bootstrap (EKS node setup)
+│   ├── scripts/            # Bootstrap (EKS node setup)
+│   └── node-compactor/     # Node consolidation controller (taints underutilized nodes)
 ├── modules/                # Optional, per clusters.yaml
 │   ├── eks/                # AWS infrastructure (VPC, EKS, Harbor S3/IAM, image mirroring)
 │   ├── karpenter/          # Karpenter controller + AWS infra (IAM, SQS, EventBridge)
 │   ├── arc/                # ARC controller (GitHub Actions)
 │   ├── nodepools/          # Karpenter NodePools (pure compute provisioning)
 │   ├── arc-runners/        # ARC runner scale sets (requires arc + nodepools)
-│   └── buildkit/           # BuildKit build service (arm64 + amd64)
+│   ├── buildkit/           # BuildKit build service (arm64 + amd64, HAProxy LB)
+│   └── monitoring/         # Prometheus, Grafana, AlertManager, DCGM exporter, Alloy
 └── docs/                   # Architecture and operations docs
 ```
 
@@ -125,13 +134,18 @@ For recipes that need mise tools, use non-shebang style (line-by-line with `@` p
 `clusters.yaml` defines every cluster and its modules. The justfile reads it via `scripts/cluster-config.py`.
 
 ```bash
+just setup                             # Install mise tools + Python venv
 just list                              # Show all clusters and modules
 just show <cluster>                    # Inspect cluster config
+just kubeconfig <cluster>              # Configure kubectl for a cluster
 just bootstrap <cluster>               # Create S3 state bucket + DynamoDB
+just bootstrap-all                     # Bootstrap all clusters
 just deploy <cluster>                  # Full deploy (base + modules)
 just deploy-base <cluster>             # Base only
 just deploy-module <cluster> <module>  # Single module
-just lint                              # Lint all code
+just test                              # Run all unit tests
+just test-compactor <cluster>          # Run node-compactor e2e tests
+just lint                              # Lint all code (shell, Python, Docker, k8s, tf)
 ```
 
 ### Base deploy order (always)
@@ -139,7 +153,8 @@ just lint                              # Lint all code
 1. **Terraform** — VPC, EKS, Harbor S3/IAM (parameterized, no per-env dirs)
 2. **Mirror images** — Harbor bootstrap images to ECR (Harbor can't cache itself)
 3. **Harbor** — Pull-through cache (first k8s workload; caches docker.io, ghcr.io, nvcr.io, registry.k8s.io, quay.io)
-4. **Base k8s** — StorageClass, NVIDIA plugin, git-cache DaemonSet, performance tuning
+4. **Base k8s** — StorageClass, NVIDIA plugin, git-cache (two-tier), performance tuning
+5. **Node compactor** — Taints underutilized Karpenter nodes for consolidation (if enabled)
 
 ### Module deploy order (per clusters.yaml list order)
 
@@ -182,6 +197,7 @@ Single parameterized root at `modules/eks/terraform/`. No per-environment direct
 - **Compute split: nodepools + arc-runners** — `nodepools` deploys pure Karpenter NodePools (compute provisioning). `arc-runners` deploys ARC runner scale sets (requires both `arc` and `nodepools`). Non-ARC clusters can use `nodepools` alone for compute.
 - **One terraform root, many clusters** — no code duplication per environment.
 - **Modules are independent** — each has its own terraform state, k8s resources, deploy script. No cross-module imports.
+- **Monitoring is a module** — not baked into base. Clusters opt-in by listing `monitoring` in their modules. In-cluster Prometheus provides local storage and Grafana dashboards; Grafana Cloud push via Alloy is optional and secret-gated.
 
 ## EKS Node Taints
 
@@ -222,6 +238,7 @@ BuildKit (`moby/buildkit:v0.27.1`) runs as two Deployments in the `buildkit` nam
 - **Storage**: NVMe instance storage (RAID0) for build cache + git object cache
 - **Registry mirrors**: `buildkitd.toml` routes `FROM` image pulls through Harbor (same as containerd on runner nodes)
 - **Network access**: NetworkPolicy restricts ingress to pods from `arc-runners` namespace only
+- **Load balancing**: HAProxy (least-connections) distributes `buildctl` connections across buildkitd pods per architecture
 
 ### Targeting an architecture
 
@@ -238,7 +255,7 @@ crane index append -t $IMAGE -m $IMAGE-arm64 -m $IMAGE-amd64
 
 ### Using the git cache in Dockerfiles
 
-The git-cache-warmer DaemonSet runs on BuildKit nodes (same as runner nodes). The buildkitd pod mounts the cache at `/opt/git-cache`. To use it inside a `RUN` step, pass it as a named build context:
+The git-cache rsync DaemonSet runs on BuildKit nodes (same as runner nodes). The buildkitd pod mounts the cache at `/opt/git-cache`. To use it inside a `RUN` step, pass it as a named build context:
 
 ```bash
 buildctl --addr tcp://buildkitd-arm64.buildkit:1234 build \
@@ -258,36 +275,104 @@ RUN --mount=type=bind,from=gitcache,source=pytorch/pytorch.git/objects,target=/t
     git clone https://github.com/pytorch/pytorch /workspace
 ```
 
+## Monitoring (kube-prometheus-stack + Grafana Alloy)
+
+The `monitoring` module deploys a two-tier metrics pipeline. Helm charts used:
+
+- **[kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)** v82.10.3 — bundles Prometheus, Grafana, AlertManager, Prometheus Operator, node-exporter, and kube-state-metrics.
+- **[Grafana Alloy](https://github.com/grafana/alloy)** (Helm chart `grafana/alloy`) — optional push agent for Grafana Cloud. Only installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace.
+- **[DCGM Exporter](https://github.com/NVIDIA/dcgm-exporter)** (`nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless`) — DaemonSet for GPU metrics, runs only on GPU nodes.
+
+### Architecture
+
+**Tier 1 — In-cluster Prometheus**: HA pair (2 replicas) on base infrastructure nodes with gp3 EBS PVCs. Auto-discovers all ServiceMonitors/PodMonitors across all namespaces. Grafana (optional, enabled by default) auto-loads dashboards from ConfigMaps labeled `grafana_dashboard: "1"`. AlertManager (optional, enabled by default) runs as HA pair.
+
+**Tier 2 — Grafana Cloud push via Alloy** (conditional): Alloy independently discovers ServiceMonitor/PodMonitor CRDs, scrapes the same targets as Prometheus, and pushes via `prometheus.remote_write` to Grafana Cloud Mimir. Clustering enabled for HA target distribution across 2 replicas.
+
+### What's scraped
+
+| Type | Name | Target Namespace | What it monitors |
+|------|------|-----------------|-----------------|
+| ServiceMonitor | arc-controller | arc-systems | ARC controller metrics |
+| ServiceMonitor | harbor | harbor-system | Harbor exporter metrics |
+| ServiceMonitor | karpenter | karpenter | Karpenter controller metrics |
+| ServiceMonitor | node-compactor | kube-system | Node compactor metrics |
+| ServiceMonitor | git-cache-central | kube-system | Git cache central pod metrics |
+| ServiceMonitor | dcgm-exporter | monitoring | NVIDIA GPU metrics (DCGM) |
+| PodMonitor | git-cache-daemonset | kube-system | Git cache DaemonSet metrics |
+| PodMonitor | arc-listeners | arc-runners | ARC listener pods metrics |
+
+node-exporter (from kube-prometheus-stack) runs on every node — it tolerates ALL taints. kube-state-metrics runs on base nodes.
+
+### Configuration (clusters.yaml)
+
+```yaml
+monitoring:
+  namespace: monitoring           # Kubernetes namespace
+  retention_days: 15              # Prometheus data retention
+  storage_size: 50Gi              # PVC size per Prometheus replica
+  grafana_enabled: true           # Deploy Grafana
+  alertmanager_enabled: true      # Deploy AlertManager
+  grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
+```
+
+### Deploy order (deploy.sh)
+
+1. Create `monitoring` namespace (via kustomization)
+2. `helm upgrade --install kube-prometheus-stack` — installs CRDs + all components
+3. `kubectl apply -k kubernetes/monitors/` — ServiceMonitors/PodMonitors (depends on CRDs from step 2)
+4. Conditionally: `helm upgrade --install alloy` — if `grafana-cloud-credentials` secret exists
+
+### CRD ordering gotcha
+
+The justfile applies `kubernetes/kustomization.yaml` (Phase 2) before running `deploy.sh` (Phase 3). ServiceMonitor/PodMonitor CRDs don't exist until kube-prometheus-stack installs in step 2 of deploy.sh. That's why monitors live in a separate `kubernetes/monitors/` kustomization applied by deploy.sh after Helm install — not in the main kustomization.
+
+### Admission webhook gotcha
+
+The kube-prometheus-stack Helm chart's admission webhook pre-install job has no tolerations by default. On OSDC clusters where ALL base nodes are tainted with `CriticalAddonsOnly`, the job stays Pending forever. The Helm values must include tolerations + nodeSelector for `prometheusOperator.admissionWebhooks.patch`. If the job gets stuck, you must delete the failed Helm release and the stuck job before retrying.
+
 ## Git Clone Cache
 
-A DaemonSet (`git-cache-warmer`) maintains bare git clones on each runner node. Workflow job pods mount the cache read-only and `GIT_ALTERNATE_OBJECT_DIRECTORIES` tells git to check the local cache before downloading objects from GitHub. This dramatically speeds up full clones of large repositories.
+A two-tier caching system speeds up git clones of large repositories on runner and BuildKit nodes.
+
+**Architecture**:
+- **Central pod** — A Deployment with an EBS PVC clones repositories from GitHub. Uses dual-slot rotation (cache-a / cache-b) so DaemonSet clients always read from a consistent snapshot. Serves repos via rsyncd on port 873.
+- **DaemonSet** — Runs on every runner/BuildKit node. Periodically rsyncs from the central pod to local NVMe storage at `/opt/git-cache`. Runner pods mount this path read-only.
+
+**How runners use it**: Runner pods get `CHECKOUT_GIT_CACHE_DIR=/opt/git-cache` and `GIT_CONFIG_SYSTEM` (with `safe.directory=*`). Workflow steps that use `actions/checkout` pass `reference-repository: $CHECKOUT_GIT_CACHE_DIR/<repo>` to avoid full clones.
 
 ### Key files
 
 | File | What to change |
 |------|---------------|
-| `base/kubernetes/git-cache-warmer.yaml` | `REPOS` variable — list of `org/repo` to cache |
-| `modules/arc-runners/templates/runner.yaml.tpl` | `GIT_ALTERNATE_OBJECT_DIRECTORIES` env value — colon-separated objects paths |
+| `base/kubernetes/git-cache/central-configmap.yaml` | `central.py` script — repo list is hardcoded in the Python `REPOS` list |
+| `base/kubernetes/git-cache/central-deployment.yaml` | Central pod spec (EBS PVC, rsyncd sidecar) |
+| `base/kubernetes/git-cache/daemonset.yaml` | Rsync DaemonSet (syncs from central to NVMe) |
+| `modules/arc-runners/templates/runner.yaml.tpl` | `CHECKOUT_GIT_CACHE_DIR` and `GIT_CONFIG_SYSTEM` env vars |
 
 ### Adding a new cached repository
 
-1. Append `org/repo` to the `REPOS` variable in `base/kubernetes/git-cache-warmer.yaml`
-2. Append `/opt/git-cache/org/repo.git/objects` to the `GIT_ALTERNATE_OBJECT_DIRECTORIES` value in `modules/arc-runners/templates/runner.yaml.tpl`
-3. Redeploy: `just deploy-base <cluster>` (DaemonSet) + `just deploy-module <cluster> arc-runners` (runner hook template)
-
-The DaemonSet fetches all repos in parallel, so adding more repos only increases warm-up time by the duration of the largest new repo (not the sum).
+1. Edit the `REPOS` list in the `central.py` script inside `base/kubernetes/git-cache/central-configmap.yaml`
+2. Redeploy: `just deploy-base <cluster>`
 
 ## External Knowledge Base
 
-The directory `../../actions-knowledge-base/` (relative to `osdc/`) contains source code, documentation, and detailed reference material for many of the open-source projects and tools used by this project — including Actions Runner Controller, Harbor, the Harbor Helm chart, the GitHub Actions runner, runner images, cloud-provider credential actions, and more. Each project lives as a git submodule under `repos/` and the knowledge base's own `AGENTS.md` indexes every included repository with summaries and key paths.
+The `actions-knowledge-base/` directory contains source code, documentation, and detailed reference material for many of the open-source projects and tools used by this project — including Actions Runner Controller, Harbor, the Harbor Helm chart, the GitHub Actions runner, runner images, cloud-provider credential actions, and more. Each project lives as a git submodule under `repos/` and the knowledge base's own `AGENTS.md` indexes every included repository with summaries and key paths.
+
+**Finding it**: The directory is named `actions-knowledge-base` and lives somewhere above or beside this project. Walk upward from the current working directory, checking each ancestor and its children, until you find a directory named `actions-knowledge-base`. It is typically a sibling of the top-level repo (e.g., beside `ciforge/`), but the exact location depends on the checkout layout. Do not hardcode a relative path — search for it.
+
+The knowledge base has two key directories:
+- **`actions-knowledge-base/repos/`** — Read-only upstream source code and docs (git submodules). Managed via `sync.py`.
+- **`actions-knowledge-base/docs/`** — Our own findings, workarounds, and gotchas discovered during development and operations (e.g., BuildKit OTEL crash, Grafana Alloy setup, CRD ordering issues, deploy phase ordering).
 
 **You should consult this knowledge base** whenever you need to:
 - Understand how a dependency works (e.g., ARC Helm chart values, Harbor configuration, runner lifecycle)
 - Clarify configuration quirks, edge cases, or undocumented behavior
 - Look up default values, API surfaces, or internal implementation details
 - Verify correct usage of upstream Helm charts, container images, or action inputs
+- Review operational learnings and previously discovered issues (`docs/`)
 
-In most cases, reading the relevant source or docs in `../../actions-knowledge-base/` first will produce more accurate results than guessing or relying on general knowledge alone. Treat it as a first-class resource.
+In most cases, reading the relevant source or docs in the knowledge base first will produce more accurate results than guessing or relying on general knowledge alone. Treat it as a first-class resource.
 
 ## Read-Only CLI Debugging (Encouraged)
 
@@ -352,6 +437,17 @@ tofu output                  # Output values
 tofu state list              # All managed resources
 ```
 
+## Before Declaring Work Complete (MANDATORY)
+
+Before declaring any code change complete, you MUST run both of these and they MUST pass clean:
+
+```bash
+just lint    # All 11 linters must pass with zero errors
+just test    # All unit tests must pass
+```
+
+If either fails, fix the issues before finishing. Do not defer lint or test failures — they block CI and break other contributors.
+
 ## Don't Do
 
 - **NEVER run `terraform`** — use `tofu` or `just` recipes (terraform will corrupt state)
@@ -369,16 +465,26 @@ tofu state list              # All managed resources
 | File | What it does |
 |------|-------------|
 | `clusters.yaml` | Defines all clusters, modules, and per-installation config (replicas, log levels, runner limits, etc.) |
-| `justfile` | All operations (deploy, lint, show, list) |
-| `mise.toml` | Tool versions (tofu, kubectl, helm, crane, etc.) |
+| `justfile` | All operations (deploy, lint, test, setup, kubeconfig) |
+| `mise.toml` | Tool versions (tofu, kubectl, helm, crane, ruff, shellcheck, etc.) + env vars |
+| `pyproject.toml` | Python dependencies + dev deps, managed by uv |
 | `scripts/cluster-config.py` | Reads clusters.yaml for justfile/shell consumption |
 | `scripts/bootstrap-state.sh` | Creates S3 bucket + DynamoDB for tofu state |
+| `scripts/mise-activate.sh` | Sourceable helper — adds mise tools to PATH for shebang recipes |
+| `scripts/python/configure_harbor_projects.py` | Configures Harbor proxy cache projects via API |
 | `modules/eks/terraform/main.tf` | Parameterized infra (VPC, EKS, Harbor) |
 | `modules/eks/terraform/variables.tf` | All variables driven from clusters.yaml |
 | `modules/eks/images.yaml` | Harbor bootstrap images to mirror to ECR |
-| `base/kubernetes/git-cache-warmer.yaml` | Git clone cache DaemonSet (repos list) |
+| `base/kubernetes/git-cache/` | Two-tier git cache (central Deployment + rsync DaemonSet) |
+| `base/node-compactor/` | Node consolidation controller (taints underutilized Karpenter nodes) |
 | `modules/karpenter/deploy.sh` | Karpenter controller + AWS infra (IAM, SQS, Helm install) |
 | `modules/nodepools/defs/*.yaml` | NodePool definitions (instance type, arch, disk, gpu flag) |
 | `modules/nodepools/deploy.sh` | Generate + apply Karpenter NodePools |
 | `modules/arc-runners/defs/*.yaml` | Runner definitions (instance type, CPU, memory, GPU, max runners) |
 | `modules/arc-runners/deploy.sh` | Generate + install ARC runner scale sets (requires arc module) |
+| `modules/buildkit/deploy.sh` | Generate + deploy BuildKit (Deployments, HAProxy, NodePools) |
+| `modules/monitoring/deploy.sh` | Deploy kube-prometheus-stack + monitors + conditionally Alloy |
+| `modules/monitoring/helm/values.yaml` | kube-prometheus-stack Helm values (node placement, storage, auto-discovery) |
+| `modules/monitoring/helm/alloy-values.yaml` | Grafana Alloy Helm values (ServiceMonitor/PodMonitor discovery, remote_write) |
+| `modules/monitoring/kubernetes/monitors/` | ServiceMonitors + PodMonitors for OSDC components (ARC, Harbor, Karpenter, etc.) |
+| `modules/monitoring/kubernetes/dcgm-exporter/` | DCGM GPU exporter DaemonSet + headless Service (GPU nodes only) |

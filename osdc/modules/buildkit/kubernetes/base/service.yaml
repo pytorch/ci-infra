@@ -77,6 +77,8 @@ spec:
   ports:
     - name: buildkit
       port: 1234
+    - name: metrics
+      port: 9090
   selector:
     app: buildkitd
     arch: arm64
@@ -92,6 +94,8 @@ spec:
   ports:
     - name: buildkit
       port: 1234
+    - name: metrics
+      port: 9090
   selector:
     app: buildkitd
     arch: amd64
@@ -107,5 +111,7 @@ spec:
   ports:
     - name: buildkit
       port: 1234
+    - name: metrics
+      port: 9090
   selector:
     app: buildkitd

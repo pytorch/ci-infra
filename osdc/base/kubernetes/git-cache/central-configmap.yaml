@@ -35,7 +35,9 @@ data:
     import shutil
     import subprocess
     import sys
+    import threading
     import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
     from pathlib import Path
 
     logging.basicConfig(
@@ -45,6 +47,176 @@ data:
         stream=sys.stdout,
     )
     log = logging.getLogger("central")
+
+
+    class MetricsServer:
+        """Prometheus metrics server using stdlib http.server.
+
+        Thread-safe metric updates via a lock. Serves /metrics on port 9101
+        in Prometheus text exposition format.
+        """
+
+        METRICS_PORT = 9101
+
+        # Metric definitions: (name, type, help)
+        METRIC_DEFS = {
+            "git_cache_central_fetch_duration_seconds": ("gauge", "Duration of last git fetch per repo"),
+            "git_cache_central_fetch_success_total": ("counter", "Successful fetch count per repo"),
+            "git_cache_central_fetch_errors_total": ("counter", "Failed fetch count per repo"),
+            "git_cache_central_last_fetch_timestamp": ("gauge", "Unix timestamp of last successful fetch"),
+            "git_cache_central_repo_size_bytes": ("gauge", "Size of each repo cache on disk"),
+            "git_cache_central_slot_swaps_total": ("counter", "Number of active-slot rotations"),
+            "git_cache_central_active_slot": ("gauge", "Current active slot (0=a, 1=b)"),
+            "git_cache_central_cycle_duration_seconds": ("gauge", "Duration of last full update cycle"),
+            "git_cache_central_rsyncd_restarts_total": ("counter", "rsyncd daemon restart count"),
+            "git_cache_central_repos_total": ("gauge", "Number of repos being cached"),
+            "git_cache_central_clone_total": ("counter", "Total clone/fetch operations"),
+            "git_cache_central_clone_duration_seconds": ("histogram", "Time to clone/fetch each repo"),
+            "git_cache_central_last_success_timestamp": ("gauge", "Unix timestamp of last successful sync per repo"),
+        }
+
+        # Histogram bucket boundaries (seconds) for clone/fetch duration
+        HISTOGRAM_BUCKETS = (1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, float("inf"))
+
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            # Keyed by (metric_name, frozenset(label_pairs))
+            self._values: dict[tuple[str, frozenset], float] = {}
+            # Histogram data: keyed by (metric_name, frozenset(label_pairs))
+            # Each value is {"buckets": {le: count}, "sum": float, "count": int}
+            self._histograms: dict[tuple[str, frozenset], dict] = {}
+
+        def set(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
+            """Set a gauge metric value."""
+            key = (name, frozenset((labels or {}).items()))
+            with self._lock:
+                self._values[key] = value
+
+        def inc(self, name: str, labels: dict[str, str] | None = None, amount: float = 1) -> None:
+            """Increment a counter metric."""
+            key = (name, frozenset((labels or {}).items()))
+            with self._lock:
+                self._values[key] = self._values.get(key, 0) + amount
+
+        def observe(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
+            """Record an observation in a histogram metric.
+
+            Stores per-bucket counts (non-cumulative). The format_metrics
+            method accumulates them into cumulative counts for output.
+            """
+            key = (name, frozenset((labels or {}).items()))
+            with self._lock:
+                if key not in self._histograms:
+                    self._histograms[key] = {
+                        "buckets": {le: 0 for le in self.HISTOGRAM_BUCKETS},
+                        "sum": 0.0,
+                        "count": 0,
+                    }
+                h = self._histograms[key]
+                # Increment only the smallest bucket that fits the value
+                for le in sorted(self.HISTOGRAM_BUCKETS):
+                    if value <= le:
+                        h["buckets"][le] += 1
+                        break
+                h["sum"] += value
+                h["count"] += 1
+
+        def _format_label_str(self, labels_dict: dict[str, str]) -> str:
+            """Format a dict of labels into Prometheus label string."""
+            if not labels_dict:
+                return ""
+            return "{" + ",".join(
+                f'{k}="{v}"' for k, v in sorted(labels_dict.items())
+            ) + "}"
+
+        def format_metrics(self) -> str:
+            """Format all metrics in Prometheus text exposition format."""
+            with self._lock:
+                snapshot = dict(self._values)
+                hist_snapshot = {k: {
+                    "buckets": dict(v["buckets"]),
+                    "sum": v["sum"],
+                    "count": v["count"],
+                } for k, v in self._histograms.items()}
+
+            # Group gauge/counter values by metric name
+            by_name: dict[str, list[tuple[frozenset, float]]] = {}
+            for (name, label_set), value in snapshot.items():
+                by_name.setdefault(name, []).append((label_set, value))
+
+            # Group histogram values by metric name
+            hist_by_name: dict[str, list[tuple[frozenset, dict]]] = {}
+            for (name, label_set), hdata in hist_snapshot.items():
+                hist_by_name.setdefault(name, []).append((label_set, hdata))
+
+            # Collect all metric names for sorted output
+            all_names = sorted(set(list(by_name.keys()) + list(hist_by_name.keys())))
+
+            lines: list[str] = []
+            for name in all_names:
+                mtype, help_text = self.METRIC_DEFS.get(name, ("untyped", ""))
+                lines.append(f"# HELP {name} {help_text}")
+                lines.append(f"# TYPE {name} {mtype}")
+
+                if name in hist_by_name:
+                    # Render histogram with _bucket, _sum, _count lines
+                    for label_set, hdata in sorted(hist_by_name[name]):
+                        base_labels = dict(label_set)
+                        cumulative = 0
+                        for le in sorted(b for b in hdata["buckets"] if b != float("inf")):
+                            cumulative += hdata["buckets"][le]
+                            le_labels = {**base_labels, "le": str(le)}
+                            lines.append(f"{name}_bucket{self._format_label_str(le_labels)} {cumulative}")
+                        # +Inf bucket
+                        cumulative += hdata["buckets"].get(float("inf"), 0)
+                        inf_labels = {**base_labels, "le": "+Inf"}
+                        lines.append(f"{name}_bucket{self._format_label_str(inf_labels)} {cumulative}")
+                        # _sum and _count
+                        base_lstr = self._format_label_str(base_labels)
+                        lines.append(f"{name}_sum{base_lstr} {hdata['sum']}")
+                        lines.append(f"{name}_count{base_lstr} {hdata['count']}")
+                else:
+                    # Render gauge/counter
+                    for label_set, value in sorted(by_name.get(name, [])):
+                        labels_dict = dict(label_set)
+                        if labels_dict:
+                            label_str = ",".join(
+                                f'{k}="{v}"' for k, v in sorted(labels_dict.items())
+                            )
+                            lines.append(f"{name}{{{label_str}}} {value}")
+                        else:
+                            lines.append(f"{name} {value}")
+            lines.append("")
+            return "\n".join(lines)
+
+        def start(self) -> None:
+            """Start the HTTP metrics server in a daemon thread."""
+            server_ref = self
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(self) -> None:
+                    if self.path == "/metrics":
+                        body = server_ref.format_metrics().encode()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+
+                def log_message(self, format: str, *args: object) -> None:
+                    # Suppress default access logs to avoid noise
+                    pass
+
+            httpd = HTTPServer(("", self.METRICS_PORT), Handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            log.info("Metrics server started on port %d", self.METRICS_PORT)
+
+
+    metrics = MetricsServer()
 
     DATA_DIR = Path("/data")
     SLOT_A = DATA_DIR / "cache-a"
@@ -182,6 +354,30 @@ data:
         return result.returncode == 0
 
 
+    def _dir_size_bytes(path: Path) -> int:
+        """Return total size in bytes of all files under path."""
+        total = 0
+        try:
+            for f in path.rglob("*"):
+                if f.is_file():
+                    total += f.stat().st_size
+        except OSError:
+            pass
+        return total
+
+
+    def _record_repo_size(slot: Path, repo: str, bare: bool) -> None:
+        """Record the on-disk size of a repo in metrics."""
+        org, name = repo.split("/")
+        if bare:
+            repo_dir = slot / org / f"{name}.git"
+        else:
+            repo_dir = slot / org / name
+        if repo_dir.exists():
+            size = _dir_size_bytes(repo_dir)
+            metrics.set("git_cache_central_repo_size_bytes", size, {"repo": repo})
+
+
     def populate_slot(slot: Path) -> None:
         """Clone all repos into a slot."""
         slot.mkdir(parents=True, exist_ok=True)
@@ -198,6 +394,9 @@ data:
         tmp_link.unlink(missing_ok=True)
         tmp_link.symlink_to(slot)
         tmp_link.rename(CURRENT_LINK)
+        metrics.inc("git_cache_central_slot_swaps_total")
+        slot_value = 0 if slot.resolve() == SLOT_A.resolve() else 1
+        metrics.set("git_cache_central_active_slot", slot_value)
         log.info("Symlink /data/current -> %s", slot)
 
 
@@ -205,11 +404,18 @@ data:
         """Fetch updates for a full (non-bare) repo with submodules."""
         if not (repo_dir / ".git").is_dir():
             return
+        labels = {"repo": repo}
+        t0 = time.monotonic()
         try:
             run(["git", "-C", str(repo_dir), "fetch", "origin",
                  "--prune", "--tags"])
             log.info("Fetched %s", repo)
         except subprocess.CalledProcessError:
+            duration = time.monotonic() - t0
+            metrics.set("git_cache_central_fetch_duration_seconds", duration, labels)
+            metrics.inc("git_cache_central_fetch_errors_total", labels)
+            metrics.inc("git_cache_central_clone_total", {"repo": repo, "status": "error"})
+            metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
             log.warning("Fetch failed for %s (will retry next cycle)", repo)
             return
 
@@ -220,16 +426,40 @@ data:
         except subprocess.CalledProcessError:
             log.warning("Submodule update failed for %s (will retry next cycle)", repo)
 
+        duration = time.monotonic() - t0
+        now = time.time()
+        metrics.set("git_cache_central_fetch_duration_seconds", duration, labels)
+        metrics.inc("git_cache_central_fetch_success_total", labels)
+        metrics.set("git_cache_central_last_fetch_timestamp", now, labels)
+        metrics.inc("git_cache_central_clone_total", {"repo": repo, "status": "success"})
+        metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
+        metrics.set("git_cache_central_last_success_timestamp", now, labels)
+
 
     def fetch_bare_repo_update(repo_dir: Path, repo: str) -> None:
         """Fetch updates for a bare repo."""
         if not (repo_dir / "objects").is_dir():
             return
+        labels = {"repo": repo}
+        t0 = time.monotonic()
         try:
             run(["git", "-C", str(repo_dir), "fetch", "origin",
                  "--prune", "--tags"])
+            duration = time.monotonic() - t0
+            now = time.time()
+            metrics.set("git_cache_central_fetch_duration_seconds", duration, labels)
+            metrics.inc("git_cache_central_fetch_success_total", labels)
+            metrics.set("git_cache_central_last_fetch_timestamp", now, labels)
+            metrics.inc("git_cache_central_clone_total", {"repo": repo, "status": "success"})
+            metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
+            metrics.set("git_cache_central_last_success_timestamp", now, labels)
             log.info("Fetched %s", repo)
         except subprocess.CalledProcessError:
+            duration = time.monotonic() - t0
+            metrics.set("git_cache_central_fetch_duration_seconds", duration, labels)
+            metrics.inc("git_cache_central_fetch_errors_total", labels)
+            metrics.inc("git_cache_central_clone_total", {"repo": repo, "status": "error"})
+            metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
             log.warning("Fetch failed for %s (will retry next cycle)", repo)
 
 
@@ -256,6 +486,12 @@ data:
     def main() -> None:
         install_deps()
 
+        # Start metrics server early so it's available during initial clone
+        metrics.start()
+
+        # Record total number of repos being cached
+        metrics.set("git_cache_central_repos_total", len(REPOS_FULL) + len(REPOS_BARE))
+
         log.info("Data directory: %s", DATA_DIR)
         log.info("Fetch interval: %ds", FETCH_INTERVAL)
 
@@ -276,11 +512,13 @@ data:
         # Rsync active -> staging, git fetch in staging, swap symlink
         while True:
             time.sleep(FETCH_INTERVAL)
+            cycle_start = time.monotonic()
             log.info("Starting periodic update cycle...")
 
             # Check rsyncd is still alive
             if rsyncd.poll() is not None:
                 log.warning("rsyncd died (rc=%d), restarting...", rsyncd.returncode)
+                metrics.inc("git_cache_central_rsyncd_restarts_total")
                 rsyncd = start_rsyncd()
 
             src = active_slot() or SLOT_A
@@ -297,6 +535,7 @@ data:
                     fetch_full_repo(repo_dir, repo)
                 else:
                     clone_full_repo(dst, repo)
+                _record_repo_size(dst, repo, bare=False)
 
             for repo in REPOS_BARE:
                 org, name = repo.split("/")
@@ -305,11 +544,13 @@ data:
                     fetch_bare_repo_update(repo_dir, repo)
                 else:
                     clone_bare_repo(dst, repo)
+                _record_repo_size(dst, repo, bare=True)
 
             write_gitconfig(dst)
 
             # Atomic swap
             set_current(dst)
+            metrics.set("git_cache_central_cycle_duration_seconds", time.monotonic() - cycle_start)
             log.info("Update cycle complete — active slot: %s", dst)
 
 

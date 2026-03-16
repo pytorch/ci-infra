@@ -1,0 +1,106 @@
+# .trivyignore — Trivy IaC scan suppressions for OSDC
+#
+# This file suppresses known-acceptable security findings from trivy config scans.
+# Every entry here is an intentional design decision for CI infrastructure, not a
+# security gap. Each suppression is documented with the rationale.
+#
+# Format: one rule ID per line. Lines starting with # are comments.
+# Ref: https://aquasecurity.github.io/trivy/latest/docs/configuration/filtering/#by-trivyignore
+
+# =============================================================================
+# AWS / Terraform findings
+# =============================================================================
+
+# EKS public API access is required. GitHub Actions runners connect to the
+# cluster API from GitHub's network. Private-only access would require a
+# VPN/PrivateLink setup that adds complexity without security benefit (API
+# server still requires valid kubeconfig + IAM auth).
+AWS-0040
+AWS-0041
+
+# Harbor S3 bucket uses SSE-S3 (AES-256) default encryption, not a customer
+# managed KMS key. CMK adds cost and key-rotation overhead for a container
+# image cache that holds only public upstream images. No sensitive data.
+AWS-0132
+
+# Public subnets auto-assign public IPs by design. Runner and BuildKit nodes
+# need outbound internet access (git clone, docker pull, PyPI). NAT Gateway
+# would add ~$100/month per AZ with no security benefit since Security Groups
+# already restrict inbound traffic.
+AWS-0164
+
+# =============================================================================
+# Kubernetes — privileged access (intentional for system DaemonSets)
+# =============================================================================
+
+# SYS_ADMIN capability: required by DCGM exporter (GPU metrics via NVML) and
+# node-performance-tuning (sysctl, NUMA, IRQ affinity, transparent hugepages).
+KSV-0005
+
+# hostIPC: node-performance-tuning needs IPC namespace access for NUMA and
+# shared memory tuning.
+KSV-0008
+
+# hostNetwork: node-performance-tuning and registry-mirror-config need host
+# network namespace to configure containerd and system-level network parameters.
+KSV-0009
+
+# hostPID: node-performance-tuning needs host PID namespace to inspect and tune
+# kernel thread affinity. registry-mirror-config needs it to signal containerd
+# after config changes (nsenter + systemctl).
+KSV-0010
+
+# readOnlyRootFilesystem=false: Multiple infrastructure containers legitimately
+# need writable root filesystems:
+#   - BuildKit: writes build cache, layer data, git objects to rootfs
+#   - git-cache: clones and updates bare git repos
+#   - NVIDIA device plugin: manages device files
+#   - HAProxy: writes runtime config and stats socket
+#   - DCGM exporter: writes profiling data
+#   - registry-mirror-config: generates containerd mirror config files
+#   - node-performance-tuning: writes tuning scripts and state
+KSV-0014
+
+# privileged=true: Required by containers that modify host state:
+#   - BuildKit: needs privileged for overlay mounts and build isolation
+#   - node-performance-tuning: modifies kernel params, IRQ affinity, hugepages
+#   - registry-mirror-config: writes to host /etc/containerd/ and restarts
+#     containerd via nsenter
+KSV-0017
+
+# =============================================================================
+# Kubernetes — RBAC
+# =============================================================================
+
+# pods/exec permission in ARC runner Role: ARC runners need to exec into job
+# containers to run workflow steps. This is core GitHub Actions runner
+# controller functionality — the runner pod creates sidecar/job containers
+# and execs commands into them.
+KSV-0053
+
+# =============================================================================
+# Kubernetes — false positives
+# =============================================================================
+
+# "Secrets in ConfigMap" false positive: Trivy flags the strings "token" and
+# "automountServiceAccountToken" appearing in ConfigMap values as potential
+# leaked secrets. These are:
+#   - YAML template snippets for runner pod specs (contain the literal key
+#     name "automountServiceAccountToken: false")
+#   - Bash scripts that reference GitHub API token variables (variable names,
+#     not actual token values)
+# No actual secrets are stored in ConfigMaps.
+KSV-0109
+
+# Default security context: Infrastructure workloads (git-cache, NVIDIA plugin,
+# BuildKit, HAProxy, DCGM exporter, registry-mirror-config) intentionally run
+# as root. These are system-level DaemonSets and Deployments that need root
+# to access host devices, modify kernel parameters, manage container storage,
+# or bind to privileged ports. Non-root would break their functionality.
+KSV-0118
+
+# hostPath volumes (/, /sys): node-performance-tuning DaemonSet mounts the
+# host root filesystem and /sys to tune kernel parameters (sysctl, NUMA policy,
+# IRQ affinity, transparent hugepages, CPU governor). This is the entire
+# purpose of the DaemonSet — it runs once at node boot and exits.
+KSV-0121

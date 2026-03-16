@@ -10,10 +10,11 @@ set -euo pipefail
 
 CLUSTER="$1"
 CNAME="$2"
-REGION="$3"
+export REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
+# shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
@@ -23,11 +24,11 @@ STATE_REGION="us-west-2"
 # Read karpenter module terraform outputs
 cd "$MODULE_DIR/terraform"
 tofu init -reconfigure \
-    -backend-config="bucket=${BUCKET}" \
-    -backend-config="key=${CLUSTER}/karpenter/terraform.tfstate" \
-    -backend-config="region=${STATE_REGION}" \
-    -backend-config="dynamodb_table=ciforge-terraform-locks" \
-    >/dev/null 2>&1
+  -backend-config="bucket=${BUCKET}" \
+  -backend-config="key=${CLUSTER}/karpenter/terraform.tfstate" \
+  -backend-config="region=${STATE_REGION}" \
+  -backend-config="dynamodb_table=ciforge-terraform-locks" \
+  >/dev/null 2>&1
 KARPENTER_ROLE=$(tofu output -raw role_arn)
 QUEUE_NAME=$(tofu output -raw queue_name)
 cd - >/dev/null
@@ -35,11 +36,11 @@ cd - >/dev/null
 # Read base terraform outputs (cluster endpoint)
 cd "$UPSTREAM_ROOT/modules/eks/terraform"
 tofu init -reconfigure \
-    -backend-config="bucket=${BUCKET}" \
-    -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
-    -backend-config="region=${STATE_REGION}" \
-    -backend-config="dynamodb_table=ciforge-terraform-locks" \
-    >/dev/null 2>&1
+  -backend-config="bucket=${BUCKET}" \
+  -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
+  -backend-config="region=${STATE_REGION}" \
+  -backend-config="dynamodb_table=ciforge-terraform-locks" \
+  >/dev/null 2>&1
 CLUSTER_ENDPOINT=$(tofu output -raw cluster_endpoint)
 cd - >/dev/null
 
@@ -51,19 +52,19 @@ KARPENTER_PDB_MIN=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_min_available 1)
 
 echo "Installing Karpenter..."
 helm upgrade --install karpenter \
-    --namespace karpenter \
-    --create-namespace \
-    -f "$MODULE_DIR/helm/values.yaml" \
-    --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="${KARPENTER_ROLE}" \
-    --set settings.clusterName="${CNAME}" \
-    --set settings.clusterEndpoint="${CLUSTER_ENDPOINT}" \
-    --set settings.interruptionQueue="${QUEUE_NAME}" \
-    --set replicas="${KARPENTER_REPLICAS}" \
-    --set logLevel="${KARPENTER_LOG_LEVEL}" \
-    --set podDisruptionBudget.enabled="${KARPENTER_PDB_ENABLED}" \
-    --set podDisruptionBudget.minAvailable="${KARPENTER_PDB_MIN}" \
-    --timeout 10m \
-    --wait \
-    oci://public.ecr.aws/karpenter/karpenter \
-    --version 1.9.0
+  --namespace karpenter \
+  --create-namespace \
+  -f "$MODULE_DIR/helm/values.yaml" \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="${KARPENTER_ROLE}" \
+  --set settings.clusterName="${CNAME}" \
+  --set settings.clusterEndpoint="${CLUSTER_ENDPOINT}" \
+  --set settings.interruptionQueue="${QUEUE_NAME}" \
+  --set replicas="${KARPENTER_REPLICAS}" \
+  --set logLevel="${KARPENTER_LOG_LEVEL}" \
+  --set podDisruptionBudget.enabled="${KARPENTER_PDB_ENABLED}" \
+  --set podDisruptionBudget.minAvailable="${KARPENTER_PDB_MIN}" \
+  --timeout 10m \
+  --wait \
+  oci://public.ecr.aws/karpenter/karpenter \
+  --version 1.9.0
 echo "Karpenter installed."

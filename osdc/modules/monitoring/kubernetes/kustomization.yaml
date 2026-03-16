@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Only standard k8s resources here — no ServiceMonitors/PodMonitors.
+# CRD-dependent resources live in monitors/kustomization.yaml and are
+# applied by deploy.sh AFTER kube-prometheus-stack installs the CRDs.
+
+resources:
+  - namespace.yaml
+  # DCGM GPU exporter DaemonSet (the ServiceMonitor is in monitors/)
+  - dcgm-exporter/daemonset.yaml

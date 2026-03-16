@@ -17,7 +17,7 @@ data:
       gc = true
       # NVMe instance storage provides ~2.8TB (arm64) or ~3.6TB (x86)
       # Keep 500GB reserved, allow up to 80% usage
-      reservedSpace = "500GB"
+      reservedSpace = "250GB"
       maxUsedSpace = "80%"
       minFreeSpace = "200GB"
 

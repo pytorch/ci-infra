@@ -94,6 +94,14 @@ resource "aws_eks_cluster" "this" {
     }
   )
 
+  lifecycle {
+    ignore_changes = [
+      # Karpenter's deploy script adds this tag out-of-band via `aws eks tag-resource`.
+      # Without ignoring it, every tofu plan shows drift.
+      tags["karpenter.sh/discovery"],
+    ]
+  }
+
   depends_on = [
     aws_iam_role_policy_attachment.cluster_policy,
     aws_iam_role_policy_attachment.vpc_resource_controller,
@@ -322,6 +330,7 @@ resource "aws_eks_node_group" "base" {
     aws_iam_role_policy_attachment.node_policy,
     aws_iam_role_policy_attachment.cni_policy,
     aws_iam_role_policy_attachment.ecr_policy,
+    aws_iam_role_policy_attachment.ssm_policy,
   ]
 }
 
@@ -405,5 +414,10 @@ resource "aws_iam_role_policy_attachment" "cni_policy" {
 
 resource "aws_iam_role_policy_attachment" "ecr_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.node.name
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   role       = aws_iam_role.node.name
 }

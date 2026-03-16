@@ -135,13 +135,15 @@ Two modules need definitions: `nodepools` (compute) and `arc-runners` (ARC scale
 
 ## Adding a cached git repository
 
-1. Edit `base/kubernetes/git-cache-warmer.yaml` — append to `REPOS`
-2. Edit `modules/arc-runners/templates/runner.yaml.tpl` — append objects path to `GIT_ALTERNATE_OBJECT_DIRECTORIES`
-3. Redeploy:
+The git cache uses a two-tier architecture: a central Deployment clones repos from GitHub and serves them via rsync, while a DaemonSet on each node syncs locally.
+
+1. Edit the `REPOS` list in the `central.py` script inside `base/kubernetes/git-cache/central-configmap.yaml`
+2. Redeploy:
    ```bash
    just deploy-base arc-staging
-   just deploy-module arc-staging arc-runners
    ```
+
+Note: Runner pods use `CHECKOUT_GIT_CACHE_DIR` (not `GIT_ALTERNATE_OBJECT_DIRECTORIES`) to find the cache. The `actions/checkout` action uses `reference-repository` to leverage the cache. No runner template changes are needed when adding a new repository.
 
 ## Terraform state management
 

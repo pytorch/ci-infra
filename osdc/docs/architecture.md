@@ -13,7 +13,8 @@ Every cluster gets the same base infrastructure:
 - **VPC** — public/private subnets, NAT gateways, route tables
 - **EKS** — managed Kubernetes cluster with OIDC, addons (vpc-cni, coredns, kube-proxy, ebs-csi), fixed-size base node group
 - **Harbor** — S3 bucket, IAM roles/user for pull-through container image cache
-- **Base k8s resources** — gp3 StorageClass, NVIDIA device plugin, node performance tuning DaemonSet, git-cache-warmer DaemonSet, Harbor namespace
+- **Base k8s resources** — gp3 StorageClass, NVIDIA device plugin, node performance tuning DaemonSet, git-cache (two-tier: central Deployment + rsync DaemonSet), Harbor namespace
+- **Node compactor** — Taints underutilized Karpenter nodes for workload consolidation (configurable via `clusters.yaml`)
 
 The base terraform is a single parameterized root — no per-environment directories. Variables flow from `clusters.yaml` through the justfile as `-var` flags.
 
@@ -30,11 +31,12 @@ Current modules:
 
 | Module | Purpose |
 |--------|---------|
+| `eks` | Base AWS infrastructure — VPC, EKS cluster, Harbor S3/IAM, ECR image mirroring |
 | `karpenter` | Karpenter controller — IAM roles, SQS interruption queue, EventBridge rules, Helm install |
 | `arc` | GitHub Actions Runner Controller — installs the ARC Helm chart |
 | `nodepools` | Karpenter NodePools — pure compute provisioning (one NodePool per instance type) |
 | `arc-runners` | ARC runner scale sets — GitHub Actions self-hosted runners (requires `arc` + `nodepools`) |
-| `buildkit` | Container build service — dual-arch BuildKit Deployments on dedicated nodes |
+| `buildkit` | Container build service — dual-arch BuildKit Deployments with HAProxy LB on dedicated nodes |
 
 Future modules (developed by other teams):
 
@@ -75,7 +77,8 @@ just deploy <cluster-id>
 │   ├── tofu apply (modules/eks/terraform/)  ← VPC, EKS, Harbor S3
 │   ├── mirror-images                       ← Harbor images to ECR
 │   ├── deploy-harbor                       ← Helm install Harbor
-│   └── kubectl apply -k base/kubernetes/   ← StorageClass, NVIDIA, git-cache, etc.
+│   ├── kubectl apply -k base/kubernetes/   ← StorageClass, NVIDIA, git-cache, etc.
+│   └── deploy node-compactor               ← if enabled in clusters.yaml
 │
 └── deploy-module (for each module in order)
     ├── tofu apply (modules/<mod>/terraform/)   ← if exists

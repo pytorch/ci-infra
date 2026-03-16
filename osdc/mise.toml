@@ -17,6 +17,8 @@ crane = "latest"
 shellcheck = "latest"
 shfmt = "latest"
 hadolint = "latest"
+"aqua:tamasfe/taplo" = "latest"
+"aqua:stackrox/kube-linter" = "latest"
 
 # Advanced linting tools
 kubeconform = "latest"
@@ -28,6 +30,7 @@ trivy = "latest"
 
 # Python tools
 uv = "latest"
+ruff = "latest"
 
 [env]
 PROJECT_NAME = "osdc"

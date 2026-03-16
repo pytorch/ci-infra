@@ -14,10 +14,11 @@ set -euo pipefail
 
 CLUSTER="$1"
 CNAME="$2"
-REGION="$3"
+export REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
+# shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
@@ -33,11 +34,11 @@ GENERATED_DIR="$MODULE_DIR/generated"
 
 echo "Generating BuildKit manifests..."
 uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" \
-    --arm64-instance-type "$ARM64_INSTANCE" \
-    --amd64-instance-type "$AMD64_INSTANCE" \
-    --replicas "$REPLICAS" \
-    --pods-per-node "$PODS_PER_NODE" \
-    --output-dir "$GENERATED_DIR"
+  --arm64-instance-type "$ARM64_INSTANCE" \
+  --amd64-instance-type "$AMD64_INSTANCE" \
+  --replicas "$REPLICAS" \
+  --pods-per-node "$PODS_PER_NODE" \
+  --output-dir "$GENERATED_DIR"
 
 # --- Apply NodePools (with cluster name substitution) ---
 
@@ -62,13 +63,13 @@ kubectl apply -f "$GENERATED_DIR/deployment.yaml"
 # can provision the right node types.
 
 for arch in arm64 amd64; do
-    pending=$(kubectl get pods -n buildkit -l "app=buildkitd,arch=${arch}" \
-        --field-selector=status.phase=Pending -o name 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$pending" -gt 0 ]]; then
-        echo "  buildkitd-${arch} has ${pending} pending pod(s) — deleting old pods to unblock rollout"
-        kubectl delete pods -n buildkit -l "app=buildkitd,arch=${arch}" \
-            --field-selector=status.phase=Running --wait=false 2>/dev/null || true
-    fi
+  pending=$(kubectl get pods -n buildkit -l "app=buildkitd,arch=${arch}" \
+    --field-selector=status.phase=Pending -o name 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$pending" -gt 0 ]]; then
+    echo "  buildkitd-${arch} has ${pending} pending pod(s) — deleting old pods to unblock rollout"
+    kubectl delete pods -n buildkit -l "app=buildkitd,arch=${arch}" \
+      --field-selector=status.phase=Running --wait=false 2>/dev/null || true
+  fi
 done
 
 # --- Wait for rollout ---
