@@ -64,7 +64,7 @@ resource "aws_eks_cluster" "this" {
   role_arn = aws_iam_role.cluster.arn
   
   access_config {
-    authentication_mode = "API_AND_CONFIG_MAP"
+    authentication_mode = var.authentication_mode
   }
 
   vpc_config {

@@ -46,3 +46,9 @@ variable "eks_version" {
   type        = string
   default     = "1.35"
 }
+
+variable "authentication_mode" {
+  description = "EKS cluster authentication mode (API, API_AND_CONFIG_MAP, or CONFIG_MAP)"
+  type        = string
+  default     = "CONFIG_MAP"
+}

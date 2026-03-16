@@ -77,6 +77,8 @@ module "eks" {
   base_node_instance_type              = var.base_node_instance_type
   base_node_max_unavailable_percentage = var.base_node_max_unavailable_percentage
 
+  authentication_mode = var.authentication_mode
+
   tags = local.tags
 }
 
