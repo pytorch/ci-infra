@@ -24,13 +24,13 @@ ARC_LOG_LEVEL=$(uv run "$CFG" "$CLUSTER" arc.log_level info)
 
 echo "Installing ARC controller (replicas=${ARC_REPLICAS}, logLevel=${ARC_LOG_LEVEL})..."
 helm upgrade --install arc \
-    --namespace arc-systems \
-    --create-namespace \
-    -f "$MODULE_DIR/helm/arc/values.yaml" \
-    --set replicaCount="${ARC_REPLICAS}" \
-    --set log.level="${ARC_LOG_LEVEL}" \
-    oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
-    --timeout 10m \
-    --wait
+  --namespace arc-systems \
+  --create-namespace \
+  -f "$MODULE_DIR/helm/arc/values.yaml" \
+  --set replicaCount="${ARC_REPLICAS}" \
+  --set log.level="${ARC_LOG_LEVEL}" \
+  oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
+  --timeout 10m \
+  --wait
 
 echo "ARC controller installed."

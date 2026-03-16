@@ -1,0 +1,61 @@
+# Ruff configuration
+# https://docs.astral.sh/ruff/configuration/
+
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "W",   # pycodestyle warnings
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "SIM", # flake8-simplify
+  "RUF", # ruff-specific rules
+  "S",   # flake8-bandit (security)
+  "T20", # flake8-print (no stray prints)
+  "PIE", # flake8-pie (misc improvements)
+  "C4",  # flake8-comprehensions
+  "PT",  # flake8-pytest-style
+  "RSE", # flake8-raise
+  "RET", # flake8-return
+  "TCH", # flake8-type-checking
+  "ARG", # flake8-unused-arguments
+  "ERA", # eradicate (commented-out code)
+]
+
+ignore = [
+  "E501",   # line length handled by formatter
+  "S108",   # /tmp usage — standard k8s liveness probe pattern
+  "S603",   # subprocess calls — we're infra scripts, not a web app
+  "S607",   # partial executable path — same reason
+  "T201",   # print() is intentional in CLI scripts
+  "RET504", # unnecessary assignment before return — readability
+  "ARG001", # unused function arguments — common in hooks/callbacks
+]
+
+[lint.per-file-ignores]
+"**/test_*.py" = [
+  "S101",   # assert usage
+  "S106",   # hardcoded passwords
+  "ARG",    # unused arguments
+  "PT009",  # unittest-style asserts — existing tests use unittest.TestCase
+  "PT019",  # fixtures without value as parameters
+  "PT027",  # unittest-style assertRaises
+  "ERA001", # commented-out code in explanatory test comments
+] # unittest patterns and test conveniences OK in tests
+"**/tests/**" = [
+  "S101",
+  "S106",
+  "ARG",
+  "PT009",
+  "PT019",
+  "PT027",
+  "ERA001",
+  "TCH",
+]
+
+[lint.isort]
+known-first-party = ["osdc"]

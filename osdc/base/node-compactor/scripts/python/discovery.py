@@ -16,7 +16,6 @@ from models import (
     pod_memory_request,
 )
 
-
 log = logging.getLogger("compactor")
 
 
@@ -113,9 +112,7 @@ def build_node_states(
         if phase == "Pending":
             conditions = pod.status.conditions or [] if pod.status else []
             is_unschedulable = any(
-                c.reason == "Unschedulable" and c.status == "False"
-                for c in conditions
-                if c.type == "PodScheduled"
+                c.reason == "Unschedulable" and c.status == "False" for c in conditions if c.type == "PodScheduled"
             )
             if is_unschedulable:
                 pending_pods.append(pod)

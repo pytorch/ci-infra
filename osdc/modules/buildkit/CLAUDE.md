@@ -10,7 +10,7 @@ Dual-architecture container build service using `moby/buildkit`.
 | `scripts/python/generate_buildkit.py` | Computes pod sizes from instance specs, generates Deployments + NodePools |
 | `generated/` | Auto-generated Deployment + NodePool YAMLs (do not edit) |
 | `kubernetes/base/` | Static resources: Namespace, Services, HAProxy LB, ConfigMap, NetworkPolicy |
-| `node-setup.sh` | NVMe RAID0 setup, registry mirrors, CPU performance tuning (embedded in NodePool userData) |
+| `node-setup.sh` | NVMe RAID0 setup (embedded as `text/x-shellscript` MIME part in NodePool userData) |
 
 ## Architecture
 

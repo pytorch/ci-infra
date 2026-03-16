@@ -11,11 +11,11 @@
 
 set -euo pipefail
 if [[ -n "${OSDC_UPSTREAM:-}" ]]; then
-    # shellcheck source=/dev/null
-    source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
+  # shellcheck source=/dev/null
+  source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
 else
-    # shellcheck source=/dev/null
-    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" && pwd)/mise-activate.sh"
+  # shellcheck source=/dev/null
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" && pwd)/mise-activate.sh"
 fi
 
 # Colors
@@ -29,38 +29,38 @@ log_warn() { echo -e "${YELLOW}!${NC} $*"; }
 log_error() { echo -e "${RED}x${NC} $*"; }
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <cluster-id>"
-    echo "  e.g. $0 arc-staging"
-    exit 1
+  echo "Usage: $0 <cluster-id>"
+  echo "  e.g. $0 arc-staging"
+  exit 1
 fi
 
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGES_FILE="$SCRIPT_DIR/../images.yaml"
 if [[ -n "${OSDC_UPSTREAM:-}" ]]; then
-    CLUSTER_CONFIG="$OSDC_UPSTREAM/scripts/cluster-config.py"
+  CLUSTER_CONFIG="$OSDC_UPSTREAM/scripts/cluster-config.py"
 else
-    CLUSTER_CONFIG="$SCRIPT_DIR/../../../scripts/cluster-config.py"
+  CLUSTER_CONFIG="$SCRIPT_DIR/../../../scripts/cluster-config.py"
 fi
 
 if [[ ! -f "$IMAGES_FILE" ]]; then
-    log_error "images.yaml not found at $IMAGES_FILE"
-    exit 1
+  log_error "images.yaml not found at $IMAGES_FILE"
+  exit 1
 fi
 
 if [[ ! -f "$CLUSTER_CONFIG" ]]; then
-    log_error "cluster-config.py not found at $CLUSTER_CONFIG"
-    exit 1
+  log_error "cluster-config.py not found at $CLUSTER_CONFIG"
+  exit 1
 fi
 
 if ! command -v crane >/dev/null 2>&1; then
-    log_error "crane not found. Install via mise: mise install crane"
-    exit 1
+  log_error "crane not found. Install via mise: mise install crane"
+  exit 1
 fi
 
 if ! command -v tofu >/dev/null 2>&1; then
-    log_error "tofu not found. Install via mise: mise install opentofu"
-    exit 1
+  log_error "tofu not found. Install via mise: mise install opentofu"
+  exit 1
 fi
 
 # Resolve cluster config via cluster-config.py
@@ -75,13 +75,13 @@ TF_DIR="$SCRIPT_DIR/../terraform"
 
 log_info "Initializing tofu backend for $CLUSTER..."
 (
-    cd "$TF_DIR"
-    tofu init -reconfigure \
-        -backend-config="bucket=$BUCKET" \
-        -backend-config="key=$CLUSTER/base/terraform.tfstate" \
-        -backend-config="region=us-west-2" \
-        -backend-config="dynamodb_table=ciforge-terraform-locks" \
-        >/dev/null 2>&1
+  cd "$TF_DIR"
+  tofu init -reconfigure \
+    -backend-config="bucket=$BUCKET" \
+    -backend-config="key=$CLUSTER/base/terraform.tfstate" \
+    -backend-config="region=us-west-2" \
+    -backend-config="dynamodb_table=ciforge-terraform-locks" \
+    >/dev/null 2>&1
 )
 
 # Get AWS region from tofu outputs (authoritative) with fallback to cluster config
@@ -95,8 +95,8 @@ echo ""
 
 # Authenticate crane to ECR
 log_info "Authenticating crane to ECR..."
-aws ecr get-login-password --region "$AWS_REGION" | \
-    crane auth login "$ECR_REGISTRY" --username AWS --password-stdin
+aws ecr get-login-password --region "$AWS_REGION" \
+  | crane auth login "$ECR_REGISTRY" --username AWS --password-stdin
 echo ""
 
 # Parse images.yaml and mirror each image
@@ -120,39 +120,39 @@ images = json.load(sys.stdin)
 for img in images:
     print(f\"{img['source']}|{img['repository']}|{img['tag']}\")
 "); do
-    IFS='|' read -r SOURCE REPO TAG <<< "$row"
-    CURRENT=$((CURRENT + 1))
-    DEST="${ECR_REGISTRY}/${REPO}:${TAG}"
+  IFS='|' read -r SOURCE REPO TAG <<<"$row"
+  CURRENT=$((CURRENT + 1))
+  DEST="${ECR_REGISTRY}/${REPO}:${TAG}"
 
-    echo "[$CURRENT/$TOTAL] $SOURCE"
-    echo "      > $DEST"
+  echo "[$CURRENT/$TOTAL] $SOURCE"
+  echo "      > $DEST"
 
-    # Create ECR repository if it doesn't exist
-    if ! aws ecr describe-repositories --repository-names "$REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
-        log_info "  Creating ECR repository: $REPO"
-        aws ecr create-repository \
-            --repository-name "$REPO" \
-            --region "$AWS_REGION" \
-            --image-scanning-configuration scanOnPush=false \
-            --output text >/dev/null
-    fi
+  # Create ECR repository if it doesn't exist
+  if ! aws ecr describe-repositories --repository-names "$REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+    log_info "  Creating ECR repository: $REPO"
+    aws ecr create-repository \
+      --repository-name "$REPO" \
+      --region "$AWS_REGION" \
+      --image-scanning-configuration scanOnPush=false \
+      --output text >/dev/null
+  fi
 
-    # Copy image with crane
-    if crane copy "$SOURCE" "$DEST" 2>&1; then
-        log_info "  Copied successfully"
-    else
-        log_error "  Failed to copy $SOURCE"
-        FAILED=$((FAILED + 1))
-    fi
-    echo ""
+  # Copy image with crane
+  if crane copy "$SOURCE" "$DEST" 2>&1; then
+    log_info "  Copied successfully"
+  else
+    log_error "  Failed to copy $SOURCE"
+    FAILED=$((FAILED + 1))
+  fi
+  echo ""
 done
 
 echo "================================================================"
 if [[ $FAILED -eq 0 ]]; then
-    log_info "All $TOTAL images mirrored to ECR successfully"
+  log_info "All $TOTAL images mirrored to ECR successfully"
 else
-    log_error "$FAILED/$TOTAL images failed to mirror"
-    exit 1
+  log_error "$FAILED/$TOTAL images failed to mirror"
+  exit 1
 fi
 echo ""
 echo "ECR_REGISTRY=$ECR_REGISTRY"

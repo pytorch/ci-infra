@@ -1,98 +1,102 @@
 #!/bin/bash
 set -euo pipefail
 
-# ---- NVMe RAID0 setup ----
-echo "Post-bootstrap: Setting up NVMe RAID0..."
+# Retry helper: 3 attempts with 30s/90s backoff
+retry() {
+  local max_attempts=3
+  local attempt=1
+  local backoff
+  while [ "$attempt" -le "$max_attempts" ]; do
+    if "$@"; then return 0; fi
+    if [ "$attempt" -eq "$max_attempts" ]; then
+      echo "FATAL: Command failed after $max_attempts attempts: $*" >&2
+      return 1
+    fi
+    backoff=$((attempt == 1 ? 30 : 90))
+    echo "WARN: Attempt $attempt/$max_attempts failed, retrying in ${backoff}s: $*" >&2
+    sleep "$backoff"
+    attempt=$((attempt + 1))
+  done
+}
 
-# Find NVMe instance store devices (exclude root EBS)
-NVME_DEVICES=()
-for dev in /dev/nvme*n1; do
-  # Skip if it's the root device (has partitions or is mounted)
-  if lsblk "$dev" 2>/dev/null | grep -q "part\|/"; then
-    continue
-  fi
-  NVME_DEVICES+=("$dev")
-done
+# ---- NVMe storage setup ----
+# Primary: nodeadm's instanceStorePolicy: RAID0 handles NVMe formatting and
+# mounts at /mnt/k8s-disks/0/. It also bind-mounts containerd + kubelet there.
+# Fallback: if nodeadm didn't set it up, do RAID0 manually (legacy path).
 
-if [ ${#NVME_DEVICES[@]} -gt 0 ]; then
-  echo "Found ${#NVME_DEVICES[@]} NVMe instance store devices: ${NVME_DEVICES[*]}"
+NVME_MNT="/mnt/k8s-disks/0"
 
-  if [ ${#NVME_DEVICES[@]} -gt 1 ]; then
-    # Create RAID0 array
-    yum install -y mdadm 2>/dev/null || true
-    mdadm --create /dev/md0 --level=0 --raid-devices=${#NVME_DEVICES[@]} "${NVME_DEVICES[@]}" --force --run
-    mkfs.xfs -f /dev/md0
-    mount /dev/md0 /mnt
-  else
-    # Single device
-    mkfs.xfs -f "${NVME_DEVICES[0]}"
-    mount "${NVME_DEVICES[0]}" /mnt
-  fi
-
-  # Create data directories on NVMe
-  mkdir -p /mnt/git-cache /mnt/buildkit-cache
-  chmod 755 /mnt/git-cache /mnt/buildkit-cache
-  echo "NVMe mounted at /mnt ($(df -h /mnt | tail -1 | awk '{print $2}') total)"
+if mountpoint -q "$NVME_MNT" 2>/dev/null; then
+  echo "NVMe mounted at $NVME_MNT by nodeadm localStorage"
+  DATA_DIR="$NVME_MNT"
 else
-  echo "No NVMe instance store devices found, using EBS"
-  mkdir -p /mnt/git-cache /mnt/buildkit-cache
+  echo "WARN: NVMe not mounted at $NVME_MNT — falling back to manual RAID0 setup" >&2
+
+  # ---- Legacy NVMe RAID0 setup ----
+  echo "Post-bootstrap: Setting up NVMe RAID0..."
+
+  # Wait for device nodes to stabilize (early boot race)
+  udevadm settle 2>/dev/null || true
+
+  # Find NVMe instance store devices (exclude root EBS)
+  shopt -s nullglob
+  NVME_DEVICES=()
+
+  ROOT_DEV=$(lsblk -ndo PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null || echo "")
+  if [ -z "$ROOT_DEV" ]; then
+    echo "WARN: Could not detect root device via findmnt, falling back to lsblk heuristic" >&2
+  fi
+
+  for dev in /dev/nvme*n1; do
+    # Skip root device if detected via findmnt
+    if [ -n "$ROOT_DEV" ] && [ "$(basename "$dev")" = "$ROOT_DEV" ]; then continue; fi
+    # Fallback: skip if it has partitions or is mounted (if lsblk fails, skip device to be safe)
+    if ! lsblk "$dev" >/dev/null 2>&1 || lsblk "$dev" 2>/dev/null | grep -q "part\|/"; then continue; fi
+    NVME_DEVICES+=("$dev")
+  done
+
+  if [ ${#NVME_DEVICES[@]} -gt 0 ]; then
+    echo "Found ${#NVME_DEVICES[@]} NVMe instance store devices: ${NVME_DEVICES[*]}"
+
+    if [ ${#NVME_DEVICES[@]} -gt 1 ]; then
+      # Attempt RAID0; degrade to single device if mdadm install or create fails
+      if retry yum install -y mdadm \
+        && retry mdadm --create /dev/md0 --level=0 --raid-devices=${#NVME_DEVICES[@]} "${NVME_DEVICES[@]}" --force --run; then
+        mkfs.xfs -f /dev/md0
+        MOUNT_DEV=/dev/md0
+      else
+        echo "WARN: RAID0 setup failed, falling back to single NVMe device" >&2
+        mdadm --stop /dev/md0 2>/dev/null || true
+        mkfs.xfs -f "${NVME_DEVICES[0]}"
+        MOUNT_DEV="${NVME_DEVICES[0]}"
+      fi
+    else
+      # Single device
+      mkfs.xfs -f "${NVME_DEVICES[0]}"
+      MOUNT_DEV="${NVME_DEVICES[0]}"
+    fi
+
+    if mountpoint -q /mnt; then
+      echo "WARN: /mnt already mounted, skipping mount" >&2
+    else
+      mount "$MOUNT_DEV" /mnt
+    fi
+    echo "NVMe mounted at /mnt ($(df -h /mnt | tail -1 | awk '{print $2}') total)"
+  else
+    echo "No NVMe instance store devices found, using EBS"
+  fi
+
+  DATA_DIR="/mnt"
+
+  # Create compatibility symlink so hostPaths at /mnt/k8s-disks/0/* resolve
+  if [ ! -e "$NVME_MNT" ]; then
+    mkdir -p "$(dirname "$NVME_MNT")"
+    ln -s /mnt "$NVME_MNT"
+    echo "Created compatibility symlink: $NVME_MNT -> /mnt"
+  fi
 fi
 
-# ---- Registry mirror configuration (Harbor pull-through cache) ----
-echo "Post-bootstrap: Configuring registry mirrors..."
-HARBOR_PORT=30002
-
-for registry_project in \
-  "docker.io dockerhub-cache https://docker.io" \
-  "ghcr.io ghcr-cache https://ghcr.io" \
-  "public.ecr.aws ecr-public-cache https://public.ecr.aws" \
-  "nvcr.io nvcr-cache https://nvcr.io" \
-  "registry.k8s.io k8s-cache https://registry.k8s.io" \
-  "quay.io quay-cache https://quay.io"; do
-  # shellcheck disable=SC2086  # intentional word splitting
-  set -- $registry_project
-  registry=$1; project=$2; upstream=$3
-  mkdir -p "/etc/containerd/certs.d/$registry"
-  cat > "/etc/containerd/certs.d/$registry/hosts.toml" <<MIRRORS
-server = "$upstream"
-
-[host."http://localhost:$HARBOR_PORT/v2/$project"]
-  capabilities = ["pull", "resolve"]
-  skip_verify = true
-  override_path = true
-
-[host."$upstream"]
-  capabilities = ["pull", "resolve"]
-MIRRORS
-done
-echo "Registry mirrors configured for 6 registries"
-
-# ---- CPU performance tuning ----
-echo "Post-bootstrap: Configuring CPU performance settings..."
-for cpu_governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-  if [ -f "$cpu_governor" ]; then
-    echo "performance" > "$cpu_governor" || true
-  fi
-done
-
-cat > /etc/systemd/system/cpu-performance.service <<'EOFS'
-[Unit]
-Description=Set CPU governor to performance mode
-After=multi-user.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c \
-  'for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; \
-  do echo performance > $gov 2>/dev/null || true; done'
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOFS
-
-systemctl daemon-reload
-systemctl enable cpu-performance.service
-systemctl start cpu-performance.service
-
-echo "Performance configuration complete"
+# Create application directories on NVMe (or EBS fallback)
+mkdir -p "$DATA_DIR/git-cache" "$DATA_DIR/buildkit-cache"
+chmod 755 "$DATA_DIR/git-cache" "$DATA_DIR/buildkit-cache"
+echo "Data directories ready at $DATA_DIR"

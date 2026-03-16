@@ -8,7 +8,6 @@ from discovery import build_node_states, discover_managed_nodes
 from lightkube import ApiError
 from models import Config
 
-
 # ============================================================================
 # Helpers
 # ============================================================================
@@ -143,23 +142,15 @@ class TestDiscoverManagedNodes:
         cfg = make_config()
         client = MagicMock()
 
-        np1 = make_mock_nodepool(
-            "managed-pool", labels={"osdc.io/node-compactor": "true"}
-        )
+        np1 = make_mock_nodepool("managed-pool", labels={"osdc.io/node-compactor": "true"})
         np2 = make_mock_nodepool("other-pool", labels={})
 
         mock_nodepool_cls = MagicMock()
         mock_create_resource.return_value = mock_nodepool_cls
 
-        node1 = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "managed-pool"}
-        )
-        node2 = make_mock_node(
-            "node-2", labels={"karpenter.sh/nodepool": "other-pool"}
-        )
-        node3 = make_mock_node(
-            "node-3", labels={"karpenter.sh/nodepool": "managed-pool"}
-        )
+        node1 = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "managed-pool"})
+        node2 = make_mock_node("node-2", labels={"karpenter.sh/nodepool": "other-pool"})
+        node3 = make_mock_node("node-3", labels={"karpenter.sh/nodepool": "managed-pool"})
 
         # First call lists NodePools, second call lists Nodes
         client.list.side_effect = [[np1, np2], [node1, node2, node3]]
@@ -174,15 +165,11 @@ class TestDiscoverManagedNodes:
         cfg = make_config()
         client = MagicMock()
 
-        np1 = make_mock_nodepool(
-            "managed-pool", labels={"osdc.io/node-compactor": "true"}
-        )
+        np1 = make_mock_nodepool("managed-pool", labels={"osdc.io/node-compactor": "true"})
         mock_nodepool_cls = MagicMock()
         mock_create_resource.return_value = mock_nodepool_cls
 
-        node1 = make_mock_node(
-            "node-unmanaged", labels={"karpenter.sh/nodepool": "other-pool"}
-        )
+        node1 = make_mock_node("node-unmanaged", labels={"karpenter.sh/nodepool": "other-pool"})
         node2 = make_mock_node("node-no-label", labels={})
 
         client.list.side_effect = [[np1], [node1, node2]]
@@ -224,9 +211,7 @@ class TestDiscoverManagedNodes:
         cfg = make_config()
         client = MagicMock()
 
-        np1 = make_mock_nodepool(
-            "pool-a", labels={"osdc.io/node-compactor": "false"}
-        )
+        np1 = make_mock_nodepool("pool-a", labels={"osdc.io/node-compactor": "false"})
         mock_nodepool_cls = MagicMock()
         mock_create_resource.return_value = mock_nodepool_cls
         client.list.return_value = [np1]
@@ -241,12 +226,8 @@ class TestDiscoverManagedNodes:
         cfg = make_config()
         client = MagicMock()
 
-        np1 = make_mock_nodepool(
-            "pool-a", labels={"osdc.io/node-compactor": "true"}
-        )
-        np2 = make_mock_nodepool(
-            "pool-b", labels={"osdc.io/node-compactor": "true"}
-        )
+        np1 = make_mock_nodepool("pool-a", labels={"osdc.io/node-compactor": "true"})
+        np2 = make_mock_nodepool("pool-b", labels={"osdc.io/node-compactor": "true"})
 
         mock_nodepool_cls = MagicMock()
         mock_create_resource.return_value = mock_nodepool_cls
@@ -301,9 +282,7 @@ class TestDiscoverManagedNodes:
         cfg = make_config()
         client = MagicMock()
 
-        np1 = make_mock_nodepool(
-            "managed-pool", labels={"osdc.io/node-compactor": "true"}
-        )
+        np1 = make_mock_nodepool("managed-pool", labels={"osdc.io/node-compactor": "true"})
         mock_nodepool_cls = MagicMock()
         mock_create_resource.return_value = mock_nodepool_cls
 
@@ -321,9 +300,7 @@ class TestDiscoverManagedNodes:
         cfg = make_config()
         client = MagicMock()
 
-        np1 = make_mock_nodepool(
-            "managed-pool", labels={"osdc.io/node-compactor": "true"}
-        )
+        np1 = make_mock_nodepool("managed-pool", labels={"osdc.io/node-compactor": "true"})
         mock_nodepool_cls = MagicMock()
         mock_create_resource.return_value = mock_nodepool_cls
 
@@ -390,12 +367,8 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node1 = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
-        node2 = make_mock_node(
-            "node-2", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node1 = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
+        node2 = make_mock_node("node-2", labels={"karpenter.sh/nodepool": "pool"})
 
         pod1 = make_mock_pod("pod-a", node_name="node-1", cpu_request="2")
         pod2 = make_mock_pod("pod-b", node_name="node-2", cpu_request="4")
@@ -414,9 +387,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node1 = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node1 = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         pod_managed = make_mock_pod("pod-m", node_name="node-1")
         pod_other = make_mock_pod("pod-other", node_name="node-unmanaged")
@@ -433,17 +404,11 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         pod_ok = make_mock_pod("pod-running", node_name="node-1", phase="Running")
-        pod_done = make_mock_pod(
-            "pod-done", node_name="node-1", phase="Succeeded"
-        )
-        pod_fail = make_mock_pod(
-            "pod-fail", node_name="node-1", phase="Failed"
-        )
+        pod_done = make_mock_pod("pod-done", node_name="node-1", phase="Succeeded")
+        pod_fail = make_mock_pod("pod-fail", node_name="node-1", phase="Failed")
 
         client.list.side_effect = [[node], [pod_ok, pod_done, pod_fail]]
 
@@ -493,18 +458,14 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         condition = MagicMock()
         condition.type = "PodScheduled"
         condition.reason = "Unschedulable"
         condition.status = "False"
 
-        pending_pod = make_mock_pod(
-            "pending-pod", node_name=None, phase="Pending", conditions=[condition]
-        )
+        pending_pod = make_mock_pod("pending-pod", node_name=None, phase="Pending", conditions=[condition])
 
         client.list.side_effect = [[node], [pending_pod]]
 
@@ -519,13 +480,9 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
-        pending_pod = make_mock_pod(
-            "pending-ok", node_name=None, phase="Pending", conditions=[]
-        )
+        pending_pod = make_mock_pod("pending-ok", node_name=None, phase="Pending", conditions=[])
 
         client.list.side_effect = [[node], [pending_pod]]
 
@@ -538,16 +495,10 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
-        ds_pod = make_mock_pod(
-            "ds-pod", node_name="node-1", owner_kind="DaemonSet"
-        )
-        regular_pod = make_mock_pod(
-            "regular-pod", node_name="node-1", owner_kind="ReplicaSet"
-        )
+        ds_pod = make_mock_pod("ds-pod", node_name="node-1", owner_kind="DaemonSet")
+        regular_pod = make_mock_pod("regular-pod", node_name="node-1", owner_kind="ReplicaSet")
 
         client.list.side_effect = [[node], [ds_pod, regular_pod]]
 
@@ -565,9 +516,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         pod = MagicMock()
         pod.status.phase = "Running"
@@ -584,9 +533,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         pod = make_mock_pod("pod-no-node", node_name=None, phase="Running")
         # Override: spec exists but nodeName is None
@@ -625,12 +572,8 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node1 = make_mock_node(
-            "node-managed", labels={"karpenter.sh/nodepool": "pool"}
-        )
-        node2 = make_mock_node(
-            "node-other", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node1 = make_mock_node("node-managed", labels={"karpenter.sh/nodepool": "pool"})
+        node2 = make_mock_node("node-other", labels={"karpenter.sh/nodepool": "pool"})
 
         client.list.side_effect = [[node1, node2], []]
 
@@ -657,9 +600,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         st = NOW - timedelta(minutes=30)
         pod = make_mock_pod("pod-1", node_name="node-1", start_time=st)
 
@@ -693,9 +634,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.status = None
 
         client.list.side_effect = [[node], []]
@@ -710,9 +649,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.spec = None
 
         client.list.side_effect = [[node], []]
@@ -741,9 +678,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.status.allocatable = None
 
         client.list.side_effect = [[node], []]
@@ -758,9 +693,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         pod = make_mock_pod("pod-nostatus", node_name="node-1")
         pod.status = None
@@ -777,9 +710,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         pod = make_mock_pod("pod-nostart", node_name="node-1", start_time=None)
         pod.status.startTime = None
 
@@ -794,9 +725,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         pod = make_mock_pod("pending-nocond", phase="Pending")
         pod.status.conditions = None
@@ -812,9 +741,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         cond = MagicMock()
         cond.type = "Ready"
@@ -834,9 +761,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         cond = MagicMock()
         cond.type = "PodScheduled"
@@ -856,9 +781,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node = make_mock_node(
-            "node-1", labels={"karpenter.sh/nodepool": "pool"}
-        )
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
         cond = MagicMock()
         cond.type = "PodScheduled"

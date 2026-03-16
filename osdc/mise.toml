@@ -17,6 +17,8 @@ crane = "latest"
 shellcheck = "latest"
 shfmt = "latest"
 hadolint = "latest"
+"aqua:tamasfe/taplo" = "latest"
+"aqua:stackrox/kube-linter" = "latest"
 
 # Advanced linting tools
 kubeconform = "latest"

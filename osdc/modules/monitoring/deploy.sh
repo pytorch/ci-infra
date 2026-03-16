@@ -39,12 +39,12 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update prometheus-community
 
 helm upgrade --install kube-prometheus-stack \
-    prometheus-community/kube-prometheus-stack \
-    --version 82.10.3 \
-    --namespace "$NAMESPACE" \
-    -f "$MODULE_DIR/helm/values.yaml" \
-    --timeout 10m \
-    --wait
+  prometheus-community/kube-prometheus-stack \
+  --version 82.10.3 \
+  --namespace "$NAMESPACE" \
+  -f "$MODULE_DIR/helm/values.yaml" \
+  --timeout 10m \
+  --wait
 
 echo "kube-prometheus-stack installed (CRDs + exporters)."
 
@@ -61,14 +61,14 @@ kubectl apply -k "$MODULE_DIR/kubernetes/monitors/"
 # Alloy independently discovers ServiceMonitor/PodMonitor CRDs, scrapes targets,
 # and pushes metrics to Grafana Cloud — fully decoupled from Prometheus.
 if kubectl get secret grafana-cloud-credentials -n "$NAMESPACE" &>/dev/null; then
-    GRAFANA_CLOUD_URL=$(uv run "$CFG" "$CLUSTER" monitoring.grafana_cloud_url "")
-    echo "Installing Alloy (pushing to ${GRAFANA_CLOUD_URL})..."
-    helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
-    helm repo update grafana
+  GRAFANA_CLOUD_URL=$(uv run "$CFG" "$CLUSTER" monitoring.grafana_cloud_url "")
+  echo "Installing Alloy (pushing to ${GRAFANA_CLOUD_URL})..."
+  helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+  helm repo update grafana
 
-    # Build a temporary override with per-cluster env vars
-    ALLOY_OVERRIDE=$(mktemp)
-    cat > "$ALLOY_OVERRIDE" <<EOF
+  # Build a temporary override with per-cluster env vars
+  ALLOY_OVERRIDE=$(mktemp)
+  cat >"$ALLOY_OVERRIDE" <<EOF
 alloy:
   extraEnv:
     - name: GCLOUD_RW_API_USER
@@ -87,17 +87,17 @@ alloy:
       value: "${CNAME}"
 EOF
 
-    helm upgrade --install alloy grafana/alloy \
-        --namespace "$NAMESPACE" \
-        -f "$MODULE_DIR/helm/alloy-values.yaml" \
-        -f "$ALLOY_OVERRIDE" \
-        --timeout 5m \
-        --wait
+  helm upgrade --install alloy grafana/alloy \
+    --namespace "$NAMESPACE" \
+    -f "$MODULE_DIR/helm/alloy-values.yaml" \
+    -f "$ALLOY_OVERRIDE" \
+    --timeout 5m \
+    --wait
 
-    rm -f "$ALLOY_OVERRIDE"
-    echo "Alloy installed — pushing metrics to Grafana Cloud."
+  rm -f "$ALLOY_OVERRIDE"
+  echo "Alloy installed — pushing metrics to Grafana Cloud."
 else
-    echo "No grafana-cloud-credentials secret found, skipping Alloy (no remote metrics push)."
+  echo "No grafana-cloud-credentials secret found, skipping Alloy (no remote metrics push)."
 fi
 
 echo "Monitoring module deployed."

@@ -19,7 +19,6 @@ from lightkube.resources.apps_v1 import Deployment as DeploymentResource
 from lightkube.resources.core_v1 import Node
 from lightkube.resources.core_v1 import Pod as PodResource
 
-
 log = logging.getLogger("e2e")
 
 # ---------------------------------------------------------------------------
@@ -55,9 +54,7 @@ def wait_for(
             return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError(
-                f"Timed out after {timeout_s}s waiting for: {description}"
-            )
+            raise TimeoutError(f"Timed out after {timeout_s}s waiting for: {description}")
         time.sleep(min(poll_s, remaining))
 
 
@@ -69,9 +66,7 @@ def wait_for(
 def get_pool_nodes(client: Client, nodepool_name: str) -> list[Node]:
     """Return all Ready nodes belonging to *nodepool_name*."""
     nodes = []
-    for node in client.list(
-        Node, labels={KARPENTER_NODEPOOL_LABEL: nodepool_name}
-    ):
+    for node in client.list(Node, labels={KARPENTER_NODEPOOL_LABEL: nodepool_name}):
         # Only include nodes that exist and are not being deleted
         if node.metadata and not node.metadata.deletionTimestamp:
             nodes.append(node)
@@ -84,9 +79,7 @@ def _node_has_taint(node: Node, taint_key: str) -> bool:
     return any(t.key == taint_key for t in node.spec.taints)
 
 
-def get_tainted_nodes(
-    client: Client, nodepool_name: str, taint_key: str = COMPACTOR_TAINT_KEY
-) -> list[str]:
+def get_tainted_nodes(client: Client, nodepool_name: str, taint_key: str = COMPACTOR_TAINT_KEY) -> list[str]:
     """Return names of nodes in *nodepool_name* that have the compactor taint."""
     return [
         node.metadata.name
@@ -95,9 +88,7 @@ def get_tainted_nodes(
     ]
 
 
-def get_untainted_nodes(
-    client: Client, nodepool_name: str, taint_key: str = COMPACTOR_TAINT_KEY
-) -> list[str]:
+def get_untainted_nodes(client: Client, nodepool_name: str, taint_key: str = COMPACTOR_TAINT_KEY) -> list[str]:
     """Return names of nodes in *nodepool_name* without the compactor taint."""
     return [
         node.metadata.name
@@ -111,9 +102,7 @@ def get_untainted_nodes(
 # ---------------------------------------------------------------------------
 
 
-def get_pods_by_node(
-    client: Client, namespace: str
-) -> dict[str, list[str]]:
+def get_pods_by_node(client: Client, namespace: str) -> dict[str, list[str]]:
     """Return ``{node_name: [pod_name, ...]}`` for pods in *namespace*."""
     result: dict[str, list[str]] = {}
     for pod in client.list(PodResource, namespace=namespace):
@@ -185,19 +174,13 @@ def delete_all_pods(client: Client, namespace: str) -> None:
     for pod in client.list(PodResource, namespace=namespace):
         if pod.metadata and pod.metadata.name:
             with contextlib.suppress(Exception):
-                client.delete(
-                    PodResource, pod.metadata.name, namespace=namespace
-                )
+                client.delete(PodResource, pod.metadata.name, namespace=namespace)
 
 
 def all_pods_running(client: Client, namespace: str, count: int) -> bool:
     """Return True when exactly *count* pods in *namespace* are Running."""
     pods = list(client.list(PodResource, namespace=namespace))
-    running = [
-        p
-        for p in pods
-        if p.status and p.status.phase == "Running"
-    ]
+    running = [p for p in pods if p.status and p.status.phase == "Running"]
     return len(running) == count
 
 
@@ -206,9 +189,7 @@ def all_pods_running(client: Client, namespace: str, count: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def patch_compactor_env(
-    client: Client, env_overrides: dict[str, str]
-) -> dict[str, str]:
+def patch_compactor_env(client: Client, env_overrides: dict[str, str]) -> dict[str, str]:
     """Patch compactor Deployment env vars. Returns original values.
 
     For env vars that didn't previously exist, the original value is stored
@@ -250,9 +231,7 @@ def patch_compactor_env(
     patch_env = []
     for entry in env_list:
         if entry.name in env_overrides:
-            patch_env.append(
-                {"name": entry.name, "value": str(env_overrides[entry.name])}
-            )
+            patch_env.append({"name": entry.name, "value": str(env_overrides[entry.name])})
         else:
             patch_env.append({"name": entry.name, "value": entry.value or ""})
     # Add env vars that weren't in the original
@@ -266,9 +245,7 @@ def patch_compactor_env(
         "spec": {
             "template": {
                 "spec": {
-                    "containers": [
-                        {"name": target.name, "env": patch_env}
-                    ],
+                    "containers": [{"name": target.name, "env": patch_env}],
                 }
             }
         }
@@ -286,9 +263,7 @@ def patch_compactor_env(
 _SENTINEL_MISSING = "__E2E_MISSING__"
 
 
-def restore_compactor_env(
-    client: Client, originals: dict[str, str]
-) -> None:
+def restore_compactor_env(client: Client, originals: dict[str, str]) -> None:
     """Restore compactor Deployment env vars to their original values.
 
     Env vars marked with ``_SENTINEL_MISSING`` are removed entirely.
@@ -310,22 +285,16 @@ def restore_compactor_env(
 
     env_list = target.env or []
     # Keys to remove (they were added by patching, not originally present)
-    keys_to_remove = {
-        k for k, v in originals.items() if v == _SENTINEL_MISSING
-    }
+    keys_to_remove = {k for k, v in originals.items() if v == _SENTINEL_MISSING}
     # Keys to restore to original values
-    keys_to_restore = {
-        k: v for k, v in originals.items() if v != _SENTINEL_MISSING
-    }
+    keys_to_restore = {k: v for k, v in originals.items() if v != _SENTINEL_MISSING}
 
     patch_env = []
     for entry in env_list:
         if entry.name in keys_to_remove:
             continue  # drop it
         if entry.name in keys_to_restore:
-            patch_env.append(
-                {"name": entry.name, "value": keys_to_restore[entry.name]}
-            )
+            patch_env.append({"name": entry.name, "value": keys_to_restore[entry.name]})
         else:
             patch_env.append({"name": entry.name, "value": entry.value or ""})
 
@@ -333,9 +302,7 @@ def restore_compactor_env(
         "spec": {
             "template": {
                 "spec": {
-                    "containers": [
-                        {"name": target.name, "env": patch_env}
-                    ],
+                    "containers": [{"name": target.name, "env": patch_env}],
                 }
             }
         }
@@ -394,21 +361,21 @@ def delete_pool_nodes(client: Client, nodepool_name: str) -> None:
                 log.warning("  Failed to delete node %s", node.metadata.name)
 
 
-def drain_pool_workloads(
-    client: Client, nodepool_name: str, test_namespace: str
-) -> None:
+def drain_pool_workloads(client: Client, nodepool_name: str, test_namespace: str) -> None:
     """Delete non-daemonset, non-system pods from pool nodes. Best-effort."""
     nodes = get_pool_nodes(client, nodepool_name)
-    node_names = {
-        n.metadata.name for n in nodes if n.metadata
-    }
+    node_names = {n.metadata.name for n in nodes if n.metadata}
     if not node_names:
         return
 
     # List all pods, delete workloads on target nodes
     skip_namespaces = {
-        "kube-system", "karpenter", "harbor-system",
-        "arc-systems", "arc-runners", "buildkit",
+        "kube-system",
+        "karpenter",
+        "harbor-system",
+        "arc-systems",
+        "arc-runners",
+        "buildkit",
     }
     for pod in client.list(PodResource, namespace=""):
         if not pod.spec or not pod.metadata:
@@ -420,10 +387,7 @@ def drain_pool_workloads(
         if pod.metadata.namespace == test_namespace:
             continue
         # Skip daemonset pods
-        if pod.metadata.ownerReferences and any(
-            ref.kind == "DaemonSet"
-            for ref in pod.metadata.ownerReferences
-        ):
+        if pod.metadata.ownerReferences and any(ref.kind == "DaemonSet" for ref in pod.metadata.ownerReferences):
             continue
         log.warning(
             "Draining pod %s/%s from %s",

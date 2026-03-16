@@ -26,12 +26,11 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-
 # ANSI colors
-RED = '\033[0;31m'
-GREEN = '\033[0;32m'
-YELLOW = '\033[1;33m'
-NC = '\033[0m'
+RED = "\033[0;31m"
+GREEN = "\033[0;32m"
+YELLOW = "\033[1;33m"
+NC = "\033[0m"
 
 # Registry endpoint configurations
 # type values: docker-hub (Docker Hub), docker-registry (generic V2), harbor (Harbor)
@@ -94,10 +93,12 @@ def create_session(harbor_url, admin_password):
     """Create a requests session with retry logic and auth."""
     session = requests.Session()
     session.auth = ("admin", admin_password)
-    session.headers.update({
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    })
+    session.headers.update(
+        {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+    )
 
     retry = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
@@ -175,12 +176,8 @@ def delete_registry_endpoint(session, harbor_url, registry_id, registry_name):
     if resp.status_code == 200:
         log_info(f"  Deleted registry endpoint: {registry_name} (id={registry_id})")
         return True
-    else:
-        log_error(
-            f"  Failed to delete registry endpoint {registry_name}: "
-            f"{resp.status_code} {resp.text}"
-        )
-        return False
+    log_error(f"  Failed to delete registry endpoint {registry_name}: {resp.status_code} {resp.text}")
+    return False
 
 
 def delete_project(session, harbor_url, project_name):
@@ -229,14 +226,10 @@ def delete_project(session, harbor_url, project_name):
     if resp.status_code == 200:
         log_info(f"  Deleted project: {project_name}")
         return True
-    elif resp.status_code == 404:
+    if resp.status_code == 404:
         return True  # already gone
-    else:
-        log_error(
-            f"  Failed to delete project {project_name}: "
-            f"{resp.status_code} {resp.text}"
-        )
-        return False
+    log_error(f"  Failed to delete project {project_name}: {resp.status_code} {resp.text}")
+    return False
 
 
 def ensure_registry_endpoint(session, harbor_url, registry, credentials=None):
@@ -278,18 +271,13 @@ def ensure_registry_endpoint(session, harbor_url, registry, credentials=None):
             cred_note = " (with credentials)" if credentials else ""
             log_info(f"  Created registry endpoint: {registry['name']} -> {registry['url']}{cred_note}")
             return True
-        elif resp.status_code == 409:
+        if resp.status_code == 409:
             log_info(f"  Registry endpoint already exists: {registry['name']}")
             return True
-        else:
-            log_error(
-                f"  Failed to create registry endpoint {registry['name']}: "
-                f"{resp.status_code} {resp.text}"
-            )
-            return False
-    else:
-        log_info(f"  Registry endpoint already exists: {registry['name']}")
-        return True
+        log_error(f"  Failed to create registry endpoint {registry['name']}: {resp.status_code} {resp.text}")
+        return False
+    log_info(f"  Registry endpoint already exists: {registry['name']}")
+    return True
 
 
 def create_proxy_cache_project(session, harbor_url, registry):
@@ -319,21 +307,15 @@ def create_proxy_cache_project(session, harbor_url, registry):
     if resp.status_code == 201:
         log_info(f"  Created proxy cache project: {registry['project_name']}")
         return True
-    elif resp.status_code == 409:
+    if resp.status_code == 409:
         log_info(f"  Proxy cache project already exists: {registry['project_name']}")
         return True
-    else:
-        log_error(
-            f"  Failed to create project {registry['project_name']}: "
-            f"{resp.status_code} {resp.text}"
-        )
-        return False
+    log_error(f"  Failed to create project {registry['project_name']}: {resp.status_code} {resp.text}")
+    return False
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Configure Harbor proxy cache projects"
-    )
+    parser = argparse.ArgumentParser(description="Configure Harbor proxy cache projects")
     parser.add_argument(
         "--harbor-url",
         default=DEFAULT_HARBOR_URL,

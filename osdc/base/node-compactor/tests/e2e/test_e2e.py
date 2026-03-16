@@ -29,7 +29,6 @@ from helpers import (
 )
 from lightkube import Client
 
-
 log = logging.getLogger("e2e")
 
 # Pod sizing: 30 CPU / 120Gi -> 3 pods per r5.24xlarge (96 vCPU, 768 GiB)
@@ -56,9 +55,7 @@ def _create_pods(
     names = []
     for i in range(count):
         name = f"{prefix}-{int(time.time())}-{i}"
-        create_test_pod(
-            client, name, namespace, nodepool, instance_type, POD_CPU, POD_MEMORY
-        )
+        create_test_pod(client, name, namespace, nodepool, instance_type, POD_CPU, POD_MEMORY)
         names.append(name)
     return names
 
@@ -128,12 +125,12 @@ class TestPhase1ScaleUpBaseline(_CompactorE2EBase):
         untainted = get_untainted_nodes(self.client, self.pool)
         log.info(
             "Phase 1 result: %d nodes, %d tainted, %d untainted",
-            len(nodes), len(tainted), len(untainted),
+            len(nodes),
+            len(tainted),
+            len(untainted),
         )
         assert len(nodes) >= 3, f"Expected >= 3 nodes, got {len(nodes)}"
-        assert len(untainted) >= 1, (
-            f"Expected >= 1 untainted (min_nodes), got {len(untainted)}"
-        )
+        assert len(untainted) >= 1, f"Expected >= 1 untainted (min_nodes), got {len(untainted)}"
         # All pods must still be running — NoSchedule doesn't evict
         assert all_pods_running(self.client, self.ns, 9), (
             "Expected all 9 pods still running after compactor stabilization"
@@ -157,9 +154,7 @@ class TestPhase2ScaleDownTriggersTaint(_CompactorE2EBase):
 
         pods_by_node = get_pods_by_node(self.client, self.ns)
         nodes_with_pods = sorted(pods_by_node.keys())
-        assert len(nodes_with_pods) >= 2, (
-            f"Expected pods on >= 2 nodes, got {len(nodes_with_pods)}"
-        )
+        assert len(nodes_with_pods) >= 2, f"Expected pods on >= 2 nodes, got {len(nodes_with_pods)}"
 
         # Keep 1 node loaded, drain all others
         nodes_to_drain = nodes_with_pods[:-1]
@@ -180,9 +175,7 @@ class TestPhase2ScaleDownTriggersTaint(_CompactorE2EBase):
         drained_set = set(nodes_to_drain)
         wait_for(
             f"drained nodes {drained_set} tainted",
-            lambda: drained_set.issubset(
-                set(get_tainted_nodes(self.client, self.pool))
-            ),
+            lambda: drained_set.issubset(set(get_tainted_nodes(self.client, self.pool))),
             timeout_s=TAINT_TIMEOUT,
         )
 
@@ -190,12 +183,11 @@ class TestPhase2ScaleDownTriggersTaint(_CompactorE2EBase):
         untainted = get_untainted_nodes(self.client, self.pool)
         log.info(
             "Phase 2 result: %d tainted, %d untainted",
-            len(tainted), len(untainted),
+            len(tainted),
+            len(untainted),
         )
         # All drained nodes must be tainted
-        assert drained_set.issubset(set(tainted)), (
-            f"Expected drained nodes {drained_set} in tainted set {tainted}"
-        )
+        assert drained_set.issubset(set(tainted)), f"Expected drained nodes {drained_set} in tainted set {tainted}"
         assert len(untainted) >= 1, f"Expected >= 1 untainted, got {len(untainted)}"
 
 
@@ -260,9 +252,7 @@ class TestPhase4BurstAbsorption(_CompactorE2EBase):
 
         # Wait for stabilization — compactor may taint surplus nodes, that's OK
         time.sleep(COMPACTOR_CYCLE * 3)
-        assert all_pods_running(self.client, self.ns, 9), (
-            "Expected all 9 pods running after stabilization"
-        )
+        assert all_pods_running(self.client, self.ns, 9), "Expected all 9 pods running after stabilization"
 
         # Drain all-but-one node -> trigger tainting
         pods_by_node = get_pods_by_node(self.client, self.ns)
@@ -276,7 +266,8 @@ class TestPhase4BurstAbsorption(_CompactorE2EBase):
         n_drained = len(nodes_to_drain)
         log.info(
             "Phase 4: Drained %d nodes, %d pods survive on kept node",
-            n_drained, surviving_pods,
+            n_drained,
+            surviving_pods,
         )
 
         wait_for(
@@ -326,15 +317,10 @@ class TestPhase5MinNodesEnforcement(_CompactorE2EBase):
 
         nodes = get_pool_nodes(self.client, self.pool)
         if len(nodes) == 0:
-            pytest.skip(
-                "Pool has 0 nodes (Karpenter scaled down); "
-                "min_nodes only applies to existing nodes"
-            )
+            pytest.skip("Pool has 0 nodes (Karpenter scaled down); min_nodes only applies to existing nodes")
 
         untainted = get_untainted_nodes(self.client, self.pool)
-        assert len(untainted) >= 1, (
-            f"Expected >= 1 untainted (min_nodes), got {len(untainted)}"
-        )
+        assert len(untainted) >= 1, f"Expected >= 1 untainted (min_nodes), got {len(untainted)}"
 
 
 # ============================================================================
@@ -349,9 +335,7 @@ class TestPhase6GracefulShutdownCleanup(_CompactorE2EBase):
         """Delete compactor pod -> taints cleaned up -> new pod starts."""
         # Record current tainted nodes (if any)
         initial_tainted = get_tainted_nodes(self.client, self.pool)
-        log.info(
-            "Phase 6: Tainted nodes before shutdown: %s", initial_tainted
-        )
+        log.info("Phase 6: Tainted nodes before shutdown: %s", initial_tainted)
 
         # Delete the compactor pod (SIGTERM -> cleanup_stale_taints)
         log.info("Phase 6: Deleting compactor pod (SIGTERM)...")

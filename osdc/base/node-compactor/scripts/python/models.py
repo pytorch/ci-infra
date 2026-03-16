@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 
 from lightkube.resources.core_v1 import Pod
 
-
 log = logging.getLogger("compactor")
 
 # ============================================================================

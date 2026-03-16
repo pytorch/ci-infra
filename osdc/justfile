@@ -30,7 +30,7 @@ CFG := SCRIPTS / "cluster-config.py"
 # Install Python dependencies
 setup:
     @echo "Installing Python dependencies..."
-    @uv pip install -r {{UPSTREAM}}/requirements.txt
+    @cd {{UPSTREAM}} && uv sync
     @echo "Setup complete."
 
 # ============================================================================
@@ -115,6 +115,14 @@ deploy cluster:
     for module in $(uv run {{CFG}} "$CLUSTER" modules); do
         just deploy-module "$CLUSTER" "$module"
     done
+
+    # Recycle Karpenter nodes if configured (e.g., staging — ensures fresh userData/AMI)
+    RECYCLE=$(uv run {{CFG}} "$CLUSTER" recycle_karpenter_nodes false)
+    if [ "$RECYCLE" = "true" ]; then
+        echo ""
+        echo "── Recycling Karpenter nodes (recycle_karpenter_nodes=true) ──"
+        just recycle-nodes "$CLUSTER"
+    fi
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -287,6 +295,35 @@ deploy-module cluster module:
 
     echo "  Module $MODULE deployed."
 
+# Terminate all Karpenter-managed nodes (they will be reprovisioned on demand)
+recycle-nodes cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+
+    echo "Recycling all Karpenter nodes for $CLUSTER ($CNAME)..."
+
+    # Preflight: verify kubectl can reach the cluster
+    if ! kubectl cluster-info &>/dev/null; then
+        echo "ERROR: kubectl cannot reach the cluster. Run 'just kubeconfig $CLUSTER' first."
+        exit 1
+    fi
+
+    NODECLAIM_COUNT=$(kubectl get nodeclaims --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$NODECLAIM_COUNT" = "0" ]; then
+        echo "  No Karpenter NodeClaims found — nothing to recycle."
+        exit 0
+    fi
+
+    echo "  Deleting $NODECLAIM_COUNT NodeClaim(s)..."
+    kubectl delete nodeclaims --all --wait=false
+    echo "  NodeClaims deleted. Karpenter will reprovision when pods need scheduling."
+
 # ============================================================================
 # INTERNAL: Base sub-deploys
 # ============================================================================
@@ -343,10 +380,10 @@ _deploy-harbor cluster:
     apiVersion: v1
     kind: ServiceAccount
     metadata:
-      name: harbor-registry
-      namespace: harbor-system
-      annotations:
-        eks.amazonaws.com/role-arn: "${HARBOR_ROLE}"
+        name: harbor-registry
+        namespace: harbor-system
+        annotations:
+            eks.amazonaws.com/role-arn: "${HARBOR_ROLE}"
     EOF
 
     # Create S3 credentials secret for Harbor registry
@@ -539,7 +576,7 @@ test:
     for dir in $TEST_DIRS; do
         echo "━━━ Testing: ${dir#{{UPSTREAM}}/} ━━━"
         # Install test dependencies inline (script deps handled by uv)
-        (cd "$dir" && uv run --with pytest --with pytest-cov pytest --tb=short -q) || ERRORS=$((ERRORS + 1))
+        (cd "$dir" && uv run pytest --tb=short -q) || ERRORS=$((ERRORS + 1))
         echo ""
     done
 
@@ -555,14 +592,14 @@ test-compactor cluster:
     export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
     cd {{UPSTREAM}}/base/node-compactor/tests/e2e && \
-    uv run --with pytest pytest test_e2e.py -v --tb=long -x \
+    uv run pytest test_e2e.py -v --tb=long -x \
         --cluster-id="{{cluster}}"
 
 # ============================================================================
 # LINTING
 # ============================================================================
 
-# Lint all code
+# Lint all code (fast checks — blocks CI)
 lint:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -572,58 +609,210 @@ lint:
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     ERRORS=0
 
-    echo "Linting terraform..."
-    tofu fmt -check -recursive "{{UPSTREAM}}/modules/" || ERRORS=$((ERRORS + 1))
-    if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
-        tofu fmt -check -recursive "{{ROOT}}/modules/" || ERRORS=$((ERRORS + 1))
-    fi
-
-    echo "Linting shell scripts..."
-    if command -v shellcheck &>/dev/null; then
-        find "{{UPSTREAM}}/base" "{{UPSTREAM}}/modules" -name '*.sh' -print0 \
-            | xargs -0 shellcheck || ERRORS=$((ERRORS + 1))
-        if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
-            find "{{ROOT}}/modules" -name '*.sh' -print0 \
-                | xargs -0 shellcheck 2>/dev/null || ERRORS=$((ERRORS + 1))
+    # Helper: collect source directories (upstream + consumer if different)
+    _src_dirs() {
+        local sub="$1"
+        [[ -d "${OSDC_UPSTREAM}/${sub}" ]] && echo "${OSDC_UPSTREAM}/${sub}"
+        if [[ "${OSDC_ROOT}" != "${OSDC_UPSTREAM}" ]] && [[ -d "${OSDC_ROOT}/${sub}" ]]; then
+            echo "${OSDC_ROOT}/${sub}"
         fi
-    else
-        echo "  shellcheck not found, skipping"
+    }
+
+    # --- Terraform formatting ---
+    echo "━━━ tofu fmt ━━━"
+    for dir in $(_src_dirs modules); do
+        tofu fmt -check -recursive "$dir" || ERRORS=$((ERRORS + 1))
+    done
+
+    # --- Shell: lint ---
+    echo "━━━ shellcheck ━━━"
+    SHELL_FILES=()
+    for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
+        while IFS= read -r -d '' f; do SHELL_FILES+=("$f"); done \
+            < <(find "$dir" -name '*.sh' -print0 2>/dev/null)
+    done
+    if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
+        shellcheck "${SHELL_FILES[@]}" || ERRORS=$((ERRORS + 1))
     fi
 
-    echo "Linting Python..."
-    if command -v ruff &>/dev/null; then
-        ruff check "{{UPSTREAM}}/base" "{{UPSTREAM}}/modules" "{{UPSTREAM}}/scripts" || ERRORS=$((ERRORS + 1))
-        if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
-            ruff check "{{ROOT}}/modules" 2>/dev/null || ERRORS=$((ERRORS + 1))
-        fi
-    else
-        echo "  ruff not found, skipping"
+    # --- Shell: formatting ---
+    echo "━━━ shfmt ━━━"
+    if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
+        shfmt -d -i 2 -ci -bn "${SHELL_FILES[@]}" || ERRORS=$((ERRORS + 1))
     fi
 
-    echo "Linting Dockerfiles..."
-    if command -v hadolint &>/dev/null; then
-        find "{{UPSTREAM}}/base" "{{UPSTREAM}}/modules" -name 'Dockerfile' -print0 \
-            | xargs -0 -I{} hadolint {} || ERRORS=$((ERRORS + 1))
-        if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules" ]]; then
-            find "{{ROOT}}/modules" -name 'Dockerfile' -print0 \
-                | xargs -0 -I{} hadolint {} 2>/dev/null || ERRORS=$((ERRORS + 1))
-        fi
-    else
-        echo "  hadolint not found, skipping"
+    # --- Python ---
+    echo "━━━ ruff ━━━"
+    PYTHON_DIRS=()
+    for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
+        PYTHON_DIRS+=("$dir")
+    done
+    ruff check --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || ERRORS=$((ERRORS + 1))
+    ruff format --check --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || ERRORS=$((ERRORS + 1))
+
+    # --- Dockerfiles ---
+    echo "━━━ hadolint ━━━"
+    DOCKERFILES=()
+    for dir in $(_src_dirs base) $(_src_dirs modules); do
+        while IFS= read -r -d '' f; do DOCKERFILES+=("$f"); done \
+            < <(find "$dir" -name 'Dockerfile' -print0 2>/dev/null)
+    done
+    if [[ ${#DOCKERFILES[@]} -gt 0 ]]; then
+        hadolint --config "{{UPSTREAM}}/.hadolint.yaml" "${DOCKERFILES[@]}" || ERRORS=$((ERRORS + 1))
     fi
 
-    echo "Linting YAML..."
-    if command -v yamllint &>/dev/null; then
-        yamllint "{{UPSTREAM}}/base/kubernetes/" "{{UPSTREAM}}/base/node-compactor/kubernetes/" "{{UPSTREAM}}/base/helm/" \
-            "{{UPSTREAM}}/modules/*/kubernetes/" "{{UPSTREAM}}/modules/*/helm/" \
-            "{{CLUSTERS_YAML}}" || ERRORS=$((ERRORS + 1))
-    else
-        echo "  yamllint not found, skipping"
+    # --- YAML ---
+    echo "━━━ yamllint ━━━"
+    YAML_DIRS=()
+    for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes) $(_src_dirs base/helm); do
+        YAML_DIRS+=("$dir")
+    done
+    # Add module kubernetes/ and helm/ dirs
+    for parent in $(_src_dirs modules); do
+        for sub in "$parent"/*/kubernetes/ "$parent"/*/helm/; do
+            [[ -d "$sub" ]] && YAML_DIRS+=("$sub")
+        done
+        # Also lint module defs/ dirs (runner/nodepool definitions)
+        for sub in "$parent"/*/defs/; do
+            [[ -d "$sub" ]] && YAML_DIRS+=("$sub")
+        done
+    done
+    if [[ ${#YAML_DIRS[@]} -gt 0 ]]; then
+        uv run yamllint -c "{{UPSTREAM}}/.yamllint.yaml" "${YAML_DIRS[@]}" "{{CLUSTERS_YAML}}" || ERRORS=$((ERRORS + 1))
     fi
 
+    # --- TOML ---
+    echo "━━━ taplo ━━━"
+    TOML_FILES=()
+    while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
+        < <(find "{{UPSTREAM}}" -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
+    if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
+        while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
+            < <(find "{{ROOT}}" -maxdepth 1 -name '*.toml' -print0 2>/dev/null)
+    fi
+    if [[ ${#TOML_FILES[@]} -gt 0 ]]; then
+        taplo check "${TOML_FILES[@]}" || ERRORS=$((ERRORS + 1))
+        taplo fmt --check "${TOML_FILES[@]}" || ERRORS=$((ERRORS + 1))
+    fi
+
+    # --- Kubernetes manifests (schema validation) ---
+    echo "━━━ kubeconform ━━━"
+    KUSTOMIZE_DIRS=()
+    for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes); do
+        [[ -f "$dir/kustomization.yaml" ]] && KUSTOMIZE_DIRS+=("$dir")
+    done
+    for parent in $(_src_dirs modules); do
+        while IFS= read -r -d '' f; do
+            KUSTOMIZE_DIRS+=("$(dirname "$f")")
+        done < <(find "$parent" -name 'kustomization.yaml' -print0 2>/dev/null)
+    done
+    # Build kubeconform CRD schema URL (uses Go template syntax — avoid just brace interpolation)
+    LB='{''{'  # left brace pair
+    RB='}''}'  # right brace pair
+    CRDS_SCHEMA="https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/${LB}.Group${RB}/${LB}.ResourceKind${RB}_${LB}.ResourceAPIVersion${RB}.json"
+    for dir in "${KUSTOMIZE_DIRS[@]}"; do
+        echo "  validating: ${dir#{{UPSTREAM}}/}"
+        kubectl kustomize "$dir" 2>/dev/null \
+            | kubeconform -strict -summary \
+                -schema-location default \
+                -schema-location "$CRDS_SCHEMA" \
+                -ignore-missing-schemas \
+                -output pretty \
+            || ERRORS=$((ERRORS + 1))
+    done
+
+    # --- Kubernetes best practices ---
+    echo "━━━ kube-linter ━━━"
+    for dir in "${KUSTOMIZE_DIRS[@]}"; do
+        echo "  checking: ${dir#{{UPSTREAM}}/}"
+        kube-linter lint "$dir" --config "{{UPSTREAM}}/.kube-linter.yaml" || ERRORS=$((ERRORS + 1))
+    done
+
+    # --- Terraform static analysis ---
+    echo "━━━ tflint ━━━"
+    TF_ROOTS=()
+    for parent in $(_src_dirs modules); do
+        while IFS= read -r -d '' f; do
+            TF_ROOTS+=("$(dirname "$f")")
+        done < <(find "$parent" -name 'main.tf' -not -path '*/modules/*' -print0 2>/dev/null)
+    done
+    if [[ ${#TF_ROOTS[@]} -gt 0 ]]; then
+        tflint --init --config "{{UPSTREAM}}/.tflint.hcl" 2>/dev/null || true
+        for dir in "${TF_ROOTS[@]}"; do
+            echo "  linting: ${dir#{{UPSTREAM}}/}"
+            tflint --chdir="$dir" --config "{{UPSTREAM}}/.tflint.hcl" || ERRORS=$((ERRORS + 1))
+        done
+    fi
+
+    # --- IaC security scanning ---
+    echo "━━━ trivy (IaC) ━━━"
+    for dir in $(_src_dirs base) $(_src_dirs modules); do
+        trivy config --severity HIGH,CRITICAL --exit-code 1 \
+            --misconfig-scanners terraform,dockerfile,kubernetes \
+            --ignorefile "{{UPSTREAM}}/.trivyignore" \
+            "$dir" || ERRORS=$((ERRORS + 1))
+    done
+
+    # --- Summary ---
+    echo ""
     if [[ $ERRORS -gt 0 ]]; then
-        echo ""
         echo "Lint FAILED with $ERRORS error(s)."
         exit 1
     fi
-    echo "Lint complete."
+    echo "All lint checks passed."
+
+# Auto-fix lint issues where possible
+lint-fix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+
+    # Helper: collect source directories (upstream + consumer if different)
+    _src_dirs() {
+        local sub="$1"
+        [[ -d "${OSDC_UPSTREAM}/${sub}" ]] && echo "${OSDC_UPSTREAM}/${sub}"
+        if [[ "${OSDC_ROOT}" != "${OSDC_UPSTREAM}" ]] && [[ -d "${OSDC_ROOT}/${sub}" ]]; then
+            echo "${OSDC_ROOT}/${sub}"
+        fi
+    }
+
+    echo "━━━ tofu fmt (fix) ━━━"
+    for dir in $(_src_dirs modules); do
+        tofu fmt -recursive "$dir"
+    done
+
+    echo "━━━ shfmt (fix) ━━━"
+    SHELL_FILES=()
+    for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
+        while IFS= read -r -d '' f; do SHELL_FILES+=("$f"); done \
+            < <(find "$dir" -name '*.sh' -print0 2>/dev/null)
+    done
+    if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
+        shfmt -w -i 2 -ci -bn "${SHELL_FILES[@]}"
+    fi
+
+    echo "━━━ ruff (fix) ━━━"
+    PYTHON_DIRS=()
+    for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
+        PYTHON_DIRS+=("$dir")
+    done
+    ruff check --fix --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || true
+    ruff format --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}"
+
+    echo "━━━ taplo fmt (fix) ━━━"
+    TOML_FILES=()
+    while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
+        < <(find "{{UPSTREAM}}" -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
+    if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
+        while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
+            < <(find "{{ROOT}}" -maxdepth 1 -name '*.toml' -print0 2>/dev/null)
+    fi
+    if [[ ${#TOML_FILES[@]} -gt 0 ]]; then
+        taplo fmt "${TOML_FILES[@]}"
+    fi
+
+    echo ""
+    echo "Auto-fix complete. Run 'just lint' to verify."

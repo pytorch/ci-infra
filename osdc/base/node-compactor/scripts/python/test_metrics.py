@@ -1,8 +1,7 @@
 """Unit tests for the metrics module (refresh_gauge helper)."""
 
-from prometheus_client import CollectorRegistry, Gauge
-
 from metrics import _known_labels, refresh_gauge
+from prometheus_client import CollectorRegistry, Gauge
 
 
 def _make_gauge(name: str, labels: list[str], registry: CollectorRegistry) -> Gauge:
@@ -10,9 +9,7 @@ def _make_gauge(name: str, labels: list[str], registry: CollectorRegistry) -> Ga
     return Gauge(name, "test gauge", labels, registry=registry)
 
 
-def _get_sample_value(
-    registry: CollectorRegistry, metric_name: str, labels: dict[str, str]
-) -> float | None:
+def _get_sample_value(registry: CollectorRegistry, metric_name: str, labels: dict[str, str]) -> float | None:
     """Read a sample value from a registry by metric name and label dict."""
     for metric in registry.collect():
         for sample in metric.samples:
@@ -21,9 +18,7 @@ def _get_sample_value(
     return None
 
 
-def _collect_label_sets(
-    registry: CollectorRegistry, metric_name: str
-) -> set[tuple[str, ...]]:
+def _collect_label_sets(registry: CollectorRegistry, metric_name: str) -> set[tuple[str, ...]]:
     """Collect all label-value tuples present for a metric."""
     result: set[tuple[str, ...]] = set()
     for metric in registry.collect():
@@ -56,7 +51,8 @@ class TestRefreshGauge:
         # First call: two pools
         refresh_gauge(g, {("pool-a",): 1.0, ("pool-b",): 2.0})
         assert _collect_label_sets(self.registry, "test_stale") == {
-            ("pool-a",), ("pool-b",),
+            ("pool-a",),
+            ("pool-b",),
         }
 
         # Second call: only pool-a remains
@@ -98,28 +94,42 @@ class TestRefreshGauge:
         """Works with gauges that have multiple labels."""
         g = _make_gauge("test_multi", ["node", "pool", "resource"], self.registry)
 
-        refresh_gauge(g, {
-            ("node-1", "pool-a", "cpu"): 0.75,
-            ("node-1", "pool-a", "memory"): 0.50,
-        })
+        refresh_gauge(
+            g,
+            {
+                ("node-1", "pool-a", "cpu"): 0.75,
+                ("node-1", "pool-a", "memory"): 0.50,
+            },
+        )
 
-        assert _get_sample_value(
-            self.registry, "test_multi",
-            {"node": "node-1", "pool": "pool-a", "resource": "cpu"},
-        ) == 0.75
-        assert _get_sample_value(
-            self.registry, "test_multi",
-            {"node": "node-1", "pool": "pool-a", "resource": "memory"},
-        ) == 0.50
+        assert (
+            _get_sample_value(
+                self.registry,
+                "test_multi",
+                {"node": "node-1", "pool": "pool-a", "resource": "cpu"},
+            )
+            == 0.75
+        )
+        assert (
+            _get_sample_value(
+                self.registry,
+                "test_multi",
+                {"node": "node-1", "pool": "pool-a", "resource": "memory"},
+            )
+            == 0.50
+        )
 
     def test_multi_label_stale_removal(self):
         """Stale removal works correctly with multi-label gauges."""
         g = _make_gauge("test_multi_stale", ["node", "pool", "resource"], self.registry)
 
-        refresh_gauge(g, {
-            ("node-1", "pool-a", "cpu"): 0.5,
-            ("node-2", "pool-b", "cpu"): 0.3,
-        })
+        refresh_gauge(
+            g,
+            {
+                ("node-1", "pool-a", "cpu"): 0.5,
+                ("node-2", "pool-b", "cpu"): 0.3,
+            },
+        )
 
         # node-2 disappears
         refresh_gauge(g, {("node-1", "pool-a", "cpu"): 0.6})
