@@ -1,0 +1,9 @@
+{
+  "Exclude": [
+    "base/kubernetes/git-cache/central-configmap\\.yaml",
+    "base/kubernetes/git-cache/daemonset-configmap\\.yaml",
+    "base/scripts/bootstrap/eks-base-bootstrap\\.sh",
+    "modules/arc-runners/scripts/python/test_validate_runner_qos\\.py",
+    "modules/arc-runners/scripts/python/test_generate_runners\\.py"
+  ]
+}
