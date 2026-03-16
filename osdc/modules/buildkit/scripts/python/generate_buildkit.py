@@ -153,6 +153,11 @@ metadata:
     app.kubernetes.io/component: build-service
 spec:
   replicas: {replicas}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: buildkitd
