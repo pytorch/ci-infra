@@ -62,14 +62,9 @@ resource "aws_eks_cluster" "this" {
   name     = var.cluster_name
   version  = var.cluster_version
   role_arn = aws_iam_role.cluster.arn
-  
-  access_config {
-    authentication_mode = var.authentication_mode
-  }
 
   access_config {
     authentication_mode                         = var.authentication_mode
-    bootstrap_cluster_creator_admin_permissions = var.bootstrap_cluster_creator_admin_permissions
   }
 
   vpc_config {
@@ -104,6 +99,9 @@ resource "aws_eks_cluster" "this" {
       # Karpenter's deploy script adds this tag out-of-band via `aws eks tag-resource`.
       # Without ignoring it, every tofu plan shows drift.
       tags["karpenter.sh/discovery"],
+      # bootstrap_cluster_creator_admin_permissions is immutable after creation
+      # and must be ignored to prevent forced replacement when changing authentication_mode
+      access_config[0].bootstrap_cluster_creator_admin_permissions,
     ]
   }
 
