@@ -51,7 +51,7 @@ ARC_RUNNERS_DEFS_DIR="$DEFS_DIR" \
 echo ""
 echo "Validating runner configurations..."
 ARC_RUNNERS_OUTPUT_DIR="$OUTPUT_DIR" \
-  "$MODULE_DIR/scripts/validate-runner-qos.sh"
+  uv run "$MODULE_DIR/scripts/python/validate_runner_qos.py"
 
 # --- Step 3: Apply ARC runner scale sets (parallel) ---
 MAX_PARALLEL="${ARC_RUNNERS_MAX_PARALLEL:-10}"
