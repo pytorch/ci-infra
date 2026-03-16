@@ -380,10 +380,10 @@ _deploy-harbor cluster:
     apiVersion: v1
     kind: ServiceAccount
     metadata:
-      name: harbor-registry
-      namespace: harbor-system
-      annotations:
-        eks.amazonaws.com/role-arn: "${HARBOR_ROLE}"
+        name: harbor-registry
+        namespace: harbor-system
+        annotations:
+            eks.amazonaws.com/role-arn: "${HARBOR_ROLE}"
     EOF
 
     # Create S3 credentials secret for Harbor registry

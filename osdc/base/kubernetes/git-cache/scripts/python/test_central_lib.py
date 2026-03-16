@@ -356,7 +356,7 @@ def _extract_signatures(source: str) -> dict[str, dict[str, list[str]]]:
 
     Returns a nested dict:
         {"top_level": {"func_name": [arg_names]},
-         "ClassName": {"method_name": [arg_names]}}
+        "ClassName": {"method_name": [arg_names]}}
 
     ``self`` is excluded from method argument lists.
     """
@@ -402,9 +402,9 @@ class TestCentralLibDriftDetection:
 
     Known intentional differences:
     - central_lib parameterizes functions with explicit args (``cache_dir``,
-      ``repos_full``, ``repos_bare``) instead of using module globals.
+        ``repos_full``, ``repos_bare``) instead of using module globals.
     - ``set_current`` in the lib omits the metrics side-effect calls
-      (metrics.inc, metrics.set) that the ConfigMap version performs.
+        (metrics.inc, metrics.set) that the ConfigMap version performs.
     """
 
     @staticmethod

@@ -326,6 +326,7 @@ resource "aws_eks_node_group" "base" {
     aws_iam_role_policy_attachment.node_policy,
     aws_iam_role_policy_attachment.cni_policy,
     aws_iam_role_policy_attachment.ecr_policy,
+    aws_iam_role_policy_attachment.ssm_policy,
   ]
 }
 
@@ -409,5 +410,10 @@ resource "aws_iam_role_policy_attachment" "cni_policy" {
 
 resource "aws_iam_role_policy_attachment" "ecr_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.node.name
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   role       = aws_iam_role.node.name
 }

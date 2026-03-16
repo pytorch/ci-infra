@@ -57,7 +57,7 @@ class MetricsServer:
 
         Args:
             now: Current time as Unix timestamp. Used to compute
-                 cache_age_seconds dynamically. Defaults to time.time().
+                cache_age_seconds dynamically. Defaults to time.time().
         """
         if now is None:
             now = time.time()

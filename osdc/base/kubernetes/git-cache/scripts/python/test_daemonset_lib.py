@@ -357,7 +357,7 @@ def _extract_signatures(source: str) -> dict[str, dict[str, list[str]]]:
 
     Returns a nested dict:
         {"top_level": {"func_name": [arg_names]},
-         "ClassName": {"method_name": [arg_names]}}
+        "ClassName": {"method_name": [arg_names]}}
 
     ``self`` is excluded from method argument lists.
     """
@@ -403,13 +403,13 @@ class TestDaemonsetLibDriftDetection:
 
     Known intentional differences:
     - daemonset_lib parameterizes functions with ``mnt`` instead of using
-      the module-level ``MNT`` global.
+        the module-level ``MNT`` global.
     - ``wait_for_central`` takes explicit ``host`` and ``port`` args instead
-      of using ``CENTRAL_HOST`` / ``CENTRAL_PORT`` globals.
+        of using ``CENTRAL_HOST`` / ``CENTRAL_PORT`` globals.
     - ``MetricsServer.format`` accepts a ``now`` parameter for deterministic
-      testing; the ConfigMap version calls ``time.time()`` internally.
+        testing; the ConfigMap version calls ``time.time()`` internally.
     - ``migrate_old_cache`` uses ``shutil.copytree`` instead of ``rsync``
-      (the lib avoids subprocess calls for testability).
+        (the lib avoids subprocess calls for testability).
     """
 
     @staticmethod

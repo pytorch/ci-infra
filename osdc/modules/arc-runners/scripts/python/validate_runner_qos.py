@@ -6,9 +6,9 @@
 """Validate ARC runner configs for Guaranteed QoS.
 
 Checks that all generated job pod hook templates have:
-  - resources.requests == resources.limits for CPU, memory, and GPU
-  - Integer CPU values (not millicores)
-  - Even CPU counts (warning only — topology manager prefers even)
+    - resources.requests == resources.limits for CPU, memory, and GPU
+    - Integer CPU values (not millicores)
+    - Even CPU counts (warning only — topology manager prefers even)
 
 Operates on: modules/arc-runners/generated/*.yaml
 Called by: modules/arc-runners/deploy.sh before deploying

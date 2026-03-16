@@ -138,8 +138,8 @@ def active_slot(cache_dir: Path) -> Path | None:
     """Return the currently active slot, or None if no valid link.
 
     Args:
-        cache_dir: The data directory containing cache-a, cache-b, and the
-                   ``current`` symlink.
+        cache_dir: The data directory containing cache-a, cache-b,
+            and the ``current`` symlink.
     """
     slot_a = cache_dir / "cache-a"
     slot_b = cache_dir / "cache-b"
@@ -155,8 +155,8 @@ def staging_slot(cache_dir: Path) -> Path:
     """Return the slot NOT currently active (for updates).
 
     Args:
-        cache_dir: The data directory containing cache-a, cache-b, and the
-                   ``current`` symlink.
+        cache_dir: The data directory containing cache-a, cache-b,
+            and the ``current`` symlink.
     """
     slot_a = cache_dir / "cache-a"
     slot_b = cache_dir / "cache-b"
