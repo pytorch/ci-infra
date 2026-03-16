@@ -72,6 +72,12 @@ variable "enable_secrets_encryption" {
   default     = true
 }
 
+variable "authentication_mode" {
+  description = "EKS cluster authentication mode (API, API_AND_CONFIG_MAP, or CONFIG_MAP)"
+  type        = string
+  default     = "CONFIG_MAP"
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

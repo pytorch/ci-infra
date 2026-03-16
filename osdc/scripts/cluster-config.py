@@ -62,6 +62,10 @@ def tfvars(cluster_id, cluster_cfg, defaults):
         "base_node_max_unavailable_percentage": base.get("base_node_max_unavailable_percentage", 33),
         "eks_version": base.get("eks_version", defaults.get("eks_version", "1.35")),
     }
+    # Optional fields — only emit if explicitly set
+    access_config = cluster_cfg.get("access_config") or base.get("access_config") or {}
+    if "authentication_mode" in access_config:
+        pairs["authentication_mode"] = access_config["authentication_mode"]
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
     print(" ".join(flags))
 
