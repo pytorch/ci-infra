@@ -17,13 +17,13 @@ SAMPLE_BASE = textwrap.dedent("""\
 SAMPLE_CLUSTERS_YAML = textwrap.dedent("""\
     defaults: {}
     clusters:
-      test-cluster:
-        cluster_name: pytorch-test
-        region: us-east-1
-        modules:
-          - karpenter
-          - monitoring
-          - arc
+        test-cluster:
+            cluster_name: pytorch-test
+            region: us-east-1
+            modules:
+                - karpenter
+                - monitoring
+                - arc
 """)
 
 
@@ -50,9 +50,9 @@ class TestLoadClusterModules:
     def test_load_cluster_modules_empty(self, tmp_path):
         content = textwrap.dedent("""\
             clusters:
-              empty-cluster:
-                cluster_name: pytorch-empty
-                region: us-west-2
+                empty-cluster:
+                    cluster_name: pytorch-empty
+                    region: us-west-2
         """)
         clusters_yaml = _write_clusters_yaml(tmp_path, content)
         modules = load_cluster_modules(clusters_yaml, "empty-cluster")
