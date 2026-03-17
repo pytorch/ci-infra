@@ -365,7 +365,7 @@ Per-module log parsing: modules can contribute `stage.match` blocks via `logging
 ```yaml
 logging:
   namespace: logging
-  grafana_cloud_loki_url: "https://logs-prod-us-central1.grafana.net/loki/api/v1/push"
+  grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
 ```
 
 ### Key gotchas (both pipelines)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import time
 import urllib.parse
@@ -12,6 +13,21 @@ import urllib.request
 DEFAULT_TIMEOUT = 60
 READY_RETRIES = 3
 READY_RETRY_DELAY = 10  # seconds
+
+
+def _proxy_bypass_env() -> dict[str, str]:
+    """Return an env dict that bypasses corporate proxy for EKS API calls.
+
+    The Meta corporate proxy intercepts HTTPS connections, which causes
+    kubectl/helm to fail with 'Unauthorized' when talking to EKS.
+    """
+    env = os.environ.copy()
+    eks_suffix = ".eks.amazonaws.com"
+    for key in ("NO_PROXY", "no_proxy"):
+        current = env.get(key, "")
+        if eks_suffix not in current:
+            env[key] = f"{current},{eks_suffix}" if current else eks_suffix
+    return env
 
 
 def run_kubectl(
@@ -24,7 +40,7 @@ def run_kubectl(
     cmd.extend(args)
     if json_output:
         cmd.extend(["-o", "json"])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True, env=_proxy_bypass_env())
     if json_output:
         return json.loads(result.stdout)
     return result.stdout.strip()
@@ -33,14 +49,14 @@ def run_kubectl(
 def run_helm(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> list[dict]:
     """Run helm with -o json, return parsed output."""
     cmd = ["helm", *args, "-o", "json"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True, env=_proxy_bypass_env())
     return json.loads(result.stdout)
 
 
 def run_aws(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> dict:
     """Run aws CLI with --output json, return parsed output."""
     cmd = ["aws", *args, "--output", "json"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True, env=_proxy_bypass_env())
     return json.loads(result.stdout)
 
 
@@ -209,8 +225,8 @@ def mimir_read_url(write_url: str) -> str:
 def loki_read_url(write_url: str) -> str:
     """Derive Loki read endpoint from the write URL.
 
-    Write: https://logs-prod-us-central1.grafana.net/loki/api/v1/push
-    Read:  https://logs-prod-us-central1.grafana.net/loki/api/v1/query_range
+    Write: https://logs-prod-021.grafana.net/loki/api/v1/push
+    Read:  https://logs-prod-021.grafana.net/loki/api/v1/query_range
     """
     base = write_url.rstrip("/")
     if base.endswith("/push"):
@@ -252,8 +268,11 @@ def query_mimir(url: str, promql: str, username: str, password: str, timeout: in
     try:
         with _urlopen_no_proxy(req, timeout=timeout) as resp:
             return json.loads(resp.read())
-    except Exception:
+    except Exception as exc:
+        query_mimir.last_error = str(exc)
         return None
+
+query_mimir.last_error = ""
 
 
 def query_loki(url: str, logql: str, username: str, password: str, timeout: int = 30) -> dict | None:
@@ -271,5 +290,8 @@ def query_loki(url: str, logql: str, username: str, password: str, timeout: int 
     try:
         with _urlopen_no_proxy(req, timeout=timeout) as resp:
             return json.loads(resp.read())
-    except Exception:
+    except Exception as exc:
+        query_loki.last_error = str(exc)
         return None
+
+query_loki.last_error = ""

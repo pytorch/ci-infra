@@ -675,7 +675,7 @@ smoke cluster:
     export PYTHONPATH="${UPSTREAM}/tests/smoke:${PYTHONPATH:-}"
 
     uv run pytest $SMOKE_DIRS \
-        -v --tb=short \
+        -v --tb=short -rs \
         --cluster-id="$CLUSTER" \
         --rootdir="${UPSTREAM}"
 

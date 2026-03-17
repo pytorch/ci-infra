@@ -135,7 +135,8 @@ class TestLoggingRemoteVerification:
             self.loki_key,
         )
         if result is None:
-            pytest.skip("Loki query failed (network/auth issue)")
+            err = getattr(query_loki, "last_error", "unknown")
+            pytest.skip(f"Loki query failed: {err}")
         status = result.get("status", "")
         assert status == "success", f"Loki query returned status '{status}'"
         streams = result.get("data", {}).get("result", [])

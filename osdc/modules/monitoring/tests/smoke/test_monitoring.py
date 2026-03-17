@@ -116,7 +116,7 @@ class TestServiceMonitors:
     """Verify expected ServiceMonitors exist."""
 
     def test_service_monitors_exist(self, mon_ns: str) -> None:
-        result = run_kubectl(["get", "servicemonitors", "-o", "json"], namespace=mon_ns)
+        result = run_kubectl(["get", "servicemonitors"], namespace=mon_ns)
         sm_names = {item["metadata"]["name"] for item in result.get("items", [])}
 
         missing = [name for name in EXPECTED_SERVICE_MONITORS if name not in sm_names]
@@ -132,7 +132,7 @@ class TestPodMonitors:
     """Verify expected PodMonitors exist."""
 
     def test_pod_monitors_exist(self, mon_ns: str) -> None:
-        result = run_kubectl(["get", "podmonitors", "-o", "json"], namespace=mon_ns)
+        result = run_kubectl(["get", "podmonitors"], namespace=mon_ns)
         pm_names = {item["metadata"]["name"] for item in result.get("items", [])}
 
         missing = [name for name in EXPECTED_POD_MONITORS if name not in pm_names]
@@ -209,7 +209,8 @@ class TestMonitoringRemoteVerification:
             self.mimir_key,
         )
         if result is None:
-            pytest.skip("Mimir query failed (network/auth issue)")
+            err = getattr(query_mimir, "last_error", "unknown")
+            pytest.skip(f"Mimir query failed: {err}")
         status = result.get("status", "")
         assert status == "success", f"Mimir query returned status '{status}'"
         results = result.get("data", {}).get("result", [])

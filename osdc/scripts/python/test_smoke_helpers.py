@@ -29,8 +29,8 @@ class TestMimirReadUrl:
 class TestLokiReadUrl:
     def test_standard_url(self):
         assert (
-            loki_read_url("https://logs-prod-us-central1.grafana.net/loki/api/v1/push")
-            == "https://logs-prod-us-central1.grafana.net/loki/api/v1/query_range"
+            loki_read_url("https://logs-prod-021.grafana.net/loki/api/v1/push")
+            == "https://logs-prod-021.grafana.net/loki/api/v1/query_range"
         )
 
     def test_trailing_slash(self):

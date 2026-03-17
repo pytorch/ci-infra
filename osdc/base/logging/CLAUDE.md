@@ -19,7 +19,7 @@ Deploys Grafana Alloy as a DaemonSet to collect pod logs and system journal entr
 defaults:
   logging:
     namespace: logging
-    grafana_cloud_loki_url: "https://logs-prod-us-central1.grafana.net/loki/api/v1/push"
+    grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
 ```
 
 ## Log sources
