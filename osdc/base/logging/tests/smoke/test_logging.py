@@ -6,8 +6,12 @@ are present, that the Alloy logging DaemonSet is deployed and healthy.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from helpers import (
+    READY_RETRIES,
+    READY_RETRY_DELAY,
     assert_daemonset_ready,
     fetch_grafana_cloud_credentials,
     filter_pods,
@@ -77,9 +81,24 @@ class TestAlloyLogging:
         assert "loki.write" in config, "ConfigMap missing Loki writer (loki.write)"
 
     def test_alloy_pods_running(self, all_pods: dict, logging_ns: str) -> None:
-        """Verify Alloy logging pods are in Running phase."""
-        pods = filter_pods(all_pods, namespace=logging_ns, labels={"app.kubernetes.io/name": "alloy-logging"})
-        assert len(pods) > 0, "No alloy-logging pods found"
+        """Verify Alloy logging pods are in Running phase.
+
+        Uses batch-fetched data first; if no pods found (e.g. nodes still
+        joining after a recycle), retries with live kubectl fetches.
+        """
+        alloy_labels = {"app.kubernetes.io/instance": "alloy-logging"}
+        pods = filter_pods(all_pods, namespace=logging_ns, labels=alloy_labels)
+
+        if not pods:
+            # Batch data may be stale — retry with live fetches
+            for _ in range(READY_RETRIES):
+                time.sleep(READY_RETRY_DELAY)
+                fresh = run_kubectl(["get", "pods", "-A"])
+                pods = filter_pods(fresh, namespace=logging_ns, labels=alloy_labels)
+                if pods:
+                    break
+
+        assert len(pods) > 0, f"No alloy-logging pods found (after {READY_RETRIES} retries)"
         not_running = [p["metadata"]["name"] for p in pods if p["status"].get("phase") != "Running"]
         assert not not_running, f"Alloy pods not Running: {not_running}"
 

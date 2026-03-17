@@ -71,7 +71,8 @@ class TestEKSAddons:
                 addon_name,
                 "--region",
                 region,
-            ]
+            ],
+            timeout=120,
         )
         status = result["addon"]["status"]
         assert status == "ACTIVE", f"Addon {addon_name} status is {status}, expected ACTIVE"

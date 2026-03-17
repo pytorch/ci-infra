@@ -238,13 +238,19 @@ def fetch_grafana_cloud_credentials(
         return None
 
 
+def _urlopen_no_proxy(req: urllib.request.Request, timeout: int = 30):
+    """Open a URL request bypassing any configured HTTP(S) proxy."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(req, timeout=timeout)
+
+
 def query_mimir(url: str, promql: str, username: str, password: str, timeout: int = 30) -> dict | None:
     """Query Grafana Cloud Mimir (Prometheus-compatible API). Returns None on error."""
     full_url = f"{url}?query={urllib.parse.quote(promql)}"
     auth = base64.b64encode(f"{username}:{password}".encode()).decode()
     req = urllib.request.Request(full_url, headers={"Authorization": f"Basic {auth}"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_no_proxy(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except Exception:
         return None
@@ -263,7 +269,7 @@ def query_loki(url: str, logql: str, username: str, password: str, timeout: int 
     auth = base64.b64encode(f"{username}:{password}".encode()).decode()
     req = urllib.request.Request(full_url, headers={"Authorization": f"Basic {auth}"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_no_proxy(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except Exception:
         return None
