@@ -1,0 +1,12 @@
+// BuildKit (logrus text)
+stage.match {
+    selector = "{namespace=\"buildkit\"}"
+    stage.regex {
+        expression = "time=\"(?P<timestamp>[^\"]+)\"\\s+level=(?P<level>\\S+)\\s+msg=\"(?P<msg>[^\"]+)\""
+    }
+    stage.labels {
+        values = {
+            level = "",
+        }
+    }
+}

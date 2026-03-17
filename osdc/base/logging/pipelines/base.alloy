@@ -1,0 +1,191 @@
+// =============================================================================
+// Base Alloy pipeline — centralized log collection (DaemonSet)
+//
+// Pod logs:  discovery.kubernetes -> discovery.relabel -> loki.source.file
+//            -> loki.process -> loki.write
+// System logs: loki.source.journal -> loki.process -> loki.write
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Pod logs pipeline
+// -----------------------------------------------------------------------------
+
+// Discover all pods on this node
+discovery.kubernetes "pods" {
+    role = "pod"
+
+    selectors {
+        role  = "pod"
+        field = "spec.nodeName=" + env("NODE_NAME")
+    }
+}
+
+// Relabel pod metadata into useful labels and build the CRI log path
+discovery.relabel "pod_logs" {
+    targets = discovery.kubernetes.pods.targets
+
+    // Drop pods that have completed (Succeeded or Failed phase)
+    rule {
+        source_labels = ["__meta_kubernetes_pod_phase"]
+        regex         = "Succeeded|Failed"
+        action        = "drop"
+    }
+
+    // Namespace
+    rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+    }
+
+    // Pod name
+    rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+    }
+
+    // Container name
+    rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+    }
+
+    // App label (app.kubernetes.io/name)
+    rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+        target_label  = "app"
+    }
+
+    // Node name
+    rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        target_label  = "node"
+    }
+
+    // Build the CRI log file path:
+    //   /var/log/pods/<namespace>_<pod>_<uid>/<container>/*.log
+    rule {
+        source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name", "__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        regex         = "(.+)/(.+)/(.+)/(.+)"
+        replacement   = "/var/log/pods/$1_$2_$3/$4/*.log"
+        target_label  = "__path__"
+    }
+}
+
+// Read CRI log files discovered above
+loki.source.file "pod_logs" {
+    targets    = discovery.relabel.pod_logs.output
+    forward_to = [loki.process.pod_logs.receiver]
+}
+
+// Process pod log lines
+loki.process "pod_logs" {
+    forward_to = [loki.write.grafana_cloud.receiver]
+
+    // Parse CRI log format (timestamp, stream, flags, message)
+    stage.cri {}
+
+    // Add cluster label from environment
+    stage.static_labels {
+        values = {
+            cluster = env("CLUSTER_NAME"),
+        }
+    }
+
+    // Drop health-check probe logs (noisy, no value)
+    stage.drop {
+        expression = ".*kube-probe/.*"
+    }
+
+    // Rate-limit: 10 MB/s per container, burst 20 MB
+    stage.limit {
+        rate  = 10485760
+        burst = 20971520
+    }
+
+    // MODULE_PIPELINES
+
+    // Move pod and node into structured metadata (not indexed labels).
+    // Placed after MODULE_PIPELINES so module stage.match blocks can
+    // still select on {pod=~"..."} or {node=~"..."} labels.
+    stage.structured_metadata {
+        values = {
+            pod  = "",
+            node = "",
+        }
+    }
+
+    // Drop pod and node from indexed labels (they're in structured metadata now)
+    stage.label_drop {
+        values = ["pod", "node"]
+    }
+}
+
+// -----------------------------------------------------------------------------
+// System logs pipeline (journal)
+// -----------------------------------------------------------------------------
+
+loki.source.journal "system" {
+    path       = "/var/log/journal"
+    forward_to = [loki.process.system_logs.receiver]
+
+    relabel_rules = loki.relabel.journal_relabel.rules
+}
+
+// Filter journal to only the units we care about
+loki.relabel "journal_relabel" {
+    forward_to = []
+
+    rule {
+        source_labels = ["__journal__systemd_unit"]
+        regex         = "kubelet.service|containerd.service|kernel"
+        action        = "keep"
+    }
+
+    rule {
+        source_labels = ["__journal__systemd_unit"]
+        target_label  = "unit"
+    }
+}
+
+// Process system log lines
+loki.process "system_logs" {
+    forward_to = [loki.write.grafana_cloud.receiver]
+
+    stage.static_labels {
+        values = {
+            cluster = env("CLUSTER_NAME"),
+            node    = env("NODE_NAME"),
+        }
+    }
+
+    // Move node into structured metadata
+    stage.structured_metadata {
+        values = {
+            node = "",
+        }
+    }
+
+    stage.label_drop {
+        values = ["node"]
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Writer — Grafana Cloud Loki
+// -----------------------------------------------------------------------------
+
+loki.write "grafana_cloud" {
+    endpoint {
+        url = env("LOKI_URL")
+
+        basic_auth {
+            username = env("LOKI_USERNAME")
+            password = env("LOKI_API_KEY")
+        }
+    }
+
+    external_labels = {
+        cluster = env("CLUSTER_NAME"),
+    }
+}

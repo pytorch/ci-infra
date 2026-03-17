@@ -233,6 +233,10 @@ deploy-base cluster:
     just _deploy-harbor "$CLUSTER"
 
     echo ""
+    echo "━━━ BASE: Deploy Logging ━━━"
+    {{UPSTREAM}}/base/logging/deploy.sh "$CLUSTER"
+
+    echo ""
     echo "━━━ BASE: Deploy Node Compactor ━━━"
     {{UPSTREAM}}/base/node-compactor/deploy.sh "$CLUSTER"
 

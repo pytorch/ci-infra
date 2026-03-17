@@ -14,6 +14,7 @@ Every cluster gets the same base infrastructure:
 - **EKS** — managed Kubernetes cluster with OIDC, addons (vpc-cni, coredns, kube-proxy, ebs-csi), fixed-size base node group
 - **Harbor** — S3 bucket, IAM roles/user for pull-through container image cache
 - **Base k8s resources** — gp3 StorageClass, NVIDIA device plugin, node performance tuning DaemonSet, git-cache (two-tier: central Deployment + rsync DaemonSet), Harbor namespace
+- **Logging** — Grafana Alloy DaemonSet collecting pod logs + system journal from every node, pushing to Grafana Cloud Loki. Secret-gated (requires `grafana-cloud-credentials` in `logging` namespace). Per-module log parsing via `logging/pipeline.alloy` files assembled at deploy time.
 - **Node compactor** — Taints underutilized Karpenter nodes for workload consolidation (configurable via `clusters.yaml`)
 
 The base terraform is a single parameterized root — no per-environment directories. Variables flow from `clusters.yaml` through the justfile as `-var` flags.
@@ -37,6 +38,7 @@ Current modules:
 | `nodepools` | Karpenter NodePools — pure compute provisioning (one NodePool per instance type) |
 | `arc-runners` | ARC runner scale sets — GitHub Actions self-hosted runners (requires `arc` + `nodepools`) |
 | `buildkit` | Container build service — dual-arch BuildKit Deployments with HAProxy LB on dedicated nodes |
+| `monitoring` | Metrics pipeline — kube-prometheus-stack CRDs/exporters + Grafana Alloy → Grafana Cloud Mimir |
 
 Future modules (developed by other teams):
 
@@ -76,8 +78,9 @@ just deploy <cluster-id>
 ├── deploy-base
 │   ├── tofu apply (modules/eks/terraform/)  ← VPC, EKS, Harbor S3
 │   ├── mirror-images                       ← Harbor images to ECR
-│   ├── deploy-harbor                       ← Helm install Harbor
 │   ├── kubectl apply -k base/kubernetes/   ← StorageClass, NVIDIA, git-cache, etc.
+│   ├── deploy-harbor                       ← Helm install Harbor (pull-through cache)
+│   ├── deploy logging                      ← Alloy DaemonSet → Loki (if secret exists)
 │   └── deploy node-compactor               ← if enabled in clusters.yaml
 │
 └── deploy-module (for each module in order)

@@ -1,0 +1,12 @@
+// Karpenter (zap console encoding)
+stage.match {
+    selector = "{namespace=\"karpenter\"}"
+    stage.regex {
+        expression = "^(?P<timestamp>\\S+)\\s+(?P<level>\\S+)\\s+(?P<logger>\\S+)\\s+(?P<msg>.+)"
+    }
+    stage.labels {
+        values = {
+            level = "",
+        }
+    }
+}

@@ -1,0 +1,16 @@
+// ARC controller (controller-runtime text/logfmt)
+stage.match {
+    selector = "{namespace=\"arc-systems\"}"
+    stage.logfmt {
+        mapping = {
+            level      = "",
+            msg        = "",
+            controller = "",
+        }
+    }
+    stage.labels {
+        values = {
+            level = "",
+        }
+    }
+}
