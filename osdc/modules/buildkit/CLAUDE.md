@@ -10,7 +10,6 @@ Dual-architecture container build service using `moby/buildkit`.
 | `scripts/python/generate_buildkit.py` | Computes pod sizes from instance specs, generates Deployments + NodePools |
 | `generated/` | Auto-generated Deployment + NodePool YAMLs (do not edit) |
 | `kubernetes/base/` | Static resources: Namespace, Services, HAProxy LB, ConfigMap, NetworkPolicy |
-| `node-setup.sh` | NVMe RAID0 setup (embedded as `text/x-shellscript` MIME part in NodePool userData) |
 
 ## Architecture
 
@@ -55,12 +54,12 @@ clusters:
 
 ## Adding a new instance type
 
-Add an entry to `INSTANCE_SPECS` in `scripts/python/generate_buildkit.py` with vcpu, memory_gib, arch, nvme_count, nvme_size_gb.
+Add an entry to `INSTANCE_SPECS` in `scripts/python/generate_buildkit.py` with vcpu, memory_gib, arch.
 
 ## Key details
 
 - `max-parallelism=1` — one build at a time per pod
-- NVMe instance storage (RAID0) for build cache
+- NVMe instance storage via `instanceStorePolicy: RAID0` on EC2NodeClass (nodeadm handles formatting/mounting)
 - `buildkitd.toml` routes image pulls through Harbor
 - NetworkPolicy restricts ingress to `arc-runners` namespace
 - Pods use Guaranteed QoS with static CPU pinning

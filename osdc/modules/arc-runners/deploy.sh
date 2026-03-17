@@ -92,6 +92,7 @@ deploy_one_runner() {
 
     helm upgrade --install "arc-${runner_name}" \
       --namespace arc-runners \
+      --history-max 2 \
       -f "$tmpfile" \
       --set template.spec.securityContext.runAsUser=1000 \
       --set template.spec.securityContext.runAsGroup=1000 \
@@ -168,6 +169,7 @@ DEPLOYED_CMS=$(kubectl get configmaps -n arc-runners \
   -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
 
 STALE_COUNT=0
+STALE_RELEASES=()
 for cm in $DEPLOYED_CMS; do
   # ConfigMap name format: arc-runner-hook-{normalized_name}
   # Strip prefix to get the normalized runner name
@@ -181,6 +183,7 @@ for cm in $DEPLOYED_CMS; do
     fi
   done
   if ! $is_expected; then
+    STALE_RELEASES+=("arc-${local_name}")
     echo "  Deleting stale Helm release: arc-${local_name}"
     helm uninstall "arc-${local_name}" -n arc-runners --wait=false 2>/dev/null \
       || echo "    WARNING: Failed to uninstall Helm release arc-${local_name} (continuing)"
@@ -195,4 +198,30 @@ if ((STALE_COUNT > 0)); then
   echo "Cleaned up $STALE_COUNT stale runner(s)."
 else
   echo "No stale runners found."
+fi
+
+# --- Step 5: Clean up orphaned Helm release history secrets ---
+# helm uninstall (Step 4) removes only the current "deployed" revision secret.
+# Prior "superseded" and "failed" revision secrets remain as orphans in etcd.
+# Delete them for each release that was just uninstalled by Step 4.
+if ((${#STALE_RELEASES[@]} > 0)); then
+  echo ""
+  echo "Cleaning up Helm release history secrets for ${#STALE_RELEASES[@]} uninstalled release(s)..."
+  ORPHAN_COUNT=0
+  for release in "${STALE_RELEASES[@]}"; do
+    while IFS= read -r secret_name; do
+      [[ -z "$secret_name" ]] && continue
+      echo "  Deleting orphaned secret: $secret_name (release=$release)"
+      kubectl delete secret "$secret_name" -n arc-runners 2>/dev/null \
+        || echo "    WARNING: Failed to delete secret $secret_name (continuing)"
+      ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
+    done < <(kubectl get secrets -n arc-runners \
+      -l "owner=helm,name=${release}" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+  done
+  if ((ORPHAN_COUNT > 0)); then
+    echo "Cleaned up $ORPHAN_COUNT orphaned Helm history secret(s)."
+  else
+    echo "No orphaned Helm history secrets found."
+  fi
 fi

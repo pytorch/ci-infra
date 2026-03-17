@@ -28,3 +28,8 @@ testpaths = [
   "modules/buildkit/scripts/python",
 ]
 addopts = "--tb=short -q"
+markers = [
+  "live: requires live cluster access (kubectl/helm)",
+  "aws: requires AWS CLI access",
+  "offline: no cluster needed",
+]

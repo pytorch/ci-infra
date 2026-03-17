@@ -281,7 +281,6 @@ def generate_nodepools_yaml(
     amd64_instance: str,
     replicas: int,
     pods_per_node: int,
-    node_setup_script: str,
 ) -> str:
     """Generate NodePool + EC2NodeClass YAML for both architectures."""
 
@@ -296,7 +295,7 @@ def generate_nodepools_yaml(
         memory_limit_gi = max_nodes * spec["memory_gib"]
         return cpu_limit, memory_limit_gi
 
-    def _nodepool_block(arch, instance_type, cpu_limit, memory_limit_gi, userdata):
+    def _nodepool_block(arch, instance_type, cpu_limit, memory_limit_gi):
         return f"""# Karpenter NodePool + EC2NodeClass: buildkit-{arch}
 # Auto-generated from generate_buildkit.py — do not edit by hand.
 # Instance type: {instance_type}
@@ -372,6 +371,8 @@ spec:
 
   role: "CLUSTER_NAME_PLACEHOLDER-node-role"
 
+  instanceStorePolicy: RAID0
+
   userData: |
     MIME-Version: 1.0
     Content-Type: multipart/mixed; boundary="==BOUNDARY=="
@@ -390,11 +391,6 @@ spec:
           topologyManagerScope: container
           topologyManagerPolicyOptions:
             prefer-closest-numa-nodes: "true"
-
-    --==BOUNDARY==
-    Content-Type: text/x-shellscript; charset="us-ascii"
-
-{userdata}
 
     --==BOUNDARY==--
 
@@ -421,10 +417,6 @@ spec:
     InstanceType: "{instance_type}"
     Architecture: "{arch}\""""
 
-    # Indent node-setup.sh for embedding as a MIME part within YAML userData.
-    # 4 spaces = same level as other MIME content inside the userData block.
-    indented_userdata = "\n".join("    " + line if line.strip() else "" for line in node_setup_script.splitlines())
-
     arm64_cpu_limit, arm64_mem_limit = _nodepool_limits(arm64_instance, replicas, pods_per_node)
     amd64_cpu_limit, amd64_mem_limit = _nodepool_limits(amd64_instance, replicas, pods_per_node)
 
@@ -433,8 +425,8 @@ spec:
         f"amd64: {amd64_cpu_limit} CPU, {amd64_mem_limit}Gi"
     )
 
-    arm64_block = _nodepool_block("arm64", arm64_instance, arm64_cpu_limit, arm64_mem_limit, indented_userdata)
-    amd64_block = _nodepool_block("amd64", amd64_instance, amd64_cpu_limit, amd64_mem_limit, indented_userdata)
+    arm64_block = _nodepool_block("arm64", arm64_instance, arm64_cpu_limit, arm64_mem_limit)
+    amd64_block = _nodepool_block("amd64", amd64_instance, amd64_cpu_limit, amd64_mem_limit)
 
     return arm64_block + "\n\n---\n" + amd64_block + "\n"
 
@@ -466,14 +458,6 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Read node-setup.sh (sibling to scripts/ in module dir)
-    module_dir = Path(__file__).resolve().parent.parent.parent
-    node_setup_path = module_dir / "node-setup.sh"
-    if not node_setup_path.exists():
-        log_error(f"node-setup.sh not found at {node_setup_path}")
-        return 1
-    node_setup_script = node_setup_path.read_text()
-
     log_info("Generating BuildKit manifests for:")
     log_info(f"  arm64: {args.arm64_instance_type}, amd64: {args.amd64_instance_type}")
     log_info(f"  replicas: {args.replicas}, pods_per_node: {args.pods_per_node}")
@@ -495,7 +479,6 @@ def main():
         args.amd64_instance_type,
         args.replicas,
         args.pods_per_node,
-        node_setup_script,
     )
     nodepools_path = output_dir / "nodepools.yaml"
     nodepools_path.write_text(nodepools_yaml)

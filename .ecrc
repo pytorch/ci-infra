@@ -10,6 +10,8 @@
     "osdc/base/kubernetes/git-cache/daemonset-configmap\\.yaml",
     "osdc/base/scripts/bootstrap/eks-base-bootstrap\\.sh",
     "osdc/modules/arc-runners/scripts/python/test_validate_runner_qos\\.py",
-    "osdc/modules/arc-runners/scripts/python/test_generate_runners\\.py"
+    "osdc/modules/arc-runners/scripts/python/test_generate_runners\\.py",
+    "osdc/modules/eks/terraform/modules/eks/main\\.tf",
+    "osdc/modules/arc-runners/scripts/python/cleanup_stale_releases\\.py"
   ]
 }

@@ -26,6 +26,7 @@ echo "Installing ARC controller (replicas=${ARC_REPLICAS}, logLevel=${ARC_LOG_LE
 helm upgrade --install arc \
   --namespace arc-systems \
   --create-namespace \
+  --history-max 3 \
   -f "$MODULE_DIR/helm/arc/values.yaml" \
   --set replicaCount="${ARC_REPLICAS}" \
   --set log.level="${ARC_LOG_LEVEL}" \

@@ -6,6 +6,12 @@
 #
 # Working directory: osdc/
 #
+# IMPORTANT: Every recipe that interacts with a live cluster (kubectl, helm,
+# deploy scripts, tests) MUST call `just kubeconfig <cluster>` or the
+# equivalent `aws eks update-kubeconfig` before doing any k8s work. This
+# prevents user error from operating on the wrong cluster. When adding new
+# recipes that touch a cluster, always include the kubeconfig step.
+#
 # Usage:
 #   just list                          # show clusters and their modules
 #   just deploy arc-staging            # full deploy (base + all modules)
@@ -129,6 +135,26 @@ deploy cluster:
     echo "DEPLOYMENT COMPLETE: $CLUSTER"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+    # Run smoke tests: OSDC_SMOKE=yes|no|ask (default: ask)
+    RUN_SMOKE="${OSDC_SMOKE:-ask}"
+    if [ "$RUN_SMOKE" = "yes" ]; then
+        echo ""
+        echo "── Running smoke tests (OSDC_SMOKE=yes) ──"
+        just smoke "$CLUSTER"
+    elif [ "$RUN_SMOKE" = "no" ]; then
+        echo ""
+        echo "Skipping smoke tests (OSDC_SMOKE=no)"
+    else
+        echo ""
+        read -p "Run smoke tests? [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            just smoke "$CLUSTER"
+        else
+            echo "Skipping smoke tests."
+        fi
+    fi
+
 # Deploy base infrastructure (tofu + harbor + base k8s)
 deploy-base cluster:
     #!/usr/bin/env bash
@@ -226,6 +252,9 @@ deploy-module cluster module:
     REGION=$(uv run {{CFG}} "$CLUSTER" region)
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
 
+    # Ensure kubectl is configured for the target cluster
+    aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME" >/dev/null
+
     echo ""
     echo "━━━ MODULE: $MODULE ━━━"
 
@@ -305,14 +334,12 @@ recycle-nodes cluster:
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+
+    # Ensure kubectl is configured for the target cluster
+    aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME" >/dev/null
 
     echo "Recycling all Karpenter nodes for $CLUSTER ($CNAME)..."
-
-    # Preflight: verify kubectl can reach the cluster
-    if ! kubectl cluster-info &>/dev/null; then
-        echo "ERROR: kubectl cannot reach the cluster. Run 'just kubeconfig $CLUSTER' first."
-        exit 1
-    fi
 
     NODECLAIM_COUNT=$(kubectl get nodeclaims --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [ "$NODECLAIM_COUNT" = "0" ]; then
@@ -440,6 +467,7 @@ _deploy-harbor cluster:
         if helm upgrade --install harbor \
             --namespace harbor-system \
             --create-namespace \
+            --history-max 3 \
             -f {{UPSTREAM}}/base/helm/harbor/values.yaml \
             --set core.image.repository="${ECR_HARBOR}/harbor-core" \
             --set jobservice.image.repository="${ECR_HARBOR}/harbor-jobservice" \
@@ -562,10 +590,10 @@ test:
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
     ERRORS=0
 
-    # Find all directories containing test_*.py files (exclude e2e tests)
-    TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/tests/e2e' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
+    # Find all directories containing test_*.py files (exclude e2e and smoke tests)
+    TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
     if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
-        TEST_DIRS="$TEST_DIRS $(find "{{ROOT}}" -path "{{UPSTREAM}}" -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)"
+        TEST_DIRS="$TEST_DIRS $(find "{{ROOT}}" -path "{{UPSTREAM}}" -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)"
     fi
 
     if [[ -z "$TEST_DIRS" ]]; then
@@ -589,11 +617,63 @@ test:
 # Run node-compactor e2e tests against a live cluster
 test-compactor cluster:
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    CNAME=$$(uv run {{CFG}} {{cluster}} cluster_name); \
+    REGION=$$(uv run {{CFG}} {{cluster}} region); \
+    aws eks update-kubeconfig --name "$$CNAME" --region "$$REGION" --alias "$$CNAME" >/dev/null; \
     export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
     cd {{UPSTREAM}}/base/node-compactor/tests/e2e && \
-    uv run pytest test_e2e.py -v --tb=long -x \
+    uv run pytest test_e2e.py -v --tb=long \
         --cluster-id="{{cluster}}"
+
+# Run smoke tests against a deployed cluster
+smoke cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+
+    UPSTREAM="{{UPSTREAM}}"
+    ROOT="{{ROOT}}"
+    CLUSTER="{{cluster}}"
+
+    # Ensure kubectl is configured for the target cluster
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER_NAME=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" cluster_name)
+    REGION=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" region)
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+        aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" --alias "$CLUSTER_NAME"
+
+    # Discover base smoke tests (co-located with each base component)
+    # Also includes modules/eks/ which is always deployed as part of base
+    SMOKE_DIRS=""
+    while IFS= read -r d; do
+        SMOKE_DIRS="${SMOKE_DIRS:+$SMOKE_DIRS }$d"
+    done < <(find "${UPSTREAM}/base" "${UPSTREAM}/modules/eks" -path '*/tests/smoke' -type d 2>/dev/null | sort)
+
+    # Add smoke tests for each enabled module
+    MODULES=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" modules)
+    for mod in $MODULES; do
+        # Check consumer modules first (ROOT), then upstream
+        if [[ -d "${ROOT}/modules/${mod}/tests/smoke" ]]; then
+            SMOKE_DIRS="$SMOKE_DIRS ${ROOT}/modules/${mod}/tests/smoke"
+        elif [[ -d "${UPSTREAM}/modules/${mod}/tests/smoke" ]]; then
+            SMOKE_DIRS="$SMOKE_DIRS ${UPSTREAM}/modules/${mod}/tests/smoke"
+        fi
+    done
+
+    echo "Running smoke tests for cluster: $CLUSTER"
+    echo "Test directories:"
+    for d in $SMOKE_DIRS; do echo "  - ${d#${UPSTREAM}/}"; done
+    echo ""
+
+    export OSDC_ROOT="${ROOT}"
+    export OSDC_UPSTREAM="${UPSTREAM}"
+    export PYTHONPATH="${UPSTREAM}/tests/smoke:${PYTHONPATH:-}"
+
+    uv run pytest $SMOKE_DIRS \
+        -v --tb=short \
+        --cluster-id="$CLUSTER" \
+        --rootdir="${UPSTREAM}"
 
 # ============================================================================
 # LINTING
