@@ -494,6 +494,10 @@ just test    # All unit tests must pass
 
 If either fails, fix the issues before finishing. Do not defer lint or test failures — they block CI and break other contributors.
 
+## Code Style
+
+- **ALWAYS use 4 spaces for indentation** — in ALL files: Python, YAML, JSON, HCL, Alloy, shell, Dockerfiles, Kubernetes manifests, Helm values, everything. The `.editorconfig` enforces this and CI will fail on non-4-space indentation.
+
 ## Don't Do
 
 - **NEVER run `terraform`** — use `tofu` or `just` recipes (terraform will corrupt state)
