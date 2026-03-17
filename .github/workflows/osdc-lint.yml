@@ -5,9 +5,11 @@ on:
     branches: [main]
     paths:
       - "osdc/**"
+      - ".github/workflows/osdc-lint.yml"
   pull_request:
     paths:
       - "osdc/**"
+      - ".github/workflows/osdc-lint.yml"
 
 permissions:
   contents: read

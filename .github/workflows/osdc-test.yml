@@ -5,9 +5,11 @@ on:
     branches: [main]
     paths:
       - "osdc/**"
+      - ".github/workflows/osdc-test.yml"
   pull_request:
     paths:
       - "osdc/**"
+      - ".github/workflows/osdc-test.yml"
 
 permissions:
   contents: read
