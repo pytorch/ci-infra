@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import os
 import subprocess
 import time
+import urllib.parse
+import urllib.request
 
 DEFAULT_TIMEOUT = 60
 READY_RETRIES = 3
 READY_RETRY_DELAY = 10  # seconds
+
+
+def _proxy_bypass_env() -> dict[str, str]:
+    """Return an env dict that bypasses corporate proxy for EKS API calls.
+
+    The Meta corporate proxy intercepts HTTPS connections, which causes
+    kubectl/helm to fail with 'Unauthorized' when talking to EKS.
+    """
+    env = os.environ.copy()
+    eks_suffix = ".eks.amazonaws.com"
+    for key in ("NO_PROXY", "no_proxy"):
+        current = env.get(key, "")
+        if eks_suffix not in current:
+            env[key] = f"{current},{eks_suffix}" if current else eks_suffix
+    return env
 
 
 def run_kubectl(
@@ -21,7 +40,7 @@ def run_kubectl(
     cmd.extend(args)
     if json_output:
         cmd.extend(["-o", "json"])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True, env=_proxy_bypass_env())
     if json_output:
         return json.loads(result.stdout)
     return result.stdout.strip()
@@ -30,14 +49,14 @@ def run_kubectl(
 def run_helm(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> list[dict]:
     """Run helm with -o json, return parsed output."""
     cmd = ["helm", *args, "-o", "json"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True, env=_proxy_bypass_env())
     return json.loads(result.stdout)
 
 
 def run_aws(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> dict:
     """Run aws CLI with --output json, return parsed output."""
     cmd = ["aws", *args, "--output", "json"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True, env=_proxy_bypass_env())
     return json.loads(result.stdout)
 
 
@@ -184,3 +203,95 @@ def assert_deployment_ready(
             return
 
     assert ready == desired, f"{name}: {ready}/{desired} replicas ready (after {READY_RETRIES} retries)"
+
+
+# ---------------------------------------------------------------------------
+# Grafana Cloud remote query helpers
+# ---------------------------------------------------------------------------
+
+
+def mimir_read_url(write_url: str) -> str:
+    """Derive Mimir read endpoint from the write URL.
+
+    Write: https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push
+    Read:  https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/api/v1/query
+    """
+    base = write_url.rstrip("/")
+    if base.endswith("/push"):
+        base = base[: -len("/push")]
+    return f"{base}/api/v1/query"
+
+
+def loki_read_url(write_url: str) -> str:
+    """Derive Loki read endpoint from the write URL.
+
+    Write: https://logs-prod-021.grafana.net/loki/api/v1/push
+    Read:  https://logs-prod-021.grafana.net/loki/api/v1/query_range
+    """
+    base = write_url.rstrip("/")
+    if base.endswith("/push"):
+        base = base[: -len("/push")]
+    return f"{base}/query_range"
+
+
+def fetch_grafana_cloud_credentials(
+    namespace: str, username_key: str, password_key: str
+) -> tuple[str, str] | None:
+    """Fetch Grafana Cloud credentials from a Kubernetes secret.
+
+    Returns (username, password) or None if the secret doesn't exist
+    or cannot be decoded.
+    """
+    try:
+        secret = run_kubectl(["get", "secret", "grafana-cloud-credentials"], namespace=namespace)
+        data = secret.get("data", {})
+        if username_key not in data or password_key not in data:
+            return None
+        username = base64.b64decode(data[username_key]).decode()
+        password = base64.b64decode(data[password_key]).decode()
+        return (username, password)
+    except Exception:
+        return None
+
+
+def _urlopen_no_proxy(req: urllib.request.Request, timeout: int = 30):
+    """Open a URL request bypassing any configured HTTP(S) proxy."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(req, timeout=timeout)
+
+
+def query_mimir(url: str, promql: str, username: str, password: str, timeout: int = 30) -> dict | None:
+    """Query Grafana Cloud Mimir (Prometheus-compatible API). Returns None on error."""
+    full_url = f"{url}?query={urllib.parse.quote(promql)}"
+    auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+    req = urllib.request.Request(full_url, headers={"Authorization": f"Basic {auth}"})
+    try:
+        with _urlopen_no_proxy(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except Exception as exc:
+        query_mimir.last_error = str(exc)
+        return None
+
+query_mimir.last_error = ""
+
+
+def query_loki(url: str, logql: str, username: str, password: str, timeout: int = 30) -> dict | None:
+    """Query Grafana Cloud Loki (LogQL query_range). Returns None on error."""
+    now = int(time.time())
+    params = urllib.parse.urlencode({
+        "query": logql,
+        "start": str(now - 3600),
+        "end": str(now),
+        "limit": "1",
+    })
+    full_url = f"{url}?{params}"
+    auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+    req = urllib.request.Request(full_url, headers={"Authorization": f"Basic {auth}"})
+    try:
+        with _urlopen_no_proxy(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except Exception as exc:
+        query_loki.last_error = str(exc)
+        return None
+
+query_loki.last_error = ""

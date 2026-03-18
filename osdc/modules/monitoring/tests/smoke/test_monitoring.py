@@ -8,7 +8,16 @@ deployed and healthy.
 from __future__ import annotations
 
 import pytest
-from helpers import assert_daemonset_ready, filter_deployments, find_helm_release, run_kubectl
+from helpers import (
+    assert_daemonset_ready,
+    assert_deployment_ready,
+    fetch_grafana_cloud_credentials,
+    filter_deployments,
+    find_helm_release,
+    mimir_read_url,
+    query_mimir,
+    run_kubectl,
+)
 
 pytestmark = [pytest.mark.live]
 
@@ -107,7 +116,7 @@ class TestServiceMonitors:
     """Verify expected ServiceMonitors exist."""
 
     def test_service_monitors_exist(self, mon_ns: str) -> None:
-        result = run_kubectl(["get", "servicemonitors", "-o", "json"], namespace=mon_ns)
+        result = run_kubectl(["get", "servicemonitors"], namespace=mon_ns)
         sm_names = {item["metadata"]["name"] for item in result.get("items", [])}
 
         missing = [name for name in EXPECTED_SERVICE_MONITORS if name not in sm_names]
@@ -123,7 +132,7 @@ class TestPodMonitors:
     """Verify expected PodMonitors exist."""
 
     def test_pod_monitors_exist(self, mon_ns: str) -> None:
-        result = run_kubectl(["get", "podmonitors", "-o", "json"], namespace=mon_ns)
+        result = run_kubectl(["get", "podmonitors"], namespace=mon_ns)
         pm_names = {item["metadata"]["name"] for item in result.get("items", [])}
 
         missing = [name for name in EXPECTED_POD_MONITORS if name not in pm_names]
@@ -150,18 +159,59 @@ class TestDCGMExporter:
 class TestAlloy:
     """Verify Alloy is deployed when grafana-cloud-credentials secret exists."""
 
-    def test_alloy_conditional(self, all_helm_releases: list[dict], mon_ns: str) -> None:
-        """If the credentials secret exists, Alloy Helm release must be deployed."""
-        secret_exists = True
+    @pytest.fixture(autouse=True)
+    def _require_credentials(self, mon_ns: str) -> None:
+        """Skip all tests in this class if credentials secret is missing."""
         try:
             run_kubectl(["get", "secret", "grafana-cloud-credentials", "-o", "json"], namespace=mon_ns)
         except Exception:
-            secret_exists = False
-
-        if not secret_exists:
             pytest.skip("grafana-cloud-credentials secret not found; Alloy not expected")
 
+    def test_alloy_helm_release(self, all_helm_releases: list[dict]) -> None:
         release = find_helm_release(all_helm_releases, "alloy")
-        assert release is not None, "Alloy Helm release not found but grafana-cloud-credentials secret exists"
+        assert release is not None, "Alloy Helm release not found but credentials exist"
         status = release.get("status", "")
         assert status == "deployed", f"Alloy status is '{status}', expected 'deployed'"
+
+    def test_alloy_deployment_ready(self, all_deployments: dict, mon_ns: str) -> None:
+        assert_deployment_ready(all_deployments, mon_ns, "alloy")
+
+
+# ============================================================================
+# Remote Verification (Grafana Cloud Mimir)
+# ============================================================================
+
+
+class TestMonitoringRemoteVerification:
+    """Verify metrics are actually arriving in Grafana Cloud Mimir."""
+
+    @pytest.fixture(autouse=True)
+    def _require_remote(self, resolve_config, mon_ns: str):
+        """Skip if no Mimir URL configured or no credentials."""
+        self.mimir_write_url = resolve_config("monitoring.grafana_cloud_url", "")
+        if not self.mimir_write_url:
+            pytest.skip("No Mimir URL configured")
+        creds = fetch_grafana_cloud_credentials(mon_ns, "username", "password")
+        if creds is None:
+            pytest.skip("No grafana-cloud-credentials for monitoring")
+        self.mimir_user, self.mimir_key = creds
+        self.read_url = mimir_read_url(self.mimir_write_url)
+
+    def test_metrics_arriving(self, resolve_config) -> None:
+        """Query Mimir for the up metric from this cluster."""
+        cluster_name = resolve_config("cluster_name", "")
+        if not cluster_name:
+            pytest.skip("cluster_name not set in config")
+        result = query_mimir(
+            self.read_url,
+            f'up{{cluster="{cluster_name}"}}',
+            self.mimir_user,
+            self.mimir_key,
+        )
+        if result is None:
+            err = getattr(query_mimir, "last_error", "unknown")
+            pytest.skip(f"Mimir query failed: {err}")
+        status = result.get("status", "")
+        assert status == "success", f"Mimir query returned status '{status}'"
+        results = result.get("data", {}).get("result", [])
+        assert len(results) > 0, f"No 'up' metrics found for cluster '{cluster_name}'"

@@ -1,0 +1,29 @@
+// Prometheus operator (controller-runtime JSON logs)
+stage.match {
+    selector = "{namespace=\"monitoring\", container=\"kube-prometheus-stack-operator\"}"
+    stage.json {
+        expressions = {
+            level = "",
+            msg   = "msg",
+            ts    = "",
+        }
+    }
+    stage.labels {
+        values = {
+            level = "",
+        }
+    }
+}
+
+// kube-state-metrics (structured text logs)
+stage.match {
+    selector = "{namespace=\"monitoring\", container=\"kube-state-metrics\"}"
+    stage.regex {
+        expression = "^[A-Z]\\d{4} \\d{2}:\\d{2}:\\d{2}\\.\\d+ .+ (?P<level>[A-Z]+)"
+    }
+    stage.labels {
+        values = {
+            level = "",
+        }
+    }
+}

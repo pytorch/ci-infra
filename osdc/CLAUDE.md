@@ -49,6 +49,7 @@ osdc/
 │   ├── helm/               # Harbor values
 │   ├── docker/             # Container images (runner-base)
 │   ├── scripts/            # Bootstrap (EKS node setup)
+│   ├── logging/            # Centralized log collection (Alloy DaemonSet → Grafana Cloud Loki)
 │   └── node-compactor/     # Node consolidation controller (taints underutilized nodes)
 ├── modules/                # Optional, per clusters.yaml
 │   ├── eks/                # AWS infrastructure (VPC, EKS, Harbor S3/IAM, image mirroring)
@@ -57,7 +58,7 @@ osdc/
 │   ├── nodepools/          # Karpenter NodePools (pure compute provisioning)
 │   ├── arc-runners/        # ARC runner scale sets (requires arc + nodepools)
 │   ├── buildkit/           # BuildKit build service (arm64 + amd64, HAProxy LB)
-│   └── monitoring/         # Prometheus, Grafana, AlertManager, DCGM exporter, Alloy
+│   └── monitoring/         # Metrics pipeline: kube-prometheus-stack CRDs/exporters + Alloy → Grafana Cloud
 └── docs/                   # Architecture and operations docs
 ```
 
@@ -188,9 +189,10 @@ just lint                              # Lint all code (shell, Python, Docker, k
 
 1. **Terraform** — VPC, EKS, Harbor S3/IAM (parameterized, no per-env dirs)
 2. **Mirror images** — Harbor bootstrap images to ECR (Harbor can't cache itself)
-3. **Harbor** — Pull-through cache (first k8s workload; caches docker.io, ghcr.io, nvcr.io, registry.k8s.io, quay.io)
-4. **Base k8s** — StorageClass, NVIDIA plugin, git-cache (two-tier), performance tuning
-5. **Node compactor** — Taints underutilized Karpenter nodes for consolidation (if enabled)
+3. **Base k8s** — StorageClass, NVIDIA plugin, git-cache (two-tier), performance tuning
+4. **Harbor** — Pull-through cache (caches docker.io, ghcr.io, nvcr.io, registry.k8s.io, quay.io)
+5. **Logging** — Alloy DaemonSet for centralized log collection → Grafana Cloud Loki (secret-gated)
+6. **Node compactor** — Taints underutilized Karpenter nodes for consolidation (if enabled)
 
 ### Module deploy order (per clusters.yaml list order)
 
@@ -233,7 +235,8 @@ Single parameterized root at `modules/eks/terraform/`. No per-environment direct
 - **Compute split: nodepools + arc-runners** — `nodepools` deploys pure Karpenter NodePools (compute provisioning). `arc-runners` deploys ARC runner scale sets (requires both `arc` and `nodepools`). Non-ARC clusters can use `nodepools` alone for compute.
 - **One terraform root, many clusters** — no code duplication per environment.
 - **Modules are independent** — each has its own terraform state, k8s resources, deploy script. No cross-module imports.
-- **Monitoring is a module** — not baked into base. Clusters opt-in by listing `monitoring` in their modules. In-cluster Prometheus provides local storage and Grafana dashboards; Grafana Cloud push via Alloy is optional and secret-gated.
+- **Monitoring is a module, logging is base** — metrics collection (Alloy Deployment → Grafana Cloud Mimir) is opt-in via the `monitoring` module. Log collection (Alloy DaemonSet → Grafana Cloud Loki) is in `base/logging/` because every cluster needs it. Both are secret-gated — no credentials, no Alloy.
+- **Two Alloy installations** — monitoring and logging each deploy their own Alloy with separate Helm releases, namespaces, and RBAC. This avoids config/permission conflicts and lets them scale independently (Deployment for metrics, DaemonSet for logs).
 
 ## EKS Node Taints
 
@@ -311,21 +314,24 @@ RUN --mount=type=bind,from=gitcache,source=pytorch/pytorch.git/objects,target=/t
     git clone https://github.com/pytorch/pytorch /workspace
 ```
 
-## Monitoring (kube-prometheus-stack + Grafana Alloy)
+## Observability: Monitoring + Logging
 
-The `monitoring` module deploys a two-tier metrics pipeline. Helm charts used:
+OSDC has two observability pipelines, both pushing to Grafana Cloud. They use **two separate Grafana Alloy installations** to avoid RBAC and config collisions:
 
-- **[kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)** v82.10.3 — bundles Prometheus, Grafana, AlertManager, Prometheus Operator, node-exporter, and kube-state-metrics.
-- **[Grafana Alloy](https://github.com/grafana/alloy)** (Helm chart `grafana/alloy`) — optional push agent for Grafana Cloud. Only installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace.
-- **[DCGM Exporter](https://github.com/NVIDIA/dcgm-exporter)** (`nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless`) — DaemonSet for GPU metrics, runs only on GPU nodes.
+| Pipeline | Component | Location | Alloy Mode | Namespace | Helm Release |
+|----------|-----------|----------|------------|-----------|--------------|
+| **Metrics** | `modules/monitoring/` | Module (opt-in) | Deployment (2 replicas, clustered) | `monitoring` | `alloy` |
+| **Logs** | `base/logging/` | Base (every cluster) | DaemonSet (one per node) | `logging` | `alloy-logging` |
 
-### Architecture
+Both are **secret-gated**: Alloy only installs if a `grafana-cloud-credentials` secret exists in the respective namespace. The secrets have different keys (metrics uses `username`/`password`; logging uses `loki-username`/`loki-api-key-write`/`loki-api-key-read`). The Grafana Cloud URL for metrics comes from `clusters.yaml`, not the secret.
 
-**Tier 1 — In-cluster Prometheus**: HA pair (2 replicas) on base infrastructure nodes with gp3 EBS PVCs. Auto-discovers all ServiceMonitors/PodMonitors across all namespaces. Grafana (optional, enabled by default) auto-loads dashboards from ConfigMaps labeled `grafana_dashboard: "1"`. AlertManager (optional, enabled by default) runs as HA pair.
+### Monitoring (metrics pipeline)
 
-**Tier 2 — Grafana Cloud push via Alloy** (conditional): Alloy independently discovers ServiceMonitor/PodMonitor CRDs, scrapes the same targets as Prometheus, and pushes via `prometheus.remote_write` to Grafana Cloud Mimir. Clustering enabled for HA target distribution across 2 replicas.
+The `monitoring` module uses kube-prometheus-stack as a **CRD + exporter bundle only** — Prometheus, Grafana, and AlertManager are all disabled. Alloy discovers ServiceMonitor/PodMonitor CRDs, scrapes targets, and pushes to Grafana Cloud Mimir.
 
-### What's scraped
+What kube-prometheus-stack provides: CRDs (`monitoring.coreos.com`), Prometheus Operator, node-exporter (DaemonSet on every node), kube-state-metrics.
+
+**What's scraped:**
 
 | Type | Name | Target Namespace | What it monitors |
 |------|------|-----------------|-----------------|
@@ -338,34 +344,36 @@ The `monitoring` module deploys a two-tier metrics pipeline. Helm charts used:
 | PodMonitor | git-cache-daemonset | kube-system | Git cache DaemonSet metrics |
 | PodMonitor | arc-listeners | arc-runners | ARC listener pods metrics |
 
-node-exporter (from kube-prometheus-stack) runs on every node — it tolerates ALL taints. kube-state-metrics runs on base nodes.
-
-### Configuration (clusters.yaml)
+**Configuration (clusters.yaml):**
 
 ```yaml
 monitoring:
-  namespace: monitoring           # Kubernetes namespace
-  retention_days: 15              # Prometheus data retention
-  storage_size: 50Gi              # PVC size per Prometheus replica
-  grafana_enabled: true           # Deploy Grafana
-  alertmanager_enabled: true      # Deploy AlertManager
+  namespace: monitoring
   grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
 ```
 
-### Deploy order (deploy.sh)
+### Logging (log collection pipeline)
 
-1. Create `monitoring` namespace (via kustomization)
-2. `helm upgrade --install kube-prometheus-stack` — installs CRDs + all components
-3. `kubectl apply -k kubernetes/monitors/` — ServiceMonitors/PodMonitors (depends on CRDs from step 2)
-4. Conditionally: `helm upgrade --install alloy` — if `grafana-cloud-credentials` secret exists
+The `base/logging/` component collects pod logs and system journal entries from every node via an Alloy DaemonSet, pushing to Grafana Cloud Loki.
 
-### CRD ordering gotcha
+Two log sources: pod logs (`loki.source.file` reading CRI-format `/var/log/pods/`) and system journal (`loki.source.journal` — kubelet, containerd, kernel only). Kubernetes events are NOT collected (no leader-election support in DaemonSet mode).
 
-The justfile applies `kubernetes/kustomization.yaml` (Phase 2) before running `deploy.sh` (Phase 3). ServiceMonitor/PodMonitor CRDs don't exist until kube-prometheus-stack installs in step 2 of deploy.sh. That's why monitors live in a separate `kubernetes/monitors/` kustomization applied by deploy.sh after Helm install — not in the main kustomization.
+Per-module log parsing: modules can contribute `stage.match` blocks via `logging/pipeline.alloy` files. The `assemble_config.py` script discovers these and inserts them at the `// MODULE_PIPELINES` marker in the base Alloy config. See `base/logging/CLAUDE.md` for details.
 
-### Admission webhook gotcha
+**Configuration (clusters.yaml):**
 
-The kube-prometheus-stack Helm chart's admission webhook pre-install job has no tolerations by default. On OSDC clusters where ALL base nodes are tainted with `CriticalAddonsOnly`, the job stays Pending forever. The Helm values must include tolerations + nodeSelector for `prometheusOperator.admissionWebhooks.patch`. If the job gets stuck, you must delete the failed Helm release and the stuck job before retrying.
+```yaml
+logging:
+  namespace: logging
+  grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
+```
+
+### Key gotchas (both pipelines)
+
+- **RBAC isolation**: Logging uses `fullnameOverride: alloy-logging` in Helm values to avoid ClusterRole/ClusterRoleBinding collision with the monitoring Alloy
+- **CRD ordering**: ServiceMonitor/PodMonitor CRDs don't exist until kube-prometheus-stack installs. Monitors live in `kubernetes/monitors/` applied by `deploy.sh` after Helm install — not in the main kustomization
+- **Admission webhook**: kube-prometheus-stack's admission webhook job has no tolerations by default. On OSDC clusters where all base nodes are tainted, the job stays Pending forever. Helm values must include tolerations for `prometheusOperator.admissionWebhooks.patch`
+- **Credential setup**: Each pipeline needs its own secret created manually before first deploy (see component CLAUDE.md files for exact commands)
 
 ## Git Clone Cache
 
@@ -430,6 +438,8 @@ kubectl get pods -n arc-systems                      # ARC controller pods
 kubectl get pods -n karpenter                        # Karpenter pods
 kubectl get pods -n harbor-system                    # Harbor pods
 kubectl get pods -n buildkit                         # BuildKit builder pods
+kubectl get pods -n logging                          # Alloy log collector pods
+kubectl get ds -n logging                            # Logging DaemonSet (should match node count)
 kubectl get nodepools                                # Karpenter NodePools
 kubectl get autoscalingrunnersets -n arc-runners      # ARC runner scale sets
 kubectl describe pod <pod> -n <ns>                   # Pod details and events
@@ -484,6 +494,10 @@ just test    # All unit tests must pass
 
 If either fails, fix the issues before finishing. Do not defer lint or test failures — they block CI and break other contributors.
 
+## Code Style
+
+- **ALWAYS use 4 spaces for indentation** — in ALL files: Python, YAML, JSON, HCL, Alloy, shell, Dockerfiles, Kubernetes manifests, Helm values, everything. The `.editorconfig` enforces this and CI will fail on non-4-space indentation.
+
 ## Don't Do
 
 - **NEVER run `terraform`** — use `tofu` or `just` recipes (terraform will corrupt state)
@@ -524,3 +538,7 @@ If either fails, fix the issues before finishing. Do not defer lint or test fail
 | `modules/monitoring/helm/alloy-values.yaml` | Grafana Alloy Helm values (ServiceMonitor/PodMonitor discovery, remote_write) |
 | `modules/monitoring/kubernetes/monitors/` | ServiceMonitors + PodMonitors for OSDC components (ARC, Harbor, Karpenter, etc.) |
 | `modules/monitoring/kubernetes/dcgm-exporter/` | DCGM GPU exporter DaemonSet + headless Service (GPU nodes only) |
+| `base/logging/deploy.sh` | Secret-gated Alloy DaemonSet install for log collection → Grafana Cloud Loki |
+| `base/logging/pipelines/base.alloy` | Base Alloy River config (pod logs, journal, loki.write, MODULE_PIPELINES marker) |
+| `base/logging/helm/alloy-logging-values.yaml` | Alloy DaemonSet Helm values (tolerates all taints, journal mount, positions hostPath) |
+| `base/logging/scripts/python/assemble_config.py` | Assembles base pipeline + per-module `stage.match` blocks into ConfigMap |

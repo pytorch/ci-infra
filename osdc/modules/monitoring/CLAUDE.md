@@ -52,6 +52,25 @@ Prometheus, Grafana, and AlertManager are all `enabled: false`.
 3. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors + PodMonitors — requires CRDs from step 2)
 4. `deploy.sh` conditionally installs Alloy (if `grafana-cloud-credentials` secret exists)
 
+## Log parsing pipeline
+
+This module can contribute log parsing rules for the centralized logging system (`base/logging/`). Place a `logging/pipeline.alloy` file containing `stage.match` blocks in this module directory. The logging `assemble_config.py` script discovers it at deploy time and inserts the blocks into the base Alloy config. See `base/logging/CLAUDE.md` and `docs/observability.md` for details.
+
+## Credential setup
+
+The Grafana Cloud URL comes from `clusters.yaml` (`monitoring.grafana_cloud_url`), not from the secret. The secret only contains authentication credentials:
+
+```bash
+kubectl create namespace monitoring
+kubectl create secret generic grafana-cloud-credentials \
+  -n monitoring \
+  --from-literal=username='<GRAFANA_CLOUD_METRICS_USER_ID>' \
+  --from-literal=password='<API_KEY_WITH_METRICS_WRITE_SCOPE>' \
+  --from-literal=loki-username='<GRAFANA_CLOUD_LOKI_USER_ID>' \
+  --from-literal=loki-api-key-write='<API_KEY_WITH_LOGS_WRITE_SCOPE>' \
+  --from-literal=loki-api-key-read='<API_KEY_WITH_LOGS_READ_SCOPE>'
+```
+
 ## Dependencies
 
 - Base must be deployed (Harbor running for image pulls)

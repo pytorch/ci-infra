@@ -57,6 +57,9 @@ defaults:
   monitoring:
     namespace: monitoring
     grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
+  logging:
+    namespace: logging
+    grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
 
 clusters:
   arc-staging:

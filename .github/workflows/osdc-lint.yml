@@ -1,0 +1,45 @@
+name: "OSDC: Lint"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "osdc/**"
+      - ".github/workflows/osdc-lint.yml"
+  pull_request:
+    paths:
+      - "osdc/**"
+      - ".github/workflows/osdc-lint.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osdc-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: osdc
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Run lint
+        run: just lint

@@ -1,0 +1,58 @@
+# Grafana Alloy Helm values for OSDC centralized logging.
+#
+# DaemonSet mode — one pod per node, collects pod logs + system journal.
+# Only installed when grafana-cloud-credentials secret exists in the logging namespace.
+#
+# Dynamic values (LOKI_URL, CLUSTER_NAME, credentials) are injected by deploy.sh
+# via a temporary override file.
+
+fullnameOverride: alloy-logging    # Prevent RBAC collision with monitoring's Alloy
+
+controller:
+  type: daemonset
+
+  tolerations:
+    - operator: Exists             # Run on every node type (base, GPU, BuildKit)
+
+  volumes:
+    extra:
+      - name: journal
+        hostPath:
+          path: /var/log/journal
+          type: DirectoryOrCreate
+      - name: positions
+        hostPath:
+          path: /var/alloy-logging/positions
+          type: DirectoryOrCreate
+
+  mounts:
+    extra:
+      - name: journal
+        mountPath: /var/log/journal
+        readOnly: true
+      - name: positions
+        mountPath: /var/alloy-logging/positions
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi               # High-throughput CI nodes need headroom
+
+serviceAccount:
+  create: true
+
+rbac:
+  create: true
+
+alloy:
+  mounts:
+    varlog: true                 # /var/log for pod logs
+    dockercontainers: false      # containerd, not Docker
+
+  clustering:
+    enabled: false               # DaemonSet — each pod handles its own node
+
+  storagePath: /var/alloy-logging/positions

@@ -20,8 +20,8 @@ class TestGitCacheCentral:
         assert_deployment_ready(all_deployments, GIT_CACHE_NAMESPACE, "git-cache-central")
 
     def test_rsync_service_exists(self, all_services):
-        svcs = filter_services(all_services, namespace=GIT_CACHE_NAMESPACE, name="git-cache-server")
-        assert len(svcs) == 1, "Service git-cache-server not found in kube-system"
+        svcs = filter_services(all_services, namespace=GIT_CACHE_NAMESPACE, name="git-cache-central")
+        assert len(svcs) == 1, "Service git-cache-central not found in kube-system"
         ports = [p["port"] for p in svcs[0].get("spec", {}).get("ports", [])]
         assert 873 in ports, f"Rsync service missing port 873. Ports: {ports}"
 
@@ -56,7 +56,7 @@ class TestGitCacheDaemonSet:
 class TestGitCacheRBAC:
     """Verify RBAC resources for the git cache."""
 
-    @pytest.mark.parametrize("sa_name", ["git-cache-server", "git-cache-warmer"])
+    @pytest.mark.parametrize("sa_name", ["git-cache-warmer"])
     def test_service_account_exists(self, sa_name):
         result = run_kubectl(["get", "serviceaccount", sa_name], namespace=GIT_CACHE_NAMESPACE)
         assert result["metadata"]["name"] == sa_name
