@@ -26,6 +26,7 @@ testpaths = [
   "modules/nodepools/scripts/python",
   "modules/arc-runners/scripts/python",
   "modules/buildkit/scripts/python",
+  "integration-tests/scripts/python",
 ]
 addopts = "--tb=short -q"
 markers = [

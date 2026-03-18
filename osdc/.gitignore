@@ -15,5 +15,8 @@ __pycache__/
 # Generated module outputs
 modules/*/generated/
 
+# Integration test scratch (cloned canary repo)
+.scratch/
+
 # OS
 .DS_Store

@@ -679,6 +679,34 @@ smoke cluster:
         --cluster-id="$CLUSTER" \
         --rootdir="${UPSTREAM}"
 
+# Run full integration test against a cluster
+integration-test cluster *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+
+    UPSTREAM="{{UPSTREAM}}"
+    ROOT="{{ROOT}}"
+    CLUSTER="{{cluster}}"
+
+    # Ensure kubectl is configured for the target cluster
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER_NAME=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" cluster_name)
+    REGION=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" region)
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+        aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" --alias "$CLUSTER_NAME"
+
+    export OSDC_ROOT="${ROOT}"
+    export OSDC_UPSTREAM="${UPSTREAM}"
+
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+        uv run "${UPSTREAM}/integration-tests/scripts/python/run.py" \
+            --cluster-id "$CLUSTER" \
+            --clusters-yaml "{{CLUSTERS_YAML}}" \
+            --upstream-dir "${UPSTREAM}" \
+            --root-dir "${ROOT}" \
+            {{args}}
+
 # ============================================================================
 # LINTING
 # ============================================================================

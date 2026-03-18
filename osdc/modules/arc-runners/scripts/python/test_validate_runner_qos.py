@@ -11,6 +11,7 @@ from validate_runner_qos import (
     validate_file,
     validate_gpu_qos,
     validate_memory_qos,
+    validate_patched_hooks,
 )
 
 # ============================================================================
@@ -57,10 +58,55 @@ def make_configmap(
     """)
 
 
+def make_helm_values(
+    include_init_container: bool = True,
+    include_hooks_env: bool = True,
+    hooks_path: str = "/opt/runner-hooks/dist/index.js",
+) -> str:
+    """Build Helm values YAML with runner template spec."""
+    lines = [
+        'githubConfigUrl: "https://github.com/test-org"',
+        'runnerScaleSetName: "test-runner"',
+        "template:",
+        "  spec:",
+    ]
+
+    if include_init_container:
+        lines.extend([
+            "    initContainers:",
+            "      - name: wait-for-hooks",
+            "        image: public.ecr.aws/docker/library/alpine:3.21",
+            "        command:",
+            "          - /bin/sh",
+            "          - -c",
+            '          - echo "waiting"',
+        ])
+
+    lines.extend([
+        "    containers:",
+        "      - name: runner",
+        "        image: ghcr.io/actions/actions-runner:latest",
+        "        env:",
+        "          - name: RUNNER_FEATURE_FLAG_EPHEMERAL",
+        '            value: "true"',
+    ])
+
+    if include_hooks_env:
+        lines.extend([
+            "          - name: ACTIONS_RUNNER_CONTAINER_HOOKS",
+            f"            value: {hooks_path}",
+        ])
+
+    return "\n".join(lines) + "\n"
+
+
 def make_full_runner_yaml(
     cpu: str = "4",
     memory: str = "16Gi",
     gpu: str | None = None,
+    include_init_container: bool = True,
+    include_hooks_env: bool = True,
+    hooks_path: str = "/opt/runner-hooks/dist/index.js",
 ) -> str:
     """Build a complete two-document runner YAML (Helm values + ConfigMap)."""
     cm = make_configmap(
@@ -71,10 +117,11 @@ def make_full_runner_yaml(
         gpu_limit=gpu,
         gpu_request=gpu,
     )
-    helm_values = textwrap.dedent("""\
-        githubConfigUrl: "https://github.com/test-org"
-        runnerScaleSetName: "test-runner"
-    """)
+    helm_values = make_helm_values(
+        include_init_container=include_init_container,
+        include_hooks_env=include_hooks_env,
+        hooks_path=hooks_path,
+    )
     return helm_values + "---\n" + cm
 
 
@@ -255,6 +302,73 @@ class TestCheckOddCpu:
 
 
 # ============================================================================
+# validate_patched_hooks
+# ============================================================================
+
+
+class TestValidatePatchedHooks:
+    """Tests for patched hooks init container validation."""
+
+    def test_valid_with_hooks(self):
+        helm = make_helm_values()
+        assert validate_patched_hooks(helm) == []
+
+    def test_missing_init_container(self):
+        helm = make_helm_values(include_init_container=False)
+        issues = validate_patched_hooks(helm)
+        assert len(issues) == 1
+        assert issues[0][0] == "error"
+        assert "wait-for-hooks" in issues[0][1]
+
+    def test_missing_hooks_env(self):
+        helm = make_helm_values(include_hooks_env=False)
+        issues = validate_patched_hooks(helm)
+        assert len(issues) == 1
+        assert issues[0][0] == "error"
+        assert "ACTIONS_RUNNER_CONTAINER_HOOKS" in issues[0][1]
+
+    def test_wrong_hooks_path(self):
+        helm = make_helm_values(hooks_path="/wrong/path.js")
+        issues = validate_patched_hooks(helm)
+        assert len(issues) == 1
+        assert issues[0][0] == "error"
+        assert "dist/index.js" in issues[0][1]
+
+    def test_both_missing(self):
+        helm = make_helm_values(include_init_container=False, include_hooks_env=False)
+        issues = validate_patched_hooks(helm)
+        assert len(issues) == 2
+
+    def test_invalid_yaml(self):
+        issues = validate_patched_hooks("{{not valid}}")
+        assert len(issues) == 1
+        assert "parse" in issues[0][1].lower()
+
+    def test_no_template_spec(self):
+        helm = textwrap.dedent("""\
+            githubConfigUrl: "https://github.com/test-org"
+            runnerScaleSetName: "test-runner"
+        """)
+        issues = validate_patched_hooks(helm)
+        assert len(issues) >= 1
+
+    def test_no_runner_container(self):
+        helm = textwrap.dedent("""\
+            githubConfigUrl: "https://github.com/test-org"
+            template:
+              spec:
+                initContainers:
+                  - name: wait-for-hooks
+                    image: alpine
+                containers:
+                  - name: sidecar
+                    image: busybox
+        """)
+        issues = validate_patched_hooks(helm)
+        assert any("runner" in i[1].lower() for i in issues)
+
+
+# ============================================================================
 # validate_file
 # ============================================================================
 
@@ -282,6 +396,22 @@ class TestValidateFile:
         errors, warnings = validate_file(f)
         assert errors == 0
         assert warnings == 1
+
+    def test_missing_init_container(self, tmp_path: Path):
+        f = tmp_path / "no-init.yaml"
+        f.write_text(make_full_runner_yaml(
+            cpu="4", memory="16Gi", include_init_container=False,
+        ))
+        errors, _warnings = validate_file(f)
+        assert errors >= 1
+
+    def test_missing_hooks_env(self, tmp_path: Path):
+        f = tmp_path / "no-hooks-env.yaml"
+        f.write_text(make_full_runner_yaml(
+            cpu="4", memory="16Gi", include_hooks_env=False,
+        ))
+        errors, _warnings = validate_file(f)
+        assert errors >= 1
 
     def test_no_separator(self, tmp_path: Path):
         f = tmp_path / "broken.yaml"

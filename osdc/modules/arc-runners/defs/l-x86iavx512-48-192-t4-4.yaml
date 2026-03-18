@@ -4,6 +4,6 @@ runner:
   name: l-x86iavx512-48-192-t4-4
   instance_type: g4dn.12xlarge
   disk_size: 150
-  vcpu: 48
-  memory: 192Gi
+  vcpu: 45
+  memory: 188Gi
   gpu: 4
