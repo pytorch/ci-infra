@@ -595,9 +595,9 @@ test:
     ERRORS=0
 
     # Find all directories containing test_*.py files (exclude e2e and smoke tests)
-    TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
+    TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -path '*/.venv' -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
     if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
-        TEST_DIRS="$TEST_DIRS $(find "{{ROOT}}" -path "{{UPSTREAM}}" -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)"
+        TEST_DIRS="$TEST_DIRS $(find "{{ROOT}}" -path "{{UPSTREAM}}" -prune -o -path '*/.scratch' -prune -o -path '*/.venv' -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)"
     fi
 
     if [[ -z "$TEST_DIRS" ]]; then

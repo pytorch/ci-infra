@@ -72,30 +72,36 @@ def make_helm_values(
     ]
 
     if include_init_container:
-        lines.extend([
-            "    initContainers:",
-            "      - name: wait-for-hooks",
-            "        image: public.ecr.aws/docker/library/alpine:3.21",
-            "        command:",
-            "          - /bin/sh",
-            "          - -c",
-            '          - echo "waiting"',
-        ])
+        lines.extend(
+            [
+                "    initContainers:",
+                "      - name: wait-for-hooks",
+                "        image: public.ecr.aws/docker/library/alpine:3.21",
+                "        command:",
+                "          - /bin/sh",
+                "          - -c",
+                '          - echo "waiting"',
+            ]
+        )
 
-    lines.extend([
-        "    containers:",
-        "      - name: runner",
-        "        image: ghcr.io/actions/actions-runner:latest",
-        "        env:",
-        "          - name: RUNNER_FEATURE_FLAG_EPHEMERAL",
-        '            value: "true"',
-    ])
+    lines.extend(
+        [
+            "    containers:",
+            "      - name: runner",
+            "        image: ghcr.io/actions/actions-runner:latest",
+            "        env:",
+            "          - name: RUNNER_FEATURE_FLAG_EPHEMERAL",
+            '            value: "true"',
+        ]
+    )
 
     if include_hooks_env:
-        lines.extend([
-            "          - name: ACTIONS_RUNNER_CONTAINER_HOOKS",
-            f"            value: {hooks_path}",
-        ])
+        lines.extend(
+            [
+                "          - name: ACTIONS_RUNNER_CONTAINER_HOOKS",
+                f"            value: {hooks_path}",
+            ]
+        )
 
     return "\n".join(lines) + "\n"
 
@@ -399,17 +405,25 @@ class TestValidateFile:
 
     def test_missing_init_container(self, tmp_path: Path):
         f = tmp_path / "no-init.yaml"
-        f.write_text(make_full_runner_yaml(
-            cpu="4", memory="16Gi", include_init_container=False,
-        ))
+        f.write_text(
+            make_full_runner_yaml(
+                cpu="4",
+                memory="16Gi",
+                include_init_container=False,
+            )
+        )
         errors, _warnings = validate_file(f)
         assert errors >= 1
 
     def test_missing_hooks_env(self, tmp_path: Path):
         f = tmp_path / "no-hooks-env.yaml"
-        f.write_text(make_full_runner_yaml(
-            cpu="4", memory="16Gi", include_hooks_env=False,
-        ))
+        f.write_text(
+            make_full_runner_yaml(
+                cpu="4",
+                memory="16Gi",
+                include_hooks_env=False,
+            )
+        )
         errors, _warnings = validate_file(f)
         assert errors >= 1
 

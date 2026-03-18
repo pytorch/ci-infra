@@ -18,7 +18,6 @@ Reads:
 """
 
 import argparse
-import math
 import os
 import sys
 from itertools import combinations_with_replacement
@@ -129,14 +128,16 @@ def load_runner_defs(dirs: list[Path]) -> list[dict]:
             if not data or "runner" not in data:
                 continue
             r = data["runner"]
-            runners.append({
-                "name": r["name"],
-                "instance_type": r["instance_type"],
-                "vcpu": int(r["vcpu"]),
-                "memory_mi": parse_memory(r["memory"]),
-                "gpu": int(r.get("gpu", 0)),
-                "file": f.name,
-            })
+            runners.append(
+                {
+                    "name": r["name"],
+                    "instance_type": r["instance_type"],
+                    "vcpu": int(r["vcpu"]),
+                    "memory_mi": parse_memory(r["memory"]),
+                    "gpu": int(r.get("gpu", 0)),
+                    "file": f.name,
+                }
+            )
     return runners
 
 
@@ -241,19 +242,21 @@ def find_valid_combos(
             gpu_util = total_gpu / avail_gpu * 100 if avail_gpu > 0 else 0
 
             runner_names = [runners[i]["name"] for i in combo]
-            combos.append({
-                "runners": runner_names,
-                "count": count,
-                "cpu_used_m": total_cpu,
-                "mem_used_mi": total_mem,
-                "gpu_used": total_gpu,
-                "cpu_util": cpu_util,
-                "mem_util": mem_util,
-                "gpu_util": gpu_util,
-                "cpu_waste_m": avail_cpu - total_cpu,
-                "mem_waste_mi": avail_mem - total_mem,
-                "gpu_waste": avail_gpu - total_gpu,
-            })
+            combos.append(
+                {
+                    "runners": runner_names,
+                    "count": count,
+                    "cpu_used_m": total_cpu,
+                    "mem_used_mi": total_mem,
+                    "gpu_used": total_gpu,
+                    "cpu_util": cpu_util,
+                    "mem_util": mem_util,
+                    "gpu_util": gpu_util,
+                    "cpu_waste_m": avail_cpu - total_cpu,
+                    "mem_waste_mi": avail_mem - total_mem,
+                    "gpu_waste": avail_gpu - total_gpu,
+                }
+            )
 
     return combos
 
@@ -274,9 +277,11 @@ def find_maximal_combos(combos: list[dict], alloc: dict, runners: list[dict]) ->
         can_add_more = False
         for r in runners:
             c, m, g = per_runner_total(r)
-            if (combo["cpu_used_m"] + c <= avail_cpu
-                    and combo["mem_used_mi"] + m <= avail_mem
-                    and combo["gpu_used"] + g <= avail_gpu):
+            if (
+                combo["cpu_used_m"] + c <= avail_cpu
+                and combo["mem_used_mi"] + m <= avail_mem
+                and combo["gpu_used"] + g <= avail_gpu
+            ):
                 can_add_more = True
                 break
         if not can_add_more:
@@ -302,17 +307,19 @@ def print_node_analysis(
     print(f"\n{'━' * 80}")
     print(f"{BOLD}{CYAN}Node Type: {instance_type}{NC}")
     spec = INSTANCE_SPECS[instance_type]
-    print(f"  Total: {spec['vcpu']} vCPU, {spec['memory_gib']}Gi RAM"
-          + (f", {spec['gpu']} GPU" if spec["gpu"] > 0 else ""))
-    print(f"  Kubelet reserved: {alloc['kube_reserved_cpu_m']}m CPU, "
-          f"{format_mem(alloc['kube_reserved_mem_mi'])} RAM")
-    print(f"  DaemonSet overhead: {alloc['ds_cpu_m']}m CPU, "
-          f"{format_mem(alloc['ds_mem_mi'])} RAM")
-    print(f"  {GREEN}Allocatable for runners: "
-          f"{alloc['allocatable_cpu_m']}m CPU ({alloc['allocatable_cpu_m'] / 1000:.1f} cores), "
-          f"{format_mem(alloc['allocatable_mem_mi'])} RAM"
-          + (f", {alloc['allocatable_gpu']} GPU" if alloc['allocatable_gpu'] > 0 else "")
-          + f"{NC}")
+    print(
+        f"  Total: {spec['vcpu']} vCPU, {spec['memory_gib']}Gi RAM"
+        + (f", {spec['gpu']} GPU" if spec["gpu"] > 0 else "")
+    )
+    print(f"  Kubelet reserved: {alloc['kube_reserved_cpu_m']}m CPU, {format_mem(alloc['kube_reserved_mem_mi'])} RAM")
+    print(f"  DaemonSet overhead: {alloc['ds_cpu_m']}m CPU, {format_mem(alloc['ds_mem_mi'])} RAM")
+    print(
+        f"  {GREEN}Allocatable for runners: "
+        f"{alloc['allocatable_cpu_m']}m CPU ({alloc['allocatable_cpu_m'] / 1000:.1f} cores), "
+        f"{format_mem(alloc['allocatable_mem_mi'])} RAM"
+        + (f", {alloc['allocatable_gpu']} GPU" if alloc["allocatable_gpu"] > 0 else "")
+        + f"{NC}"
+    )
     print()
 
     # List runners targeting this node
@@ -339,19 +346,29 @@ def print_node_analysis(
         mem_pct = used_mem / alloc["allocatable_mem_mi"] * 100
         gpu_pct = used_gpu / alloc["allocatable_gpu"] * 100 if alloc["allocatable_gpu"] > 0 else 100
 
-        bottleneck = "CPU" if max_by_cpu <= max_by_mem and max_by_cpu <= max_by_gpu else (
-            "MEM" if max_by_mem <= max_by_gpu else "GPU")
+        bottleneck = (
+            "CPU"
+            if max_by_cpu <= max_by_mem and max_by_cpu <= max_by_gpu
+            else ("MEM" if max_by_mem <= max_by_gpu else "GPU")
+        )
         waste_cpu = alloc["allocatable_cpu_m"] - used_cpu
         waste_mem = alloc["allocatable_mem_mi"] - used_mem
 
-        color = GREEN if min(cpu_pct, mem_pct) >= threshold else (
-            YELLOW if min(cpu_pct, mem_pct) >= threshold * 0.9 else RED)
+        color = (
+            GREEN
+            if min(cpu_pct, mem_pct) >= threshold
+            else (YELLOW if min(cpu_pct, mem_pct) >= threshold * 0.9 else RED)
+        )
 
         print(f"    {color}{r['name']}{NC}: {max_pods} pods")
-        print(f"      CPU: {cpu_pct:5.1f}% ({used_cpu}m / {alloc['allocatable_cpu_m']}m) "
-              f"waste: {waste_cpu}m ({waste_cpu / 1000:.1f} cores)")
-        print(f"      MEM: {mem_pct:5.1f}% ({format_mem(used_mem)} / {format_mem(alloc['allocatable_mem_mi'])}) "
-              f"waste: {format_mem(waste_mem)}")
+        print(
+            f"      CPU: {cpu_pct:5.1f}% ({used_cpu}m / {alloc['allocatable_cpu_m']}m) "
+            f"waste: {waste_cpu}m ({waste_cpu / 1000:.1f} cores)"
+        )
+        print(
+            f"      MEM: {mem_pct:5.1f}% ({format_mem(used_mem)} / {format_mem(alloc['allocatable_mem_mi'])}) "
+            f"waste: {format_mem(waste_mem)}"
+        )
         if alloc["allocatable_gpu"] > 0:
             print(f"      GPU: {gpu_pct:5.1f}% ({used_gpu} / {alloc['allocatable_gpu']})")
         print(f"      Bottleneck: {bottleneck}")
@@ -393,16 +410,18 @@ def print_node_analysis(
 def _print_combo(combo: dict, alloc: dict, threshold: float, rank: int):
     """Print a single combo's utilization."""
     from collections import Counter
+
     counts = Counter(combo["runners"])
     desc = ", ".join(f"{n}x{name}" for name, n in sorted(counts.items()))
     min_util = min(combo["cpu_util"], combo["mem_util"])
-    color = GREEN if min_util >= threshold else (
-        YELLOW if min_util >= threshold * 0.9 else RED)
+    color = GREEN if min_util >= threshold else (YELLOW if min_util >= threshold * 0.9 else RED)
     print(f"      {color}#{rank}{NC} [{desc}]")
-    print(f"         CPU: {combo['cpu_util']:5.1f}%  "
-          f"MEM: {combo['mem_util']:5.1f}%"
-          + (f"  GPU: {combo['gpu_util']:5.1f}%" if alloc["allocatable_gpu"] > 0 else "")
-          + f"  waste: {combo['cpu_waste_m'] / 1000:.1f}c + {format_mem(combo['mem_waste_mi'])}")
+    print(
+        f"         CPU: {combo['cpu_util']:5.1f}%  "
+        f"MEM: {combo['mem_util']:5.1f}%"
+        + (f"  GPU: {combo['gpu_util']:5.1f}%" if alloc["allocatable_gpu"] > 0 else "")
+        + f"  waste: {combo['cpu_waste_m'] / 1000:.1f}c + {format_mem(combo['mem_waste_mi'])}"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -410,7 +429,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Analyze runner-to-node packing efficiency",
     )
     parser.add_argument(
-        "--threshold", type=float, default=90.0,
+        "--threshold",
+        type=float,
+        default=90.0,
         help="Utilization threshold %% below which combos are flagged (default: 90)",
     )
     args = parser.parse_args(argv)
@@ -423,10 +444,7 @@ def main(argv: list[str] | None = None) -> int:
     if not consumer_root.is_dir():
         # Try to find consumer root by walking up
         candidate = upstream_dir.parent.parent  # consumer osdc/
-        if (candidate / "clusters.yaml").exists():
-            consumer_root = candidate
-        else:
-            consumer_root = upstream_dir
+        consumer_root = candidate if (candidate / "clusters.yaml").exists() else upstream_dir
 
     # Collect runner defs from upstream + consumer
     runner_dirs = [
@@ -471,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Utilization threshold: {args.threshold}%")
 
     runners = load_runner_defs(runner_dirs)
-    nodepools = load_nodepool_defs(nodepool_dirs)
+    _nodepools = load_nodepool_defs(nodepool_dirs)  # loaded for future use
 
     if not runners:
         print(f"{RED}No runner definitions found{NC}")
@@ -512,11 +530,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\n{'━' * 80}")
     if total_issues > 0:
-        print(f"{RED}{BOLD}Found {total_issues} runner type(s) with homogeneous "
-              f"utilization below {args.threshold}%{NC}")
+        print(
+            f"{RED}{BOLD}Found {total_issues} runner type(s) with homogeneous utilization below {args.threshold}%{NC}"
+        )
     else:
-        print(f"{GREEN}{BOLD}All runner types achieve >= {args.threshold}% "
-              f"utilization in homogeneous packing{NC}")
+        print(f"{GREEN}{BOLD}All runner types achieve >= {args.threshold}% utilization in homogeneous packing{NC}")
 
     return 0
 

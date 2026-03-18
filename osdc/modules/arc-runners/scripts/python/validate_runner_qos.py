@@ -217,15 +217,14 @@ def validate_patched_hooks(helm_yaml: str) -> list[tuple[str, str]]:
     if not isinstance(init_containers, list):
         init_containers = []
 
-    has_wait_for_hooks = any(
-        isinstance(ic, dict) and ic.get("name") == "wait-for-hooks"
-        for ic in init_containers
-    )
+    has_wait_for_hooks = any(isinstance(ic, dict) and ic.get("name") == "wait-for-hooks" for ic in init_containers)
     if not has_wait_for_hooks:
-        errors.append((
-            "error",
-            "Missing 'wait-for-hooks' init container (required for patched runner-container-hooks)",
-        ))
+        errors.append(
+            (
+                "error",
+                "Missing 'wait-for-hooks' init container (required for patched runner-container-hooks)",
+            )
+        )
 
     # Check for ACTIONS_RUNNER_CONTAINER_HOOKS env var in runner container
     containers = template_spec.get("containers", [])
@@ -253,16 +252,20 @@ def validate_patched_hooks(helm_yaml: str) -> list[tuple[str, str]]:
             break
 
     if hooks_env is None:
-        errors.append((
-            "error",
-            "Runner container missing ACTIONS_RUNNER_CONTAINER_HOOKS env var",
-        ))
+        errors.append(
+            (
+                "error",
+                "Runner container missing ACTIONS_RUNNER_CONTAINER_HOOKS env var",
+            )
+        )
     elif not hooks_env.get("value", "").endswith("/dist/index.js"):
-        errors.append((
-            "error",
-            f"ACTIONS_RUNNER_CONTAINER_HOOKS should point to patched hooks dist/index.js, "
-            f"got: {hooks_env.get('value', '')}",
-        ))
+        errors.append(
+            (
+                "error",
+                f"ACTIONS_RUNNER_CONTAINER_HOOKS should point to patched hooks dist/index.js, "
+                f"got: {hooks_env.get('value', '')}",
+            )
+        )
 
     return errors
 
