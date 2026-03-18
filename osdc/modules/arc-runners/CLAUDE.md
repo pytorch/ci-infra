@@ -35,7 +35,7 @@ GitHub Actions self-hosted runners via Actions Runner Controller. Requires the `
 
 ## Two-tier pod model
 
-- **Runner pod** (200m CPU, 512Mi) — lightweight ARC orchestrator, mounts hook ConfigMap
+- **Runner pod** (750m CPU, 512Mi) — lightweight ARC orchestrator, mounts hook ConfigMap
 - **Job pod** (resources from def) — runs actual workflow containers, gets git cache volume
 
 ## Configuration resolution

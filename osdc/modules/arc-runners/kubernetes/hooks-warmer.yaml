@@ -1,0 +1,144 @@
+# Runner container hooks warmer DaemonSet.
+# Downloads the patched runner-container-hooks zip once per node to NVMe,
+# so runner pods can mount it read-only without per-pod downloads.
+#
+# Fix: find -exec stat {} \; -> find -exec stat {} + (10-100x faster)
+# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.1
+# Remove this when upstream merges the fix into actions/runner-container-hooks
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: runner-hooks-warmer
+  namespace: arc-runners
+  labels:
+    app: runner-hooks-warmer
+    app.kubernetes.io/name: runner-hooks-warmer
+    app.kubernetes.io/component: runner-infrastructure
+spec:
+  selector:
+    matchLabels:
+      app: runner-hooks-warmer
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "25%"
+
+  template:
+    metadata:
+      labels:
+        app: runner-hooks-warmer
+
+    spec:
+      priorityClassName: system-node-critical
+
+      # Tolerate ALL taints used by Karpenter nodepools
+      tolerations:
+        - key: instance-type
+          operator: Exists
+          effect: NoSchedule
+        - key: git-cache-not-ready
+          operator: Exists
+          effect: NoSchedule
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        - key: cpu-type
+          operator: Exists
+          effect: NoSchedule
+        - key: karpenter.sh/unschedulable
+          operator: Exists
+          effect: NoSchedule
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/memory-pressure
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/pid-pressure
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/unschedulable
+          operator: Exists
+          effect: NoSchedule
+
+      # Run on Karpenter-managed runner nodes only
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - github-runner
+
+      containers:
+        - name: hooks-warmer
+          image: public.ecr.aws/docker/library/alpine:3.21
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              HOOKS_VERSION="0.8.1"
+              HOOKS_URL="https://github.com/jeanschmidt/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
+              DEST="/mnt/runner-container-hooks"
+              MARKER="$DEST/.version"
+
+              # If already downloaded at this version, just sleep
+              if [ -f "$MARKER" ] && [ "$(cat "$MARKER")" = "$HOOKS_VERSION" ]; then
+                  echo "Hooks v${HOOKS_VERSION} already present at $DEST"
+              else
+                  echo "Downloading hooks v${HOOKS_VERSION}..."
+                  apk add --no-cache curl unzip >/dev/null 2>&1
+                  TMP=$(mktemp -d)
+                  curl -fsSL -o "$TMP/hooks.zip" "$HOOKS_URL"
+                  mkdir -p "$DEST"
+                  # Extract to temp dir, then atomic swap via mv
+                  unzip -o "$TMP/hooks.zip" -d "$DEST/dist-new"
+                  mv "$DEST/dist" "$DEST/dist-old" 2>/dev/null || true
+                  mv "$DEST/dist-new" "$DEST/dist"
+                  rm -rf "$DEST/dist-old"
+
+                  if [ ! -f "$DEST/dist/index.js" ]; then
+                      echo "ERROR: index.js not found after extraction — zip structure may have changed"
+                      rm -rf "$DEST/dist"
+                      exit 1
+                  fi
+
+                  echo "$HOOKS_VERSION" > "$MARKER"
+                  rm -rf "$TMP"
+                  echo "Hooks v${HOOKS_VERSION} installed to $DEST/dist/"
+              fi
+
+              # Stay alive so DaemonSet doesn't restart
+              echo "Hooks warmer idle."
+              while true; do sleep 3600; done
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+          volumeMounts:
+            - name: hooks-dir
+              mountPath: /mnt/runner-container-hooks
+
+      volumes:
+        - name: hooks-dir
+          hostPath:
+            path: /mnt/runner-container-hooks
+            type: DirectoryOrCreate
