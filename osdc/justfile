@@ -595,9 +595,9 @@ test:
     ERRORS=0
 
     # Find all directories containing test_*.py files (exclude e2e and smoke tests)
-    TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
+    TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -path '*/.venv' -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
     if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
-        TEST_DIRS="$TEST_DIRS $(find "{{ROOT}}" -path "{{UPSTREAM}}" -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)"
+        TEST_DIRS="$TEST_DIRS $(find "{{ROOT}}" -path "{{UPSTREAM}}" -prune -o -path '*/.scratch' -prune -o -path '*/.venv' -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)"
     fi
 
     if [[ -z "$TEST_DIRS" ]]; then
@@ -678,6 +678,34 @@ smoke cluster:
         -v --tb=short -rs \
         --cluster-id="$CLUSTER" \
         --rootdir="${UPSTREAM}"
+
+# Run full integration test against a cluster
+integration-test cluster *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+
+    UPSTREAM="{{UPSTREAM}}"
+    ROOT="{{ROOT}}"
+    CLUSTER="{{cluster}}"
+
+    # Ensure kubectl is configured for the target cluster
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER_NAME=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" cluster_name)
+    REGION=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" region)
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+        aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" --alias "$CLUSTER_NAME"
+
+    export OSDC_ROOT="${ROOT}"
+    export OSDC_UPSTREAM="${UPSTREAM}"
+
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+        uv run "${UPSTREAM}/integration-tests/scripts/python/run.py" \
+            --cluster-id "$CLUSTER" \
+            --clusters-yaml "{{CLUSTERS_YAML}}" \
+            --upstream-dir "${UPSTREAM}" \
+            --root-dir "${ROOT}" \
+            {{args}}
 
 # ============================================================================
 # LINTING

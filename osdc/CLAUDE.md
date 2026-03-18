@@ -467,6 +467,76 @@ helm get values <release> -n <ns>                    # Current values
 helm history <release> -n <ns>                       # Release history
 ```
 
+### Querying Logs in Grafana Cloud Loki
+
+**When a pod has terminated, a node was evicted, or `kubectl logs` is unavailable**, logs are still available in Grafana Cloud Loki. The Alloy DaemonSet pushes all pod and system journal logs to Loki continuously, so historical logs survive pod/node termination.
+
+**Step 1 — Extract credentials from the cluster:**
+
+```bash
+LOKI_USER=$(kubectl get secret grafana-cloud-credentials -n logging -o jsonpath='{.data.loki-username}' | base64 -d)
+LOKI_READ_KEY=$(kubectl get secret grafana-cloud-credentials -n logging -o jsonpath='{.data.loki-api-key-read}' | base64 -d)
+LOKI_URL="https://logs-prod-021.grafana.net"
+```
+
+The Loki URL comes from `clusters.yaml` (`logging.grafana_cloud_loki_url`), minus the `/loki/api/v1/push` suffix.
+
+**Step 2 — Query with curl:**
+
+```bash
+# Journal logs by unit (kubelet, containerd)
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="<cluster-name>", unit="kubelet.service"}' \
+    --data-urlencode "limit=100" \
+    --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+
+# Filter by node (structured metadata — use pipe syntax)
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="<cluster-name>", unit="kubelet.service"} | node="<node-name>"' \
+    --data-urlencode "limit=100" \
+    --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+
+# Pod logs by namespace + container (when pod log collection is active)
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="<cluster-name>", namespace="arc-runners", container="runner"}' \
+    --data-urlencode "limit=100" \
+    --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+
+# Filter pod logs by specific pod name (structured metadata)
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="<cluster-name>", namespace="arc-runners"} | pod="<pod-name>"' \
+    --data-urlencode "limit=100" \
+    --data-urlencode "start=$(date -u -v-6H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+
+# List available labels
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" "$LOKI_URL/loki/api/v1/labels" | jq .
+
+# List values for a label
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" "$LOKI_URL/loki/api/v1/label/cluster/values" | jq .
+```
+
+**Available labels:**
+
+| Label | Type | Usage in LogQL |
+|-------|------|---------------|
+| `cluster` | Indexed | `{cluster="pytorch-arc-staging"}` |
+| `namespace` | Indexed | `{namespace="arc-runners"}` |
+| `container` | Indexed | `{container="runner"}` |
+| `app` | Indexed | `{app="harbor-core"}` |
+| `unit` | Indexed | `{unit="kubelet.service"}` (journal logs only) |
+| `pod` | Structured metadata | `\| pod="my-pod-xyz"` (pipe syntax) |
+| `node` | Structured metadata | `\| node="ip-10-4-34-110..."` (pipe syntax) |
+
+**Note:** `pod` and `node` are structured metadata (Loki 3.x), not indexed labels. Use the pipe `|` syntax to filter on them, not label matchers `{}`. Indexed labels go inside `{}`, structured metadata goes after `|`.
+
 ### tofu (OpenTofu) — read-only
 
 To inspect state for a specific cluster, first init with the cluster's backend config:
@@ -496,7 +566,8 @@ If either fails, fix the issues before finishing. Do not defer lint or test fail
 
 ## Code Style
 
-- **ALWAYS use 4 spaces for indentation** — in ALL files: Python, YAML, JSON, HCL, Alloy, shell, Dockerfiles, Kubernetes manifests, Helm values, everything. The `.editorconfig` enforces this and CI will fail on non-4-space indentation.
+- **ALWAYS use 4 spaces for indentation** — in ALL files: Python, JSON, HCL, Alloy, shell, Dockerfiles, everything. The `.editorconfig` enforces this and CI will fail on non-4-space indentation.
+- **EXCEPTION: YAML files use 2 spaces** — Kubernetes manifests, Helm values, kustomization files, and all other YAML files use 2-space indentation. The yamllint config enforces this. Follow the existing patterns in `base/kubernetes/` and `modules/*/kubernetes/`.
 
 ## Don't Do
 
