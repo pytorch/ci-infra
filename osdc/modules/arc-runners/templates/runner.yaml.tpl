@@ -108,6 +108,33 @@ template:
         value: "true"
         effect: NoSchedule{{GPU_TOLERATIONS}}
 
+    # Wait for patched hooks to be available on the node (placed by
+    # runner-hooks-warmer DaemonSet). Polls every 10s for the index.js.
+    # Remove this when upstream merges the fix into actions/runner-container-hooks
+    initContainers:
+      - name: wait-for-hooks
+        image: public.ecr.aws/docker/library/alpine:3.21
+        command:
+          - /bin/sh
+          - -c
+          - |
+            TIMEOUT=300
+            ELAPSED=0
+            echo "Waiting for patched hooks at /opt/runner-hooks/dist/index.js..."
+            while [ ! -f /opt/runner-hooks/dist/index.js ]; do
+              if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+                echo "ERROR: Timed out waiting for patched hooks after ${TIMEOUT}s"
+                exit 1
+              fi
+              sleep 10
+              ELAPSED=$((ELAPSED + 10))
+            done
+            echo "Patched hooks found."
+        volumeMounts:
+          - name: patched-hooks
+            mountPath: /opt/runner-hooks
+            readOnly: true
+
     containers:
       - name: runner
         image: ghcr.io/actions/actions-runner:latest
@@ -118,20 +145,31 @@ template:
           # Point to hook template for job pod customization
           - name: ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE
             value: /home/runner/hook-extensions/job-pod.yaml
+          # Use patched hooks from DaemonSet instead of baked-in ones
+          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.1
+          - name: ACTIONS_RUNNER_CONTAINER_HOOKS
+            value: /opt/runner-hooks/dist/index.js
         resources:
-          # LIGHTWEIGHT runner pod - job pods get the heavy resources
-          # Runner is just an orchestrator, doesn't do the actual work
+          # Runner pod needs enough CPU for the k8s-novolume hook's
+          # workspace copy verification (find -exec stat over all files)
           limits:
-            cpu: "200m"
+            cpu: "750m"
             memory: "512Mi"
           requests:
-            cpu: "200m"
+            cpu: "750m"
             memory: "512Mi"
         volumeMounts:
           - name: hook-extensions
             mountPath: /home/runner/hook-extensions
+          - name: patched-hooks
+            mountPath: /opt/runner-hooks
+            readOnly: true
 
     volumes:
+      - name: patched-hooks
+        hostPath:
+          path: /mnt/runner-container-hooks
+          type: DirectoryOrCreate
       - name: hook-extensions
         configMap:
           name: arc-runner-hook-{{RUNNER_NAME_NORMALIZED}}

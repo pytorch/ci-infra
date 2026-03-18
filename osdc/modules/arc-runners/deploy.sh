@@ -71,9 +71,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Ensure namespace exists before parallel helm installs
-kubectl create namespace arc-runners 2>/dev/null || true
-
 deploy_one_runner() {
   local runner_config="$1"
   local runner_name

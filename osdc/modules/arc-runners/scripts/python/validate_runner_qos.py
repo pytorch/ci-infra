@@ -3,12 +3,14 @@
 # requires-python = ">=3.12"
 # dependencies = ["pyyaml>=6.0"]
 # ///
-"""Validate ARC runner configs for Guaranteed QoS.
+"""Validate ARC runner configs for Guaranteed QoS and patched hooks.
 
-Checks that all generated job pod hook templates have:
+Checks that all generated runner configs have:
     - resources.requests == resources.limits for CPU, memory, and GPU
     - Integer CPU values (not millicores)
     - Even CPU counts (warning only — topology manager prefers even)
+    - wait-for-hooks init container (patched runner-container-hooks)
+    - ACTIONS_RUNNER_CONTAINER_HOOKS env var pointing to patched hooks
 
 Operates on: modules/arc-runners/generated/*.yaml
 Called by: modules/arc-runners/deploy.sh before deploying
@@ -183,6 +185,91 @@ def validate_gpu_qos(gpu_limit: str, gpu_request: str) -> list[tuple[str, str]]:
     return errors
 
 
+def validate_patched_hooks(helm_yaml: str) -> list[tuple[str, str]]:
+    """Validate that the runner template includes patched hooks init container.
+
+    Checks:
+        1. An initContainer named 'wait-for-hooks' exists in template.spec
+        2. The runner container has ACTIONS_RUNNER_CONTAINER_HOOKS env var
+           pointing to the patched hooks path
+
+    Returns list of (level, message) tuples where level is 'error'.
+    """
+    errors = []
+
+    try:
+        doc = yaml.safe_load(helm_yaml)
+    except yaml.YAMLError:
+        errors.append(("error", "Failed to parse Helm values YAML"))
+        return errors
+
+    if not isinstance(doc, dict):
+        errors.append(("error", "Helm values is not a mapping"))
+        return errors
+
+    # Check for wait-for-hooks init container
+    template_spec = doc.get("template", {}).get("spec", {})
+    if not isinstance(template_spec, dict):
+        errors.append(("error", "Missing template.spec in Helm values"))
+        return errors
+
+    init_containers = template_spec.get("initContainers", [])
+    if not isinstance(init_containers, list):
+        init_containers = []
+
+    has_wait_for_hooks = any(isinstance(ic, dict) and ic.get("name") == "wait-for-hooks" for ic in init_containers)
+    if not has_wait_for_hooks:
+        errors.append(
+            (
+                "error",
+                "Missing 'wait-for-hooks' init container (required for patched runner-container-hooks)",
+            )
+        )
+
+    # Check for ACTIONS_RUNNER_CONTAINER_HOOKS env var in runner container
+    containers = template_spec.get("containers", [])
+    if not isinstance(containers, list):
+        containers = []
+
+    runner_container = None
+    for c in containers:
+        if isinstance(c, dict) and c.get("name") == "runner":
+            runner_container = c
+            break
+
+    if runner_container is None:
+        errors.append(("error", "Missing 'runner' container in template.spec"))
+        return errors
+
+    env_vars = runner_container.get("env", [])
+    if not isinstance(env_vars, list):
+        env_vars = []
+
+    hooks_env = None
+    for ev in env_vars:
+        if isinstance(ev, dict) and ev.get("name") == "ACTIONS_RUNNER_CONTAINER_HOOKS":
+            hooks_env = ev
+            break
+
+    if hooks_env is None:
+        errors.append(
+            (
+                "error",
+                "Runner container missing ACTIONS_RUNNER_CONTAINER_HOOKS env var",
+            )
+        )
+    elif not hooks_env.get("value", "").endswith("/dist/index.js"):
+        errors.append(
+            (
+                "error",
+                f"ACTIONS_RUNNER_CONTAINER_HOOKS should point to patched hooks dist/index.js, "
+                f"got: {hooks_env.get('value', '')}",
+            )
+        )
+
+    return errors
+
+
 def check_odd_cpu(cpu_value: str) -> list[tuple[str, str]]:
     """Warn if CPU count is odd (topology manager prefers even).
 
@@ -228,6 +315,7 @@ def validate_file(filepath: Path) -> tuple[int, int]:
         print()
         return 1, 0
 
+    helm_yaml = parts[0]
     configmap_yaml = parts[1]
 
     # If split left a leading newline, that's fine for YAML parsing
@@ -235,6 +323,15 @@ def validate_file(filepath: Path) -> tuple[int, int]:
 
     errors = 0
     warnings = 0
+
+    # Validate patched hooks init container
+    hooks_issues = validate_patched_hooks(helm_yaml)
+    for level, msg in hooks_issues:
+        if level == "error":
+            print(f"  {RED}✗{NC} {msg}")
+            errors += 1
+    if not hooks_issues:
+        print(f"  {GREEN}✓{NC} Patched hooks: wait-for-hooks init container present")
 
     # Validate CPU
     cpu_issues = validate_cpu_qos(resources["cpu_limit"], resources["cpu_request"])

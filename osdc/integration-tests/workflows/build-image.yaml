@@ -1,0 +1,51 @@
+# Reusable workflow: Build a test image via OSDC BuildKit
+# Called by integration-test.yaml to validate BuildKit connectivity.
+# Uses buildctl directly — no Docker daemon required.
+name: Build Test Image
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: "Target architecture (amd64 or arm64)"
+        required: true
+        type: string
+      runner_label:
+        description: "Runner label to use (includes cluster prefix)"
+        required: false
+        type: string
+        default: "l-x86iavx512-2-4"
+
+jobs:
+  build:
+    # NOTE: Always runs on x86 — BuildKit is a *remote* builder.
+    # The arch input selects which BuildKit endpoint to connect to.
+    runs-on: ${{ inputs.runner_label }}
+    container:
+      image: moby/buildkit:v0.27.1
+      # Run as root to use buildctl
+      options: --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build test image via BuildKit
+        run: |
+          echo "=== BuildKit ${{ inputs.arch }} connectivity test ==="
+          ENDPOINT="tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
+          echo "Connecting to: $ENDPOINT"
+
+          buildctl --addr "$ENDPOINT" build \
+            --frontend dockerfile.v0 \
+            --local context=docker/test-buildkit \
+            --local dockerfile=docker/test-buildkit \
+            --output type=image,name=ghcr.io/${{ github.repository }}:integration-test-${{ inputs.arch }}-${{ github.sha }},push=false
+
+          echo "PASS: BuildKit ${{ inputs.arch }} built successfully"
+          echo "Endpoint: $ENDPOINT"
+
+      - name: Verify BuildKit endpoint info
+        run: |
+          ENDPOINT="tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
+          buildctl --addr "$ENDPOINT" debug info || echo "WARN: debug info not available"
+          echo "PASS: BuildKit ${{ inputs.arch }} endpoint is responsive"

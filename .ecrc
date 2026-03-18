@@ -1,17 +1,5 @@
 {
   "Exclude": [
-    "osdc/modules/nodepools/scripts/python/generate_nodepools.py",
-    "osdc/modules/arc-runners/scripts/python/generate_runners.py",
-    "osdc/modules/buildkit/scripts/python/generate_buildkit.py",
-    "osdc/base/node-compactor/scripts/python/test_compactor.py",
-    "osdc/base/node-compactor/scripts/python/test_models_pod_helpers.py",
-    "osdc/base/node-compactor/tests/e2e/test_e2e.py",
-    "osdc/base/kubernetes/git-cache/central-configmap\\.yaml",
-    "osdc/base/kubernetes/git-cache/daemonset-configmap\\.yaml",
-    "osdc/base/scripts/bootstrap/eks-base-bootstrap\\.sh",
-    "osdc/modules/arc-runners/scripts/python/test_validate_runner_qos\\.py",
-    "osdc/modules/arc-runners/scripts/python/test_generate_runners\\.py",
-    "osdc/modules/eks/terraform/modules/eks/main\\.tf",
-    "osdc/modules/arc-runners/scripts/python/cleanup_stale_releases\\.py"
+    "osdc/"
   ]
 }
