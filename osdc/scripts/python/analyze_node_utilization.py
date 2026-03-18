@@ -10,7 +10,7 @@ on a node (after subtracting kubelet + DaemonSet + runner sidecar overhead),
 and reports suboptimal configurations where resources are wasted.
 
 Usage:
-    uv run scripts/python/analyze_node_utilization.py [--threshold 90]
+    uv run scripts/python/analyze_node_utilization.py [--threshold 90] [--show-daemonsets]
 
 Reads:
     - modules/arc-runners/defs/*.yaml (+ consumer overrides)
@@ -24,6 +24,7 @@ from itertools import combinations_with_replacement
 from pathlib import Path
 
 import yaml
+from daemonset_overhead import DaemonSetOverhead, discover_daemonsets
 
 # ANSI colors
 RED = "\033[0;31m"
@@ -40,8 +41,20 @@ NC = "\033[0m"
 # From AWS documentation — add entries when supporting new instance types.
 # ---------------------------------------------------------------------------
 INSTANCE_SPECS = {
+    # x86 CPU — compute-optimized (~2 GiB/core)
+    "c7i.32xlarge": {"vcpu": 128, "memory_gib": 256, "gpu": 0},
+    "c7a.48xlarge": {"vcpu": 192, "memory_gib": 384, "gpu": 0},
+    # x86 CPU — balanced (~4 GiB/core)
+    "m6i.32xlarge": {"vcpu": 128, "memory_gib": 512, "gpu": 0},
+    "m7i.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 0},
+    # x86 CPU — memory-optimized (~8 GiB/core)
     "r5.24xlarge": {"vcpu": 96, "memory_gib": 768, "gpu": 0},
+    "r7i.48xlarge": {"vcpu": 192, "memory_gib": 1536, "gpu": 0},
+    "r7a.48xlarge": {"vcpu": 192, "memory_gib": 1536, "gpu": 0},
+    # ARM64 CPU
+    "m8g.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 0},
     "r7g.16xlarge": {"vcpu": 64, "memory_gib": 512, "gpu": 0},
+    # GPU instances
     "g4dn.12xlarge": {"vcpu": 48, "memory_gib": 192, "gpu": 4},
     "g4dn.metal": {"vcpu": 96, "memory_gib": 384, "gpu": 8},
     "g5.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
@@ -49,22 +62,6 @@ INSTANCE_SPECS = {
     "p6-b200.48xlarge": {"vcpu": 192, "memory_gib": 2048, "gpu": 8},
 }
 
-
-# ---------------------------------------------------------------------------
-# DaemonSet overhead on runner nodes (from actual manifests)
-# ---------------------------------------------------------------------------
-# Each entry: (name, cpu_millicores, memory_mib, gpu_only)
-DAEMONSETS = [
-    ("git-cache-warmer", 100, 256, False),
-    ("node-performance-tuning", 10, 32, False),
-    ("registry-mirror-config", 10, 32, False),
-    ("hooks-warmer", 10, 32, False),
-    ("alloy-logging", 100, 256, False),
-    ("node-exporter", 15, 32, False),  # chart defaults
-    # GPU-only daemonsets
-    ("nvidia-device-plugin", 0, 0, True),  # no resource requests
-    ("dcgm-exporter", 100, 128, True),
-]
 
 # Runner pod sidecar (the ARC orchestrator container, not the $job container)
 RUNNER_SIDECAR_CPU_M = 750
@@ -91,15 +88,18 @@ def kubelet_reserved(vcpu: int, memory_gib: int) -> tuple[int, int]:
     return reserved_cpu, reserved_mem
 
 
-def daemonset_overhead(is_gpu: bool) -> tuple[int, int]:
+def compute_daemonset_overhead(
+    daemonsets: list[DaemonSetOverhead],
+    is_gpu: bool,
+) -> tuple[int, int]:
     """Total DaemonSet overhead on a runner node (milliCPU, MiB)."""
     total_cpu = 0
     total_mem = 0
-    for _name, cpu, mem, gpu_only in DAEMONSETS:
-        if gpu_only and not is_gpu:
+    for ds in daemonsets:
+        if ds.gpu_only and not is_gpu:
             continue
-        total_cpu += cpu
-        total_mem += mem
+        total_cpu += ds.cpu_millicores
+        total_mem += ds.memory_mib
     return total_cpu, total_mem
 
 
@@ -160,7 +160,10 @@ def load_nodepool_defs(dirs: list[Path]) -> dict:
     return nodepools
 
 
-def compute_allocatable(instance_type: str) -> dict:
+def compute_allocatable(
+    instance_type: str,
+    daemonsets: list[DaemonSetOverhead],
+) -> dict:
     """Compute allocatable resources for an instance type after overhead."""
     if instance_type not in INSTANCE_SPECS:
         return None
@@ -168,7 +171,7 @@ def compute_allocatable(instance_type: str) -> dict:
     is_gpu = spec["gpu"] > 0
 
     kube_cpu, kube_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"])
-    ds_cpu, ds_mem = daemonset_overhead(is_gpu)
+    ds_cpu, ds_mem = compute_daemonset_overhead(daemonsets, is_gpu)
 
     total_cpu_m = spec["vcpu"] * 1000
     total_mem_mi = spec["memory_gib"] * 1024
@@ -434,6 +437,11 @@ def main(argv: list[str] | None = None) -> int:
         default=90.0,
         help="Utilization threshold %% below which combos are flagged (default: 90)",
     )
+    parser.add_argument(
+        "--show-daemonsets",
+        action="store_true",
+        help="Print discovered DaemonSets and their resource overhead, then exit",
+    )
     args = parser.parse_args(argv)
 
     # Resolve directories
@@ -445,6 +453,20 @@ def main(argv: list[str] | None = None) -> int:
         # Try to find consumer root by walking up
         candidate = upstream_dir.parent.parent  # consumer osdc/
         consumer_root = candidate if (candidate / "clusters.yaml").exists() else upstream_dir
+
+    # Discover DaemonSet overhead dynamically from manifests
+    daemonsets = discover_daemonsets(
+        upstream_dir,
+        consumer_root=consumer_root if consumer_root != upstream_dir else None,
+    )
+
+    if args.show_daemonsets:
+        print(f"{BOLD}Discovered DaemonSets ({len(daemonsets)}):{NC}\n")
+        for ds in daemonsets:
+            gpu_tag = f" {YELLOW}[GPU-only]{NC}" if ds.gpu_only else ""
+            print(f"  {ds.name}: {ds.cpu_millicores}m CPU, {ds.memory_mib}Mi RAM{gpu_tag}")
+            print(f"    {DIM}source: {ds.source}{NC}")
+        return 0
 
     # Collect runner defs from upstream + consumer
     runner_dirs = [
@@ -510,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
     for instance_type in sorted(by_instance.keys()):
         if instance_type not in INSTANCE_SPECS:
             continue
-        alloc = compute_allocatable(instance_type)
+        alloc = compute_allocatable(instance_type, daemonsets)
         type_runners = by_instance[instance_type]
         print_node_analysis(instance_type, alloc, type_runners, args.threshold)
 

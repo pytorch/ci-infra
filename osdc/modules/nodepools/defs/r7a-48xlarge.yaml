@@ -1,0 +1,10 @@
+# Karpenter NodePool definition: r7a.48xlarge
+# Memory-optimized pool for AVX-512 runners with ~8 GiB/core ratio
+# AMD EPYC (Genoa) — AVX-512 support, no AMX
+# Node disk: worst case 21x 200Gi pods + 100Gi OS = 4300Gi
+nodepool:
+  name: r7a-48xlarge
+  instance_type: r7a.48xlarge
+  arch: amd64
+  node_disk_size: 4300
+  gpu: false

@@ -6,7 +6,7 @@ Analysis of runner-to-node packing efficiency across all OSDC nodepools, with re
 
 OSDC uses Kubernetes Guaranteed QoS pods (requests == limits) for all runner workloads. Each runner type has fixed CPU and memory requirements, and each nodepool uses a single AWS instance type. When runners with different CPU:memory ratios share a nodepool, the mismatched resource is wasted.
 
-**Current state**: 36 of 39 runner types have homogeneous utilization below 90%. Several have worst-case utilization under 20%, meaning >80% of the node's resources are paid for but unused.
+**Original state** (before Phase 2): 36 of 39 runner types had homogeneous utilization below 90%. Several had worst-case utilization under 20%. After Phase 2 (ratio-matched nodepools), x86 CPU worst-case improved from 12.6% to ~74% and ARM64 from 37.9% to 75.3%.
 
 > **Note**: This analysis covers both upstream runners (35 in `modules/arc-runners/defs/`) and consumer B200 runners (4 in the consumer repo's `modules/arc-runners-b200/defs/`). B200 nodepool and runner defs are not in the upstream repo.
 
@@ -32,7 +32,7 @@ Runners fall into three ratio categories:
 | Balanced | ~4 GiB/core | 8c/32Gi, 32c/128Gi, 40c/160Gi | m-series (m7i, m7a, m8g) |
 | Memory-heavy | ~8 GiB/core | 8c/64Gi, 16c/128Gi, 48c/384Gi | r-series (r7i, r7a, r7g) |
 
-**Current assignment**: All CPU runners in a constraint group share one r5.24xlarge (96c/768Gi, ratio 8:1). This is perfect for memory-heavy runners but wastes ~75% of memory for compute-heavy runners like `l-x86iavx512-48-96` (48c/96Gi, ratio 2:1).
+**Original assignment** (before Phase 2): All CPU runners shared one r5.24xlarge (96c/768Gi, ratio 8:1). This was perfect for memory-heavy runners but wasted ~75% of memory for compute-heavy runners like `l-x86iavx512-48-96` (48c/96Gi, ratio 2:1). Phase 2 split these into ratio-matched nodepools (c/m/r series per ISA group).
 
 ## ISA Constraint Groups
 
@@ -47,7 +47,7 @@ Runners have ISA (instruction set) requirements encoded in their names that cons
 
 **Critical constraint**: AMX runners (`l-x86iamx-*`) require Intel Sapphire Rapids or newer. They **cannot run on AMD instances** (c6a, m6a, r6a, c7a, m7a, r7a). This limits instance selection for the "AVX2 group" which includes AMX runners.
 
-## Current State by Nodepool
+## Pre-Optimization State by Nodepool
 
 ### Non-GPU Nodepools
 
@@ -186,15 +186,15 @@ The only way to push these above 85% is to use instances where `N × runner_size
 1. Renamed `l-x86iavx512-48-192-t4-4` → `l-x86iavx512-45-188-t4-4` (45 vCPU, 188Gi)
 2. Regenerate and redeploy
 
-### Phase 2: Add Compute/Balanced Instance Types (requires new nodepools)
-1. Add nodepool defs for c7i.32xlarge, c7a.48xlarge, m7i.48xlarge, m6i.32xlarge, m8g.48xlarge
-2. Update runner defs to reference new instance types
-3. Deploy new nodepools, then update runner scale sets
+### Phase 2: Split x86 CPU + ARM64 Nodepools by Ratio (DONE)
+1. Created 7 new nodepool defs: c7i-32xlarge, m7i-48xlarge, r7i-48xlarge, c7a-48xlarge, m6i-32xlarge, r7a-48xlarge, m8g-48xlarge
+2. Updated 22 x86 runner defs to reference ratio-matched instance types (see Recommendations 1 & 2 above)
+3. Updated 4 ARM64 runner defs to m8g.48xlarge; 1 ARM64 runner stays on r7g.16xlarge
+4. Kept r5-24xlarge nodepool def for RE (Release Engineering) job-assigner workloads (cpu-44, cpu-85); no ARC runners use it
+5. Updated r7g-16xlarge node_disk_size from 2660 to 700 (now serves only 1 runner)
 
-### Phase 3: Retire Old Nodepools
-1. After all runners are migrated, remove the r5.24xlarge nodepool def
-2. Keep r7g.16xlarge for the single memory-heavy ARM64 runner
-3. Verify Karpenter drains old nodes naturally
+### Phase 3: Retire Old Nodepools (DONE — merged into Phase 2)
+No ARC runners use r5.24xlarge anymore. The nodepool is retained solely for RE job-assigner workloads. r7g.16xlarge kept for the single memory-heavy ARM64 runner. Karpenter will drain underutilized r5 nodes naturally after redeployment.
 
 ## Analysis Tools
 

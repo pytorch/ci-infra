@@ -1,8 +1,8 @@
 # ARC runner definition: l-x86iavx512-2-4
-# Instance type: r5.24xlarge (pool: x86-cpu)
+# Instance type: c7a.48xlarge (pool: x86-cpu)
 runner:
   name: l-x86iavx512-2-4
-  instance_type: r5.24xlarge
+  instance_type: c7a.48xlarge
   disk_size: 15
   vcpu: 2
   memory: 4Gi

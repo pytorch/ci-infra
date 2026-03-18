@@ -1,9 +1,11 @@
 # Karpenter NodePool definition: r5.24xlarge
-# Consolidated pool for AMD64 CPU workloads
-# Node disk: worst case 12x 200Gi pods + 100Gi OS = 2500Gi
+# Memory-optimized pool for x86 workloads (~8 GiB/core ratio)
+# Intel Cascade Lake
+# Kept for RE (Release Engineering) job-assigner workloads (cpu-44, cpu-85)
+# Node disk: worst case 1x pod + 100Gi OS = 300Gi
 nodepool:
   name: r5-24xlarge
   instance_type: r5.24xlarge
   arch: amd64
-  node_disk_size: 2500
+  node_disk_size: 300
   gpu: false
