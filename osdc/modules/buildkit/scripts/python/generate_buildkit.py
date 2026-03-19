@@ -21,7 +21,14 @@ import math
 import sys
 from pathlib import Path
 
-from analyze_node_utilization import ENI_MAX_PODS, kubelet_reserved
+# analyze_node_utilization lives in scripts/python/ at the repo root.
+# Add it to sys.path so the import works both when run directly (deploy.sh)
+# and when run via pytest (conftest.py also adds it).
+_scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
+if _scripts_python not in sys.path:
+    sys.path.insert(0, _scripts_python)
+
+from analyze_node_utilization import ENI_MAX_PODS, kubelet_reserved  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
