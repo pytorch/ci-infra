@@ -238,6 +238,21 @@ Single parameterized root at `modules/eks/terraform/`. No per-environment direct
 - **Monitoring is a module, logging is base** — metrics collection (Alloy Deployment → Grafana Cloud Mimir) is opt-in via the `monitoring` module. Log collection (Alloy DaemonSet → Grafana Cloud Loki) is in `base/logging/` because every cluster needs it. Both are secret-gated — no credentials, no Alloy.
 - **Two Alloy installations** — monitoring and logging each deploy their own Alloy with separate Helm releases, namespaces, and RBAC. This avoids config/permission conflicts and lets them scale independently (Deployment for metrics, DaemonSet for logs).
 
+## Runner & NodePool Change Checklist (MANDATORY)
+
+When changing runner definitions (`modules/arc-runners/defs/`) or NodePool definitions (`modules/nodepools/defs/`), you MUST update the following `scripts/python/` files to stay in sync:
+
+| File | What to update |
+|------|---------------|
+| `scripts/python/instance_specs.py` | `INSTANCE_SPECS` (add/update instance types), `ENI_MAX_PODS` (add/update ENI limits) |
+| `scripts/python/pytorch_workload_data.py` | `OLD_TO_NEW_LABEL` (update old→new runner name mappings when names change) |
+| `scripts/python/simulate_cluster.py` | Uses `analyze_node_utilization` functions — verify simulation still works |
+| `scripts/python/simulate_cluster_cli.py` | CLI entry point for simulation — re-run to validate packing |
+| `integration-tests/workflows/integration-test.yaml.tpl` | Update `runs-on` labels if runner names changed |
+| `docs/runner_naming_convention.md` | Update runner name examples and mapping tables |
+
+**Verification**: After any runner/nodepool change, run `uv run scripts/python/analyze_node_utilization.py` to confirm packing efficiency and `just test` to verify all scripts agree on the new values.
+
 ## EKS Node Taints
 
 Base nodes: `CriticalAddonsOnly=true:NoSchedule`. All base workloads (Harbor, DaemonSets, Karpenter, control plane) must tolerate this.
@@ -564,10 +579,69 @@ just test    # All unit tests must pass
 
 If either fails, fix the issues before finishing. Do not defer lint or test failures — they block CI and break other contributors.
 
-## Code Style
+## Code Style & Linting
 
-- **ALWAYS use 4 spaces for indentation** — in ALL files: Python, JSON, HCL, Alloy, shell, Dockerfiles, everything. The `.editorconfig` enforces this and CI will fail on non-4-space indentation.
-- **EXCEPTION: YAML files use 2 spaces** — Kubernetes manifests, Helm values, kustomization files, and all other YAML files use 2-space indentation. The yamllint config enforces this. Follow the existing patterns in `base/kubernetes/` and `modules/*/kubernetes/`.
+`just lint` runs **11 linters**. `just lint-fix` auto-fixes what it can (ruff, shfmt, tofu fmt, taplo). All must pass — CI blocks on any failure.
+
+### Indentation (most common agent mistake)
+
+| Language | Indent | Tool |
+|----------|--------|------|
+| Python | 4 spaces | ruff |
+| Shell (.sh) | **2 spaces** | shfmt (`-i 2 -ci -bn`) |
+| YAML | 2 spaces (sequences indented) | yamllint |
+| HCL/Terraform | 2 spaces | tofu fmt |
+| TOML | 2 spaces | taplo |
+| Dockerfile, JSON, Alloy | 4 spaces | .editorconfig |
+
+### Python (ruff)
+
+- **Line length: 120** (not 80/88)
+- **Target: Python 3.12**
+- Imports must be sorted (isort rules enabled). `known-first-party = ["osdc"]`
+- No commented-out code (`ERA001`) — except in test files
+- Use comprehensions over `map()`/`filter()` (`C4`)
+- Don't use `assert` outside test files (`S101`)
+- `print()` is allowed (`T201` ignored)
+- `/tmp` paths are allowed (`S108` ignored)
+- `subprocess` calls are allowed (`S603`/`S607` ignored)
+
+### Shell (shellcheck + shfmt)
+
+- **2-space indent**, case bodies indented (`-ci`), binary ops (`&&`/`||`) start the next line (`-bn`)
+- Always quote variables (shellcheck `SC2086`)
+- Follow shellcheck defaults — no custom config
+
+### YAML (yamllint)
+
+- 2-space indent, sequences indented too
+- Truthy values: only `true`, `false`, `yes`, `no` (not `on`/`off`/`True`/`False`)
+- Max line length: 200 (warning only)
+- No trailing whitespace, newline at EOF, max 2 consecutive blank lines
+
+### Kubernetes (kubeconform + kube-linter)
+
+- All manifests validated against official schemas (strict mode)
+- Resource requirements, readiness probes, and other best-practice checks are active
+- Many infra-specific checks disabled (privileged containers, hostPath, etc.) — see `.kube-linter.yaml`
+
+### Terraform (tflint + tofu fmt)
+
+- AWS plugin enabled (catches invalid instance types, deprecated resources)
+- Canonical formatting enforced by `tofu fmt`
+
+### Dockerfiles (hadolint)
+
+- Standard rules, but apt/pip version pinning not required (`DL3008`/`DL3013` ignored)
+
+### Security (trivy)
+
+- Scans `base/` and `modules/` for HIGH/CRITICAL IaC issues
+- Known exceptions in `.trivyignore` (public EKS API, privileged DaemonSets, etc.)
+
+### All files (.editorconfig)
+
+- LF line endings, trailing newline required, no trailing whitespace
 
 ## Don't Do
 

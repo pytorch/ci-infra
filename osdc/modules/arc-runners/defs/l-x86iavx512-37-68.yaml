@@ -1,0 +1,9 @@
+# ARC runner definition: l-x86iavx512-37-68
+# Instance type: c7a.48xlarge (pool: x86-cpu)
+runner:
+  name: l-x86iavx512-37-68
+  instance_type: c7a.48xlarge
+  disk_size: 200
+  vcpu: 37
+  memory: 68Gi
+  gpu: 0

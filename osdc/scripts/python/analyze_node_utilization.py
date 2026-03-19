@@ -10,7 +10,7 @@ on a node (after subtracting kubelet + DaemonSet + runner sidecar overhead),
 and reports suboptimal configurations where resources are wasted.
 
 Usage:
-    uv run scripts/python/analyze_node_utilization.py [--threshold 90]
+    uv run scripts/python/analyze_node_utilization.py [--threshold 90] [--show-daemonsets]
 
 Reads:
     - modules/arc-runners/defs/*.yaml (+ consumer overrides)
@@ -24,59 +24,28 @@ from itertools import combinations_with_replacement
 from pathlib import Path
 
 import yaml
-
-# ANSI colors
-RED = "\033[0;31m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-CYAN = "\033[0;36m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-NC = "\033[0m"
-
-
-# ---------------------------------------------------------------------------
-# AWS instance type specs: vCPU, memory_gib, gpu_count
-# From AWS documentation — add entries when supporting new instance types.
-# ---------------------------------------------------------------------------
-INSTANCE_SPECS = {
-    "r5.24xlarge": {"vcpu": 96, "memory_gib": 768, "gpu": 0},
-    "r7g.16xlarge": {"vcpu": 64, "memory_gib": 512, "gpu": 0},
-    "g4dn.12xlarge": {"vcpu": 48, "memory_gib": 192, "gpu": 4},
-    "g4dn.metal": {"vcpu": 96, "memory_gib": 384, "gpu": 8},
-    "g5.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
-    "g6.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
-    "p6-b200.48xlarge": {"vcpu": 192, "memory_gib": 2048, "gpu": 8},
-}
-
-
-# ---------------------------------------------------------------------------
-# DaemonSet overhead on runner nodes (from actual manifests)
-# ---------------------------------------------------------------------------
-# Each entry: (name, cpu_millicores, memory_mib, gpu_only)
-DAEMONSETS = [
-    ("git-cache-warmer", 100, 256, False),
-    ("node-performance-tuning", 10, 32, False),
-    ("registry-mirror-config", 10, 32, False),
-    ("hooks-warmer", 10, 32, False),
-    ("alloy-logging", 100, 256, False),
-    ("node-exporter", 15, 32, False),  # chart defaults
-    # GPU-only daemonsets
-    ("nvidia-device-plugin", 0, 0, True),  # no resource requests
-    ("dcgm-exporter", 100, 128, True),
-]
+from cli_colors import BOLD, CYAN, DIM, GREEN, NC, RED, YELLOW
+from daemonset_overhead import DaemonSetOverhead, discover_daemonsets
+from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
 
 # Runner pod sidecar (the ARC orchestrator container, not the $job container)
 RUNNER_SIDECAR_CPU_M = 750
 RUNNER_SIDECAR_MEM_MI = 512
 
+# ARC container-hooks overhead: injected containers added to the workflow
+# (job) pod by runner-container-hooks beyond the def's vcpu/memory.
+# Measured from Karpenter scheduling requests vs def values.
+HOOKS_OVERHEAD_CPU_M = 320
+HOOKS_OVERHEAD_MEM_MI = 522
 
-def kubelet_reserved(vcpu: int, memory_gib: int) -> tuple[int, int]:
+
+def kubelet_reserved(vcpu: int, memory_gib: int, max_pods: int) -> tuple[int, int]:
     """Estimate EKS kubelet reserved resources (milliCPU, MiB).
 
-    EKS formula (approximate):
+    EKS formula (from awslabs/amazon-eks-ami nodeadm source):
     - CPU: 60m first core, 10m next, 5m next 2, 2.5m/core after
-    - Memory: 255Mi + 11Mi/core + ~100Mi eviction threshold
+    - Memory: 255Mi + 11Mi * max_pods + ~100Mi eviction threshold
+      (max_pods is derived from ENI limits, NOT vCPU count)
     """
     if vcpu <= 1:
         reserved_cpu = 60
@@ -87,19 +56,22 @@ def kubelet_reserved(vcpu: int, memory_gib: int) -> tuple[int, int]:
     else:
         reserved_cpu = 80 + int((vcpu - 4) * 2.5)
 
-    reserved_mem = 255 + 11 * vcpu + 100
+    reserved_mem = 255 + 11 * max_pods + 100
     return reserved_cpu, reserved_mem
 
 
-def daemonset_overhead(is_gpu: bool) -> tuple[int, int]:
+def compute_daemonset_overhead(
+    daemonsets: list[DaemonSetOverhead],
+    is_gpu: bool,
+) -> tuple[int, int]:
     """Total DaemonSet overhead on a runner node (milliCPU, MiB)."""
     total_cpu = 0
     total_mem = 0
-    for _name, cpu, mem, gpu_only in DAEMONSETS:
-        if gpu_only and not is_gpu:
+    for ds in daemonsets:
+        if ds.gpu_only and not is_gpu:
             continue
-        total_cpu += cpu
-        total_mem += mem
+        total_cpu += ds.cpu_millicores
+        total_mem += ds.memory_mib
     return total_cpu, total_mem
 
 
@@ -117,36 +89,48 @@ def parse_memory(value: str) -> int:
 
 
 def load_runner_defs(dirs: list[Path]) -> list[dict]:
-    """Load all runner definitions from the given directories."""
-    runners = []
+    """Load all runner definitions from the given directories.
+
+    Directories are processed in order. If a runner name appears in
+    multiple directories, the last one wins (consumer overrides upstream).
+    Duplicate resolved paths are skipped.
+    """
+    by_name: dict[str, dict] = {}
+    seen_dirs: set[Path] = set()
     for d in dirs:
-        if not d.exists():
+        resolved = d.resolve()
+        if resolved in seen_dirs or not d.exists():
             continue
+        seen_dirs.add(resolved)
         for f in sorted(d.glob("*.yaml")):
             with open(f) as fh:
                 data = yaml.safe_load(fh)
             if not data or "runner" not in data:
                 continue
             r = data["runner"]
-            runners.append(
-                {
-                    "name": r["name"],
-                    "instance_type": r["instance_type"],
-                    "vcpu": int(r["vcpu"]),
-                    "memory_mi": parse_memory(r["memory"]),
-                    "gpu": int(r.get("gpu", 0)),
-                    "file": f.name,
-                }
-            )
-    return runners
+            by_name[r["name"]] = {
+                "name": r["name"],
+                "instance_type": r["instance_type"],
+                "vcpu": int(r["vcpu"]),
+                "memory_mi": parse_memory(r["memory"]),
+                "gpu": int(r.get("gpu", 0)),
+                "file": f.name,
+            }
+    return list(by_name.values())
 
 
 def load_nodepool_defs(dirs: list[Path]) -> dict:
-    """Load nodepool defs and return a dict of instance_type -> def."""
+    """Load nodepool defs and return a dict of instance_type -> def.
+
+    Duplicate resolved paths are skipped. Last-wins for same instance_type.
+    """
     nodepools = {}
+    seen_dirs: set[Path] = set()
     for d in dirs:
-        if not d.exists():
+        resolved = d.resolve()
+        if resolved in seen_dirs or not d.exists():
             continue
+        seen_dirs.add(resolved)
         for f in sorted(d.glob("*.yaml")):
             with open(f) as fh:
                 data = yaml.safe_load(fh)
@@ -160,18 +144,22 @@ def load_nodepool_defs(dirs: list[Path]) -> dict:
     return nodepools
 
 
-def compute_allocatable(instance_type: str) -> dict:
+def compute_allocatable(
+    instance_type: str,
+    daemonsets: list[DaemonSetOverhead],
+) -> dict:
     """Compute allocatable resources for an instance type after overhead."""
     if instance_type not in INSTANCE_SPECS:
         return None
     spec = INSTANCE_SPECS[instance_type]
     is_gpu = spec["gpu"] > 0
 
-    kube_cpu, kube_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"])
-    ds_cpu, ds_mem = daemonset_overhead(is_gpu)
+    max_pods = ENI_MAX_PODS.get(instance_type, spec["vcpu"])  # fallback to vcpu if unknown
+    kube_cpu, kube_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"], max_pods)
+    ds_cpu, ds_mem = compute_daemonset_overhead(daemonsets, is_gpu)
 
     total_cpu_m = spec["vcpu"] * 1000
-    total_mem_mi = spec["memory_gib"] * 1024
+    total_mem_mi = spec["memory_mi"]
 
     alloc_cpu_m = total_cpu_m - kube_cpu - ds_cpu
     alloc_mem_mi = total_mem_mi - kube_mem - ds_mem
@@ -191,9 +179,9 @@ def compute_allocatable(instance_type: str) -> dict:
 
 
 def per_runner_total(runner: dict) -> tuple[int, int, int]:
-    """Total resources per runner pod (job container + sidecar)."""
-    cpu = runner["vcpu"] * 1000 + RUNNER_SIDECAR_CPU_M
-    mem = runner["memory_mi"] + RUNNER_SIDECAR_MEM_MI
+    """Total resources per runner pod (job container + sidecar + hooks overhead)."""
+    cpu = runner["vcpu"] * 1000 + RUNNER_SIDECAR_CPU_M + HOOKS_OVERHEAD_CPU_M
+    mem = runner["memory_mi"] + RUNNER_SIDECAR_MEM_MI + HOOKS_OVERHEAD_MEM_MI
     gpu = runner["gpu"]
     return cpu, mem, gpu
 
@@ -297,6 +285,57 @@ def format_mem(mi: int) -> str:
     return f"{mi}Mi"
 
 
+def compute_node_slack(
+    alloc: dict,
+    runners: list[dict],
+    homogeneous_only: bool = False,
+) -> dict | None:
+    """Compute min/max unused CPU and memory across maximal combos.
+
+    When homogeneous_only is True (or >8 runner types), only considers
+    single-runner-type packings. Otherwise enumerates all mixed combos.
+
+    Returns dict with min_cpu_m, max_cpu_m, min_mem_mi, max_mem_mi,
+    or None if no valid combos exist.
+    """
+    if homogeneous_only or len(runners) > 8:
+        slacks = []
+        for r in runners:
+            c, m, g = per_runner_total(r)
+            max_by_cpu = alloc["allocatable_cpu_m"] // c if c > 0 else 999
+            max_by_mem = alloc["allocatable_mem_mi"] // m if m > 0 else 999
+            max_by_gpu = alloc["allocatable_gpu"] // g if g > 0 else 999
+            max_pods = min(max_by_cpu, max_by_mem, max_by_gpu)
+            if max_pods == 0:
+                continue
+            slacks.append(
+                {
+                    "cpu_m": alloc["allocatable_cpu_m"] - max_pods * c,
+                    "mem_mi": alloc["allocatable_mem_mi"] - max_pods * m,
+                }
+            )
+        if not slacks:
+            return None
+        return {
+            "min_cpu_m": min(s["cpu_m"] for s in slacks),
+            "max_cpu_m": max(s["cpu_m"] for s in slacks),
+            "min_mem_mi": min(s["mem_mi"] for s in slacks),
+            "max_mem_mi": max(s["mem_mi"] for s in slacks),
+        }
+
+    all_combos = find_valid_combos(runners, alloc)
+    maximal = find_maximal_combos(all_combos, alloc, runners)
+    if not maximal:
+        return None
+
+    return {
+        "min_cpu_m": min(c["cpu_waste_m"] for c in maximal),
+        "max_cpu_m": max(c["cpu_waste_m"] for c in maximal),
+        "min_mem_mi": min(c["mem_waste_mi"] for c in maximal),
+        "max_mem_mi": max(c["mem_waste_mi"] for c in maximal),
+    }
+
+
 def print_node_analysis(
     instance_type: str,
     alloc: dict,
@@ -308,8 +347,8 @@ def print_node_analysis(
     print(f"{BOLD}{CYAN}Node Type: {instance_type}{NC}")
     spec = INSTANCE_SPECS[instance_type]
     print(
-        f"  Total: {spec['vcpu']} vCPU, {spec['memory_gib']}Gi RAM"
-        + (f", {spec['gpu']} GPU" if spec["gpu"] > 0 else "")
+        f"  Total: {spec['vcpu']} vCPU, {spec['memory_gib']}Gi advertised"
+        f" ({format_mem(spec['memory_mi'])} actual)" + (f", {spec['gpu']} GPU" if spec["gpu"] > 0 else "")
     )
     print(f"  Kubelet reserved: {alloc['kube_reserved_cpu_m']}m CPU, {format_mem(alloc['kube_reserved_mem_mi'])} RAM")
     print(f"  DaemonSet overhead: {alloc['ds_cpu_m']}m CPU, {format_mem(alloc['ds_mem_mi'])} RAM")
@@ -326,7 +365,11 @@ def print_node_analysis(
     print(f"  {BOLD}Runners targeting this node:{NC}")
     for r in runners:
         c, m, g = per_runner_total(r)
-        sidecar_note = f" (job: {r['vcpu']}c+{format_mem(r['memory_mi'])}, sidecar: 750m+512Mi)"
+        sidecar_note = (
+            f" (job: {r['vcpu']}c+{format_mem(r['memory_mi'])},"
+            f" sidecar: {RUNNER_SIDECAR_CPU_M}m+{RUNNER_SIDECAR_MEM_MI}Mi,"
+            f" hooks: {HOOKS_OVERHEAD_CPU_M}m+{HOOKS_OVERHEAD_MEM_MI}Mi)"
+        )
         gpu_note = f", {r['gpu']} GPU" if r["gpu"] > 0 else ""
         print(f"    - {r['name']}: {c}m CPU, {format_mem(m)} RAM{gpu_note}{sidecar_note}")
 
@@ -434,17 +477,38 @@ def main(argv: list[str] | None = None) -> int:
         default=90.0,
         help="Utilization threshold %% below which combos are flagged (default: 90)",
     )
+    parser.add_argument(
+        "--show-daemonsets",
+        action="store_true",
+        help="Print discovered DaemonSets and their resource overhead, then exit",
+    )
     args = parser.parse_args(argv)
 
     # Resolve directories
     script_dir = Path(__file__).resolve().parent
     upstream_dir = script_dir.parent.parent  # upstream/osdc
     # Check if we're in a consumer repo
-    consumer_root = Path(os.environ.get("OSDC_ROOT", ""))
-    if not consumer_root.is_dir():
+    osdc_root_env = os.environ.get("OSDC_ROOT", "")
+    consumer_root = Path(osdc_root_env).resolve() if osdc_root_env else None
+    if consumer_root is None or not consumer_root.is_dir():
         # Try to find consumer root by walking up
         candidate = upstream_dir.parent.parent  # consumer osdc/
         consumer_root = candidate if (candidate / "clusters.yaml").exists() else upstream_dir
+    consumer_root = consumer_root.resolve()
+
+    # Discover DaemonSet overhead dynamically from manifests
+    daemonsets = discover_daemonsets(
+        upstream_dir,
+        consumer_root=consumer_root if consumer_root != upstream_dir else None,
+    )
+
+    if args.show_daemonsets:
+        print(f"{BOLD}Discovered DaemonSets ({len(daemonsets)}):{NC}\n")
+        for ds in daemonsets:
+            gpu_tag = f" {YELLOW}[GPU-only]{NC}" if ds.gpu_only else ""
+            print(f"  {ds.name}: {ds.cpu_millicores}m CPU, {ds.memory_mib}Mi RAM{gpu_tag}")
+            print(f"    {DIM}source: {ds.source}{NC}")
+        return 0
 
     # Collect runner defs from upstream + consumer
     runner_dirs = [
@@ -505,14 +569,20 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         print(f"\n{RED}Unknown instance types (add to INSTANCE_SPECS): {unknown}{NC}")
 
-    # Analyze each instance type
+    # Analyze each instance type and collect slack data
     total_issues = 0
+    node_slacks: dict[str, dict] = {}
     for instance_type in sorted(by_instance.keys()):
         if instance_type not in INSTANCE_SPECS:
             continue
-        alloc = compute_allocatable(instance_type)
+        alloc = compute_allocatable(instance_type, daemonsets)
         type_runners = by_instance[instance_type]
         print_node_analysis(instance_type, alloc, type_runners, args.threshold)
+
+        # Compute slack for summary (homogeneous only — excludes mixed combos)
+        slack = compute_node_slack(alloc, type_runners, homogeneous_only=True)
+        if slack:
+            node_slacks[instance_type] = slack
 
         # Count suboptimal homogeneous packings
         for r in type_runners:
@@ -535,6 +605,45 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         print(f"{GREEN}{BOLD}All runner types achieve >= {args.threshold}% utilization in homogeneous packing{NC}")
+
+    # --- Slack / headroom summary ---
+    if node_slacks:
+        print(f"\n{'━' * 80}")
+        print(f"{BOLD}Unused resource headroom per node (homogeneous packing only):{NC}\n")
+        print(f"  {'Node Type':<22} {'Min CPU':>10} {'Max CPU':>10} {'Min MEM':>10} {'Max MEM':>10}")
+        print(f"  {'─' * 64}")
+
+        global_min_cpu = None
+        global_max_cpu = None
+        global_min_mem = None
+        global_max_mem = None
+
+        for inst in sorted(node_slacks.keys()):
+            s = node_slacks[inst]
+            print(
+                f"  {inst:<22} {s['min_cpu_m']:>7}m   {s['max_cpu_m']:>7}m  "
+                f" {format_mem(s['min_mem_mi']):>8}   {format_mem(s['max_mem_mi']):>8}"
+            )
+            if global_min_cpu is None or s["min_cpu_m"] < global_min_cpu:
+                global_min_cpu = s["min_cpu_m"]
+            if global_max_cpu is None or s["max_cpu_m"] > global_max_cpu:
+                global_max_cpu = s["max_cpu_m"]
+            if global_min_mem is None or s["min_mem_mi"] < global_min_mem:
+                global_min_mem = s["min_mem_mi"]
+            if global_max_mem is None or s["max_mem_mi"] > global_max_mem:
+                global_max_mem = s["max_mem_mi"]
+
+        print(f"  {'─' * 64}")
+        print(
+            f"  {BOLD}{'WORST CASE':<22}{NC} {global_min_cpu:>7}m   {global_max_cpu:>7}m  "
+            f" {format_mem(global_min_mem):>8}   {format_mem(global_max_mem):>8}"
+        )
+        print()
+        print(
+            f"  The tightest node has only {BOLD}{global_min_cpu}m CPU{NC}"
+            f" and {BOLD}{format_mem(global_min_mem)} RAM{NC} free."
+        )
+        print("  Any new DaemonSet must fit within these limits or runners will fail to schedule.")
 
     return 0
 

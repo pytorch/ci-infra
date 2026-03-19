@@ -21,6 +21,16 @@ import math
 import sys
 from pathlib import Path
 
+# analyze_node_utilization lives in scripts/python/ at the repo root.
+# Add it to sys.path so the import works both when run directly (deploy.sh)
+# and when run via pytest (conftest.py also adds it).
+_scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
+if _scripts_python not in sys.path:
+    sys.path.insert(0, _scripts_python)
+
+from analyze_node_utilization import kubelet_reserved  # noqa: E402
+from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS  # noqa: E402
+
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
@@ -36,19 +46,6 @@ def log_error(msg):
 
 
 # ---------------------------------------------------------------------------
-# Instance type specifications
-# ---------------------------------------------------------------------------
-# Static lookup table — add entries here when supporting new instance types.
-# Values are from AWS documentation (total vCPU, total GiB memory).
-
-INSTANCE_SPECS = {
-    "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "arch": "arm64"},
-    "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "arch": "arm64"},
-    "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "arch": "amd64"},
-    "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "arch": "arm64"},
-}
-
-# ---------------------------------------------------------------------------
 # Overhead constants (milliCPU and MiB)
 # ---------------------------------------------------------------------------
 # DaemonSet overhead measured from running clusters:
@@ -58,31 +55,6 @@ DAEMONSET_OVERHEAD_MEM_MI = 440  # 440Mi total across all DaemonSets
 
 # Margin factor — 10% headroom for future growth in daemonsets/kubelet reserved
 MARGIN = 0.90
-
-
-def _kubelet_reserved(vcpu: int, memory_gib: int) -> tuple[int, int]:
-    """Estimate kubelet reserved resources (milliCPU, MiB).
-
-    EKS uses a formula based on node size:
-    - CPU: 60m for first 1 core, 10m for next 1, 5m for next 2, 2.5m per core after
-    - Memory: 255Mi + 11Mi per core (approximate)
-
-    Returns (reserved_cpu_m, reserved_mem_mi).
-    """
-    # CPU reservation (simplified EKS formula)
-    if vcpu <= 1:
-        reserved_cpu = 60
-    elif vcpu <= 2:
-        reserved_cpu = 70
-    elif vcpu <= 4:
-        reserved_cpu = 80
-    else:
-        reserved_cpu = 80 + int((vcpu - 4) * 2.5)
-
-    # Memory reservation: 255Mi base + 11Mi/core + eviction threshold (~100Mi)
-    reserved_mem = 255 + 11 * vcpu + 100
-
-    return reserved_cpu, reserved_mem
 
 
 def compute_pod_resources(instance_type: str, pods_per_node: int) -> dict:
@@ -96,11 +68,13 @@ def compute_pod_resources(instance_type: str, pods_per_node: int) -> dict:
     spec = INSTANCE_SPECS[instance_type]
     vcpu = spec["vcpu"]
     memory_gib = spec["memory_gib"]
+    memory_mi = spec["memory_mi"]
 
-    reserved_cpu_m, reserved_mem_mi = _kubelet_reserved(vcpu, memory_gib)
+    max_pods = ENI_MAX_PODS.get(instance_type, vcpu)  # fallback to vcpu if unknown
+    reserved_cpu_m, reserved_mem_mi = kubelet_reserved(vcpu, memory_gib, max_pods)
 
     allocatable_cpu_m = vcpu * 1000 - reserved_cpu_m
-    allocatable_mem_mi = memory_gib * 1024 - reserved_mem_mi
+    allocatable_mem_mi = memory_mi - reserved_mem_mi
 
     usable_cpu_m = allocatable_cpu_m - DAEMONSET_OVERHEAD_CPU_M
     usable_mem_mi = allocatable_mem_mi - DAEMONSET_OVERHEAD_MEM_MI

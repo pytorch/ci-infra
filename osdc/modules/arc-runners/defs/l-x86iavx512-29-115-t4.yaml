@@ -1,0 +1,12 @@
+# ARC runner definition: l-x86iavx512-29-115-t4
+# Instance type: g4dn.8xlarge — 1-GPU T4, 32c/128Gi node
+# Actual K8s capacity ~118.4Gi after VM overhead. With kubelet reserved,
+# DaemonSets, sidecar (750m/512Mi), and hooks overhead (320m/522Mi),
+# max job memory is 115Gi.
+runner:
+  name: l-x86iavx512-29-115-t4
+  instance_type: g4dn.8xlarge
+  disk_size: 150
+  vcpu: 29
+  memory: 115Gi
+  gpu: 1

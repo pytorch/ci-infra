@@ -1,0 +1,10 @@
+# ARC runner definition: l-arm64g3-61-463
+# Instance type: r7g.16xlarge — 64c/512Gi node
+# Actual K8s capacity ~473.7Gi. Max job memory after all overhead: 463Gi.
+runner:
+  name: l-arm64g3-61-463
+  instance_type: r7g.16xlarge
+  disk_size: 600
+  vcpu: 61
+  memory: 463Gi
+  gpu: 0

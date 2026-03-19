@@ -1,0 +1,10 @@
+# ARC runner definition: l-bx86iamx-92-167
+# Instance type: c7i.metal-24xl — 96c/192Gi node
+# Actual K8s capacity ~177.6Gi. Max job memory after all overhead: 167Gi.
+runner:
+  name: l-bx86iamx-92-167
+  instance_type: c7i.metal-24xl
+  disk_size: 200
+  vcpu: 92
+  memory: 167Gi
+  gpu: 0

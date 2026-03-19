@@ -535,9 +535,8 @@ class TestMain:
         with patch.dict(os.environ, env, clear=False):
             result = main()
 
-        # Missing name → skipped, 0 generated but no error return (continues)
-        # Actually it logs and continues, generated=0, prints summary, returns 0
-        assert result == 0
+        # Missing name → invalid, aborts with error return code
+        assert result == 1
 
     def test_output_files_are_parseable_yaml(self, tmp_path):
         defs_dir = self._create_defs(

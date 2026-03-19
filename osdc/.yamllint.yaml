@@ -5,6 +5,7 @@ extends: default
 
 ignore: |
   .venv/
+  .scratch/
   .terraform/
   **/generated/
   **/charts/

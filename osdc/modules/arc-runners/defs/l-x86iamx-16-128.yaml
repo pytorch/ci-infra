@@ -1,8 +1,8 @@
 # ARC runner definition: l-x86iamx-16-128
-# Instance type: r5.24xlarge (pool: x86-cpu)
+# Instance type: r7i.48xlarge (pool: x86-cpu)
 runner:
   name: l-x86iamx-16-128
-  instance_type: r5.24xlarge
+  instance_type: r7i.48xlarge
   disk_size: 150
   vcpu: 16
   memory: 128Gi
