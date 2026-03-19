@@ -137,7 +137,7 @@ template:
 
     containers:
       - name: runner
-        image: ghcr.io/actions/actions-runner:latest
+        image: {{RUNNER_IMAGE}}
         command: ["/home/runner/run.sh"]
         env:
           - name: RUNNER_FEATURE_FLAG_EPHEMERAL

@@ -184,6 +184,22 @@ def _parse_k8s_timestamp(ts: str) -> float:
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
 
 
+def _is_node_unstable(node: dict) -> bool:
+    """Check if a single node is unstable (new, NotReady, or being deleted)."""
+    meta = node.get("metadata", {})
+    if meta.get("deletionTimestamp"):
+        return True
+    conditions = {c["type"]: c["status"] for c in node.get("status", {}).get("conditions", [])}
+    if conditions.get("Ready") != "True":
+        return True
+    created = meta.get("creationTimestamp", "")
+    if created:
+        created_ts = _parse_k8s_timestamp(created)
+        if (time.time() - created_ts) < MIN_NODE_AGE_SECONDS:
+            return True
+    return False
+
+
 def _count_unstable_nodes(all_nodes: dict) -> int:
     """Count nodes that are new, NotReady, or being deleted.
 
@@ -192,26 +208,16 @@ def _count_unstable_nodes(all_nodes: dict) -> int:
     - Its Ready condition is not True
     - It was created less than MIN_NODE_AGE_SECONDS ago
     """
-    count = 0
-    now = time.time()
-    for node in all_nodes.get("items", []):
-        meta = node.get("metadata", {})
-        # Being deleted
-        if meta.get("deletionTimestamp"):
-            count += 1
-            continue
-        # Not Ready
-        conditions = {c["type"]: c["status"] for c in node.get("status", {}).get("conditions", [])}
-        if conditions.get("Ready") != "True":
-            count += 1
-            continue
-        # Too new
-        created = meta.get("creationTimestamp", "")
-        if created:
-            created_ts = _parse_k8s_timestamp(created)
-            if (now - created_ts) < MIN_NODE_AGE_SECONDS:
-                count += 1
-    return count
+    return sum(1 for node in all_nodes.get("items", []) if _is_node_unstable(node))
+
+
+def get_unstable_node_names(all_nodes: dict) -> set[str]:
+    """Return names of nodes that are new, NotReady, or being deleted."""
+    return {
+        node["metadata"]["name"]
+        for node in all_nodes.get("items", [])
+        if _is_node_unstable(node)
+    }
 
 
 def assert_daemonset_healthy(

@@ -88,11 +88,13 @@ alloy:
       value: "${CNAME}"
 EOF
 
+  ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" monitoring.alloy_chart_version 1.6.2)
   helm upgrade --install alloy grafana/alloy \
     --namespace "$NAMESPACE" \
     --history-max 3 \
     -f "$MODULE_DIR/helm/alloy-values.yaml" \
     -f "$ALLOY_OVERRIDE" \
+    --version "${ALLOY_CHART_VERSION}" \
     --timeout 5m \
     --wait
 

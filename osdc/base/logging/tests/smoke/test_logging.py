@@ -16,6 +16,7 @@ from helpers import (
     fetch_grafana_cloud_credentials,
     filter_pods,
     find_helm_release,
+    get_unstable_node_names,
     loki_read_url,
     query_loki,
     run_kubectl,
@@ -80,14 +81,19 @@ class TestAlloyLogging:
         assert "loki.source.file" in config, "ConfigMap missing pod log source (loki.source.file)"
         assert "loki.write" in config, "ConfigMap missing Loki writer (loki.write)"
 
-    def test_alloy_pods_running(self, all_pods: dict, logging_ns: str) -> None:
+    def test_alloy_pods_running(self, all_pods: dict, all_nodes: dict, logging_ns: str) -> None:
         """Verify Alloy logging pods are in Running phase.
+
+        Tolerates pods not Running on unstable nodes (new, NotReady, or being
+        deleted) — these are expected during node churn (Karpenter scaling,
+        spot interruptions, node recycling).
 
         Uses batch-fetched data first; if no pods found (e.g. nodes still
         joining after a recycle), retries with live kubectl fetches.
         """
         alloy_labels = {"app.kubernetes.io/instance": "alloy-logging"}
         pods = filter_pods(all_pods, namespace=logging_ns, labels=alloy_labels)
+        nodes = all_nodes
 
         if not pods:
             # Batch data may be stale — retry with live fetches
@@ -99,8 +105,36 @@ class TestAlloyLogging:
                     break
 
         assert len(pods) > 0, f"No alloy-logging pods found (after {READY_RETRIES} retries)"
-        not_running = [p["metadata"]["name"] for p in pods if p["status"].get("phase") != "Running"]
-        assert not not_running, f"Alloy pods not Running: {not_running}"
+
+        unstable_names = get_unstable_node_names(nodes)
+        not_running = [
+            p["metadata"]["name"]
+            for p in pods
+            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable_names
+        ]
+
+        if not not_running:
+            return
+
+        # Batch data may be stale — retry with live node + pod data
+        for _ in range(READY_RETRIES):
+            time.sleep(READY_RETRY_DELAY)
+            fresh_pods = run_kubectl(["get", "pods", "-A"])
+            fresh_nodes = run_kubectl(["get", "nodes"])
+            pods = filter_pods(fresh_pods, namespace=logging_ns, labels=alloy_labels)
+            unstable_names = get_unstable_node_names(fresh_nodes)
+            not_running = [
+                p["metadata"]["name"]
+                for p in pods
+                if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable_names
+            ]
+            if not not_running:
+                return
+
+        assert not not_running, (
+            f"Alloy pods not Running on stable nodes: {not_running} "
+            f"({len(unstable_names)} unstable nodes excluded, after {READY_RETRIES} retries)"
+        )
 
 
 # ============================================================================

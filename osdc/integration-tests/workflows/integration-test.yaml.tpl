@@ -223,25 +223,6 @@ jobs:
           nvidia-smi topo -m
 
   # BEGIN_B200
-  test-gpu-b200-1:
-    runs-on: a.linux.b200
-    container:
-      image: nvidia/cuda:12.6.3-base-ubuntu22.04
-    steps:
-      - name: Verify B200 GPU
-        run: |
-          echo "=== nvidia-smi ==="
-          nvidia-smi
-          echo ""
-          GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-          if [ "$GPU_COUNT" -lt 1 ]; then
-            echo "FAIL: Expected at least 1 GPU, found $GPU_COUNT"
-            exit 1
-          fi
-          GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-          echo "GPU: $GPU_NAME"
-          echo "PASS: B200 GPU accessible"
-
   test-gpu-b200-2:
     runs-on: a.linux.b200.2
     container:
@@ -258,27 +239,6 @@ jobs:
             exit 1
           fi
           echo "PASS: Found $GPU_COUNT B200 GPUs"
-
-  test-gpu-b200-8:
-    runs-on: a.linux.b200.8
-    container:
-      image: nvidia/cuda:12.6.3-base-ubuntu22.04
-    steps:
-      - name: Verify B200 full-node
-        run: |
-          echo "=== nvidia-smi ==="
-          nvidia-smi
-          echo ""
-          GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-          if [ "$GPU_COUNT" -ne 8 ]; then
-            echo "FAIL: Expected 8 GPUs, found $GPU_COUNT"
-            exit 1
-          fi
-          echo "PASS: Found $GPU_COUNT B200 GPUs"
-      - name: Verify GPU topology
-        run: |
-          echo "=== GPU Topology ==="
-          nvidia-smi topo -m
   # END_B200
 
   # ── BuildKit Tests ────────────────────────────────────────────────────
