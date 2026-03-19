@@ -1,0 +1,9 @@
+# ARC runner definition: l-x86iamx-22-45
+# Instance type: c7i.12xlarge (pool: x86-amx-compute)
+runner:
+  name: l-x86iamx-22-45
+  instance_type: c7i.12xlarge
+  disk_size: 200
+  vcpu: 22
+  memory: 45Gi
+  gpu: 0

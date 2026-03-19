@@ -33,7 +33,8 @@ from daemonset_overhead import DaemonSetOverhead, discover_daemonsets
 # ---------------------------------------------------------------------------
 INSTANCE_SPECS = {
     # x86 CPU — compute-optimized (~2 GiB/core)
-    "c7i.32xlarge": {"vcpu": 128, "memory_gib": 256, "gpu": 0},
+    "c7i.12xlarge": {"vcpu": 48, "memory_gib": 96, "gpu": 0},
+    "c7i.metal-24xl": {"vcpu": 96, "memory_gib": 192, "gpu": 0},
     "c7a.48xlarge": {"vcpu": 192, "memory_gib": 384, "gpu": 0},
     # x86 CPU — balanced (~4 GiB/core)
     "m6i.32xlarge": {"vcpu": 128, "memory_gib": 512, "gpu": 0},
@@ -58,6 +59,47 @@ INSTANCE_SPECS = {
     "g5.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
     "g6.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
     "p6-b200.48xlarge": {"vcpu": 192, "memory_gib": 2048, "gpu": 8},
+    # BuildKit instances (used by modules/buildkit/)
+    "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "gpu": 0},
+    "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "gpu": 0},
+    "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "gpu": 0},
+    "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "gpu": 0},
+    "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "gpu": 0},
+}
+
+# ---------------------------------------------------------------------------
+# EKS max pods per instance type (from ENI limits).
+# Source: awslabs/amazon-eks-ami eni-max-pods.txt
+# The kubelet memory reservation formula uses max_pods, NOT vCPU count.
+# ---------------------------------------------------------------------------
+ENI_MAX_PODS = {
+    # Runner node instance types
+    "c7i.12xlarge": 234,
+    "c7i.metal-24xl": 737,
+    "c7a.48xlarge": 737,
+    "m6i.32xlarge": 737,
+    "m7i.48xlarge": 737,
+    "r5.24xlarge": 737,
+    "r7i.48xlarge": 737,
+    "r7a.48xlarge": 737,
+    "m8g.48xlarge": 737,
+    "r7g.16xlarge": 737,
+    "g4dn.8xlarge": 58,
+    "g5.8xlarge": 234,
+    "g6.8xlarge": 234,
+    "g4dn.12xlarge": 234,
+    "g5.12xlarge": 737,
+    "g6.12xlarge": 234,
+    "g4dn.metal": 737,
+    "g5.48xlarge": 345,
+    "g6.48xlarge": 737,
+    "p6-b200.48xlarge": 198,
+    # BuildKit instance types
+    "m8gd.24xlarge": 737,
+    "m6id.24xlarge": 737,
+    "c7gd.16xlarge": 737,
+    "m7gd.16xlarge": 737,
+    "m8gd.16xlarge": 737,
 }
 
 
@@ -66,12 +108,13 @@ RUNNER_SIDECAR_CPU_M = 750
 RUNNER_SIDECAR_MEM_MI = 512
 
 
-def kubelet_reserved(vcpu: int, memory_gib: int) -> tuple[int, int]:
+def kubelet_reserved(vcpu: int, memory_gib: int, max_pods: int) -> tuple[int, int]:
     """Estimate EKS kubelet reserved resources (milliCPU, MiB).
 
-    EKS formula (approximate):
+    EKS formula (from awslabs/amazon-eks-ami nodeadm source):
     - CPU: 60m first core, 10m next, 5m next 2, 2.5m/core after
-    - Memory: 255Mi + 11Mi/core + ~100Mi eviction threshold
+    - Memory: 255Mi + 11Mi * max_pods + ~100Mi eviction threshold
+      (max_pods is derived from ENI limits, NOT vCPU count)
     """
     if vcpu <= 1:
         reserved_cpu = 60
@@ -82,7 +125,7 @@ def kubelet_reserved(vcpu: int, memory_gib: int) -> tuple[int, int]:
     else:
         reserved_cpu = 80 + int((vcpu - 4) * 2.5)
 
-    reserved_mem = 255 + 11 * vcpu + 100
+    reserved_mem = 255 + 11 * max_pods + 100
     return reserved_cpu, reserved_mem
 
 
@@ -168,7 +211,8 @@ def compute_allocatable(
     spec = INSTANCE_SPECS[instance_type]
     is_gpu = spec["gpu"] > 0
 
-    kube_cpu, kube_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"])
+    max_pods = ENI_MAX_PODS.get(instance_type, spec["vcpu"])  # fallback to vcpu if unknown
+    kube_cpu, kube_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"], max_pods)
     ds_cpu, ds_mem = compute_daemonset_overhead(daemonsets, is_gpu)
 
     total_cpu_m = spec["vcpu"] * 1000

@@ -12,7 +12,7 @@ concurrency:
 jobs:
   # ── CPU Runner Tests ──────────────────────────────────────────────────
   test-cpu-x86-avx512:
-    runs-on: {{PREFIX}}l-x86iavx512-2-4
+    runs-on: {{PREFIX}}l-x86iamx-8-32
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -56,7 +56,7 @@ jobs:
           echo "PASS: Required env vars present"
 
   test-cpu-x86-amx:
-    runs-on: {{PREFIX}}l-x86iamx-8-16
+    runs-on: {{PREFIX}}l-x86iamx-8-32
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -118,7 +118,7 @@ jobs:
 
   # ── Git Cache Test ────────────────────────────────────────────────────
   test-git-cache:
-    runs-on: {{PREFIX}}l-x86iavx512-8-16
+    runs-on: {{PREFIX}}l-x86iamx-8-32
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -136,20 +136,20 @@ jobs:
           ls -la "$CHECKOUT_GIT_CACHE_DIR/" || true
       - name: Verify pytorch cache
         run: |
-          CACHE_DIR="$CHECKOUT_GIT_CACHE_DIR/pytorch/pytorch"
+          CACHE_DIR="$CHECKOUT_GIT_CACHE_DIR/pytorch"
           if [ ! -d "$CACHE_DIR/.git/objects" ]; then
-            echo "FAIL: pytorch/pytorch/.git/objects not found"
+            echo "FAIL: pytorch/.git/objects not found"
             echo "Cache dir contents:"
-            ls -la "$CHECKOUT_GIT_CACHE_DIR/pytorch/" 2>/dev/null || echo "(empty)"
+            ls -la "$CHECKOUT_GIT_CACHE_DIR/" 2>/dev/null || echo "(empty)"
             exit 1
           fi
           OBJ_COUNT=$(find "$CACHE_DIR/.git/objects" -type f 2>/dev/null | head -100 | wc -l)
           echo "PASS: pytorch/pytorch cache has objects (sampled $OBJ_COUNT files)"
       - name: Verify test-infra cache
         run: |
-          CACHE_DIR="$CHECKOUT_GIT_CACHE_DIR/pytorch/test-infra.git"
+          CACHE_DIR="$CHECKOUT_GIT_CACHE_DIR/test-infra.git"
           if [ ! -d "$CACHE_DIR/objects" ]; then
-            echo "FAIL: pytorch/test-infra.git/objects not found"
+            echo "FAIL: test-infra.git/objects not found"
             exit 1
           fi
           echo "PASS: pytorch/test-infra cache present"
@@ -170,7 +170,7 @@ jobs:
 
   # ── GPU Runner Tests ──────────────────────────────────────────────────
   test-gpu-t4:
-    runs-on: {{PREFIX}}l-x86iavx512-16-64-t4
+    runs-on: {{PREFIX}}l-x86iavx512-29-125-t4
     container:
       image: nvidia/cuda:12.6.3-base-ubuntu22.04
     steps:
@@ -202,7 +202,7 @@ jobs:
           echo "PASS: GPU driver responsive"
 
   test-gpu-t4-multi:
-    runs-on: {{PREFIX}}l-x86iavx512-45-188-t4-4
+    runs-on: {{PREFIX}}l-x86iavx512-45-187-t4-4
     container:
       image: nvidia/cuda:12.6.3-base-ubuntu22.04
     steps:
@@ -286,17 +286,17 @@ jobs:
     uses: ./.github/workflows/build-image.yaml
     with:
       arch: amd64
-      runner_label: {{PREFIX}}l-x86iavx512-2-4
+      runner_label: {{PREFIX}}l-x86iamx-8-32
 
   build-arm64:
     uses: ./.github/workflows/build-image.yaml
     with:
       arch: arm64
-      runner_label: {{PREFIX}}l-x86iavx512-2-4
+      runner_label: {{PREFIX}}l-x86iamx-8-32
 
   # ── Harbor Cache Test ─────────────────────────────────────────────────
   test-harbor:
-    runs-on: {{PREFIX}}l-x86iavx512-2-4
+    runs-on: {{PREFIX}}l-x86iamx-8-32
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:

@@ -1,9 +1,0 @@
-# ARC runner definition: l-x86iamx-48-96
-# Instance type: c7i.32xlarge (pool: x86-amx-compute)
-runner:
-  name: l-x86iamx-48-96
-  instance_type: c7i.32xlarge
-  disk_size: 200
-  vcpu: 48
-  memory: 96Gi
-  gpu: 0

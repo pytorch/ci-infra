@@ -15,7 +15,7 @@ OSDC uses Kubernetes Guaranteed QoS pods (requests == limits) for all runner wor
 Each node's allocatable resources are reduced by:
 
 1. **Kubelet reserved CPU**: 60m (first core) + 10m/core (cores 2-4) + 5m/core (cores 5-8) + 2.5m/core (cores 9+)
-2. **Kubelet reserved memory**: 255Mi + 11Mi per vCPU + 100Mi eviction threshold
+2. **Kubelet reserved memory**: 255Mi + 11Mi per max_pod (ENI-based) + 100Mi eviction threshold
 3. **DaemonSet overhead**: 245m CPU / 640Mi memory (non-GPU), 345m CPU / 768Mi memory (GPU nodes)
 
 Each runner pod also includes a sidecar (750m CPU, 512Mi memory) on top of its job container resources.
@@ -62,7 +62,7 @@ Runners have ISA (instruction set) requirements encoded in their names that cons
 |----------|----------|---------|-----------|---------|
 | g5.48xlarge | 192c/768Gi @ $16.29/hr | 3 (A10G) | **50.3%** | 4-GPU runner uses only half the node |
 | g6.48xlarge | 192c/768Gi @ $13.35/hr | 2 (L4) | **50.3%** | Same — 4-GPU runner on 8-GPU node |
-| g4dn.12xlarge | 48c/192Gi @ $3.91/hr | 2 (T4) | **67.8%** | `l-x86iavx512-16-64-t4` fits at 68%; `l-x86iavx512-45-188-t4-4` fits with headroom (FIXED) |
+| g4dn.12xlarge | 48c/192Gi @ $3.91/hr | 2 (T4) | **67.8%** | `l-x86iavx512-16-64-t4` fits at 68%; `l-x86iavx512-45-187-t4-4` fits with headroom (FIXED) |
 | g4dn.metal | 96c/384Gi @ $7.82/hr | 1 (T4) | 96.0% | Good — `l-bx86iavx512-94-384-t4-8` fills the node |
 | p6-b200.48xlarge | 192c/2048Gi @ $55.47/hr | 4 (B200) | 88.1% | Good — runners scale proportionally to GPU count |
 
@@ -91,12 +91,12 @@ These runners include `l-x86iamx-*` (AMX) and `l-x86iavx2-*` (AVX2). Since AMX r
 
 | Pool | Instance | Runners | Worst Util | Cost/hr |
 |------|----------|---------|-----------|---------|
-| Compute | **c7i.32xlarge** (128c/256Gi) | 4 runners (2:1 ratio) | ~74% | $5.38 |
+| Compute | **c7i.12xlarge** (48c/96Gi) + **c7i.metal-24xl** (96c/192Gi) | 5 shared + 1 bare-metal (2:1 ratio) | ~92-99% | $2.14 / $4.28 |
 | Balanced | **m7i.48xlarge** (192c/768Gi) | 4 runners (4:1 ratio) | ~84% | $9.68 |
 | Memory | **r7i.48xlarge** (192c/1536Gi) | 2 runners (8:1 ratio) | ~88% | $12.70 |
 
 **Runner assignments**:
-- Compute pool: `l-x86iamx-8-16`, `l-x86iamx-16-32`, `l-x86iamx-48-96`, `l-bx86iamx-94-192`
+- Compute pool: `l-x86iamx-8-17`, `l-x86iamx-14-30`, `l-x86iamx-22-45`, `l-x86iamx-46-91` (c7i.12xlarge), `l-bx86iamx-92-180` (c7i.metal-24xl)
 - Balanced pool: `l-x86iamx-8-32`, `l-x86iamx-32-128`, `l-x86iavx2-8-32`, `l-x86iavx2-40-160`
 - Memory pool: `l-x86iamx-8-64`, `l-x86iamx-16-128`
 
@@ -138,7 +138,7 @@ AVX-512 runners can use either Intel or AMD instances with AVX-512 support.
 
 ### Recommendation 3: Fix T4 Runner Scheduling (DONE)
 
-`l-x86iavx512-48-192-t4-4` was renamed to `l-x86iavx512-45-188-t4-4` with reduced vCPU (45) and memory (188Gi) to leave headroom for the runner pod (750m/512Mi) and system overhead on g4dn.12xlarge (allocatable ~47.5c/~186Gi).
+`l-x86iavx512-48-192-t4-4` was renamed to `l-x86iavx512-45-187-t4-4` with reduced vCPU (45) and memory (187Gi) to leave headroom for the runner pod (750m/512Mi) and system overhead on g4dn.12xlarge (allocatable ~47.5c/~186Gi).
 
 ### Recommendation 4: GPU Nodepool Right-Sizing (LOW PRIORITY)
 
@@ -183,11 +183,11 @@ The only way to push these above 85% is to use instances where `N × runner_size
 ## Implementation Plan
 
 ### Phase 1: Fix T4 Scheduling (DONE)
-1. Renamed `l-x86iavx512-48-192-t4-4` → `l-x86iavx512-45-188-t4-4` (45 vCPU, 188Gi)
+1. Renamed `l-x86iavx512-48-192-t4-4` → `l-x86iavx512-45-187-t4-4` (45 vCPU, 187Gi)
 2. Regenerate and redeploy
 
 ### Phase 2: Split x86 CPU + ARM64 Nodepools by Ratio (DONE)
-1. Created 7 new nodepool defs: c7i-32xlarge, m7i-48xlarge, r7i-48xlarge, c7a-48xlarge, m6i-32xlarge, r7a-48xlarge, m8g-48xlarge
+1. Created 8 new nodepool defs: c7i-12xlarge, c7i-metal-24xl, m7i-48xlarge, r7i-48xlarge, c7a-48xlarge, m6i-32xlarge, r7a-48xlarge, m8g-48xlarge
 2. Updated 22 x86 runner defs to reference ratio-matched instance types (see Recommendations 1 & 2 above)
 3. Updated 4 ARM64 runner defs to m8g.48xlarge; 1 ARM64 runner stays on r7g.16xlarge
 4. Kept r5-24xlarge nodepool def for RE (Release Engineering) job-assigner workloads (cpu-44, cpu-85); no ARC runners use it

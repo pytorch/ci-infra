@@ -1,0 +1,10 @@
+# Karpenter NodePool definition: c7i.metal-24xl
+# Bare-metal Intel Sapphire Rapids for AMX workloads
+# Single runner claims the full node — no bin-packing
+# Node disk: 1x 200Gi pod + 100Gi OS = 300Gi
+nodepool:
+  name: c7i-metal-24xl
+  instance_type: c7i.metal-24xl
+  arch: amd64
+  node_disk_size: 300
+  gpu: false

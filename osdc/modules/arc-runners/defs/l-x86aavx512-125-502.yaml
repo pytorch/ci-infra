@@ -1,0 +1,11 @@
+# ARC runner definition: l-x86aavx512-125-502
+# Instance type: m6i.32xlarge — 128c/512Gi node
+# Note: m6i.32xlarge has 128 vCPU / 512 GiB but allocatable is ~502.9 GiB
+# after kubelet reserved (max_pods=737) + DaemonSets. Runner pod adds 750m/512Mi.
+runner:
+  name: l-x86aavx512-125-502
+  instance_type: m6i.32xlarge
+  disk_size: 200
+  vcpu: 125
+  memory: 502Gi
+  gpu: 0

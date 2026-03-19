@@ -1,0 +1,11 @@
+# ARC runner definition: l-x86aavx2-45-182-a10g-4
+# Instance type: g5.12xlarge — 4-GPU A10G, 48c/192Gi node
+# Note: g5.12xlarge has 48 vCPU / 192 GiB but allocatable is ~182.8 GiB
+# after kubelet reserved (max_pods=737) + DaemonSets. Runner pod adds 750m/512Mi.
+runner:
+  name: l-x86aavx2-45-182-a10g-4
+  instance_type: g5.12xlarge
+  disk_size: 150
+  vcpu: 45
+  memory: 182Gi
+  gpu: 4

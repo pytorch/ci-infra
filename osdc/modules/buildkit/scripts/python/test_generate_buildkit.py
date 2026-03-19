@@ -6,12 +6,12 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from analyze_node_utilization import ENI_MAX_PODS, kubelet_reserved
 from generate_buildkit import (
     DAEMONSET_OVERHEAD_CPU_M,
     DAEMONSET_OVERHEAD_MEM_MI,
     INSTANCE_SPECS,
     MARGIN,
-    _kubelet_reserved,
     compute_pod_resources,
     generate_deployment_yaml,
     generate_nodepools_yaml,
@@ -28,63 +28,69 @@ def parse_all_yaml(text: str) -> list[dict]:
 
 
 # ============================================================================
-# _kubelet_reserved
+# kubelet_reserved
 # ============================================================================
 
 
 class TestKubeletReserved:
-    """Tests for _kubelet_reserved CPU + memory tiered formula."""
+    """Tests for kubelet_reserved CPU + memory tiered formula.
+
+    kubelet_reserved is now imported from analyze_node_utilization.
+    Memory formula uses max_pods (from ENI limits), not vCPU count.
+    """
 
     def test_1_vcpu(self):
-        cpu, mem = _kubelet_reserved(1, 8)
+        cpu, mem = kubelet_reserved(1, 8, max_pods=8)
         assert cpu == 60
-        assert mem == 255 + 11 * 1 + 100
+        assert mem == 255 + 11 * 8 + 100
 
     def test_2_vcpu(self):
-        cpu, mem = _kubelet_reserved(2, 16)
+        cpu, mem = kubelet_reserved(2, 16, max_pods=17)
         assert cpu == 70
-        assert mem == 255 + 11 * 2 + 100
+        assert mem == 255 + 11 * 17 + 100
 
     def test_4_vcpu_boundary(self):
-        cpu, mem = _kubelet_reserved(4, 32)
+        cpu, mem = kubelet_reserved(4, 32, max_pods=29)
         assert cpu == 80
-        assert mem == 255 + 11 * 4 + 100
+        assert mem == 255 + 11 * 29 + 100
 
     def test_8_vcpu(self):
-        cpu, _ = _kubelet_reserved(8, 64)
+        cpu, _ = kubelet_reserved(8, 64, max_pods=58)
         assert cpu == 80 + int((8 - 4) * 2.5)  # 80 + 10 = 90
 
     def test_16_vcpu(self):
-        cpu, _ = _kubelet_reserved(16, 128)
+        cpu, _ = kubelet_reserved(16, 128, max_pods=234)
         assert cpu == 80 + int((16 - 4) * 2.5)  # 80 + 30 = 110
 
     def test_32_vcpu(self):
-        cpu, _ = _kubelet_reserved(32, 256)
+        cpu, _ = kubelet_reserved(32, 256, max_pods=737)
         assert cpu == 80 + int((32 - 4) * 2.5)  # 80 + 70 = 150
 
     def test_48_vcpu(self):
-        cpu, _ = _kubelet_reserved(48, 384)
+        cpu, _ = kubelet_reserved(48, 384, max_pods=737)
         assert cpu == 80 + int((48 - 4) * 2.5)  # 80 + 110 = 190
 
     def test_64_vcpu(self):
-        cpu, mem = _kubelet_reserved(64, 256)
+        # c7gd.16xlarge: 64 vCPU, max_pods=737
+        cpu, mem = kubelet_reserved(64, 256, max_pods=737)
         assert cpu == 80 + int((64 - 4) * 2.5)  # 80 + 150 = 230
-        assert mem == 255 + 11 * 64 + 100
+        assert mem == 255 + 11 * 737 + 100
 
     def test_96_vcpu(self):
-        cpu, mem = _kubelet_reserved(96, 384)
+        # m8gd.24xlarge: 96 vCPU, max_pods=737
+        cpu, mem = kubelet_reserved(96, 384, max_pods=737)
         assert cpu == 80 + int((96 - 4) * 2.5)  # 80 + 230 = 310
-        assert mem == 255 + 11 * 96 + 100
+        assert mem == 255 + 11 * 737 + 100
 
     def test_128_vcpu(self):
-        cpu, _ = _kubelet_reserved(128, 512)
+        cpu, _ = kubelet_reserved(128, 512, max_pods=737)
         assert cpu == 80 + int((128 - 4) * 2.5)  # 80 + 310 = 390
 
     def test_memory_formula(self):
-        """Memory reservation: 255Mi base + 11Mi/core + 100Mi eviction."""
-        for vcpu in [1, 4, 16, 64, 96]:
-            _, mem = _kubelet_reserved(vcpu, vcpu * 4)
-            assert mem == 255 + 11 * vcpu + 100
+        """Memory reservation: 255Mi base + 11Mi * max_pods + 100Mi eviction."""
+        for max_pods in [8, 29, 58, 234, 737]:
+            _, mem = kubelet_reserved(4, 32, max_pods=max_pods)
+            assert mem == 255 + 11 * max_pods + 100
 
 
 # ============================================================================
@@ -126,7 +132,8 @@ class TestComputePodResources:
     def test_margin_applied(self):
         """10% margin means pod resources are less than raw usable / pods."""
         spec = INSTANCE_SPECS["m6id.24xlarge"]
-        reserved_cpu, _reserved_mem = _kubelet_reserved(spec["vcpu"], spec["memory_gib"])
+        max_pods = ENI_MAX_PODS["m6id.24xlarge"]
+        reserved_cpu, _reserved_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"], max_pods)
         usable_cpu_m = spec["vcpu"] * 1000 - reserved_cpu - DAEMONSET_OVERHEAD_CPU_M
 
         result = compute_pod_resources("m6id.24xlarge", 2)
@@ -142,7 +149,8 @@ class TestComputePodResources:
         assert "allocatable_cpu_m" in result
         assert "allocatable_mem_mi" in result
         spec = INSTANCE_SPECS["c7gd.16xlarge"]
-        reserved_cpu, reserved_mem = _kubelet_reserved(spec["vcpu"], spec["memory_gib"])
+        max_pods = ENI_MAX_PODS["c7gd.16xlarge"]
+        reserved_cpu, reserved_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"], max_pods)
         assert result["allocatable_cpu_m"] == spec["vcpu"] * 1000 - reserved_cpu
         assert result["allocatable_mem_mi"] == spec["memory_gib"] * 1024 - reserved_mem
 
@@ -159,7 +167,8 @@ class TestComputePodResources:
 
         result = compute_pod_resources("m8gd.24xlarge", 2)
         # Manually compute expected values
-        reserved_cpu, reserved_mem = _kubelet_reserved(96, 384)
+        max_pods = ENI_MAX_PODS["m8gd.24xlarge"]
+        reserved_cpu, reserved_mem = kubelet_reserved(96, 384, max_pods)
         alloc_cpu_m = 96 * 1000 - reserved_cpu
         alloc_mem_mi = 384 * 1024 - reserved_mem
         usable_cpu_m = alloc_cpu_m - DAEMONSET_OVERHEAD_CPU_M

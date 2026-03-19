@@ -41,7 +41,7 @@ Reference: [actions/actions-runner-controller#2697](https://github.com/actions/a
 | `mt-l-arm64g3-16-64` | Meta, Linux, ARM64 Graviton 3, 16 vCPU, 64 GiB |
 | `nv-l-x86aavx2-48-192-a10g-4` | NVIDIA, Linux, x86 AMD AVX2, 48 vCPU, 192 GiB, 4x A10G GPUs |
 | `c-mt-l-x86iavx512-8-16` | **Canary**, Meta, Linux, x86 Intel AVX-512, 8 vCPU, 16 GiB |
-| `l-x86iamx-16-32` | Linux, x86 Intel AMX, 16 vCPU, 32 GiB |
+| `l-x86iamx-14-30` | Linux, x86 Intel AMX, 14 vCPU, 30 GiB |
 
 ## Old Label → New Label Mapping
 
@@ -68,7 +68,7 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | linux.24xlarge | c5.24xlarge | mt-l-x86iavx512-94-192 |
 | linux.24xlarge.ephemeral | c5.24xlarge | mt-l-x86iavx512-94-192 |
 | linux.c7i.24xlarge | c7i.24xlarge | mt-l-x86iavx512-94-192 |
-| linux.24xl.spr-metal | c7i.metal-24xl | mt-l-bx86iamx-94-192 |
+| linux.24xl.spr-metal | c7i.metal-24xl | mt-l-bx86iamx-92-180 |
 
 ### x86 CPU — Intel AMX (m7i-flex family)
 
@@ -114,7 +114,7 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | --- | --- | --- |
 | linux.8xlarge.amd | m7a.8xlarge | *— no equivalent* |
 | linux.12xlarge.amd | m6a.12xlarge | *— no equivalent* |
-| linux.24xlarge.amd | m7a.24xlarge | mt-l-x86aavx512-94-384 |
+| linux.24xlarge.amd | m6i.32xlarge | mt-l-x86aavx512-125-502 |
 
 ### x86 GPU — T4 (g4dn family)
 
@@ -122,7 +122,7 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
 | linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-125-t4 |
-| linux.g4dn.12xlarge.nvidia.gpu | g4dn.12xlarge | mt-l-x86iavx512-45-188-t4-4 |
+| linux.g4dn.12xlarge.nvidia.gpu | g4dn.12xlarge | mt-l-x86iavx512-45-187-t4-4 |
 | linux.g4dn.metal.nvidia.gpu | g4dn.metal | mt-l-bx86iavx512-94-384-t4-8 |
 
 ### x86 GPU — A10G (g5 family)
@@ -130,8 +130,8 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.g5.4xlarge.nvidia.gpu | g5.4xlarge | mt-l-x86aavx2-29-125-a10g |
-| linux.g5.12xlarge.nvidia.gpu | g5.12xlarge | mt-l-x86aavx2-45-188-a10g-4 |
+| linux.g5.4xlarge.nvidia.gpu | g5.4xlarge | mt-l-x86aavx2-29-123-a10g |
+| linux.g5.12xlarge.nvidia.gpu | g5.12xlarge | mt-l-x86aavx2-45-182-a10g-4 |
 | linux.g5.48xlarge.nvidia.gpu | g5.48xlarge | mt-l-x86aavx2-192-768-a10g-8 |
 
 ### x86 GPU — L4 (g6 family)
@@ -139,8 +139,8 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.g6.4xlarge.experimental.nvidia.gpu | g6.4xlarge | mt-l-x86aavx2-29-125-l4 |
-| linux.g6.12xlarge.nvidia.gpu | g6.12xlarge | mt-l-x86aavx2-45-188-l4-4 |
+| linux.g6.4xlarge.experimental.nvidia.gpu | g6.4xlarge | mt-l-x86aavx2-29-123-l4 |
+| linux.g6.12xlarge.nvidia.gpu | g6.12xlarge | mt-l-x86aavx2-45-187-l4-4 |
 
 ### x86 GPU — V100 (p3 family)
 
@@ -160,7 +160,7 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | linux.arm64.m7g.4xlarge.ephemeral | m7g.4xlarge | mt-l-arm64g3-16-64 |
 | linux.arm64.m8g.4xlarge | m8g.4xlarge | mt-l-arm64g4-16-64 |
 | linux.arm64.m8g.4xlarge.ephemeral | m8g.4xlarge | mt-l-arm64g4-16-64 |
-| linux.arm64.r7g.12xlarge.memory | r7g.12xlarge | mt-l-arm64g3-61-509 |
+| linux.arm64.r7g.12xlarge.memory | r7g.16xlarge | mt-l-arm64g3-61-502 |
 | linux.arm64.m7g.metal | m7g.metal | mt-l-barm64g3-62-256 |
 
 ## Many-to-One: Old Labels That Collapse Into a Single New Label

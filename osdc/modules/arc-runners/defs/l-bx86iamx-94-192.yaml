@@ -1,9 +1,0 @@
-# ARC runner definition: l-bx86iamx-94-192
-# Instance type: c7i.32xlarge (pool: x86-amx-compute)
-runner:
-  name: l-bx86iamx-94-192
-  instance_type: c7i.32xlarge
-  disk_size: 200
-  vcpu: 94
-  memory: 192Gi
-  gpu: 0

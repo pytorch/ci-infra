@@ -1,0 +1,9 @@
+# ARC runner definition: l-x86iamx-8-17
+# Instance type: c7i.12xlarge (pool: x86-amx-compute)
+runner:
+  name: l-x86iamx-8-17
+  instance_type: c7i.12xlarge
+  disk_size: 150
+  vcpu: 8
+  memory: 17Gi
+  gpu: 0

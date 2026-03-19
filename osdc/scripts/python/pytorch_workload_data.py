@@ -23,7 +23,7 @@ OLD_TO_NEW_LABEL: dict[str, str] = {
     "linux.12xlarge": "l-x86iavx512-48-96",
     "linux.c7i.12xlarge": "l-x86iavx512-48-96",
     "linux.24xlarge": "l-x86iavx512-94-192",
-    "linux.24xl.spr-metal": "l-bx86iamx-94-192",
+    "linux.24xl.spr-metal": "l-bx86iamx-92-180",
     # x86 CPU — Intel AMX
     "linux.2xlarge.amx": "l-x86iamx-8-32",
     "linux.8xlarge.amx": "l-x86iamx-32-128",
@@ -40,25 +40,25 @@ OLD_TO_NEW_LABEL: dict[str, str] = {
     "linux.12xlarge.memory.ephemeral": "l-x86iavx512-48-384",
     "linux.24xlarge.memory": "l-x86iavx512-94-768",
     # x86 CPU — AMD
-    "linux.24xlarge.amd": "l-x86aavx512-125-508",
+    "linux.24xlarge.amd": "l-x86aavx512-125-502",
     # x86 GPU — T4 (g4dn)
     "linux.4xlarge.nvidia.gpu": "l-x86iavx512-29-125-t4",
     "linux.g4dn.4xlarge.nvidia.gpu": "l-x86iavx512-29-125-t4",
-    "linux.g4dn.12xlarge.nvidia.gpu": "l-x86iavx512-45-188-t4-4",
+    "linux.g4dn.12xlarge.nvidia.gpu": "l-x86iavx512-45-187-t4-4",
     "linux.g4dn.metal.nvidia.gpu": "l-bx86iavx512-94-384-t4-8",
     # x86 GPU — A10G (g5)
-    "linux.g5.4xlarge.nvidia.gpu": "l-x86aavx2-29-125-a10g",
-    "linux.g5.12xlarge.nvidia.gpu": "l-x86aavx2-45-188-a10g-4",
+    "linux.g5.4xlarge.nvidia.gpu": "l-x86aavx2-29-123-a10g",
+    "linux.g5.12xlarge.nvidia.gpu": "l-x86aavx2-45-182-a10g-4",
     "linux.g5.48xlarge.nvidia.gpu": "l-x86aavx2-192-768-a10g-8",
     # x86 GPU — L4 (g6)
-    "linux.g6.4xlarge.experimental.nvidia.gpu": "l-x86aavx2-29-125-l4",
-    "linux.g6.12xlarge.nvidia.gpu": "l-x86aavx2-45-188-l4-4",
+    "linux.g6.4xlarge.experimental.nvidia.gpu": "l-x86aavx2-29-123-l4",
+    "linux.g6.12xlarge.nvidia.gpu": "l-x86aavx2-45-187-l4-4",
     # ARM64
     "linux.arm64.2xlarge": "l-arm64g2-6-32",
     "linux.arm64.2xlarge.ephemeral": "l-arm64g2-6-32",
     "linux.arm64.m7g.4xlarge": "l-arm64g3-16-64",
     "linux.arm64.m8g.4xlarge": "l-arm64g4-16-64",
-    "linux.arm64.r7g.12xlarge.memory": "l-arm64g3-61-509",
+    "linux.arm64.r7g.12xlarge.memory": "l-arm64g3-61-502",
     "linux.arm64.m7g.metal": "l-barm64g3-62-256",
 }
 
