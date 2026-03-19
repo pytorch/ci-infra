@@ -58,7 +58,9 @@ This module can contribute log parsing rules for the centralized logging system 
 
 ## Credential setup
 
-The Grafana Cloud URL comes from `clusters.yaml` (`monitoring.grafana_cloud_url`), not from the secret. The secret only contains authentication credentials:
+The Grafana Cloud URLs come from `clusters.yaml` (`monitoring.grafana_cloud_url` for write, `monitoring.grafana_cloud_read_url` for read), not from secrets. Secrets only contain authentication credentials.
+
+**Write credentials** (used by Alloy to push metrics):
 
 ```bash
 kubectl create namespace monitoring
@@ -69,6 +71,15 @@ kubectl create secret generic grafana-cloud-credentials \
   --from-literal=loki-username='<GRAFANA_CLOUD_LOKI_USER_ID>' \
   --from-literal=loki-api-key-write='<API_KEY_WITH_LOGS_WRITE_SCOPE>' \
   --from-literal=loki-api-key-read='<API_KEY_WITH_LOGS_READ_SCOPE>'
+```
+
+**Read credentials** (used by smoke tests to verify metrics arrive in Mimir):
+
+```bash
+kubectl create secret generic grafana-cloud-read-credentials \
+  -n monitoring \
+  --from-literal=username='<GRAFANA_CLOUD_METRICS_USER_ID>' \
+  --from-literal=password='<API_KEY_WITH_METRICS_READ_SCOPE>'
 ```
 
 ## Dependencies

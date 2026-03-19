@@ -12,7 +12,7 @@ import pytest
 from helpers import (
     READY_RETRIES,
     READY_RETRY_DELAY,
-    assert_daemonset_ready,
+    assert_daemonset_healthy,
     fetch_grafana_cloud_credentials,
     filter_pods,
     find_helm_release,
@@ -65,8 +65,8 @@ class TestAlloyLogging:
         status = release.get("status", "")
         assert status == "deployed", f"alloy-logging status is '{status}', expected 'deployed'"
 
-    def test_daemonset_ready(self, all_daemonsets: dict, logging_ns: str) -> None:
-        assert_daemonset_ready(all_daemonsets, logging_ns, name_contains="alloy-logging")
+    def test_daemonset_ready(self, all_daemonsets: dict, all_nodes: dict, logging_ns: str) -> None:
+        assert_daemonset_healthy(all_daemonsets, all_nodes, logging_ns, name_contains="alloy-logging")
 
     def test_configmap_exists(self, logging_ns: str) -> None:
         result = run_kubectl(["get", "configmap", "alloy-logging-config", "-o", "json"], namespace=logging_ns)
@@ -124,7 +124,14 @@ class TestLoggingRemoteVerification:
         self.read_url = loki_read_url(self.loki_write_url)
 
     def test_logs_arriving(self, resolve_config) -> None:
-        """Query Loki for recent logs from this cluster."""
+        """Query Loki for recent logs from this cluster, verifying freshness.
+
+        Checks that log entries were received within the last 5 minutes.
+        This catches cases where a deploy broke the Alloy DaemonSet but
+        stale log entries still exist in Loki from before the deploy.
+        """
+        max_staleness_seconds = 300  # 5 minutes
+
         cluster_name = resolve_config("cluster_name", "")
         if not cluster_name:
             pytest.skip("cluster_name not set in config")
@@ -141,3 +148,17 @@ class TestLoggingRemoteVerification:
         assert status == "success", f"Loki query returned status '{status}'"
         streams = result.get("data", {}).get("result", [])
         assert len(streams) > 0, f"No log streams found for cluster '{cluster_name}' in last hour"
+
+        # Verify freshness: check that at least one log entry is recent.
+        # Loki query_range returns streams with "values": [[nanosecond_ts, line], ...]
+        newest_ns = 0
+        for stream in streams:
+            for ts_ns, _ in stream.get("values", []):
+                newest_ns = max(newest_ns, int(ts_ns))
+        if newest_ns > 0:
+            age = time.time() - (newest_ns / 1e9)
+            assert age < max_staleness_seconds, (
+                f"Logs are stale: newest entry is {age:.0f}s old "
+                f"(threshold: {max_staleness_seconds}s). "
+                f"Alloy DaemonSet may have stopped pushing after a deploy."
+            )

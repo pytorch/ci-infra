@@ -11,22 +11,25 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_TIMEOUT = 60
-READY_RETRIES = 3
-READY_RETRY_DELAY = 10  # seconds
+READY_RETRIES = 6
+READY_RETRY_DELAY = 15  # seconds
+MIN_NODE_AGE_SECONDS = 120  # Nodes must be Ready for 2+ min to count as stable
 
 
 def _proxy_bypass_env() -> dict[str, str]:
-    """Return an env dict that bypasses corporate proxy for EKS API calls.
+    """Return an env dict that bypasses corporate proxy for AWS API calls.
 
     The Meta corporate proxy intercepts HTTPS connections, which causes
-    kubectl/helm to fail with 'Unauthorized' when talking to EKS.
+    kubectl/helm to fail with 'Unauthorized' when talking to EKS, and
+    AWS CLI calls to fail for services like ECR, IAM, SQS, EventBridge.
+    Using '.amazonaws.com' covers all AWS service endpoints at once.
     """
     env = os.environ.copy()
-    eks_suffix = ".eks.amazonaws.com"
+    aws_suffix = ".amazonaws.com"
     for key in ("NO_PROXY", "no_proxy"):
         current = env.get(key, "")
-        if eks_suffix not in current:
-            env[key] = f"{current},{eks_suffix}" if current else eks_suffix
+        if aws_suffix not in current:
+            env[key] = f"{current},{aws_suffix}" if current else aws_suffix
     return env
 
 
@@ -161,7 +164,7 @@ def assert_daemonset_ready(
         return
 
     # Batch data is stale — retry with live fetches
-    for attempt in range(READY_RETRIES):
+    for _attempt in range(READY_RETRIES):
         time.sleep(READY_RETRY_DELAY)
         fresh = run_kubectl(["get", f"daemonset/{ds_name}"], namespace=namespace)
         desired = fresh.get("status", {}).get("desiredNumberScheduled", 0)
@@ -172,6 +175,113 @@ def assert_daemonset_ready(
             return
 
     assert ready == desired, f"{ds_name}: {ready}/{desired} pods ready (after {READY_RETRIES} retries)"
+
+
+def _parse_k8s_timestamp(ts: str) -> float:
+    """Parse Kubernetes ISO 8601 timestamp to Unix epoch seconds."""
+    from datetime import datetime
+
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+
+
+def _count_unstable_nodes(all_nodes: dict) -> int:
+    """Count nodes that are new, NotReady, or being deleted.
+
+    A node is "unstable" if any of:
+    - It has a deletionTimestamp (being deleted)
+    - Its Ready condition is not True
+    - It was created less than MIN_NODE_AGE_SECONDS ago
+    """
+    count = 0
+    now = time.time()
+    for node in all_nodes.get("items", []):
+        meta = node.get("metadata", {})
+        # Being deleted
+        if meta.get("deletionTimestamp"):
+            count += 1
+            continue
+        # Not Ready
+        conditions = {c["type"]: c["status"] for c in node.get("status", {}).get("conditions", [])}
+        if conditions.get("Ready") != "True":
+            count += 1
+            continue
+        # Too new
+        created = meta.get("creationTimestamp", "")
+        if created:
+            created_ts = _parse_k8s_timestamp(created)
+            if (now - created_ts) < MIN_NODE_AGE_SECONDS:
+                count += 1
+    return count
+
+
+def assert_daemonset_healthy(
+    all_daemonsets: dict,
+    all_nodes: dict,
+    namespace: str,
+    name: str | None = None,
+    *,
+    name_contains: str | None = None,
+    allow_zero: bool = False,
+) -> None:
+    """Assert DaemonSet is healthy, tolerating mismatches from node churn.
+
+    Passes if desired == ready, OR if the mismatch is fully explained by
+    nodes that are new (< MIN_NODE_AGE_SECONDS), NotReady, or being deleted.
+
+    This is resilient to concurrent node churn (compactor e2e, Karpenter
+    autoscaling, spot interruptions, node recycling).
+
+    Args:
+        all_daemonsets: Batch-fetched DaemonSet data.
+        all_nodes: Batch-fetched node data.
+        namespace: Namespace to filter by.
+        name: Exact DaemonSet name (mutually exclusive with name_contains).
+        name_contains: Substring match on DaemonSet name.
+        allow_zero: If True, 0/0 is acceptable (e.g. GPU plugin with no GPU nodes).
+    """
+    ds_list = filter_daemonsets(all_daemonsets, namespace=namespace, name=name, name_contains=name_contains)
+    label = name or name_contains
+    assert len(ds_list) >= 1, f"DaemonSet matching '{label}' not found in {namespace}"
+
+    ds = ds_list[0]
+    ds_name = ds["metadata"]["name"]
+    desired = ds.get("status", {}).get("desiredNumberScheduled", 0)
+    ready = ds.get("status", {}).get("numberReady", 0)
+
+    if desired == ready:
+        if not allow_zero:
+            assert desired > 0, f"{ds_name} has 0 desired pods"
+        return
+
+    # Check if mismatch is explained by unstable nodes
+    unstable = _count_unstable_nodes(all_nodes)
+    if max(0, desired - ready) <= unstable:
+        if not allow_zero and ready == 0:
+            assert desired > 0, f"{ds_name} has 0 ready pods (all {unstable} nodes unstable)"
+        return
+
+    # Batch data may be stale — retry with live fetches
+    for _attempt in range(READY_RETRIES):
+        time.sleep(READY_RETRY_DELAY)
+        fresh_ds = run_kubectl(["get", f"daemonset/{ds_name}"], namespace=namespace)
+        fresh_nodes = run_kubectl(["get", "nodes"])
+        desired = fresh_ds.get("status", {}).get("desiredNumberScheduled", 0)
+        ready = fresh_ds.get("status", {}).get("numberReady", 0)
+        if desired == ready:
+            if not allow_zero:
+                assert desired > 0, f"{ds_name} has 0 desired pods"
+            return
+        unstable = _count_unstable_nodes(fresh_nodes)
+        if max(0, desired - ready) <= unstable:
+            if not allow_zero and ready == 0:
+                assert desired > 0, f"{ds_name} has 0 ready pods (all {unstable} nodes unstable)"
+            return
+
+    raise AssertionError(
+        f"{ds_name}: {ready}/{desired} pods ready, {unstable} unstable nodes "
+        f"(after {READY_RETRIES} retries). "
+        f"Mismatch exceeds unstable node count — this is a real failure."
+    )
 
 
 def assert_deployment_ready(
@@ -194,7 +304,7 @@ def assert_deployment_ready(
         return
 
     # Batch data is stale — retry with live fetches
-    for attempt in range(READY_RETRIES):
+    for _attempt in range(READY_RETRIES):
         time.sleep(READY_RETRY_DELAY)
         fresh = run_kubectl(["get", f"deployment/{name}"], namespace=namespace)
         desired = fresh["spec"].get("replicas", 1)
@@ -235,7 +345,10 @@ def loki_read_url(write_url: str) -> str:
 
 
 def fetch_grafana_cloud_credentials(
-    namespace: str, username_key: str, password_key: str
+    namespace: str,
+    username_key: str,
+    password_key: str,
+    secret_name: str = "grafana-cloud-credentials",
 ) -> tuple[str, str] | None:
     """Fetch Grafana Cloud credentials from a Kubernetes secret.
 
@@ -243,7 +356,7 @@ def fetch_grafana_cloud_credentials(
     or cannot be decoded.
     """
     try:
-        secret = run_kubectl(["get", "secret", "grafana-cloud-credentials"], namespace=namespace)
+        secret = run_kubectl(["get", "secret", secret_name], namespace=namespace)
         data = secret.get("data", {})
         if username_key not in data or password_key not in data:
             return None

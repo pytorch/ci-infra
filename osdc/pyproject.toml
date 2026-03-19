@@ -29,6 +29,9 @@ testpaths = [
   "integration-tests/scripts/python",
 ]
 addopts = "--tb=short -q"
+filterwarnings = [
+  "ignore:`verify=<str>` is deprecated:DeprecationWarning:httpx._config",
+]
 markers = [
   "live: requires live cluster access (kubectl/helm)",
   "aws: requires AWS CLI access",

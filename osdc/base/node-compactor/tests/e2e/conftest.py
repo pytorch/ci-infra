@@ -1,4 +1,25 @@
-"""Pytest configuration and session-scoped fixtures for node-compactor e2e."""
+"""Pytest configuration and session-scoped fixtures for node-compactor e2e.
+
+-----------------------------------------------------------------------
+Concurrency note: smoke test interaction
+
+These e2e tests mutate cluster state that smoke tests also verify.
+Smoke tests (just smoke) are designed to tolerate this via
+assert_daemonset_healthy() which ignores nodes in transition.
+
+State mutated by these e2e tests:
+  - Karpenter nodes in target NodePool: deleted at setup, provisioned
+    on demand during tests, may be deleted by Karpenter's WhenEmpty
+  - node-compactor Deployment (kube-system): env vars patched for fast
+    cycles, pod restarted; restored at teardown
+  - compactor-e2e-test namespace: created at setup, deleted at teardown
+  - Node taints: node-compactor.osdc.io/consolidating applied/removed
+
+If you change what these tests mutate, evaluate whether the smoke
+tests' resilience mechanisms (assert_daemonset_healthy, Deployment
+retry window) still cover the new mutations.
+-----------------------------------------------------------------------
+"""
 
 from __future__ import annotations
 

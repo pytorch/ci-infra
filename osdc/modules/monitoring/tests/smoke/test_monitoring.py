@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 from helpers import (
-    assert_daemonset_ready,
+    assert_daemonset_healthy,
     assert_deployment_ready,
     fetch_grafana_cloud_credentials,
     filter_deployments,
@@ -65,8 +65,8 @@ class TestMonitoringHelm:
 class TestNodeExporter:
     """Verify node-exporter DaemonSet runs on all nodes."""
 
-    def test_node_exporter_healthy(self, all_daemonsets: dict, mon_ns: str) -> None:
-        assert_daemonset_ready(all_daemonsets, mon_ns, name_contains="node-exporter")
+    def test_node_exporter_healthy(self, all_daemonsets: dict, all_nodes: dict, mon_ns: str) -> None:
+        assert_daemonset_healthy(all_daemonsets, all_nodes, mon_ns, name_contains="node-exporter")
 
 
 # ============================================================================
@@ -147,8 +147,8 @@ class TestPodMonitors:
 class TestDCGMExporter:
     """Verify DCGM exporter DaemonSet exists (0 desired is OK if no GPU nodes)."""
 
-    def test_dcgm_exporter_healthy(self, all_daemonsets: dict, mon_ns: str) -> None:
-        assert_daemonset_ready(all_daemonsets, mon_ns, name_contains="dcgm", allow_zero=True)
+    def test_dcgm_exporter_healthy(self, all_daemonsets: dict, all_nodes: dict, mon_ns: str) -> None:
+        assert_daemonset_healthy(all_daemonsets, all_nodes, mon_ns, name_contains="dcgm", allow_zero=True)
 
 
 # ============================================================================
@@ -187,18 +187,29 @@ class TestMonitoringRemoteVerification:
 
     @pytest.fixture(autouse=True)
     def _require_remote(self, resolve_config, mon_ns: str):
-        """Skip if no Mimir URL configured or no credentials."""
-        self.mimir_write_url = resolve_config("monitoring.grafana_cloud_url", "")
-        if not self.mimir_write_url:
-            pytest.skip("No Mimir URL configured")
-        creds = fetch_grafana_cloud_credentials(mon_ns, "username", "password")
+        """Skip if no Mimir read URL configured or no read credentials."""
+        read_url_base = resolve_config("monitoring.grafana_cloud_read_url", "")
+        if not read_url_base:
+            pytest.skip("No Mimir read URL configured (monitoring.grafana_cloud_read_url)")
+        creds = fetch_grafana_cloud_credentials(
+            mon_ns, "username", "password", secret_name="grafana-cloud-read-credentials"
+        )
         if creds is None:
-            pytest.skip("No grafana-cloud-credentials for monitoring")
+            pytest.skip("No grafana-cloud-read-credentials secret for monitoring")
         self.mimir_user, self.mimir_key = creds
-        self.read_url = mimir_read_url(self.mimir_write_url)
+        self.read_url = mimir_read_url(read_url_base)
 
     def test_metrics_arriving(self, resolve_config) -> None:
-        """Query Mimir for the up metric from this cluster."""
+        """Query Mimir for the up metric from this cluster, verifying freshness.
+
+        Checks that metrics were scraped within the last 5 minutes. This
+        catches cases where a deploy broke Alloy but stale metrics still
+        exist in Mimir from before the deploy.
+        """
+        import time
+
+        max_staleness_seconds = 300  # 5 minutes
+
         cluster_name = resolve_config("cluster_name", "")
         if not cluster_name:
             pytest.skip("cluster_name not set in config")
@@ -215,3 +226,13 @@ class TestMonitoringRemoteVerification:
         assert status == "success", f"Mimir query returned status '{status}'"
         results = result.get("data", {}).get("result", [])
         assert len(results) > 0, f"No 'up' metrics found for cluster '{cluster_name}'"
+
+        # Verify freshness: check that at least one sample is recent
+        now = time.time()
+        newest_ts = max(float(r["value"][0]) for r in results)
+        age = now - newest_ts
+        assert age < max_staleness_seconds, (
+            f"Metrics are stale: newest sample is {age:.0f}s old "
+            f"(threshold: {max_staleness_seconds}s). "
+            f"Alloy may have stopped pushing after a deploy."
+        )

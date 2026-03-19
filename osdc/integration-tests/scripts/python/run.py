@@ -123,6 +123,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Generate workflows but don't push/PR")
     parser.add_argument("--keep-pr", action="store_true", help="Don't close PR after test (useful for debugging failures)")
     parser.add_argument("--force", action="store_true", help="Skip interactive prompts (e.g. staging pool clear)")
+    parser.add_argument("--skip-drain", action="store_true", help="Skip staging pool drain entirely")
     return parser.parse_args()
 
 
@@ -168,7 +169,7 @@ def main():
         cleanup_stale_prs(branch)
 
         # Phase 1: Staging pool clear
-        if not args.dry_run:
+        if not args.dry_run and not args.skip_drain:
             clear_staging_pools(args.cluster_id, force=args.force)
 
         # Clone / update canary repo

@@ -76,7 +76,7 @@ kubeconfig cluster:
     CNAME=$(uv run {{CFG}} {{cluster}} cluster_name); \
     REGION=$(uv run {{CFG}} {{cluster}} region); \
     echo "Updating kubeconfig for $CNAME ($REGION)..."; \
-    aws eks update-kubeconfig --name "$CNAME" --region "$REGION"
+    aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME"
 
 # ============================================================================
 # BOOTSTRAP
@@ -112,9 +112,17 @@ deploy cluster:
     echo "Modules:"
     uv run {{CFG}} "$CLUSTER" modules | sed 's/^/  - /'
     echo ""
-    read -p "Continue? [y/N] " -n 1 -r
-    echo
-    [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
+    CONFIRM="${OSDC_CONFIRM:-ask}"
+    if [ "$CONFIRM" = "yes" ]; then
+        echo "Auto-confirmed (OSDC_CONFIRM=yes)"
+    elif [ "$CONFIRM" = "no" ]; then
+        echo "Cancelled (OSDC_CONFIRM=no)."
+        exit 1
+    else
+        read -p "Continue? [y/N] " -n 1 -r
+        echo
+        [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
+    fi
 
     just deploy-base "$CLUSTER"
 
@@ -200,12 +208,21 @@ deploy-base cluster:
         rm -f tfplan
     elif [[ $PLAN_EXIT -eq 2 ]]; then
         echo ""
-        read -p "Apply this plan? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        CONFIRM="${OSDC_CONFIRM:-ask}"
+        if [[ "$CONFIRM" == "yes" ]]; then
+            echo "Auto-confirmed (OSDC_CONFIRM=yes)"
+        elif [[ "$CONFIRM" == "no" ]]; then
             rm -f tfplan
-            echo "Cancelled."
+            echo "Cancelled (OSDC_CONFIRM=no)."
             exit 1
+        else
+            read -p "Apply this plan? [y/N] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                rm -f tfplan
+                echo "Cancelled."
+                exit 1
+            fi
         fi
         tofu apply tfplan
         rm -f tfplan
@@ -216,8 +233,7 @@ deploy-base cluster:
     fi
 
     echo ""
-    echo "Updating kubeconfig..."
-    aws eks update-kubeconfig --name "${CNAME}" --region "${REGION}"
+    just kubeconfig "$CLUSTER"
 
     echo ""
     echo "━━━ BASE: Mirror bootstrap images ━━━"
@@ -257,7 +273,7 @@ deploy-module cluster module:
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
 
     # Ensure kubectl is configured for the target cluster
-    aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME" >/dev/null
+    just kubeconfig "$CLUSTER"
 
     echo ""
     echo "━━━ MODULE: $MODULE ━━━"
@@ -338,10 +354,9 @@ recycle-nodes cluster:
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
-    REGION=$(uv run {{CFG}} "$CLUSTER" region)
 
     # Ensure kubectl is configured for the target cluster
-    aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME" >/dev/null
+    just kubeconfig "$CLUSTER"
 
     echo "Recycling all Karpenter nodes for $CLUSTER ($CNAME)..."
 
@@ -371,6 +386,9 @@ _deploy-harbor cluster:
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
     REGION=$(uv run {{CFG}} "$CLUSTER" region)
     BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
+
+    # Ensure kubectl is configured for the target cluster
+    just kubeconfig "$CLUSTER"
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -620,10 +638,8 @@ test:
 
 # Run node-compactor e2e tests against a live cluster
 test-compactor cluster:
+    @just kubeconfig {{cluster}}
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
-    CNAME=$$(uv run {{CFG}} {{cluster}} cluster_name); \
-    REGION=$$(uv run {{CFG}} {{cluster}} region); \
-    aws eks update-kubeconfig --name "$$CNAME" --region "$$REGION" --alias "$$CNAME" >/dev/null; \
     export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
     cd {{UPSTREAM}}/base/node-compactor/tests/e2e && \
@@ -642,10 +658,7 @@ smoke cluster:
 
     # Ensure kubectl is configured for the target cluster
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
-    CLUSTER_NAME=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" cluster_name)
-    REGION=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" region)
-    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
-        aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" --alias "$CLUSTER_NAME"
+    just kubeconfig "$CLUSTER"
 
     # Discover base smoke tests (co-located with each base component)
     # Also includes modules/eks/ which is always deployed as part of base
@@ -691,10 +704,7 @@ integration-test cluster *args:
 
     # Ensure kubectl is configured for the target cluster
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
-    CLUSTER_NAME=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" cluster_name)
-    REGION=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" region)
-    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
-        aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" --alias "$CLUSTER_NAME"
+    just kubeconfig "$CLUSTER"
 
     export OSDC_ROOT="${ROOT}"
     export OSDC_UPSTREAM="${UPSTREAM}"
@@ -706,6 +716,27 @@ integration-test cluster *args:
             --upstream-dir "${UPSTREAM}" \
             --root-dir "${ROOT}" \
             {{args}}
+
+# ============================================================================
+# ANALYSIS
+# ============================================================================
+
+# Analyze runner-to-node packing efficiency
+analyze-utilization *args:
+    @export OSDC_ROOT="{{ROOT}}"; \
+    export OSDC_UPSTREAM="{{UPSTREAM}}"; \
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    uv run {{SCRIPTS}}/python/analyze_node_utilization.py {{args}}
+
+# Monte Carlo cluster simulation for PyTorch CI load
+simulate-cluster *args:
+    @export OSDC_ROOT="{{ROOT}}"; \
+    export OSDC_UPSTREAM="{{UPSTREAM}}"; \
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    uv run {{SCRIPTS}}/python/simulate_cluster_cli.py \
+        --upstream-dir "{{UPSTREAM}}" \
+        --consumer-root "{{ROOT}}" \
+        {{args}}
 
 # ============================================================================
 # LINTING
