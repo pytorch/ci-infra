@@ -170,7 +170,7 @@ jobs:
 
   # ── GPU Runner Tests ──────────────────────────────────────────────────
   test-gpu-t4:
-    runs-on: {{PREFIX}}l-x86iavx512-29-125-t4
+    runs-on: {{PREFIX}}l-x86iavx512-29-115-t4
     container:
       image: nvidia/cuda:12.6.3-base-ubuntu22.04
     steps:
@@ -202,7 +202,7 @@ jobs:
           echo "PASS: GPU driver responsive"
 
   test-gpu-t4-multi:
-    runs-on: {{PREFIX}}l-x86iavx512-45-187-t4-4
+    runs-on: {{PREFIX}}l-x86iavx512-45-172-t4-4
     container:
       image: nvidia/cuda:12.6.3-base-ubuntu22.04
     steps:
