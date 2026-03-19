@@ -25,6 +25,9 @@ UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
+# Chart version — MUST match the controller (arc module). Read from clusters.yaml.
+ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.0)
+
 # Allow consumers to override defs, output, template, and module name
 DEFS_DIR="${ARC_RUNNERS_DEFS_DIR:-$MODULE_DIR/defs}"
 OUTPUT_DIR="${ARC_RUNNERS_OUTPUT_DIR:-$MODULE_DIR/generated}"
@@ -95,7 +98,7 @@ deploy_one_runner() {
       --set template.spec.securityContext.runAsGroup=1000 \
       --set template.spec.securityContext.fsGroup=1000 \
       oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
-      --version 0.13.1 \
+      --version "${ARC_CHART_VERSION}" \
       --wait
 
     rm -f "$tmpfile"

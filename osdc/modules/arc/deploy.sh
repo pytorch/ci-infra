@@ -19,10 +19,11 @@ source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # Read per-installation ARC config (with defaults)
+ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.0)
 ARC_REPLICAS=$(uv run "$CFG" "$CLUSTER" arc.replica_count 1)
 ARC_LOG_LEVEL=$(uv run "$CFG" "$CLUSTER" arc.log_level info)
 
-echo "Installing ARC controller (replicas=${ARC_REPLICAS}, logLevel=${ARC_LOG_LEVEL})..."
+echo "Installing ARC controller v${ARC_CHART_VERSION} (replicas=${ARC_REPLICAS}, logLevel=${ARC_LOG_LEVEL})..."
 helm upgrade --install arc \
   --namespace arc-systems \
   --create-namespace \
@@ -31,6 +32,7 @@ helm upgrade --install arc \
   --set replicaCount="${ARC_REPLICAS}" \
   --set log.level="${ARC_LOG_LEVEL}" \
   oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
+  --version "${ARC_CHART_VERSION}" \
   --timeout 10m \
   --wait
 

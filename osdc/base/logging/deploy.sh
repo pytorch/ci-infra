@@ -103,11 +103,13 @@ echo "Installing Alloy logging DaemonSet (pushing to ${LOKI_URL})..."
 helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
 helm repo update grafana
 
+ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" monitoring.alloy_chart_version 1.6.2)
 helm upgrade --install alloy-logging grafana/alloy \
   --namespace "$NAMESPACE" \
   --history-max 3 \
   -f "$MODULE_DIR/helm/alloy-logging-values.yaml" \
   -f "$ALLOY_OVERRIDE" \
+  --version "${ALLOY_CHART_VERSION}" \
   --timeout 5m \
   --wait
 

@@ -50,33 +50,35 @@ sed "s/CLUSTER_NAME_PLACEHOLDER/$CNAME/g" "$GENERATED_DIR/nodepools.yaml" | kube
 echo "Applying BuildKit static manifests..."
 kubectl apply -k "$MODULE_DIR/kubernetes/base/"
 
-# --- Apply generated Deployments ---
+# --- Apply generated Deployments (only if changed) ---
 
-echo "Applying BuildKit Deployments..."
-kubectl apply -f "$GENERATED_DIR/deployment.yaml"
+if kubectl diff -f "$GENERATED_DIR/deployment.yaml" &>/dev/null; then
+  echo "BuildKit Deployments unchanged — skipping apply"
+else
+  echo "Applying BuildKit Deployments..."
+  kubectl apply -f "$GENERATED_DIR/deployment.yaml"
 
-# --- Unblock stuck rollouts ---
-# When the deployment's nodeSelector changes (e.g., c7gd → m8gd), new pods
-# are Pending (no matching nodes yet) while old pods hold their spots on
-# stale nodes. RollingUpdate won't kill old pods until new ones are Ready,
-# creating a deadlock. Break it by deleting old Running pods so Karpenter
-# can provision the right node types.
+  # --- Unblock stuck rollouts ---
+  # When the deployment's nodeSelector changes (e.g., c7gd → m8gd), new pods
+  # are Pending (no matching nodes yet) while old pods hold their spots on
+  # stale nodes. RollingUpdate won't kill old pods until new ones are Ready,
+  # creating a deadlock. Break it by deleting old Running pods so Karpenter
+  # can provision the right node types.
+  for arch in arm64 amd64; do
+    pending=$(kubectl get pods -n buildkit -l "app=buildkitd,arch=${arch}" \
+      --field-selector=status.phase=Pending -o name 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$pending" -gt 0 ]]; then
+      echo "  buildkitd-${arch} has ${pending} pending pod(s) — deleting old pods to unblock rollout"
+      kubectl delete pods -n buildkit -l "app=buildkitd,arch=${arch}" \
+        --field-selector=status.phase=Running --wait=false 2>/dev/null || true
+    fi
+  done
 
-for arch in arm64 amd64; do
-  pending=$(kubectl get pods -n buildkit -l "app=buildkitd,arch=${arch}" \
-    --field-selector=status.phase=Pending -o name 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$pending" -gt 0 ]]; then
-    echo "  buildkitd-${arch} has ${pending} pending pod(s) — deleting old pods to unblock rollout"
-    kubectl delete pods -n buildkit -l "app=buildkitd,arch=${arch}" \
-      --field-selector=status.phase=Running --wait=false 2>/dev/null || true
-  fi
-done
-
-# --- Wait for rollout ---
-
-echo "Waiting for buildkitd rollout..."
-kubectl rollout status deployment/buildkitd-arm64 -n buildkit --timeout=15m
-kubectl rollout status deployment/buildkitd-amd64 -n buildkit --timeout=15m
+  # --- Wait for rollout ---
+  echo "Waiting for buildkitd rollout..."
+  kubectl rollout status deployment/buildkitd-arm64 -n buildkit --timeout=15m
+  kubectl rollout status deployment/buildkitd-amd64 -n buildkit --timeout=15m
+fi
 
 echo "BuildKit deployed."
 kubectl get pods -n buildkit -o wide

@@ -25,6 +25,9 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
     runnerScaleSetName: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
     template:
       spec:
+        containers:
+          - name: runner
+            image: {{RUNNER_IMAGE}}
         nodeSelector:
           instance-type: "{{INSTANCE_TYPE}}"
         tolerations:
@@ -65,6 +68,9 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
 
 FAKE_CLUSTERS_YAML = {
     "defaults": {
+        "arc": {
+            "runner_image_tag": "2.333.0",
+        },
         "arc-runners": {
             "github_config_url": "https://github.com/default-org",
             "github_secret_name": "default-secret",
