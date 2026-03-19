@@ -90,7 +90,7 @@ clusters:
     arc-runners:
       github_config_url: "https://github.com/pytorch/pytorch-canary"
       github_secret_name: pytorch-arc-staging
-      runner_name_prefix: "c-"
+      runner_name_prefix: "c-mt-"
     buildkit:
       replicas_per_arch: 2
       arm64_instance_type: m7gd.16xlarge
