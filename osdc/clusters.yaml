@@ -49,9 +49,9 @@ defaults:
     dry_run: false
   nodepools:
     gpu_disruption_budget: "100%"
-    gpu_consolidate_after: "3h"
+    gpu_consolidate_after: "20m"
     cpu_disruption_budget: "100%"
-    cpu_consolidate_after: "3h"
+    cpu_consolidate_after: "20m"
   buildkit:
     replicas_per_arch: 4
   monitoring:

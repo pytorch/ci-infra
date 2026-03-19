@@ -124,7 +124,9 @@ def _run_multi(
         utils.append(compute_utilization(result))
 
     print(f"\n{BOLD}{'━' * 80}{NC}")
-    print(f"{BOLD}{CYAN}Multi-Round Summary ({args.rounds} rounds, seeds {args.seed}..{args.seed + args.rounds - 1}){NC}")
+    print(
+        f"{BOLD}{CYAN}Multi-Round Summary ({args.rounds} rounds, seeds {args.seed}..{args.seed + args.rounds - 1}){NC}"
+    )
     print(f"{'━' * 80}")
 
     if skipped_mapping:
@@ -175,7 +177,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
     parser.add_argument("--threshold", type=float, default=0.15, help="Weighted MAPE threshold to stop (default: 0.15)")
-    parser.add_argument("--rounds", type=int, default=1, help="Run N rounds with different seeds, print summary statistics")
+    parser.add_argument(
+        "--rounds", type=int, default=1, help="Run N rounds with different seeds, print summary statistics"
+    )
     parser.add_argument("--upstream-dir", type=Path, default=None, help="Path to upstream osdc/ directory")
     parser.add_argument("--consumer-root", type=Path, default=None, help="Path to consumer osdc/ directory")
     args = parser.parse_args(argv)
