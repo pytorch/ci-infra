@@ -112,9 +112,17 @@ deploy cluster:
     echo "Modules:"
     uv run {{CFG}} "$CLUSTER" modules | sed 's/^/  - /'
     echo ""
-    read -p "Continue? [y/N] " -n 1 -r
-    echo
-    [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
+    CONFIRM="${OSDC_CONFIRM:-ask}"
+    if [ "$CONFIRM" = "yes" ]; then
+        echo "Auto-confirmed (OSDC_CONFIRM=yes)"
+    elif [ "$CONFIRM" = "no" ]; then
+        echo "Cancelled (OSDC_CONFIRM=no)."
+        exit 1
+    else
+        read -p "Continue? [y/N] " -n 1 -r
+        echo
+        [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
+    fi
 
     just deploy-base "$CLUSTER"
 

@@ -1,0 +1,153 @@
+name: "OSDC: Pre-merge"
+
+on:
+  merge_group:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: osdc-pre-merge-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: osdc
+
+env:
+  CLUSTER: arc-staging
+
+jobs:
+  # ------------------------------------------------------------------
+  # Phase 1: Deploy to staging (merges PR on top of main automatically)
+  # ------------------------------------------------------------------
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+
+      - name: Deploy to staging
+        run: just deploy $CLUSTER
+        env:
+          OSDC_SMOKE: "no"
+          OSDC_CONFIRM: "yes"
+
+  # ------------------------------------------------------------------
+  # Phase 2: Wait for deployment to stabilize
+  # ------------------------------------------------------------------
+  wait:
+    runs-on: ubuntu-latest
+    needs: deploy
+    timeout-minutes: 5
+    steps:
+      - name: Wait for cluster stabilization
+        run: sleep 240
+
+  # ------------------------------------------------------------------
+  # Phase 3: Validate (parallel)
+  # ------------------------------------------------------------------
+  smoke:
+    runs-on: ubuntu-latest
+    needs: wait
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+
+      - name: Run smoke tests
+        run: just smoke $CLUSTER
+
+  compactor:
+    runs-on: ubuntu-latest
+    needs: wait
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+
+      - name: Run compactor e2e tests
+        run: just test-compactor $CLUSTER
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: wait
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.PY_FOUNDATION_AWS_ACC_ID }}:role/${{ secrets.PY_FOUNDATION_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+
+      - name: Run integration tests
+        run: just integration-test $CLUSTER --skip-drain --skip-smoke --skip-compactor
