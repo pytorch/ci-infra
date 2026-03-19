@@ -9,6 +9,12 @@ Each test directory has a tiny conftest.py that does:
     from smoke_conftest import *  # noqa: F401, F403
 
 The just recipe sets PYTHONPATH to include tests/smoke/ so the import works.
+
+Smoke tests are designed to run concurrently with other cluster operations
+(compactor e2e tests, Karpenter scaling, node recycling). DaemonSet checks
+use assert_daemonset_healthy() which tolerates mismatches caused by nodes
+in transition (new, NotReady, or being deleted). Deployment checks use a
+90-second retry window for rollout tolerance.
 """
 
 from __future__ import annotations

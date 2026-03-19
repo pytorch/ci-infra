@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from helpers import assert_daemonset_ready, filter_daemonsets, find_helm_release, run_kubectl
+from helpers import assert_daemonset_healthy, filter_daemonsets, find_helm_release, run_kubectl
 
 pytestmark = [pytest.mark.live]
 
@@ -207,11 +207,11 @@ class TestHooksWarmer:
         assert pod_spec, "DaemonSet spec.template.spec is empty or missing"
         return pod_spec
 
-    def test_hooks_warmer_daemonset_ready(self, all_daemonsets, enabled_modules) -> None:
+    def test_hooks_warmer_daemonset_ready(self, all_daemonsets, all_nodes, enabled_modules) -> None:
         """DaemonSet must have all pods ready."""
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
-        assert_daemonset_ready(all_daemonsets, "arc-runners", name="runner-hooks-warmer", allow_zero=True)
+        assert_daemonset_healthy(all_daemonsets, all_nodes, "arc-runners", name="runner-hooks-warmer", allow_zero=True)
 
     def test_priority_class(self, all_daemonsets, enabled_modules) -> None:
         """DaemonSet must use system-node-critical priority to run on all nodes."""

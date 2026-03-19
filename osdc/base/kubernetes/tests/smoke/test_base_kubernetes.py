@@ -1,7 +1,7 @@
 """Smoke tests for base Kubernetes resources (DaemonSets, StorageClass, nodes)."""
 
 import pytest
-from helpers import assert_daemonset_ready
+from helpers import assert_daemonset_healthy
 
 pytestmark = [pytest.mark.live]
 
@@ -16,15 +16,17 @@ NAMESPACE = "kube-system"
 class TestBaseDaemonSets:
     """Verify base DaemonSets are running on all expected nodes."""
 
-    def test_nvidia_device_plugin(self, all_daemonsets):
+    def test_nvidia_device_plugin(self, all_daemonsets, all_nodes):
         # 0/0 is OK if no GPU nodes are present
-        assert_daemonset_ready(all_daemonsets, NAMESPACE, "nvidia-device-plugin-daemonset", allow_zero=True)
+        assert_daemonset_healthy(
+            all_daemonsets, all_nodes, NAMESPACE, "nvidia-device-plugin-daemonset", allow_zero=True
+        )
 
-    def test_registry_mirror_config(self, all_daemonsets):
-        assert_daemonset_ready(all_daemonsets, NAMESPACE, "registry-mirror-config")
+    def test_registry_mirror_config(self, all_daemonsets, all_nodes):
+        assert_daemonset_healthy(all_daemonsets, all_nodes, NAMESPACE, "registry-mirror-config")
 
-    def test_node_performance_tuning(self, all_daemonsets):
-        assert_daemonset_ready(all_daemonsets, NAMESPACE, "node-performance-tuning", allow_zero=True)
+    def test_node_performance_tuning(self, all_daemonsets, all_nodes):
+        assert_daemonset_healthy(all_daemonsets, all_nodes, NAMESPACE, "node-performance-tuning", allow_zero=True)
 
 
 # ============================================================================

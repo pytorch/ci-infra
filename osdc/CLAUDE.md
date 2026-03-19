@@ -163,7 +163,7 @@ Smoke tests verify that what was deployed is actually working: Helm releases are
 - Smoke test files live in `<component>/tests/smoke/test_*.py`
 - Shared helpers and retry logic are in `tests/smoke/helpers.py`
 - Each module's `tests/smoke/conftest.py` re-exports the root conftest: `from smoke_conftest import *`
-- Readiness checks for Deployments and DaemonSets use retry helpers (`assert_deployment_ready`, `assert_daemonset_ready`) that tolerate transient mismatches during node rotation
+- DaemonSet checks use `assert_daemonset_healthy()` which tolerates mismatches caused by nodes in transition (new, NotReady, or being deleted). Deployment checks use `assert_deployment_ready()` with a 90-second retry window for rollout tolerance
 - Consumer modules can have their own `tests/smoke/` — they're discovered the same way
 
 ## How Deployment Works
@@ -180,9 +180,15 @@ just bootstrap-all                     # Bootstrap all clusters
 just deploy <cluster>                  # Full deploy (base + modules)
 just deploy-base <cluster>             # Base only
 just deploy-module <cluster> <module>  # Single module
+just recycle-nodes <cluster>           # Terminate Karpenter nodes (reprovisioned on demand)
 just test                              # Run all unit tests
 just test-compactor <cluster>          # Run node-compactor e2e tests
+just smoke <cluster>                   # Run smoke tests against a deployed cluster
+just integration-test <cluster>        # Run full integration test against a cluster
 just lint                              # Lint all code (shell, Python, Docker, k8s, tf)
+just lint-fix                          # Auto-fix lint issues (ruff, shfmt, tofu fmt, taplo)
+just analyze-utilization               # Analyze runner-to-node packing efficiency
+just simulate-cluster                  # Monte Carlo cluster simulation for CI load
 ```
 
 ### Base deploy order (always)
@@ -251,7 +257,7 @@ When changing runner definitions (`modules/arc-runners/defs/`) or NodePool defin
 | `integration-tests/workflows/integration-test.yaml.tpl` | Update `runs-on` labels if runner names changed |
 | `docs/runner_naming_convention.md` | Update runner name examples and mapping tables |
 
-**Verification**: After any runner/nodepool change, run `uv run scripts/python/analyze_node_utilization.py` to confirm packing efficiency and `just test` to verify all scripts agree on the new values.
+**Verification**: After any runner/nodepool change, run `just analyze-utilization` to confirm packing efficiency and `just test` to verify all scripts agree on the new values.
 
 ## EKS Node Taints
 
