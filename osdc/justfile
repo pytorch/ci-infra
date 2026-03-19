@@ -208,12 +208,21 @@ deploy-base cluster:
         rm -f tfplan
     elif [[ $PLAN_EXIT -eq 2 ]]; then
         echo ""
-        read -p "Apply this plan? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        CONFIRM="${OSDC_CONFIRM:-ask}"
+        if [[ "$CONFIRM" == "yes" ]]; then
+            echo "Auto-confirmed (OSDC_CONFIRM=yes)"
+        elif [[ "$CONFIRM" == "no" ]]; then
             rm -f tfplan
-            echo "Cancelled."
+            echo "Cancelled (OSDC_CONFIRM=no)."
             exit 1
+        else
+            read -p "Apply this plan? [y/N] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                rm -f tfplan
+                echo "Cancelled."
+                exit 1
+            fi
         fi
         tofu apply tfplan
         rm -f tfplan

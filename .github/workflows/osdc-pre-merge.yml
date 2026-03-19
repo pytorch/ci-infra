@@ -63,6 +63,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Wait for cluster stabilization
+        working-directory: .
         run: sleep 240
 
   # ------------------------------------------------------------------
@@ -151,3 +152,5 @@ jobs:
 
       - name: Run integration tests
         run: just integration-test "$CLUSTER" --skip-drain --skip-smoke --skip-compactor
+        env:
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
