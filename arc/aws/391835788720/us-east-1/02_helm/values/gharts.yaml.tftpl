@@ -1,0 +1,77 @@
+# Replica counts — reduced for dev cluster
+replicaCount:
+  backend: 1
+  frontend: 1
+
+# Disable autoscaling for dev
+backend:
+  autoscaling:
+    enabled: false
+
+frontend:
+  autoscaling:
+    enabled: false
+
+# ─── OIDC ─────────────────────────────────────────────────────────────────────
+oidc:
+  enabled: true
+  issuer: "${oidc_issuer}"
+  audience: "${oidc_audience}"
+  jwksUrl: "${oidc_jwks_url}"
+  clientIdSecret: "gharts-oidc"
+  clientIdSecretKey: "oidc-client-id"
+
+# ─── GitHub App ────────────────────────────────────────────────────────────────
+github:
+  organization: "${github_org}"
+  appId: "${github_app_id}"
+  installationId: "${github_install_id}"
+  privateKeySecret: "gharts-github"
+  privateKeySecretKey: "private-key.pem"
+
+# ─── Database — RDS via IAM authentication ────────────────────────────────────
+postgresql:
+  enabled: false
+
+database:
+  host: "${rds_host}"
+  port: 5432
+  name: gharts
+  username: gharts
+  sslMode: require
+  poolRecycle: 900  # keep below IAM token expiry of 15 minutes
+  iamAuth:
+    enabled: true
+    region: "${aws_region}"
+
+# ─── Service account — IRSA annotation for RDS IAM auth ──────────────────────
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: "${irsa_role_arn}"
+
+# ─── Application config ────────────────────────────────────────────────────────
+config:
+  logLevel: "INFO"
+
+# ─── Ingress ──────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "${letsencrypt_issuer}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: ${ingress_host}
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: gharts-tls
+      hosts:
+        - ${ingress_host}
+
+# ─── PodDisruptionBudget — disable for single-replica dev ─────────────────────
+podDisruptionBudget:
+  enabled: false
