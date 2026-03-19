@@ -1,0 +1,10 @@
+# ARC runner definition: l-x86aavx512-125-463
+# Instance type: m6i.32xlarge — 128c/512Gi node
+# Actual K8s capacity ~473.7Gi. Max job memory after all overhead: 463Gi.
+runner:
+  name: l-x86aavx512-125-463
+  instance_type: m6i.32xlarge
+  disk_size: 200
+  vcpu: 125
+  memory: 463Gi
+  gpu: 0

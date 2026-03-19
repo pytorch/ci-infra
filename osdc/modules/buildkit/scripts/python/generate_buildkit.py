@@ -52,12 +52,15 @@ def log_error(msg):
 # The kubelet_reserved function and ENI_MAX_PODS table are imported from
 # analyze_node_utilization to avoid formula duplication.
 
+# memory_mi is the actual K8s node allocatable memory capacity, which is lower than the
+# advertised GiB due to VM overhead. Estimated using Karpenter's VM_MEMORY_OVERHEAD_PERCENT
+# of 7.5%: memory_mi = int(memory_gib * 1024 * 0.925)
 INSTANCE_SPECS = {
-    "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "arch": "arm64"},
-    "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "arch": "arm64"},
-    "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "arch": "arm64"},
-    "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "arch": "amd64"},
-    "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "arch": "arm64"},
+    "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "arch": "arm64"},
+    "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "arch": "arm64"},
+    "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "arch": "arm64"},
+    "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "arch": "amd64"},
+    "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "arch": "arm64"},
 }
 
 # ---------------------------------------------------------------------------
@@ -83,12 +86,13 @@ def compute_pod_resources(instance_type: str, pods_per_node: int) -> dict:
     spec = INSTANCE_SPECS[instance_type]
     vcpu = spec["vcpu"]
     memory_gib = spec["memory_gib"]
+    memory_mi = spec["memory_mi"]
 
     max_pods = ENI_MAX_PODS.get(instance_type, vcpu)  # fallback to vcpu if unknown
     reserved_cpu_m, reserved_mem_mi = kubelet_reserved(vcpu, memory_gib, max_pods)
 
     allocatable_cpu_m = vcpu * 1000 - reserved_cpu_m
-    allocatable_mem_mi = memory_gib * 1024 - reserved_mem_mi
+    allocatable_mem_mi = memory_mi - reserved_mem_mi
 
     usable_cpu_m = allocatable_cpu_m - DAEMONSET_OVERHEAD_CPU_M
     usable_mem_mi = allocatable_mem_mi - DAEMONSET_OVERHEAD_MEM_MI

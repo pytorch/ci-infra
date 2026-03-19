@@ -86,7 +86,7 @@ jobs:
           df -h
 
   test-cpu-arm64:
-    runs-on: {{PREFIX}}l-arm64g3-16-64
+    runs-on: {{PREFIX}}l-arm64g3-16-62
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:

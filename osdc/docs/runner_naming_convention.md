@@ -7,7 +7,7 @@ Runner labels must stay under **~42 characters**. This limit comes from three st
 1. **ARC Helm chart** enforces a **45-character** maximum on scale set names. With ARC, the scale set name *is* the `runs-on` label — you cannot add extra labels to target ARC runners.
 2. **Kubernetes label values** are capped at **63 characters**. ARC derives resource names by appending suffixes (e.g. `-gha-rs-no-permission`, 21 chars) to the scale set name. 45 + 18 (fullname infix) = 63, exactly at the K8s ceiling.
 3. **Cilium/Istio CNI** plugins create `CiliumIdentity` resources using the ServiceAccount name as a label value. Derived SA names from a 45-char scale set name can reach ~66 chars, exceeding the 63-char limit. Keeping names at **~42 characters** avoids this entirely.
-This is why every field is abbreviated (`l` not `linux`, `avx512` not `avx-512`, no units on vCPU/memory). The longest possible label from our current schema is 33 characters (`c-mt-l-bx86aavx512-192-768-a10g-8`) — well within the ceiling.
+This is why every field is abbreviated (`l` not `linux`, `avx512` not `avx-512`, no units on vCPU/memory). The longest possible label from our current schema is 33 characters (`c-mt-l-bx86aavx512-189-704-a10g-8`) — well within the ceiling.
 
 Reference: [actions/actions-runner-controller#2697](https://github.com/actions/actions-runner-controller/issues/2697)
 
@@ -38,10 +38,10 @@ Reference: [actions/actions-runner-controller#2697](https://github.com/actions/a
 | **Label** | **Breakdown** |
 | --- | --- |
 | `mt-l-x86iavx512-8-16` | Meta, Linux, x86 Intel AVX-512, 8 vCPU, 16 GiB |
-| `mt-l-arm64g3-16-64` | Meta, Linux, ARM64 Graviton 3, 16 vCPU, 64 GiB |
+| `mt-l-arm64g3-16-62` | Meta, Linux, ARM64 Graviton 3, 16 vCPU, 62 GiB |
 | `nv-l-x86aavx2-48-192-a10g-4` | NVIDIA, Linux, x86 AMD AVX2, 48 vCPU, 192 GiB, 4x A10G GPUs |
 | `c-mt-l-x86iavx512-8-16` | **Canary**, Meta, Linux, x86 Intel AVX-512, 8 vCPU, 16 GiB |
-| `l-x86iamx-14-30` | Linux, x86 Intel AMX, 14 vCPU, 30 GiB |
+| `l-x86iamx-14-27` | Linux, x86 Intel AMX, 14 vCPU, 27 GiB |
 
 ## Old Label → New Label Mapping
 
@@ -60,15 +60,15 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | linux.4xlarge.for.testing.donotuse | c5.4xlarge | mt-l-x86iavx512-16-32 |
 | linux.c7i.4xlarge | c7i.4xlarge | mt-l-x86iavx512-16-32 |
 | linux.c7i.8xlarge | c7i.8xlarge | *— no equivalent* |
-| linux.9xlarge.ephemeral | c5.9xlarge | mt-l-x86iavx512-36-72 |
-| linux.12xlarge | c5.12xlarge | mt-l-x86iavx512-48-96 |
-| linux.12xlarge.ephemeral | c5.12xlarge | mt-l-x86iavx512-48-96 |
-| linux.c7i.12xlarge | c7i.12xlarge | mt-l-x86iavx512-48-96 |
+| linux.9xlarge.ephemeral | c5.9xlarge | mt-l-x86iavx512-37-68 |
+| linux.12xlarge | c5.12xlarge | mt-l-x86iavx512-46-85 |
+| linux.12xlarge.ephemeral | c5.12xlarge | mt-l-x86iavx512-46-85 |
+| linux.c7i.12xlarge | c7i.12xlarge | mt-l-x86iavx512-46-85 |
 | linux.16xlarge.spr | c7i.16xlarge | *— no equivalent* |
 | linux.24xlarge | c5.24xlarge | mt-l-x86iavx512-94-192 |
 | linux.24xlarge.ephemeral | c5.24xlarge | mt-l-x86iavx512-94-192 |
 | linux.c7i.24xlarge | c7i.24xlarge | mt-l-x86iavx512-94-192 |
-| linux.24xl.spr-metal | c7i.metal-24xl | mt-l-bx86iamx-92-180 |
+| linux.24xl.spr-metal | c7i.metal-24xl | mt-l-bx86iamx-92-167 |
 
 ### x86 CPU — Intel AMX (m7i-flex family)
 
@@ -114,33 +114,33 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | --- | --- | --- |
 | linux.8xlarge.amd | m7a.8xlarge | *— no equivalent* |
 | linux.12xlarge.amd | m6a.12xlarge | *— no equivalent* |
-| linux.24xlarge.amd | m6i.32xlarge | mt-l-x86aavx512-125-502 |
+| linux.24xlarge.amd | m6i.32xlarge | mt-l-x86aavx512-125-463 |
 
 ### x86 GPU — T4 (g4dn family)
 
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-125-t4 |
-| linux.g4dn.12xlarge.nvidia.gpu | g4dn.12xlarge | mt-l-x86iavx512-45-187-t4-4 |
-| linux.g4dn.metal.nvidia.gpu | g4dn.metal | mt-l-bx86iavx512-94-384-t4-8 |
+| linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-115-t4 |
+| linux.g4dn.12xlarge.nvidia.gpu | g4dn.12xlarge | mt-l-x86iavx512-45-172-t4-4 |
+| linux.g4dn.metal.nvidia.gpu | g4dn.metal | mt-l-bx86iavx512-94-344-t4-8 |
 
 ### x86 GPU — A10G (g5 family)
 
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.g5.4xlarge.nvidia.gpu | g5.4xlarge | mt-l-x86aavx2-29-123-a10g |
-| linux.g5.12xlarge.nvidia.gpu | g5.12xlarge | mt-l-x86aavx2-45-182-a10g-4 |
-| linux.g5.48xlarge.nvidia.gpu | g5.48xlarge | mt-l-x86aavx2-192-768-a10g-8 |
+| linux.g5.4xlarge.nvidia.gpu | g5.4xlarge | mt-l-x86aavx2-29-113-a10g |
+| linux.g5.12xlarge.nvidia.gpu | g5.12xlarge | mt-l-x86aavx2-45-167-a10g-4 |
+| linux.g5.48xlarge.nvidia.gpu | g5.48xlarge | mt-l-x86aavx2-189-704-a10g-8 |
 
 ### x86 GPU — L4 (g6 family)
 
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.g6.4xlarge.experimental.nvidia.gpu | g6.4xlarge | mt-l-x86aavx2-29-123-l4 |
-| linux.g6.12xlarge.nvidia.gpu | g6.12xlarge | mt-l-x86aavx2-45-187-l4-4 |
+| linux.g6.4xlarge.experimental.nvidia.gpu | g6.4xlarge | mt-l-x86aavx2-29-113-l4 |
+| linux.g6.12xlarge.nvidia.gpu | g6.12xlarge | mt-l-x86aavx2-45-172-l4-4 |
 
 ### x86 GPU — V100 (p3 family)
 
@@ -156,12 +156,12 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | --- | --- | --- |
 | linux.arm64.2xlarge | t4g.2xlarge | mt-l-arm64g2-6-32 |
 | linux.arm64.2xlarge.ephemeral | t4g.2xlarge | mt-l-arm64g2-6-32 |
-| linux.arm64.m7g.4xlarge | m7g.4xlarge | mt-l-arm64g3-16-64 |
-| linux.arm64.m7g.4xlarge.ephemeral | m7g.4xlarge | mt-l-arm64g3-16-64 |
-| linux.arm64.m8g.4xlarge | m8g.4xlarge | mt-l-arm64g4-16-64 |
-| linux.arm64.m8g.4xlarge.ephemeral | m8g.4xlarge | mt-l-arm64g4-16-64 |
-| linux.arm64.r7g.12xlarge.memory | r7g.16xlarge | mt-l-arm64g3-61-502 |
-| linux.arm64.m7g.metal | m7g.metal | mt-l-barm64g3-62-256 |
+| linux.arm64.m7g.4xlarge | m7g.4xlarge | mt-l-arm64g3-16-62 |
+| linux.arm64.m7g.4xlarge.ephemeral | m7g.4xlarge | mt-l-arm64g3-16-62 |
+| linux.arm64.m8g.4xlarge | m8g.4xlarge | mt-l-arm64g4-16-62 |
+| linux.arm64.m8g.4xlarge.ephemeral | m8g.4xlarge | mt-l-arm64g4-16-62 |
+| linux.arm64.r7g.12xlarge.memory | r7g.16xlarge | mt-l-arm64g3-61-463 |
+| linux.arm64.m7g.metal | m8g.16xlarge | mt-l-barm64g3-62-226 |
 
 ## Many-to-One: Old Labels That Collapse Into a Single New Label
 
@@ -175,7 +175,7 @@ Excluding trivial `.ephemeral` / `.nonephemeral` duplicates, these are the cases
 | mt-l-x86iavx512-2-4 | linux.large, linux.c7i.large | c5.large, c7i.large |
 | mt-l-x86iavx512-8-16 | linux.2xlarge, linux.c7i.2xlarge | c5.2xlarge, c7i.2xlarge |
 | mt-l-x86iavx512-16-32 | linux.4xlarge, linux.4xlarge.for.testing.donotuse, linux.c7i.4xlarge | c5.4xlarge, c7i.4xlarge |
-| mt-l-x86iavx512-48-96 | linux.12xlarge, linux.c7i.12xlarge | c5.12xlarge, c7i.12xlarge |
+| mt-l-x86iavx512-46-85 | linux.12xlarge, linux.c7i.12xlarge | c5.12xlarge, c7i.12xlarge |
 | mt-l-x86iavx512-94-192 | linux.24xlarge, linux.c7i.24xlarge | c5.24xlarge, c7i.24xlarge |
 | mt-l-x86iavx512-8-64 | linux.r7i.2xlarge, linux.2xlarge.memory | r7i.2xlarge, r5.2xlarge |
 | mt-l-x86iavx512-16-128 | linux.r7i.4xlarge, linux.4xlarge.memory | r7i.4xlarge, r5.4xlarge |

@@ -1,0 +1,10 @@
+# ARC runner definition: l-x86aavx2-29-113-l4
+# Instance type: g6.8xlarge — 1-GPU L4, 32c/128Gi node
+# Actual K8s capacity ~118.4Gi. Max job memory after all overhead: 113Gi.
+runner:
+  name: l-x86aavx2-29-113-l4
+  instance_type: g6.8xlarge
+  disk_size: 150
+  vcpu: 29
+  memory: 113Gi
+  gpu: 1

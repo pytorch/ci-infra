@@ -238,6 +238,21 @@ Single parameterized root at `modules/eks/terraform/`. No per-environment direct
 - **Monitoring is a module, logging is base** — metrics collection (Alloy Deployment → Grafana Cloud Mimir) is opt-in via the `monitoring` module. Log collection (Alloy DaemonSet → Grafana Cloud Loki) is in `base/logging/` because every cluster needs it. Both are secret-gated — no credentials, no Alloy.
 - **Two Alloy installations** — monitoring and logging each deploy their own Alloy with separate Helm releases, namespaces, and RBAC. This avoids config/permission conflicts and lets them scale independently (Deployment for metrics, DaemonSet for logs).
 
+## Runner & NodePool Change Checklist (MANDATORY)
+
+When changing runner definitions (`modules/arc-runners/defs/`) or NodePool definitions (`modules/nodepools/defs/`), you MUST update the following `scripts/python/` files to stay in sync:
+
+| File | What to update |
+|------|---------------|
+| `scripts/python/analyze_node_utilization.py` | `INSTANCE_SPECS` (add/update instance types), `ENI_MAX_PODS` (add/update ENI limits) |
+| `scripts/python/pytorch_workload_data.py` | `OLD_TO_NEW_LABEL` (update old→new runner name mappings when names change) |
+| `scripts/python/simulate_cluster.py` | Uses `analyze_node_utilization` functions — verify simulation still works |
+| `scripts/python/simulate_cluster_cli.py` | CLI entry point for simulation — re-run to validate packing |
+| `integration-tests/workflows/integration-test.yaml.tpl` | Update `runs-on` labels if runner names changed |
+| `docs/runner_naming_convention.md` | Update runner name examples and mapping tables |
+
+**Verification**: After any runner/nodepool change, run `uv run scripts/python/analyze_node_utilization.py` to confirm packing efficiency and `just test` to verify all scripts agree on the new values.
+
 ## EKS Node Taints
 
 Base nodes: `CriticalAddonsOnly=true:NoSchedule`. All base workloads (Harbor, DaemonSets, Karpenter, control plane) must tolerate this.

@@ -152,7 +152,7 @@ class TestComputePodResources:
         max_pods = ENI_MAX_PODS["c7gd.16xlarge"]
         reserved_cpu, reserved_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"], max_pods)
         assert result["allocatable_cpu_m"] == spec["vcpu"] * 1000 - reserved_cpu
-        assert result["allocatable_mem_mi"] == spec["memory_gib"] * 1024 - reserved_mem
+        assert result["allocatable_mem_mi"] == spec["memory_mi"] - reserved_mem
 
     def test_unknown_instance_type_raises(self):
         """Unknown instance type raises KeyError."""
@@ -170,7 +170,7 @@ class TestComputePodResources:
         max_pods = ENI_MAX_PODS["m8gd.24xlarge"]
         reserved_cpu, reserved_mem = kubelet_reserved(96, 384, max_pods)
         alloc_cpu_m = 96 * 1000 - reserved_cpu
-        alloc_mem_mi = 384 * 1024 - reserved_mem
+        alloc_mem_mi = spec["memory_mi"] - reserved_mem
         usable_cpu_m = alloc_cpu_m - DAEMONSET_OVERHEAD_CPU_M
         usable_mem_mi = alloc_mem_mi - DAEMONSET_OVERHEAD_MEM_MI
         expected_cpu = math.floor(usable_cpu_m * MARGIN / 2) // 1000

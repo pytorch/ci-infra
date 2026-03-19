@@ -28,43 +28,52 @@ from cli_colors import BOLD, CYAN, DIM, GREEN, NC, RED, YELLOW
 from daemonset_overhead import DaemonSetOverhead, discover_daemonsets
 
 # ---------------------------------------------------------------------------
-# AWS instance type specs: vCPU, memory_gib, gpu_count
-# From AWS documentation — add entries when supporting new instance types.
+# AWS instance type specs: vCPU, memory_gib (advertised), memory_mi (actual), gpu_count
+#
+# memory_gib: AWS-advertised memory (for display/documentation).
+# memory_mi:  Actual Kubernetes node capacity in MiB.  This is what Karpenter
+#             sees for scheduling and is always less than advertised due to
+#             hypervisor/firmware overhead.  Where actual values haven't been
+#             collected from a live node, we apply Karpenter's
+#             VM_MEMORY_OVERHEAD_PERCENT (7.5%): int(memory_gib * 1024 * 0.925).
+#             Run scripts/python/collect_instance_memory.py against a live
+#             cluster to obtain precise values.
 # ---------------------------------------------------------------------------
 INSTANCE_SPECS = {
     # x86 CPU — compute-optimized (~2 GiB/core)
-    "c7i.12xlarge": {"vcpu": 48, "memory_gib": 96, "gpu": 0},
-    "c7i.metal-24xl": {"vcpu": 96, "memory_gib": 192, "gpu": 0},
-    "c7a.48xlarge": {"vcpu": 192, "memory_gib": 384, "gpu": 0},
+    "c7i.12xlarge": {"vcpu": 48, "memory_gib": 96, "memory_mi": 90931, "gpu": 0},
+    "c7i.metal-24xl": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0},
+    "c7a.48xlarge": {"vcpu": 192, "memory_gib": 384, "memory_mi": 363724, "gpu": 0},
     # x86 CPU — balanced (~4 GiB/core)
-    "m6i.32xlarge": {"vcpu": 128, "memory_gib": 512, "gpu": 0},
-    "m7i.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 0},
+    "m6i.32xlarge": {"vcpu": 128, "memory_gib": 512, "memory_mi": 485081, "gpu": 0},
+    "m7i.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 0},
     # x86 CPU — memory-optimized (~8 GiB/core)
-    "r5.24xlarge": {"vcpu": 96, "memory_gib": 768, "gpu": 0},
-    "r7i.48xlarge": {"vcpu": 192, "memory_gib": 1536, "gpu": 0},
-    "r7a.48xlarge": {"vcpu": 192, "memory_gib": 1536, "gpu": 0},
+    "r5.24xlarge": {"vcpu": 96, "memory_gib": 768, "memory_mi": 727449, "gpu": 0},
+    "r7i.48xlarge": {"vcpu": 192, "memory_gib": 1536, "memory_mi": 1454899, "gpu": 0},
+    "r7a.48xlarge": {"vcpu": 192, "memory_gib": 1536, "memory_mi": 1454899, "gpu": 0},
     # ARM64 CPU
-    "m8g.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 0},
-    "r7g.16xlarge": {"vcpu": 64, "memory_gib": 512, "gpu": 0},
+    "m8g.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0},
+    "m8g.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 0},
+    "r7g.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0},
     # GPU instances — 1-GPU
-    "g4dn.8xlarge": {"vcpu": 32, "memory_gib": 128, "gpu": 1},
-    "g5.8xlarge": {"vcpu": 32, "memory_gib": 128, "gpu": 1},
-    "g6.8xlarge": {"vcpu": 32, "memory_gib": 128, "gpu": 1},
+    "g4dn.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1},
+    "g5.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1},
+    "g6.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1},
     # GPU instances — 4-GPU
-    "g4dn.12xlarge": {"vcpu": 48, "memory_gib": 192, "gpu": 4},
-    "g5.12xlarge": {"vcpu": 48, "memory_gib": 192, "gpu": 4},
-    "g6.12xlarge": {"vcpu": 48, "memory_gib": 192, "gpu": 4},
+    "g4dn.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 4},
+    "g5.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 4},
+    "g6.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 4},
     # GPU instances — 8-GPU
-    "g4dn.metal": {"vcpu": 96, "memory_gib": 384, "gpu": 8},
-    "g5.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
-    "g6.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
-    "p6-b200.48xlarge": {"vcpu": 192, "memory_gib": 2048, "gpu": 8},
+    "g4dn.metal": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 8},
+    "g5.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 8},
+    "g6.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 8},
+    "p6-b200.48xlarge": {"vcpu": 192, "memory_gib": 2048, "memory_mi": 1939865, "gpu": 8},
     # BuildKit instances (used by modules/buildkit/)
-    "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "gpu": 0},
-    "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "gpu": 0},
-    "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "gpu": 0},
-    "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "gpu": 0},
-    "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "gpu": 0},
+    "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0},
+    "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0},
+    "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0},
+    "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0},
+    "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0},
 }
 
 # ---------------------------------------------------------------------------
@@ -82,6 +91,7 @@ ENI_MAX_PODS = {
     "r5.24xlarge": 737,
     "r7i.48xlarge": 737,
     "r7a.48xlarge": 737,
+    "m8g.16xlarge": 737,
     "m8g.48xlarge": 737,
     "r7g.16xlarge": 737,
     "g4dn.8xlarge": 58,
@@ -106,6 +116,12 @@ ENI_MAX_PODS = {
 # Runner pod sidecar (the ARC orchestrator container, not the $job container)
 RUNNER_SIDECAR_CPU_M = 750
 RUNNER_SIDECAR_MEM_MI = 512
+
+# ARC container-hooks overhead: injected containers added to the workflow
+# (job) pod by runner-container-hooks beyond the def's vcpu/memory.
+# Measured from Karpenter scheduling requests vs def values.
+HOOKS_OVERHEAD_CPU_M = 320
+HOOKS_OVERHEAD_MEM_MI = 522
 
 
 def kubelet_reserved(vcpu: int, memory_gib: int, max_pods: int) -> tuple[int, int]:
@@ -158,36 +174,48 @@ def parse_memory(value: str) -> int:
 
 
 def load_runner_defs(dirs: list[Path]) -> list[dict]:
-    """Load all runner definitions from the given directories."""
-    runners = []
+    """Load all runner definitions from the given directories.
+
+    Directories are processed in order. If a runner name appears in
+    multiple directories, the last one wins (consumer overrides upstream).
+    Duplicate resolved paths are skipped.
+    """
+    by_name: dict[str, dict] = {}
+    seen_dirs: set[Path] = set()
     for d in dirs:
-        if not d.exists():
+        resolved = d.resolve()
+        if resolved in seen_dirs or not d.exists():
             continue
+        seen_dirs.add(resolved)
         for f in sorted(d.glob("*.yaml")):
             with open(f) as fh:
                 data = yaml.safe_load(fh)
             if not data or "runner" not in data:
                 continue
             r = data["runner"]
-            runners.append(
-                {
-                    "name": r["name"],
-                    "instance_type": r["instance_type"],
-                    "vcpu": int(r["vcpu"]),
-                    "memory_mi": parse_memory(r["memory"]),
-                    "gpu": int(r.get("gpu", 0)),
-                    "file": f.name,
-                }
-            )
-    return runners
+            by_name[r["name"]] = {
+                "name": r["name"],
+                "instance_type": r["instance_type"],
+                "vcpu": int(r["vcpu"]),
+                "memory_mi": parse_memory(r["memory"]),
+                "gpu": int(r.get("gpu", 0)),
+                "file": f.name,
+            }
+    return list(by_name.values())
 
 
 def load_nodepool_defs(dirs: list[Path]) -> dict:
-    """Load nodepool defs and return a dict of instance_type -> def."""
+    """Load nodepool defs and return a dict of instance_type -> def.
+
+    Duplicate resolved paths are skipped. Last-wins for same instance_type.
+    """
     nodepools = {}
+    seen_dirs: set[Path] = set()
     for d in dirs:
-        if not d.exists():
+        resolved = d.resolve()
+        if resolved in seen_dirs or not d.exists():
             continue
+        seen_dirs.add(resolved)
         for f in sorted(d.glob("*.yaml")):
             with open(f) as fh:
                 data = yaml.safe_load(fh)
@@ -216,7 +244,7 @@ def compute_allocatable(
     ds_cpu, ds_mem = compute_daemonset_overhead(daemonsets, is_gpu)
 
     total_cpu_m = spec["vcpu"] * 1000
-    total_mem_mi = spec["memory_gib"] * 1024
+    total_mem_mi = spec["memory_mi"]
 
     alloc_cpu_m = total_cpu_m - kube_cpu - ds_cpu
     alloc_mem_mi = total_mem_mi - kube_mem - ds_mem
@@ -236,9 +264,9 @@ def compute_allocatable(
 
 
 def per_runner_total(runner: dict) -> tuple[int, int, int]:
-    """Total resources per runner pod (job container + sidecar)."""
-    cpu = runner["vcpu"] * 1000 + RUNNER_SIDECAR_CPU_M
-    mem = runner["memory_mi"] + RUNNER_SIDECAR_MEM_MI
+    """Total resources per runner pod (job container + sidecar + hooks overhead)."""
+    cpu = runner["vcpu"] * 1000 + RUNNER_SIDECAR_CPU_M + HOOKS_OVERHEAD_CPU_M
+    mem = runner["memory_mi"] + RUNNER_SIDECAR_MEM_MI + HOOKS_OVERHEAD_MEM_MI
     gpu = runner["gpu"]
     return cpu, mem, gpu
 
@@ -404,8 +432,8 @@ def print_node_analysis(
     print(f"{BOLD}{CYAN}Node Type: {instance_type}{NC}")
     spec = INSTANCE_SPECS[instance_type]
     print(
-        f"  Total: {spec['vcpu']} vCPU, {spec['memory_gib']}Gi RAM"
-        + (f", {spec['gpu']} GPU" if spec["gpu"] > 0 else "")
+        f"  Total: {spec['vcpu']} vCPU, {spec['memory_gib']}Gi advertised"
+        f" ({format_mem(spec['memory_mi'])} actual)" + (f", {spec['gpu']} GPU" if spec["gpu"] > 0 else "")
     )
     print(f"  Kubelet reserved: {alloc['kube_reserved_cpu_m']}m CPU, {format_mem(alloc['kube_reserved_mem_mi'])} RAM")
     print(f"  DaemonSet overhead: {alloc['ds_cpu_m']}m CPU, {format_mem(alloc['ds_mem_mi'])} RAM")
@@ -422,7 +450,11 @@ def print_node_analysis(
     print(f"  {BOLD}Runners targeting this node:{NC}")
     for r in runners:
         c, m, g = per_runner_total(r)
-        sidecar_note = f" (job: {r['vcpu']}c+{format_mem(r['memory_mi'])}, sidecar: 750m+512Mi)"
+        sidecar_note = (
+            f" (job: {r['vcpu']}c+{format_mem(r['memory_mi'])},"
+            f" sidecar: {RUNNER_SIDECAR_CPU_M}m+{RUNNER_SIDECAR_MEM_MI}Mi,"
+            f" hooks: {HOOKS_OVERHEAD_CPU_M}m+{HOOKS_OVERHEAD_MEM_MI}Mi)"
+        )
         gpu_note = f", {r['gpu']} GPU" if r["gpu"] > 0 else ""
         print(f"    - {r['name']}: {c}m CPU, {format_mem(m)} RAM{gpu_note}{sidecar_note}")
 
@@ -541,11 +573,13 @@ def main(argv: list[str] | None = None) -> int:
     script_dir = Path(__file__).resolve().parent
     upstream_dir = script_dir.parent.parent  # upstream/osdc
     # Check if we're in a consumer repo
-    consumer_root = Path(os.environ.get("OSDC_ROOT", ""))
-    if not consumer_root.is_dir():
+    osdc_root_env = os.environ.get("OSDC_ROOT", "")
+    consumer_root = Path(osdc_root_env).resolve() if osdc_root_env else None
+    if consumer_root is None or not consumer_root.is_dir():
         # Try to find consumer root by walking up
         candidate = upstream_dir.parent.parent  # consumer osdc/
         consumer_root = candidate if (candidate / "clusters.yaml").exists() else upstream_dir
+    consumer_root = consumer_root.resolve()
 
     # Discover DaemonSet overhead dynamically from manifests
     daemonsets = discover_daemonsets(

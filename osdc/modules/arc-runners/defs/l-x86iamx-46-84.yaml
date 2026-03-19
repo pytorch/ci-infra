@@ -1,0 +1,10 @@
+# ARC runner definition: l-x86iamx-46-84
+# Instance type: c7i.12xlarge — 48c/96Gi node
+# Actual K8s capacity ~88.8Gi. Max job memory after all overhead: 84Gi.
+runner:
+  name: l-x86iamx-46-84
+  instance_type: c7i.12xlarge
+  disk_size: 200
+  vcpu: 46
+  memory: 84Gi
+  gpu: 0

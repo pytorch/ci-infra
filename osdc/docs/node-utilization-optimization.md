@@ -28,11 +28,11 @@ Runners fall into three ratio categories:
 
 | Category | GiB/core | Example Runners | Best Instance Family |
 |----------|----------|----------------|---------------------|
-| Compute-heavy | ~2 GiB/core | 48c/96Gi, 94c/192Gi, 8c/16Gi | c-series (c7i, c7a) |
+| Compute-heavy | ~2 GiB/core | 46c/85Gi, 94c/192Gi, 8c/16Gi | c-series (c7i, c7a) |
 | Balanced | ~4 GiB/core | 8c/32Gi, 32c/128Gi, 40c/160Gi | m-series (m7i, m7a, m8g) |
 | Memory-heavy | ~8 GiB/core | 8c/64Gi, 16c/128Gi, 48c/384Gi | r-series (r7i, r7a, r7g) |
 
-**Original assignment** (before Phase 2): All CPU runners shared one r5.24xlarge (96c/768Gi, ratio 8:1). This was perfect for memory-heavy runners but wasted ~75% of memory for compute-heavy runners like `l-x86iavx512-48-96` (48c/96Gi, ratio 2:1). Phase 2 split these into ratio-matched nodepools (c/m/r series per ISA group).
+**Original assignment** (before Phase 2): All CPU runners shared one r5.24xlarge (96c/768Gi, ratio 8:1). This was perfect for memory-heavy runners but wasted ~75% of memory for compute-heavy runners like `l-x86iavx512-46-85` (46c/85Gi, ratio 2:1). Phase 2 split these into ratio-matched nodepools (c/m/r series per ISA group).
 
 ## ISA Constraint Groups
 
@@ -96,7 +96,7 @@ These runners include `l-x86iamx-*` (AMX) and `l-x86iavx2-*` (AVX2). Since AMX r
 | Memory | **r7i.48xlarge** (192c/1536Gi) | 2 runners (8:1 ratio) | ~88% | $12.70 |
 
 **Runner assignments**:
-- Compute pool: `l-x86iamx-8-17`, `l-x86iamx-14-30`, `l-x86iamx-22-45`, `l-x86iamx-46-91` (c7i.12xlarge), `l-bx86iamx-92-180` (c7i.metal-24xl)
+- Compute pool: `l-x86iamx-8-16`, `l-x86iamx-14-27`, `l-x86iamx-22-41`, `l-x86iamx-46-91` (c7i.12xlarge), `l-bx86iamx-92-180` (c7i.metal-24xl)
 - Balanced pool: `l-x86iamx-8-32`, `l-x86iamx-32-128`, `l-x86iavx2-8-32`, `l-x86iavx2-40-160`
 - Memory pool: `l-x86iamx-8-64`, `l-x86iamx-16-128`
 
@@ -113,7 +113,7 @@ AVX-512 runners can use either Intel or AMD instances with AVX-512 support.
 | Memory | **r7a.48xlarge** (192c/1536Gi) | 5 runners (8:1 ratio) | 75.2% | $12.21 |
 
 **Runner assignments**:
-- Compute pool: `l-x86iavx512-2-4`, `l-x86iavx512-8-16`, `l-x86iavx512-16-32`, `l-x86iavx512-36-72`, `l-x86iavx512-48-96`, `l-x86iavx512-94-192`
+- Compute pool: `l-x86iavx512-2-4`, `l-x86iavx512-8-16`, `l-x86iavx512-16-32`, `l-x86iavx512-37-68`, `l-x86iavx512-46-85`, `l-x86iavx512-94-192`
 - Balanced pool: `l-x86aavx512-94-384`
 - Memory pool: `l-x86iavx512-8-64`, `l-x86iavx512-16-128`, `l-x86iavx512-32-256`, `l-x86iavx512-48-384`, `l-x86iavx512-94-768`
 
@@ -131,7 +131,7 @@ AVX-512 runners can use either Intel or AMD instances with AVX-512 support.
 | Memory | **r7g.16xlarge** (64c/512Gi) | 1 runner | 75.3% | $3.43 |
 
 **Runner assignments**:
-- Balanced pool: `l-arm64g2-6-32`, `l-arm64g3-16-64`, `l-arm64g4-16-64`, `l-barm64g3-62-256`
+- Balanced pool: `l-arm64g2-6-32`, `l-arm64g3-16-62`, `l-arm64g4-16-62`, `l-barm64g3-62-226`
 - Memory pool (keep current): `l-arm64g3-48-384`
 
 **Improvement**: worst-case utilization 37.9% → 75.3% (+37.4pp). The balanced pool achieves 88-99% utilization for all 4 runners.
@@ -163,16 +163,16 @@ Direct cost comparison is difficult because runners scale dynamically (Karpenter
 
 **Better utilization = fewer nodes needed for the same number of concurrent runners.**
 
-Example for the AVX-512 compute-heavy runners (`l-x86iavx512-48-96`):
-- **Current** (r5.24xlarge): 1 pod per node, 12.6% utilization → pay $6.05/hr for 48c used of 96c
-- **Proposed** (c7a.48xlarge): 3 pods per node, 76% utilization → pay $8.24/hr for 144c used of 192c
+Example for the AVX-512 compute-heavy runners (`l-x86iavx512-46-85`):
+- **Current** (r5.24xlarge): 1 pod per node, 12.6% utilization → pay $6.05/hr for 46c used of 96c
+- **Proposed** (c7a.48xlarge): 3 pods per node, 76% utilization → pay $8.24/hr for 138c used of 192c
 - **Per-runner cost**: current $6.05/runner-hr → proposed $2.75/runner-hr (**55% savings**)
 
 The savings compound: nodes with better packing serve more concurrent runners, reducing the number of nodes Karpenter needs to provision during peak load. The exact dollar impact depends on runner concurrency patterns.
 
 ## Why 85% Utilization Is Hard for Large Runners
 
-Some runners (48c/96Gi, 94c/192Gi, 94c/384Gi) consistently achieve only 74-76% utilization even on perfectly-matched instance types. This is because:
+Some runners (46c/85Gi, 94c/192Gi, 94c/384Gi) consistently achieve only 74-76% utilization even on perfectly-matched instance types. This is because:
 
 1. **Overhead is fixed**: Kubelet + DaemonSet overhead (~500m CPU, ~1.5Gi memory) is constant regardless of instance size
 2. **Large runners don't divide evenly**: A 94c runner on a 128c node leaves 34c unused — only 1 pod fits
@@ -215,6 +215,6 @@ Some runner names don't exactly match their actual resource requests (the actual
 | `l-bx86iavx512-94-384-t4-8` | 94c/384Gi | 94c/366Gi |
 | `l-x86iavx512-94-192` | 94c/192Gi | 94c/189Gi |
 | `l-arm64g2-6-32` | 6c/32Gi | 6c/29Gi |
-| `l-barm64g3-62-256` | 62c/256Gi | 62c/253Gi |
+| `l-barm64g3-62-226` | 62c/226Gi | 62c/223Gi |
 
 The analysis scripts use the actual def values. The ratio categorizations are unaffected by these differences.

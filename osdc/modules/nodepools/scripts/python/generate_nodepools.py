@@ -332,13 +332,15 @@ def main():
     log_info(f"Found {len(def_files)} nodepool definition(s)")
 
     generated = 0
+    skipped = []
     for def_file in def_files:
         try:
             with open(def_file) as f:
                 data = yaml.safe_load(f)
 
             if not data or "nodepool" not in data:
-                log_error(f"Skipping {def_file.name}: missing 'nodepool' key")
+                log_error(f"Invalid {def_file.name}: missing 'nodepool' key")
+                skipped.append(def_file.name)
                 continue
 
             nodepool_def = data["nodepool"]
@@ -346,7 +348,8 @@ def main():
             instance_type = nodepool_def.get("instance_type")
 
             if not name or not instance_type:
-                log_error(f"Skipping {def_file.name}: missing 'name' or 'instance_type'")
+                log_error(f"Invalid {def_file.name}: missing 'name' or 'instance_type'")
+                skipped.append(def_file.name)
                 continue
 
             is_gpu = nodepool_def.get("gpu", False)
@@ -364,6 +367,10 @@ def main():
         except Exception as e:
             log_error(f"Failed to process {def_file.name}: {e}")
             return 1
+
+    if skipped:
+        log_error(f"Aborting: {len(skipped)} definition(s) were invalid: {', '.join(skipped)}")
+        return 1
 
     log_info(f"Generated {generated} NodePool(s) in {output_dir}")
     return 0

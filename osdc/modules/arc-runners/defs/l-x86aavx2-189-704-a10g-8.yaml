@@ -1,0 +1,10 @@
+# ARC runner definition: l-x86aavx2-189-704-a10g-8
+# Instance type: g5.48xlarge — 8-GPU A10G, 192c/768Gi node
+# Actual K8s capacity ~710.4Gi. Max job: 189c/704Gi after all overhead.
+runner:
+  name: l-x86aavx2-189-704-a10g-8
+  instance_type: g5.48xlarge
+  disk_size: 150
+  vcpu: 189
+  memory: 704Gi
+  gpu: 8
