@@ -244,7 +244,7 @@ When changing runner definitions (`modules/arc-runners/defs/`) or NodePool defin
 
 | File | What to update |
 |------|---------------|
-| `scripts/python/analyze_node_utilization.py` | `INSTANCE_SPECS` (add/update instance types), `ENI_MAX_PODS` (add/update ENI limits) |
+| `scripts/python/instance_specs.py` | `INSTANCE_SPECS` (add/update instance types), `ENI_MAX_PODS` (add/update ENI limits) |
 | `scripts/python/pytorch_workload_data.py` | `OLD_TO_NEW_LABEL` (update old→new runner name mappings when names change) |
 | `scripts/python/simulate_cluster.py` | Uses `analyze_node_utilization` functions — verify simulation still works |
 | `scripts/python/simulate_cluster_cli.py` | CLI entry point for simulation — re-run to validate packing |

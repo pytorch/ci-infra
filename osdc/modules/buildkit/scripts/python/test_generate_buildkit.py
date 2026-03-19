@@ -6,16 +6,16 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from analyze_node_utilization import ENI_MAX_PODS, kubelet_reserved
+from analyze_node_utilization import kubelet_reserved
 from generate_buildkit import (
     DAEMONSET_OVERHEAD_CPU_M,
     DAEMONSET_OVERHEAD_MEM_MI,
-    INSTANCE_SPECS,
     MARGIN,
     compute_pod_resources,
     generate_deployment_yaml,
     generate_nodepools_yaml,
 )
+from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
 
 # ============================================================================
 # Helpers

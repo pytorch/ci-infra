@@ -20,7 +20,7 @@ import os
 import subprocess
 import sys
 
-from analyze_node_utilization import INSTANCE_SPECS
+from instance_specs import INSTANCE_SPECS
 
 
 def ki_to_mib(ki_str: str) -> int:

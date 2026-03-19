@@ -1,8 +1,8 @@
-# ARC runner definition: l-barm64g3-62-226
+# ARC runner definition: l-barm64g4-62-226
 # Instance type: m8g.16xlarge (dedicated node — bare-metal runner)
 # Used for: inductor CPU perf benchmarks (needs bare-metal for noise isolation)
 runner:
-  name: l-barm64g3-62-226
+  name: l-barm64g4-62-226
   instance_type: m8g.16xlarge
   disk_size: 256
   vcpu: 62

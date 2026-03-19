@@ -59,7 +59,7 @@ OLD_TO_NEW_LABEL: dict[str, str] = {
     "linux.arm64.m7g.4xlarge": "l-arm64g3-16-62",
     "linux.arm64.m8g.4xlarge": "l-arm64g4-16-62",
     "linux.arm64.r7g.12xlarge.memory": "l-arm64g3-61-463",
-    "linux.arm64.m7g.metal": "l-barm64g3-62-226",
+    "linux.arm64.m7g.metal": "l-barm64g4-62-226",
 }
 
 # ---------------------------------------------------------------------------

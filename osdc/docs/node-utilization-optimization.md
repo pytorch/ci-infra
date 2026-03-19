@@ -62,20 +62,16 @@ Runners have ISA (instruction set) requirements encoded in their names that cons
 |----------|----------|---------|-----------|---------|
 | g5.48xlarge | 192c/768Gi @ $16.29/hr | 3 (A10G) | **50.3%** | 4-GPU runner uses only half the node |
 | g6.48xlarge | 192c/768Gi @ $13.35/hr | 2 (L4) | **50.3%** | Same — 4-GPU runner on 8-GPU node |
-| g4dn.12xlarge | 48c/192Gi @ $3.91/hr | 2 (T4) | **67.8%** | `l-x86iavx512-16-64-t4` fits at 68%; `l-x86iavx512-45-187-t4-4` fits with headroom (FIXED) |
-| g4dn.metal | 96c/384Gi @ $7.82/hr | 1 (T4) | 96.0% | Good — `l-bx86iavx512-94-384-t4-8` fills the node |
+| g4dn.8xlarge | 32c/128Gi @ $2.18/hr | 1 (T4) | **90.6%** | `l-x86iavx512-29-115-t4` fills the node |
+| g4dn.12xlarge | 48c/192Gi @ $3.91/hr | 1 (T4) | **95.6%** | `l-x86iavx512-45-172-t4-4` fills the node (FIXED) |
+| g4dn.metal | 96c/384Gi @ $7.82/hr | 1 (T4) | 96.0% | Good — `l-bx86iavx512-94-344-t4-8` fills the node |
 | p6-b200.48xlarge | 192c/2048Gi @ $55.47/hr | 4 (B200) | 88.1% | Good — runners scale proportionally to GPU count |
 
-### Critical Issue: T4 Runner Cannot Schedule
+### Critical Issue: T4 Runner Cannot Schedule (RESOLVED)
 
-`l-x86iavx512-48-192-t4-4` requests 48 vCPU + 192Gi memory + 4 GPUs. After adding the 750m sidecar (total: 48750m CPU), it exceeds the g4dn.12xlarge allocatable CPU of 47465m. **This runner can never schedule on g4dn.12xlarge.**
+The original 4-GPU T4 runner (`l-x86iavx512-48-192-t4-4`) requested 48 vCPU + 192Gi memory + 4 GPUs. After adding the 750m sidecar (total: 48750m CPU), it exceeded the g4dn.12xlarge allocatable CPU of 47465m and could never schedule.
 
-The other T4 runner on g4dn.12xlarge — `l-x86iavx512-16-64-t4` (16c/64Gi, 1 GPU) — schedules fine with 2 pods at 68% utilization.
-
-Options:
-1. Move the 4-GPU runner to g4dn.metal (96c, 8 GPU) — wastes half the node but it will schedule
-2. Reduce its CPU request to 46 vCPU (46750m with sidecar fits in 47465m allocatable)
-3. Accept that it can only schedule on g4dn.metal alongside the 94c/366Gi runner
+**Fix applied**: Renamed to `l-x86iavx512-45-172-t4-4` with reduced vCPU (45) and memory (172Gi) to fit within g4dn.12xlarge allocatable resources. The 1-GPU T4 runner (`l-x86iavx512-29-115-t4`) runs on its own g4dn.8xlarge nodepool.
 
 ## Recommendations
 
@@ -96,7 +92,7 @@ These runners include `l-x86iamx-*` (AMX) and `l-x86iavx2-*` (AVX2). Since AMX r
 | Memory | **r7i.48xlarge** (192c/1536Gi) | 2 runners (8:1 ratio) | ~88% | $12.70 |
 
 **Runner assignments**:
-- Compute pool: `l-x86iamx-8-16`, `l-x86iamx-14-27`, `l-x86iamx-22-41`, `l-x86iamx-46-91` (c7i.12xlarge), `l-bx86iamx-92-180` (c7i.metal-24xl)
+- Compute pool: `l-x86iamx-8-16`, `l-x86iamx-14-27`, `l-x86iamx-22-41`, `l-x86iamx-46-84` (c7i.12xlarge), `l-bx86iamx-92-167` (c7i.metal-24xl)
 - Balanced pool: `l-x86iamx-8-32`, `l-x86iamx-32-128`, `l-x86iavx2-8-32`, `l-x86iavx2-40-160`
 - Memory pool: `l-x86iamx-8-64`, `l-x86iamx-16-128`
 
@@ -114,7 +110,7 @@ AVX-512 runners can use either Intel or AMD instances with AVX-512 support.
 
 **Runner assignments**:
 - Compute pool: `l-x86iavx512-2-4`, `l-x86iavx512-8-16`, `l-x86iavx512-16-32`, `l-x86iavx512-37-68`, `l-x86iavx512-46-85`, `l-x86iavx512-94-192`
-- Balanced pool: `l-x86aavx512-94-384`
+- Balanced pool: `l-x86aavx512-125-463`
 - Memory pool: `l-x86iavx512-8-64`, `l-x86iavx512-16-128`, `l-x86iavx512-32-256`, `l-x86iavx512-48-384`, `l-x86iavx512-94-768`
 
 **Improvement**: worst-case utilization 12.6% → 74.4% (+61.8pp)
@@ -131,14 +127,14 @@ AVX-512 runners can use either Intel or AMD instances with AVX-512 support.
 | Memory | **r7g.16xlarge** (64c/512Gi) | 1 runner | 75.3% | $3.43 |
 
 **Runner assignments**:
-- Balanced pool: `l-arm64g2-6-32`, `l-arm64g3-16-62`, `l-arm64g4-16-62`, `l-barm64g3-62-226`
-- Memory pool (keep current): `l-arm64g3-48-384`
+- Balanced pool: `l-arm64g2-6-32`, `l-arm64g3-16-62`, `l-arm64g4-16-62`, `l-barm64g4-62-226`
+- Memory pool (keep current): `l-arm64g3-61-463`
 
 **Improvement**: worst-case utilization 37.9% → 75.3% (+37.4pp). The balanced pool achieves 88-99% utilization for all 4 runners.
 
 ### Recommendation 3: Fix T4 Runner Scheduling (DONE)
 
-`l-x86iavx512-48-192-t4-4` was renamed to `l-x86iavx512-45-187-t4-4` with reduced vCPU (45) and memory (187Gi) to leave headroom for the runner pod (750m/512Mi) and system overhead on g4dn.12xlarge (allocatable ~47.5c/~186Gi).
+`l-x86iavx512-48-192-t4-4` was renamed to `l-x86iavx512-45-172-t4-4` with reduced vCPU (45) and memory (172Gi) to leave headroom for the runner pod (750m/512Mi) and system overhead on g4dn.12xlarge.
 
 ### Recommendation 4: GPU Nodepool Right-Sizing (LOW PRIORITY)
 
@@ -152,10 +148,10 @@ GPU nodepools are constrained by GPU count, limiting instance options. The curre
 
 | State | CPU Nodepools | GPU Nodepools | Total |
 |-------|--------------|---------------|-------|
-| Current | 2 (r5.24xlarge, r7g.16xlarge) | 5 (g4dn.12xl, g4dn.metal, g5.48xl, g6.48xl, p6-b200) | 7 |
-| Proposed | 8 (3×amx/avx2 + 3×avx512 + 2×arm64) | 5 (unchanged) | 13 |
+| Current | 2 (r5.24xlarge, r7g.16xlarge) | 6 (g4dn.8xl, g4dn.12xl, g4dn.metal, g5.48xl, g6.48xl, p6-b200) | 8 |
+| Proposed | 8 (3×amx/avx2 + 3×avx512 + 2×arm64) | 6 (unchanged) | 14 |
 
-This increases from 7 to 13 nodepools (+6). Each nodepool is a Karpenter NodePool CRD — lightweight, no ongoing cost. The infrastructure impact is minimal.
+This increases from 8 to 14 nodepools (+6). Each nodepool is a Karpenter NodePool CRD — lightweight, no ongoing cost. The infrastructure impact is minimal.
 
 ## Cost Analysis
 
@@ -183,7 +179,7 @@ The only way to push these above 85% is to use instances where `N × runner_size
 ## Implementation Plan
 
 ### Phase 1: Fix T4 Scheduling (DONE)
-1. Renamed `l-x86iavx512-48-192-t4-4` → `l-x86iavx512-45-187-t4-4` (45 vCPU, 187Gi)
+1. Renamed `l-x86iavx512-48-192-t4-4` → `l-x86iavx512-45-172-t4-4` (45 vCPU, 172Gi)
 2. Regenerate and redeploy
 
 ### Phase 2: Split x86 CPU + ARM64 Nodepools by Ratio (DONE)
@@ -212,9 +208,9 @@ Some runner names don't exactly match their actual resource requests (the actual
 | Runner Name | Name Implies | Actual Request |
 |-------------|-------------|----------------|
 | `l-x86iavx512-94-768` | 94c/768Gi | 94c/740Gi |
-| `l-bx86iavx512-94-384-t4-8` | 94c/384Gi | 94c/366Gi |
+| `l-bx86iavx512-94-344-t4-8` | 94c/344Gi | 94c/344Gi |
 | `l-x86iavx512-94-192` | 94c/192Gi | 94c/189Gi |
 | `l-arm64g2-6-32` | 6c/32Gi | 6c/29Gi |
-| `l-barm64g3-62-226` | 62c/226Gi | 62c/223Gi |
+| `l-barm64g4-62-226` | 62c/226Gi | 62c/223Gi |
 
 The analysis scripts use the actual def values. The ratio categorizations are unaffected by these differences.

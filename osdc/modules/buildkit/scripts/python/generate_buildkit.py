@@ -28,7 +28,8 @@ _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
-from analyze_node_utilization import ENI_MAX_PODS, kubelet_reserved  # noqa: E402
+from analyze_node_utilization import kubelet_reserved  # noqa: E402
+from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -43,25 +44,6 @@ def log_info(msg):
 def log_error(msg):
     print(f"{RED}\u2717{NC} {msg}", file=sys.stderr)
 
-
-# ---------------------------------------------------------------------------
-# Instance type specifications
-# ---------------------------------------------------------------------------
-# Static lookup table — add entries here when supporting new instance types.
-# Values are from AWS documentation (total vCPU, total GiB memory).
-# The kubelet_reserved function and ENI_MAX_PODS table are imported from
-# analyze_node_utilization to avoid formula duplication.
-
-# memory_mi is the actual K8s node allocatable memory capacity, which is lower than the
-# advertised GiB due to VM overhead. Estimated using Karpenter's VM_MEMORY_OVERHEAD_PERCENT
-# of 7.5%: memory_mi = int(memory_gib * 1024 * 0.925)
-INSTANCE_SPECS = {
-    "m8gd.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "arch": "arm64"},
-    "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "arch": "arm64"},
-    "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "arch": "arm64"},
-    "m6id.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "arch": "amd64"},
-    "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "arch": "arm64"},
-}
 
 # ---------------------------------------------------------------------------
 # Overhead constants (milliCPU and MiB)

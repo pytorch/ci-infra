@@ -7,7 +7,7 @@ Runner labels must stay under **~42 characters**. This limit comes from three st
 1. **ARC Helm chart** enforces a **45-character** maximum on scale set names. With ARC, the scale set name *is* the `runs-on` label — you cannot add extra labels to target ARC runners.
 2. **Kubernetes label values** are capped at **63 characters**. ARC derives resource names by appending suffixes (e.g. `-gha-rs-no-permission`, 21 chars) to the scale set name. 45 + 18 (fullname infix) = 63, exactly at the K8s ceiling.
 3. **Cilium/Istio CNI** plugins create `CiliumIdentity` resources using the ServiceAccount name as a label value. Derived SA names from a 45-char scale set name can reach ~66 chars, exceeding the 63-char limit. Keeping names at **~42 characters** avoids this entirely.
-This is why every field is abbreviated (`l` not `linux`, `avx512` not `avx-512`, no units on vCPU/memory). The longest possible label from our current schema is 33 characters (`c-mt-l-bx86aavx512-189-704-a10g-8`) — well within the ceiling.
+This is why every field is abbreviated (`l` not `linux`, `avx512` not `avx-512`, no units on vCPU/memory). The longest label from our current runner catalog is 32 characters (`c-mt-l-bx86iavx512-94-344-t4-8`) — well within the ceiling.
 
 Reference: [actions/actions-runner-controller#2697](https://github.com/actions/actions-runner-controller/issues/2697)
 
@@ -121,6 +121,7 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
+| linux.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-115-t4 |
 | linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-115-t4 |
 | linux.g4dn.12xlarge.nvidia.gpu | g4dn.12xlarge | mt-l-x86iavx512-45-172-t4-4 |
 | linux.g4dn.metal.nvidia.gpu | g4dn.metal | mt-l-bx86iavx512-94-344-t4-8 |
@@ -161,7 +162,7 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | linux.arm64.m8g.4xlarge | m8g.4xlarge | mt-l-arm64g4-16-62 |
 | linux.arm64.m8g.4xlarge.ephemeral | m8g.4xlarge | mt-l-arm64g4-16-62 |
 | linux.arm64.r7g.12xlarge.memory | r7g.16xlarge | mt-l-arm64g3-61-463 |
-| linux.arm64.m7g.metal | m8g.16xlarge | mt-l-barm64g3-62-226 |
+| linux.arm64.m7g.metal | m8g.16xlarge | mt-l-barm64g4-62-226 |
 
 ## Many-to-One: Old Labels That Collapse Into a Single New Label
 
@@ -181,6 +182,7 @@ Excluding trivial `.ephemeral` / `.nonephemeral` duplicates, these are the cases
 | mt-l-x86iavx512-16-128 | linux.r7i.4xlarge, linux.4xlarge.memory | r7i.4xlarge, r5.4xlarge |
 | mt-l-x86iavx512-32-256 | linux.r7i.8xlarge, linux.8xlarge.memory | r7i.8xlarge, r5.8xlarge |
 | mt-l-x86iavx512-48-384 | linux.r7i.12xlarge, linux.12xlarge.memory | r7i.12xlarge, r5.12xlarge |
+| mt-l-x86iavx512-29-115-t4 | linux.4xlarge.nvidia.gpu, linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge |
 
 **Note on r7i vs r5:** r7i is Sapphire Rapids (has AMX), while r5 is Cascade Lake (AVX-512 only). Both are mapped to `x86iavx512` in our current defs because the underlying OSDC NodePool runs on r5.24xlarge regardless — the label reflects what is actually delivered, not what the old instance could do.
 

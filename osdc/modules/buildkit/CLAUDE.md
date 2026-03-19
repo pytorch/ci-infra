@@ -54,7 +54,7 @@ clusters:
 
 ## Adding a new instance type
 
-Add an entry to `INSTANCE_SPECS` in `scripts/python/generate_buildkit.py` with vcpu, memory_gib, arch.
+Add an entry to `INSTANCE_SPECS` and `ENI_MAX_PODS` in `scripts/python/instance_specs.py`.
 
 ## Key details
 
