@@ -76,6 +76,7 @@ kubeconfig cluster:
     CNAME=$(uv run {{CFG}} {{cluster}} cluster_name); \
     REGION=$(uv run {{CFG}} {{cluster}} region); \
     echo "Updating kubeconfig for $CNAME ($REGION)..."; \
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
     aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME"
 
 # ============================================================================
@@ -233,7 +234,9 @@ deploy-base cluster:
     fi
 
     echo ""
-    just kubeconfig "$CLUSTER"
+    echo "Updating kubeconfig for $CNAME ($REGION)..."
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+      aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME"
 
     echo ""
     echo "━━━ BASE: Mirror bootstrap images ━━━"
