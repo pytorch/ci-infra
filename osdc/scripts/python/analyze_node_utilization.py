@@ -24,17 +24,8 @@ from itertools import combinations_with_replacement
 from pathlib import Path
 
 import yaml
+from cli_colors import BOLD, CYAN, DIM, GREEN, NC, RED, YELLOW
 from daemonset_overhead import DaemonSetOverhead, discover_daemonsets
-
-# ANSI colors
-RED = "\033[0;31m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-CYAN = "\033[0;36m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-NC = "\033[0m"
-
 
 # ---------------------------------------------------------------------------
 # AWS instance type specs: vCPU, memory_gib, gpu_count
@@ -54,8 +45,15 @@ INSTANCE_SPECS = {
     # ARM64 CPU
     "m8g.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 0},
     "r7g.16xlarge": {"vcpu": 64, "memory_gib": 512, "gpu": 0},
-    # GPU instances
+    # GPU instances — 1-GPU
+    "g4dn.8xlarge": {"vcpu": 32, "memory_gib": 128, "gpu": 1},
+    "g5.8xlarge": {"vcpu": 32, "memory_gib": 128, "gpu": 1},
+    "g6.8xlarge": {"vcpu": 32, "memory_gib": 128, "gpu": 1},
+    # GPU instances — 4-GPU
     "g4dn.12xlarge": {"vcpu": 48, "memory_gib": 192, "gpu": 4},
+    "g5.12xlarge": {"vcpu": 48, "memory_gib": 192, "gpu": 4},
+    "g6.12xlarge": {"vcpu": 48, "memory_gib": 192, "gpu": 4},
+    # GPU instances — 8-GPU
     "g4dn.metal": {"vcpu": 96, "memory_gib": 384, "gpu": 8},
     "g5.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
     "g6.48xlarge": {"vcpu": 192, "memory_gib": 768, "gpu": 8},
@@ -300,6 +298,57 @@ def format_mem(mi: int) -> str:
     return f"{mi}Mi"
 
 
+def compute_node_slack(
+    alloc: dict,
+    runners: list[dict],
+    homogeneous_only: bool = False,
+) -> dict | None:
+    """Compute min/max unused CPU and memory across maximal combos.
+
+    When homogeneous_only is True (or >8 runner types), only considers
+    single-runner-type packings. Otherwise enumerates all mixed combos.
+
+    Returns dict with min_cpu_m, max_cpu_m, min_mem_mi, max_mem_mi,
+    or None if no valid combos exist.
+    """
+    if homogeneous_only or len(runners) > 8:
+        slacks = []
+        for r in runners:
+            c, m, g = per_runner_total(r)
+            max_by_cpu = alloc["allocatable_cpu_m"] // c if c > 0 else 999
+            max_by_mem = alloc["allocatable_mem_mi"] // m if m > 0 else 999
+            max_by_gpu = alloc["allocatable_gpu"] // g if g > 0 else 999
+            max_pods = min(max_by_cpu, max_by_mem, max_by_gpu)
+            if max_pods == 0:
+                continue
+            slacks.append(
+                {
+                    "cpu_m": alloc["allocatable_cpu_m"] - max_pods * c,
+                    "mem_mi": alloc["allocatable_mem_mi"] - max_pods * m,
+                }
+            )
+        if not slacks:
+            return None
+        return {
+            "min_cpu_m": min(s["cpu_m"] for s in slacks),
+            "max_cpu_m": max(s["cpu_m"] for s in slacks),
+            "min_mem_mi": min(s["mem_mi"] for s in slacks),
+            "max_mem_mi": max(s["mem_mi"] for s in slacks),
+        }
+
+    all_combos = find_valid_combos(runners, alloc)
+    maximal = find_maximal_combos(all_combos, alloc, runners)
+    if not maximal:
+        return None
+
+    return {
+        "min_cpu_m": min(c["cpu_waste_m"] for c in maximal),
+        "max_cpu_m": max(c["cpu_waste_m"] for c in maximal),
+        "min_mem_mi": min(c["mem_waste_mi"] for c in maximal),
+        "max_mem_mi": max(c["mem_waste_mi"] for c in maximal),
+    }
+
+
 def print_node_analysis(
     instance_type: str,
     alloc: dict,
@@ -527,14 +576,20 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         print(f"\n{RED}Unknown instance types (add to INSTANCE_SPECS): {unknown}{NC}")
 
-    # Analyze each instance type
+    # Analyze each instance type and collect slack data
     total_issues = 0
+    node_slacks: dict[str, dict] = {}
     for instance_type in sorted(by_instance.keys()):
         if instance_type not in INSTANCE_SPECS:
             continue
         alloc = compute_allocatable(instance_type, daemonsets)
         type_runners = by_instance[instance_type]
         print_node_analysis(instance_type, alloc, type_runners, args.threshold)
+
+        # Compute slack for summary (homogeneous only — excludes mixed combos)
+        slack = compute_node_slack(alloc, type_runners, homogeneous_only=True)
+        if slack:
+            node_slacks[instance_type] = slack
 
         # Count suboptimal homogeneous packings
         for r in type_runners:
@@ -557,6 +612,45 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         print(f"{GREEN}{BOLD}All runner types achieve >= {args.threshold}% utilization in homogeneous packing{NC}")
+
+    # --- Slack / headroom summary ---
+    if node_slacks:
+        print(f"\n{'━' * 80}")
+        print(f"{BOLD}Unused resource headroom per node (homogeneous packing only):{NC}\n")
+        print(f"  {'Node Type':<22} {'Min CPU':>10} {'Max CPU':>10} {'Min MEM':>10} {'Max MEM':>10}")
+        print(f"  {'─' * 64}")
+
+        global_min_cpu = None
+        global_max_cpu = None
+        global_min_mem = None
+        global_max_mem = None
+
+        for inst in sorted(node_slacks.keys()):
+            s = node_slacks[inst]
+            print(
+                f"  {inst:<22} {s['min_cpu_m']:>7}m   {s['max_cpu_m']:>7}m  "
+                f" {format_mem(s['min_mem_mi']):>8}   {format_mem(s['max_mem_mi']):>8}"
+            )
+            if global_min_cpu is None or s["min_cpu_m"] < global_min_cpu:
+                global_min_cpu = s["min_cpu_m"]
+            if global_max_cpu is None or s["max_cpu_m"] > global_max_cpu:
+                global_max_cpu = s["max_cpu_m"]
+            if global_min_mem is None or s["min_mem_mi"] < global_min_mem:
+                global_min_mem = s["min_mem_mi"]
+            if global_max_mem is None or s["max_mem_mi"] > global_max_mem:
+                global_max_mem = s["max_mem_mi"]
+
+        print(f"  {'─' * 64}")
+        print(
+            f"  {BOLD}{'WORST CASE':<22}{NC} {global_min_cpu:>7}m   {global_max_cpu:>7}m  "
+            f" {format_mem(global_min_mem):>8}   {format_mem(global_max_mem):>8}"
+        )
+        print()
+        print(
+            f"  The tightest node has only {BOLD}{global_min_cpu}m CPU{NC}"
+            f" and {BOLD}{format_mem(global_min_mem)} RAM{NC} free."
+        )
+        print("  Any new DaemonSet must fit within these limits or runners will fail to schedule.")
 
     return 0
 

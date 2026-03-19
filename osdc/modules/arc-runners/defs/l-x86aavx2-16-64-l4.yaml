@@ -1,9 +1,0 @@
-# ARC runner definition: l-x86aavx2-16-64-l4
-# Instance type: g6.48xlarge (pool: x86-l4)
-runner:
-  name: l-x86aavx2-16-64-l4
-  instance_type: g6.48xlarge
-  disk_size: 150
-  vcpu: 16
-  memory: 64Gi
-  gpu: 1

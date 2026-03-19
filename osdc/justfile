@@ -741,7 +741,7 @@ lint:
     SHELL_FILES=()
     for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
         while IFS= read -r -d '' f; do SHELL_FILES+=("$f"); done \
-            < <(find "$dir" -name '*.sh' -print0 2>/dev/null)
+            < <(find "$dir" -path '*/.scratch' -prune -o -name '*.sh' -print0 2>/dev/null)
     done
     if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
         shellcheck "${SHELL_FILES[@]}" || ERRORS=$((ERRORS + 1))
@@ -767,7 +767,7 @@ lint:
     DOCKERFILES=()
     for dir in $(_src_dirs base) $(_src_dirs modules); do
         while IFS= read -r -d '' f; do DOCKERFILES+=("$f"); done \
-            < <(find "$dir" -name 'Dockerfile' -print0 2>/dev/null)
+            < <(find "$dir" -path '*/.scratch' -prune -o -name 'Dockerfile' -print0 2>/dev/null)
     done
     if [[ ${#DOCKERFILES[@]} -gt 0 ]]; then
         hadolint --config "{{UPSTREAM}}/.hadolint.yaml" "${DOCKERFILES[@]}" || ERRORS=$((ERRORS + 1))
@@ -797,7 +797,7 @@ lint:
     echo "━━━ taplo ━━━"
     TOML_FILES=()
     while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
-        < <(find "{{UPSTREAM}}" -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
+        < <(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
     if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
         while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
             < <(find "{{ROOT}}" -maxdepth 1 -name '*.toml' -print0 2>/dev/null)
@@ -816,7 +816,7 @@ lint:
     for parent in $(_src_dirs modules); do
         while IFS= read -r -d '' f; do
             KUSTOMIZE_DIRS+=("$(dirname "$f")")
-        done < <(find "$parent" -name 'kustomization.yaml' -print0 2>/dev/null)
+        done < <(find "$parent" -path '*/.scratch' -prune -o -name 'kustomization.yaml' -print0 2>/dev/null)
     done
     # Build kubeconform CRD schema URL (uses Go template syntax — avoid just brace interpolation)
     LB='{''{'  # left brace pair
@@ -846,7 +846,7 @@ lint:
     for parent in $(_src_dirs modules); do
         while IFS= read -r -d '' f; do
             TF_ROOTS+=("$(dirname "$f")")
-        done < <(find "$parent" -name 'main.tf' -not -path '*/modules/*' -print0 2>/dev/null)
+        done < <(find "$parent" -path '*/.scratch' -prune -o -name 'main.tf' -not -path '*/modules/*' -print0 2>/dev/null)
     done
     if [[ ${#TF_ROOTS[@]} -gt 0 ]]; then
         tflint --init --config "{{UPSTREAM}}/.tflint.hcl" 2>/dev/null || true
@@ -862,6 +862,7 @@ lint:
         trivy config --severity HIGH,CRITICAL --exit-code 1 \
             --misconfig-scanners terraform,dockerfile,kubernetes \
             --ignorefile "{{UPSTREAM}}/.trivyignore" \
+            --skip-dirs '.scratch' \
             "$dir" || ERRORS=$((ERRORS + 1))
     done
 
@@ -900,7 +901,7 @@ lint-fix:
     SHELL_FILES=()
     for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
         while IFS= read -r -d '' f; do SHELL_FILES+=("$f"); done \
-            < <(find "$dir" -name '*.sh' -print0 2>/dev/null)
+            < <(find "$dir" -path '*/.scratch' -prune -o -name '*.sh' -print0 2>/dev/null)
     done
     if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
         shfmt -w -i 2 -ci -bn "${SHELL_FILES[@]}"
@@ -917,7 +918,7 @@ lint-fix:
     echo "━━━ taplo fmt (fix) ━━━"
     TOML_FILES=()
     while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
-        < <(find "{{UPSTREAM}}" -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
+        < <(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
     if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
         while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
             < <(find "{{ROOT}}" -maxdepth 1 -name '*.toml' -print0 2>/dev/null)

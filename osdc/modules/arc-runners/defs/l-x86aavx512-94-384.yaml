@@ -1,9 +1,0 @@
-# ARC runner definition: l-x86aavx512-94-384
-# Instance type: m6i.32xlarge (pool: x86-cpu)
-runner:
-  name: l-x86aavx512-94-384
-  instance_type: m6i.32xlarge
-  disk_size: 200
-  vcpu: 94
-  memory: 384Gi
-  gpu: 0

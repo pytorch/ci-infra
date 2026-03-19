@@ -1,0 +1,11 @@
+# ARC runner definition: l-x86aavx2-29-125-l4
+# Instance type: g6.8xlarge — 1-GPU L4, 32c/128Gi node
+# Note: g6.8xlarge has 32 vCPU / 128 GiB but allocatable is ~31.4/~126.3 GiB
+# after system overhead. Runner pod adds 750m/512Mi on top. -1 vCPU for DaemonSet headroom.
+runner:
+  name: l-x86aavx2-29-125-l4
+  instance_type: g6.8xlarge
+  disk_size: 150
+  vcpu: 29
+  memory: 125Gi
+  gpu: 1
