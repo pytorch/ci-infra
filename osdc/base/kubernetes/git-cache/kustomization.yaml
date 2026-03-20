@@ -1,15 +1,14 @@
 # Two-tier git cache: central pod (EBS) + rsync DaemonSet (NVMe).
 # Central pod clones from GitHub once, DaemonSet rsyncs to each node.
+# Note: StatefulSet and PDB are generated from .tpl files by deploy.sh.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - rbac.yaml
-  - central-pvc.yaml
   - central-configmap.yaml
-  - central-deployment.yaml
   - central-service.yaml
+  - central-headless-service.yaml
   - central-metrics-service.yaml
-  - central-pdb.yaml
   - daemonset-configmap.yaml
   - daemonset.yaml

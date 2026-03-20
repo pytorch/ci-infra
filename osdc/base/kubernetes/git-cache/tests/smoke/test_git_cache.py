@@ -1,7 +1,7 @@
 """Smoke tests for the two-tier git clone cache."""
 
 import pytest
-from helpers import assert_daemonset_healthy, assert_deployment_ready, filter_services, run_kubectl
+from helpers import assert_daemonset_healthy, filter_services, run_kubectl
 
 pytestmark = [pytest.mark.live]
 
@@ -14,10 +14,27 @@ GIT_CACHE_NAMESPACE = "kube-system"
 
 
 class TestGitCacheCentral:
-    """Verify the central git cache Deployment, Services, and PDB."""
+    """Verify the central git cache StatefulSet, Services, and PDB."""
 
-    def test_deployment_exists_and_ready(self, all_deployments):
-        assert_deployment_ready(all_deployments, GIT_CACHE_NAMESPACE, "git-cache-central")
+    def test_statefulset_exists_and_ready(self):
+        """Verify StatefulSet git-cache-central exists with correct replica count."""
+        result = run_kubectl(["get", "statefulset", "git-cache-central"], namespace=GIT_CACHE_NAMESPACE)
+        assert result["metadata"]["name"] == "git-cache-central"
+        spec_replicas = result["spec"]["replicas"]
+        ready_replicas = result.get("status", {}).get("readyReplicas", 0)
+        assert ready_replicas == spec_replicas, f"StatefulSet git-cache-central: {ready_replicas}/{spec_replicas} ready"
+
+    def test_headless_service_exists(self, all_services):
+        svcs = filter_services(all_services, namespace=GIT_CACHE_NAMESPACE, name="git-cache-central-headless")
+        assert len(svcs) == 1, "Service git-cache-central-headless not found in kube-system"
+        svc = svcs[0]
+        assert svc["spec"].get("clusterIP") == "None", "Headless service should have clusterIP=None"
+        assert svc["spec"].get("publishNotReadyAddresses") is True, (
+            "Headless service must set publishNotReadyAddresses=true for rollout discovery"
+        )
+        ports = [p["port"] for p in svc.get("spec", {}).get("ports", [])]
+        assert 873 in ports, f"Headless service missing rsync port 873. Ports: {ports}"
+        assert 9101 in ports, f"Headless service missing metrics port 9101. Ports: {ports}"
 
     def test_rsync_service_exists(self, all_services):
         svcs = filter_services(all_services, namespace=GIT_CACHE_NAMESPACE, name="git-cache-central")

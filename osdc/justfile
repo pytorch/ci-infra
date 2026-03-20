@@ -247,6 +247,10 @@ deploy-base cluster:
     kubectl apply -k {{UPSTREAM}}/base/kubernetes/
 
     echo ""
+    echo "━━━ BASE: Deploy Git Cache Central ━━━"
+    {{UPSTREAM}}/base/kubernetes/git-cache/deploy.sh "$CLUSTER"
+
+    echo ""
     echo "━━━ BASE: Deploy Harbor ━━━"
     cd "{{ROOT}}"
     just _deploy-harbor "$CLUSTER"

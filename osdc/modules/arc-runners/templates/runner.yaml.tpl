@@ -203,10 +203,25 @@ data:
       serviceAccountName: arc-workflow
       automountServiceAccountToken: false
 
-      # Schedule job pods on same instance type as runner
-      nodeSelector:
-        workload-type: github-runner
-        instance-type: "{{INSTANCE_TYPE}}"{{GPU_NODE_SELECTOR}}
+      # Prefer scheduling job pods on same instance type as runner.
+      # Tolerations enforce instance-type constraints (every NodePool taints
+      # with instance-type=<type>:NoSchedule), so nodeSelector is not needed.
+      # The hooks inject a weight-100 same-node preference at runtime;
+      # this weight-50 preference is the fallback for same-instance-type nodes.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              preference:
+                matchExpressions:
+                  - key: instance-type
+                    operator: In
+                    values:
+                      - "{{INSTANCE_TYPE}}"
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - github-runner{{GPU_NODE_SELECTOR_AFFINITY}}
 
       # Tolerate instance-type taint
       tolerations:
