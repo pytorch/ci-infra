@@ -693,3 +693,21 @@ If either fails, fix the issues before finishing. Do not defer lint or test fail
 | `base/logging/pipelines/base.alloy` | Base Alloy River config (pod logs, journal, loki.write, MODULE_PIPELINES marker) |
 | `base/logging/helm/alloy-logging-values.yaml` | Alloy DaemonSet Helm values (tolerates all taints, journal mount, positions hostPath) |
 | `base/logging/scripts/python/assemble_config.py` | Assembles base pipeline + per-module `stage.match` blocks into ConfigMap |
+
+## Documentation (`docs/`)
+
+**Keep this list in sync.** When adding, removing, or significantly editing a document in `docs/`, update this table (description, filename, or entry presence).
+
+| Document | Description |
+|----------|-------------|
+| `architecture.md` | Modular platform architecture — base vs modules, deployment layers |
+| `current_runner_load_distribution.md` | 30-day job counts and peak concurrency analysis by runner type |
+| `initialize-containers-slowness.md` | Root cause analysis of slow "Initialize containers" step (ARC hook bottleneck) |
+| `loki_query.md` | CLI guide for querying Grafana Cloud Loki logs (credentials, LogQL patterns) |
+| `mimir_query.md` | CLI guide for querying Grafana Cloud Mimir metrics (credentials, PromQL patterns) |
+| `modules.md` | Module contract and deployment order (Terraform → Kubernetes → deploy.sh) |
+| `node-utilization-optimization.md` | Runner-to-node packing efficiency analysis and instance type recommendations |
+| `observability.md` | Two-pipeline observability architecture (metrics Deployment + logs DaemonSet → Grafana Cloud) |
+| `operations.md` | Operational procedures — bootstrap, deploy, and manage clusters |
+| `pr-migration.md` | Migration history from monolithic `arc/` to modular `osdc/` layout |
+| `runner_naming_convention.md` | Compact runner label naming scheme (42-char limit, abbreviation rules) |

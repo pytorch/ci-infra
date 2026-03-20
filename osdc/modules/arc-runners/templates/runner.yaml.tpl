@@ -146,9 +146,14 @@ template:
           - name: ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE
             value: /home/runner/hook-extensions/job-pod.yaml
           # Use patched hooks from DaemonSet instead of baked-in ones
-          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.1
+          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.2
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /opt/runner-hooks/dist/index.js
+          # Allow more time for workflow pods to come online during demand surges.
+          # Default is 600s (10 min), which is exceeded when node provisioning +
+          # git-cache sync takes longer than expected under concurrent load.
+          - name: ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS
+            value: "900"
         resources:
           # Runner pod needs enough CPU for the k8s-novolume hook's
           # workspace copy verification (find -exec stat over all files)
