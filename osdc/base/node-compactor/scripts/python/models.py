@@ -22,6 +22,7 @@ DEFAULTS = {
     "COMPACTOR_MIN_NODES": "1",
     "COMPACTOR_DRY_RUN": "false",
     "COMPACTOR_TAINT_COOLDOWN": "300",
+    "COMPACTOR_MIN_NODE_AGE": "420",
 }
 
 
@@ -34,6 +35,7 @@ class Config:
     min_nodes: int
     dry_run: bool
     taint_cooldown: int
+    min_node_age: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -48,6 +50,7 @@ class Config:
             min_nodes=int(env("COMPACTOR_MIN_NODES")),
             dry_run=env("COMPACTOR_DRY_RUN").lower() in ("true", "1", "yes"),
             taint_cooldown=int(env("COMPACTOR_TAINT_COOLDOWN")),
+            min_node_age=int(env("COMPACTOR_MIN_NODE_AGE")),
         )
 
 
@@ -138,9 +141,12 @@ class NodeState:
         return max(self.cpu_utilization, self.memory_utilization)
 
     @property
+    def uptime_seconds(self) -> float:
+        return (datetime.now(UTC) - self.creation_time).total_seconds()
+
+    @property
     def uptime_hours(self) -> float:
-        delta = datetime.now(UTC) - self.creation_time
-        return delta.total_seconds() / 3600
+        return self.uptime_seconds / 3600
 
     @property
     def youngest_pod_age_seconds(self) -> float:
