@@ -146,7 +146,7 @@ template:
           - name: ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE
             value: /home/runner/hook-extensions/job-pod.yaml
           # Use patched hooks from DaemonSet instead of baked-in ones
-          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.2
+          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.3
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /opt/runner-hooks/dist/index.js
           # Allow more time for workflow pods to come online during demand surges.
