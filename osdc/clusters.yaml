@@ -27,6 +27,15 @@ defaults:
   eks_version: "1.35"
   single_nat_gateway: false
 
+  # --- Git cache central ---
+  git_cache:
+    central_replicas: 2
+    central_cpu_request: "2"
+    central_cpu_limit: "2"
+    central_memory_request: "4Gi"
+    central_memory_limit: "8Gi"
+    central_storage_size: "50Gi"
+
   # --- Base component tuning ---
   harbor:
     core_replicas: 2
@@ -72,8 +81,8 @@ clusters:
     recycle_karpenter_nodes: true
     state_bucket: ciforge-tfstate-arc-staging
     base:
-      base_node_count: 3
-      base_node_instance_type: m5.xlarge
+      base_node_count: 2
+      base_node_instance_type: m7i.48xlarge
       base_node_max_unavailable_percentage: 100  # all-at-once for staging
       single_nat_gateway: true       # cost optimization for staging
       vpc_cidr: "10.0.0.0/16"
@@ -115,7 +124,14 @@ clusters:
     state_bucket: ciforge-tfstate-arc-production
     base:
       vpc_cidr: "10.1.0.0/16"
-      base_node_instance_type: m5.xlarge
+      base_node_instance_type: m7i.48xlarge
+      base_node_count: 6
+    git_cache:
+      central_replicas: 6
+      central_cpu_request: "8"
+      central_cpu_limit: "15"
+      central_memory_request: "8Gi"
+      central_memory_limit: "32Gi"
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-production
