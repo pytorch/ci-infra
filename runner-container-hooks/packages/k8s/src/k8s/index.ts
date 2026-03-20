@@ -430,7 +430,7 @@ export async function execCpToPod(
       attempt++
       if (attempt >= 30) {
         throw new Error(
-          `cpToPod failed after ${attempt} attempts: ${JSON.stringify(error)}`
+          `cpToPod failed after ${attempt} attempts: ${error instanceof Error ? error.message : String(error)}`
         )
       }
       await sleep(1000)
@@ -527,7 +527,7 @@ export async function execCpFromPod(
       attempt++
       if (attempt >= 30) {
         throw new Error(
-          `execCpFromPod failed after ${attempt} attempts: ${JSON.stringify(error)}`
+          `execCpFromPod failed after ${attempt} attempts: ${error instanceof Error ? error.message : String(error)}`
         )
       }
       await sleep(1000)
@@ -574,7 +574,7 @@ export async function waitForJobToComplete(jobName: string): Promise<void> {
         return
       }
     } catch (error) {
-      throw new Error(`job ${jobName} has failed: ${JSON.stringify(error)}`)
+      throw new Error(`job ${jobName} has failed: ${error instanceof Error ? error.message : String(error)}`)
     }
     await backOffManager.backOff()
   }
@@ -697,7 +697,7 @@ export async function waitForPodPhases(
     }
   } catch (error) {
     throw new Error(
-      `Pod ${podName} is unhealthy with phase status ${phase}: ${JSON.stringify(error)}`
+      `Pod ${podName} is unhealthy with phase status ${phase}: ${error instanceof Error ? error.message : String(error)}`
     )
   }
 }
