@@ -16,6 +16,7 @@ import {
   PodPhase,
   mergePodSpecWithOptions,
   mergeObjectMeta,
+  injectSameNodePreference,
   fixArgs,
   listDirAllCommand,
   sleep,
@@ -34,6 +35,31 @@ const k8sBatchV1Api = kc.makeApiClient(k8s.BatchV1Api)
 const k8sAuthorizationV1Api = kc.makeApiClient(k8s.AuthorizationV1Api)
 
 const DEFAULT_WAIT_FOR_POD_TIME_SECONDS = 10 * 60 // 10 min
+
+/**
+ * Look up the runner pod's node and inject a weight-100 same-node scheduling
+ * preference into the given pod spec. Non-fatal: if the lookup fails, a
+ * warning is logged and the pod spec is left unchanged.
+ */
+async function applySameNodePreference(spec: k8s.V1PodSpec): Promise<void> {
+  try {
+    const runnerPodName = process.env.ACTIONS_RUNNER_POD_NAME
+    if (runnerPodName) {
+      const runnerPod = await k8sApi.readNamespacedPod({
+        name: runnerPodName,
+        namespace: namespace()
+      })
+      const runnerNodeName = runnerPod.spec?.nodeName
+      if (runnerNodeName) {
+        injectSameNodePreference(spec, runnerNodeName)
+      }
+    }
+  } catch (err) {
+    core.warning(
+      `Could not look up runner pod node for same-node scheduling: ${err}`
+    )
+  }
+}
 
 export const requiredPermissions = [
   {
@@ -176,6 +202,8 @@ export async function createJobPod(
     mergePodSpecWithOptions(appPod.spec, extension.spec)
   }
 
+  await applySameNodePreference(appPod.spec)
+
   return await k8sApi.createNamespacedPod({
     namespace: namespace(),
     body: appPod
@@ -228,6 +256,8 @@ export async function createContainerStepPod(
   if (extension?.spec) {
     mergePodSpecWithOptions(appPod.spec, extension.spec)
   }
+
+  await applySameNodePreference(appPod.spec)
 
   return await k8sApi.createNamespacedPod({
     namespace: namespace(),
@@ -574,7 +604,9 @@ export async function waitForJobToComplete(jobName: string): Promise<void> {
         return
       }
     } catch (error) {
-      throw new Error(`job ${jobName} has failed: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(
+        `job ${jobName} has failed: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
     await backOffManager.backOff()
   }

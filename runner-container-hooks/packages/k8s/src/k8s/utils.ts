@@ -269,6 +269,44 @@ export function useKubeScheduler(): boolean {
   return process.env[ENV_USE_KUBE_SCHEDULER] === 'true'
 }
 
+/**
+ * Inject a weight-100 same-node preference into the pod spec's nodeAffinity.
+ * APPENDS to existing preferredDuringScheduling entries (the extension
+ * template's weight-50 instance-type preference is already there from
+ * mergePodSpecWithOptions). Does not touch requiredDuringScheduling.
+ */
+export function injectSameNodePreference(
+  spec: k8s.V1PodSpec,
+  nodeName: string
+): void {
+  if (!spec.affinity) {
+    spec.affinity = {}
+  }
+  if (!spec.affinity.nodeAffinity) {
+    spec.affinity.nodeAffinity = {}
+  }
+  if (
+    !spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution
+  ) {
+    spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution =
+      []
+  }
+  spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution.push(
+    {
+      weight: 100,
+      preference: {
+        matchExpressions: [
+          {
+            key: 'kubernetes.io/hostname',
+            operator: 'In',
+            values: [nodeName]
+          }
+        ]
+      }
+    }
+  )
+}
+
 export enum PodPhase {
   PENDING = 'Pending',
   RUNNING = 'Running',
