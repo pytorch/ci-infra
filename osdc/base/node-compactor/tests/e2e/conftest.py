@@ -181,6 +181,7 @@ def compactor_setup(
         "COMPACTOR_DRY_RUN": "false",
         "COMPACTOR_INTERVAL": "10",
         "COMPACTOR_TAINT_COOLDOWN": "30",
+        "COMPACTOR_MIN_NODE_AGE": "0",
     }
 
     log.info("Patching compactor Deployment for e2e testing...")

@@ -3,16 +3,18 @@
 # Install with: helm install arc oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
 
 # Controller settings
-replicaCount: 1
+replicaCount: 2
 
-# Controller resources
+# Controller resources — sized for 40+ AutoScalingRunnerSets at high concurrency.
+# Informer caches grow linearly with active runners; Go GC doubles live heap.
+# At peak (thousands of concurrent runners), cache alone can exceed 1Gi.
 resources:
   limits:
-    cpu: 500m
-    memory: 512Mi
+    cpu: "4"
+    memory: 4Gi
   requests:
-    cpu: 100m
-    memory: 128Mi
+    cpu: "1"
+    memory: 2Gi
 
 # Logging level (debug, info, warn, error)
 log:

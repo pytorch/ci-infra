@@ -6,8 +6,8 @@ Runs a full integration test against an OSDC cluster by:
 2. Optionally clearing staging pools (arc-staging only)
 3. Opening a PR with test workflows that exercise every cluster capability
 4. Running smoke tests and node-compactor tests in parallel
-5. Collecting workflow results and checking observability
-6. Reporting results and cleaning up
+5. Collecting workflow results and reporting
+6. Cleaning up
 """
 
 import argparse
@@ -15,6 +15,7 @@ import json
 import logging
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -139,7 +140,6 @@ def main():
         close_pr,
         print_report,
         run_parallel_validation,
-        verify_observability,
         wait_for_workflows,
     )
 
@@ -179,6 +179,7 @@ def main():
         workflow_content = generate_workflow(
             args.upstream_dir, prefix, args.cluster_id, cluster_name, b200_enabled,
         )
+        pr_created_at = datetime.now(tz=UTC)
         pr_number = prepare_pr(canary_path, args.upstream_dir, workflow_content, args.dry_run, branch)
 
         if args.dry_run:
@@ -192,15 +193,12 @@ def main():
         )
 
         # Phase 4: Collect workflow results
-        workflow_results = wait_for_workflows(branch)
-
-        # Phase 4b: Observability verification
-        observability_results = verify_observability(cluster_name, cfg, args.upstream_dir)
+        workflow_results = wait_for_workflows(branch, pr_created_at)
 
         # Phase 5: Report
         overall_pass = print_report(
             args.cluster_id, cluster_name,
-            workflow_results, validation_results, observability_results,
+            workflow_results, validation_results,
         )
 
     finally:

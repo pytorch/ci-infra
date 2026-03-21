@@ -50,8 +50,12 @@ defaults:
   arc:
     chart_version: "0.14.0"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion)
     runner_image_tag: "2.333.0"  # ghcr.io/actions/actions-runner tag — pin to avoid :latest
-    replica_count: 1
+    replica_count: 2
     log_level: info
+    controller_cpu_request: "1"
+    controller_cpu_limit: "4"
+    controller_memory_request: "2Gi"
+    controller_memory_limit: "4Gi"
   node_compactor:
     enabled: true
     interval_seconds: 20
@@ -124,8 +128,8 @@ clusters:
     state_bucket: ciforge-tfstate-arc-production
     base:
       vpc_cidr: "10.1.0.0/16"
-      base_node_instance_type: m7i.48xlarge
-      base_node_count: 6
+      base_node_instance_type: m7i.4xlarge
+      base_node_count: 5
     git_cache:
       central_replicas: 6
       central_cpu_request: "8"
