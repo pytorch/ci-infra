@@ -483,6 +483,7 @@ _deploy-harbor cluster:
     # Read per-cluster Harbor config
     HARBOR_CORE_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.core_replicas 2)
     HARBOR_REGISTRY_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.registry_replicas 2)
+    HARBOR_NGINX_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.nginx_replicas 3)
 
     # Install Harbor (using traditional Helm repo to avoid ghcr.io auth/rate-limit issues)
     echo "Installing Harbor..."
@@ -516,6 +517,7 @@ _deploy-harbor cluster:
             --set database.internal.password="${HARBOR_DB_PW}" \
             --set core.replicas="${HARBOR_CORE_REPLICAS}" \
             --set registry.replicas="${HARBOR_REGISTRY_REPLICAS}" \
+            --set nginx.replicas="${HARBOR_NGINX_REPLICAS}" \
             --timeout 15m \
             --wait \
             --burst-limit 10000 \

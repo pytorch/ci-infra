@@ -30,8 +30,8 @@ MODULE_NAME="${NODEPOOLS_MODULE_NAME:-nodepools}"
 CLUSTER_CONFIG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 GPU_DISRUPTION_BUDGET=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.gpu_disruption_budget "100%")
 GPU_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.gpu_consolidate_after "3h")
-CPU_DISRUPTION_BUDGET=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_disruption_budget "10%")
-CPU_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_consolidate_after "3h")
+CPU_DISRUPTION_BUDGET=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_disruption_budget "100%")
+CPU_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_consolidate_after "20m")
 COMPACTOR_ENABLED=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.enabled "false")
 
 # --- Step 1: Generate NodePools from definitions ---
