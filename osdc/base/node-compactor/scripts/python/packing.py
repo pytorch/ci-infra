@@ -126,6 +126,19 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
                     mandatory_untaint.add(node.name)
             continue
 
+        # Exclude young nodes from taint candidates — they may not have
+        # received pods yet (race between Karpenter provisioning and the
+        # compactor's reconcile cycle).
+        eligible = []
+        for node in pool_nodes:
+            if node.uptime_seconds < cfg.min_node_age:
+                log.debug("Skipping %s: too young (%.0fs < %ds)", node.name, node.uptime_seconds, cfg.min_node_age)
+                if node.is_tainted:
+                    to_untaint.add(node.name)
+                    mandatory_untaint.add(node.name)
+                continue
+            eligible.append(node)
+
         # Priority: old nodes first, then lowest utilization, then youngest
         # pod age descending (nodes whose youngest pod is oldest are closer
         # to draining naturally -- higher age = better taint candidate)
@@ -137,7 +150,7 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
                 -node.youngest_pod_age_seconds,
             )
 
-        candidates = sorted(pool_nodes, key=taint_priority)
+        candidates = sorted(eligible, key=taint_priority)
 
         # Nodes beyond the surplus count are definitely remaining untainted.
         # Nodes within the surplus range that fail the safety check also

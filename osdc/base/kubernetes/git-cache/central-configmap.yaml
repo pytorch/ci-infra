@@ -73,6 +73,7 @@ data:
             "git_cache_central_clone_total": ("counter", "Total clone/fetch operations"),
             "git_cache_central_clone_duration_seconds": ("histogram", "Time to clone/fetch each repo"),
             "git_cache_central_last_success_timestamp": ("gauge", "Unix timestamp of last successful sync per repo"),
+            "git_cache_central_active_rsync_connections": ("gauge", "Number of active rsync client connections"),
         }
 
         # Histogram bucket boundaries (seconds) for clone/fetch duration
@@ -248,7 +249,7 @@ data:
     def install_deps() -> None:
         """Install git and rsync via apk."""
         log.info("Installing dependencies...")
-        run(["apk", "add", "--no-cache", "git", "rsync"],
+        run(["apk", "add", "--no-cache", "git", "rsync", "procps"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         result = run(["git", "--version"], capture_output=True, text=True)
         log.info("Git version: %s", result.stdout.strip())
@@ -483,6 +484,26 @@ data:
         return proc
 
 
+    def _count_rsync_connections(rsyncd_proc: subprocess.Popen) -> int:
+        """Count active rsync child processes (excludes the daemon itself)."""
+        try:
+            result = subprocess.run(
+                ["pgrep", "-c", "-P", str(rsyncd_proc.pid)],
+                capture_output=True, text=True, check=False,
+            )
+            return int(result.stdout.strip()) if result.returncode == 0 else 0
+        except (ValueError, OSError):
+            return 0
+
+
+    def _connection_counter(rsyncd_proc: subprocess.Popen) -> None:
+        """Background thread: update active connection count every 5 seconds."""
+        while True:
+            count = _count_rsync_connections(rsyncd_proc)
+            metrics.set("git_cache_central_active_rsync_connections", count)
+            time.sleep(5)
+
+
     def main() -> None:
         install_deps()
 
@@ -507,6 +528,13 @@ data:
 
         # Phase 2: Start rsyncd to serve the cache
         rsyncd = start_rsyncd()
+
+        # Start connection counter thread (for least-loaded DaemonSet selection)
+        counter_thread = threading.Thread(
+            target=_connection_counter, args=(rsyncd,), daemon=True,
+        )
+        counter_thread.start()
+        log.info("Connection counter started")
 
         # Phase 3: Periodic update loop
         # Rsync active -> staging, git fetch in staging, swap symlink

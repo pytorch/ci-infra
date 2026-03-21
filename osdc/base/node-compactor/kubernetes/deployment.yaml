@@ -48,6 +48,8 @@ spec:
               value: "COMPACTOR_DRY_RUN_PLACEHOLDER"
             - name: COMPACTOR_MIN_NODES
               value: "COMPACTOR_MIN_NODES_PLACEHOLDER"
+            - name: COMPACTOR_MIN_NODE_AGE
+              value: "COMPACTOR_MIN_NODE_AGE_PLACEHOLDER"
           resources:
             requests:
               cpu: "50m"

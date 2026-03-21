@@ -22,15 +22,24 @@
 defaults:
   # --- Terraform / base infra ---
   base_node_count: 5
-  base_node_instance_type: m5.xlarge
+  base_node_instance_type: m7i.4xlarge
   base_node_max_unavailable_percentage: 33
   eks_version: "1.35"
   single_nat_gateway: false
+
+  # --- Git cache central ---
+  git_cache:
+    central_replicas: 2
+    central_cpu_request: "2"
+    central_cpu_limit: "2"
+    central_memory_request: "4Gi"
+    central_memory_limit: "8Gi"
 
   # --- Base component tuning ---
   harbor:
     core_replicas: 2
     registry_replicas: 2
+    nginx_replicas: 3
 
   # --- Module defaults ---
   karpenter:
@@ -41,8 +50,12 @@ defaults:
   arc:
     chart_version: "0.14.0"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion)
     runner_image_tag: "2.333.0"  # ghcr.io/actions/actions-runner tag — pin to avoid :latest
-    replica_count: 1
+    replica_count: 2
     log_level: info
+    controller_cpu_request: "1"
+    controller_cpu_limit: "4"
+    controller_memory_request: "2Gi"
+    controller_memory_limit: "4Gi"
   node_compactor:
     enabled: true
     interval_seconds: 20
@@ -50,19 +63,13 @@ defaults:
     min_nodes: 1
     dry_run: false
   nodepools:
-    gpu_disruption_budget: "100%"
     gpu_consolidate_after: "20m"
-    cpu_disruption_budget: "100%"
-    cpu_consolidate_after: "20m"
   buildkit:
     replicas_per_arch: 4
   monitoring:
-    namespace: monitoring
-    alloy_chart_version: "1.6.2"  # Grafana Alloy Helm chart — shared by monitoring + logging
     grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
     grafana_cloud_read_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
   logging:
-    namespace: logging
     grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
 
 clusters:
@@ -72,21 +79,27 @@ clusters:
     recycle_karpenter_nodes: true
     state_bucket: ciforge-tfstate-arc-staging
     base:
-      base_node_count: 3
-      base_node_instance_type: m5.xlarge
+      base_node_count: 2
+      base_node_instance_type: m5.4xlarge
       base_node_max_unavailable_percentage: 100  # all-at-once for staging
       single_nat_gateway: true       # cost optimization for staging
       vpc_cidr: "10.0.0.0/16"
     harbor:
       core_replicas: 1
       registry_replicas: 1
+      nginx_replicas: 1
     karpenter:
       replicas: 1
       log_level: debug
       pdb_enabled: false
+      pdb_min_available: 0
     arc:
       replica_count: 1
       log_level: debug
+      controller_cpu_request: "500m"
+      controller_cpu_limit: "1"
+      controller_memory_request: "1Gi"
+      controller_memory_limit: "1Gi"
     node_compactor:
       dry_run: true
     nodepools:
@@ -98,9 +111,6 @@ clusters:
     buildkit:
       replicas_per_arch: 2
       arm64_instance_type: m7gd.16xlarge
-    monitoring:
-      retention_days: 7
-      storage_size: 20Gi
     modules:
       - karpenter
       - arc
@@ -115,7 +125,12 @@ clusters:
     state_bucket: ciforge-tfstate-arc-production
     base:
       vpc_cidr: "10.1.0.0/16"
-      base_node_instance_type: m5.xlarge
+    git_cache:
+      central_replicas: 5
+      central_cpu_request: "6"
+      central_cpu_limit: "15"
+      central_memory_request: "8Gi"
+      central_memory_limit: "32Gi"
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-production

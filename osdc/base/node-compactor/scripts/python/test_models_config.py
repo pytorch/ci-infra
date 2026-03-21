@@ -78,6 +78,7 @@ class TestConfigFromEnvDefaults(unittest.TestCase):
         self.assertEqual(cfg.min_nodes, 1)
         self.assertFalse(cfg.dry_run)
         self.assertEqual(cfg.taint_cooldown, 300)
+        self.assertEqual(cfg.min_node_age, 420)
 
 
 class TestConfigFromEnvOverrides(unittest.TestCase):
@@ -112,6 +113,10 @@ class TestConfigFromEnvOverrides(unittest.TestCase):
     def test_taint_cooldown_override(self):
         cfg = self._from_env(COMPACTOR_TAINT_COOLDOWN="600")
         self.assertEqual(cfg.taint_cooldown, 600)
+
+    def test_min_node_age_override(self):
+        cfg = self._from_env(COMPACTOR_MIN_NODE_AGE="600")
+        self.assertEqual(cfg.min_node_age, 600)
 
     def test_dry_run_true(self):
         cfg = self._from_env(COMPACTOR_DRY_RUN="true")

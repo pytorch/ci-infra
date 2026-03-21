@@ -146,9 +146,14 @@ template:
           - name: ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE
             value: /home/runner/hook-extensions/job-pod.yaml
           # Use patched hooks from DaemonSet instead of baked-in ones
-          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.1
+          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.3
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /opt/runner-hooks/dist/index.js
+          # Allow more time for workflow pods to come online during demand surges.
+          # Default is 600s (10 min), which is exceeded when node provisioning +
+          # git-cache sync takes longer than expected under concurrent load.
+          - name: ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS
+            value: "900"
         resources:
           # Runner pod needs enough CPU for the k8s-novolume hook's
           # workspace copy verification (find -exec stat over all files)
@@ -198,10 +203,25 @@ data:
       serviceAccountName: arc-workflow
       automountServiceAccountToken: false
 
-      # Schedule job pods on same instance type as runner
-      nodeSelector:
-        workload-type: github-runner
-        instance-type: "{{INSTANCE_TYPE}}"{{GPU_NODE_SELECTOR}}
+      # Prefer scheduling job pods on same instance type as runner.
+      # Tolerations enforce instance-type constraints (every NodePool taints
+      # with instance-type=<type>:NoSchedule), so nodeSelector is not needed.
+      # The hooks inject a weight-100 same-node preference at runtime;
+      # this weight-50 preference is the fallback for same-instance-type nodes.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              preference:
+                matchExpressions:
+                  - key: instance-type
+                    operator: In
+                    values:
+                      - "{{INSTANCE_TYPE}}"
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - github-runner{{GPU_NODE_SELECTOR_AFFINITY}}
 
       # Tolerate instance-type taint
       tolerations:
