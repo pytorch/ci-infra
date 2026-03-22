@@ -1,7 +1,8 @@
-"""Smoke tests for centralized logging (Alloy DaemonSet).
+"""Smoke tests for centralized logging (Alloy DaemonSet + Events Deployment).
 
 Validates that the logging namespace exists and, when grafana-cloud-credentials
-are present, that the Alloy logging DaemonSet is deployed and healthy.
+are present, that the Alloy logging DaemonSet and events Deployment are deployed
+and healthy.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from helpers import (
     READY_RETRIES,
     READY_RETRY_DELAY,
     assert_daemonset_healthy,
+    assert_deployment_ready,
+    assert_logs_fresh_in_loki,
     fetch_grafana_cloud_credentials,
     filter_pods,
     find_helm_release,
@@ -138,6 +141,50 @@ class TestAlloyLogging:
 
 
 # ============================================================================
+# Alloy Events (conditional on credentials secret)
+# ============================================================================
+
+
+class TestAlloyEvents:
+    """Verify Alloy events Deployment is deployed when credentials exist."""
+
+    @pytest.fixture(autouse=True)
+    def _require_credentials(self, logging_ns: str) -> None:
+        """Skip all tests in this class if grafana-cloud-credentials secret is missing."""
+        try:
+            run_kubectl(["get", "secret", "grafana-cloud-credentials", "-o", "json"], namespace=logging_ns)
+        except Exception:
+            pytest.skip("grafana-cloud-credentials secret not found; alloy-events not expected")
+
+    def test_helm_release_deployed(self, all_helm_releases: list[dict]) -> None:
+        release = find_helm_release(all_helm_releases, "alloy-events")
+        assert release is not None, "Helm release 'alloy-events' not found but grafana-cloud-credentials exists"
+        status = release.get("status", "")
+        assert status == "deployed", f"alloy-events status is '{status}', expected 'deployed'"
+
+    def test_deployment_ready(self, all_deployments: dict, logging_ns: str) -> None:
+        assert_deployment_ready(all_deployments, logging_ns, name="alloy-events")
+
+    def test_events_pod_running(self, all_pods: dict, logging_ns: str) -> None:
+        """Verify alloy-events pod is in Running phase."""
+        alloy_labels = {"app.kubernetes.io/instance": "alloy-events"}
+        pods = filter_pods(all_pods, namespace=logging_ns, labels=alloy_labels)
+
+        if not pods:
+            for _ in range(READY_RETRIES):
+                time.sleep(READY_RETRY_DELAY)
+                fresh = run_kubectl(["get", "pods", "-A"])
+                pods = filter_pods(fresh, namespace=logging_ns, labels=alloy_labels)
+                if pods:
+                    break
+
+        assert len(pods) > 0, f"No alloy-events pods found (after {READY_RETRIES} retries)"
+
+        not_running = [p["metadata"]["name"] for p in pods if p["status"].get("phase") != "Running"]
+        assert not not_running, f"Alloy events pods not Running: {not_running}"
+
+
+# ============================================================================
 # Remote Verification (Grafana Cloud Loki)
 # ============================================================================
 
@@ -196,3 +243,72 @@ class TestLoggingRemoteVerification:
                 f"(threshold: {max_staleness_seconds}s). "
                 f"Alloy DaemonSet may have stopped pushing after a deploy."
             )
+
+
+# ============================================================================
+# Per-Source Remote Verification (Grafana Cloud Loki)
+# ============================================================================
+
+
+class TestLoggingPerSourceVerification:
+    """Verify each log source is producing fresh data in Grafana Cloud Loki."""
+
+    @pytest.fixture(autouse=True)
+    def _require_remote(self, resolve_config, logging_ns: str):
+        """Skip if no Loki URL configured or no credentials."""
+        self.loki_write_url = resolve_config("logging.grafana_cloud_loki_url", "")
+        if not self.loki_write_url:
+            pytest.skip("No Loki URL configured")
+        creds = fetch_grafana_cloud_credentials(logging_ns, "loki-username", "loki-api-key-read")
+        if creds is None:
+            pytest.skip("No grafana-cloud-credentials for logging")
+        self.loki_user, self.loki_key = creds
+        self.read_url = loki_read_url(self.loki_write_url)
+
+    def test_pod_logs_arriving(self, resolve_config) -> None:
+        """Verify pod logs are being collected (kube-system always has pods)."""
+        cluster_name = resolve_config("cluster_name", "")
+        if not cluster_name:
+            pytest.skip("cluster_name not set in config")
+
+        logql = f'{{cluster="{cluster_name}", namespace="kube-system"}}'
+        assert_logs_fresh_in_loki(
+            self.read_url,
+            logql,
+            self.loki_user,
+            self.loki_key,
+            max_staleness=600,
+            description="pod logs (kube-system)",
+        )
+
+    def test_journal_logs_arriving(self, resolve_config) -> None:
+        """Verify journal logs are being collected (kubelet always runs)."""
+        cluster_name = resolve_config("cluster_name", "")
+        if not cluster_name:
+            pytest.skip("cluster_name not set in config")
+
+        logql = f'{{cluster="{cluster_name}", unit="kubelet.service"}}'
+        assert_logs_fresh_in_loki(
+            self.read_url,
+            logql,
+            self.loki_user,
+            self.loki_key,
+            max_staleness=600,
+            description="journal logs (kubelet.service)",
+        )
+
+    def test_k8s_events_arriving(self, resolve_config) -> None:
+        """Verify Kubernetes events are being collected (events always have reason label)."""
+        cluster_name = resolve_config("cluster_name", "")
+        if not cluster_name:
+            pytest.skip("cluster_name not set in config")
+
+        logql = f'{{cluster="{cluster_name}", reason=~".+"}}'
+        assert_logs_fresh_in_loki(
+            self.read_url,
+            logql,
+            self.loki_user,
+            self.loki_key,
+            max_staleness=600,
+            description="k8s events",
+        )

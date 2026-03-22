@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: buildkit-haproxy
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - buildkit
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkitd-lb
+      app.kubernetes.io/component: load-balancer
+  endpoints:
+    - port: metrics
+      interval: 30s

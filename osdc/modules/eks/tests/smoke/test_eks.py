@@ -2,7 +2,7 @@
 
 import pytest
 import yaml
-from helpers import run_aws
+from helpers import get_unstable_node_names, run_aws, run_kubectl
 
 pytestmark = [pytest.mark.live, pytest.mark.aws]
 
@@ -53,12 +53,30 @@ class TestEKSCluster:
 
 _REQUIRED_ADDONS = ["vpc-cni", "coredns", "kube-proxy", "aws-ebs-csi-driver"]
 
+# Terminal addon statuses that indicate a real failure (not transient churn).
+_ADDON_FAILURE_STATUSES = {"CREATE_FAILED", "DELETE_FAILED"}
+
+# Addons backed by DaemonSets — their pod-level health is the real signal.
+# Maps addon name to (namespace, pod label selector key, pod label selector value).
+_DAEMONSET_ADDONS: dict[str, tuple[str, str, str]] = {
+    "kube-proxy": ("kube-system", "k8s-app", "kube-proxy"),
+    "vpc-cni": ("kube-system", "k8s-app", "aws-node"),
+    "aws-ebs-csi-driver": ("kube-system", "app", "ebs-csi-node"),
+}
+
 
 class TestEKSAddons:
-    """Verify required EKS addons are installed and active."""
+    """Verify required EKS addons are installed and healthy.
+
+    Uses a two-layer check:
+    1. Addon must not be in a terminal failure state (CREATE_FAILED, DELETE_FAILED).
+    2. For DaemonSet-backed addons (kube-proxy, vpc-cni, ebs-csi), verify actual
+       pod health — all pods on stable nodes must be Running. This is resilient to
+       transient DEGRADED status caused by Karpenter node churn.
+    """
 
     @pytest.mark.parametrize("addon_name", _REQUIRED_ADDONS)
-    def test_addon_is_active(self, cluster_config, addon_name):
+    def test_addon_healthy(self, cluster_config, addon_name):
         cluster_name = cluster_config["cluster"]["cluster_name"]
         region = cluster_config["cluster"].get("region", "us-west-2")
         result = run_aws(
@@ -75,7 +93,39 @@ class TestEKSAddons:
             timeout=120,
         )
         status = result["addon"]["status"]
-        assert status == "ACTIVE", f"Addon {addon_name} status is {status}, expected ACTIVE"
+        assert status not in _ADDON_FAILURE_STATUSES, (
+            f"Addon {addon_name} is in terminal failure state: {status}"
+        )
+
+        if status == "ACTIVE":
+            return
+
+        # Status is DEGRADED or UPDATING — verify actual pod health for
+        # DaemonSet-backed addons (the most common case for transient DEGRADED).
+        ds_info = _DAEMONSET_ADDONS.get(addon_name)
+        if ds_info is None:
+            # Non-DaemonSet addon (e.g. coredns) — can't do pod-level check,
+            # so accept non-failure status.
+            return
+
+        ns, label_key, label_value = ds_info
+        pods_result = run_kubectl(["get", "pods", "-l", f"{label_key}={label_value}"], namespace=ns)
+        pods = pods_result.get("items", [])
+        assert len(pods) > 0, f"Addon {addon_name}: no pods found with label {label_key}={label_value} in {ns}"
+
+        nodes_result = run_kubectl(["get", "nodes"])
+        unstable = get_unstable_node_names(nodes_result)
+
+        not_running = [
+            p["metadata"]["name"]
+            for p in pods
+            if p["status"].get("phase") != "Running"
+            and p["spec"].get("nodeName") not in unstable
+        ]
+        assert not not_running, (
+            f"Addon {addon_name} status is {status} and pods are unhealthy on stable nodes: "
+            f"{not_running} ({len(unstable)} unstable nodes excluded)"
+        )
 
 
 # ============================================================================

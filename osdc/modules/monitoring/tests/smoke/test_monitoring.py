@@ -11,6 +11,7 @@ import pytest
 from helpers import (
     assert_daemonset_healthy,
     assert_deployment_ready,
+    assert_metric_fresh_in_mimir,
     fetch_grafana_cloud_credentials,
     filter_deployments,
     find_helm_release,
@@ -23,6 +24,8 @@ pytestmark = [pytest.mark.live]
 
 EXPECTED_SERVICE_MONITORS = [
     "arc-controller",
+    "buildkit",
+    "buildkit-haproxy",
     "harbor",
     "karpenter",
     "node-compactor",
@@ -235,4 +238,90 @@ class TestMonitoringRemoteVerification:
             f"Metrics are stale: newest sample is {age:.0f}s old "
             f"(threshold: {max_staleness_seconds}s). "
             f"Alloy may have stopped pushing after a deploy."
+        )
+
+
+# ============================================================================
+# Per-Target Remote Verification (Grafana Cloud Mimir)
+# ============================================================================
+
+# Scrape targets to verify in Mimir.
+# Each entry maps a descriptive name to (mimir_job_label, required_module).
+# The job label comes from the target Service name (Alloy/Prometheus convention
+# for ServiceMonitors without an explicit jobLabel field).
+# required_module is None for base components (always present).
+SCRAPE_TARGETS: dict[str, tuple[str, str | None]] = {
+    "buildkit": ("buildkitd-pods", "buildkit"),
+    "buildkit-haproxy": ("buildkitd-lb-metrics", "buildkit"),
+    "karpenter": ("karpenter", "karpenter"),
+    "node-compactor": ("node-compactor", None),
+    "git-cache-central": ("git-cache-central-metrics", None),
+    # arc-controller: skipped — ARC controller metrics Service varies by chart version
+    # harbor: skipped — Harbor exporter Service name varies by chart version
+    # dcgm-exporter: skipped — only runs on GPU nodes which may not exist
+    # arc-listeners: skipped — ephemeral pods, too flaky
+    # git-cache-daemonset: skipped — PodMonitor, different job label format
+}
+
+# kube-prometheus-stack built-in targets (always present when monitoring is enabled).
+# These use short Service names, not Helm-prefixed names.
+KUBE_PROM_STACK_TARGETS = [
+    "node-exporter",
+    "kube-state-metrics",
+]
+
+
+class TestMonitoringPerTargetVerification:
+    """Verify per-target metrics are arriving in Grafana Cloud Mimir."""
+
+    @pytest.fixture(autouse=True)
+    def _require_remote(self, resolve_config, mon_ns: str):
+        """Skip if no Mimir read URL configured or no read credentials."""
+        read_url_base = resolve_config("monitoring.grafana_cloud_read_url", "")
+        if not read_url_base:
+            pytest.skip("No Mimir read URL configured (monitoring.grafana_cloud_read_url)")
+        creds = fetch_grafana_cloud_credentials(
+            mon_ns, "username", "password", secret_name="grafana-cloud-read-credentials"
+        )
+        if creds is None:
+            pytest.skip("No grafana-cloud-read-credentials secret for monitoring")
+        self.mimir_user, self.mimir_key = creds
+        self.read_url = mimir_read_url(read_url_base)
+
+    @pytest.mark.parametrize("target_name", list(SCRAPE_TARGETS.keys()))
+    def test_scrape_target_fresh(self, target_name: str, resolve_config, enabled_modules: list[str]) -> None:
+        """Verify each ServiceMonitor target has fresh metrics in Mimir."""
+        job_label, required_module = SCRAPE_TARGETS[target_name]
+        if required_module is not None and required_module not in enabled_modules:
+            pytest.skip(f"Module '{required_module}' not enabled for this cluster")
+
+        cluster_name = resolve_config("cluster_name", "")
+        if not cluster_name:
+            pytest.skip("cluster_name not set in config")
+
+        promql = f'up{{job="{job_label}", cluster="{cluster_name}"}}'
+        assert_metric_fresh_in_mimir(
+            self.read_url,
+            promql,
+            self.mimir_user,
+            self.mimir_key,
+            max_staleness=600,
+            description=f"scrape target: {target_name}",
+        )
+
+    @pytest.mark.parametrize("target_name", KUBE_PROM_STACK_TARGETS)
+    def test_kube_prom_stack_target_fresh(self, target_name: str, resolve_config) -> None:
+        """Verify kube-prometheus-stack built-in targets have fresh metrics."""
+        cluster_name = resolve_config("cluster_name", "")
+        if not cluster_name:
+            pytest.skip("cluster_name not set in config")
+
+        promql = f'up{{job="{target_name}", cluster="{cluster_name}"}}'
+        assert_metric_fresh_in_mimir(
+            self.read_url,
+            promql,
+            self.mimir_user,
+            self.mimir_key,
+            max_staleness=600,
+            description=f"kube-prom-stack target: {target_name}",
         )

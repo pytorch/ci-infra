@@ -51,6 +51,28 @@ spec:
           port: 1234
 
 ---
+# Allow monitoring namespace to scrape Prometheus metrics from HAProxy LB
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: buildkitd-lb-metrics-ingress
+  namespace: buildkit
+spec:
+  podSelector:
+    matchLabels:
+      app: buildkitd-lb
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9404
+
+---
 # Allow monitoring namespace to scrape Prometheus metrics from buildkitd pods
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

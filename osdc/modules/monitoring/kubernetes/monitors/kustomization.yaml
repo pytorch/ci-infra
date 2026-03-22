@@ -11,6 +11,8 @@ resources:
   - servicemonitors/karpenter.yaml
   - servicemonitors/node-compactor.yaml
   - servicemonitors/git-cache-central.yaml
+  - servicemonitors/buildkit.yaml
+  - servicemonitors/buildkit-haproxy.yaml
   # PodMonitors
   - podmonitors/git-cache-daemonset.yaml
   - podmonitors/arc-listeners.yaml

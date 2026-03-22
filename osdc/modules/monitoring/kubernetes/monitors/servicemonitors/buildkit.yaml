@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: buildkit
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - buildkit
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkitd
+      app.kubernetes.io/component: build-service
+  endpoints:
+    - port: metrics
+      path: /debug/metrics_prometheus
+      interval: 30s

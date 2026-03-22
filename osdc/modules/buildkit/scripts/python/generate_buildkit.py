@@ -154,12 +154,14 @@ spec:
 
       containers:
         - name: buildkitd
-          image: moby/buildkit:v0.27.1
+          image: moby/buildkit:v0.28.0
           args:
             - --addr
             - unix:///run/buildkit/buildkitd.sock
             - --addr
             - tcp://0.0.0.0:1234
+            - --debugaddr
+            - 0.0.0.0:9090
             - --config
             - /etc/buildkit/buildkitd.toml
             - --root
@@ -168,6 +170,9 @@ spec:
           ports:
             - name: buildkit
               containerPort: 1234
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
               protocol: TCP
           # Guaranteed QoS: requests == limits for static CPU pinning
           # {cpu} vCPU + {memory_gi}Gi = {pods_per_node} pods per {instance_type}

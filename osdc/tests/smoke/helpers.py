@@ -414,3 +414,140 @@ def query_loki(url: str, logql: str, username: str, password: str, timeout: int 
         return None
 
 query_loki.last_error = ""
+
+
+# ---------------------------------------------------------------------------
+# Per-target / per-source remote verification helpers
+# ---------------------------------------------------------------------------
+
+REMOTE_RETRIES = 3
+REMOTE_RETRY_DELAY = 10
+
+
+def assert_metric_fresh_in_mimir(
+    read_url: str,
+    promql: str,
+    username: str,
+    password: str,
+    max_staleness: int = 600,
+    description: str = "",
+) -> None:
+    """Query Mimir for a PromQL expression and assert fresh data exists.
+
+    Retries up to REMOTE_RETRIES times on network errors OR staleness.
+    This handles transient gaps from pipeline restarts (e.g. Alloy pod
+    churn) — if data is stale on the first check, the pipeline may still
+    be catching up.
+
+    Raises AssertionError if metric is still missing or stale after all retries.
+    Raises pytest.skip if all retries fail with network errors.
+    """
+    import pytest
+
+    label = description or promql
+    last_err = ""
+    last_age: float | None = None
+
+    for attempt in range(REMOTE_RETRIES):
+        if attempt > 0:
+            time.sleep(REMOTE_RETRY_DELAY)
+
+        result = query_mimir(read_url, promql, username, password)
+        if result is None:
+            last_err = getattr(query_mimir, "last_error", "unknown")
+            continue
+
+        # Got a response — check it
+        status = result.get("status", "")
+        assert status == "success", f"[{label}] Mimir query returned status '{status}'"
+
+        results = result.get("data", {}).get("result", [])
+        if len(results) == 0:
+            last_err = "no metric series found"
+            continue
+
+        newest_ts = max(float(r["value"][0]) for r in results if r.get("value"))
+        last_age = time.time() - newest_ts
+        if last_age < max_staleness:
+            return
+        # Stale — retry in case the pipeline is catching up
+        last_err = f"stale ({last_age:.0f}s)"
+
+    # All retries exhausted — determine failure mode
+    if last_age is not None:
+        assert last_age < max_staleness, (
+            f"[{label}] Metric is stale after {REMOTE_RETRIES} attempts: "
+            f"newest sample is {last_age:.0f}s old (threshold: {max_staleness}s)"
+        )
+    if "no metric series found" in last_err:
+        raise AssertionError(f"[{label}] No metric series found after {REMOTE_RETRIES} attempts")
+    pytest.skip(f"[{label}] Mimir unreachable after {REMOTE_RETRIES} attempts: {last_err}")
+
+
+def assert_logs_fresh_in_loki(
+    read_url: str,
+    logql: str,
+    username: str,
+    password: str,
+    max_staleness: int = 600,
+    description: str = "",
+) -> None:
+    """Query Loki for a LogQL expression and assert fresh log streams exist.
+
+    Retries up to REMOTE_RETRIES times on network errors OR staleness.
+    This handles transient gaps from pipeline restarts (e.g. Alloy DaemonSet
+    pod churn) — if data is stale on the first check, the pipeline may still
+    be catching up.
+
+    Raises AssertionError if logs are still missing or stale after all retries.
+    Raises pytest.skip if all retries fail with network errors.
+    """
+    import pytest
+
+    label = description or logql
+    last_err = ""
+    last_age: float | None = None
+
+    for attempt in range(REMOTE_RETRIES):
+        if attempt > 0:
+            time.sleep(REMOTE_RETRY_DELAY)
+
+        result = query_loki(read_url, logql, username, password)
+        if result is None:
+            last_err = getattr(query_loki, "last_error", "unknown")
+            continue
+
+        # Got a response — check it
+        status = result.get("status", "")
+        assert status == "success", f"[{label}] Loki query returned status '{status}'"
+
+        streams = result.get("data", {}).get("result", [])
+        if len(streams) == 0:
+            last_err = "no log streams found"
+            continue
+
+        # Loki query_range returns streams with "values": [[nanosecond_ts, line], ...]
+        newest_ns = 0
+        for stream in streams:
+            for ts_ns, _ in stream.get("values", []):
+                newest_ns = max(newest_ns, int(ts_ns))
+
+        if newest_ns > 0:
+            last_age = time.time() - (newest_ns / 1e9)
+            if last_age < max_staleness:
+                return
+            # Stale — retry in case the pipeline is catching up
+            last_err = f"stale ({last_age:.0f}s)"
+        else:
+            last_err = "no timestamps in log streams"
+            continue
+
+    # All retries exhausted — determine failure mode
+    if last_age is not None:
+        assert last_age < max_staleness, (
+            f"[{label}] Logs are stale after {REMOTE_RETRIES} attempts: "
+            f"newest entry is {last_age:.0f}s old (threshold: {max_staleness}s)"
+        )
+    if "no log streams found" in last_err:
+        raise AssertionError(f"[{label}] No log streams found after {REMOTE_RETRIES} attempts")
+    pytest.skip(f"[{label}] Loki unreachable after {REMOTE_RETRIES} attempts: {last_err}")

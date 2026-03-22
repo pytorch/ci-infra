@@ -10,6 +10,7 @@ set -euo pipefail
 #   1. Logging namespace
 #   2. Assembled Alloy config ConfigMap (base pipeline + per-module pipelines)
 #   3. Grafana Alloy DaemonSet (if grafana-cloud-credentials secret exists)
+#   4. Grafana Alloy Deployment for Kubernetes Event collection
 
 CLUSTER="$1"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -42,9 +43,11 @@ fi
 # --- Cleanup trap ---
 CONFIGMAP_FILE=""
 ALLOY_OVERRIDE=""
+EVENTS_OVERRIDE=""
 cleanup() {
   [[ -n "$CONFIGMAP_FILE" ]] && rm -f "$CONFIGMAP_FILE" 2>/dev/null || true
   [[ -n "$ALLOY_OVERRIDE" ]] && rm -f "$ALLOY_OVERRIDE" 2>/dev/null || true
+  [[ -n "$EVENTS_OVERRIDE" ]] && rm -f "$EVENTS_OVERRIDE" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -113,4 +116,29 @@ helm upgrade --install alloy-logging grafana/alloy \
   --timeout 5m \
   --wait
 
-echo "Logging deployed — Alloy DaemonSet pushing logs to Grafana Cloud Loki."
+# --- Install Alloy Events Deployment ---
+echo "Installing Alloy events Deployment (K8s event collection)..."
+EVENTS_OVERRIDE=$(mktemp)
+cat >"$EVENTS_OVERRIDE" <<EOF
+alloy:
+  extraEnv:
+    - name: CLUSTER_NAME
+      value: "${CNAME}"
+    - name: LOKI_URL
+      value: "${LOKI_URL}"
+    - name: LOKI_USERNAME
+      value: "${LOKI_USERNAME}"
+    - name: LOKI_API_KEY
+      value: "${LOKI_API_KEY}"
+EOF
+
+helm upgrade --install alloy-events grafana/alloy \
+  --namespace "$NAMESPACE" \
+  --history-max 3 \
+  -f "$MODULE_DIR/helm/alloy-events-values.yaml" \
+  -f "$EVENTS_OVERRIDE" \
+  --version "${ALLOY_CHART_VERSION}" \
+  --timeout 5m \
+  --wait
+
+echo "Logging deployed — Alloy DaemonSet + Events Deployment pushing to Grafana Cloud Loki."

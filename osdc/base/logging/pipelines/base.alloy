@@ -138,7 +138,7 @@ loki.relabel "journal_relabel" {
 
     rule {
         source_labels = ["__journal__systemd_unit"]
-        regex         = "kubelet.service|containerd.service|kernel"
+        regex         = "kubelet.service|containerd.service|kernel|nvidia-fabricmanager.service|nvidia-persistenced.service"
         action        = "keep"
     }
 
