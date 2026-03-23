@@ -67,12 +67,18 @@ def assemble_config(base_content: str, module_pipelines: dict[str, str]) -> str:
 
     Each module's content is wrapped with comment delimiters and indented by 4 spaces
     to match loki.process block indentation. The marker line is removed.
+
+    Raises SystemExit if module_pipelines is non-empty but the marker is not found in
+    base_content — this indicates a broken base.alloy that would silently drop all
+    module pipelines.
     """
     lines = base_content.splitlines(keepends=True)
     result: list[str] = []
+    marker_found = False
 
     for line in lines:
         if MODULE_PIPELINES_MARKER in line:
+            marker_found = True
             # Replace marker with all module pipelines
             for mod_name, content in module_pipelines.items():
                 result.append(f"    // --- module: {mod_name} ---\n")
@@ -84,6 +90,15 @@ def assemble_config(base_content: str, module_pipelines: dict[str, str]) -> str:
                 result.append(f"    // --- end module: {mod_name} ---\n")
         else:
             result.append(line)
+
+    if not marker_found and module_pipelines:
+        print(
+            f"Error: base pipeline is missing the '{MODULE_PIPELINES_MARKER}' marker "
+            f"but {len(module_pipelines)} module pipeline(s) were discovered "
+            f"({', '.join(module_pipelines)}). Module pipelines would be silently dropped.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     return "".join(result)
 

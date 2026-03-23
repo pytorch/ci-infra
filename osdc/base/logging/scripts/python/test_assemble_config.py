@@ -121,6 +121,34 @@ class TestAssembleConfig:
         assert "stage.static_labels" in result
         assert "loki.process" in result
 
+    def test_missing_marker_with_modules_exits(self):
+        """assemble_config must exit with an error when the marker is absent but modules exist."""
+        import pytest
+
+        base_without_marker = textwrap.dedent("""\
+            loki.process "default" {
+                stage.static_labels {
+                    values = { cluster = "test" }
+                }
+            }
+        """)
+        with pytest.raises(SystemExit) as exc_info:
+            assemble_config(base_without_marker, {"monitoring": "stage.json {}"})
+        assert exc_info.value.code == 1
+
+    def test_missing_marker_no_modules_is_ok(self):
+        """assemble_config must NOT exit when the marker is absent and there are no modules."""
+        base_without_marker = textwrap.dedent("""\
+            loki.process "default" {
+                stage.static_labels {
+                    values = { cluster = "test" }
+                }
+            }
+        """)
+        # Should not raise
+        result = assemble_config(base_without_marker, {})
+        assert "stage.static_labels" in result
+
     def test_module_with_pipeline(self):
         pipelines = {"monitoring": 'stage.json {\n    expressions = { level = "" }\n}'}
         result = assemble_config(SAMPLE_BASE, pipelines)

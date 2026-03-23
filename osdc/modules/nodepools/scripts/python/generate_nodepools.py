@@ -280,7 +280,9 @@ spec:
           cpuManagerPolicy: static
           topologyManagerPolicy: {topology_policy}
           topologyManagerScope: {topology_scope}
-{"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' if topology_policy in ("restricted", "best-effort") else ""}
+{"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' + chr(10) if topology_policy in ("restricted", "best-effort") else ""}\
+          containerLogMaxSize: 50Mi
+          containerLogMaxFiles: 5
 {_user_data_script_mime_part(indented_userdata)}
     --==BOUNDARY==--
 

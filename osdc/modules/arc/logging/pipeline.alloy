@@ -32,12 +32,22 @@ stage.match {
     }
 }
 
-// Throttle non-error arc-runner logs to reduce volume
+// ARC runner pods — extract workflow_run_id from runner log lines
+// NOTE: regex pattern needs validation against actual runner log output format
 stage.match {
-    selector = "{namespace=\"arc-runners\", level!~\"(?i)error|fatal|panic\"}"
+    selector = "{namespace=\"arc-runners\"}"
 
-    stage.limit {
-        rate  = 50
-        burst = 200
+    stage.regex {
+        expression = "\\bworkflow_run_id[=: ]+(?P<workflow_run_id>\\d+)\\b"
+    }
+
+    stage.structured_metadata {
+        values = {
+            workflow_run_id = "",
+        }
     }
 }
+
+// Note: non-error arc-runner log volume is controlled by the base pipeline's
+// 10% namespace sampling (base.alloy), which already applies aggressive
+// reduction. No additional rate limit needed here.

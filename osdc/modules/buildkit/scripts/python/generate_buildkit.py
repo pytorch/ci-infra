@@ -370,6 +370,8 @@ spec:
           topologyManagerScope: container
           topologyManagerPolicyOptions:
             prefer-closest-numa-nodes: "true"
+          containerLogMaxSize: 50Mi
+          containerLogMaxFiles: 5
 
     --==BOUNDARY==--
 

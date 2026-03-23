@@ -35,11 +35,11 @@ controller:
 
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
       cpu: 500m
-      memory: 1Gi               # High-throughput CI nodes need headroom
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi               # High-throughput CI nodes need headroom
 
 serviceAccount:
   create: true

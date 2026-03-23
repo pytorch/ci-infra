@@ -7,6 +7,7 @@ and healthy.
 
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
@@ -83,6 +84,49 @@ class TestAlloyLogging:
         config = result.get("data", {}).get("config.alloy", "")
         assert "loki.source.file" in config, "ConfigMap missing pod log source (loki.source.file)"
         assert "loki.write" in config, "ConfigMap missing Loki writer (loki.write)"
+
+    def test_configmap_has_module_pipelines(self, logging_ns: str) -> None:
+        """Verify the ConfigMap contains module pipeline content beyond the base pipeline.
+
+        The assemble_config.py script wraps each module's pipeline with comment
+        delimiters of the form '// --- module: <name> ---'. Presence of at least
+        one such delimiter confirms module pipeline injection ran and at least one
+        module contributed a pipeline. This is stable — the delimiter format is
+        controlled by assemble_config.py and does not change with module names.
+        """
+        result = run_kubectl(["get", "configmap", "alloy-logging-config", "-o", "json"], namespace=logging_ns)
+        config = result.get("data", {}).get("config.alloy", "")
+        assert "// --- module:" in config, (
+            "ConfigMap contains no module pipeline comment delimiters ('// --- module: ...'). "
+            "Either assemble_config.py was not run, or no cluster modules have logging/pipeline.alloy files."
+        )
+
+    def test_configmap_has_journal_pipeline(self, logging_ns: str) -> None:
+        """Verify ConfigMap contains the journal log source for system log collection."""
+        result = run_kubectl(["get", "configmap", "alloy-logging-config", "-o", "json"], namespace=logging_ns)
+        config = result.get("data", {}).get("config.alloy", "")
+        assert "loki.source.journal" in config, (
+            "ConfigMap missing journal log source (loki.source.journal); system/kubelet logs will not be collected"
+        )
+
+    def test_configmap_has_level_normalization(self, logging_ns: str) -> None:
+        """Verify ConfigMap contains level normalization stage.replace blocks.
+
+        The base pipeline normalizes log levels in two places:
+        - Pod logs: maps uppercase/abbreviated variants (ERROR, WARN, etc.) to lowercase
+        - Journal: maps syslog PRIORITY integers to level strings
+
+        We check that stage.replace blocks exist and that "error" and "warn" appear
+        as replace targets, using regex to be resilient to HCL whitespace formatting.
+        """
+        result = run_kubectl(["get", "configmap", "alloy-logging-config", "-o", "json"], namespace=logging_ns)
+        config = result.get("data", {}).get("config.alloy", "")
+        assert re.search(r'replace\s*=\s*"error"', config), (
+            'ConfigMap missing level normalization: no stage.replace targeting "error"'
+        )
+        assert re.search(r'replace\s*=\s*"warn"', config), (
+            'ConfigMap missing level normalization: no stage.replace targeting "warn"'
+        )
 
     def test_alloy_pods_running(self, all_pods: dict, all_nodes: dict, logging_ns: str) -> None:
         """Verify Alloy logging pods are in Running phase.

@@ -322,6 +322,21 @@ class TestGenerateNodepoolsYaml:
             assert "cpuManagerPolicy: static" in userdata
             assert "topologyManagerPolicy: restricted" in userdata
 
+    def test_container_log_rotation_in_userdata(self):
+        """Every BuildKit EC2NodeClass must have kubelet log rotation config."""
+        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
+        docs = self._parse_nodepools(output)
+        ec2_classes = [d for d in docs if d["kind"] == "EC2NodeClass"]
+        assert len(ec2_classes) == 2
+        for ec2 in ec2_classes:
+            userdata = ec2["spec"]["userData"]
+            assert "containerLogMaxSize: 50Mi" in userdata, (
+                f"EC2NodeClass {ec2['metadata']['name']} missing containerLogMaxSize"
+            )
+            assert "containerLogMaxFiles: 5" in userdata, (
+                f"EC2NodeClass {ec2['metadata']['name']} missing containerLogMaxFiles"
+            )
+
     def test_nodepool_limits_correct(self):
         """NodePool CPU/memory limits = 2x nodes_needed * instance capacity."""
         replicas = 4

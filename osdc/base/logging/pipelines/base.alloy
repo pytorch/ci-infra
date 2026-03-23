@@ -31,6 +31,14 @@ discovery.relabel "pod_logs" {
         action        = "drop"
     }
 
+    // Feedback loop prevention: drop all pods in the logging namespace so
+    // Alloy never ingests its own log-shipping output (infinite loop)
+    rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "logging"
+        action        = "drop"
+    }
+
     // Namespace
     rule {
         source_labels = ["__meta_kubernetes_namespace"]
@@ -85,13 +93,6 @@ loki.process "pod_logs" {
     // Parse CRI log format (timestamp, stream, flags, message)
     stage.cri {}
 
-    // Add cluster label from environment
-    stage.static_labels {
-        values = {
-            cluster = env("CLUSTER_NAME"),
-        }
-    }
-
     // Drop debug/trace log lines (match level token at start of line or after whitespace)
     stage.drop {
         expression  = "(?i)(?:^|\\s)(?:DEBUG|TRACE)(?:\\s|:|$)"
@@ -109,7 +110,120 @@ loki.process "pod_logs" {
         expression = ".*kube-probe/.*"
     }
 
+    // --- kube-system base services ---
+
+    // CoreDNS (structured key-value logs)
+    stage.match {
+        selector = "{namespace=\"kube-system\", container=\"coredns\"}"
+        stage.regex {
+            expression = "\\[(?P<level>INFO|WARNING|ERROR|FATAL)\\]"
+        }
+        stage.labels {
+            values = {
+                level = "",
+            }
+        }
+    }
+
+    // kube-proxy (klog format)
+    stage.match {
+        selector = "{namespace=\"kube-system\", container=\"kube-proxy\"}"
+        stage.regex {
+            expression = "^(?P<level>[IWEF])\\d{4}"
+        }
+        stage.labels {
+            values = {
+                level = "",
+            }
+        }
+    }
+
+    // aws-node / VPC CNI (JSON logs)
+    stage.match {
+        selector = "{namespace=\"kube-system\", container=~\"aws-node|aws-eks-nodeagent\"}"
+        stage.json {
+            expressions = {
+                level = "level",
+            }
+        }
+        stage.labels {
+            values = {
+                level = "",
+            }
+        }
+    }
+
+    // git-cache and node-compactor (Python logging format)
+    stage.match {
+        selector = "{namespace=\"kube-system\", container=~\"git-cache-central|git-cache-warmer|node-compactor\"}"
+        stage.regex {
+            expression = "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3} - \\S+ - (?P<level>\\S+) -"
+        }
+        stage.labels {
+            values = {
+                level = "",
+            }
+        }
+    }
+
+    // --- end kube-system base services ---
+
     // MODULE_PIPELINES
+
+    // --- Level normalization: map common uppercase/abbreviated variants to lowercase ---
+    stage.replace {
+        source     = "level"
+        expression = "^(?i)(ERROR|ERR|E)$"
+        replace    = "error"
+    }
+    stage.replace {
+        source     = "level"
+        expression = "^(?i)(WARN|WARNING|W)$"
+        replace    = "warn"
+    }
+    stage.replace {
+        source     = "level"
+        expression = "^(?i)(INFO|INFORMATION|I)$"
+        replace    = "info"
+    }
+    stage.replace {
+        source     = "level"
+        expression = "^(?i)(DEBUG|DBG|D)$"
+        replace    = "debug"
+    }
+    stage.replace {
+        source     = "level"
+        expression = "^(?i)(FATAL|F)$"
+        replace    = "fatal"
+    }
+    stage.replace {
+        source     = "level"
+        expression = "^(?i)PANIC$"
+        replace    = "panic"
+    }
+
+    // --- Namespace-based sampling policies ---
+    // arc-runners: aggressive sampling (job output available in GitHub UI)
+    stage.match {
+        selector = "{namespace=\"arc-runners\"}"
+        stage.match {
+            selector = "{level!~\"(?i)(error|warn|warning|fatal|panic)\"}"
+            stage.sampling {
+                rate = 0.10
+            }
+        }
+    }
+
+    // buildkit: moderate sampling (structured logs, high volume during builds)
+    stage.match {
+        selector = "{namespace=\"buildkit\"}"
+        stage.match {
+            selector = "{level!~\"(?i)(error|warn|warning|fatal|panic)\"}"
+            stage.sampling {
+                rate = 0.50
+            }
+        }
+    }
 
     // Rate-limit: safety valve after module pipelines have had a chance to
     // filter/sample. Placed here so module pipelines (e.g., ARC runner
@@ -117,8 +231,10 @@ loki.process "pod_logs" {
     // Rate-limit per Alloy pod (lines/sec, token-bucket).
     // 1000 lines/s sustained, 5000 burst handles spikes.
     stage.limit {
-        rate  = 1000
-        burst = 5000
+        rate          = 1000
+        burst         = 5000
+        drop          = true
+        by_label_name = "pod"
     }
 
     // Move pod and node into structured metadata (not indexed labels).
@@ -142,8 +258,9 @@ loki.process "pod_logs" {
 // -----------------------------------------------------------------------------
 
 loki.source.journal "system" {
-    path       = "/var/log/journal"
-    forward_to = [loki.process.system_logs.receiver]
+    path           = "/var/log/journal"
+    format_as_json = true
+    forward_to     = [loki.process.system_logs.receiver]
 
     relabel_rules = loki.relabel.journal_relabel.rules
 }
@@ -170,9 +287,47 @@ loki.process "system_logs" {
 
     stage.static_labels {
         values = {
-            cluster = env("CLUSTER_NAME"),
-            node    = env("NODE_NAME"),
+            node = env("NODE_NAME"),
         }
+    }
+
+    // Extract syslog priority from journal PRIORITY field and map to
+    // standard log levels (RFC 5424: 0-3=error, 4=warn, 5-6=info, 7=debug)
+    stage.json {
+        expressions = {
+            priority = "PRIORITY",
+        }
+    }
+    stage.replace {
+        source     = "priority"
+        expression = "^(0|1|2|3)$"
+        replace    = "error"
+    }
+    stage.replace {
+        source     = "priority"
+        expression = "^4$"
+        replace    = "warn"
+    }
+    stage.replace {
+        source     = "priority"
+        expression = "^(5|6)$"
+        replace    = "info"
+    }
+    stage.replace {
+        source     = "priority"
+        expression = "^7$"
+        replace    = "debug"
+    }
+    stage.labels {
+        values = {
+            level = "priority",
+        }
+    }
+    // Drop debug-level journal entries (priority 7)
+    stage.drop {
+        source              = "level"
+        expression          = "debug"
+        drop_counter_reason = "journal_debug"
     }
 
     // Move node into structured metadata
@@ -199,6 +354,13 @@ loki.write "grafana_cloud" {
             username = env("LOKI_USERNAME")
             password = env("LOKI_API_KEY")
         }
+
+        // Explicit batch and retry tuning for Grafana Cloud
+        batch_wait          = "1s"
+        batch_size          = "1MiB"
+        min_backoff_period  = "500ms"
+        max_backoff_period  = "5m"
+        max_backoff_retries = 10
     }
 
     external_labels = {

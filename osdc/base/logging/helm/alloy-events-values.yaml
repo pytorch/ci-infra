@@ -54,22 +54,42 @@ alloy:
 
       // Extract structured fields and promote key labels for LogQL filtering.
       loki.process "kubernetes_events" {
+        // loki.source.kubernetes_events emits a flat JSON object with top-level keys
+        // (name, kind, reason, type, sourcecomponent, sourcehost, count, msg, etc.).
+        // The namespace is set as a Loki label directly by the component — it is NOT
+        // present in the JSON payload, so event_namespace is read from the label below.
         stage.json {
           expressions = {
-            reason              = "reason",
-            type                = "type",
-            kind                = "kind",
-            sourcecomponent     = "sourcecomponent",
+            reason          = "reason",
+            type            = "type",
+            kind            = "kind",
+            sourcecomponent = "sourcecomponent",
           }
+        }
+
+        // Drop events from the logging namespace to prevent feedback loops.
+        // The namespace label is set by loki.source.kubernetes_events directly.
+        stage.drop {
+          source                  = "namespace"
+          expression              = "^logging$"
+          drop_counter_reason     = "feedback_loop_prevention"
         }
 
         // Promote low-cardinality fields to labels.
         // High-cardinality fields (name, sourcehost, msg) stay in the log line.
+        // reason is medium-cardinality — moved to structured_metadata.
         stage.labels {
           values = {
-            reason = "",
-            type   = "",
-            kind   = "",
+            type = "",
+            kind = "",
+          }
+        }
+
+        // Attach medium/high-cardinality fields as structured metadata (queryable but not indexed).
+        stage.structured_metadata {
+          values = {
+            reason          = "",
+            sourcecomponent = "",
           }
         }
 

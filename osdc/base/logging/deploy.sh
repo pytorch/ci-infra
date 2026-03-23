@@ -67,17 +67,6 @@ uv run "$MODULE_DIR/scripts/python/assemble_config.py" \
 
 kubectl apply -f "$CONFIGMAP_FILE"
 
-# --- Read credentials from secret ---
-LOKI_USERNAME=$(kubectl get secret grafana-cloud-credentials -n "$NAMESPACE" \
-  -o jsonpath='{.data.loki-username}' | base64 -d)
-LOKI_API_KEY=$(kubectl get secret grafana-cloud-credentials -n "$NAMESPACE" \
-  -o jsonpath='{.data.loki-api-key-write}' | base64 -d)
-
-if [[ -z "$LOKI_USERNAME" || -z "$LOKI_API_KEY" ]]; then
-  echo "Error: grafana-cloud-credentials secret is missing 'loki-username' or 'loki-api-key-write' keys."
-  exit 1
-fi
-
 # --- Build Helm override with per-cluster env vars ---
 ALLOY_OVERRIDE=$(mktemp)
 cat >"$ALLOY_OVERRIDE" <<EOF
@@ -88,9 +77,17 @@ alloy:
     - name: LOKI_URL
       value: "${LOKI_URL}"
     - name: LOKI_USERNAME
-      value: "${LOKI_USERNAME}"
+      valueFrom:
+        secretKeyRef:
+          name: grafana-cloud-credentials
+          key: loki-username
     - name: LOKI_API_KEY
-      value: "${LOKI_API_KEY}"
+      valueFrom:
+        secretKeyRef:
+          name: grafana-cloud-credentials
+          key: loki-api-key-write
+    - name: GOMEMLIMIT
+      value: "1800MiB"
     - name: NODE_NAME
       valueFrom:
         fieldRef:
@@ -127,9 +124,17 @@ alloy:
     - name: LOKI_URL
       value: "${LOKI_URL}"
     - name: LOKI_USERNAME
-      value: "${LOKI_USERNAME}"
+      valueFrom:
+        secretKeyRef:
+          name: grafana-cloud-credentials
+          key: loki-username
     - name: LOKI_API_KEY
-      value: "${LOKI_API_KEY}"
+      valueFrom:
+        secretKeyRef:
+          name: grafana-cloud-credentials
+          key: loki-api-key-write
+    - name: GOMEMLIMIT
+      value: "1800MiB"
 EOF
 
 helm upgrade --install alloy-events grafana/alloy \

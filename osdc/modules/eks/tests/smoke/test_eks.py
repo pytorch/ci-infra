@@ -93,9 +93,7 @@ class TestEKSAddons:
             timeout=120,
         )
         status = result["addon"]["status"]
-        assert status not in _ADDON_FAILURE_STATUSES, (
-            f"Addon {addon_name} is in terminal failure state: {status}"
-        )
+        assert status not in _ADDON_FAILURE_STATUSES, f"Addon {addon_name} is in terminal failure state: {status}"
 
         if status == "ACTIVE":
             return
@@ -119,8 +117,7 @@ class TestEKSAddons:
         not_running = [
             p["metadata"]["name"]
             for p in pods
-            if p["status"].get("phase") != "Running"
-            and p["spec"].get("nodeName") not in unstable
+            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable
         ]
         assert not not_running, (
             f"Addon {addon_name} status is {status} and pods are unhealthy on stable nodes: "
