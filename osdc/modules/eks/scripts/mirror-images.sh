@@ -113,6 +113,7 @@ json.dump(data['images'], sys.stdout)
 TOTAL=$(echo "$IMAGES_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
 CURRENT=0
 FAILED=0
+SKIPPED=0
 
 for row in $(echo "$IMAGES_JSON" | python3 -c "
 import json, sys
@@ -126,6 +127,23 @@ for img in images:
 
   echo "[$CURRENT/$TOTAL] $SOURCE"
   echo "      > $DEST"
+
+  # Skip if destination already has the same digest as source (avoids unnecessary copies).
+  # Use MIRROR_FORCE=1 to bypass and re-copy everything.
+  if [[ "${MIRROR_FORCE:-0}" != "1" ]]; then
+    DST_DIGEST=$(crane digest "$DEST" 2>/dev/null || true)
+    if [[ -n "$DST_DIGEST" ]]; then
+      SRC_DIGEST=$(crane digest "$SOURCE" 2>/dev/null || true)
+      if [[ -n "$SRC_DIGEST" && "$SRC_DIGEST" == "$DST_DIGEST" ]]; then
+        log_info "  Up to date ($DST_DIGEST), skipping"
+        SKIPPED=$((SKIPPED + 1))
+        echo ""
+        continue
+      elif [[ -n "$SRC_DIGEST" ]]; then
+        log_warn "  Digest mismatch (src=$SRC_DIGEST dst=$DST_DIGEST), re-copying"
+      fi
+    fi
+  fi
 
   # Create ECR repository if it doesn't exist
   if ! aws ecr describe-repositories --repository-names "$REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
@@ -149,7 +167,13 @@ done
 
 echo "================================================================"
 if [[ $FAILED -eq 0 ]]; then
-  log_info "All $TOTAL images mirrored to ECR successfully"
+  if [[ $SKIPPED -eq $TOTAL ]]; then
+    log_info "All $TOTAL images already present in ECR, nothing to copy"
+  elif [[ $SKIPPED -gt 0 ]]; then
+    log_info "Mirrored $((TOTAL - SKIPPED)) images, skipped $SKIPPED already present"
+  else
+    log_info "All $TOTAL images mirrored to ECR successfully"
+  fi
 else
   log_error "$FAILED/$TOTAL images failed to mirror"
   exit 1

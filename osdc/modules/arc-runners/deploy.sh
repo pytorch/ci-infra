@@ -25,6 +25,8 @@ UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # Chart version — MUST match the controller (arc module). Read from clusters.yaml.
@@ -86,7 +88,7 @@ deploy_one_runner() {
 
   {
     # Apply ConfigMap (second YAML doc — job pod hook template)
-    awk '/^---$/,0' "$runner_config" | kubectl apply -f -
+    awk '/^---$/,0' "$runner_config" | kubectl_apply_if_changed -f -
 
     # Install Helm chart (first YAML doc — ARC scale set values)
     local tmpfile="/tmp/${runner_name}-values-$$.yaml"

@@ -66,11 +66,14 @@ helm_upgrade_if_changed() {
     esac
   done
 
-  if ! helm template "$release" --namespace "$namespace" "${template_args[@]}" >"$proposed" 2>/dev/null; then
+  local template_stderr
+  template_stderr=$(mktemp)
+  if ! helm template "$release" --namespace "$namespace" --no-hooks "${template_args[@]}" >"$proposed" 2>"$template_stderr"; then
     # Template rendering failed — fall through to normal upgrade
-    # which will produce a proper error message
     rm -f "$proposed"
     echo "  Template render failed — running full upgrade..."
+    cat "$template_stderr" >&2
+    rm -f "$template_stderr"
     helm upgrade --install "$release" --namespace "$namespace" "$@"
     return $?
   fi
@@ -80,16 +83,15 @@ helm_upgrade_if_changed() {
   current=$(mktemp)
   helm get manifest "$release" -n "$namespace" >"$current" 2>/dev/null || true
 
-  # Compare (ignore whitespace and comment-only differences)
-  # Sort YAML documents for stable comparison
+  # Compare using YAML-aware diff (handles key ordering, whitespace, comments)
   local changed=false
-  if ! diff -q <(grep -v '^#' "$proposed" | sed '/^$/d' | sort) \
-    <(grep -v '^#' "$current" | sed '/^$/d' | sort) \
-    &>/dev/null; then
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if ! uv run "$script_dir/yaml-diff.py" "$proposed" "$current" 2>/dev/null; then
     changed=true
   fi
 
-  rm -f "$proposed" "$current"
+  rm -f "$proposed" "$current" "$template_stderr"
 
   if $changed; then
     echo "  Changes detected — upgrading '$release'..."

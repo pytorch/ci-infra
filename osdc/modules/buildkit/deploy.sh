@@ -20,6 +20,8 @@ REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # Read per-installation config
@@ -43,16 +45,18 @@ uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" \
 # --- Apply NodePools (with cluster name substitution) ---
 
 echo "Applying BuildKit Karpenter NodePools..."
-sed "s/CLUSTER_NAME_PLACEHOLDER/$CNAME/g" "$GENERATED_DIR/nodepools.yaml" | kubectl apply -f -
+sed "s/CLUSTER_NAME_PLACEHOLDER/$CNAME/g" "$GENERATED_DIR/nodepools.yaml" | kubectl_apply_if_changed -f -
 
 # --- Apply static k8s resources ---
 
 echo "Applying BuildKit static manifests..."
-kubectl apply -k "$MODULE_DIR/kubernetes/base/"
+kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/base/"
 
 # --- Apply generated Deployments (only if changed) ---
 
-if kubectl diff -f "$GENERATED_DIR/deployment.yaml" &>/dev/null; then
+diff_rc=0
+kubectl diff -f "$GENERATED_DIR/deployment.yaml" >/dev/null 2>&1 || diff_rc=$?
+if [[ $diff_rc -eq 0 ]]; then
   echo "BuildKit Deployments unchanged — skipping apply"
 else
   echo "Applying BuildKit Deployments..."

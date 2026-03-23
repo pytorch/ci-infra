@@ -14,6 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 # shellcheck source=/dev/null
 source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$OSDC_UPSTREAM/scripts/kubectl-apply.sh"
 CFG="$OSDC_UPSTREAM/scripts/cluster-config.py"
 CLUSTERS_YAML="${CLUSTERS_YAML:-$OSDC_UPSTREAM/clusters.yaml}"
 
@@ -76,13 +78,13 @@ fi
 
 # --- Apply static resources (kustomize) ---
 echo "Applying static git-cache resources..."
-kubectl apply -k "$SCRIPT_DIR/"
+kubectl_apply_if_changed -k "$SCRIPT_DIR/"
 
 # --- Apply generated resources ---
 echo "Applying generated StatefulSet..."
-kubectl apply -f "$GENERATED_SS"
+kubectl_apply_if_changed -f "$GENERATED_SS"
 
 echo "Applying generated PDB..."
-kubectl apply -f "$GENERATED_PDB"
+kubectl_apply_if_changed -f "$GENERATED_PDB"
 
 echo "Git cache central deployed (${REPLICAS} replicas)."

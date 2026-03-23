@@ -264,7 +264,7 @@ deploy-base cluster:
     echo ""
     echo "Updating kubeconfig for $CNAME ($REGION)..."
     NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
-      "${UPSTREAM}/scripts/kubeconfig-lock.sh" --name "$CNAME" --region "$REGION" --alias "$CNAME"
+      "{{UPSTREAM}}/scripts/kubeconfig-lock.sh" --name "$CNAME" --region "$REGION" --alias "$CNAME"
 
     echo ""
     echo "━━━ BASE: Mirror bootstrap images ━━━"
@@ -626,6 +626,49 @@ _deploy-harbor cluster:
     # Override each component's image to use ECR mirror
     # (Harbor chart has no global.imageRegistry; each component sets image.repository individually)
     ECR_HARBOR="${ECR_REGISTRY}/mirror/goharbor"
+
+    # Pin chart-generated secrets so helm template produces deterministic output.
+    # The Harbor chart uses randAlphaNum for 4 secrets and genCA for a token
+    # keypair when values aren't set explicitly. helm template (offline) can't
+    # use lookup to read existing secrets, so without pinning, every template
+    # render produces different values → false diffs on every deploy.
+    HARBOR_SECRET_SETS=()
+    HARBOR_TOKEN_KEY_FILE=""
+    HARBOR_TOKEN_CERT_FILE=""
+    _cleanup_harbor_tmp() {
+        [[ -n "$HARBOR_TOKEN_KEY_FILE" ]] && rm -f "$HARBOR_TOKEN_KEY_FILE" 2>/dev/null || true
+        [[ -n "$HARBOR_TOKEN_CERT_FILE" ]] && rm -f "$HARBOR_TOKEN_CERT_FILE" 2>/dev/null || true
+    }
+    trap _cleanup_harbor_tmp EXIT
+    if helm status harbor -n harbor-system &>/dev/null; then
+        _get_harbor_secret() {
+            kubectl get secret "$1" -n harbor-system -o jsonpath="{.data.$2}" 2>/dev/null | base64 -d
+        }
+        CORE_SECRET=$(_get_harbor_secret harbor-core secret)
+        CSRF_KEY=$(_get_harbor_secret harbor-core CSRF_KEY)
+        JOBSERVICE_SECRET=$(_get_harbor_secret harbor-jobservice JOBSERVICE_SECRET)
+        REGISTRY_SECRET=$(_get_harbor_secret harbor-registry REGISTRY_HTTP_SECRET)
+
+        [[ -n "$CORE_SECRET" ]] && HARBOR_SECRET_SETS+=(--set "core.secret=${CORE_SECRET}")
+        [[ -n "$CSRF_KEY" ]] && HARBOR_SECRET_SETS+=(--set "core.xsrfKey=${CSRF_KEY}")
+        [[ -n "$JOBSERVICE_SECRET" ]] && HARBOR_SECRET_SETS+=(--set "jobservice.secret=${JOBSERVICE_SECRET}")
+        [[ -n "$REGISTRY_SECRET" ]] && HARBOR_SECRET_SETS+=(--set "registry.secret=${REGISTRY_SECRET}")
+
+        # Pin the genCA-generated token keypair (PEM, multi-line → --set-file)
+        TOKEN_KEY=$(kubectl get secret harbor-core -n harbor-system \
+            -o 'jsonpath={.data.tls\.key}' 2>/dev/null | base64 -d)
+        TOKEN_CERT=$(kubectl get secret harbor-core -n harbor-system \
+            -o 'jsonpath={.data.tls\.crt}' 2>/dev/null | base64 -d)
+        if [[ -n "$TOKEN_KEY" ]] && [[ -n "$TOKEN_CERT" ]]; then
+            HARBOR_TOKEN_KEY_FILE=$(mktemp)
+            HARBOR_TOKEN_CERT_FILE=$(mktemp)
+            echo "$TOKEN_KEY" > "$HARBOR_TOKEN_KEY_FILE"
+            echo "$TOKEN_CERT" > "$HARBOR_TOKEN_CERT_FILE"
+            HARBOR_SECRET_SETS+=(--set-file "core.tokenKey=${HARBOR_TOKEN_KEY_FILE}")
+            HARBOR_SECRET_SETS+=(--set-file "core.tokenCert=${HARBOR_TOKEN_CERT_FILE}")
+        fi
+    fi
+
     HELM_MAX_RETRIES=3
     for attempt in $(seq 1 $HELM_MAX_RETRIES); do
         if helm_upgrade_if_changed harbor harbor-system \
@@ -651,6 +694,7 @@ _deploy-harbor cluster:
             --set core.replicas="${HARBOR_CORE_REPLICAS}" \
             --set registry.replicas="${HARBOR_REGISTRY_REPLICAS}" \
             --set nginx.replicas="${HARBOR_NGINX_REPLICAS}" \
+            ${HARBOR_SECRET_SETS[@]+"${HARBOR_SECRET_SETS[@]}"} \
             --timeout 15m \
             --wait \
             --burst-limit 10000 \

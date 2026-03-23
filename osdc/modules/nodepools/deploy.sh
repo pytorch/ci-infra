@@ -20,6 +20,8 @@ MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$MODULE_DIR/../.." && pwd)}"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 
 # Allow consumers to override defs, output, and module name
 DEFS_DIR="${NODEPOOLS_DEFS_DIR:-$MODULE_DIR/defs}"
@@ -78,7 +80,7 @@ for nodepool in "${_generated[@]}"; do
   echo "  → ${name}"
   (
     sed "s/CLUSTER_NAME_PLACEHOLDER/${CNAME}/g" "$nodepool" \
-      | kubectl apply -f - \
+      | kubectl_apply_if_changed -f - \
         >"$LOGDIR/${name}.log" 2>&1
   ) &
   PIDS+=($!)
