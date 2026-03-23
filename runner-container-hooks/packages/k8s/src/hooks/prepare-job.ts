@@ -15,7 +15,8 @@ import {
   waitForPodPhases,
   getPrepareJobTimeoutSeconds,
   execCpToPod,
-  execPodStep
+  execPodStep,
+  waitForNodeTaintsRemoval
 } from '../k8s'
 import {
   CONTAINER_VOLUMES,
@@ -72,6 +73,8 @@ export async function prepareJob(
   if (!container && !services?.length) {
     throw new Error('No containers exist, skipping hook invocation')
   }
+
+  await waitForNodeTaintsRemoval()
 
   let createdPod: k8s.V1Pod | undefined = undefined
   try {

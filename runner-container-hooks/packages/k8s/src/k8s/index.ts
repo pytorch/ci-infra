@@ -36,6 +36,107 @@ const k8sAuthorizationV1Api = kc.makeApiClient(k8s.AuthorizationV1Api)
 
 const DEFAULT_WAIT_FOR_POD_TIME_SECONDS = 10 * 60 // 10 min
 
+const ENV_WAIT_FOR_NODE_TAINTS = 'ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS'
+const ENV_WAIT_FOR_NODE_TAINTS_TIMEOUT =
+  'ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS'
+const DEFAULT_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS = 300
+
+/**
+ * Wait for configurable startup taints to be removed from the runner's node.
+ *
+ * Reads ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS (comma-separated taint keys) and
+ * polls the node until none of those taints remain. This prevents the
+ * Karpenter-scheduler deadlock where workflow pods are created before startup
+ * taints (e.g. git-cache-not-ready) have cleared.
+ *
+ * Non-fatal if runner pod or node lookup fails (same pattern as
+ * applySameNodePreference). Returns immediately if the env var is unset.
+ */
+export async function waitForNodeTaintsRemoval(): Promise<void> {
+  const taintKeysRaw = process.env[ENV_WAIT_FOR_NODE_TAINTS]
+  if (!taintKeysRaw || taintKeysRaw.trim() === '') {
+    return
+  }
+
+  const taintKeys = taintKeysRaw
+    .split(',')
+    .map(k => k.trim())
+    .filter(k => k.length > 0)
+  if (taintKeys.length === 0) {
+    return
+  }
+
+  const timeoutStr = process.env[ENV_WAIT_FOR_NODE_TAINTS_TIMEOUT]
+  const timeoutSeconds = timeoutStr
+    ? parseInt(timeoutStr, 10)
+    : DEFAULT_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS
+  const effectiveTimeout =
+    !timeoutSeconds || timeoutSeconds <= 0
+      ? DEFAULT_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS
+      : timeoutSeconds
+
+  const runnerPodName = process.env.ACTIONS_RUNNER_POD_NAME
+  if (!runnerPodName) {
+    core.warning('ACTIONS_RUNNER_POD_NAME not set, skipping node taint wait')
+    return
+  }
+
+  let nodeName: string | undefined
+  try {
+    const runnerPod = await k8sApi.readNamespacedPod({
+      name: runnerPodName,
+      namespace: namespace()
+    })
+    nodeName = runnerPod.spec?.nodeName
+  } catch (err) {
+    core.warning(`Could not look up runner pod for node taint wait: ${err}`)
+    return
+  }
+
+  if (!nodeName) {
+    core.warning(
+      'Runner pod has no nodeName assigned, skipping node taint wait'
+    )
+    return
+  }
+
+  const pollIntervalMs = 5000
+  let elapsed = 0
+
+  core.info(
+    `Waiting for node ${nodeName} taints to clear: [${taintKeys.join(', ')}] (timeout: ${effectiveTimeout}s)`
+  )
+
+  while (elapsed < effectiveTimeout) {
+    try {
+      const node = await k8sApi.readNode({ name: nodeName })
+      const activeTaints = (node.spec?.taints || [])
+        .filter(t => taintKeys.includes(t.key))
+        .map(t => t.key)
+
+      if (activeTaints.length === 0) {
+        core.info(
+          `All configured taints cleared on node ${nodeName} after ${elapsed}s`
+        )
+        return
+      }
+
+      core.info(
+        `Node ${nodeName} still has taints: [${activeTaints.join(', ')}] (${elapsed}s/${effectiveTimeout}s)`
+      )
+    } catch (err) {
+      core.warning(`Failed to read node ${nodeName}: ${err}`)
+    }
+
+    await sleep(pollIntervalMs)
+    elapsed += pollIntervalMs / 1000
+  }
+
+  throw new Error(
+    `Timed out after ${effectiveTimeout}s waiting for node ${nodeName} taints to clear: [${taintKeys.join(', ')}]`
+  )
+}
+
 /**
  * Look up the runner pod's node and inject a weight-100 same-node scheduling
  * preference into the given pod spec. Non-fatal: if the lookup fails, a
