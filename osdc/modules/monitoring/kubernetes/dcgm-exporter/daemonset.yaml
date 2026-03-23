@@ -47,6 +47,9 @@ spec:
             - name: metrics
               containerPort: 9400
               protocol: TCP
+          args:
+            - -f
+            - /etc/dcgm-exporter/custom-metrics.csv
           env:
             - name: DCGM_EXPORTER_KUBERNETES
               value: "true"
@@ -69,10 +72,17 @@ spec:
             - name: device-plugins
               mountPath: /var/lib/kubelet/device-plugins
               readOnly: true
+            - name: custom-metrics
+              mountPath: /etc/dcgm-exporter/custom-metrics.csv
+              subPath: custom-metrics.csv
+              readOnly: true
       volumes:
         - name: device-plugins
           hostPath:
             path: /var/lib/kubelet/device-plugins
+        - name: custom-metrics
+          configMap:
+            name: dcgm-exporter-metrics
 ---
 apiVersion: v1
 kind: Service

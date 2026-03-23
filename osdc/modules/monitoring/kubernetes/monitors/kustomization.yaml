@@ -18,3 +18,5 @@ resources:
   - podmonitors/arc-listeners.yaml
   # DCGM ServiceMonitor (DaemonSet is in parent kustomization)
   - dcgm-servicemonitor.yaml
+  # PrometheusRule alerts
+  - ../alerts

@@ -92,18 +92,34 @@ loki.process "pod_logs" {
         }
     }
 
+    // Drop debug/trace log lines (match level token at start of line or after whitespace)
+    stage.drop {
+        expression  = "(?i)(?:^|\\s)(?:DEBUG|TRACE)(?:\\s|:|$)"
+        drop_counter_reason = "low_log_level"
+    }
+
+    // Drop oversized lines (binary spam, extremely large stack dumps >16KB)
+    stage.drop {
+        longer_than = "16KB"
+        drop_counter_reason = "oversized_line"
+    }
+
     // Drop health-check probe logs (noisy, no value)
     stage.drop {
         expression = ".*kube-probe/.*"
     }
 
-    // Rate-limit: 10 MB/s per container, burst 20 MB
-    stage.limit {
-        rate  = 10485760
-        burst = 20971520
-    }
-
     // MODULE_PIPELINES
+
+    // Rate-limit: safety valve after module pipelines have had a chance to
+    // filter/sample. Placed here so module pipelines (e.g., ARC runner
+    // sampling) can protect important logs before rate limiting applies.
+    // Rate-limit per Alloy pod (lines/sec, token-bucket).
+    // 1000 lines/s sustained, 5000 burst handles spikes.
+    stage.limit {
+        rate  = 1000
+        burst = 5000
+    }
 
     // Move pod and node into structured metadata (not indexed labels).
     // Placed after MODULE_PIPELINES so module stage.match blocks can

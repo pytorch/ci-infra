@@ -15,3 +15,12 @@ spec:
   endpoints:
     - port: metrics
       interval: 30s
+      metricRelabelings:
+        - action: labeldrop
+          regex: UUID
+        - action: labeldrop
+          regex: modelName
+        - action: labeldrop
+          regex: DCGM_FI_DRIVER_VERSION
+        - action: labeldrop
+          regex: pci_bus_id

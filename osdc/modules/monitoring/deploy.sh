@@ -67,6 +67,13 @@ if kubectl get secret grafana-cloud-credentials -n "$NAMESPACE" &>/dev/null; the
   helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
   helm repo update grafana
 
+  # Derive Grafana Cloud base URL (strip the push path for mimir.rules.kubernetes)
+  GCLOUD_BASE_URL="${GRAFANA_CLOUD_URL%/api/prom/push}"
+  if [[ "$GCLOUD_BASE_URL" == "$GRAFANA_CLOUD_URL" ]]; then
+    echo "WARNING: grafana_cloud_url does not end with /api/prom/push — mimir.rules.kubernetes may not work correctly"
+    echo "  URL: $GRAFANA_CLOUD_URL"
+  fi
+
   # Build a temporary override with per-cluster env vars
   ALLOY_OVERRIDE=$(mktemp)
   cat >"$ALLOY_OVERRIDE" <<EOF
@@ -84,6 +91,8 @@ alloy:
           key: password
     - name: GCLOUD_RW_URL
       value: "${GRAFANA_CLOUD_URL}"
+    - name: GCLOUD_BASE_URL
+      value: "${GCLOUD_BASE_URL}"
     - name: CLUSTER_NAME
       value: "${CNAME}"
 EOF

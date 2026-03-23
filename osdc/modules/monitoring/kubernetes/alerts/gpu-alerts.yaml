@@ -1,0 +1,46 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gpu-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  groups:
+    - name: gpu
+      rules:
+        - alert: GPUDoublebitECCError
+          expr: increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} has double-bit ECC errors"
+            description: "GPU {{ $labels.gpu }} ({{ $labels.device }}) on node {{ $labels.node }} has new uncorrectable double-bit ECC errors. This GPU should be taken out of service."
+
+        - alert: GPUXIDCriticalError
+          expr: DCGM_FI_DEV_XID_ERRORS == 48 or DCGM_FI_DEV_XID_ERRORS == 79 or DCGM_FI_DEV_XID_ERRORS == 94 or DCGM_FI_DEV_XID_ERRORS == 95
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} has critical XID error {{ $value }}"
+            description: "GPU {{ $labels.gpu }} reported XID error {{ $value }} (48=DBE, 79=GPU fallen off bus, 94/95=NVLink errors). Immediate investigation required."
+
+        - alert: GPURowRemapFailure
+          expr: DCGM_FI_DEV_ROW_REMAP_FAILURE > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} has row remap failure"
+            description: "GPU {{ $labels.gpu }} has a failed row remap, indicating irreparable memory damage. This GPU should be replaced."
+
+        - alert: GPUTemperatureCritical
+          expr: DCGM_FI_DEV_GPU_TEMP > 95
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} temperature critical ({{ $value }}°C)"
+            description: "GPU {{ $labels.gpu }} temperature has exceeded 95°C for 5 minutes. Sustained high temperatures cause throttling and hardware damage."

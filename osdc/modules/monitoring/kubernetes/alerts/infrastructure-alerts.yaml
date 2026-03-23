@@ -1,0 +1,50 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: infrastructure-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  groups:
+    - name: infrastructure
+      rules:
+        - alert: NodeNotReady
+          expr: kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node {{ $labels.node }} is NotReady"
+            description: "Node {{ $labels.node }} has been in NotReady state for more than 5 minutes."
+
+        - alert: ControlPlaneCrashLoop
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace=~"arc-systems|karpenter|harbor-system|monitoring|logging|buildkit"}[1h]) > 5
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
+            description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last hour."
+
+        - alert: HarborDown
+          expr: up{job=~".*harbor.*"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Harbor is down"
+            description: "Harbor scrape target {{ $labels.instance }} has been down for more than 5 minutes. Image pulls through the proxy cache will fail."
+
+        - alert: KarpenterNodeClaimNotReady
+          expr: |
+            (increase(karpenter_nodeclaims_created_total[15m]) > 0)
+              unless
+            (increase(karpenter_nodes_created_total[15m]) > 0)
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Karpenter creating nodeclaims but no nodes joining"
+            description: "Karpenter has created nodeclaims in the last 15 minutes but no new nodes have joined the cluster. Nodes may be failing to register."

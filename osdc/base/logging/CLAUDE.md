@@ -95,5 +95,5 @@ Consumer repos can override or suppress upstream pipelines by placing a file at 
 - **Alloy not installed**: Check `kubectl get secret grafana-cloud-credentials -n logging` — deploy is skipped without it
 - **Alloy OOM**: Default limit is 1Gi. High-throughput CI nodes may need more — check `kubectl describe pod` for OOMKilled
 - **Missing logs from a namespace**: Check if the module has a `logging/pipeline.alloy` with a broken regex — bad `stage.match` blocks can silently drop logs
-- **Rate limiting**: `stage.limit` caps at 10MB/s per Alloy pod. Check Alloy metrics for `loki_process_dropped_lines_total`
+- **Rate limiting**: `stage.limit` caps at 1000 lines/s (burst 5000) per Alloy pod. Check Alloy metrics for `loki_process_dropped_lines_total`
 - **Journal path empty**: EKS AL2023 uses `/var/log/journal` — the hostPath uses `DirectoryOrCreate` so it won't fail, but no journal logs will appear if the path is wrong

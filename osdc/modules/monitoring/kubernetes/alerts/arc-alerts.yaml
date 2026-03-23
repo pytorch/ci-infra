@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: arc-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  groups:
+    - name: arc
+      rules:
+        - alert: ARCListenerStall
+          expr: (gha_assigned_jobs > 0) and (changes(gha_assigned_jobs[10m]) == 0)
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ARC listener stalled — jobs queued but no progress"
+            description: "ARC listener has {{ $value }} assigned jobs but the assignment rate has been zero for 15 minutes. Runners may not be picking up new jobs."
