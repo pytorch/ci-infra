@@ -8,3 +8,4 @@ nodepool:
   arch: amd64
   node_disk_size: 300
   gpu: false
+  baremetal: true

@@ -402,6 +402,7 @@ def query_loki(url: str, logql: str, username: str, password: str, timeout: int 
         "start": str(now - 3600),
         "end": str(now),
         "limit": "1",
+        "direction": "backward",
     })
     full_url = f"{url}?{params}"
     auth = base64.b64encode(f"{username}:{password}".encode()).decode()
@@ -420,8 +421,8 @@ query_loki.last_error = ""
 # Per-target / per-source remote verification helpers
 # ---------------------------------------------------------------------------
 
-REMOTE_RETRIES = 3
-REMOTE_RETRY_DELAY = 10
+REMOTE_RETRIES = 5
+REMOTE_RETRY_DELAY = 15
 
 
 def assert_metric_fresh_in_mimir(

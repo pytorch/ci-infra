@@ -8,3 +8,4 @@ nodepool:
   node_disk_size: 100
   gpu: true
   has_nvme: true
+  baremetal: true

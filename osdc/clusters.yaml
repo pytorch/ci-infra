@@ -64,6 +64,8 @@ defaults:
     dry_run: false
   nodepools:
     gpu_consolidate_after: "20m"
+    cpu_consolidate_after: "20m"
+    baremetal_consolidate_after: "1h"
   buildkit:
     replicas_per_arch: 4
   monitoring:

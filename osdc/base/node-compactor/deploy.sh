@@ -40,7 +40,7 @@ INTERVAL=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.interval_seconds "
 MAX_UPTIME=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.max_uptime_hours "48")
 DRY_RUN=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.dry_run "false")
 MIN_NODES=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_nodes "1")
-MIN_NODE_AGE=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_node_age_seconds "420")
+MIN_NODE_AGE=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_node_age_seconds "900")
 
 # --- Build container image ---
 echo "Building node-compactor image..."

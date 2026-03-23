@@ -29,7 +29,7 @@ def make_config(**overrides) -> Config:
         "min_nodes": 1,
         "dry_run": False,
         "taint_cooldown": 300,
-        "min_node_age": 420,
+        "min_node_age": 900,
     }
     defaults.update(overrides)
     return Config(**defaults)
