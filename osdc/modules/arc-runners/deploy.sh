@@ -23,6 +23,8 @@ REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # Chart version — MUST match the controller (arc module). Read from clusters.yaml.
@@ -90,8 +92,7 @@ deploy_one_runner() {
     local tmpfile="/tmp/${runner_name}-values-$$.yaml"
     awk 'BEGIN{doc=0} /^---$/{doc++} doc==0' "$runner_config" >"$tmpfile"
 
-    helm upgrade --install "arc-${runner_name}" \
-      --namespace arc-runners \
+    helm_upgrade_if_changed "arc-${runner_name}" arc-runners \
       --history-max 2 \
       -f "$tmpfile" \
       --set template.spec.securityContext.runAsUser=1000 \

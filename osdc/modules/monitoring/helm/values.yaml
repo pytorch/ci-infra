@@ -27,6 +27,10 @@ nodeExporter:
 
 # --- node-exporter subchart overrides ---
 prometheus-node-exporter:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 50
   extraArgs:
     - --no-collector.bcache
     - --no-collector.bonding

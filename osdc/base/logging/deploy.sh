@@ -17,6 +17,8 @@ MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$MODULE_DIR/../.." && pwd)}"
 # shellcheck source=/dev/null
 source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$OSDC_UPSTREAM/scripts/helm-upgrade.sh"
 CFG="$OSDC_UPSTREAM/scripts/cluster-config.py"
 CLUSTERS_YAML="${CLUSTERS_YAML:-$OSDC_UPSTREAM/clusters.yaml}"
 
@@ -104,14 +106,14 @@ helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
 helm repo update grafana
 
 ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" monitoring.alloy_chart_version 1.6.2)
-helm upgrade --install alloy-logging grafana/alloy \
-  --namespace "$NAMESPACE" \
+helm_upgrade_if_changed alloy-logging "$NAMESPACE" \
   --history-max 3 \
   -f "$MODULE_DIR/helm/alloy-logging-values.yaml" \
   -f "$ALLOY_OVERRIDE" \
   --version "${ALLOY_CHART_VERSION}" \
-  --timeout 5m \
-  --wait
+  --timeout 10m \
+  --wait \
+  grafana/alloy
 
 # --- Install Alloy Events Deployment ---
 echo "Installing Alloy events Deployment (K8s event collection)..."
@@ -137,13 +139,13 @@ alloy:
       value: "1800MiB"
 EOF
 
-helm upgrade --install alloy-events grafana/alloy \
-  --namespace "$NAMESPACE" \
+helm_upgrade_if_changed alloy-events "$NAMESPACE" \
   --history-max 3 \
   -f "$MODULE_DIR/helm/alloy-events-values.yaml" \
   -f "$EVENTS_OVERRIDE" \
   --version "${ALLOY_CHART_VERSION}" \
-  --timeout 5m \
-  --wait
+  --timeout 10m \
+  --wait \
+  grafana/alloy
 
 echo "Logging deployed — Alloy DaemonSet + Events Deployment pushing to Grafana Cloud Loki."

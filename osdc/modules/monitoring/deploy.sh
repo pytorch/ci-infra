@@ -21,6 +21,8 @@ REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # --- Read per-installation monitoring config ---
@@ -38,14 +40,13 @@ echo "Installing kube-prometheus-stack (CRDs + exporters)..."
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 helm repo update prometheus-community
 
-helm upgrade --install kube-prometheus-stack \
-  prometheus-community/kube-prometheus-stack \
-  --version 82.10.3 \
-  --namespace "$NAMESPACE" \
+helm_upgrade_if_changed kube-prometheus-stack "$NAMESPACE" \
   --history-max 3 \
   -f "$MODULE_DIR/helm/values.yaml" \
   --timeout 10m \
-  --wait
+  --wait \
+  prometheus-community/kube-prometheus-stack \
+  --version 82.10.3
 
 echo "kube-prometheus-stack installed (CRDs + exporters)."
 
@@ -98,14 +99,14 @@ alloy:
 EOF
 
   ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" monitoring.alloy_chart_version 1.6.2)
-  helm upgrade --install alloy grafana/alloy \
-    --namespace "$NAMESPACE" \
+  helm_upgrade_if_changed alloy "$NAMESPACE" \
     --history-max 3 \
     -f "$MODULE_DIR/helm/alloy-values.yaml" \
     -f "$ALLOY_OVERRIDE" \
     --version "${ALLOY_CHART_VERSION}" \
     --timeout 5m \
-    --wait
+    --wait \
+    grafana/alloy
 
   rm -f "$ALLOY_OVERRIDE"
   echo "Alloy installed — pushing metrics to Grafana Cloud."

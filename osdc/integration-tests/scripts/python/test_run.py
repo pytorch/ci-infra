@@ -81,7 +81,7 @@ def workflow_template(tmp_path):
         "      - run: echo {{CLUSTER_ID}}\n"
         "  # BEGIN_B200\n"
         "  b200-job:\n"
-        "    runs-on: b200-runner\n"
+        "    runs-on: {{PREFIX}}b200-runner\n"
         "    steps:\n"
         "      - run: echo B200\n"
         "  # END_B200\n"
@@ -180,6 +180,9 @@ class TestGenerateWorkflow:
         )
         assert "b200-job:" in result
         assert "echo B200" in result
+        # Prefix must be substituted inside B200 block
+        assert "runs-on: cbrb200-runner" in result
+        assert "{{PREFIX}}" not in result
         # Marker comments should be stripped
         assert "BEGIN_B200" not in result
         assert "END_B200" not in result

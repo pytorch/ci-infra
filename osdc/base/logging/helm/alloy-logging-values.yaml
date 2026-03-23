@@ -11,6 +11,11 @@ fullnameOverride: alloy-logging    # Prevent RBAC collision with monitoring's Al
 controller:
   type: daemonset
 
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 50           # Allow fast rollouts across many nodes
+
   tolerations:
     - operator: Exists             # Run on every node type (base, GPU, BuildKit)
 

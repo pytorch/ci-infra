@@ -16,6 +16,8 @@ REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 BUCKET=$(uv run "$CFG" "$CLUSTER" state_bucket)
@@ -51,8 +53,7 @@ KARPENTER_PDB_ENABLED=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_enabled true)
 KARPENTER_PDB_MIN=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_min_available 1)
 
 echo "Installing Karpenter..."
-helm upgrade --install karpenter \
-  --namespace karpenter \
+helm_upgrade_if_changed karpenter karpenter \
   --create-namespace \
   --history-max 3 \
   -f "$MODULE_DIR/helm/values.yaml" \

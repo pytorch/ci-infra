@@ -16,6 +16,8 @@ REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # Read per-installation ARC config (with defaults)
@@ -28,8 +30,7 @@ ARC_MEM_REQ=$(uv run "$CFG" "$CLUSTER" arc.controller_memory_request 2Gi)
 ARC_MEM_LIM=$(uv run "$CFG" "$CLUSTER" arc.controller_memory_limit 4Gi)
 
 echo "Installing ARC controller v${ARC_CHART_VERSION} (replicas=${ARC_REPLICAS}, logLevel=${ARC_LOG_LEVEL}, cpu=${ARC_CPU_REQ}/${ARC_CPU_LIM}, mem=${ARC_MEM_REQ}/${ARC_MEM_LIM})..."
-helm upgrade --install arc \
-  --namespace arc-systems \
+helm_upgrade_if_changed arc arc-systems \
   --create-namespace \
   --history-max 3 \
   -f "$MODULE_DIR/helm/arc/values.yaml" \
