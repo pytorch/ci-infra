@@ -479,8 +479,8 @@ class TestGenerateNodepoolYaml:
         docs = self._parse(output)
         ec2 = docs[1]
         bdm = ec2["spec"]["blockDeviceMappings"][0]
-        assert bdm["ebs"]["iops"] == 5000
-        assert bdm["ebs"]["throughput"] == 250
+        assert bdm["ebs"]["iops"] == 16000
+        assert bdm["ebs"]["throughput"] == 1000
 
     def test_cpu_iops_and_throughput(self):
         nodepool_def = _make_nodepool_def(gpu=False)
@@ -488,8 +488,8 @@ class TestGenerateNodepoolYaml:
         docs = self._parse(output)
         ec2 = docs[1]
         bdm = ec2["spec"]["blockDeviceMappings"][0]
-        assert bdm["ebs"]["iops"] == 3000
-        assert bdm["ebs"]["throughput"] == 125
+        assert bdm["ebs"]["iops"] == 16000
+        assert bdm["ebs"]["throughput"] == 1000
 
     def test_gpu_tags(self):
         nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")

@@ -17,6 +17,7 @@ from run import (
     CANARY_REPO,
     POLL_INTERVAL_SECONDS,
     WORKFLOW_TIMEOUT_MINUTES,
+    format_duration,
     resolve,
     run_cmd,
 )
@@ -74,15 +75,36 @@ def run_parallel_validation(
     else:
         results["compactor"] = {"status": "skipped"}
 
+    # Track start time for each process
+    start_times = {name: time.monotonic() for name in procs}
+
     # Wait for all processes
-    for name, proc in procs.items():
-        stdout, _ = proc.communicate()
-        results[name] = {
-            "status": "passed" if proc.returncode == 0 else "failed",
-            "output": stdout,
-            "returncode": proc.returncode,
-        }
-        log.info("  %s: %s (exit %d)", name, results[name]["status"], proc.returncode)
+    try:
+        for name, proc in procs.items():
+            stdout, _ = proc.communicate()
+            elapsed = time.monotonic() - start_times[name]
+            results[name] = {
+                "status": "passed" if proc.returncode == 0 else "failed",
+                "output": stdout,
+                "returncode": proc.returncode,
+                "duration_s": elapsed,
+            }
+            log.info("  %s: %s (exit %d)", name, results[name]["status"], proc.returncode)
+    except KeyboardInterrupt:
+        log.warning("  Interrupted during parallel validation")
+        for name, proc in procs.items():
+            if name in results:
+                continue  # already collected
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            elapsed = time.monotonic() - start_times.get(name, time.monotonic())
+            results[name] = {"status": "interrupted", "duration_s": elapsed}
+            log.info("  %s: interrupted", name)
+        raise
 
     return results
 
@@ -120,48 +142,67 @@ def wait_for_workflows(branch: str, pr_created_at: datetime) -> list[dict]:
     deadline = time.time() + WORKFLOW_TIMEOUT_MINUTES * 60
     completed_runs = []
 
-    while time.time() < deadline:
-        result = run_cmd(
-            ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-             "--json", "databaseId,status,conclusion,name,createdAt"],
-            check=False,
-        )
-        if result.returncode != 0:
-            log.warning("  Could not list runs: %s", result.stderr.strip())
+    try:
+        while time.time() < deadline:
+            result = run_cmd(
+                ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
+                 "--json", "databaseId,status,conclusion,name,createdAt"],
+                check=False,
+            )
+            if result.returncode != 0:
+                log.warning("  Could not list runs: %s", result.stderr.strip())
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
+
+            all_runs = json.loads(result.stdout) if result.stdout.strip() else []
+            runs = _filter_runs_by_time(all_runs, pr_created_at)
+            if not runs:
+                log.info("  No runs found yet, waiting...")
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
+
+            all_done = all(r.get("status") == "completed" for r in runs)
+            in_progress = sum(1 for r in runs if r.get("status") != "completed")
+
+            if all_done:
+                log.info("  All %d run(s) completed.", len(runs))
+                completed_runs = runs
+                break
+
+            log.info("  %d/%d runs still in progress...", in_progress, len(runs))
             time.sleep(POLL_INTERVAL_SECONDS)
-            continue
-
-        all_runs = json.loads(result.stdout) if result.stdout.strip() else []
-        runs = _filter_runs_by_time(all_runs, pr_created_at)
-        if not runs:
-            log.info("  No runs found yet, waiting...")
-            time.sleep(POLL_INTERVAL_SECONDS)
-            continue
-
-        all_done = all(r.get("status") == "completed" for r in runs)
-        in_progress = sum(1 for r in runs if r.get("status") != "completed")
-
-        if all_done:
-            log.info("  All %d run(s) completed.", len(runs))
-            completed_runs = runs
-            break
-
-        log.info("  %d/%d runs still in progress...", in_progress, len(runs))
-        time.sleep(POLL_INTERVAL_SECONDS)
-    else:
-        log.warning("  Timeout reached! Collecting partial results.")
-        result = run_cmd(
-            ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-             "--json", "databaseId,status,conclusion,name,createdAt"],
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            completed_runs = _filter_runs_by_time(json.loads(result.stdout), pr_created_at)
+        else:
+            log.warning("  Timeout reached! Collecting partial results.")
+            completed_runs = _fetch_latest_runs(branch, pr_created_at)
+    except KeyboardInterrupt:
+        log.warning("  Interrupted during workflow polling, collecting partial results")
+        completed_runs = _fetch_latest_runs(branch, pr_created_at)
+        # Don't re-raise — return partial results so main() can print the report.
+        # main()'s try block will NOT get a KeyboardInterrupt from here, but
+        # workflow_results will be set, so the report will include whatever we got.
 
     # Get job details for each run
+    return _collect_run_details(completed_runs)
+
+
+def _fetch_latest_runs(branch: str, pr_created_at: datetime) -> list[dict]:
+    """Fetch the latest run list from GitHub (used on timeout and interrupt)."""
+    result = run_cmd(
+        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
+         "--json", "databaseId,status,conclusion,name,createdAt"],
+        check=False,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return _filter_runs_by_time(json.loads(result.stdout), pr_created_at)
+    return []
+
+
+def _collect_run_details(runs: list[dict]) -> list[dict]:
+    """Fetch job details and failure logs for a list of workflow runs."""
     results = []
-    for run in completed_runs:
+    for run in runs:
         run_id = run["databaseId"]
+        conclusion = run.get("conclusion") or "in_progress"
         result = run_cmd(
             ["gh", "run", "view", str(run_id), "--repo", CANARY_REPO, "--json", "jobs"],
             check=False,
@@ -171,9 +212,9 @@ def wait_for_workflows(branch: str, pr_created_at: datetime) -> list[dict]:
             run_data = json.loads(result.stdout)
             jobs = run_data.get("jobs", [])
 
-        # Get failure logs if needed
+        # Get failure logs only for completed failures
         failure_log = ""
-        if run.get("conclusion") == "failure":
+        if conclusion == "failure":
             log_result = run_cmd(
                 ["gh", "run", "view", str(run_id), "--repo", CANARY_REPO, "--log-failed"],
                 check=False,
@@ -185,7 +226,7 @@ def wait_for_workflows(branch: str, pr_created_at: datetime) -> list[dict]:
             "run_id": run_id,
             "name": run.get("name", "unknown"),
             "status": run.get("status", "unknown"),
-            "conclusion": run.get("conclusion", "unknown"),
+            "conclusion": conclusion,
             "jobs": jobs,
             "failure_log": failure_log,
         })
@@ -210,14 +251,19 @@ def print_report(
     cluster_name: str,
     workflow_results: list[dict],
     validation_results: dict,
+    interrupted: bool = False,
 ):
     """Print the final summary report."""
     now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
     overall_pass = True
 
+    title = "OSDC Integration Test Results"
+    if interrupted:
+        title += " (interrupted)"
+
     print("\n")
     print("=" * 60)
-    print("  OSDC Integration Test Results")
+    print(f"  {title}")
     print("=" * 60)
     print(f"  Cluster: {cluster_id} ({cluster_name})")
     print(f"  Date:    {now}")
@@ -229,9 +275,13 @@ def print_report(
         for run in workflow_results:
             for job in run.get("jobs", []):
                 name = job.get("name", "unknown")
-                conclusion = job.get("conclusion", "unknown")
-                icon = "\u2713" if conclusion == "success" else "\u2717"
-                if conclusion != "success":
+                conclusion = job.get("conclusion") or "in_progress"
+                if conclusion == "success":
+                    icon = "\u2713"
+                elif conclusion == "in_progress":
+                    icon = "\u2026"
+                else:
+                    icon = "\u2717"
                     overall_pass = False
                 print(f"    {icon} {name:30s} {conclusion}")
             if run.get("failure_log"):
@@ -248,11 +298,18 @@ def print_report(
     for name in ["smoke", "compactor"]:
         res = validation_results.get(name, {})
         status = res.get("status", "unknown")
-        icon = "\u2713" if status == "passed" else ("\u2298" if status == "skipped" else "\u2717")
+        if status == "passed":
+            icon = "\u2713"
+        elif status in ("skipped", "interrupted"):
+            icon = "\u2298"
+        else:
+            icon = "\u2717"
         label = name.capitalize()
-        if status != "passed" and status != "skipped":
+        if status not in ("passed", "skipped", "interrupted"):
             overall_pass = False
-        print(f"  {label:16s} {icon} {status.upper()}")
+        duration = res.get("duration_s")
+        dur_str = f" ({format_duration(duration)})" if duration is not None else ""
+        print(f"  {label:16s} {icon} {status.upper()}{dur_str}")
         if status == "failed":
             output = res.get("output", "")
             if output:

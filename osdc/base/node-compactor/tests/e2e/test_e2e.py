@@ -5,7 +5,7 @@ Sequential test phases that validate the full compactor loop:
 
 Each phase builds on the previous one. Stop on first failure (-x).
 
-Expected runtime: ~25 minutes (dominated by Karpenter provisioning and
+Expected runtime: ~15 minutes (dominated by Karpenter provisioning and
 WhenEmpty consolidation waits).
 """
 
@@ -26,8 +26,10 @@ from helpers import (
     get_untainted_nodes,
     restart_compactor_pod,
     wait_for,
+    wait_for_stable,
 )
 from lightkube import Client
+from lightkube.resources.core_v1 import Pod as PodResource
 
 log = logging.getLogger("e2e")
 
@@ -41,6 +43,13 @@ TAINT_TIMEOUT = 120  # 2 min for compactor to taint
 KARPENTER_DELETE_TIMEOUT = 360  # 6 min for WhenEmpty + consolidateAfter
 BURST_TIMEOUT = 180  # 3 min for burst absorption
 COMPACTOR_CYCLE = 10  # seconds (matches COMPACTOR_INTERVAL override)
+STABLE_WINDOW = COMPACTOR_CYCLE * 2  # taint state must be stable for this long
+
+
+def _count_running_pods(client: Client, namespace: str) -> int:
+    """Count pods in *namespace* that are in Running phase."""
+    pods = list(client.list(PodResource, namespace=namespace))
+    return sum(1 for p in pods if p.status and p.status.phase == "Running")
 
 
 def _create_pods(
@@ -101,7 +110,7 @@ class TestPhase1ScaleUpBaseline(_CompactorE2EBase):
             ">= 3 nodes in pool",
             lambda: len(get_pool_nodes(self.client, self.pool)) >= 3,
             timeout_s=PROVISION_TIMEOUT,
-            poll_s=15,
+            poll_s=5,
         )
 
         # Wait for all pods Running
@@ -109,12 +118,16 @@ class TestPhase1ScaleUpBaseline(_CompactorE2EBase):
             "9 pods running",
             lambda: all_pods_running(self.client, self.ns, 9),
             timeout_s=PROVISION_TIMEOUT,
-            poll_s=10,
+            poll_s=5,
         )
 
-        # Wait 3 compactor cycles to ensure it stabilizes
-        log.info("Waiting 3 compactor cycles (%ds)...", COMPACTOR_CYCLE * 3)
-        time.sleep(COMPACTOR_CYCLE * 3)
+        # Wait for compactor taint state to stabilise (replaces fixed 30s sleep)
+        wait_for_stable(
+            "compactor taint state after scale-up",
+            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            stable_s=STABLE_WINDOW,
+            timeout_s=TAINT_TIMEOUT,
+        )
 
         # Assert: nodes exist and all pods are still running.
         # Karpenter may over-provision (e.g. 5 nodes for 9 pods). The compactor
@@ -200,7 +213,7 @@ class TestPhase3KarpenterDeletesEmptyNodes(_CompactorE2EBase):
     """Tainted nodes with 0 workloads get deleted by Karpenter WhenEmpty."""
 
     def test_karpenter_deletes_empty_tainted_nodes(self) -> None:
-        """After consolidateAfter (2m), empty tainted nodes are removed."""
+        """After consolidateAfter, empty tainted nodes are removed."""
         # Wait for all tainted (empty) nodes to be deleted by Karpenter.
         # Nodes with pods remain. We don't know exact counts — just wait
         # for tainted count to reach 0.
@@ -208,7 +221,7 @@ class TestPhase3KarpenterDeletesEmptyNodes(_CompactorE2EBase):
             "all tainted nodes deleted",
             lambda: len(get_tainted_nodes(self.client, self.pool)) == 0,
             timeout_s=KARPENTER_DELETE_TIMEOUT,
-            poll_s=15,
+            poll_s=5,
         )
 
         nodes = get_pool_nodes(self.client, self.pool)
@@ -229,29 +242,42 @@ class TestPhase4BurstAbsorption(_CompactorE2EBase):
 
     def test_burst_absorption(self) -> None:
         """Tainted nodes get untainted when new pods are pending."""
-        # Clean slate: delete all test pods and allow API to propagate
-        delete_all_pods(self.client, self.ns)
-        time.sleep(5)  # allow API to propagate deletions
+        # Reuse surviving nodes from Phase 3 instead of a full clean-slate
+        # reprovision.  We need enough nodes for the burst test — if Phase 3
+        # left fewer than 3 nodes, top up by creating pods to trigger
+        # Karpenter provisioning.
+        current_nodes = get_pool_nodes(self.client, self.pool)
+        # Count only Running pods — Terminating stragglers from earlier
+        # phases must not inflate the count or the shortfall math breaks.
+        running_pod_count = _count_running_pods(self.client, self.ns)
 
-        # Create 9 pods -> Karpenter provisions nodes
-        log.info("Phase 4: Creating 9 pods for burst test...")
-        _create_pods(self.client, self.ns, self.pool, self.itype, 9, "p4a")
+        # We need 9 pods across >= 3 nodes.  Create only the shortfall.
+        pods_needed = max(0, 9 - running_pod_count)
+        if pods_needed > 0:
+            log.info("Phase 4: Creating %d additional pods (have %d)...", pods_needed, running_pod_count)
+            _create_pods(self.client, self.ns, self.pool, self.itype, pods_needed, "p4a")
 
-        wait_for(
-            ">= 3 nodes in pool",
-            lambda: len(get_pool_nodes(self.client, self.pool)) >= 3,
-            timeout_s=PROVISION_TIMEOUT,
-            poll_s=15,
+        if len(current_nodes) < 3 or pods_needed > 0:
+            wait_for(
+                ">= 3 nodes in pool",
+                lambda: len(get_pool_nodes(self.client, self.pool)) >= 3,
+                timeout_s=PROVISION_TIMEOUT,
+                poll_s=5,
+            )
+            wait_for(
+                "9 pods running",
+                lambda: all_pods_running(self.client, self.ns, 9),
+                timeout_s=PROVISION_TIMEOUT,
+                poll_s=5,
+            )
+
+        # Wait for compactor taint state to stabilise
+        wait_for_stable(
+            "compactor taint state before burst drain",
+            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            stable_s=STABLE_WINDOW,
+            timeout_s=TAINT_TIMEOUT,
         )
-        wait_for(
-            "9 pods running",
-            lambda: all_pods_running(self.client, self.ns, 9),
-            timeout_s=PROVISION_TIMEOUT,
-            poll_s=10,
-        )
-
-        # Wait for stabilization — compactor may taint surplus nodes, that's OK
-        time.sleep(COMPACTOR_CYCLE * 3)
         assert all_pods_running(self.client, self.ns, 9), "Expected all 9 pods running after stabilization"
 
         # Drain all-but-one node -> trigger tainting
@@ -289,7 +315,7 @@ class TestPhase4BurstAbsorption(_CompactorE2EBase):
             f"all {total_expected} pods running after burst absorption",
             lambda: all_pods_running(self.client, self.ns, total_expected),
             timeout_s=BURST_TIMEOUT,
-            poll_s=10,
+            poll_s=5,
         )
 
         # All pods running is the real contract — burst was absorbed
@@ -312,8 +338,13 @@ class TestPhase5MinNodesEnforcement(_CompactorE2EBase):
         log.info("Phase 5: Deleting all test pods...")
         delete_all_pods(self.client, self.ns)
 
-        # Wait for compactor to reconcile
-        time.sleep(COMPACTOR_CYCLE * 3)
+        # Wait for compactor taint state to stabilise after pod deletion
+        wait_for_stable(
+            "compactor taint state after pod deletion",
+            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            stable_s=STABLE_WINDOW,
+            timeout_s=TAINT_TIMEOUT,
+        )
 
         nodes = get_pool_nodes(self.client, self.pool)
         if len(nodes) == 0:

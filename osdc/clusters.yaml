@@ -106,6 +106,7 @@ clusters:
       dry_run: true
     nodepools:
       gpu_consolidate_after: "10s"
+      cpu_consolidate_after: "10s"
     arc-runners:
       github_config_url: "https://github.com/pytorch/pytorch-canary"
       github_secret_name: pytorch-arc-staging

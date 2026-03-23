@@ -15,8 +15,10 @@ stage.match {
     }
 }
 
-// ARC runner pods — extract log level and throttle non-error logs
-// (GitHub stores full workflow logs, so runner-side logs are supplementary)
+// ARC runner pods — extract level, sample aggressively, then enrich survivors.
+// GitHub stores full workflow logs, so runner-side logs are supplementary.
+// Sampling is done HERE (not in base.alloy) so that workflow_run_id extraction
+// and level normalization only run on the ~10% of lines that survive.
 stage.match {
     selector = "{namespace=\"arc-runners\"}"
 
@@ -30,13 +32,18 @@ stage.match {
             level = "",
         }
     }
-}
 
-// ARC runner pods — extract workflow_run_id from runner log lines
-// NOTE: regex pattern needs validation against actual runner log output format
-stage.match {
-    selector = "{namespace=\"arc-runners\"}"
+    // Sample non-error logs at 10% — errors/warns always kept.
+    // Placed BEFORE workflow_run_id extraction so the regex only
+    // runs on the ~10% of non-error lines that survive.
+    stage.match {
+        selector = "{level!~\"(?i)(error|warn|warning|fatal|panic)\"}"
+        stage.sampling {
+            rate = 0.10
+        }
+    }
 
+    // Extract workflow_run_id (only runs on survivors after sampling)
     stage.regex {
         expression = "\\bworkflow_run_id[=: ]+(?P<workflow_run_id>\\d+)\\b"
     }
@@ -47,7 +54,3 @@ stage.match {
         }
     }
 }
-
-// Note: non-error arc-runner log volume is controlled by the base pipeline's
-// 10% namespace sampling (base.alloy), which already applies aggressive
-// reduction. No additional rate limit needed here.

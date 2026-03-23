@@ -107,7 +107,7 @@ loki.process "pod_logs" {
 
     // Drop health-check probe logs (noisy, no value)
     stage.drop {
-        expression = ".*kube-probe/.*"
+        expression = "kube-probe/"
     }
 
     // --- kube-system base services ---
@@ -170,60 +170,47 @@ loki.process "pod_logs" {
 
     // MODULE_PIPELINES
 
-    // --- Level normalization: map common uppercase/abbreviated variants to lowercase ---
+    // --- Level normalization ---
+    // Lowercase first — handles the common case (ERROR→error, WARN→warn, etc.)
+    // Guard: only transform if level was extracted (avoids creating empty level="")
+    stage.template {
+        source   = "level"
+        template = "{{ if .Value }}{{ ToLower .Value }}{{ end }}"
+    }
+    // Fix short aliases (rare, already lowercase from above)
     stage.replace {
         source     = "level"
-        expression = "^(?i)(ERROR|ERR|E)$"
+        expression = "^(err|e)$"
         replace    = "error"
     }
     stage.replace {
         source     = "level"
-        expression = "^(?i)(WARN|WARNING|W)$"
+        expression = "^(warning|w)$"
         replace    = "warn"
     }
     stage.replace {
         source     = "level"
-        expression = "^(?i)(INFO|INFORMATION|I)$"
+        expression = "^(information|i)$"
         replace    = "info"
     }
     stage.replace {
         source     = "level"
-        expression = "^(?i)(DEBUG|DBG|D)$"
+        expression = "^(dbg|d)$"
         replace    = "debug"
     }
     stage.replace {
         source     = "level"
-        expression = "^(?i)(FATAL|F)$"
+        expression = "^f$"
         replace    = "fatal"
-    }
-    stage.replace {
-        source     = "level"
-        expression = "^(?i)PANIC$"
-        replace    = "panic"
     }
 
     // --- Namespace-based sampling policies ---
-    // arc-runners: aggressive sampling (job output available in GitHub UI)
-    stage.match {
-        selector = "{namespace=\"arc-runners\"}"
-        stage.match {
-            selector = "{level!~\"(?i)(error|warn|warning|fatal|panic)\"}"
-            stage.sampling {
-                rate = 0.10
-            }
-        }
-    }
+    // arc-runners: sampling moved to modules/arc/logging/pipeline.alloy
+    // (placed right after level extraction, before workflow_run_id regex,
+    // so 90% of non-error lines are dropped before expensive processing)
 
-    // buildkit: moderate sampling (structured logs, high volume during builds)
-    stage.match {
-        selector = "{namespace=\"buildkit\"}"
-        stage.match {
-            selector = "{level!~\"(?i)(error|warn|warning|fatal|panic)\"}"
-            stage.sampling {
-                rate = 0.50
-            }
-        }
-    }
+    // buildkit: sampling moved to modules/buildkit/logging/pipeline.alloy
+    // (placed right after level extraction so normalization only runs on survivors)
 
     // Rate-limit: safety valve after module pipelines have had a chance to
     // filter/sample. Placed here so module pipelines (e.g., ARC runner
@@ -356,10 +343,10 @@ loki.write "grafana_cloud" {
         }
 
         // Explicit batch and retry tuning for Grafana Cloud
-        batch_wait          = "1s"
-        batch_size          = "1MiB"
+        batch_wait          = "3s"
+        batch_size          = "2MiB"
         min_backoff_period  = "500ms"
-        max_backoff_period  = "5m"
+        max_backoff_period  = "30s"
         max_backoff_retries = 10
     }
 

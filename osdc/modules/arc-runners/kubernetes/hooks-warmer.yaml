@@ -3,7 +3,7 @@
 # so runner pods can mount it read-only without per-pod downloads.
 #
 # Fix: find -exec stat {} \; -> find -exec stat {} + (10-100x faster)
-# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.3
+# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.4
 # Remove this when upstream merges the fix into actions/runner-container-hooks
 apiVersion: apps/v1
 kind: DaemonSet
@@ -90,7 +90,7 @@ spec:
             - -c
             - |
               set -eu
-              HOOKS_VERSION="0.8.3"
+              HOOKS_VERSION="0.8.4"
               HOOKS_URL="https://github.com/jeanschmidt/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
               DEST="/mnt/runner-container-hooks"
               MARKER="$DEST/.version"

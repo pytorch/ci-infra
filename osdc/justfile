@@ -77,7 +77,7 @@ kubeconfig cluster:
     REGION=$(uv run {{CFG}} {{cluster}} region); \
     echo "Updating kubeconfig for $CNAME ($REGION)..."; \
     NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
-    aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME"
+    "{{UPSTREAM}}/scripts/kubeconfig-lock.sh" --name "$CNAME" --region "$REGION" --alias "$CNAME"
 
 # ============================================================================
 # BOOTSTRAP
@@ -143,6 +143,34 @@ deploy cluster:
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "DEPLOYMENT COMPLETE: $CLUSTER"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # Taint ARC runner nodes for graceful refresh (production only)
+    # When nodes are recycled (staging), tainting is pointless — they're already being destroyed.
+    # OSDC_TAINT_NODES=yes|no|ask (default: ask)
+    if [ "$RECYCLE" != "true" ]; then
+        TAINT="${OSDC_TAINT_NODES:-ask}"
+        if [ "$TAINT" = "yes" ]; then
+            echo ""
+            echo "── Tainting ARC runner nodes (OSDC_TAINT_NODES=yes) ──"
+            just taint-nodes "$CLUSTER"
+        elif [ "$TAINT" = "no" ]; then
+            echo ""
+            echo "Skipping node tainting (OSDC_TAINT_NODES=no)"
+        else
+            echo ""
+            echo "Taint existing ARC runner nodes with NoSchedule?"
+            echo "  This prevents new jobs from scheduling on old nodes while"
+            echo "  in-flight jobs finish undisturbed. Fresh nodes will be"
+            echo "  provisioned by Karpenter as needed."
+            read -p "Taint runner nodes? [y/N] " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                just taint-nodes "$CLUSTER"
+            else
+                echo "Skipping node tainting."
+            fi
+        fi
+    fi
 
     # Run smoke tests: OSDC_SMOKE=yes|no|ask (default: ask)
     RUN_SMOKE="${OSDC_SMOKE:-ask}"
@@ -236,7 +264,7 @@ deploy-base cluster:
     echo ""
     echo "Updating kubeconfig for $CNAME ($REGION)..."
     NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
-      aws eks update-kubeconfig --name "$CNAME" --region "$REGION" --alias "$CNAME"
+      "${UPSTREAM}/scripts/kubeconfig-lock.sh" --name "$CNAME" --region "$REGION" --alias "$CNAME"
 
     echo ""
     echo "━━━ BASE: Mirror bootstrap images ━━━"
@@ -376,6 +404,111 @@ recycle-nodes cluster:
     echo "  Deleting $NODECLAIM_COUNT NodeClaim(s)..."
     kubectl delete nodeclaims --all --wait=false
     echo "  NodeClaims deleted. Karpenter will reprovision when pods need scheduling."
+
+# Taint ARC runner nodes with NoSchedule (graceful refresh — new jobs go to fresh nodes)
+taint-nodes cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+
+    # Ensure kubectl is configured for the target cluster
+    just kubeconfig "$CLUSTER"
+
+    TAINT_KEY="deploy.osdc.io/refresh-pending"
+    TAINT_VALUE="true"
+    TAINT_EFFECT="NoSchedule"
+
+    echo "Tainting ARC runner nodes for $CLUSTER ($CNAME)..."
+    echo "  Taint: ${TAINT_KEY}=${TAINT_VALUE}:${TAINT_EFFECT}"
+    echo ""
+
+    NODES=$(kubectl get nodes -l workload-type=github-runner --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null || true)
+    if [ -z "$NODES" ]; then
+        echo "  No ARC runner nodes found (workload-type=github-runner) — nothing to taint."
+        exit 0
+    fi
+
+    TAINTED=0
+    SKIPPED=0
+    FAILED=0
+    for node in $NODES; do
+        # Check if taint already exists
+        if kubectl get node "$node" -o jsonpath='{.spec.taints[*].key}' 2>/dev/null | tr ' ' '\n' | grep -qx "$TAINT_KEY"; then
+            echo "  $node — already tainted, skipping"
+            SKIPPED=$((SKIPPED + 1))
+        elif kubectl taint nodes "$node" "${TAINT_KEY}=${TAINT_VALUE}:${TAINT_EFFECT}" 2>/dev/null; then
+            echo "  $node — tainted"
+            TAINTED=$((TAINTED + 1))
+        else
+            echo "  $node — FAILED (node may have been removed)"
+            FAILED=$((FAILED + 1))
+        fi
+    done
+
+    echo ""
+    TOTAL=$((TAINTED + SKIPPED + FAILED))
+    echo "Summary: $TAINTED tainted, $SKIPPED already tainted, $FAILED failed, $TOTAL total runner nodes."
+    if [ "$FAILED" -gt 0 ]; then
+        echo "Warning: $FAILED node(s) failed to taint. Re-run to retry."
+    fi
+
+# Remove refresh taint from ARC runner nodes (reversal of taint-nodes)
+untaint-nodes cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+
+    # Ensure kubectl is configured for the target cluster
+    just kubeconfig "$CLUSTER"
+
+    TAINT_KEY="deploy.osdc.io/refresh-pending"
+    TAINT_EFFECT="NoSchedule"
+
+    echo "Removing refresh taint from ARC runner nodes for $CLUSTER ($CNAME)..."
+    echo "  Taint: ${TAINT_KEY}:${TAINT_EFFECT}"
+    echo ""
+
+    NODES=$(kubectl get nodes -l workload-type=github-runner --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null || true)
+    if [ -z "$NODES" ]; then
+        echo "  No ARC runner nodes found (workload-type=github-runner) — nothing to untaint."
+        exit 0
+    fi
+
+    REMOVED=0
+    SKIPPED=0
+    FAILED=0
+    for node in $NODES; do
+        # Check if taint exists
+        if kubectl get node "$node" -o jsonpath='{.spec.taints[*].key}' 2>/dev/null | tr ' ' '\n' | grep -qx "$TAINT_KEY"; then
+            if kubectl taint nodes "$node" "${TAINT_KEY}:${TAINT_EFFECT}-" 2>/dev/null; then
+                echo "  $node — taint removed"
+                REMOVED=$((REMOVED + 1))
+            else
+                echo "  $node — FAILED (node may have been removed)"
+                FAILED=$((FAILED + 1))
+            fi
+        else
+            echo "  $node — not tainted, skipping"
+            SKIPPED=$((SKIPPED + 1))
+        fi
+    done
+
+    echo ""
+    TOTAL=$((REMOVED + SKIPPED + FAILED))
+    echo "Summary: $REMOVED untainted, $SKIPPED not tainted, $FAILED failed, $TOTAL total runner nodes."
+    if [ "$FAILED" -gt 0 ]; then
+        echo "Warning: $FAILED node(s) failed to untaint. Re-run to retry."
+    fi
 
 # ============================================================================
 # INTERNAL: Base sub-deploys
@@ -620,6 +753,8 @@ test:
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
     ERRORS=0
+    SECONDS=0
+    FAILED_DIRS=()
 
     # Find all directories containing test_*.py files (exclude e2e and smoke tests)
     TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -path '*/.venv' -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
@@ -633,17 +768,20 @@ test:
     fi
 
     for dir in $TEST_DIRS; do
-        echo "━━━ Testing: ${dir#{{UPSTREAM}}/} ━━━"
+        short_dir="${dir#{{UPSTREAM}}/}"
+        echo "━━━ Testing: ${short_dir} ━━━"
         # Install test dependencies inline (script deps handled by uv)
-        (cd "$dir" && uv run pytest --tb=short -q) || ERRORS=$((ERRORS + 1))
+        (cd "$dir" && uv run pytest --tb=short -q) || { ERRORS=$((ERRORS + 1)); FAILED_DIRS+=("${short_dir}"); }
         echo ""
     done
 
+    if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi
     if [[ $ERRORS -gt 0 ]]; then
-        echo "Tests FAILED in $ERRORS directory(ies)."
+        echo "FAILED test dirs: $(printf '%s, ' "${FAILED_DIRS[@]}" | sed 's/, $//')"
+        echo "Tests FAILED in $ERRORS directory(ies). (${elapsed})"
         exit 1
     fi
-    echo "All tests passed."
+    echo "All tests passed. (${elapsed})"
 
 # Run node-compactor e2e tests against a live cluster
 test-compactor cluster:
@@ -651,9 +789,15 @@ test-compactor cluster:
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
     export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
+    SECONDS=0; \
     cd {{UPSTREAM}}/base/node-compactor/tests/e2e && \
     uv run pytest test_e2e.py -v --tb=long \
-        --cluster-id="{{cluster}}"
+        --cluster-id="{{cluster}}" \
+        && rc=0 || rc=$?; \
+    echo ""; \
+    if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi; \
+    echo "Compactor e2e tests completed in ${elapsed}"; \
+    exit $rc
 
 # Run smoke tests against a deployed cluster
 smoke cluster:
@@ -696,10 +840,17 @@ smoke cluster:
     export OSDC_UPSTREAM="${UPSTREAM}"
     export PYTHONPATH="${UPSTREAM}/tests/smoke:${PYTHONPATH:-}"
 
+    SECONDS=0
     uv run pytest $SMOKE_DIRS \
         -v --tb=short -rs \
+        -n auto \
         --cluster-id="$CLUSTER" \
-        --rootdir="${UPSTREAM}"
+        --rootdir="${UPSTREAM}" \
+        && rc=0 || rc=$?
+    echo ""
+    if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi
+    echo "Smoke tests completed in ${elapsed}"
+    exit $rc
 
 # Run full integration test against a cluster
 integration-test cluster *args:
@@ -784,6 +935,7 @@ lint:
     export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     ERRORS=0
+    FAILED_LINTERS=()
 
     # Helper: collect source directories (upstream + consumer if different)
     _src_dirs() {
@@ -797,7 +949,7 @@ lint:
     # --- Terraform formatting ---
     echo "━━━ tofu fmt ━━━"
     for dir in $(_src_dirs modules); do
-        tofu fmt -check -recursive "$dir" || ERRORS=$((ERRORS + 1))
+        tofu fmt -check -recursive "$dir" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("tofu fmt"); }
     done
 
     # --- Shell: lint ---
@@ -808,13 +960,13 @@ lint:
             < <(find "$dir" -path '*/.scratch' -prune -o -name '*.sh' -print0 2>/dev/null)
     done
     if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
-        shellcheck "${SHELL_FILES[@]}" || ERRORS=$((ERRORS + 1))
+        shellcheck "${SHELL_FILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("shellcheck"); }
     fi
 
     # --- Shell: formatting ---
     echo "━━━ shfmt ━━━"
     if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
-        shfmt -d -i 2 -ci -bn "${SHELL_FILES[@]}" || ERRORS=$((ERRORS + 1))
+        shfmt -d -i 2 -ci -bn "${SHELL_FILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("shfmt"); }
     fi
 
     # --- Python ---
@@ -823,8 +975,8 @@ lint:
     for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
         PYTHON_DIRS+=("$dir")
     done
-    ruff check --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || ERRORS=$((ERRORS + 1))
-    ruff format --check --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || ERRORS=$((ERRORS + 1))
+    ruff check --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("ruff check"); }
+    ruff format --check --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("ruff format"); }
 
     # --- Dockerfiles ---
     echo "━━━ hadolint ━━━"
@@ -834,7 +986,7 @@ lint:
             < <(find "$dir" -path '*/.scratch' -prune -o -name 'Dockerfile' -print0 2>/dev/null)
     done
     if [[ ${#DOCKERFILES[@]} -gt 0 ]]; then
-        hadolint --config "{{UPSTREAM}}/.hadolint.yaml" "${DOCKERFILES[@]}" || ERRORS=$((ERRORS + 1))
+        hadolint --config "{{UPSTREAM}}/.hadolint.yaml" "${DOCKERFILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("hadolint"); }
     fi
 
     # --- YAML ---
@@ -854,7 +1006,7 @@ lint:
         done
     done
     if [[ ${#YAML_DIRS[@]} -gt 0 ]]; then
-        uv run yamllint -c "{{UPSTREAM}}/.yamllint.yaml" "${YAML_DIRS[@]}" "{{CLUSTERS_YAML}}" || ERRORS=$((ERRORS + 1))
+        uv run yamllint -c "{{UPSTREAM}}/.yamllint.yaml" "${YAML_DIRS[@]}" "{{CLUSTERS_YAML}}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("yamllint"); }
     fi
 
     # --- TOML ---
@@ -867,8 +1019,8 @@ lint:
             < <(find "{{ROOT}}" -maxdepth 1 -name '*.toml' -print0 2>/dev/null)
     fi
     if [[ ${#TOML_FILES[@]} -gt 0 ]]; then
-        taplo check "${TOML_FILES[@]}" || ERRORS=$((ERRORS + 1))
-        taplo fmt --check "${TOML_FILES[@]}" || ERRORS=$((ERRORS + 1))
+        taplo check "${TOML_FILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("taplo check"); }
+        taplo fmt --check "${TOML_FILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("taplo fmt"); }
     fi
 
     # --- Kubernetes manifests (schema validation) ---
@@ -894,14 +1046,14 @@ lint:
                 -schema-location "$CRDS_SCHEMA" \
                 -ignore-missing-schemas \
                 -output pretty \
-            || ERRORS=$((ERRORS + 1))
+            || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("kubeconform"); }
     done
 
     # --- Kubernetes best practices ---
     echo "━━━ kube-linter ━━━"
     for dir in "${KUSTOMIZE_DIRS[@]}"; do
         echo "  checking: ${dir#{{UPSTREAM}}/}"
-        kube-linter lint "$dir" --config "{{UPSTREAM}}/.kube-linter.yaml" || ERRORS=$((ERRORS + 1))
+        kube-linter lint "$dir" --config "{{UPSTREAM}}/.kube-linter.yaml" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("kube-linter"); }
     done
 
     # --- Terraform static analysis ---
@@ -916,7 +1068,7 @@ lint:
         tflint --init --config "{{UPSTREAM}}/.tflint.hcl" 2>/dev/null || true
         for dir in "${TF_ROOTS[@]}"; do
             echo "  linting: ${dir#{{UPSTREAM}}/}"
-            tflint --chdir="$dir" --config "{{UPSTREAM}}/.tflint.hcl" || ERRORS=$((ERRORS + 1))
+            tflint --chdir="$dir" --config "{{UPSTREAM}}/.tflint.hcl" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("tflint"); }
         done
     fi
 
@@ -927,12 +1079,15 @@ lint:
             --misconfig-scanners terraform,dockerfile,kubernetes \
             --ignorefile "{{UPSTREAM}}/.trivyignore" \
             --skip-dirs '.scratch' \
-            "$dir" || ERRORS=$((ERRORS + 1))
+            "$dir" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("trivy"); }
     done
 
     # --- Summary ---
     echo ""
     if [[ $ERRORS -gt 0 ]]; then
+        # Deduplicate linter names (a linter running on multiple dirs may fail more than once)
+        UNIQUE_FAILED=$(printf '%s\n' "${FAILED_LINTERS[@]}" | sort -u | paste -sd', ' -)
+        echo "FAILED linters: ${UNIQUE_FAILED}"
         echo "Lint FAILED with $ERRORS error(s)."
         exit 1
     fi

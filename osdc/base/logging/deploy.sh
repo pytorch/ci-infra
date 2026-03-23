@@ -88,6 +88,8 @@ alloy:
         secretKeyRef:
           name: grafana-cloud-credentials
           key: loki-api-key-write
+    - name: GOGC
+      value: "200"
     - name: GOMEMLIMIT
       value: "1800MiB"
     - name: NODE_NAME
@@ -135,6 +137,8 @@ alloy:
         secretKeyRef:
           name: grafana-cloud-credentials
           key: loki-api-key-write
+    - name: GOGC
+      value: "200"
     - name: GOMEMLIMIT
       value: "1800MiB"
 EOF

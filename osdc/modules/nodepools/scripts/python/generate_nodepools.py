@@ -150,8 +150,8 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
             disruption_budget = "0"
             consolidation_policy = "WhenEmptyOrUnderutilized"
             consolidation_after = os.environ.get("NODEPOOLS_GPU_CONSOLIDATE_AFTER", "3h")
-        iops = 5000
-        throughput = 250
+        iops = 16000
+        throughput = 1000
 
         gpu_labels = '        nvidia.com/gpu: "true"\n'
         gpu_taints = """        - key: nvidia.com/gpu
@@ -172,8 +172,8 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
             consolidation_after = os.environ.get("NODEPOOLS_CPU_CONSOLIDATE_AFTER", "3h")
             disruption_budget = os.environ.get("NODEPOOLS_CPU_DISRUPTION_BUDGET", "10%")
 
-        iops = 3000
-        throughput = 125
+        iops = 16000
+        throughput = 1000
 
         gpu_labels = ""
         gpu_taints = ""
