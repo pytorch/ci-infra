@@ -104,6 +104,14 @@ portal:
   affinity: *base-affinity
 
 nginx:
+  replicas: 3
+  resources:
+    requests:
+      cpu: "500m"
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
   tolerations: *base-tolerations
   affinity: *base-affinity
 
@@ -111,6 +119,13 @@ database:
   internal:
     # password is set at deploy time via --set database.internal.password=...
     # (auto-generated and stored in K8s secret harbor-db-password)
+    resources:
+      requests:
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 2Gi
     tolerations: *base-tolerations
     affinity: *base-affinity
 

@@ -10,12 +10,15 @@ set -euo pipefail
 #   1. Logging namespace
 #   2. Assembled Alloy config ConfigMap (base pipeline + per-module pipelines)
 #   3. Grafana Alloy DaemonSet (if grafana-cloud-credentials secret exists)
+#   4. Grafana Alloy Deployment for Kubernetes Event collection
 
 CLUSTER="$1"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$MODULE_DIR/../.." && pwd)}"
 # shellcheck source=/dev/null
 source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
+# shellcheck source=/dev/null
+source "$OSDC_UPSTREAM/scripts/helm-upgrade.sh"
 CFG="$OSDC_UPSTREAM/scripts/cluster-config.py"
 CLUSTERS_YAML="${CLUSTERS_YAML:-$OSDC_UPSTREAM/clusters.yaml}"
 
@@ -42,9 +45,11 @@ fi
 # --- Cleanup trap ---
 CONFIGMAP_FILE=""
 ALLOY_OVERRIDE=""
+EVENTS_OVERRIDE=""
 cleanup() {
   [[ -n "$CONFIGMAP_FILE" ]] && rm -f "$CONFIGMAP_FILE" 2>/dev/null || true
   [[ -n "$ALLOY_OVERRIDE" ]] && rm -f "$ALLOY_OVERRIDE" 2>/dev/null || true
+  [[ -n "$EVENTS_OVERRIDE" ]] && rm -f "$EVENTS_OVERRIDE" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -64,17 +69,6 @@ uv run "$MODULE_DIR/scripts/python/assemble_config.py" \
 
 kubectl apply -f "$CONFIGMAP_FILE"
 
-# --- Read credentials from secret ---
-LOKI_USERNAME=$(kubectl get secret grafana-cloud-credentials -n "$NAMESPACE" \
-  -o jsonpath='{.data.loki-username}' | base64 -d)
-LOKI_API_KEY=$(kubectl get secret grafana-cloud-credentials -n "$NAMESPACE" \
-  -o jsonpath='{.data.loki-api-key-write}' | base64 -d)
-
-if [[ -z "$LOKI_USERNAME" || -z "$LOKI_API_KEY" ]]; then
-  echo "Error: grafana-cloud-credentials secret is missing 'loki-username' or 'loki-api-key-write' keys."
-  exit 1
-fi
-
 # --- Build Helm override with per-cluster env vars ---
 ALLOY_OVERRIDE=$(mktemp)
 cat >"$ALLOY_OVERRIDE" <<EOF
@@ -85,9 +79,17 @@ alloy:
     - name: LOKI_URL
       value: "${LOKI_URL}"
     - name: LOKI_USERNAME
-      value: "${LOKI_USERNAME}"
+      valueFrom:
+        secretKeyRef:
+          name: grafana-cloud-credentials
+          key: loki-username
     - name: LOKI_API_KEY
-      value: "${LOKI_API_KEY}"
+      valueFrom:
+        secretKeyRef:
+          name: grafana-cloud-credentials
+          key: loki-api-key-write
+    - name: GOMEMLIMIT
+      value: "1800MiB"
     - name: NODE_NAME
       valueFrom:
         fieldRef:
@@ -104,13 +106,46 @@ helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
 helm repo update grafana
 
 ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" monitoring.alloy_chart_version 1.6.2)
-helm upgrade --install alloy-logging grafana/alloy \
-  --namespace "$NAMESPACE" \
+helm_upgrade_if_changed alloy-logging "$NAMESPACE" \
   --history-max 3 \
   -f "$MODULE_DIR/helm/alloy-logging-values.yaml" \
   -f "$ALLOY_OVERRIDE" \
   --version "${ALLOY_CHART_VERSION}" \
-  --timeout 5m \
-  --wait
+  --timeout 10m \
+  --wait \
+  grafana/alloy
 
-echo "Logging deployed — Alloy DaemonSet pushing logs to Grafana Cloud Loki."
+# --- Install Alloy Events Deployment ---
+echo "Installing Alloy events Deployment (K8s event collection)..."
+EVENTS_OVERRIDE=$(mktemp)
+cat >"$EVENTS_OVERRIDE" <<EOF
+alloy:
+  extraEnv:
+    - name: CLUSTER_NAME
+      value: "${CNAME}"
+    - name: LOKI_URL
+      value: "${LOKI_URL}"
+    - name: LOKI_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: grafana-cloud-credentials
+          key: loki-username
+    - name: LOKI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: grafana-cloud-credentials
+          key: loki-api-key-write
+    - name: GOMEMLIMIT
+      value: "1800MiB"
+EOF
+
+helm_upgrade_if_changed alloy-events "$NAMESPACE" \
+  --history-max 3 \
+  -f "$MODULE_DIR/helm/alloy-events-values.yaml" \
+  -f "$EVENTS_OVERRIDE" \
+  --version "${ALLOY_CHART_VERSION}" \
+  --timeout 10m \
+  --wait \
+  grafana/alloy
+
+echo "Logging deployed — Alloy DaemonSet + Events Deployment pushing to Grafana Cloud Loki."

@@ -15,15 +15,54 @@ stage.match {
     }
 }
 
-// kube-state-metrics (structured text logs)
+// kube-state-metrics (klog format)
 stage.match {
     selector = "{namespace=\"monitoring\", container=\"kube-state-metrics\"}"
     stage.regex {
-        expression = "^[A-Z]\\d{4} \\d{2}:\\d{2}:\\d{2}\\.\\d+ .+ (?P<level>[A-Z]+)"
+        expression = "^(?P<level>[IWEF])\\d{4}"
     }
     stage.labels {
         values = {
             level = "",
         }
+    }
+}
+
+// Harbor core, registry, jobservice, trivy (Go stdlib / logrus JSON logs)
+stage.match {
+    selector = "{namespace=\"harbor-system\", container=~\"core|registry|jobservice|trivy\"}"
+    stage.json {
+        expressions = {
+            level = "level",
+        }
+    }
+    stage.labels {
+        values = {
+            level = "",
+        }
+    }
+}
+
+// Harbor nginx (access logs — drop health-check noise, extract status)
+stage.match {
+    selector = "{namespace=\"harbor-system\", container=\"nginx\"}"
+
+    // Drop health-check probes from nginx access logs
+    stage.drop {
+        expression = "\"GET /api/v2\\.0/health HTTP/"
+    }
+
+    stage.regex {
+        expression = "\"\\S+ \\S+ \\S+\" (?P<status>\\d{3})"
+    }
+}
+
+// Throttle Harbor non-error logs to reduce volume
+stage.match {
+    selector = "{namespace=\"harbor-system\", level!~\"(?i)error|fatal|panic\"}"
+
+    stage.limit {
+        rate  = 100
+        burst = 500
     }
 }

@@ -33,9 +33,10 @@ All config comes from `clusters.yaml` under `node_compactor:` and is injected as
 |---|---|---|---|
 | `node_compactor.enabled` | — | `true` | Set `false` to skip deployment entirely |
 | `node_compactor.interval_seconds` | `COMPACTOR_INTERVAL` | `20` | Seconds between compaction cycles |
-| `node_compactor.max_uptime_hours` | `COMPACTOR_MAX_UPTIME_HOURS` | `48` | Don't taint nodes younger than this |
+| `node_compactor.max_uptime_hours` | `COMPACTOR_MAX_UPTIME_HOURS` | `48` | Prioritize tainting nodes older than this (hours) |
 | `node_compactor.dry_run` | `COMPACTOR_DRY_RUN` | `false` | Log what would happen without tainting |
 | `node_compactor.min_nodes` | `COMPACTOR_MIN_NODES` | `1` | Minimum nodes to keep untainted per NodePool |
+| `node_compactor.min_node_age_seconds` | `COMPACTOR_MIN_NODE_AGE` | `420` | Grace period (seconds) before a new node can be tainted |
 
 ## How it works with Karpenter
 

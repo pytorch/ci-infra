@@ -65,6 +65,11 @@ data:
     NODE_NAME = os.environ.get("NODE_NAME", "")
     METRICS_PORT = 9102
 
+    # Headless service for direct pod-to-pod discovery
+    HEADLESS_SVC = "git-cache-central-headless.kube-system.svc.cluster.local"
+    CENTRAL_METRICS_PORT = 9101
+    CONNECTION_METRIC = "git_cache_central_active_rsync_connections"
+
     # Kubernetes API for taint removal
     K8S_API = "https://kubernetes.default.svc"
     TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
@@ -100,6 +105,8 @@ data:
              "Time spent waiting for central rsyncd on startup"),
             ("git_cache_node_cache_size_bytes", "gauge",
              "Total size of the local git cache on disk"),
+            ("git_cache_node_selected_replica", "gauge",
+             "IP hash of selected central replica (0 = fallback to ClusterIP)"),
         ]
 
         def __init__(self) -> None:
@@ -192,6 +199,66 @@ data:
             size = _dir_size_bytes(current)
             metrics.set("git_cache_node_cache_size_bytes", size)
             log.info("Cache size: %.1f MiB", size / (1024 * 1024))
+
+
+    def discover_replicas() -> list[str]:
+        """Resolve headless service DNS to get all central pod IPs."""
+        try:
+            results = socket.getaddrinfo(
+                HEADLESS_SVC, CENTRAL_METRICS_PORT,
+                socket.AF_INET, socket.SOCK_STREAM,
+            )
+            ips = list({r[4][0] for r in results})
+            if ips:
+                log.info("Discovered %d central replicas: %s", len(ips), ", ".join(sorted(ips)))
+            return ips
+        except socket.gaierror as exc:
+            log.warning("DNS resolution of headless service failed: %s", exc)
+            return []
+
+
+    def _parse_connection_count(metrics_text: str) -> int | None:
+        """Extract active rsync connection count from Prometheus metrics text."""
+        for line in metrics_text.splitlines():
+            if line.startswith(CONNECTION_METRIC) and not line.startswith(CONNECTION_METRIC + "_"):
+                try:
+                    # Format: metric_name value  or  metric_name{labels} value
+                    parts = line.split()
+                    return int(float(parts[-1]))
+                except (ValueError, IndexError):
+                    return None
+        return None
+
+
+    def get_least_loaded_replica(replicas: list[str]) -> str | None:
+        """Query each replica's metrics and return the IP with fewest active connections."""
+        if not replicas:
+            return None
+
+        best_ip = None
+        best_count = float("inf")
+
+        for ip in replicas:
+            try:
+                url = f"http://{ip}:{CENTRAL_METRICS_PORT}/metrics"
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    text = resp.read().decode("utf-8", errors="replace")
+                count = _parse_connection_count(text)
+                if count is not None and count < best_count:
+                    best_count = count
+                    best_ip = ip
+                    log.info("Replica %s: %d active connections", ip, count)
+            except Exception as exc:
+                log.warning("Failed to query metrics from %s: %s", ip, exc)
+
+        if best_ip is not None:
+            log.info("Selected replica %s (connections: %s)", best_ip, best_count)
+            # Store a hash for the metric (IP as integer for Prometheus gauge)
+            ip_parts = best_ip.split(".")
+            ip_hash = sum(int(p) * (256 ** (3 - i)) for i, p in enumerate(ip_parts))
+            metrics.set("git_cache_node_selected_replica", float(ip_hash))
+        return best_ip
 
 
     def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -290,11 +357,31 @@ data:
 
 
     def rsync_from_central(dst: Path) -> bool:
-        """Rsync from the central pod to a local slot. Returns True on success."""
+        """Rsync from the central pod to a local slot. Returns True on success.
+
+        Attempts least-loaded replica selection via headless service DNS.
+        Falls back to the ClusterIP service if discovery or selection fails.
+        """
         dst.mkdir(parents=True, exist_ok=True)
+
+        # Try least-loaded replica selection
+        source = RSYNC_SOURCE
+        replicas = discover_replicas()
+        if replicas:
+            best = get_least_loaded_replica(replicas)
+            if best:
+                source = f"rsync://{best}/git-cache/"
+                log.info("Using least-loaded replica: %s", best)
+            else:
+                log.info("Replica selection failed, falling back to ClusterIP service")
+                metrics.set("git_cache_node_selected_replica", 0.0)
+        else:
+            log.info("No replicas discovered, using ClusterIP service")
+            metrics.set("git_cache_node_selected_replica", 0.0)
+
         t0 = time.monotonic()
         try:
-            run(["rsync", "-a", "--delete", RSYNC_SOURCE, f"{dst}/"])
+            run(["rsync", "-a", "--delete", source, f"{dst}/"])
             duration = time.monotonic() - t0
             log.info("Rsynced from central -> %s", dst)
             metrics.set("git_cache_node_sync_duration_seconds", duration)

@@ -29,6 +29,7 @@ def make_config(**overrides) -> Config:
         "min_nodes": 1,
         "dry_run": False,
         "taint_cooldown": 300,
+        "min_node_age": 420,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -565,6 +566,47 @@ class TestComputeTaints:
         to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
         assert "n0" in to_taint
         assert len(to_taint) == 1
+
+    def test_young_nodes_excluded_from_tainting(self):
+        cfg = make_config(min_nodes=1, min_node_age=420)
+        young = make_node("young", cpu=16.0, creation_time=NOW - timedelta(seconds=120))
+        old1 = make_node("old1", cpu=16.0)
+        old2 = make_node("old2", cpu=16.0)
+        nodes = {"young": young, "old1": old1, "old2": old2}
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        # Young node must not be tainted
+        assert "young" not in to_taint
+        # 3 nodes, 0 pods -> min_needed=1, surplus=2
+        # Young excluded -> 2 eligible, both tainted (surplus covers them)
+        assert to_taint == {"old1", "old2"}
+
+    def test_young_tainted_node_gets_mandatory_untaint(self):
+        cfg = make_config(min_nodes=1, min_node_age=420)
+        young = make_node("young", cpu=16.0, is_tainted=True, creation_time=NOW - timedelta(seconds=120))
+        old = make_node("old", cpu=16.0)
+        nodes = {"young": young, "old": old}
+        _to_taint, to_untaint, mandatory = compute_taints(nodes, cfg)
+        assert "young" in to_untaint
+        assert "young" in mandatory
+
+    def test_all_nodes_young_no_tainting(self):
+        cfg = make_config(min_nodes=1, min_node_age=420)
+        n1 = make_node("n1", cpu=16.0, creation_time=NOW - timedelta(seconds=60))
+        n2 = make_node("n2", cpu=16.0, creation_time=NOW - timedelta(seconds=60))
+        n3 = make_node("n3", cpu=16.0, creation_time=NOW - timedelta(seconds=60))
+        nodes = {"n1": n1, "n2": n2, "n3": n3}
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        assert len(to_taint) == 0
+
+    def test_min_node_age_zero_disables_grace_period(self):
+        cfg = make_config(min_nodes=1, min_node_age=0)
+        young = make_node("young", cpu=16.0, creation_time=NOW - timedelta(seconds=30))
+        old1 = make_node("old1", cpu=16.0)
+        old2 = make_node("old2", cpu=16.0)
+        nodes = {"young": young, "old1": old1, "old2": old2}
+        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        # All 3 eligible, min_nodes=1 -> surplus=2
+        assert len(to_taint) == 2
 
 
 # ============================================================================

@@ -15,7 +15,8 @@ Prometheus, Grafana, and AlertManager are **not installed locally** — all metr
 | `kubernetes/monitors/` | CRD-dependent resources applied by deploy.sh after Helm install |
 | `kubernetes/monitors/servicemonitors/` | ServiceMonitors for node-compactor, git-cache-central, Harbor, ARC controller, Karpenter |
 | `kubernetes/monitors/podmonitors/` | PodMonitors for git-cache DaemonSet, ARC listeners |
-| `kubernetes/dcgm-exporter/` | DCGM exporter DaemonSet + headless Service (ServiceMonitor is in monitors/) |
+| `kubernetes/dcgm-exporter/` | DCGM exporter DaemonSet + custom metrics ConfigMap (ServiceMonitor is in monitors/) |
+| `kubernetes/alerts/` | PrometheusRule CRDs — ARC, infrastructure, and GPU alerts (synced to Grafana Cloud by Alloy's `mimir.rules.kubernetes`) |
 
 ## Configuration (clusters.yaml)
 
@@ -28,7 +29,23 @@ defaults:
 
 ## Metrics pipeline
 
-**Grafana Alloy** is the primary (and only) metrics pipeline. It discovers ServiceMonitor/PodMonitor CRDs, scrapes targets, and pushes to Grafana Cloud via `prometheus.remote_write`.
+**Grafana Alloy** is the primary (and only) metrics pipeline. It discovers ServiceMonitor/PodMonitor CRDs, scrapes targets, applies cost-control relabeling, and pushes to Grafana Cloud via `prometheus.remote_write`.
+
+### Metrics cost control
+
+A `prometheus.relabel "cost_control"` stage sits between discovery and remote_write. It drops high-cardinality, low-value metrics before they leave the cluster:
+
+- **cadvisor**: network tcp/udp usage, tasks state, cpu load average, memory failures, blkio device usage, last_seen, start_time, spec_*
+- **KSM**: *_created, *_metadata_resource_version, secret/configmap/endpoint/lease metrics
+- **ARC histograms**: job execution/startup duration buckets (prevents unbounded series growth)
+
+### DCGM custom metrics
+
+The DCGM exporter uses a curated ~26 metric subset (ConfigMap mounted as `/etc/dcgm-exporter/custom-metrics.csv`) instead of the full ~200 default metrics. High-cardinality labels (UUID, modelName, DCGM_FI_DRIVER_VERSION, pci_bus_id) are dropped via `metricRelabelings` on the ServiceMonitor.
+
+### Alerting via mimir.rules.kubernetes
+
+PrometheusRule CRDs in `kubernetes/alerts/` are **not evaluated locally** (no Prometheus instance). Instead, Alloy's `mimir.rules.kubernetes` component syncs them to Grafana Cloud Mimir, which evaluates the rules and routes alerts through Grafana Cloud Alerting.
 
 Alloy is installed when a `grafana-cloud-credentials` secret exists in the monitoring namespace.
 

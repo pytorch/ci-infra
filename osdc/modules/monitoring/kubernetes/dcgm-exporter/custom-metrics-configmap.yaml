@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dcgm-exporter-metrics
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: dcgm-exporter
+    app.kubernetes.io/part-of: osdc-monitoring
+data:
+  custom-metrics.csv: |
+    # Format: DCGM field ID, Prometheus metric type, help text
+    # Tier 1 — Essential health & utilization
+    DCGM_FI_DEV_GPU_UTIL,         gauge, GPU utilization (%)
+    DCGM_FI_DEV_MEM_COPY_UTIL,    gauge, Memory utilization (%)
+    DCGM_FI_DEV_FB_USED,          gauge, Framebuffer memory used (MiB)
+    DCGM_FI_DEV_FB_FREE,          gauge, Framebuffer memory free (MiB)
+    DCGM_FI_DEV_GPU_TEMP,         gauge, GPU temperature (C)
+    DCGM_FI_DEV_MEMORY_TEMP,      gauge, Memory temperature (C)
+    DCGM_FI_DEV_POWER_USAGE,      gauge, Power usage (W)
+    DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, Total energy consumption (mJ)
+    DCGM_FI_DEV_PCIE_TX_THROUGHPUT, counter, PCIe TX throughput (KB/s)
+    DCGM_FI_DEV_PCIE_RX_THROUGHPUT, counter, PCIe RX throughput (KB/s)
+    DCGM_FI_DEV_SM_CLOCK,         gauge, SM clock frequency (MHz)
+    DCGM_FI_DEV_MEM_CLOCK,        gauge, Memory clock frequency (MHz)
+    DCGM_FI_DEV_POWER_VIOLATION,  counter, Power throttling duration (us)
+    DCGM_FI_DEV_THERMAL_VIOLATION, counter, Thermal throttling duration (us)
+    # Tier 1 — Error tracking
+    DCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Single-bit ECC errors (volatile)
+    DCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Double-bit ECC errors (volatile)
+    DCGM_FI_DEV_ECC_SBE_AGG_TOTAL, counter, Single-bit ECC errors (aggregate)
+    DCGM_FI_DEV_ECC_DBE_AGG_TOTAL, counter, Double-bit ECC errors (aggregate)
+    DCGM_FI_DEV_RETIRED_SBE,      counter, Retired pages (single-bit)
+    DCGM_FI_DEV_RETIRED_DBE,      counter, Retired pages (double-bit)
+    DCGM_FI_DEV_RETIRED_PENDING,  gauge, Retired pages pending
+    DCGM_FI_DEV_XID_ERRORS,       gauge, Last XID error code
+    # Tier 2 — Diagnostic
+    DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, counter, NVLink total bandwidth (bytes)
+    DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL, counter, NVLink replay error count
+    DCGM_FI_DEV_PSTATE,           gauge, Performance state (0-15)
+    DCGM_FI_DEV_FAN_SPEED,        gauge, Fan speed (%)
+    DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Row remap failure (0=ok 1=fail)

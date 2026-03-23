@@ -372,6 +372,35 @@ class TestGenerateNodepoolYaml:
         assert "topologyManagerPolicy: single-numa-node" in userdata
         assert "topologyManagerScope: pod" in userdata
 
+    def test_container_log_rotation_present(self):
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        userdata = ec2["spec"]["userData"]
+        assert "containerLogMaxSize: 50Mi" in userdata
+        assert "containerLogMaxFiles: 5" in userdata
+
+    def test_container_log_rotation_with_topology_options(self):
+        """Log rotation must appear after topologyManagerPolicyOptions on own lines."""
+        nodepool_def = _make_nodepool_def(
+            topology_manager_policy="restricted",
+            topology_manager_scope="container",
+        )
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        userdata = ec2["spec"]["userData"]
+        assert "topologyManagerPolicyOptions:" in userdata
+        assert "containerLogMaxSize: 50Mi" in userdata
+        assert "containerLogMaxFiles: 5" in userdata
+        # Ensure containerLogMaxSize is on its own line (not concatenated)
+        for line in userdata.splitlines():
+            if "containerLogMaxSize" in line:
+                assert line.strip() == "containerLogMaxSize: 50Mi"
+            if "containerLogMaxFiles" in line:
+                assert line.strip() == "containerLogMaxFiles: 5"
+
     def test_block_device_disk_size(self):
         nodepool_def = _make_nodepool_def(node_disk_size=2500)
         output = generate_nodepool_yaml(nodepool_def, "nodepools")

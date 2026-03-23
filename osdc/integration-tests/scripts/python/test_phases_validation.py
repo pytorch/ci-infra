@@ -1,4 +1,39 @@
-"""Unit tests for phases_validation.py (print_report, etc.)."""
+"""Unit tests for phases_validation.py (print_report, _filter_runs_by_time, etc.)."""
+
+from datetime import UTC, datetime
+
+
+class TestFilterRunsByTime:
+    def setup_method(self):
+        from phases_validation import _filter_runs_by_time
+
+        self._filter = _filter_runs_by_time
+
+    def test_filters_old_runs(self):
+        cutoff = datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC)
+        runs = [
+            {"databaseId": 1, "createdAt": "2026-03-20T11:00:00Z"},  # before cutoff
+            {"databaseId": 2, "createdAt": "2026-03-20T12:00:00Z"},  # at cutoff
+            {"databaseId": 3, "createdAt": "2026-03-20T13:00:00Z"},  # after cutoff
+        ]
+        result = self._filter(runs, cutoff)
+        assert [r["databaseId"] for r in result] == [2, 3]
+
+    def test_keeps_runs_without_timestamp(self):
+        cutoff = datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC)
+        runs = [{"databaseId": 1}]
+        result = self._filter(runs, cutoff)
+        assert len(result) == 1
+
+    def test_keeps_runs_with_unparseable_timestamp(self):
+        cutoff = datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC)
+        runs = [{"databaseId": 1, "createdAt": "not-a-date"}]
+        result = self._filter(runs, cutoff)
+        assert len(result) == 1
+
+    def test_empty_list(self):
+        cutoff = datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC)
+        assert self._filter([], cutoff) == []
 
 
 class TestPrintReport:
@@ -21,12 +56,8 @@ class TestPrintReport:
             "smoke": {"status": "passed"},
             "compactor": {"status": "passed"},
         }
-        observability = [
-            {"name": "Mimir: metrics", "status": "pass", "detail": "up metric found"},
-            {"name": "Loki: logs", "status": "pass"},
-        ]
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation, observability)
+        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
 
         assert result is True
         out = capsys.readouterr().out
@@ -48,7 +79,7 @@ class TestPrintReport:
             "compactor": {"status": "passed"},
         }
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation, [])
+        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
 
         assert result is False
 
@@ -59,21 +90,7 @@ class TestPrintReport:
             "compactor": {"status": "skipped"},
         }
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation, [])
-
-        assert result is False
-
-    def test_observability_failure_sets_overall_fail(self, capsys):
-        workflow_results = []
-        validation = {
-            "smoke": {"status": "passed"},
-            "compactor": {"status": "passed"},
-        }
-        observability = [
-            {"name": "Mimir: metrics", "status": "fail"},
-        ]
-
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation, observability)
+        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
 
         assert result is False
 
@@ -83,11 +100,8 @@ class TestPrintReport:
             "smoke": {"status": "skipped"},
             "compactor": {"status": "skipped"},
         }
-        observability = [
-            {"name": "Loki: logs", "status": "skip"},
-        ]
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation, observability)
+        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
 
         assert result is True
 
@@ -101,8 +115,33 @@ class TestPrintReport:
         ]
         validation = {"smoke": {"status": "passed"}, "compactor": {"status": "passed"}}
 
-        self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation, [])
+        self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
 
         out = capsys.readouterr().out
         assert "something broke" in out
         assert "run 42" in out
+
+    def test_validation_failure_shows_output(self, capsys):
+        workflow_results = []
+        validation = {
+            "smoke": {"status": "failed", "output": "FAILED test_something\nAssertionError: pods not ready\n"},
+            "compactor": {"status": "passed"},
+        }
+
+        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+
+        assert result is False
+        out = capsys.readouterr().out
+        assert "Smoke output" in out
+        assert "AssertionError: pods not ready" in out
+
+    def test_validation_failure_no_output_no_crash(self, capsys):
+        workflow_results = []
+        validation = {
+            "smoke": {"status": "failed"},
+            "compactor": {"status": "failed", "output": ""},
+        }
+
+        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+
+        assert result is False

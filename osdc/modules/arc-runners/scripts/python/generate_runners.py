@@ -119,13 +119,18 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
           operator: Equal
           value: "true"
           effect: NoSchedule"""
-        gpu_node_selector = '\n        nvidia.com/gpu: "true"'
+        # Affinity-style GPU selector for job pod's preferredDuringScheduling
+        gpu_node_selector_affinity = """
+                  - key: nvidia.com/gpu
+                    operator: In
+                    values:
+                      - "true\""""
         gpu_request = f'\n              nvidia.com/gpu: "{gpu}"'
         gpu_limit = f'\n              nvidia.com/gpu: "{gpu}"'
     else:
         gpu_tolerations = ""
         gpu_job_tolerations = ""
-        gpu_node_selector = ""
+        gpu_node_selector_affinity = ""
         gpu_request = ""
         gpu_limit = ""
 
@@ -143,7 +148,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{DISK_SIZE}}": f"{disk_size}Gi",
         "{{GPU_TOLERATIONS}}": gpu_tolerations,
         "{{GPU_JOB_TOLERATIONS}}": gpu_job_tolerations,
-        "{{GPU_NODE_SELECTOR}}": gpu_node_selector,
+        "{{GPU_NODE_SELECTOR_AFFINITY}}": gpu_node_selector_affinity,
         "{{GPU_REQUEST}}": gpu_request,
         "{{GPU_LIMIT}}": gpu_limit,
         "{{MODULE_NAME}}": module_name,

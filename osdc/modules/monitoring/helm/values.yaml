@@ -25,8 +25,34 @@ nodeExporter:
   tolerations:
     - operator: Exists  # tolerate ALL taints — must run on every node
 
+# --- node-exporter subchart overrides ---
+prometheus-node-exporter:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 50
+  extraArgs:
+    - --no-collector.bcache
+    - --no-collector.bonding
+    - --no-collector.infiniband
+    - --no-collector.nfs
+    - --no-collector.nfsd
+    - --no-collector.fibrechannel
+    - --no-collector.ipvs
+    - --no-collector.rapl
+    - --no-collector.schedstat
+    - --no-collector.interrupts
+    - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker|var/lib/kubelet|run/containerd)($|/)
+    - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|cgroup|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|sysfs|tracefs|tmpfs)$
+    - --collector.netdev.device-exclude=^(veth|cali|flannel|cni|docker|br-).*
+  prometheus:
+    monitor:
+      interval: 60s
+
 # --- kube-state-metrics ---
 kube-state-metrics:
+  extraArgs:
+    - --metric-allowlist=kube_(daemonset|deployment|pod|namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|replicaset|job)_.+
   tolerations:
     - key: CriticalAddonsOnly
       operator: Equal

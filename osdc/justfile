@@ -247,6 +247,10 @@ deploy-base cluster:
     kubectl apply -k {{UPSTREAM}}/base/kubernetes/
 
     echo ""
+    echo "━━━ BASE: Deploy Git Cache Central ━━━"
+    {{UPSTREAM}}/base/kubernetes/git-cache/deploy.sh "$CLUSTER"
+
+    echo ""
     echo "━━━ BASE: Deploy Harbor ━━━"
     cd "{{ROOT}}"
     just _deploy-harbor "$CLUSTER"
@@ -382,6 +386,7 @@ _deploy-harbor cluster:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/helm-upgrade.sh"
     export OSDC_ROOT="{{ROOT}}"
     export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
@@ -479,6 +484,7 @@ _deploy-harbor cluster:
     # Read per-cluster Harbor config
     HARBOR_CORE_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.core_replicas 2)
     HARBOR_REGISTRY_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.registry_replicas 2)
+    HARBOR_NGINX_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.nginx_replicas 3)
 
     # Install Harbor (using traditional Helm repo to avoid ghcr.io auth/rate-limit issues)
     echo "Installing Harbor..."
@@ -489,8 +495,7 @@ _deploy-harbor cluster:
     ECR_HARBOR="${ECR_REGISTRY}/mirror/goharbor"
     HELM_MAX_RETRIES=3
     for attempt in $(seq 1 $HELM_MAX_RETRIES); do
-        if helm upgrade --install harbor \
-            --namespace harbor-system \
+        if helm_upgrade_if_changed harbor harbor-system \
             --create-namespace \
             --history-max 3 \
             -f {{UPSTREAM}}/base/helm/harbor/values.yaml \
@@ -512,6 +517,7 @@ _deploy-harbor cluster:
             --set database.internal.password="${HARBOR_DB_PW}" \
             --set core.replicas="${HARBOR_CORE_REPLICAS}" \
             --set registry.replicas="${HARBOR_REGISTRY_REPLICAS}" \
+            --set nginx.replicas="${HARBOR_NGINX_REPLICAS}" \
             --timeout 15m \
             --wait \
             --burst-limit 10000 \
@@ -714,6 +720,30 @@ integration-test cluster *args:
 
     NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
         uv run "${UPSTREAM}/integration-tests/scripts/python/run.py" \
+            --cluster-id "$CLUSTER" \
+            --clusters-yaml "{{CLUSTERS_YAML}}" \
+            --upstream-dir "${UPSTREAM}" \
+            --root-dir "${ROOT}" \
+            {{args}}
+
+# Run load test against a cluster
+load-test cluster *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+
+    UPSTREAM="{{UPSTREAM}}"
+    ROOT="{{ROOT}}"
+    CLUSTER="{{cluster}}"
+
+    # Ensure kubectl is configured for the target cluster
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+
+    export OSDC_ROOT="${ROOT}"
+    export OSDC_UPSTREAM="${UPSTREAM}"
+
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+        uv run "${UPSTREAM}/integration-tests/load-test/scripts/python/load_test_run.py" \
             --cluster-id "$CLUSTER" \
             --clusters-yaml "{{CLUSTERS_YAML}}" \
             --upstream-dir "${UPSTREAM}" \

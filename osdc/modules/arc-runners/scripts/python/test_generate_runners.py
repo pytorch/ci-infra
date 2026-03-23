@@ -46,8 +46,20 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
     data:
       job-pod.yaml: |
         spec:
-          nodeSelector:
-            instance-type: "{{INSTANCE_TYPE}}"{{GPU_NODE_SELECTOR}}
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: instance-type
+                        operator: In
+                        values:
+                          - "{{INSTANCE_TYPE}}"
+                      - key: workload-type
+                        operator: In
+                        values:
+                          - github-runner{{GPU_NODE_SELECTOR_AFFINITY}}
           tolerations:
             - key: instance-type
               operator: Equal
@@ -235,7 +247,7 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all(output_file.read_text()))
         assert len(docs) == 2
 
-        # Helm values doc
+        # Helm values doc — runner pod still uses hard nodeSelector
         helm = docs[0]
         assert helm["githubConfigUrl"] == "https://github.com/test-org"
         assert helm["githubConfigSecret"] == "gh-secret"
@@ -247,6 +259,18 @@ class TestGenerateRunner:
         assert cm["kind"] == "ConfigMap"
         assert cm["metadata"]["name"] == "arc-runner-hook-cpu-runner"
         assert cm["metadata"]["labels"]["osdc.io/module"] == "arc-runners"
+
+        # Job pod uses soft affinity, not nodeSelector
+        cm_data = yaml.safe_load(cm["data"]["job-pod.yaml"])
+        assert "nodeSelector" not in cm_data["spec"]
+        prefs = cm_data["spec"]["affinity"]["nodeAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"]
+        assert len(prefs) == 1
+        assert prefs[0]["weight"] == 50
+        match_exprs = prefs[0]["preference"]["matchExpressions"]
+        keys = [e["key"] for e in match_exprs]
+        assert "instance-type" in keys
+        assert "workload-type" in keys
+        assert "nvidia.com/gpu" not in keys  # CPU runner has no GPU affinity
 
     def test_gpu_runner(self, tmp_path):
         def_file = make_def_file(tmp_path, "gpu-runner", "g4dn.12xlarge", 16, 64, gpu=1, disk_size=150)
@@ -272,11 +296,21 @@ class TestGenerateRunner:
         taint_keys = [t["key"] for t in tolerations]
         assert "nvidia.com/gpu" in taint_keys
 
-        # ConfigMap job-pod data should have GPU resources
+        # ConfigMap job-pod data should have GPU resources and GPU affinity
         cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
         container = cm_data["spec"]["containers"][0]
         assert "nvidia.com/gpu" in container["resources"]["requests"]
         assert "nvidia.com/gpu" in container["resources"]["limits"]
+
+        # Job pod affinity should include nvidia.com/gpu matchExpression
+        assert "nodeSelector" not in cm_data["spec"]
+        prefs = cm_data["spec"]["affinity"]["nodeAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"]
+        assert len(prefs) == 1
+        match_exprs = prefs[0]["preference"]["matchExpressions"]
+        keys = [e["key"] for e in match_exprs]
+        assert "instance-type" in keys
+        assert "workload-type" in keys
+        assert "nvidia.com/gpu" in keys
 
     def test_no_placeholders_remaining(self, tmp_path):
         def_file = make_def_file(tmp_path, "test-runner", "c5.xlarge", 2, 4)

@@ -16,6 +16,8 @@ spec:
   kubelet:
     config:
       maxPods: 110
+      containerLogMaxSize: 50Mi
+      containerLogMaxFiles: 5
     flags:
       - --register-with-taints=CriticalAddonsOnly=true:NoSchedule
 

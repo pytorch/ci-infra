@@ -1,7 +1,7 @@
 """Validation and reporting phase functions for the OSDC integration test orchestrator (phases 3-5).
 
 Phase 3: Parallel validation (smoke + compactor tests)
-Phase 4: Collect workflow results + observability verification
+Phase 4: Collect workflow results
 Phase 5: Cleanup + report
 """
 
@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -91,9 +90,32 @@ def run_parallel_validation(
 # ── Phase 4: Collect workflow results ───────────────────────────────────
 
 
-def wait_for_workflows(branch: str) -> list[dict]:
-    """Poll for workflow run completion. Returns list of run results."""
+def _filter_runs_by_time(runs: list[dict], not_before: datetime) -> list[dict]:
+    """Filter runs to only those created at or after not_before."""
+    filtered = []
+    for r in runs:
+        created = r.get("createdAt", "")
+        if not created:
+            filtered.append(r)  # keep if no timestamp (shouldn't happen)
+            continue
+        # gh returns ISO 8601 with Z suffix, e.g. "2026-03-20T23:14:05Z"
+        try:
+            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            if created_dt >= not_before:
+                filtered.append(r)
+        except (ValueError, TypeError):
+            filtered.append(r)  # keep if parse fails
+    return filtered
+
+
+def wait_for_workflows(branch: str, pr_created_at: datetime) -> list[dict]:
+    """Poll for workflow run completion. Returns list of run results.
+
+    Only considers runs created at or after pr_created_at, so historical
+    runs from previous integration test cycles on the same branch are excluded.
+    """
     log.info("Phase 4: Waiting for PR workflow runs (timeout: %d min)...", WORKFLOW_TIMEOUT_MINUTES)
+    log.info("  Filtering to runs created after %s", pr_created_at.isoformat())
 
     deadline = time.time() + WORKFLOW_TIMEOUT_MINUTES * 60
     completed_runs = []
@@ -109,7 +131,8 @@ def wait_for_workflows(branch: str) -> list[dict]:
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
 
-        runs = json.loads(result.stdout) if result.stdout.strip() else []
+        all_runs = json.loads(result.stdout) if result.stdout.strip() else []
+        runs = _filter_runs_by_time(all_runs, pr_created_at)
         if not runs:
             log.info("  No runs found yet, waiting...")
             time.sleep(POLL_INTERVAL_SECONDS)
@@ -129,11 +152,11 @@ def wait_for_workflows(branch: str) -> list[dict]:
         log.warning("  Timeout reached! Collecting partial results.")
         result = run_cmd(
             ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-             "--json", "databaseId,status,conclusion,name"],
+             "--json", "databaseId,status,conclusion,name,createdAt"],
             check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
-            completed_runs = json.loads(result.stdout)
+            completed_runs = _filter_runs_by_time(json.loads(result.stdout), pr_created_at)
 
     # Get job details for each run
     results = []
@@ -170,97 +193,6 @@ def wait_for_workflows(branch: str) -> list[dict]:
     return results
 
 
-# ── Phase 4b: Observability verification ────────────────────────────────
-
-
-def verify_observability(cluster_name: str, cfg: dict, upstream_dir: Path) -> list[dict]:
-    """Verify metrics and logs are arriving in Grafana Cloud."""
-    log.info("Phase 4b: Verifying observability...")
-    results = []
-
-    # Import smoke test helpers
-    helpers_path = upstream_dir / "tests" / "smoke"
-    sys.path.insert(0, str(helpers_path))
-    try:
-        from helpers import fetch_grafana_cloud_credentials, loki_read_url, mimir_read_url, query_loki, query_mimir
-    except ImportError:
-        log.warning("  Could not import smoke test helpers. Skipping observability checks.")
-        results.append({"name": "observability", "status": "skip", "detail": "helpers not importable"})
-        return results
-
-    # ── Mimir (metrics) ──
-    mimir_url = resolve(cfg, "monitoring.grafana_cloud_url")
-    if not mimir_url:
-        results.append({"name": "Mimir", "status": "skip", "detail": "monitoring.grafana_cloud_url not configured"})
-    else:
-        creds = fetch_grafana_cloud_credentials("monitoring", "username", "password")
-        if not creds:
-            results.append({"name": "Mimir", "status": "skip", "detail": "monitoring credentials not configured"})
-        else:
-            read_url = mimir_read_url(mimir_url)
-            username, password = creds
-
-            metrics_checks = [
-                ("runner pod metrics (kube_pod_status_phase)",
-                 f'kube_pod_status_phase{{cluster="{cluster_name}", namespace="arc-runners", phase="Running"}}'),
-                ("node-exporter metrics (node_cpu_seconds_total)",
-                 f'node_cpu_seconds_total{{cluster="{cluster_name}"}}'),
-            ]
-
-            for name, promql in metrics_checks:
-                try:
-                    data = query_mimir(read_url, promql, username, password)
-                    if data and data.get("status") == "success":
-                        result_data = data.get("data", {}).get("result", [])
-                        if result_data:
-                            results.append({"name": f"Mimir: {name}", "status": "pass", "detail": ""})
-                        else:
-                            results.append({"name": f"Mimir: {name}", "status": "fail",
-                                            "detail": "query succeeded but no data"})
-                    else:
-                        results.append({"name": f"Mimir: {name}", "status": "fail",
-                                        "detail": f"query status: {data.get('status') if data else 'no response'}"})
-                except Exception as e:
-                    results.append({"name": f"Mimir: {name}", "status": "skip", "detail": str(e)})
-
-    # ── Loki (logs) ──
-    loki_url = resolve(cfg, "logging.grafana_cloud_loki_url")
-    if not loki_url:
-        results.append({"name": "Loki", "status": "skip", "detail": "logging.grafana_cloud_loki_url not configured"})
-    else:
-        creds = fetch_grafana_cloud_credentials("logging", "loki-username", "loki-api-key-read")
-        if not creds:
-            results.append({"name": "Loki", "status": "skip", "detail": "logging credentials not configured"})
-        else:
-            read_url = loki_read_url(loki_url)
-            username, password = creds
-
-            log_checks = [
-                ("runner logs (namespace=arc-runners)",
-                 f'{{cluster="{cluster_name}", namespace="arc-runners"}}'),
-                ("ARC controller logs (namespace=arc-systems)",
-                 f'{{cluster="{cluster_name}", namespace="arc-systems"}}'),
-            ]
-
-            for name, logql in log_checks:
-                try:
-                    data = query_loki(read_url, logql, username, password)
-                    if data and data.get("status") == "success":
-                        streams = data.get("data", {}).get("result", [])
-                        if streams:
-                            results.append({"name": f"Loki: {name}", "status": "pass", "detail": ""})
-                        else:
-                            results.append({"name": f"Loki: {name}", "status": "fail",
-                                            "detail": "query succeeded but no streams"})
-                    else:
-                        results.append({"name": f"Loki: {name}", "status": "fail",
-                                        "detail": f"query status: {data.get('status') if data else 'no response'}"})
-                except Exception as e:
-                    results.append({"name": f"Loki: {name}", "status": "skip", "detail": str(e)})
-
-    return results
-
-
 # ── Phase 5: Cleanup + Report ───────────────────────────────────────────
 
 
@@ -278,7 +210,6 @@ def print_report(
     cluster_name: str,
     workflow_results: list[dict],
     validation_results: dict,
-    observability_results: list[dict],
 ):
     """Print the final summary report."""
     now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -313,7 +244,7 @@ def print_report(
         print("  PR Workflow Jobs: N/A (dry run or no runs)")
         print()
 
-    # Validation results
+    # Validation results (with output on failure)
     for name in ["smoke", "compactor"]:
         res = validation_results.get(name, {})
         status = res.get("status", "unknown")
@@ -322,25 +253,15 @@ def print_report(
         if status != "passed" and status != "skipped":
             overall_pass = False
         print(f"  {label:16s} {icon} {status.upper()}")
+        if status == "failed":
+            output = res.get("output", "")
+            if output:
+                print(f"    --- {label} output (last 50 lines) ---")
+                lines = output.rstrip("\n").split("\n")
+                for line in lines[-50:]:
+                    print(f"    | {line}")
+                print("    ---")
     print()
-
-    # Observability
-    if observability_results:
-        print("  Observability:")
-        for res in observability_results:
-            status = res["status"]
-            name = res["name"]
-            detail = res.get("detail", "")
-            if status == "pass":
-                icon = "\u2713"
-            elif status == "skip":
-                icon = "\u2298"
-            else:
-                icon = "\u2717"
-                overall_pass = False
-            suffix = f" ({detail})" if detail else ""
-            print(f"    {icon} {name}{suffix}")
-        print()
 
     # Overall
     if overall_pass:

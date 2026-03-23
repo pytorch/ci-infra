@@ -1,8 +1,10 @@
-// Karpenter (zap console encoding)
+// Karpenter (zap JSON logs)
 stage.match {
     selector = "{namespace=\"karpenter\"}"
-    stage.regex {
-        expression = "^(?P<timestamp>\\S+)\\s+(?P<level>\\S+)\\s+(?P<logger>\\S+)\\s+(?P<msg>.+)"
+    stage.json {
+        expressions = {
+            level = "level",
+        }
     }
     stage.labels {
         values = {

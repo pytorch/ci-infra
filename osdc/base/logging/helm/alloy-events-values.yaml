@@ -1,0 +1,113 @@
+# Grafana Alloy Helm values for Kubernetes Event collection.
+#
+# Single-replica Deployment — watches the K8s Events API and pushes to Loki.
+# Runs alongside the logging DaemonSet (alloy-logging) as a separate Helm release.
+# Only installed when grafana-cloud-credentials secret exists in the logging namespace.
+#
+# Dynamic values (LOKI_URL, CLUSTER_NAME, credentials) are injected by deploy.sh
+# via a temporary override file.
+
+fullnameOverride: alloy-events    # Prevent RBAC collision with alloy-logging and monitoring Alloy
+
+controller:
+  type: deployment
+  replicas: 1                     # Single replica — watching API, not node-local logs
+
+  # Run on base infrastructure nodes
+  nodeSelector:
+    role: base-infrastructure
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+serviceAccount:
+  create: true
+
+rbac:
+  create: true
+
+alloy:
+  mounts:
+    varlog: false
+    dockercontainers: false
+
+  clustering:
+    enabled: false                # Single replica — no clustering needed
+
+  configMap:
+    content: |-
+      // Collect Kubernetes events from all namespaces as JSON.
+      loki.source.kubernetes_events "cluster" {
+        log_format = "json"
+        forward_to = [loki.process.kubernetes_events.receiver]
+      }
+
+      // Extract structured fields and promote key labels for LogQL filtering.
+      loki.process "kubernetes_events" {
+        // loki.source.kubernetes_events emits a flat JSON object with top-level keys
+        // (name, kind, reason, type, sourcecomponent, sourcehost, count, msg, etc.).
+        // The namespace is set as a Loki label directly by the component — it is NOT
+        // present in the JSON payload, so event_namespace is read from the label below.
+        stage.json {
+          expressions = {
+            reason          = "reason",
+            type            = "type",
+            kind            = "kind",
+            sourcecomponent = "sourcecomponent",
+          }
+        }
+
+        // Drop events from the logging namespace to prevent feedback loops.
+        // The namespace label is set by loki.source.kubernetes_events directly.
+        stage.drop {
+          source                  = "namespace"
+          expression              = "^logging$"
+          drop_counter_reason     = "feedback_loop_prevention"
+        }
+
+        // Promote low-cardinality fields to labels.
+        // High-cardinality fields (name, sourcehost, msg) stay in the log line.
+        // reason is medium-cardinality — moved to structured_metadata.
+        stage.labels {
+          values = {
+            type = "",
+            kind = "",
+          }
+        }
+
+        // Attach medium/high-cardinality fields as structured metadata (queryable but not indexed).
+        stage.structured_metadata {
+          values = {
+            reason          = "",
+            sourcecomponent = "",
+          }
+        }
+
+        forward_to = [loki.write.grafana_cloud.receiver]
+      }
+
+      // Push events to Grafana Cloud Loki.
+      loki.write "grafana_cloud" {
+        endpoint {
+          url = env("LOKI_URL")
+
+          basic_auth {
+            username = env("LOKI_USERNAME")
+            password = env("LOKI_API_KEY")
+          }
+        }
+
+        external_labels = {
+          cluster = env("CLUSTER_NAME"),
+        }
+      }

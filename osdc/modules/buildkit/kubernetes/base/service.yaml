@@ -64,6 +64,26 @@ spec:
     app: buildkitd-lb
 
 ---
+# HAProxy metrics Service — exposes Prometheus endpoint for monitoring.
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkitd-lb-metrics
+  namespace: buildkit
+  labels:
+    app.kubernetes.io/name: buildkitd-lb
+    app.kubernetes.io/component: load-balancer
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: 9404
+      targetPort: prometheus
+      protocol: TCP
+  selector:
+    app: buildkitd-lb
+
+---
 # Headless Services — used by HAProxy for backend pod discovery via DNS.
 # These are not accessed directly by runners.
 
@@ -72,6 +92,10 @@ kind: Service
 metadata:
   name: buildkitd-arm64-pods
   namespace: buildkit
+  labels:
+    app.kubernetes.io/name: buildkitd
+    app.kubernetes.io/component: build-service
+    arch: arm64
 spec:
   clusterIP: None
   ports:
@@ -89,6 +113,10 @@ kind: Service
 metadata:
   name: buildkitd-amd64-pods
   namespace: buildkit
+  labels:
+    app.kubernetes.io/name: buildkitd
+    app.kubernetes.io/component: build-service
+    arch: amd64
 spec:
   clusterIP: None
   ports:
@@ -106,6 +134,9 @@ kind: Service
 metadata:
   name: buildkitd-pods
   namespace: buildkit
+  labels:
+    app.kubernetes.io/name: buildkitd
+    app.kubernetes.io/component: build-service
 spec:
   clusterIP: None
   ports:

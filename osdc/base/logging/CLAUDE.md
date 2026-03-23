@@ -1,14 +1,15 @@
 # base/logging/ — Centralized Log Collection
 
-Deploys Grafana Alloy as a DaemonSet to collect pod logs and system journal entries from every node, then pushes them to Grafana Cloud Loki. Only installed when a `grafana-cloud-credentials` secret exists in the logging namespace.
+Deploys Grafana Alloy in two modes: a DaemonSet for pod logs and system journal collection from every node, and a single-replica Deployment for Kubernetes Event collection. Both push to Grafana Cloud Loki. Only installed when a `grafana-cloud-credentials` secret exists in the logging namespace.
 
 ## What's here
 
 | Path | Purpose |
 |------|---------|
-| `deploy.sh` | Secret-gated Alloy DaemonSet install (creates namespace, assembles config, helm install) |
+| `deploy.sh` | Secret-gated Alloy install (DaemonSet for logs + Deployment for events) |
 | `pipelines/base.alloy` | Base Alloy River config — pod log collection, journal collection, loki.write output |
 | `helm/alloy-logging-values.yaml` | Helm values for DaemonSet mode Alloy (tolerates all taints, journal mount, positions hostPath) |
+| `helm/alloy-events-values.yaml` | Helm values for single-replica Deployment Alloy (K8s event collection) |
 | `scripts/python/assemble_config.py` | Assembles base pipeline + per-module `stage.match` blocks into a ConfigMap |
 | `scripts/python/test_assemble_config.py` | Unit tests for assembly logic |
 | `tests/smoke/test_logging.py` | Post-deploy smoke tests (namespace, DaemonSet health, ConfigMap) |
@@ -24,10 +25,9 @@ defaults:
 
 ## Log sources
 
-1. **Pod logs** — `loki.source.file` reads CRI-format logs from `/var/log/pods/` on each node
-2. **System journal** — `loki.source.journal` reads kubelet, containerd, and kernel logs from `/var/log/journal`
-
-Kubernetes events are NOT collected (no leader-election support in DaemonSet mode).
+1. **Pod logs** — `loki.source.file` reads CRI-format logs from `/var/log/pods/` on each node (DaemonSet)
+2. **System journal** — `loki.source.journal` reads kubelet, containerd, kernel, and NVIDIA GPU service logs from `/var/log/journal` (DaemonSet)
+3. **Kubernetes events** — `loki.source.kubernetes_events` watches the K8s Events API and pushes events as JSON log lines (single-replica Deployment, `alloy-events`)
 
 ## Label strategy
 
@@ -68,13 +68,17 @@ kubectl create secret generic grafana-cloud-credentials \
   --from-literal=loki-api-key-read='<API_KEY_WITH_LOGS_READ_SCOPE>'
 ```
 
-## Dual-Alloy architecture
+## Multi-Alloy architecture
 
-This logging Alloy DaemonSet is **separate from** the monitoring module's Alloy Deployment (`modules/monitoring/`). They have different namespaces, Helm releases, RBAC, and config. See `docs/observability.md` for the full dual-Alloy architecture explanation.
+The logging component deploys **two** Alloy Helm releases in the `logging` namespace:
+- **`alloy-logging`** — DaemonSet for pod logs + journal (one pod per node)
+- **`alloy-events`** — Deployment for K8s event collection (single replica on base node)
+
+Both are **separate from** the monitoring module's Alloy Deployment (`modules/monitoring/`, namespace `monitoring`). All three have distinct Helm releases, RBAC, and config. See `docs/observability.md` for the full architecture explanation.
 
 ## RBAC isolation
 
-Uses `fullnameOverride: alloy-logging` to prevent ClusterRole/ClusterRoleBinding collision with the monitoring module's Alloy deployment.
+Uses `fullnameOverride` on each Helm release (`alloy-logging`, `alloy-events`) to prevent ClusterRole/ClusterRoleBinding collision with each other and with the monitoring module's Alloy deployment.
 
 ## Adding a module pipeline
 
@@ -91,5 +95,5 @@ Consumer repos can override or suppress upstream pipelines by placing a file at 
 - **Alloy not installed**: Check `kubectl get secret grafana-cloud-credentials -n logging` — deploy is skipped without it
 - **Alloy OOM**: Default limit is 1Gi. High-throughput CI nodes may need more — check `kubectl describe pod` for OOMKilled
 - **Missing logs from a namespace**: Check if the module has a `logging/pipeline.alloy` with a broken regex — bad `stage.match` blocks can silently drop logs
-- **Rate limiting**: `stage.limit` caps at 10MB/s per Alloy pod. Check Alloy metrics for `loki_process_dropped_lines_total`
+- **Rate limiting**: `stage.limit` caps at 1000 lines/s (burst 5000) per Alloy pod. Check Alloy metrics for `loki_process_dropped_lines_total`
 - **Journal path empty**: EKS AL2023 uses `/var/log/journal` — the hostPath uses `DirectoryOrCreate` so it won't fail, but no journal logs will appear if the path is wrong

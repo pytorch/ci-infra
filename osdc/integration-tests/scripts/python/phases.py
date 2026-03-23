@@ -44,7 +44,7 @@ def ensure_canary_repo(upstream_dir: Path) -> Path:
 # ── Phase 0: Cleanup ───────────────────────────────────────────────────
 
 
-def cleanup_stale_prs(branch: str):
+def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
     """Close any stale integration test PRs and cancel running workflows."""
     log.info("Phase 0: Cleaning up stale PRs...")
 
@@ -60,7 +60,7 @@ def cleanup_stale_prs(branch: str):
 
     prs = json.loads(result.stdout) if result.stdout.strip() else []
     for pr in prs:
-        if PR_TITLE_PREFIX in pr.get("title", ""):
+        if pr_title_prefix in pr.get("title", ""):
             log.info("  Closing stale PR #%d: %s", pr["number"], pr["title"])
             run_cmd(
                 ["gh", "pr", "close", str(pr["number"]), "--repo", CANARY_REPO, "--delete-branch"],

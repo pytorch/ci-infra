@@ -14,3 +14,40 @@ stage.match {
         }
     }
 }
+
+// ARC runner pods — extract log level and throttle non-error logs
+// (GitHub stores full workflow logs, so runner-side logs are supplementary)
+stage.match {
+    selector = "{namespace=\"arc-runners\"}"
+
+    // Extract log level for filtering (word boundary match to avoid substrings)
+    stage.regex {
+        expression = "(?i)\\b(?P<level>ERROR|FATAL|PANIC|WARN|INFO|DEBUG)\\b"
+    }
+
+    stage.labels {
+        values = {
+            level = "",
+        }
+    }
+}
+
+// ARC runner pods — extract workflow_run_id from runner log lines
+// NOTE: regex pattern needs validation against actual runner log output format
+stage.match {
+    selector = "{namespace=\"arc-runners\"}"
+
+    stage.regex {
+        expression = "\\bworkflow_run_id[=: ]+(?P<workflow_run_id>\\d+)\\b"
+    }
+
+    stage.structured_metadata {
+        values = {
+            workflow_run_id = "",
+        }
+    }
+}
+
+// Note: non-error arc-runner log volume is controlled by the base pipeline's
+// 10% namespace sampling (base.alloy), which already applies aggressive
+// reduction. No additional rate limit needed here.

@@ -45,6 +45,12 @@ data:
       stats uri /stats
       stats refresh 10s
 
+    # Prometheus metrics endpoint (scraped by Alloy via ServiceMonitor)
+    frontend prometheus
+      bind *:9404
+      mode http
+      http-request use-service prometheus-exporter if { path /metrics }
+
     # Per-arch frontends: existing Services map port 1234 → these targetPorts
     frontend ft_arm64
       bind *:2234
@@ -118,6 +124,9 @@ spec:
               protocol: TCP
             - name: stats
               containerPort: 8404
+              protocol: TCP
+            - name: prometheus
+              containerPort: 9404
               protocol: TCP
 
           resources:

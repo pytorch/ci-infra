@@ -40,6 +40,7 @@ INTERVAL=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.interval_seconds "
 MAX_UPTIME=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.max_uptime_hours "48")
 DRY_RUN=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.dry_run "false")
 MIN_NODES=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_nodes "1")
+MIN_NODE_AGE=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_node_age_seconds "420")
 
 # --- Build container image ---
 echo "Building node-compactor image..."
@@ -125,6 +126,7 @@ kubectl kustomize "$COMPACTOR_DIR/kubernetes/" \
     -e "s|COMPACTOR_MAX_UPTIME_HOURS_PLACEHOLDER|\"${MAX_UPTIME}\"|g" \
     -e "s|COMPACTOR_DRY_RUN_PLACEHOLDER|\"${DRY_RUN}\"|g" \
     -e "s|COMPACTOR_MIN_NODES_PLACEHOLDER|\"${MIN_NODES}\"|g" \
+    -e "s|COMPACTOR_MIN_NODE_AGE_PLACEHOLDER|\"${MIN_NODE_AGE}\"|g" \
   | kubectl apply -f -
 
 echo "Node compactor deployed."

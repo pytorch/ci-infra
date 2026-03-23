@@ -7,5 +7,6 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
-  # DCGM GPU exporter DaemonSet (the ServiceMonitor is in monitors/)
+  # DCGM GPU exporter DaemonSet + custom metrics ConfigMap
+  - dcgm-exporter/custom-metrics-configmap.yaml
   - dcgm-exporter/daemonset.yaml
