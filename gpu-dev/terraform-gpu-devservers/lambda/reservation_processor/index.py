@@ -234,6 +234,7 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
         nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
 
         candidate_nodes = []
+        all_ready_nodes = []
 
         for node in nodes.items:
             # Check if node is ready and schedulable
@@ -271,6 +272,13 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
             # Check available GPU capacity on this node
             available_gpus = get_available_gpus_on_node(v1, node)
 
+            # Track all ready nodes (for fallback AZ when no single node has enough)
+            all_ready_nodes.append({
+                'node_name': node.metadata.name,
+                'az': node_az,
+                'available_gpus': available_gpus
+            })
+
             if available_gpus >= gpus_requested:
                 candidate_nodes.append({
                     'node_name': node.metadata.name,
@@ -280,19 +288,27 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
                 logger.info(
                     f"Node {node.metadata.name} in {node_az}: {available_gpus} available GPUs")
 
-        if not candidate_nodes:
-            logger.warning(
-                f"No nodes found with {gpus_requested} available {gpu_type} GPUs")
-            return None
+        if candidate_nodes:
+            # Return the AZ of the first suitable node (Kubernetes scheduler will make the final decision)
+            selected_node = candidate_nodes[0]
+            target_az = selected_node['az']
+            logger.info(
+                f"Target AZ for {gpu_type} reservation: {target_az} (node: {selected_node['node_name']})")
+            return target_az
 
-        # Return the AZ of the first suitable node (Kubernetes scheduler will make the final decision)
-        # This gives us the best prediction of where the pod will land
-        selected_node = candidate_nodes[0]
-        target_az = selected_node['az']
+        if all_ready_nodes:
+            # No single node has enough GPUs, but nodes exist — return AZ of the node
+            # with the most available GPUs so the disk is created in the right AZ
+            best_node = max(all_ready_nodes, key=lambda n: n['available_gpus'])
+            target_az = best_node['az']
+            logger.info(
+                f"No single node has {gpus_requested} {gpu_type} GPUs, "
+                f"but {len(all_ready_nodes)} nodes exist. Using AZ {target_az} "
+                f"from node {best_node['node_name']} ({best_node['available_gpus']} GPUs available)")
+            return target_az
 
-        logger.info(
-            f"Target AZ for {gpu_type} reservation: {target_az} (node: {selected_node['node_name']})")
-        return target_az
+        logger.warning(f"No ready/schedulable {gpu_type} nodes found in cluster")
+        return None
 
     except Exception as e:
         logger.error(f"Error determining target AZ for {gpu_type}: {str(e)}")
@@ -1101,8 +1117,6 @@ def scan_all_reservations_with_prefix(table, reservation_prefix: str) -> list:
 def record_trace_event(trace_data: dict, event_name: str) -> None:
     """Record a timing event in trace data"""
     if trace_data is not None:
-        import time
-        from decimal import Decimal
         # Convert float to Decimal for DynamoDB compatibility
         trace_data[event_name] = Decimal(str(time.time()))
 
@@ -1930,8 +1944,6 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         trace_enabled = reservation_request.get("trace", False)
         trace_data = {}
         if trace_enabled:
-            import time
-            from decimal import Decimal
             # Convert floats to Decimal for DynamoDB compatibility
             trace_data["lambda_receive"] = Decimal(str(time.time()))
             # CLI start time passed from client (also needs Decimal conversion)
@@ -1950,8 +1962,6 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         if reservation_id:
             try:
                 # Create initial reservation record with pending status
-                from datetime import datetime, timedelta
-
                 duration_hours = reservation_request.get("duration_hours", 8)
                 duration_float = float(duration_hours)
                 expires_at = (
@@ -2034,10 +2044,14 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
             logger.info(
                 f"Multinode node: skipping individual resource check, coordinator already validated resources")
             available_gpus = requested_gpus  # Assume coordinator validated
+            max_single_node = requested_gpus
         else:
             available_gpus = check_gpu_availability(gpu_type)
+            max_single_node = check_max_gpus_on_single_node(gpu_type)
+            logger.info(
+                f"Max {gpu_type.upper()} GPUs on a single node: {max_single_node}")
 
-        if available_gpus >= requested_gpus:
+        if available_gpus >= requested_gpus and max_single_node >= requested_gpus:
             # Update status to show we're preparing the machine
             reservation_id = reservation_request.get("reservation_id")
             if reservation_id:
@@ -2076,6 +2090,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 # Provide more specific queued message based on availability
                 if available_gpus == 0:
                     queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
+                elif available_gpus >= requested_gpus and max_single_node < requested_gpus:
+                    queue_message = f"Need {requested_gpus} {gpu_type.upper()} GPUs on one node, max available on single node is {max_single_node} - position #{queue_info.get('position', '?')}"
                 else:
                     queue_message = f"Need {requested_gpus} {gpu_type.upper()} GPUs, only {available_gpus} available - position #{queue_info.get('position', '?')}"
 
@@ -2246,6 +2262,34 @@ def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
     except Exception as e:
         logger.error(
             f"Error checking schedulable GPUs for type {gpu_type}: {str(e)}")
+        return 0
+
+
+def check_max_gpus_on_single_node(gpu_type: str) -> int:
+    """Return the maximum available GPUs on any single node of the specified type.
+
+    K8s cannot split a GPU request across nodes, so a pod requesting N GPUs
+    needs a single node with N available GPUs.
+    """
+    try:
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+        nodes = v1.list_node()
+        max_gpus = 0
+
+        for node in nodes.items:
+            node_labels = node.metadata.labels or {}
+            if node_labels.get("GpuType") != gpu_type:
+                continue
+            if not is_node_ready_and_schedulable(node):
+                continue
+            node_gpus = get_available_gpus_on_node(v1, node)
+            max_gpus = max(max_gpus, node_gpus)
+
+        return max_gpus
+
+    except Exception as e:
+        logger.error(f"Error checking max GPUs per node for {gpu_type}: {e}")
         return 0
 
 
@@ -2675,7 +2719,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                 # Determine target AZ for this reservation
                 target_az = get_target_az_for_reservation(gpu_type, gpu_count)
                 if not target_az:
-                    raise ValueError(f"Could not determine target AZ for {gpu_type} GPUs")
+                    raise ValueError(f"No {gpu_type} nodes found in cluster")
 
                 logger.info(f"Target AZ for reservation: {target_az}")
                 logger.info(f"Creating persistent disk for user {user_id}, disk_name={disk_name or 'default'}")
@@ -2848,8 +2892,23 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                 duration_hours = float(request.get("duration_hours", 8))
                 expires_timestamp = int(time.time()) + \
                     int(duration_hours * 3600)
-                store_domain_mapping(domain_name, node_private_ip or node_public_ip,
+                mapping_stored = store_domain_mapping(domain_name, node_private_ip or node_public_ip,
                                      node_port, reservation_id, expires_timestamp)
+
+                # Retry with new names if collision detected
+                if not mapping_stored:
+                    logger.warning(f"Domain mapping collision for {domain_name}, retrying with new name")
+                    for _ in range(5):
+                        domain_name = generate_unique_name()
+                        dns_success = create_dns_record(domain_name, node_public_ip, node_port)
+                        if dns_success:
+                            mapping_stored = store_domain_mapping(
+                                domain_name, node_private_ip or node_public_ip,
+                                node_port, reservation_id, expires_timestamp)
+                            if mapping_stored:
+                                break
+                    if not mapping_stored:
+                        logger.error(f"Failed to store domain mapping after retries for reservation {reservation_id}")
 
                 logger.info(
                     f"Created domain name {domain_name} for reservation {reservation_id}")
@@ -7221,8 +7280,10 @@ def process_scheduled_queue_management():
                 gpu_type = reservation.get("gpu_type", "h100")
 
                 # Check if this reservation can be allocated now - validate GPU type availability
+                # Must check both total and per-node: K8s can't split GPU requests across nodes
                 type_available_gpus = check_gpu_availability(gpu_type)
-                if type_available_gpus >= requested_gpus:
+                max_single_node = check_max_gpus_on_single_node(gpu_type)
+                if type_available_gpus >= requested_gpus and max_single_node >= requested_gpus:
                     logger.info(
                         f"Allocating {requested_gpus} {gpu_type.upper()} GPUs for reservation {reservation_id} - {type_available_gpus} available"
                     )

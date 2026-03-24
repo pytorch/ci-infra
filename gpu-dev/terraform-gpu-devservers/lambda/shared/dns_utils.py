@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import time
+from datetime import datetime
 from typing import List, Optional
 
 import boto3
@@ -146,19 +147,26 @@ def get_existing_dns_names() -> List[str]:
         dynamodb = boto3.resource("dynamodb")
         table = dynamodb.Table(table_name)
 
-        # Scan for all active domain mappings
+        # Scan for all domain mappings
         response = table.scan()
         existing_names = []
+        now = time.time()
 
         for item in response.get('Items', []):
-            # Check if the reservation is still active
-            reservation_id = item.get('reservation_id')
-            if reservation_id:
-                # Quick check: if expires_at is in the future, consider it active
-                # The exact status will be verified during actual reservation creation
-                expires_at = item.get('expires_at', 0)
-                if expires_at > time.time():
-                    existing_names.append(item.get('domain_name'))
+            domain_name = item.get('domain_name')
+            if not domain_name:
+                continue
+
+            expires_at = item.get('expires_at', 0)
+            try:
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at).timestamp()
+                expires_at = float(expires_at)
+            except (ValueError, TypeError):
+                expires_at = 0
+
+            if expires_at > now:
+                existing_names.append(domain_name)
 
         return existing_names
     except Exception as e:
@@ -171,7 +179,7 @@ def get_existing_dns_names() -> List[str]:
 
             for page in paginator.paginate(HostedZoneId=HOSTED_ZONE_ID):
                 for record in page['ResourceRecordSets']:
-                    if record['Type'] == 'A' and record['Name'].endswith(f'.{DOMAIN_NAME}.'):
+                    if record['Type'] in ('A', 'CNAME') and record['Name'].endswith(f'.{DOMAIN_NAME}.'):
                         # Extract subdomain name
                         name = record['Name'].replace(f'.{DOMAIN_NAME}.', '')
                         existing_names.append(name)
@@ -405,15 +413,41 @@ def store_domain_mapping(subdomain: str, target_ip: str, target_port: int, reser
         dynamodb = boto3.resource("dynamodb")
         table = dynamodb.Table(table_name)
 
-        table.put_item(
-            Item={
-                'domain_name': subdomain,
-                'node_ip': target_ip,  # Proxy expects 'node_ip'
-                'node_port': target_port,  # Proxy expects 'node_port'
-                'reservation_id': reservation_id,
-                'expires_at': expires_at
-            }
-        )
+        item = {
+            'domain_name': subdomain,
+            'node_ip': target_ip,  # Proxy expects 'node_ip'
+            'node_port': target_port,  # Proxy expects 'node_port'
+            'reservation_id': reservation_id,
+            'expires_at': expires_at
+        }
+
+        # Only write if domain doesn't exist, has no expiry, or is expired
+        try:
+            table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(domain_name) OR attribute_not_exists(expires_at) OR expires_at < :now",
+                ExpressionAttributeValues={':now': int(time.time())}
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                # Existing entry has a non-expired numeric expires_at — real collision
+                # For string timestamps (legacy), we can't compare in DynamoDB, so
+                # check manually
+                try:
+                    existing = table.get_item(Key={'domain_name': subdomain}).get('Item', {})
+                    existing_expires = existing.get('expires_at', 0)
+                    if isinstance(existing_expires, str):
+                        existing_expires = datetime.fromisoformat(existing_expires).timestamp()
+                    if float(existing_expires) < time.time():
+                        # Actually expired, force overwrite
+                        table.put_item(Item=item)
+                        logger.info(f"Overwrote expired domain mapping: {subdomain}")
+                        return True
+                except Exception:
+                    pass
+                logger.error(f"Domain mapping collision: {subdomain} is already in use by another active reservation")
+                return False
+            raise
 
         logger.info(f"Stored domain mapping: {subdomain} -> {target_ip}:{target_port}")
         return True
