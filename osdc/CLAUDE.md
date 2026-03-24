@@ -20,7 +20,7 @@ This project uses **OpenTofu** (`tofu`), NOT Terraform. Running `terraform` comm
 ## Before Declaring Work Complete (MANDATORY)
 
 ```bash
-just lint    # All 11 linters must pass with zero errors
+just lint    # All 13 linters must pass with zero errors
 just test    # All unit tests must pass
 ```
 
@@ -41,10 +41,30 @@ Detailed instructions are broken into on-demand skills. Load the relevant skill 
 |-------|---------------|--------------|
 | `osdc-project-structure` | Architecture, directory tree, submodule pattern, design decisions, git cache, knowledge base, key files, docs index | Always load when working on OSDC |
 | `osdc-deployment` | Deploy workflow, just recipes, base/module deploy order, clusters.yaml, Terraform architecture, smoke tests | Deploying, adding modules, modifying deploy scripts |
-| `osdc-tooling-and-quality` | Tools (tofu/just/mise/uv), automation hierarchy, unit tests, code style, 11 linters, indentation rules, full Don't Do list | Writing code, running linters, adding scripts/tests |
+| `osdc-tooling-and-quality` | Tools (tofu/just/mise/uv), automation hierarchy, unit tests, code style, 13 linters, indentation rules, full Don't Do list | Writing code, running linters, adding scripts/tests |
 | `osdc-runners-nodepools` | Runners, NodePools, BuildKit, GitHub Actions constraints, node taints, image mirroring, change checklist | Modifying runners, nodepools, BuildKit, node configs |
 | `osdc-observability` | Monitoring + logging pipelines, three-Alloy architecture, Loki log queries, label strategy, module pipelines, credentials | Working on monitoring, logging, Alloy, querying logs |
 | `osdc-cli-debugging` | Read-only kubectl, aws, helm, tofu commands and safety boundaries | Investigating cluster state, debugging pods |
 | `osdc-harbor` | Harbor Helm chart gotchas, image mirroring, proxy cache configuration | Working on Harbor or container registry config |
 
 Load the relevant `osdc-*` skill when you need detailed instructions on any specific topic.
+
+## Docs Index
+
+Reference documentation in `docs/`:
+
+| Doc | What it covers |
+|-----|---------------|
+| `docs/architecture.md` | Platform design — base vs modules separation, cluster lifecycle on AWS EKS |
+| `docs/modules.md` | Module contract — what a module is, directory structure, required files |
+| `docs/observability.md` | Three-Alloy observability architecture — monitoring + logging pipelines to Grafana Cloud |
+| `docs/observability-estimates.md` | Per-unit cost estimates for metrics cardinality and log volume (Grafana Cloud billing) |
+| `docs/operations.md` | Operational prerequisites — AWS CLI, mise, working directory setup for cluster management |
+| `docs/loki_query.md` | CLI queries against Grafana Cloud Loki when kubectl logs is unavailable |
+| `docs/mimir_query.md` | CLI queries against Grafana Cloud Mimir (Prometheus metrics, no in-cluster Prometheus) |
+| `docs/runner_naming_convention.md` | Runner label format and the ~42 character name limit (ARC/K8s/Cilium constraints) |
+| `docs/current_runner_load_distribution.md` | Job counts and peak concurrency by runner type (pytorch/pytorch, from ClickHouse) |
+| `docs/node-utilization-optimization.md` | Runner-to-node packing efficiency analysis and instance type recommendations |
+| `docs/node-warmup-and-scheduling-gates.md` | Full node initialization sequence — taints, DaemonSets, init containers before job scheduling |
+| `docs/initialize-containers-slowness.md` | Root-cause analysis of "Initialize containers" delays (ARC workspace copy + CPU starvation) |
+| `docs/pr-migration.md` | Migration plan from monolithic `arc/` to modular `osdc/` layout |

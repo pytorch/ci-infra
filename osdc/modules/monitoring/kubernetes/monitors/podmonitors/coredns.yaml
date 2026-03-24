@@ -1,0 +1,32 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: coredns
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  # CoreDNS pods in kube-system. PodMonitor is used instead of ServiceMonitor
+  # because EKS's kube-dns Service may not expose the metrics port (9153).
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      k8s-app: kube-dns
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 60s
+      metricRelabelings:
+        # Drop Go runtime metrics (high cardinality, low operational value)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "go_.*"
+        # Drop process metrics (CPU/memory of CoreDNS itself)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "process_.*"
+        # Drop histogram buckets (keep _sum/_count for latency tracking)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "coredns_dns_request_duration_seconds_bucket|coredns_forward_request_duration_seconds_bucket"

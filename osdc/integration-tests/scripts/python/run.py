@@ -15,6 +15,7 @@ import json
 import logging
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -162,8 +163,12 @@ def main():
     log.info("  B200 enabled: %s", b200_enabled)
     log.info("  Branch: %s", branch)
 
+    start_time = time.monotonic()
     pr_number = None
+    pr_created_at = None
     overall_pass = False
+    validation_results = {}
+    workflow_results = []
     try:
         # Phase 0: Cleanup
         cleanup_stale_prs(branch)
@@ -201,11 +206,34 @@ def main():
             workflow_results, validation_results,
         )
 
+    except KeyboardInterrupt:
+        log.warning("Interrupted! Printing available results...")
+
+        # If we have a PR but no workflow results yet, try a quick fetch
+        if pr_created_at and not workflow_results:
+            from phases_validation import _collect_run_details, _fetch_latest_runs
+
+            try:
+                runs = _fetch_latest_runs(branch, pr_created_at)
+                if runs:
+                    workflow_results = _collect_run_details(runs)
+            except KeyboardInterrupt:
+                pass  # double Ctrl+C — skip fetch, print what we have
+
+        overall_pass = print_report(
+            args.cluster_id, cluster_name,
+            workflow_results, validation_results,
+            interrupted=True,
+        )
+
     finally:
         if pr_number is not None and not args.keep_pr:
             close_pr(pr_number)
         elif pr_number is not None and args.keep_pr:
             log.info("Keeping PR #%d open (--keep-pr).", pr_number)
+
+        elapsed = time.monotonic() - start_time
+        log.info("Total integration test time: %s", format_duration(elapsed))
 
     sys.exit(0 if overall_pass else 1)
 

@@ -22,7 +22,12 @@ DEFAULTS = {
     "COMPACTOR_MIN_NODES": "1",
     "COMPACTOR_DRY_RUN": "false",
     "COMPACTOR_TAINT_COOLDOWN": "300",
-    "COMPACTOR_MIN_NODE_AGE": "420",
+    "COMPACTOR_MIN_NODE_AGE": "900",
+    "COMPACTOR_FLEET_COOLDOWN": "900",
+    "COMPACTOR_TAINT_RATE": "0.3",
+    "COMPACTOR_SPARE_CAPACITY_NODES": "3",
+    "COMPACTOR_SPARE_CAPACITY_RATIO": "0.15",
+    "COMPACTOR_SPARE_CAPACITY_THRESHOLD": "0.4",
 }
 
 
@@ -36,6 +41,11 @@ class Config:
     dry_run: bool
     taint_cooldown: int
     min_node_age: int
+    fleet_cooldown: int
+    taint_rate: float
+    spare_capacity_nodes: int
+    spare_capacity_ratio: float
+    spare_capacity_threshold: float
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -51,6 +61,11 @@ class Config:
             dry_run=env("COMPACTOR_DRY_RUN").lower() in ("true", "1", "yes"),
             taint_cooldown=int(env("COMPACTOR_TAINT_COOLDOWN")),
             min_node_age=int(env("COMPACTOR_MIN_NODE_AGE")),
+            fleet_cooldown=int(env("COMPACTOR_FLEET_COOLDOWN")),
+            taint_rate=float(env("COMPACTOR_TAINT_RATE")),
+            spare_capacity_nodes=int(env("COMPACTOR_SPARE_CAPACITY_NODES")),
+            spare_capacity_ratio=float(env("COMPACTOR_SPARE_CAPACITY_RATIO")),
+            spare_capacity_threshold=float(env("COMPACTOR_SPARE_CAPACITY_THRESHOLD")),
         )
 
 
@@ -70,6 +85,7 @@ class PodInfo:
     node_name: str
     is_daemonset: bool
     start_time: datetime | None = None
+    is_phantom: bool = False
 
 
 @dataclass
@@ -84,6 +100,7 @@ class NodeState:
     pods: list[PodInfo] = field(default_factory=list)
     is_tainted: bool = False
     node_taints: list = field(default_factory=list)  # raw taint objects from API
+    labels: dict = field(default_factory=dict)  # node metadata labels
 
     @property
     def workload_pods(self) -> list[PodInfo]:

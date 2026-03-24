@@ -58,6 +58,42 @@ def wait_for(
         time.sleep(min(poll_s, remaining))
 
 
+def wait_for_stable(
+    description: str,
+    state_fn: Callable[[], object],
+    stable_s: float = 20,
+    timeout_s: int = 120,
+    poll_s: int = 5,
+) -> None:
+    """Poll ``state_fn`` until its return value is unchanged for *stable_s*.
+
+    Use instead of hard ``time.sleep`` when waiting for a controller to
+    stabilise — this returns as soon as the state is genuinely stable
+    rather than waiting a fixed duration.
+    """
+    deadline = time.monotonic() + timeout_s
+    log.info("Waiting for stable: %s (stable %gs, timeout %ds)", description, stable_s, timeout_s)
+    last_state = state_fn()
+    stable_since = time.monotonic()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            elapsed_stable = time.monotonic() - stable_since
+            raise TimeoutError(
+                f"Timed out after {timeout_s}s waiting for stable: {description} "
+                f"(last change {elapsed_stable:.0f}s ago)"
+            )
+        time.sleep(min(poll_s, remaining))
+        current = state_fn()
+        if current != last_state:
+            last_state = current
+            stable_since = time.monotonic()
+        elapsed_stable = time.monotonic() - stable_since
+        if elapsed_stable >= stable_s:
+            log.info("  Stable: %s (unchanged for %gs)", description, elapsed_stable)
+            return
+
+
 # ---------------------------------------------------------------------------
 # Node queries
 # ---------------------------------------------------------------------------
@@ -316,21 +352,48 @@ def restore_compactor_env(client: Client, originals: dict[str, str]) -> None:
 
 
 def restart_compactor_pod(client: Client) -> None:
-    """Delete the compactor pod so the Deployment recreates it."""
+    """Delete the compactor pod and wait for a *new* pod to be Running.
+
+    The old pod stays in ``Running`` phase during its graceful termination
+    period, so we must track old pod names and wait for them to disappear
+    before checking for a replacement.
+    """
+    old_names: set[str] = set()
     for pod in client.list(
         PodResource,
         namespace=COMPACTOR_NAMESPACE,
         labels={"app.kubernetes.io/name": "node-compactor"},
     ):
         if pod.metadata and pod.metadata.name:
+            old_names.add(pod.metadata.name)
             client.delete(
                 PodResource,
                 pod.metadata.name,
                 namespace=COMPACTOR_NAMESPACE,
             )
-    # Wait for new pod to be Running
+
+    # Wait for old pod(s) to fully terminate
+    def _old_pods_gone() -> bool:
+        for pod in client.list(
+            PodResource,
+            namespace=COMPACTOR_NAMESPACE,
+            labels={"app.kubernetes.io/name": "node-compactor"},
+        ):
+            if pod.metadata and pod.metadata.name in old_names:
+                return False
+        return True
+
+    if old_names:
+        wait_for(
+            f"old compactor pod(s) terminated: {old_names}",
+            _old_pods_gone,
+            timeout_s=120,
+            poll_s=2,
+        )
+
+    # Wait for a new pod to be Running
     wait_for(
-        "compactor pod running",
+        "new compactor pod running",
         lambda: _compactor_pod_running(client),
         timeout_s=120,
         poll_s=5,

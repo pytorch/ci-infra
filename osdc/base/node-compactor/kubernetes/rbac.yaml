@@ -13,6 +13,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
   # Discover managed NodePools
   - apiGroups: ["karpenter.sh"]
     resources: ["nodepools"]

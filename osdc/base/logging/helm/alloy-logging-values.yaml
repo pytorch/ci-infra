@@ -43,7 +43,7 @@ controller:
       cpu: 500m
       memory: 1Gi
     limits:
-      cpu: "1"
+      cpu: "3"
       memory: 2Gi               # High-throughput CI nodes need headroom
 
 serviceAccount:
@@ -53,6 +53,10 @@ rbac:
   create: true
 
 alloy:
+  # Note: extraEnv (GOGC, GOMEMLIMIT, LOKI_*, NODE_NAME) is set in deploy.sh's
+  # runtime override file because it includes per-cluster secrets and config.
+  # Helm array overrides replace entirely, so all env vars must be in one place.
+
   mounts:
     varlog: true                 # /var/log for pod logs
     dockercontainers: false      # containerd, not Docker

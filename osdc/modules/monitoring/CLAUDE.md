@@ -13,8 +13,8 @@ Prometheus, Grafana, and AlertManager are **not installed locally** — all metr
 | `helm/alloy-values.yaml` | Grafana Alloy values — ServiceMonitor/PodMonitor discovery + remote_write to Grafana Cloud |
 | `kubernetes/namespace.yaml` | Monitoring namespace |
 | `kubernetes/monitors/` | CRD-dependent resources applied by deploy.sh after Helm install |
-| `kubernetes/monitors/servicemonitors/` | ServiceMonitors for node-compactor, git-cache-central, Harbor, ARC controller, Karpenter |
-| `kubernetes/monitors/podmonitors/` | PodMonitors for git-cache DaemonSet, ARC listeners |
+| `kubernetes/monitors/servicemonitors/` | ServiceMonitors for API server, node-compactor, git-cache-central, Harbor, ARC controller, Karpenter |
+| `kubernetes/monitors/podmonitors/` | PodMonitors for CoreDNS, git-cache DaemonSet, ARC listeners |
 | `kubernetes/dcgm-exporter/` | DCGM exporter DaemonSet + custom metrics ConfigMap (ServiceMonitor is in monitors/) |
 | `kubernetes/alerts/` | PrometheusRule CRDs — ARC, infrastructure, and GPU alerts (synced to Grafana Cloud by Alloy's `mimir.rules.kubernetes`) |
 

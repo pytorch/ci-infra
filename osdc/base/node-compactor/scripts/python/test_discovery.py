@@ -25,7 +25,12 @@ def make_config(**overrides) -> Config:
         "min_nodes": 1,
         "dry_run": False,
         "taint_cooldown": 300,
-        "min_node_age": 420,
+        "min_node_age": 900,
+        "fleet_cooldown": 120,
+        "taint_rate": 1.0,
+        "spare_capacity_nodes": 2,
+        "spare_capacity_ratio": 0.15,
+        "spare_capacity_threshold": 0.4,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -55,6 +60,13 @@ def make_mock_node(
     return node
 
 
+def make_mock_namespace(name: str, deletion_timestamp=None):
+    ns = MagicMock()
+    ns.metadata.name = name
+    ns.metadata.deletionTimestamp = deletion_timestamp
+    return ns
+
+
 def make_mock_pod(
     name: str = "pod-1",
     namespace: str = "default",
@@ -66,16 +78,20 @@ def make_mock_pod(
     start_time: datetime | None = None,
     conditions: list | None = None,
     tolerations: list | None = None,
+    creation_timestamp: datetime | None = None,
+    scheduling_gates: list | None = None,
 ):
     pod = MagicMock()
     pod.metadata.name = name
     pod.metadata.namespace = namespace
+    pod.metadata.creationTimestamp = creation_timestamp or NOW - timedelta(minutes=5)
     pod.metadata.ownerReferences = []
     if owner_kind:
         ref = MagicMock()
         ref.kind = owner_kind
         pod.metadata.ownerReferences = [ref]
     pod.spec.nodeName = node_name
+    pod.spec.schedulingGates = scheduling_gates
     container = MagicMock()
     container.resources.requests = {"cpu": cpu_request, "memory": memory_request}
     pod.spec.containers = [container]
@@ -349,7 +365,7 @@ class TestBuildNodeStates:
             creation_timestamp=creation,
         )
 
-        client.list.side_effect = [[node], []]  # Nodes, then Pods
+        client.list.side_effect = [[node], [], []]  # Nodes, Namespaces, Pods
 
         states, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -374,7 +390,7 @@ class TestBuildNodeStates:
         pod1 = make_mock_pod("pod-a", node_name="node-1", cpu_request="2")
         pod2 = make_mock_pod("pod-b", node_name="node-2", cpu_request="4")
 
-        client.list.side_effect = [[node1, node2], [pod1, pod2]]
+        client.list.side_effect = [[node1, node2], [], [pod1, pod2]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool", "node-2": "pool"})
 
@@ -393,7 +409,7 @@ class TestBuildNodeStates:
         pod_managed = make_mock_pod("pod-m", node_name="node-1")
         pod_other = make_mock_pod("pod-other", node_name="node-unmanaged")
 
-        client.list.side_effect = [[node1], [pod_managed, pod_other]]
+        client.list.side_effect = [[node1], [], [pod_managed, pod_other]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -411,7 +427,7 @@ class TestBuildNodeStates:
         pod_done = make_mock_pod("pod-done", node_name="node-1", phase="Succeeded")
         pod_fail = make_mock_pod("pod-fail", node_name="node-1", phase="Failed")
 
-        client.list.side_effect = [[node], [pod_ok, pod_done, pod_fail]]
+        client.list.side_effect = [[node], [], [pod_ok, pod_done, pod_fail]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -430,7 +446,7 @@ class TestBuildNodeStates:
             taints=[taint],
         )
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -448,7 +464,7 @@ class TestBuildNodeStates:
             taints=[taint],
         )
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -465,10 +481,11 @@ class TestBuildNodeStates:
         condition.type = "PodScheduled"
         condition.reason = "Unschedulable"
         condition.status = "False"
+        condition.message = ""
 
         pending_pod = make_mock_pod("pending-pod", node_name=None, phase="Pending", conditions=[condition])
 
-        client.list.side_effect = [[node], [pending_pod]]
+        client.list.side_effect = [[node], [], [pending_pod]]
 
         states, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -476,8 +493,8 @@ class TestBuildNodeStates:
         assert pending[0].metadata.name == "pending-pod"
         assert len(states["node-1"].pods) == 0
 
-    def test_pending_schedulable_pod_not_in_pending_list(self):
-        """Pending pods without Unschedulable condition are not collected."""
+    def test_pending_pod_without_unschedulable_still_collected(self):
+        """Pending pods without Unschedulable condition ARE now collected (broader detection)."""
         cfg = make_config()
         client = MagicMock()
 
@@ -485,11 +502,12 @@ class TestBuildNodeStates:
 
         pending_pod = make_mock_pod("pending-ok", node_name=None, phase="Pending", conditions=[])
 
-        client.list.side_effect = [[node], [pending_pod]]
+        client.list.side_effect = [[node], [], [pending_pod]]
 
         _states, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
-        assert len(pending) == 0
+        assert len(pending) == 1
+        assert pending[0].metadata.name == "pending-ok"
 
     def test_daemonset_pod_identified(self):
         """DaemonSet pods are marked is_daemonset=True."""
@@ -501,7 +519,7 @@ class TestBuildNodeStates:
         ds_pod = make_mock_pod("ds-pod", node_name="node-1", owner_kind="DaemonSet")
         regular_pod = make_mock_pod("regular-pod", node_name="node-1", owner_kind="ReplicaSet")
 
-        client.list.side_effect = [[node], [ds_pod, regular_pod]]
+        client.list.side_effect = [[node], [], [ds_pod, regular_pod]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -523,7 +541,7 @@ class TestBuildNodeStates:
         pod.status.phase = "Running"
         pod.spec = None
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -540,7 +558,7 @@ class TestBuildNodeStates:
         # Override: spec exists but nodeName is None
         pod.spec.nodeName = None
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -559,7 +577,7 @@ class TestBuildNodeStates:
         # Override: metadata.creationTimestamp is None
         node.metadata.creationTimestamp = None
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         before = datetime.now(UTC)
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
@@ -576,7 +594,7 @@ class TestBuildNodeStates:
         node1 = make_mock_node("node-managed", labels={"karpenter.sh/nodepool": "pool"})
         node2 = make_mock_node("node-other", labels={"karpenter.sh/nodepool": "pool"})
 
-        client.list.side_effect = [[node1, node2], []]
+        client.list.side_effect = [[node1, node2], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-managed": "pool"})
 
@@ -590,7 +608,7 @@ class TestBuildNodeStates:
 
         node = make_mock_node("node-1", labels={})
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -605,7 +623,7 @@ class TestBuildNodeStates:
         st = NOW - timedelta(minutes=30)
         pod = make_mock_pod("pod-1", node_name="node-1", start_time=st)
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -624,7 +642,7 @@ class TestBuildNodeStates:
             taints=[t1, t2],
         )
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -638,7 +656,7 @@ class TestBuildNodeStates:
         node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.status = None
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -653,7 +671,7 @@ class TestBuildNodeStates:
         node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.spec = None
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -668,7 +686,7 @@ class TestBuildNodeStates:
         node = make_mock_node("node-1")
         node.metadata.labels = None
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -682,7 +700,7 @@ class TestBuildNodeStates:
         node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.status.allocatable = None
 
-        client.list.side_effect = [[node], []]
+        client.list.side_effect = [[node], [], []]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -699,7 +717,7 @@ class TestBuildNodeStates:
         pod = make_mock_pod("pod-nostatus", node_name="node-1")
         pod.status = None
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
@@ -715,30 +733,30 @@ class TestBuildNodeStates:
         pod = make_mock_pod("pod-nostart", node_name="node-1", start_time=None)
         pod.status.startTime = None
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         states, _ = build_node_states(client, cfg, {"node-1": "pool"})
 
         assert states["node-1"].pods[0].start_time is None
 
-    def test_pending_pod_with_conditions_none(self):
-        """Pending pod with conditions=None -> not collected as unschedulable."""
+    def test_pending_pod_with_conditions_none_still_collected(self):
+        """Pending pod with conditions=None -> still collected (no exclusion triggered)."""
         cfg = make_config()
         client = MagicMock()
 
         node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
 
-        pod = make_mock_pod("pending-nocond", phase="Pending")
+        pod = make_mock_pod("pending-nocond", node_name=None, phase="Pending")
         pod.status.conditions = None
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         _, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
-        assert len(pending) == 0
+        assert len(pending) == 1
 
-    def test_pending_pod_condition_type_not_podscheduled(self):
-        """Pending pod with non-PodScheduled condition -> not collected."""
+    def test_pending_pod_condition_type_not_podscheduled_still_collected(self):
+        """Pending pod with non-PodScheduled condition -> still collected (broader detection)."""
         cfg = make_config()
         client = MagicMock()
 
@@ -748,17 +766,18 @@ class TestBuildNodeStates:
         cond.type = "Ready"
         cond.reason = "Unschedulable"
         cond.status = "False"
+        cond.message = ""
 
-        pod = make_mock_pod("pending-ready", phase="Pending", conditions=[cond])
+        pod = make_mock_pod("pending-ready", node_name=None, phase="Pending", conditions=[cond])
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         _, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
-        assert len(pending) == 0
+        assert len(pending) == 1
 
-    def test_pending_pod_scheduled_but_not_unschedulable_reason(self):
-        """Pending pod with PodScheduled but reason != Unschedulable -> not collected."""
+    def test_pending_pod_scheduled_but_not_unschedulable_reason_still_collected(self):
+        """Pending pod with PodScheduled reason != Unschedulable -> still collected."""
         cfg = make_config()
         client = MagicMock()
 
@@ -768,17 +787,18 @@ class TestBuildNodeStates:
         cond.type = "PodScheduled"
         cond.reason = "OtherReason"
         cond.status = "False"
+        cond.message = ""
 
-        pod = make_mock_pod("pending-other", phase="Pending", conditions=[cond])
+        pod = make_mock_pod("pending-other", node_name=None, phase="Pending", conditions=[cond])
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         _, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
-        assert len(pending) == 0
+        assert len(pending) == 1
 
-    def test_pending_pod_scheduled_true_not_collected(self):
-        """Pending pod with PodScheduled status=True -> not collected."""
+    def test_pending_pod_scheduled_true_still_collected(self):
+        """Pending pod with PodScheduled status=True -> still collected (broader detection)."""
         cfg = make_config()
         client = MagicMock()
 
@@ -788,11 +808,224 @@ class TestBuildNodeStates:
         cond.type = "PodScheduled"
         cond.reason = "Unschedulable"
         cond.status = "True"
+        cond.message = ""
 
-        pod = make_mock_pod("pending-true", phase="Pending", conditions=[cond])
+        pod = make_mock_pod("pending-true", node_name=None, phase="Pending", conditions=[cond])
 
-        client.list.side_effect = [[node], [pod]]
+        client.list.side_effect = [[node], [], [pod]]
 
         _, pending = build_node_states(client, cfg, {"node-1": "pool"})
 
+        assert len(pending) == 1
+
+
+# ============================================================================
+# Pending pod exclusion filter tests
+# ============================================================================
+
+
+class TestPendingPodExclusionFilters:
+    """Tests for the pending pod exclusion filters in build_node_states()."""
+
+    def _run_with_pending_pod(self, pod, namespaces=None):
+        """Helper: run build_node_states with one managed node and one pending pod."""
+        cfg = make_config()
+        client = MagicMock()
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
+        ns_list = namespaces or []
+        client.list.side_effect = [[node], ns_list, [pod]]
+        return build_node_states(client, cfg, {"node-1": "pool"})
+
+    def test_scheduling_gates_excluded(self):
+        """Pod with scheduling gates is excluded from pending list."""
+        gate = MagicMock()
+        gate.name = "my-gate"
+        pod = make_mock_pod(
+            "gated-pod",
+            node_name=None,
+            phase="Pending",
+            scheduling_gates=[gate],
+        )
+        _, pending = self._run_with_pending_pod(pod)
         assert len(pending) == 0
+
+    def test_empty_scheduling_gates_not_excluded(self):
+        """Pod with empty scheduling gates list is NOT excluded."""
+        pod = make_mock_pod(
+            "ungated-pod",
+            node_name=None,
+            phase="Pending",
+            scheduling_gates=[],
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 1
+
+    def test_daemonset_pending_pod_excluded(self):
+        """DaemonSet-owned pending pod is excluded from pending list."""
+        pod = make_mock_pod(
+            "ds-pending",
+            node_name=None,
+            phase="Pending",
+            owner_kind="DaemonSet",
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 0
+
+    def test_replicaset_pending_pod_not_excluded(self):
+        """ReplicaSet-owned pending pod is NOT excluded."""
+        pod = make_mock_pod(
+            "rs-pending",
+            node_name=None,
+            phase="Pending",
+            owner_kind="ReplicaSet",
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 1
+
+    def test_pod_too_young_excluded(self):
+        """Pod pending for only 10s is excluded (< 30s threshold)."""
+        pod = make_mock_pod(
+            "young-pod",
+            node_name=None,
+            phase="Pending",
+            creation_timestamp=NOW - timedelta(seconds=10),
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 0
+
+    def test_pod_old_enough_included(self):
+        """Pod pending for 60s is included (> 30s threshold)."""
+        pod = make_mock_pod(
+            "old-pod",
+            node_name=None,
+            phase="Pending",
+            creation_timestamp=NOW - timedelta(seconds=60),
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 1
+
+    def test_pod_exactly_at_threshold_excluded(self):
+        """Pod pending for exactly 30s is excluded (< not <=)."""
+        # The check is `age < 30`, so exactly 30 should pass
+        pod = make_mock_pod(
+            "threshold-pod",
+            node_name=None,
+            phase="Pending",
+            creation_timestamp=NOW - timedelta(seconds=30),
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 1
+
+    def test_terminating_namespace_excluded(self):
+        """Pod in a namespace with deletionTimestamp is excluded."""
+        ns = make_mock_namespace("dying-ns", deletion_timestamp=NOW)
+        pod = make_mock_pod(
+            "dying-pod",
+            namespace="dying-ns",
+            node_name=None,
+            phase="Pending",
+        )
+        _, pending = self._run_with_pending_pod(pod, namespaces=[ns])
+        assert len(pending) == 0
+
+    def test_active_namespace_not_excluded(self):
+        """Pod in a namespace without deletionTimestamp is NOT excluded."""
+        ns = make_mock_namespace("active-ns", deletion_timestamp=None)
+        pod = make_mock_pod(
+            "active-pod",
+            namespace="active-ns",
+            node_name=None,
+            phase="Pending",
+        )
+        _, pending = self._run_with_pending_pod(pod, namespaces=[ns])
+        assert len(pending) == 1
+
+    def test_volume_binding_pvc_excluded(self):
+        """Pod waiting for PVC binding is excluded."""
+        cond = MagicMock()
+        cond.type = "PodScheduled"
+        cond.status = "False"
+        cond.reason = "Unschedulable"
+        cond.message = "0/10 nodes available: 1 persistentvolumeclaim not found"
+
+        pod = make_mock_pod(
+            "pvc-pod",
+            node_name=None,
+            phase="Pending",
+            conditions=[cond],
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 0
+
+    def test_volume_binding_bound_excluded(self):
+        """Pod waiting for volume bound is excluded."""
+        cond = MagicMock()
+        cond.type = "PodScheduled"
+        cond.status = "False"
+        cond.reason = "Unschedulable"
+        cond.message = "0/5 nodes available: 2 node(s) didn't find available persistent volumes, volume not bound"
+
+        pod = make_mock_pod(
+            "bound-pod",
+            node_name=None,
+            phase="Pending",
+            conditions=[cond],
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 0
+
+    def test_normal_unschedulable_not_excluded_by_volume_filter(self):
+        """Normal unschedulable pod (no volume message) is NOT excluded."""
+        cond = MagicMock()
+        cond.type = "PodScheduled"
+        cond.status = "False"
+        cond.reason = "Unschedulable"
+        cond.message = "0/10 nodes available: insufficient cpu"
+
+        pod = make_mock_pod(
+            "cpu-pod",
+            node_name=None,
+            phase="Pending",
+            conditions=[cond],
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 1
+
+    def test_normal_pending_pod_included(self):
+        """A normal pending pod without nodeName passes all filters."""
+        pod = make_mock_pod(
+            "normal-pending",
+            node_name=None,
+            phase="Pending",
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 1
+        assert pending[0].metadata.name == "normal-pending"
+
+    def test_pending_pod_with_node_name_not_collected(self):
+        """A pending pod that already has a nodeName is not collected."""
+        pod = make_mock_pod(
+            "assigned-pending",
+            node_name="node-1",
+            phase="Pending",
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 0
+
+    def test_backward_compat_unschedulable_still_collected(self):
+        """Backward compat: PodScheduled=False/Unschedulable IS still collected."""
+        cond = MagicMock()
+        cond.type = "PodScheduled"
+        cond.reason = "Unschedulable"
+        cond.status = "False"
+        cond.message = "0/10 nodes available: insufficient cpu"
+
+        pod = make_mock_pod(
+            "unschedulable-pod",
+            node_name=None,
+            phase="Pending",
+            conditions=[cond],
+        )
+        _, pending = self._run_with_pending_pod(pod)
+        assert len(pending) == 1
+        assert pending[0].metadata.name == "unschedulable-pod"

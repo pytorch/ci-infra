@@ -78,7 +78,7 @@ class TestConfigFromEnvDefaults(unittest.TestCase):
         self.assertEqual(cfg.min_nodes, 1)
         self.assertFalse(cfg.dry_run)
         self.assertEqual(cfg.taint_cooldown, 300)
-        self.assertEqual(cfg.min_node_age, 420)
+        self.assertEqual(cfg.min_node_age, 900)
 
 
 class TestConfigFromEnvOverrides(unittest.TestCase):

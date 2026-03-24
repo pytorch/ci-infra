@@ -6,16 +6,18 @@ kind: Kustomization
 
 resources:
   # ServiceMonitors
+  - servicemonitors/apiserver.yaml
   - servicemonitors/arc-controller.yaml
+  - servicemonitors/buildkit.yaml
+  - servicemonitors/buildkit-haproxy.yaml
+  - servicemonitors/git-cache-central.yaml
   - servicemonitors/harbor.yaml
   - servicemonitors/karpenter.yaml
   - servicemonitors/node-compactor.yaml
-  - servicemonitors/git-cache-central.yaml
-  - servicemonitors/buildkit.yaml
-  - servicemonitors/buildkit-haproxy.yaml
   # PodMonitors
-  - podmonitors/git-cache-daemonset.yaml
   - podmonitors/arc-listeners.yaml
+  - podmonitors/coredns.yaml
+  - podmonitors/git-cache-daemonset.yaml
   # DCGM ServiceMonitor (DaemonSet is in parent kustomization)
   - dcgm-servicemonitor.yaml
   # PrometheusRule alerts

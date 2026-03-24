@@ -342,12 +342,12 @@ class TestLoggingPerSourceVerification:
         )
 
     def test_k8s_events_arriving(self, resolve_config) -> None:
-        """Verify Kubernetes events are being collected (events always have reason label)."""
+        """Verify Kubernetes events are being collected (events always have kind label)."""
         cluster_name = resolve_config("cluster_name", "")
         if not cluster_name:
             pytest.skip("cluster_name not set in config")
 
-        logql = f'{{cluster="{cluster_name}", reason=~".+"}}'
+        logql = f'{{cluster="{cluster_name}", kind=~".+"}}'
         assert_logs_fresh_in_loki(
             self.read_url,
             logql,

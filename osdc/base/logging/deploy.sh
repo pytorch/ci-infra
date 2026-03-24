@@ -19,6 +19,8 @@ OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$MODULE_DIR/../.." && pwd)}"
 source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
 # shellcheck source=/dev/null
 source "$OSDC_UPSTREAM/scripts/helm-upgrade.sh"
+# shellcheck source=/dev/null
+source "$OSDC_UPSTREAM/scripts/kubectl-apply.sh"
 CFG="$OSDC_UPSTREAM/scripts/cluster-config.py"
 CLUSTERS_YAML="${CLUSTERS_YAML:-$OSDC_UPSTREAM/clusters.yaml}"
 
@@ -67,7 +69,7 @@ uv run "$MODULE_DIR/scripts/python/assemble_config.py" \
   --namespace "$NAMESPACE" \
   --output "$CONFIGMAP_FILE"
 
-kubectl apply -f "$CONFIGMAP_FILE"
+kubectl_apply_if_changed -f "$CONFIGMAP_FILE"
 
 # --- Build Helm override with per-cluster env vars ---
 ALLOY_OVERRIDE=$(mktemp)
@@ -88,6 +90,8 @@ alloy:
         secretKeyRef:
           name: grafana-cloud-credentials
           key: loki-api-key-write
+    - name: GOGC
+      value: "200"
     - name: GOMEMLIMIT
       value: "1800MiB"
     - name: NODE_NAME
@@ -135,6 +139,8 @@ alloy:
         secretKeyRef:
           name: grafana-cloud-credentials
           key: loki-api-key-write
+    - name: GOGC
+      value: "200"
     - name: GOMEMLIMIT
       value: "1800MiB"
 EOF

@@ -13,6 +13,8 @@ CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
+# shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 
 CLUSTER_CONFIG="$UPSTREAM_ROOT/scripts/cluster-config.py"
@@ -40,27 +42,18 @@ INTERVAL=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.interval_seconds "
 MAX_UPTIME=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.max_uptime_hours "48")
 DRY_RUN=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.dry_run "false")
 MIN_NODES=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_nodes "1")
-MIN_NODE_AGE=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_node_age_seconds "420")
+MIN_NODE_AGE=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_node_age_seconds "900")
 
-# --- Build container image ---
-echo "Building node-compactor image..."
+# --- Compute content-based image tag ---
+# Hash all source files that go into the image so we can skip build+push
+# when nothing has changed.
+TAG=$(find "$COMPACTOR_DIR/docker" "$COMPACTOR_DIR/scripts/python" \
+  \( -name '*.py' -o -name 'Dockerfile' -o -name 'pyproject.toml' \) \
+  ! -name 'test_*' -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)
 
-TAG="$(date +%Y%m%d-%H%M%S)"
-BUILD_CONTEXT=$(mktemp -d)
-cp "$COMPACTOR_DIR/docker/Dockerfile" "$BUILD_CONTEXT/"
-cp "$COMPACTOR_DIR/docker/pyproject.toml" "$BUILD_CONTEXT/"
-cp "$COMPACTOR_DIR/scripts/python/"*.py "$BUILD_CONTEXT/"
-# Exclude test files from the build context
-rm -f "$BUILD_CONTEXT/test_"*.py
+IMAGE="localhost:30002/osdc/node-compactor"
 
-docker build --platform linux/amd64 \
-  -t "node-compactor:${TAG}" \
-  -t "node-compactor:latest" \
-  "$BUILD_CONTEXT"
-
-# --- Push to Harbor ---
-echo "Pushing image to Harbor..."
-
+# --- Connect to Harbor ---
 HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \
   -o jsonpath='{.data.password}' | base64 -d)
 
@@ -102,20 +95,36 @@ else
   echo "  Warning: Harbor project creation returned HTTP $HTTP_CODE"
 fi
 
-# Push image to Harbor via crane (supports --insecure, avoids docker-login HTTPS issues)
+# --- Build + push only if image doesn't already exist ---
 crane auth login localhost:8081 -u admin -p "$HARBOR_ADMIN_PW" --insecure
-IMAGE_TAR=$(mktemp)
-docker save "node-compactor:${TAG}" -o "$IMAGE_TAR"
-crane push "$IMAGE_TAR" "localhost:8081/osdc/node-compactor:${TAG}" --insecure
-rm -f "$IMAGE_TAR"
+if crane manifest "localhost:8081/osdc/node-compactor:${TAG}" --insecure >/dev/null 2>&1; then
+  echo "  Image osdc/node-compactor:${TAG} already exists — skipping build."
+else
+  echo "Building node-compactor image (tag: ${TAG})..."
+  BUILD_CONTEXT=$(mktemp -d)
+  cp "$COMPACTOR_DIR/docker/Dockerfile" "$BUILD_CONTEXT/"
+  cp "$COMPACTOR_DIR/docker/pyproject.toml" "$BUILD_CONTEXT/"
+  cp "$COMPACTOR_DIR/scripts/python/"*.py "$BUILD_CONTEXT/"
+  # Exclude test files from the build context
+  rm -f "$BUILD_CONTEXT/test_"*.py
+
+  docker build --platform linux/amd64 \
+    -t "node-compactor:${TAG}" \
+    -t "node-compactor:latest" \
+    "$BUILD_CONTEXT"
+
+  echo "Pushing image to Harbor..."
+  IMAGE_TAR=$(mktemp)
+  docker save "node-compactor:${TAG}" -o "$IMAGE_TAR"
+  crane push "$IMAGE_TAR" "localhost:8081/osdc/node-compactor:${TAG}" --insecure
+  rm -f "$IMAGE_TAR"
+fi
 
 # Kill port-forward now that push is done
 kill "$PF_PID" 2>/dev/null || true
 PF_PID=""
 
-# Image reference for pods uses NodePort (accessible on every node)
-IMAGE="localhost:30002/osdc/node-compactor"
-echo "Pushed ${IMAGE}:${TAG}"
+echo "Using ${IMAGE}:${TAG}"
 
 # --- Apply Kubernetes manifests with config substitution ---
 echo "Applying node-compactor manifests..."
@@ -127,6 +136,6 @@ kubectl kustomize "$COMPACTOR_DIR/kubernetes/" \
     -e "s|COMPACTOR_DRY_RUN_PLACEHOLDER|\"${DRY_RUN}\"|g" \
     -e "s|COMPACTOR_MIN_NODES_PLACEHOLDER|\"${MIN_NODES}\"|g" \
     -e "s|COMPACTOR_MIN_NODE_AGE_PLACEHOLDER|\"${MIN_NODE_AGE}\"|g" \
-  | kubectl apply -f -
+  | kubectl_apply_if_changed -f -
 
 echo "Node compactor deployed."

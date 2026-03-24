@@ -56,6 +56,18 @@ node_utilization_ratio = Gauge(
     ["node", "nodepool", "resource"],
 )
 
+spare_capacity_gauge = Gauge(
+    "compactor_spare_capacity_nodes",
+    "Number of spare capacity nodes (low utilization, untainted)",
+    ["nodepool"],
+)
+
+spare_capacity_required = Gauge(
+    "compactor_spare_capacity_required",
+    "Required spare capacity nodes",
+    ["nodepool"],
+)
+
 # --- Counters ---
 
 reconcile_cycles_total = Counter(
@@ -73,6 +85,30 @@ taint_operations_total = Counter(
 cooldown_blocks_total = Counter(
     "node_compactor_cooldown_blocks_total",
     "Untaint attempts blocked by cooldown timer",
+)
+
+fleet_cooldown_blocks = Counter(
+    "compactor_fleet_cooldown_blocks_total",
+    "Taint operations blocked by fleet cooldown",
+    ["nodepool"],
+)
+
+rate_limit_blocks = Counter(
+    "compactor_rate_limit_blocks_total",
+    "Nodes not tainted due to rate limit",
+    ["nodepool"],
+)
+
+phantom_load_pods = Gauge(
+    "compactor_phantom_load_pods",
+    "Number of phantom load pods",
+    ["nodepool"],
+)
+
+fleet_cooldown_remaining = Gauge(
+    "compactor_fleet_cooldown_remaining_seconds",
+    "Seconds remaining in fleet cooldown",
+    ["nodepool"],
 )
 
 # --- Histogram ---

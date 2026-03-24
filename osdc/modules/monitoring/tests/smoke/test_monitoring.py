@@ -23,6 +23,7 @@ from helpers import (
 pytestmark = [pytest.mark.live]
 
 EXPECTED_SERVICE_MONITORS = [
+    "apiserver",
     "arc-controller",
     "buildkit",
     "buildkit-haproxy",
@@ -35,6 +36,7 @@ EXPECTED_SERVICE_MONITORS = [
 
 EXPECTED_POD_MONITORS = [
     "arc-listeners",
+    "coredns",
     "git-cache-daemonset",
 ]
 
@@ -270,6 +272,14 @@ KUBE_PROM_STACK_TARGETS = [
     "kube-state-metrics",
 ]
 
+# Control plane targets scraped via custom monitors (always present).
+# API server: ServiceMonitor targets the "kubernetes" Service, so job="kubernetes".
+# CoreDNS: PodMonitor targets kube-dns pods, so job label varies by Alloy convention.
+CONTROL_PLANE_TARGETS = [
+    ("apiserver", "kubernetes"),
+    # coredns: skipped — PodMonitor job labels are pod-name-based, too variable
+]
+
 
 class TestMonitoringPerTargetVerification:
     """Verify per-target metrics are arriving in Grafana Cloud Mimir."""
@@ -324,4 +334,21 @@ class TestMonitoringPerTargetVerification:
             self.mimir_key,
             max_staleness=600,
             description=f"kube-prom-stack target: {target_name}",
+        )
+
+    @pytest.mark.parametrize(("monitor_name", "job_label"), CONTROL_PLANE_TARGETS)
+    def test_control_plane_target_fresh(self, monitor_name: str, job_label: str, resolve_config) -> None:
+        """Verify control plane targets (API server, CoreDNS) have fresh metrics."""
+        cluster_name = resolve_config("cluster_name", "")
+        if not cluster_name:
+            pytest.skip("cluster_name not set in config")
+
+        promql = f'up{{job="{job_label}", cluster="{cluster_name}"}}'
+        assert_metric_fresh_in_mimir(
+            self.read_url,
+            promql,
+            self.mimir_user,
+            self.mimir_key,
+            max_staleness=600,
+            description=f"control plane target: {monitor_name}",
         )

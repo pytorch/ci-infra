@@ -213,11 +213,24 @@ def _count_unstable_nodes(all_nodes: dict) -> int:
 
 def get_unstable_node_names(all_nodes: dict) -> set[str]:
     """Return names of nodes that are new, NotReady, or being deleted."""
-    return {
-        node["metadata"]["name"]
-        for node in all_nodes.get("items", [])
-        if _is_node_unstable(node)
-    }
+    return {node["metadata"]["name"] for node in all_nodes.get("items", []) if _is_node_unstable(node)}
+
+
+def _has_matching_nodes(all_nodes: dict, node_selector: dict[str, list[str]] | None) -> bool:
+    """Check if any nodes match a label selector.
+
+    When a DaemonSet targets specific nodes via nodeAffinity, desired can
+    legitimately be 0 when no matching nodes exist (e.g. Karpenter scaled
+    runner/buildkit pools to zero). Returns True if no selector is given
+    (conservative — assume matching nodes exist).
+    """
+    if node_selector is None:
+        return True
+    for node in all_nodes.get("items", []):
+        node_labels = node.get("metadata", {}).get("labels", {})
+        if all(node_labels.get(k) in vs for k, vs in node_selector.items()):
+            return True
+    return False
 
 
 def assert_daemonset_healthy(
@@ -228,6 +241,7 @@ def assert_daemonset_healthy(
     *,
     name_contains: str | None = None,
     allow_zero: bool = False,
+    node_selector: dict[str, list[str]] | None = None,
 ) -> None:
     """Assert DaemonSet is healthy, tolerating mismatches from node churn.
 
@@ -244,6 +258,9 @@ def assert_daemonset_healthy(
         name: Exact DaemonSet name (mutually exclusive with name_contains).
         name_contains: Substring match on DaemonSet name.
         allow_zero: If True, 0/0 is acceptable (e.g. GPU plugin with no GPU nodes).
+        node_selector: Label selector for the DaemonSet's target nodes, as
+            ``{label_key: [value, ...]}``. When set and no nodes match, 0/0
+            is accepted (the DaemonSet has no eligible nodes to schedule on).
     """
     ds_list = filter_daemonsets(all_daemonsets, namespace=namespace, name=name, name_contains=name_contains)
     label = name or name_contains
@@ -255,14 +272,14 @@ def assert_daemonset_healthy(
     ready = ds.get("status", {}).get("numberReady", 0)
 
     if desired == ready:
-        if not allow_zero:
+        if not allow_zero and _has_matching_nodes(all_nodes, node_selector):
             assert desired > 0, f"{ds_name} has 0 desired pods"
         return
 
     # Check if mismatch is explained by unstable nodes
     unstable = _count_unstable_nodes(all_nodes)
     if max(0, desired - ready) <= unstable:
-        if not allow_zero and ready == 0:
+        if not allow_zero and ready == 0 and _has_matching_nodes(all_nodes, node_selector):
             assert desired > 0, f"{ds_name} has 0 ready pods (all {unstable} nodes unstable)"
         return
 
@@ -274,12 +291,12 @@ def assert_daemonset_healthy(
         desired = fresh_ds.get("status", {}).get("desiredNumberScheduled", 0)
         ready = fresh_ds.get("status", {}).get("numberReady", 0)
         if desired == ready:
-            if not allow_zero:
+            if not allow_zero and _has_matching_nodes(fresh_nodes, node_selector):
                 assert desired > 0, f"{ds_name} has 0 desired pods"
             return
         unstable = _count_unstable_nodes(fresh_nodes)
         if max(0, desired - ready) <= unstable:
-            if not allow_zero and ready == 0:
+            if not allow_zero and ready == 0 and _has_matching_nodes(fresh_nodes, node_selector):
                 assert desired > 0, f"{ds_name} has 0 ready pods (all {unstable} nodes unstable)"
             return
 
@@ -391,18 +408,22 @@ def query_mimir(url: str, promql: str, username: str, password: str, timeout: in
         query_mimir.last_error = str(exc)
         return None
 
+
 query_mimir.last_error = ""
 
 
 def query_loki(url: str, logql: str, username: str, password: str, timeout: int = 30) -> dict | None:
     """Query Grafana Cloud Loki (LogQL query_range). Returns None on error."""
     now = int(time.time())
-    params = urllib.parse.urlencode({
-        "query": logql,
-        "start": str(now - 3600),
-        "end": str(now),
-        "limit": "1",
-    })
+    params = urllib.parse.urlencode(
+        {
+            "query": logql,
+            "start": str(now - 3600),
+            "end": str(now),
+            "limit": "1",
+            "direction": "backward",
+        }
+    )
     full_url = f"{url}?{params}"
     auth = base64.b64encode(f"{username}:{password}".encode()).decode()
     req = urllib.request.Request(full_url, headers={"Authorization": f"Basic {auth}"})
@@ -413,6 +434,7 @@ def query_loki(url: str, logql: str, username: str, password: str, timeout: int 
         query_loki.last_error = str(exc)
         return None
 
+
 query_loki.last_error = ""
 
 
@@ -420,8 +442,8 @@ query_loki.last_error = ""
 # Per-target / per-source remote verification helpers
 # ---------------------------------------------------------------------------
 
-REMOTE_RETRIES = 3
-REMOTE_RETRY_DELAY = 10
+REMOTE_RETRIES = 5
+REMOTE_RETRY_DELAY = 15
 
 
 def assert_metric_fresh_in_mimir(

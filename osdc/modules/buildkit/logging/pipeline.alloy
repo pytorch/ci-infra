@@ -1,12 +1,22 @@
-// BuildKit (logrus text)
+// BuildKit (logrus text) — extract level and sample non-error logs at 50%.
+// Sampling is done here (not in base.alloy) so level normalization stages
+// only run on the 50% of non-error lines that survive.
 stage.match {
     selector = "{namespace=\"buildkit\"}"
-    stage.regex {
-        expression = "time=\"(?P<timestamp>[^\"]+)\"\\s+level=(?P<level>\\S+)\\s+msg=\"(?P<msg>[^\"]+)\""
+    stage.logfmt {
+        mapping = { level = "" }
     }
     stage.labels {
         values = {
             level = "",
+        }
+    }
+
+    // Sample non-error logs at 50% — errors/warns always kept
+    stage.match {
+        selector = "{level!~\"(?i)(error|warn|warning|fatal|panic)\"}"
+        stage.sampling {
+            rate = 0.50
         }
     }
 }

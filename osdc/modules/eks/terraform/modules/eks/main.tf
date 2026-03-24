@@ -13,6 +13,13 @@ terraform {
   }
 }
 
+# Current AWS account ID — used to construct role ARNs for access entries
+data "aws_caller_identity" "current" {}
+
+locals {
+  cluster_admin_roles = var.cluster_admin_role_names != "" ? split(",", var.cluster_admin_role_names) : []
+}
+
 # Get latest EKS-optimized AMI for Amazon Linux 2023
 data "aws_ami" "eks_optimized_al2023" {
   most_recent = true
@@ -421,4 +428,30 @@ resource "aws_iam_role_policy_attachment" "ecr_policy" {
 resource "aws_iam_role_policy_attachment" "ssm_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   role       = aws_iam_role.node.name
+}
+
+# --- EKS Access Entries (requires API or API_AND_CONFIG_MAP authentication mode) ---
+
+resource "aws_eks_access_entry" "cluster_admin" {
+  for_each = toset(local.cluster_admin_roles)
+
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${each.value}"
+  type          = "STANDARD"
+
+  tags = var.tags
+}
+
+resource "aws_eks_access_policy_association" "cluster_admin" {
+  for_each = toset(local.cluster_admin_roles)
+
+  cluster_name  = aws_eks_cluster.this.name
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+  principal_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${each.value}"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.cluster_admin]
 }

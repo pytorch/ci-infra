@@ -64,6 +64,8 @@ defaults:
     dry_run: false
   nodepools:
     gpu_consolidate_after: "20m"
+    cpu_consolidate_after: "20m"
+    baremetal_consolidate_after: "1h"
   buildkit:
     replicas_per_arch: 4
   monitoring:
@@ -78,6 +80,10 @@ clusters:
     cluster_name: pytorch-arc-staging
     recycle_karpenter_nodes: true
     state_bucket: ciforge-tfstate-arc-staging
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+      cluster_admin_role_names:
+        - ossci_gha_terraform
     base:
       base_node_count: 2
       base_node_instance_type: m5.4xlarge
@@ -104,6 +110,7 @@ clusters:
       dry_run: true
     nodepools:
       gpu_consolidate_after: "10s"
+      cpu_consolidate_after: "10s"
     arc-runners:
       github_config_url: "https://github.com/pytorch/pytorch-canary"
       github_secret_name: pytorch-arc-staging
@@ -123,6 +130,10 @@ clusters:
     cluster_name: pytorch-arc-production
     region: us-west-2
     state_bucket: ciforge-tfstate-arc-production
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+      cluster_admin_role_names:
+        - ossci_gha_terraform
     base:
       vpc_cidr: "10.1.0.0/16"
     git_cache:

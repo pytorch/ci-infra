@@ -1,6 +1,6 @@
 # Observability: Monitoring + Logging
 
-OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. They use **two separate Grafana Alloy installations** with distinct modes, namespaces, and RBAC to avoid collisions.
+OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. They use **three Grafana Alloy installations** with distinct modes, namespaces, and RBAC to avoid collisions.
 
 ## Architecture Overview
 
@@ -15,18 +15,18 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
                                 │               │
                    prometheus.  │               │  loki.write
                    remote_write │               │
-                        ┌───────┴──────┐ ┌──────┴────────┐
-                        │ Alloy        │ │ Alloy         │
-                        │ (Deployment) │ │ (DaemonSet)   │
-                        │ 2 replicas   │ │ 1 per node    │
-                        │ ns:monitoring│ │ ns:logging    │
-                        │ clustered    │ │ independent   │
-                        └───────┬──────┘ └──────┬────────┘
-                                │               │
-                   ServiceMonitor/   loki.source.file +
-                   PodMonitor CRDs   loki.source.journal
-                        │               │
-                  ┌─────┴─────────┐  ┌──┴──────────────┐
+                        ┌───────┴──────┐ ┌──────┴────────┐ ┌──────────────┐
+                        │ Alloy        │ │ Alloy         │ │ Alloy        │
+                        │ (Deployment) │ │ (DaemonSet)   │ │ (Deployment) │
+                        │ 2 replicas   │ │ 1 per node    │ │ 1 replica    │
+                        │ ns:monitoring│ │ ns:logging    │ │ ns:logging   │
+                        │ clustered    │ │ independent   │ │ independent  │
+                        └───────┬──────┘ └──────┬────────┘ └──────┬───────┘
+                                │               │                 │
+                   ServiceMonitor/   loki.source.file +   loki.source.
+                   PodMonitor CRDs   loki.source.journal  kubernetes_events
+                        │               │                 │
+                  ┌─────┴─────────┐  ┌──┴──────────────┐  K8s Events API
                   │ kube-prom-stack│  │ /var/log/pods/  │
                   │ exporters:    │  │ /var/log/journal │
                   │ - node-export │  │ (every node)    │
@@ -35,37 +35,37 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
                   └───────────────┘
 ```
 
-## The Two Alloy Installations
+## The Three Alloy Installations
 
-| Aspect | Monitoring Alloy | Logging Alloy |
-|--------|-----------------|---------------|
-| **Location** | `modules/monitoring/` (opt-in module) | `base/logging/` (every cluster) |
-| **Controller type** | Deployment (2 replicas) | DaemonSet (1 per node) |
-| **Namespace** | `monitoring` | `logging` |
-| **Helm release** | `alloy` | `alloy-logging` |
-| **fullnameOverride** | (default) | `alloy-logging` |
-| **Clustering** | Enabled (HA target dedup) | Disabled (each pod handles its node) |
-| **Config source** | Helm-generated (alloy-values.yaml) | Assembled ConfigMap (`assemble_config.py`) |
-| **Data destination** | Grafana Cloud Mimir (metrics) | Grafana Cloud Loki (logs) |
-| **Secret name** | `grafana-cloud-credentials` in `monitoring` | `grafana-cloud-credentials` in `logging` |
-| **Secret keys** | `username`, `password` (URL from `clusters.yaml`) | `loki-username`, `loki-api-key-write`, `loki-api-key-read` |
+| Aspect | Monitoring Alloy | Logging Alloy | Events Alloy |
+|--------|-----------------|---------------|--------------|
+| **Location** | `modules/monitoring/` (opt-in module) | `base/logging/` (every cluster) | `base/logging/` (every cluster) |
+| **Controller type** | Deployment (2 replicas) | DaemonSet (1 per node) | Deployment (1 replica) |
+| **Namespace** | `monitoring` | `logging` | `logging` |
+| **Helm release** | `alloy` | `alloy-logging` | `alloy-events` |
+| **fullnameOverride** | (default) | `alloy-logging` | `alloy-events` |
+| **Clustering** | Enabled (HA target dedup) | Disabled (each pod handles its node) | Disabled |
+| **Config source** | Helm-generated (alloy-values.yaml) | Assembled ConfigMap (`assemble_config.py`) | Inline in Helm values |
+| **Data destination** | Grafana Cloud Mimir (metrics) | Grafana Cloud Loki (logs) | Grafana Cloud Loki (logs) |
+| **Secret name** | `grafana-cloud-credentials` in `monitoring` | `grafana-cloud-credentials` in `logging` | `grafana-cloud-credentials` in `logging` |
+| **Secret keys** | `username`, `password` (URL from `clusters.yaml`) | `loki-username`, `loki-api-key-write`, `loki-api-key-read` | Same as Logging Alloy |
 
-### Why two separate installations?
+### Why three separate installations?
 
-1. **Different controller types** — metrics scraping works with a clustered Deployment (Alloy's built-in clustering distributes scrape targets). Log collection requires a DaemonSet (each node's logs are local files).
+1. **Different controller types** — metrics scraping works with a clustered Deployment (Alloy's built-in clustering distributes scrape targets). Log collection requires a DaemonSet (each node's logs are local files). Event collection needs a single-replica Deployment (to avoid duplicate events).
 2. **RBAC isolation** — each Alloy needs ClusterRole/ClusterRoleBinding for Kubernetes API access. Without `fullnameOverride`, Helm creates identically-named RBAC resources that collide.
 3. **Independent lifecycle** — metrics and logs can be enabled/disabled separately. Logging is base infrastructure (always deployed). Monitoring is a module (opt-in).
-4. **Config complexity** — monitoring Alloy config is driven by CRD discovery (ServiceMonitor/PodMonitor). Logging Alloy config is assembled from base + per-module pipeline files. Mixing these in one config would be fragile.
+4. **Config complexity** — monitoring Alloy config is driven by CRD discovery (ServiceMonitor/PodMonitor). Logging Alloy config is assembled from base + per-module pipeline files. Events Alloy uses inline config for `loki.source.kubernetes_events`. Mixing these in one config would be fragile.
 
 ## Monitoring Pipeline (Metrics)
 
 ### What kube-prometheus-stack provides
 
-The chart is used **only as a CRD + exporter bundle**:
+The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 
 - **CRDs**: `monitoring.coreos.com` — ServiceMonitor, PodMonitor, PrometheusRule, etc.
 - **Prometheus Operator**: Manages CRD lifecycle
-- **node-exporter**: DaemonSet on every node (tolerates ALL taints)
+- **node-exporter**: DaemonSet on every node (tolerates ALL taints), 60s scrape interval
 - **kube-state-metrics**: Kubernetes object state metrics (runs on base nodes)
 
 **Prometheus, Grafana, and AlertManager are all `enabled: false`.** No in-cluster metric storage or dashboards. All metrics go to Grafana Cloud.
@@ -74,14 +74,64 @@ The chart is used **only as a CRD + exporter bundle**:
 
 | Type | Name | Target Namespace | What it monitors |
 |------|------|-----------------|-----------------|
+| ServiceMonitor | apiserver | default | K8s API server request rate, latency, inflight requests, etcd latency |
 | ServiceMonitor | arc-controller | arc-systems | ARC controller metrics |
 | ServiceMonitor | harbor | harbor-system | Harbor exporter metrics |
 | ServiceMonitor | karpenter | karpenter | Karpenter controller metrics |
 | ServiceMonitor | node-compactor | kube-system | Node compactor metrics |
 | ServiceMonitor | git-cache-central | kube-system | Git cache central pod metrics |
 | ServiceMonitor | dcgm-exporter | monitoring | NVIDIA GPU metrics (DCGM) |
+| ServiceMonitor | buildkit | buildkit | BuildKit daemon metrics |
+| ServiceMonitor | buildkit-haproxy | buildkit | BuildKit HAProxy LB metrics |
+| PodMonitor | coredns | kube-system | CoreDNS request rate, latency, cache hit/miss, errors |
 | PodMonitor | git-cache-daemonset | kube-system | Git cache DaemonSet metrics |
 | PodMonitor | arc-listeners | arc-runners | ARC listener pods metrics |
+
+Plus kube-prometheus-stack built-in targets:
+- **node-exporter** — DaemonSet on ALL nodes (tolerates all taints), 60s interval
+- **kube-state-metrics** — Deployment on base-infrastructure nodes
+- **cAdvisor** — Built-in to kubelet, scraped via Prometheus Operator configs
+
+### Cost-control filtering
+
+Alloy applies `prometheus.relabel "cost_control"` rules before `remote_write` to drop high-cardinality or low-value metrics:
+
+| Category | Dropped metrics |
+|----------|----------------|
+| cAdvisor network/tasks | `container_network_(tcp\|udp)_usage_total`, `container_tasks_state`, `container_cpu_load_average_10s`, `container_memory_failures_total` |
+| cAdvisor lifecycle/spec | `container_blkio_device_usage_total`, `container_last_seen`, `container_start_time_seconds`, `container_spec_.*` |
+| KSM low-value | `kube_.*_created`, `kube_.*_metadata_resource_version`, `kube_secret_.*`, `kube_configmap_.*`, `kube_endpoint_.*`, `kube_lease_.*` |
+| ARC histogram buckets | `gha_job_(execution\|startup)_duration_seconds_bucket` (sum/count kept) |
+| API server low-value | `go_.*`, `process_.*`, `workqueue_.*` (runtime/process/queue internals) |
+| API server histogram buckets | `apiserver_request_duration_seconds_bucket`, `apiserver_request_sli_duration_seconds_bucket`, `apiserver_response_sizes_bucket`, `apiserver_watch_events_sizes_bucket`, `apiserver_admission_controller_admission_duration_seconds_bucket` (sum/count kept) |
+| CoreDNS low-value | `go_.*`, `process_.*` (runtime/process internals) |
+| CoreDNS histogram buckets | `coredns_dns_request_duration_seconds_bucket`, `coredns_forward_request_duration_seconds_bucket` (sum/count kept) |
+
+**KSM metric allowlist** — only these resource types are emitted:
+```
+kube_(daemonset|deployment|pod|namespace|node|statefulset|persistentvolume|
+      horizontalpodautoscaler|replicaset|job)_.+
+```
+
+**Node-exporter disabled collectors**: bcache, bonding, infiniband, nfs, nfsd, fibrechannel, ipvs, rapl, schedstat, interrupts. Filesystem and netdev have exclusion patterns for virtual filesystems and virtual network interfaces.
+
+**DCGM label drops**: `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id` dropped to reduce cardinality.
+
+### Alerting
+
+PrometheusRule CRDs are defined locally and synced to Grafana Cloud Mimir via Alloy's `mimir.rules.kubernetes` component for remote evaluation. Three alert groups:
+
+| Alert | Condition |
+|-------|-----------|
+| `ARCListenerStall` | Assigned jobs stuck for 15m |
+| `GPUDoublebitECCError` | Uncorrectable memory errors |
+| `GPUXIDCriticalError` | XID 48/79/94/95 errors |
+| `GPURowRemapFailure` | Row remapping failed |
+| `GPUTemperatureCritical` | GPU temp >95C for 5m |
+| `NodeNotReady` | Node not ready for 5m |
+| `ControlPlaneCrashLoop` | >5 restarts/hr in control-plane namespaces |
+| `HarborDown` | Harbor not responding for 5m |
+| `KarpenterNodeClaimNotReady` | NodeClaim created but no node joins for 15m |
 
 ### Adding a new ServiceMonitor/PodMonitor
 
@@ -110,16 +160,20 @@ defaults:
   monitoring:
     namespace: monitoring
     grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
+    grafana_cloud_read_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
 ```
+
+## Metrics Cardinality Reference (arc-cbr-production)
+
+See [observability-estimates.md](observability-estimates.md#metrics-cardinality-reference) for detailed per-pod, per-node, and cluster-wide metrics cardinality estimates.
 
 ## Logging Pipeline (Logs)
 
 ### Log sources
 
-1. **Pod logs** — `loki.source.file` reads CRI-format logs from `/var/log/pods/` on each node
-2. **System journal** — `loki.source.journal` reads kubelet, containerd, and kernel logs from `/var/log/journal`
-
-Kubernetes events are NOT collected (no leader-election support in DaemonSet mode — every pod would independently duplicate events).
+1. **Pod logs** — `loki.source.file` reads CRI-format logs from `/var/log/pods/` on each node (Alloy DaemonSet)
+2. **System journal** — `loki.source.journal` reads kubelet, containerd, kernel, nvidia-fabricmanager, and nvidia-persistenced logs from `/var/log/journal` (Alloy DaemonSet)
+3. **Kubernetes events** — `loki.source.kubernetes_events` watches the K8s Events API and pushes events as JSON log lines (Alloy Events Deployment, single replica)
 
 ### Label strategy
 
@@ -151,13 +205,19 @@ During deploy, `assemble_config.py`:
 **Example module pipeline** (`modules/karpenter/logging/pipeline.alloy`):
 
 ```alloy
-// Karpenter (zap console encoding)
+// Karpenter (zap JSON logs)
 stage.match {
     selector = "{namespace=\"karpenter\"}"
-    stage.regex {
-        expression = "^(?P<timestamp>\\S+)\\s+(?P<level>\\S+)\\s+(?P<logger>\\S+)\\s+(?P<msg>.+)"
+    stage.json {
+        expressions = {
+            level = "level",
+        }
     }
-    stage.labels { values = { level = "" } }
+    stage.labels {
+        values = {
+            level = "",
+        }
+    }
 }
 ```
 
@@ -181,13 +241,17 @@ defaults:
     grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
 ```
 
+## Log Volume Estimation Reference (arc-cbr-production)
+
+See [observability-estimates.md](observability-estimates.md#log-volume-estimation-reference) for per-unit log volume rates and scaling formulas. Runner pod logs are expected to be the dominant source despite 90% sampling of non-error lines.
+
 ## Deploy Order
 
 ### Monitoring (module — runs during `deploy-module`)
 
 1. Justfile applies `kubernetes/kustomization.yaml` (namespace + DCGM DaemonSet)
 2. `deploy.sh` installs kube-prometheus-stack (CRDs + exporters)
-3. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors + PodMonitors — requires CRDs from step 2)
+3. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors, PodMonitors, and PrometheusRules — alerts are included via kustomization, requires CRDs from step 2)
 4. `deploy.sh` conditionally installs Alloy (if `grafana-cloud-credentials` secret exists)
 
 ### Logging (base — runs during `deploy-base`)
@@ -199,12 +263,13 @@ Within the base deploy sequence: Terraform → Mirror images → Base k8s → Ha
 3. Runs `assemble_config.py` to build the ConfigMap from base + module pipelines
 4. `kubectl apply` the ConfigMap
 5. `helm upgrade --install alloy-logging` with runtime env vars (cluster name, Loki URL, credentials)
+6. `helm upgrade --install alloy-events` for Kubernetes event collection
 
 ## Gotchas
 
 ### RBAC collision
 
-Both Alloy installations create ClusterRole/ClusterRoleBinding resources. Without `fullnameOverride: alloy-logging` in the logging Helm values, both releases would create resources named `alloy`, causing Helm to error or silently overwrite the other's permissions.
+All three Alloy installations create ClusterRole/ClusterRoleBinding resources. Without `fullnameOverride` (`alloy-logging`, `alloy-events`), Helm would create identically-named resources that collide with each other and with the monitoring Alloy.
 
 ### CRD ordering
 
@@ -216,7 +281,7 @@ kube-prometheus-stack's Prometheus Operator admission webhook pre-install job ha
 
 ### Alloy memory on high-throughput nodes
 
-CI nodes can have 100+ concurrent runner pods each producing logs. The logging Alloy has a 1Gi memory limit by default. Under sustained backpressure (Loki down, rate-limited), Alloy may OOM. Check `kubectl describe pod` for OOMKilled events. The `stage.limit` rate limiter (10MB/s per Alloy pod) helps bound memory usage.
+CI nodes can have 100+ concurrent runner pods each producing logs. The logging Alloy DaemonSet is configured with 1Gi request / 2Gi limit and GC tuning (`GOGC=200`, `GOMEMLIMIT=1800MiB`). Under sustained backpressure (Loki down, rate-limited), Alloy may still OOM on high-throughput nodes. Check `kubectl describe pod` for OOMKilled events. The `stage.limit` rate limiter (1000 lines/s, burst 5000, scoped `by_label_name = "pod"` so each source pod is rate-limited independently) helps bound memory usage.
 
 ### Module pipeline ordering
 
@@ -232,14 +297,16 @@ kubectl logs -n monitoring -l app.kubernetes.io/name=alloy   # Alloy metrics age
 helm get values alloy -n monitoring                 # Current Alloy config
 kubectl get servicemonitors -A                      # All ServiceMonitors
 kubectl get podmonitors -A                          # All PodMonitors
+kubectl get prometheusrules -A                      # All PrometheusRules
 ```
 
 ### Logging
 
 ```bash
-kubectl get pods -n logging                         # All logging pods
+kubectl get pods -n logging                         # All logging pods (DaemonSet + Events Deployment)
 kubectl get ds -n logging                           # DaemonSet status (should match node count)
-kubectl logs -n logging -l app.kubernetes.io/name=alloy-logging --tail=20  # Recent Alloy logs
+kubectl logs -n logging -l app.kubernetes.io/name=alloy-logging --tail=20  # Log collector
+kubectl logs -n logging -l app.kubernetes.io/name=alloy-events --tail=20  # Event collector
 kubectl get configmap alloy-logging-config -n logging -o yaml  # Assembled pipeline config
 kubectl get secret grafana-cloud-credentials -n logging  # Verify credentials exist
 ```
@@ -250,9 +317,10 @@ kubectl get secret grafana-cloud-credentials -n logging  # Verify credentials ex
 |---------|-------------|-----|
 | No metrics in Grafana Cloud | `grafana-cloud-credentials` secret missing in `monitoring` ns | Create the secret, redeploy |
 | No logs in Grafana Cloud | `grafana-cloud-credentials` secret missing in `logging` ns | Create the secret, redeploy |
+| No K8s events in Loki | `alloy-events` pod not running or secret missing | Check `kubectl get pods -n logging`, verify secret |
 | Alloy logging pods not running | Secret missing — deploy exits cleanly | Create secret, run `just deploy-base <cluster>` |
 | Missing logs from a namespace | Module `pipeline.alloy` has broken regex in `stage.match` | Check the assembled ConfigMap for syntax errors |
-| Alloy OOMKilled | High-throughput nodes exceeding 1Gi limit | Increase `resources.limits.memory` in logging Helm values |
-| RBAC errors in Alloy logs | ClusterRole collision between monitoring and logging Alloy | Verify `fullnameOverride: alloy-logging` in logging values |
+| Alloy OOMKilled | High-throughput nodes exceeding 2Gi limit | Increase `resources.limits.memory` in logging Helm values |
+| RBAC errors in Alloy logs | ClusterRole collision between monitoring and logging Alloy | Verify `fullnameOverride` on all three Alloy releases |
 | ServiceMonitor not discovered | CRD ordering — monitors applied before kube-prometheus-stack | Redeploy monitoring module (deploy.sh handles ordering) |
 | Webhook job stuck Pending | Missing tolerations for `CriticalAddonsOnly` taint | Delete stuck job + Helm release, verify values, retry |

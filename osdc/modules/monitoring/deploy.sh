@@ -23,6 +23,8 @@ UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # --- Read per-installation monitoring config ---
@@ -56,7 +58,7 @@ echo "kube-prometheus-stack installed (CRDs + exporters)."
 # The main kubernetes/kustomization.yaml (namespace + DCGM DaemonSet) is
 # applied by the justfile before deploy.sh runs.
 echo "Applying monitors (ServiceMonitors + PodMonitors)..."
-kubectl apply -k "$MODULE_DIR/kubernetes/monitors/"
+kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/monitors/"
 
 # --- Optionally install Alloy for Grafana Cloud push ---
 # Gate: only install when the grafana-cloud-credentials secret exists.

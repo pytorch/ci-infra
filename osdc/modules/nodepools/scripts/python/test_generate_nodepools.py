@@ -342,6 +342,70 @@ class TestGenerateNodepoolYaml:
             np = docs[0]
             assert np["spec"]["disruption"]["consolidationPolicy"] == "WhenEmpty"
 
+    @patch.dict(
+        os.environ,
+        {
+            "NODEPOOLS_COMPACTOR_ENABLED": "true",
+            "NODEPOOLS_GPU_CONSOLIDATE_AFTER": "20m",
+            "NODEPOOLS_BAREMETAL_CONSOLIDATE_AFTER": "1h",
+        },
+        clear=False,
+    )
+    def test_baremetal_gpu_uses_baremetal_consolidate_after(self):
+        """Baremetal GPU nodepool uses the baremetal consolidate_after env var."""
+        nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.metal", arch="amd64", baremetal=True)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        assert np["spec"]["disruption"]["consolidateAfter"] == "1h"
+
+    @patch.dict(
+        os.environ,
+        {
+            "NODEPOOLS_COMPACTOR_ENABLED": "true",
+            "NODEPOOLS_CPU_CONSOLIDATE_AFTER": "20m",
+            "NODEPOOLS_BAREMETAL_CONSOLIDATE_AFTER": "1h",
+        },
+        clear=False,
+    )
+    def test_baremetal_cpu_uses_baremetal_consolidate_after(self):
+        """Baremetal CPU nodepool uses the baremetal consolidate_after env var."""
+        nodepool_def = _make_nodepool_def(gpu=False, baremetal=True)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        assert np["spec"]["disruption"]["consolidateAfter"] == "1h"
+
+    @patch.dict(
+        os.environ,
+        {"NODEPOOLS_COMPACTOR_ENABLED": "true", "NODEPOOLS_GPU_CONSOLIDATE_AFTER": "20m"},
+        clear=False,
+    )
+    def test_non_baremetal_gpu_uses_gpu_default(self):
+        """Non-baremetal GPU nodepool uses the GPU consolidate_after env var."""
+        nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        assert np["spec"]["disruption"]["consolidateAfter"] == "20m"
+
+    @patch.dict(
+        os.environ,
+        {
+            "NODEPOOLS_COMPACTOR_ENABLED": "true",
+            "NODEPOOLS_GPU_CONSOLIDATE_AFTER": "10s",
+            "NODEPOOLS_BAREMETAL_CONSOLIDATE_AFTER": "",
+        },
+        clear=False,
+    )
+    def test_baremetal_empty_env_falls_through_to_gpu_default(self):
+        """Baremetal with empty env var falls through to GPU/CPU default (staging)."""
+        nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.metal", arch="amd64", baremetal=True)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        assert np["spec"]["disruption"]["consolidateAfter"] == "10s"
+
     def test_gpu_no_compactor_disruption_zero(self):
         """GPU + no compactor → disruption budget 0."""
         with patch.dict(os.environ, {"NODEPOOLS_COMPACTOR_ENABLED": "false"}, clear=False):
@@ -415,8 +479,8 @@ class TestGenerateNodepoolYaml:
         docs = self._parse(output)
         ec2 = docs[1]
         bdm = ec2["spec"]["blockDeviceMappings"][0]
-        assert bdm["ebs"]["iops"] == 5000
-        assert bdm["ebs"]["throughput"] == 250
+        assert bdm["ebs"]["iops"] == 16000
+        assert bdm["ebs"]["throughput"] == 1000
 
     def test_cpu_iops_and_throughput(self):
         nodepool_def = _make_nodepool_def(gpu=False)
@@ -424,8 +488,8 @@ class TestGenerateNodepoolYaml:
         docs = self._parse(output)
         ec2 = docs[1]
         bdm = ec2["spec"]["blockDeviceMappings"][0]
-        assert bdm["ebs"]["iops"] == 3000
-        assert bdm["ebs"]["throughput"] == 125
+        assert bdm["ebs"]["iops"] == 16000
+        assert bdm["ebs"]["throughput"] == 1000
 
     def test_gpu_tags(self):
         nodepool_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")

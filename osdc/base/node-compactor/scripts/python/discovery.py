@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime
 
 from lightkube import ApiError, Client
-from lightkube.resources.core_v1 import Node, Pod
+from lightkube.resources.core_v1 import Namespace, Node, Pod
 from models import (
     Config,
     NodeState,
@@ -15,6 +15,10 @@ from models import (
     pod_cpu_request,
     pod_memory_request,
 )
+
+# Minimum age (seconds) before a pending pod is considered for burst detection.
+# Pods younger than this are likely still being scheduled normally.
+PENDING_POD_MIN_AGE_SECONDS = 30
 
 log = logging.getLogger("compactor")
 
@@ -102,20 +106,75 @@ def build_node_states(
             creation_time=creation,
             is_tainted=is_tainted,
             node_taints=list(taints),
+            labels=dict(labels),
         )
 
+    # Build a set of terminating namespaces to exclude pending pods from.
+    # We do a single list call rather than per-pod lookups.
+    terminating_namespaces: set[str] = set()
+    for ns in client.list(Namespace):
+        if ns.metadata and ns.metadata.deletionTimestamp:
+            terminating_namespaces.add(ns.metadata.name)
+
     pending_pods = []
+    now = datetime.now(UTC)
+    unschedulable_count = 0
+    other_pending_count = 0
+
     for pod in client.list(Pod, namespace="*"):
         phase = pod.status.phase if pod.status else None
 
-        # Collect unschedulable pending pods for burst absorption
+        # Collect pending pods without a nodeName for burst absorption.
+        # Apply exclusion filters to avoid noise from pods that aren't
+        # genuinely waiting for capacity.
         if phase == "Pending":
+            # Only consider pods not yet assigned to a node
+            if pod.spec and pod.spec.nodeName:
+                continue
+
+            # --- Exclusion filter 1: scheduling gates ---
+            scheduling_gates = getattr(pod.spec, "schedulingGates", None) if pod.spec else None
+            if scheduling_gates:
+                continue
+
+            # --- Exclusion filter 2: DaemonSet-owned pods ---
+            if is_daemonset_pod(pod):
+                continue
+
+            # --- Exclusion filter 3: pod too young (< 30s) ---
+            creation_ts = pod.metadata.creationTimestamp if pod.metadata else None
+            if creation_ts:
+                age = (now - creation_ts).total_seconds()
+                if age < PENDING_POD_MIN_AGE_SECONDS:
+                    continue
+
+            # --- Exclusion filter 4: terminating namespace ---
+            pod_ns = pod.metadata.namespace if pod.metadata else None
+            if pod_ns and pod_ns in terminating_namespaces:
+                continue
+
+            # --- Exclusion filter 5: waiting for volume binding ---
             conditions = pod.status.conditions or [] if pod.status else []
+            is_volume_wait = any(
+                c.type == "PodScheduled"
+                and c.status == "False"
+                and c.message
+                and ("persistentvolumeclaim" in c.message.lower() or "bound" in c.message.lower())
+                for c in conditions
+            )
+            if is_volume_wait:
+                continue
+
+            # Track unschedulable vs other pending for logging
             is_unschedulable = any(
                 c.reason == "Unschedulable" and c.status == "False" for c in conditions if c.type == "PodScheduled"
             )
             if is_unschedulable:
-                pending_pods.append(pod)
+                unschedulable_count += 1
+            else:
+                other_pending_count += 1
+
+            pending_pods.append(pod)
             continue
 
         if not pod.spec or not pod.spec.nodeName:
@@ -140,6 +199,14 @@ def build_node_states(
                 is_daemonset=is_daemonset_pod(pod),
                 start_time=start_time,
             )
+        )
+
+    if pending_pods:
+        log.info(
+            "Pending pods: %d total (%d unschedulable, %d other pending)",
+            len(pending_pods),
+            unschedulable_count,
+            other_pending_count,
         )
 
     return node_states, pending_pods

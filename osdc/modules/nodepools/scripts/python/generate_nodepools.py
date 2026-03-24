@@ -150,8 +150,8 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
             disruption_budget = "0"
             consolidation_policy = "WhenEmptyOrUnderutilized"
             consolidation_after = os.environ.get("NODEPOOLS_GPU_CONSOLIDATE_AFTER", "3h")
-        iops = 5000
-        throughput = 250
+        iops = 16000
+        throughput = 1000
 
         gpu_labels = '        nvidia.com/gpu: "true"\n'
         gpu_taints = """        - key: nvidia.com/gpu
@@ -166,16 +166,26 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         if compactor_enabled:
             # Compactor-managed: all empty nodes can be cleaned simultaneously
             disruption_budget = os.environ.get("NODEPOOLS_CPU_DISRUPTION_BUDGET", "100%")
+            consolidation_after = os.environ.get("NODEPOOLS_CPU_CONSOLIDATE_AFTER", "2m")
         else:
             consolidation_policy = "WhenEmptyOrUnderutilized"
             consolidation_after = os.environ.get("NODEPOOLS_CPU_CONSOLIDATE_AFTER", "3h")
             disruption_budget = os.environ.get("NODEPOOLS_CPU_DISRUPTION_BUDGET", "10%")
-        iops = 3000
-        throughput = 125
+
+        iops = 16000
+        throughput = 1000
 
         gpu_labels = ""
         gpu_taints = ""
         gpu_tags = ""
+
+    # ----- Baremetal consolidate_after override -----
+    # Baremetal instances take much longer to provision, so they get a longer
+    # consolidation window to avoid unnecessary churn.
+    if nodepool_def.get("baremetal", False):
+        baremetal_override = os.environ.get("NODEPOOLS_BAREMETAL_CONSOLIDATE_AFTER")
+        if baremetal_override:
+            consolidation_after = baremetal_override
 
     # ----- Capacity reservation block (EC2NodeClass) -----
     if capacity_reservation_ids:
