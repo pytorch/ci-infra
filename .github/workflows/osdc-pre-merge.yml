@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: osdc-pre-merge-${{ github.ref }}
+  group: osdc-pre-merge
   cancel-in-progress: false
 
 defaults:
@@ -22,9 +22,30 @@ env:
 
 jobs:
   # ------------------------------------------------------------------
+  # Path filter: skip expensive jobs when no OSDC files changed
+  # ------------------------------------------------------------------
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      osdc: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.osdc == 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          filters: |
+            osdc:
+              - 'osdc/**'
+              - '.github/workflows/osdc-pre-merge.yml'
+
+  # ------------------------------------------------------------------
   # Phase 1: Deploy to staging (merges PR on top of main automatically)
   # ------------------------------------------------------------------
   deploy:
+    needs: changes
+    if: needs.changes.outputs.osdc == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
