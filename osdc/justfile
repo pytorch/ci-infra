@@ -682,7 +682,19 @@ _deploy-harbor cluster:
     echo "Ensuring Harbor admin password is up to date..."
     kubectl port-forward -n harbor-system svc/harbor 8090:80 &
     PW_PF_PID=$!
-    sleep 5
+    PW_MAX_RETRIES=12
+    for pw_attempt in $(seq 1 $PW_MAX_RETRIES); do
+        if curl -sf -o /dev/null http://localhost:8090/api/v2.0/health 2>/dev/null; then
+            break
+        fi
+        if [ "$pw_attempt" -eq "$PW_MAX_RETRIES" ]; then
+            echo "  Harbor API not reachable after $PW_MAX_RETRIES attempts"
+            kill $PW_PF_PID 2>/dev/null || true
+            exit 1
+        fi
+        echo "  Waiting for Harbor API (attempt $pw_attempt/$PW_MAX_RETRIES)..."
+        sleep 5
+    done
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
         -X PUT "http://localhost:8090/api/v2.0/users/1/password" \
         -u "admin:Harbor12345" \
@@ -741,7 +753,18 @@ _configure-harbor-projects:
     kubectl port-forward -n harbor-system svc/harbor 8080:80 &
     PF_PID=$!
     trap "kill $PF_PID 2>/dev/null || true" EXIT
-    sleep 5
+    HP_MAX_RETRIES=12
+    for hp_attempt in $(seq 1 $HP_MAX_RETRIES); do
+        if curl -sf -o /dev/null http://localhost:8080/api/v2.0/health 2>/dev/null; then
+            break
+        fi
+        if [ "$hp_attempt" -eq "$HP_MAX_RETRIES" ]; then
+            echo "  Harbor API not reachable after $HP_MAX_RETRIES attempts"
+            exit 1
+        fi
+        echo "  Waiting for Harbor API (attempt $hp_attempt/$HP_MAX_RETRIES)..."
+        sleep 5
+    done
 
     uv run {{SCRIPTS}}/python/configure_harbor_projects.py \
         --harbor-url http://localhost:8080 \
