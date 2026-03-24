@@ -121,10 +121,15 @@ class TestPhase1ScaleUpBaseline(_CompactorE2EBase):
             poll_s=5,
         )
 
-        # Wait for compactor taint state to stabilise (replaces fixed 30s sleep)
+        # Wait for compactor taint state AND node count to stabilise.
+        # Tracking node count ensures Karpenter topology changes (node
+        # deletions) also reset the stability window.
         wait_for_stable(
             "compactor taint state after scale-up",
-            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            lambda: (
+                sorted(get_tainted_nodes(self.client, self.pool)),
+                len(get_pool_nodes(self.client, self.pool)),
+            ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
         )
@@ -271,10 +276,15 @@ class TestPhase4BurstAbsorption(_CompactorE2EBase):
                 poll_s=5,
             )
 
-        # Wait for compactor taint state to stabilise
+        # Wait for compactor taint state AND node count to stabilise.
+        # Tracking node count ensures Karpenter topology changes (node
+        # deletions) also reset the stability window.
         wait_for_stable(
             "compactor taint state before burst drain",
-            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            lambda: (
+                sorted(get_tainted_nodes(self.client, self.pool)),
+                len(get_pool_nodes(self.client, self.pool)),
+            ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
         )
@@ -338,10 +348,17 @@ class TestPhase5MinNodesEnforcement(_CompactorE2EBase):
         log.info("Phase 5: Deleting all test pods...")
         delete_all_pods(self.client, self.ns)
 
-        # Wait for compactor taint state to stabilise after pod deletion
+        # Wait for compactor taint state AND node count to stabilise.
+        # Tracking both signals prevents a race where Karpenter deletes
+        # the untainted node (changing topology) without changing the
+        # tainted-node list, causing wait_for_stable to exit before the
+        # compactor's next cycle can restore the min_nodes invariant.
         wait_for_stable(
             "compactor taint state after pod deletion",
-            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            lambda: (
+                sorted(get_tainted_nodes(self.client, self.pool)),
+                len(get_pool_nodes(self.client, self.pool)),
+            ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
         )
