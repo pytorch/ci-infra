@@ -62,7 +62,13 @@ class TestGitCacheDaemonSet:
     """Verify the git cache rsync DaemonSet."""
 
     def test_daemonset_exists_and_ready(self, all_daemonsets, all_nodes):
-        assert_daemonset_healthy(all_daemonsets, all_nodes, GIT_CACHE_NAMESPACE, "git-cache-warmer")
+        assert_daemonset_healthy(
+            all_daemonsets,
+            all_nodes,
+            GIT_CACHE_NAMESPACE,
+            "git-cache-warmer",
+            node_selector={"workload-type": ["github-runner", "buildkit"]},
+        )
 
 
 # ============================================================================
