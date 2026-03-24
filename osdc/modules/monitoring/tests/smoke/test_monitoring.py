@@ -336,7 +336,7 @@ class TestMonitoringPerTargetVerification:
             description=f"kube-prom-stack target: {target_name}",
         )
 
-    @pytest.mark.parametrize("monitor_name,job_label", CONTROL_PLANE_TARGETS)
+    @pytest.mark.parametrize(("monitor_name", "job_label"), CONTROL_PLANE_TARGETS)
     def test_control_plane_target_fresh(self, monitor_name: str, job_label: str, resolve_config) -> None:
         """Verify control plane targets (API server, CoreDNS) have fresh metrics."""
         cluster_name = resolve_config("cluster_name", "")

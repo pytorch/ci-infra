@@ -39,4 +39,5 @@ spec:
         # Drop high-cardinality histogram buckets (keep _sum/_count for averages)
         - action: drop
           sourceLabels: [__name__]
-          regex: "apiserver_request_duration_seconds_bucket|apiserver_request_sli_duration_seconds_bucket|apiserver_response_sizes_bucket|apiserver_watch_events_sizes_bucket|apiserver_admission_controller_admission_duration_seconds_bucket"
+          regex: >-
+            apiserver_request_duration_seconds_bucket|apiserver_request_sli_duration_seconds_bucket|apiserver_response_sizes_bucket|apiserver_watch_events_sizes_bucket|apiserver_admission_controller_admission_duration_seconds_bucket
