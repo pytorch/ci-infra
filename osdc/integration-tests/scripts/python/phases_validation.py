@@ -5,7 +5,6 @@ Phase 4: Collect workflow results
 Phase 5: Cleanup + report
 """
 
-import json
 import logging
 import os
 import subprocess
@@ -20,6 +19,7 @@ from run import (
     format_duration,
     resolve,
     run_cmd,
+    safe_json_loads,
 )
 
 log = logging.getLogger("osdc-integration-test")
@@ -130,16 +130,31 @@ def _filter_runs_by_time(runs: list[dict], not_before: datetime) -> list[dict]:
     return filtered
 
 
-def wait_for_workflows(branch: str, pr_created_at: datetime) -> list[dict]:
+def wait_for_workflows(
+    branch: str,
+    pr_created_at: datetime,
+    workflow_name: str | None = None,
+) -> list[dict]:
     """Poll for workflow run completion. Returns list of run results.
 
     Only considers runs created at or after pr_created_at, so historical
     runs from previous integration test cycles on the same branch are excluded.
-    """
-    log.info("Phase 4: Waiting for PR workflow runs (timeout: %d min)...", WORKFLOW_TIMEOUT_MINUTES)
-    log.info("  Filtering to runs created after %s", pr_created_at.isoformat())
 
-    deadline = time.time() + WORKFLOW_TIMEOUT_MINUTES * 60
+    Args:
+        workflow_name: If set, only track runs matching this workflow name.
+    """
+    # Leave a safety buffer so the GHA job has time for cleanup (PR close,
+    # report printing) even when the polling loop runs long.
+    CLEANUP_BUFFER_MINUTES = 10
+    effective_timeout = max(WORKFLOW_TIMEOUT_MINUTES - CLEANUP_BUFFER_MINUTES, 10)
+
+    log.info("Phase 4: Waiting for PR workflow runs (timeout: %d min, buffer: %d min)...",
+             effective_timeout, CLEANUP_BUFFER_MINUTES)
+    log.info("  Filtering to runs created after %s", pr_created_at.isoformat())
+    if workflow_name:
+        log.info("  Filtering to workflow name: %s", workflow_name)
+
+    deadline = time.time() + effective_timeout * 60
     completed_runs = []
 
     try:
@@ -154,8 +169,10 @@ def wait_for_workflows(branch: str, pr_created_at: datetime) -> list[dict]:
                 time.sleep(POLL_INTERVAL_SECONDS)
                 continue
 
-            all_runs = json.loads(result.stdout) if result.stdout.strip() else []
+            all_runs = safe_json_loads(result.stdout, "list workflow runs") or []
             runs = _filter_runs_by_time(all_runs, pr_created_at)
+            if workflow_name:
+                runs = [r for r in runs if r.get("name") == workflow_name]
             if not runs:
                 log.info("  No runs found yet, waiting...")
                 time.sleep(POLL_INTERVAL_SECONDS)
@@ -175,11 +192,8 @@ def wait_for_workflows(branch: str, pr_created_at: datetime) -> list[dict]:
             log.warning("  Timeout reached! Collecting partial results.")
             completed_runs = _fetch_latest_runs(branch, pr_created_at)
     except KeyboardInterrupt:
-        log.warning("  Interrupted during workflow polling, collecting partial results")
-        completed_runs = _fetch_latest_runs(branch, pr_created_at)
-        # Don't re-raise — return partial results so main() can print the report.
-        # main()'s try block will NOT get a KeyboardInterrupt from here, but
-        # workflow_results will be set, so the report will include whatever we got.
+        log.warning("  Interrupted during workflow polling")
+        raise  # Let main() handle cleanup and partial result collection
 
     # Get job details for each run
     return _collect_run_details(completed_runs)
@@ -193,7 +207,9 @@ def _fetch_latest_runs(branch: str, pr_created_at: datetime) -> list[dict]:
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
-        return _filter_runs_by_time(json.loads(result.stdout), pr_created_at)
+        runs = safe_json_loads(result.stdout, "fetch latest runs")
+        if runs:
+            return _filter_runs_by_time(runs, pr_created_at)
     return []
 
 
@@ -209,8 +225,9 @@ def _collect_run_details(runs: list[dict]) -> list[dict]:
         )
         jobs = []
         if result.returncode == 0 and result.stdout.strip():
-            run_data = json.loads(result.stdout)
-            jobs = run_data.get("jobs", [])
+            run_data = safe_json_loads(result.stdout, f"run {run_id} details")
+            if isinstance(run_data, dict):
+                jobs = run_data.get("jobs", [])
 
         # Get failure logs only for completed failures
         failure_log = ""
@@ -237,8 +254,33 @@ def _collect_run_details(runs: list[dict]) -> list[dict]:
 # ── Phase 5: Cleanup + Report ───────────────────────────────────────────
 
 
-def close_pr(pr_number: int):
-    """Close the integration test PR."""
+def close_pr(pr_number: int, branch: str | None = None):
+    """Close the integration test PR and cancel associated workflows.
+
+    Args:
+        branch: If provided, cancel queued/in-progress workflow runs on this
+                branch before closing the PR.  Optional for backward compat.
+    """
+    if branch:
+        for status in ("queued", "in_progress"):
+            result = run_cmd(
+                ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
+                 "--status", status, "--json", "databaseId"],
+                check=False,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                continue
+            runs = safe_json_loads(result.stdout, f"list {status} runs")
+            if not runs:
+                continue
+            for r in runs:
+                log.info("  Cancelling %s run %s", status, r["databaseId"])
+                run_cmd(
+                    ["gh", "run", "cancel", str(r["databaseId"]),
+                     "--repo", CANARY_REPO],
+                    check=False,
+                )
+
     log.info("Phase 5: Closing PR #%d...", pr_number)
     run_cmd(
         ["gh", "pr", "close", str(pr_number), "--repo", CANARY_REPO, "--delete-branch"],

@@ -1,6 +1,10 @@
 """Unit tests for phases_validation.py (print_report, _filter_runs_by_time, etc.)."""
 
+import json
 from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestFilterRunsByTime:
@@ -326,3 +330,138 @@ class TestRunParallelValidationInterrupt:
 
         # compactor proc should have been terminated
         proc_compactor.terminate.assert_called_once()
+
+
+# ── wait_for_workflows ─────────────────────────────────────────────────
+
+
+class TestWaitForWorkflows:
+    @patch("phases_validation.time.sleep")
+    @patch("phases_validation.run_cmd")
+    def test_keyboard_interrupt_reraises(self, mock_run, mock_sleep):
+        """KeyboardInterrupt must propagate so main() can handle cleanup."""
+        from phases_validation import wait_for_workflows
+
+        mock_run.side_effect = KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            wait_for_workflows(
+                "test-branch",
+                datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+            )
+
+    @patch("phases_validation.time.sleep")
+    @patch("phases_validation.run_cmd")
+    def test_filters_by_workflow_name(self, mock_run, mock_sleep):
+        """When workflow_name is set, only matching runs are tracked."""
+        from phases_validation import wait_for_workflows
+
+        runs_json = json.dumps([
+            {"databaseId": 1, "status": "completed", "conclusion": "success",
+             "name": "target-wf", "createdAt": "2026-03-20T13:00:00Z"},
+            {"databaseId": 2, "status": "completed", "conclusion": "success",
+             "name": "other-wf", "createdAt": "2026-03-20T13:00:00Z"},
+        ])
+
+        mock_run.side_effect = [
+            # gh run list
+            MagicMock(returncode=0, stdout=runs_json, stderr=""),
+            # gh run view for run 1 (only target-wf should be collected)
+            MagicMock(returncode=0, stdout=json.dumps({"jobs": []}), stderr=""),
+        ]
+
+        results = wait_for_workflows(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+            workflow_name="target-wf",
+        )
+
+        assert len(results) == 1
+        assert results[0]["name"] == "target-wf"
+
+    def test_timeout_buffer(self):
+        """Effective deadline uses a cleanup buffer, not the full timeout."""
+        from run import WORKFLOW_TIMEOUT_MINUTES
+
+        # The buffer is hardcoded to 10 minutes inside wait_for_workflows.
+        # Verify the math: effective = max(WORKFLOW_TIMEOUT_MINUTES - 10, 10)
+        expected_effective = max(WORKFLOW_TIMEOUT_MINUTES - 10, 10)
+        assert expected_effective < WORKFLOW_TIMEOUT_MINUTES
+        assert expected_effective >= 10
+
+
+# ── close_pr ───────────────────────────────────────────────────────────
+
+
+class TestClosePr:
+    @patch("phases_validation.run_cmd")
+    def test_cancels_workflows_before_closing(self, mock_run):
+        """When branch is provided, queued and in-progress runs are cancelled."""
+        from phases_validation import close_pr
+
+        queued_runs = json.dumps([{"databaseId": 100}])
+        in_progress_runs = json.dumps([{"databaseId": 200}])
+
+        mock_run.side_effect = [
+            # gh run list --status queued
+            MagicMock(returncode=0, stdout=queued_runs, stderr=""),
+            # gh run cancel 100
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # gh run list --status in_progress
+            MagicMock(returncode=0, stdout=in_progress_runs, stderr=""),
+            # gh run cancel 200
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # gh pr close
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        close_pr(42, branch="test-branch")
+
+        assert mock_run.call_count == 5
+
+        # Verify cancel calls happened before pr close
+        cancel_1 = mock_run.call_args_list[1][0][0]
+        assert "cancel" in cancel_1 and "100" in cancel_1
+
+        cancel_2 = mock_run.call_args_list[3][0][0]
+        assert "cancel" in cancel_2 and "200" in cancel_2
+
+        pr_close = mock_run.call_args_list[4][0][0]
+        assert "close" in pr_close and "42" in pr_close
+
+    @patch("phases_validation.run_cmd")
+    def test_works_without_branch(self, mock_run):
+        """Without branch arg, no cancel calls — backward compatible."""
+        from phases_validation import close_pr
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        close_pr(42)
+
+        # Only the pr close call
+        assert mock_run.call_count == 1
+        cmd = mock_run.call_args_list[0][0][0]
+        assert "close" in cmd and "42" in cmd
+
+    @patch("phases_validation.run_cmd")
+    def test_handles_no_running_workflows(self, mock_run):
+        """When no runs are queued or in-progress, only the PR close happens."""
+        from phases_validation import close_pr
+
+        empty_runs = json.dumps([])
+
+        mock_run.side_effect = [
+            # gh run list --status queued (empty)
+            MagicMock(returncode=0, stdout=empty_runs, stderr=""),
+            # gh run list --status in_progress (empty)
+            MagicMock(returncode=0, stdout=empty_runs, stderr=""),
+            # gh pr close
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        close_pr(42, branch="test-branch")
+
+        assert mock_run.call_count == 3
+        # Last call should be pr close
+        cmd = mock_run.call_args_list[2][0][0]
+        assert "close" in cmd

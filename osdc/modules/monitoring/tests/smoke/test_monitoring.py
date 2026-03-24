@@ -155,6 +155,40 @@ class TestDCGMExporter:
     def test_dcgm_exporter_healthy(self, all_daemonsets: dict, all_nodes: dict, mon_ns: str) -> None:
         assert_daemonset_healthy(all_daemonsets, all_nodes, mon_ns, name_contains="dcgm", allow_zero=True)
 
+    def test_dcgm_exporter_no_crashloop(self, all_pods: dict, mon_ns: str) -> None:
+        """Detect CrashLoopBackOff by checking restart counts on dcgm-exporter pods.
+
+        OOMKilled containers (exit code 137) enter CrashLoopBackOff but the
+        DaemonSet-level health check (desired==ready) can miss this when
+        Karpenter terminates the underlying node before the next reconcile.
+        """
+        pods = [
+            p
+            for p in all_pods.get("items", [])
+            if p.get("metadata", {}).get("namespace") == mon_ns
+            and "dcgm-exporter" in p.get("metadata", {}).get("name", "")
+        ]
+        if not pods:
+            pytest.skip("No dcgm-exporter pods found (no GPU nodes)")
+
+        max_restarts = 3
+        problems = []
+        for pod in pods:
+            name = pod["metadata"]["name"]
+            node = pod.get("spec", {}).get("nodeName", "unknown")
+            for cs in pod.get("status", {}).get("containerStatuses", []):
+                restarts = cs.get("restartCount", 0)
+                waiting = cs.get("state", {}).get("waiting", {})
+                last_term = cs.get("lastState", {}).get("terminated", {})
+
+                if restarts > max_restarts:
+                    reason = last_term.get("reason", "Unknown")
+                    problems.append(f"{name} on {node}: {restarts} restarts (last: {reason})")
+                elif waiting.get("reason") == "CrashLoopBackOff":
+                    problems.append(f"{name} on {node}: CrashLoopBackOff")
+
+        assert not problems, f"dcgm-exporter pod health issues: {'; '.join(problems)}"
+
 
 # ============================================================================
 # Alloy (conditional)

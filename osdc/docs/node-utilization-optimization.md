@@ -16,7 +16,7 @@ Each node's allocatable resources are reduced by:
 
 1. **Kubelet reserved CPU**: 60m (first core) + 10m/core (cores 2-4) + 5m/core (cores 5-8) + 2.5m/core (cores 9+)
 2. **Kubelet reserved memory**: 255Mi + 11Mi per max_pod (ENI-based) + 100Mi eviction threshold
-3. **DaemonSet overhead**: 245m CPU / 640Mi memory (non-GPU), 345m CPU / 768Mi memory (GPU nodes)
+3. **DaemonSet overhead**: 245m CPU / 640Mi memory (non-GPU), 345m CPU / 896Mi memory (GPU nodes)
 
 Each runner pod also includes a sidecar (750m CPU, 512Mi memory) on top of its job container resources.
 

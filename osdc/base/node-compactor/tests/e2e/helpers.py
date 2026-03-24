@@ -133,15 +133,40 @@ def get_untainted_nodes(client: Client, nodepool_name: str, taint_key: str = COM
     ]
 
 
+def partition_pool_nodes(
+    client: Client, nodepool_name: str, taint_key: str = COMPACTOR_TAINT_KEY
+) -> tuple[list[Node], list[str], list[str]]:
+    """Single-snapshot partition of pool nodes into tainted/untainted.
+
+    Returns ``(nodes, tainted_names, untainted_names)`` from one API call,
+    eliminating TOCTOU races between separate ``get_tainted_nodes`` /
+    ``get_untainted_nodes`` calls.
+    """
+    nodes = get_pool_nodes(client, nodepool_name)
+    tainted = [node.metadata.name for node in nodes if node.metadata and _node_has_taint(node, taint_key)]
+    untainted = [node.metadata.name for node in nodes if node.metadata and not _node_has_taint(node, taint_key)]
+    return nodes, tainted, untainted
+
+
 # ---------------------------------------------------------------------------
 # Pod helpers
 # ---------------------------------------------------------------------------
 
 
 def get_pods_by_node(client: Client, namespace: str) -> dict[str, list[str]]:
-    """Return ``{node_name: [pod_name, ...]}`` for pods in *namespace*."""
+    """Return ``{node_name: [pod_name, ...]}`` for Running pods in *namespace*.
+
+    Pods with a ``deletionTimestamp`` (Terminating) are excluded — they still
+    have ``spec.nodeName`` set but are no longer meaningful workloads.
+    """
     result: dict[str, list[str]] = {}
     for pod in client.list(PodResource, namespace=namespace):
+        # Skip Terminating pods (deletionTimestamp set)
+        if pod.metadata and pod.metadata.deletionTimestamp:
+            continue
+        # Only include Running pods
+        if not pod.status or pod.status.phase != "Running":
+            continue
         node = pod.spec.nodeName if pod.spec else None
         name = pod.metadata.name if pod.metadata else "unknown"
         if node:
@@ -214,9 +239,18 @@ def delete_all_pods(client: Client, namespace: str) -> None:
 
 
 def all_pods_running(client: Client, namespace: str, count: int) -> bool:
-    """Return True when exactly *count* pods in *namespace* are Running."""
+    """Return True when exactly *count* non-Terminating pods are Running.
+
+    Kubernetes reports Terminating pods as ``phase=Running`` until the
+    kubelet stops the container.  Filtering on ``deletionTimestamp``
+    prevents inflated counts during pod teardown.
+    """
     pods = list(client.list(PodResource, namespace=namespace))
-    running = [p for p in pods if p.status and p.status.phase == "Running"]
+    running = [
+        p
+        for p in pods
+        if p.status and p.status.phase == "Running" and not (p.metadata and p.metadata.deletionTimestamp)
+    ]
     return len(running) == count
 
 
@@ -400,14 +434,50 @@ def restart_compactor_pod(client: Client) -> None:
     )
 
 
+def scale_compactor_deployment(client: Client, replicas: int) -> None:
+    """Scale the compactor Deployment to *replicas* and wait for rollout.
+
+    Setting replicas=0 triggers SIGTERM on existing pods (graceful shutdown
+    handler runs) without immediately starting a replacement — useful for
+    testing cleanup behaviour in isolation.
+    """
+    patch_body = {"spec": {"replicas": replicas}}
+    client.patch(
+        DeploymentResource,
+        name=COMPACTOR_DEPLOYMENT,
+        namespace=COMPACTOR_NAMESPACE,
+        obj=patch_body,
+    )
+    if replicas == 0:
+        # Wait for all compactor pods to terminate
+        wait_for(
+            "compactor scaled to 0",
+            lambda: not _compactor_pod_running(client),
+            timeout_s=120,
+            poll_s=2,
+        )
+    else:
+        # Wait for at least one pod to be Running
+        wait_for(
+            f"compactor scaled to {replicas}",
+            lambda: _compactor_pod_running(client),
+            timeout_s=120,
+            poll_s=5,
+        )
+
+
 def _compactor_pod_running(client: Client) -> bool:
-    """Check if a compactor pod is Running."""
+    """Check if a non-terminating compactor pod is Running."""
     for pod in client.list(
         PodResource,
         namespace=COMPACTOR_NAMESPACE,
         labels={"app.kubernetes.io/name": "node-compactor"},
     ):
-        if pod.status and pod.status.phase == "Running":
+        if (
+            pod.status
+            and pod.status.phase == "Running"
+            and not (pod.metadata and pod.metadata.deletionTimestamp)
+        ):
             return True
     return False
 

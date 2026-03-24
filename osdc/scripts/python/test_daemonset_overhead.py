@@ -494,9 +494,9 @@ class TestRealManifests:
         assert by_name["nvidia-device-plugin-daemonset"].cpu_millicores == 0
         assert by_name["nvidia-device-plugin-daemonset"].memory_mib == 0
 
-        # dcgm-exporter: 100m CPU, 128Mi
+        # dcgm-exporter: 100m CPU, 256Mi
         assert by_name["dcgm-exporter"].cpu_millicores == 100
-        assert by_name["dcgm-exporter"].memory_mib == 128
+        assert by_name["dcgm-exporter"].memory_mib == 256
 
         # hooks-warmer: 10m CPU, 32Mi
         assert by_name["runner-hooks-warmer"].cpu_millicores == 10
