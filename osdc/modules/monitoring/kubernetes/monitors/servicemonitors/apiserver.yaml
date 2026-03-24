@@ -1,0 +1,42 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: apiserver
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  # The "kubernetes" Service in the default namespace is the API server.
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      component: apiserver
+      provider: kubernetes
+  endpoints:
+    - port: https
+      scheme: https
+      interval: 60s
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        serverName: kubernetes
+        insecureSkipVerify: false
+      metricRelabelings:
+        # Drop Go runtime metrics (high cardinality, low operational value)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "go_.*"
+        # Drop process metrics (CPU/memory of the API server process itself)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "process_.*"
+        # Drop internal workqueue metrics (very noisy, many queues)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "workqueue_.*"
+        # Drop high-cardinality histogram buckets (keep _sum/_count for averages)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "apiserver_request_duration_seconds_bucket|apiserver_request_sli_duration_seconds_bucket|apiserver_response_sizes_bucket|apiserver_watch_events_sizes_bucket|apiserver_admission_controller_admission_duration_seconds_bucket"

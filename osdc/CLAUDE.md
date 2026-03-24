@@ -48,3 +48,23 @@ Detailed instructions are broken into on-demand skills. Load the relevant skill 
 | `osdc-harbor` | Harbor Helm chart gotchas, image mirroring, proxy cache configuration | Working on Harbor or container registry config |
 
 Load the relevant `osdc-*` skill when you need detailed instructions on any specific topic.
+
+## Docs Index
+
+Reference documentation in `docs/`:
+
+| Doc | What it covers |
+|-----|---------------|
+| `docs/architecture.md` | Platform design — base vs modules separation, cluster lifecycle on AWS EKS |
+| `docs/modules.md` | Module contract — what a module is, directory structure, required files |
+| `docs/observability.md` | Three-Alloy observability architecture — monitoring + logging pipelines to Grafana Cloud |
+| `docs/observability-estimates.md` | Per-unit cost estimates for metrics cardinality and log volume (Grafana Cloud billing) |
+| `docs/operations.md` | Operational prerequisites — AWS CLI, mise, working directory setup for cluster management |
+| `docs/loki_query.md` | CLI queries against Grafana Cloud Loki when kubectl logs is unavailable |
+| `docs/mimir_query.md` | CLI queries against Grafana Cloud Mimir (Prometheus metrics, no in-cluster Prometheus) |
+| `docs/runner_naming_convention.md` | Runner label format and the ~42 character name limit (ARC/K8s/Cilium constraints) |
+| `docs/current_runner_load_distribution.md` | Job counts and peak concurrency by runner type (pytorch/pytorch, from ClickHouse) |
+| `docs/node-utilization-optimization.md` | Runner-to-node packing efficiency analysis and instance type recommendations |
+| `docs/node-warmup-and-scheduling-gates.md` | Full node initialization sequence — taints, DaemonSets, init containers before job scheduling |
+| `docs/initialize-containers-slowness.md` | Root-cause analysis of "Initialize containers" delays (ARC workspace copy + CPU starvation) |
+| `docs/pr-migration.md` | Migration plan from monolithic `arc/` to modular `osdc/` layout |

@@ -84,6 +84,12 @@ variable "bootstrap_cluster_creator_admin_permissions" {
   default     = true
 }
 
+variable "cluster_admin_role_names" {
+  description = "Comma-separated IAM role names to grant EKS cluster admin access via access entries (requires API or API_AND_CONFIG_MAP authentication mode)"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

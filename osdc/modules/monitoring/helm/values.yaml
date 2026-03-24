@@ -12,6 +12,24 @@
 prometheus:
   enabled: false
 
+# --- Control plane ServiceMonitors (DISABLED — we manage our own) ---
+# kube-prometheus-stack creates ServiceMonitors for these by default.
+# We disable them all and use custom monitors in kubernetes/monitors/
+# for the components we actually want (apiserver, coredns).
+# EKS does not expose controller-manager, scheduler, or etcd endpoints.
+kubeApiServer:
+  enabled: false
+coreDns:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
 # --- Grafana (DISABLED — use Grafana Cloud) ---
 grafana:
   enabled: false

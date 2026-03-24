@@ -116,7 +116,7 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
     for _pool_name, pool_nodes in pools.items():
         all_workload_pods = []
         for node in pool_nodes:
-            all_workload_pods.extend(node.workload_pods)
+            all_workload_pods.extend(p for p in node.workload_pods if not p.is_phantom)
 
         min_needed = bin_pack_min_nodes(all_workload_pods, pool_nodes)
         min_needed = max(min_needed, cfg.min_nodes)
@@ -189,9 +189,12 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
                     mandatory_untaint.add(node.name)
                 continue
 
-            # This node is a taint candidate -- check safety
+            # This node is a taint candidate -- check safety.
+            # Exclude phantom pods: they are predictions about pending pod
+            # placement, not real workload that needs to be accommodated.
+            real_pods = [p for p in node.workload_pods if not p.is_phantom]
             all_remaining = definitely_remaining + conditionally_remaining
-            if node.workload_pods and not _pods_fit_on_nodes(node.workload_pods, all_remaining):
+            if real_pods and not _pods_fit_on_nodes(real_pods, all_remaining):
                 log.info(
                     "Skipping taint of %s: pods cannot fit on remaining nodes",
                     node.name,

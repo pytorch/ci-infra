@@ -52,3 +52,9 @@ variable "authentication_mode" {
   type        = string
   default     = "CONFIG_MAP"
 }
+
+variable "cluster_admin_role_names" {
+  description = "Comma-separated IAM role names to grant EKS cluster admin access via access entries"
+  type        = string
+  default     = ""
+}

@@ -66,6 +66,9 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     access_config = cluster_cfg.get("access_config") or base.get("access_config") or {}
     if "authentication_mode" in access_config:
         pairs["authentication_mode"] = access_config["authentication_mode"]
+    cluster_admin_roles = access_config.get("cluster_admin_role_names", [])
+    if cluster_admin_roles:
+        pairs["cluster_admin_role_names"] = ",".join(cluster_admin_roles)
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
     print(" ".join(flags))
 
