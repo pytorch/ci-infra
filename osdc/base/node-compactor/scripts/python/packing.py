@@ -1,6 +1,7 @@
 """Bin-packing and taint computation for the Node Compactor."""
 
 import logging
+import math
 from collections import defaultdict
 
 from models import Config, NodeState, PodInfo
@@ -88,17 +89,20 @@ def _pods_fit_on_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> bool:
     return True
 
 
-def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[str], set[str], set[str]]:
+def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[str], set[str], set[str], set[str]]:
     """Decide which nodes to taint and which to untaint.
 
-    Returns (nodes_to_taint, nodes_to_untaint, mandatory_untaint).
+    Returns (nodes_to_taint, nodes_to_untaint, mandatory_untaint, rate_limited).
 
     mandatory_untaint is a subset of nodes_to_untaint that must be
     untainted regardless of cooldown — these are min_nodes enforcement
     untaints (a safety invariant, not a preference).
+
+    rate_limited contains nodes that would have been tainted but were
+    blocked by the per-iteration taint rate limit (cfg.taint_rate).
     """
     if not node_states:
-        return set(), set(), set()
+        return set(), set(), set(), set()
 
     pools: dict[str, list[NodeState]] = defaultdict(list)
     for ns in node_states.values():
@@ -107,6 +111,7 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
     to_taint: set[str] = set()
     to_untaint: set[str] = set()
     mandatory_untaint: set[str] = set()
+    rate_limited: set[str] = set()
 
     for _pool_name, pool_nodes in pools.items():
         all_workload_pods = []
@@ -125,6 +130,15 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
                     to_untaint.add(node.name)
                     mandatory_untaint.add(node.name)
             continue
+
+        # Compute required spare capacity for this pool.
+        # spare_capacity_nodes is a floor, spare_capacity_ratio scales with
+        # pool size. The effective requirement is the max of both.
+        # Setting both to 0 disables the feature.
+        required_spare = max(
+            cfg.spare_capacity_nodes,
+            math.ceil(len(pool_nodes) * cfg.spare_capacity_ratio),
+        )
 
         # Exclude young nodes from taint candidates — they may not have
         # received pods yet (race between Karpenter provisioning and the
@@ -151,6 +165,12 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
             )
 
         candidates = sorted(eligible, key=taint_priority)
+
+        # Rate limit: cap the number of NEW taints (nodes not already tainted)
+        # per iteration to avoid large-scale taint storms.
+        # Always allow at least 1 new taint even with rate=0.0.
+        max_new_taints = max(1, math.ceil(surplus * cfg.taint_rate))
+        new_taint_count = 0
 
         # Nodes beyond the surplus count are definitely remaining untainted.
         # Nodes within the surplus range that fail the safety check also
@@ -181,7 +201,95 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
                     to_untaint.add(node.name)
                 continue
 
+            # Rate limit: already-tainted nodes don't count toward the cap
+            # (they maintain existing state). Only new taints are limited.
+            if not node.is_tainted and new_taint_count >= max_new_taints:
+                log.info(
+                    "Rate-limited taint of %s: %d/%d new taints this iteration",
+                    node.name,
+                    new_taint_count,
+                    max_new_taints,
+                )
+                rate_limited.add(node.name)
+                conditionally_remaining.append(node)
+                continue
+
+            # Spare capacity check: ensure enough low-utilization nodes
+            # remain untainted after this taint.  Count untainted nodes
+            # (excluding this candidate and nodes already marked to taint)
+            # with utilization at or below the threshold.
+            if required_spare > 0:
+                spare_after = _count_spare_nodes(
+                    pool_nodes,
+                    node.name,
+                    to_taint,
+                    cfg.spare_capacity_threshold,
+                )
+                if spare_after < required_spare:
+                    log.info(
+                        "Skipping taint of %s: would violate spare capacity (spare_after=%d < required=%d)",
+                        node.name,
+                        spare_after,
+                        required_spare,
+                    )
+                    conditionally_remaining.append(node)
+                    if node.is_tainted:
+                        to_untaint.add(node.name)
+                    continue
+
             to_taint.add(node.name)
             taint_count += 1
+            if not node.is_tainted:
+                new_taint_count += 1
 
-    return to_taint, to_untaint, mandatory_untaint
+        # Spare capacity recovery: untaint low-utilization tainted nodes
+        # if the pool doesn't meet the spare capacity requirement.
+        if required_spare > 0:
+            current_spare = _count_spare_nodes(
+                pool_nodes,
+                None,
+                to_taint,
+                cfg.spare_capacity_threshold,
+            )
+            if current_spare < required_spare:
+                # Find tainted nodes with low utilization that we can
+                # untaint to restore spare capacity. Prefer lowest
+                # utilization first.
+                tainted_low = sorted(
+                    (
+                        n
+                        for n in pool_nodes
+                        if n.is_tainted and n.name not in to_untaint and n.utilization <= cfg.spare_capacity_threshold
+                    ),
+                    key=lambda n: n.utilization,
+                )
+                for node in tainted_low:
+                    if current_spare >= required_spare:
+                        break
+                    to_untaint.add(node.name)
+                    mandatory_untaint.add(node.name)
+                    to_taint.discard(node.name)
+                    current_spare += 1
+
+    return to_taint, to_untaint, mandatory_untaint, rate_limited
+
+
+def _count_spare_nodes(
+    pool_nodes: list[NodeState],
+    exclude_node: str | None,
+    to_taint: set[str],
+    threshold: float,
+) -> int:
+    """Count untainted nodes with utilization at or below threshold.
+
+    Nodes in to_taint or matching exclude_node are treated as tainted.
+    """
+    count = 0
+    for n in pool_nodes:
+        if n.name == exclude_node:
+            continue
+        if n.is_tainted or n.name in to_taint:
+            continue
+        if n.utilization <= threshold:
+            count += 1
+    return count

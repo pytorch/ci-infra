@@ -13,10 +13,13 @@ This achieves cost savings without disrupting running CI jobs.
 | `scripts/python/discovery.py` | NodePool and node discovery logic |
 | `scripts/python/packing.py` | Bin-packing algorithm for node consolidation |
 | `scripts/python/taints.py` | Taint management (apply, remove, SIGTERM cleanup) |
+| `scripts/python/phantom.py` | Phantom load simulation for pending pods |
 | `scripts/python/test_compactor.py` | Unit tests for main controller |
 | `scripts/python/test_discovery.py` | Unit tests for discovery module |
 | `scripts/python/test_taints.py` | Unit tests for taint management |
 | `scripts/python/test_models_pod_helpers.py` | Unit tests for pod helper functions |
+| `scripts/python/test_phantom.py` | Unit tests for phantom load simulation |
+| `scripts/python/test_spare_capacity.py` | Unit tests for spare capacity feature |
 | `kubernetes/deployment.yaml` | Deployment manifest (runs in `kube-system`) |
 | `kubernetes/rbac.yaml` | RBAC — node get/list/patch, pod list, NodePool list |
 | `kubernetes/serviceaccount.yaml` | ServiceAccount |
@@ -37,6 +40,11 @@ All config comes from `clusters.yaml` under `node_compactor:` and is injected as
 | `node_compactor.dry_run` | `COMPACTOR_DRY_RUN` | `false` | Log what would happen without tainting |
 | `node_compactor.min_nodes` | `COMPACTOR_MIN_NODES` | `1` | Minimum nodes to keep untainted per NodePool |
 | `node_compactor.min_node_age_seconds` | `COMPACTOR_MIN_NODE_AGE` | `900` | Grace period (seconds) before a new node can be tainted |
+| `node_compactor.taint_rate` | `COMPACTOR_TAINT_RATE` | `0.3` | Max fraction of surplus nodes to taint per iteration (`ceil(surplus * rate)`) |
+| `node_compactor.fleet_cooldown` | `COMPACTOR_FLEET_COOLDOWN` | `900` | Seconds after a burst untaint before new taints are allowed in the same pool |
+| `node_compactor.spare_capacity_nodes` | `COMPACTOR_SPARE_CAPACITY_NODES` | `3` | Minimum low-utilization nodes to keep untainted per pool (floor) |
+| `node_compactor.spare_capacity_ratio` | `COMPACTOR_SPARE_CAPACITY_RATIO` | `0.15` | Fraction of pool size to keep as spare capacity (scales with pool) |
+| `node_compactor.spare_capacity_threshold` | `COMPACTOR_SPARE_CAPACITY_THRESHOLD` | `0.4` | Max utilization for a node to count as "spare capacity" |
 
 ## How it works with Karpenter
 
@@ -49,7 +57,11 @@ All config comes from `clusters.yaml` under `node_compactor:` and is injected as
 ## Safety properties
 
 - Never taints all nodes in a pool — always keeps at least `min_nodes` untainted
-- Burst absorption: temporarily removes taints when many pods are pending
+- Burst absorption: temporarily removes taints when pending pods match tainted nodes (checks tolerations, nodeSelector, affinity, and resource fit)
+- Phantom load: pending pods (30–120s old) are simulated on untainted nodes before utilization decisions, preventing premature tainting
+- Rate limiting: caps new taints per iteration to `ceil(surplus * taint_rate)`, preventing taint storms
+- Fleet cooldown: blocks new taints for `fleet_cooldown` seconds after a burst untaint, with override at >50% surplus
+- Spare capacity floor: keeps at least `max(spare_capacity_nodes, ceil(pool_size * spare_capacity_ratio))` low-utilization nodes untainted
 - Graceful shutdown: catches SIGTERM and removes all taints it applied before exiting
 - Dry-run mode for safe testing
 

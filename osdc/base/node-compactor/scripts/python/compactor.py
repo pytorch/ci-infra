@@ -18,6 +18,7 @@ Configuration via environment variables -- see models.DEFAULTS.
 """
 
 import logging
+import math
 import pathlib
 import signal
 import sys
@@ -28,6 +29,7 @@ from discovery import build_node_states, discover_managed_nodes
 from lightkube import ApiError, Client
 from models import Config
 from packing import compute_taints
+from phantom import apply_pending_phantom_load
 from prometheus_client import start_http_server
 from taints import apply_taint, check_pending_pods, cleanup_stale_taints, remove_taint
 
@@ -39,7 +41,12 @@ log = logging.getLogger("compactor")
 # ============================================================================
 
 
-def reconcile(client: Client, cfg: Config, taint_times: dict[str, float]) -> None:
+def reconcile(
+    client: Client,
+    cfg: Config,
+    taint_times: dict[str, float],
+    fleet_cooldown_times: dict[str, float] | None = None,
+) -> None:
     """Single reconciliation cycle.
 
     Args:
@@ -47,6 +54,9 @@ def reconcile(client: Client, cfg: Config, taint_times: dict[str, float]) -> Non
         cfg: Compactor configuration.
         taint_times: Mutable dict tracking when each node was last tainted.
             Updated in-place when nodes are tainted.
+        fleet_cooldown_times: Mutable dict tracking when each nodepool last
+            had a burst untaint. Updated in-place. If None, fleet cooldown
+            is effectively disabled.
     """
     # Touch healthcheck file at the start of every cycle so the liveness
     # probe passes even when there are no managed nodes (controller is
@@ -76,6 +86,11 @@ def reconcile(client: Client, cfg: Config, taint_times: dict[str, float]) -> Non
         m.refresh_gauge(m.tainted_nodes, {})
         return
 
+    # Apply phantom load from pending pods before any utilization-based decisions.
+    # This makes the compactor "see" pods that are about to land, preventing
+    # premature tainting of nodes that will soon be needed.
+    apply_pending_phantom_load(node_states, pending_pods, cfg)
+
     total_pods = sum(ns.workload_pod_count for ns in node_states.values())
     total_nodes = len(node_states)
     tainted = sum(1 for ns in node_states.values() if ns.is_tainted)
@@ -103,11 +118,95 @@ def reconcile(client: Client, cfg: Config, taint_times: dict[str, float]) -> Non
     burst_untaint = check_pending_pods(cfg, node_states, pending_pods)
     m.pending_pods_compatible.set(len(pending_pods))
 
-    desired_taint, desired_untaint, mandatory_untaint = compute_taints(node_states, cfg)
+    # Record fleet cooldown for pools that had burst untaints
+    if fleet_cooldown_times is not None:
+        for node_name in burst_untaint:
+            ns = node_states.get(node_name)
+            if ns:
+                fleet_cooldown_times[ns.nodepool] = time.time()
+
+    desired_taint, desired_untaint, mandatory_untaint, rate_limited = compute_taints(node_states, cfg)
+
+    # Log and emit metrics for rate-limited nodes
+    if rate_limited:
+        log.info("Rate-limited %d node(s) from tainting: %s", len(rate_limited), sorted(rate_limited))
+        # Emit per-pool rate limit metrics
+        pool_rate_limited: dict[str, int] = {}
+        for node_name in rate_limited:
+            ns = node_states.get(node_name)
+            pool = managed_names.get(node_name, "unknown") if ns is None else ns.nodepool
+            pool_rate_limited[pool] = pool_rate_limited.get(pool, 0) + 1
+        for pool, count in pool_rate_limited.items():
+            m.rate_limit_blocks.labels(nodepool=pool).inc(count)
+
+    # Instrumentation point: spare capacity per pool
+    from packing import _count_spare_nodes
+
+    spare_actual: dict[tuple[str, ...], float] = {}
+    spare_req: dict[tuple[str, ...], float] = {}
+    pool_groups: dict[str, list] = {}
+    for node_name, ns in node_states.items():
+        pool = managed_names.get(node_name, "unknown")
+        pool_groups.setdefault(pool, []).append(ns)
+    for pool, nodes_in_pool in pool_groups.items():
+        required = max(
+            cfg.spare_capacity_nodes,
+            math.ceil(len(nodes_in_pool) * cfg.spare_capacity_ratio),
+        )
+        spare_req[(pool,)] = float(required)
+        spare_actual[(pool,)] = float(
+            _count_spare_nodes(nodes_in_pool, None, desired_taint, cfg.spare_capacity_threshold)
+        )
+    m.refresh_gauge(m.spare_capacity_gauge, spare_actual)
+    m.refresh_gauge(m.spare_capacity_required, spare_req)
 
     # Merge burst untaint
     desired_untaint |= burst_untaint
     desired_taint -= burst_untaint
+
+    # Fleet cooldown: block new taints in pools that recently had a burst untaint.
+    # This prevents the compactor from immediately re-tainting nodes after a burst
+    # event, giving the pool time to stabilize.
+    now_fleet = time.time()
+    fleet_blocked: set[str] = set()
+    if fleet_cooldown_times is not None and cfg.fleet_cooldown > 0:
+        for node_name in list(desired_taint):
+            ns = node_states.get(node_name)
+            if ns and ns.nodepool in fleet_cooldown_times:
+                pool_nodes = [n for n in node_states.values() if n.nodepool == ns.nodepool]
+                surplus_count = sum(1 for n in pool_nodes if n.name in desired_taint or n.is_tainted)
+                # Override: halve cooldown if >50% of pool is surplus
+                effective_cooldown = cfg.fleet_cooldown
+                if surplus_count > len(pool_nodes) * 0.5:
+                    effective_cooldown = cfg.fleet_cooldown // 2
+
+                elapsed = now_fleet - fleet_cooldown_times[ns.nodepool]
+                if elapsed < effective_cooldown:
+                    desired_taint.discard(node_name)
+                    fleet_blocked.add(node_name)
+
+        # Log and emit metrics for fleet-blocked nodes
+        if fleet_blocked:
+            log.info(
+                "Fleet cooldown blocked %d taint(s): %s",
+                len(fleet_blocked),
+                ", ".join(sorted(fleet_blocked)),
+            )
+            # Count blocks per pool
+            pool_block_counts: dict[str, int] = {}
+            for node_name in fleet_blocked:
+                ns = node_states.get(node_name)
+                if ns:
+                    pool_block_counts[ns.nodepool] = pool_block_counts.get(ns.nodepool, 0) + 1
+            for pool, count in pool_block_counts.items():
+                m.fleet_cooldown_blocks.labels(nodepool=pool).inc(count)
+
+        # Emit fleet_cooldown_remaining gauge per pool
+        cooldown_remaining: dict[tuple[str, ...], float] = {}
+        for pool, last_burst_time in fleet_cooldown_times.items():
+            remaining = max(0.0, cfg.fleet_cooldown - (now_fleet - last_burst_time))
+            cooldown_remaining[(pool,)] = remaining
+        m.refresh_gauge(m.fleet_cooldown_remaining, cooldown_remaining)
 
     # Instrumentation point 4: tainted nodes per nodepool (after compute)
     pool_taint_counts: dict[str, int] = {}
@@ -199,11 +298,12 @@ def main() -> int:
     cfg = Config.from_env()
     log.info("Node Compactor starting")
     log.info(
-        "Config: interval=%ds, max_uptime=%dh, min_nodes=%d, taint_cooldown=%ds, dry_run=%s",
+        "Config: interval=%ds, max_uptime=%dh, min_nodes=%d, taint_cooldown=%ds, fleet_cooldown=%ds, dry_run=%s",
         cfg.interval,
         cfg.max_uptime_hours,
         cfg.min_nodes,
         cfg.taint_cooldown,
+        cfg.fleet_cooldown,
         cfg.dry_run,
     )
 
@@ -217,6 +317,7 @@ def main() -> int:
             "max_uptime_hours": str(cfg.max_uptime_hours),
             "min_nodes": str(cfg.min_nodes),
             "taint_cooldown": str(cfg.taint_cooldown),
+            "fleet_cooldown": str(cfg.fleet_cooldown),
             "dry_run": str(cfg.dry_run),
             "taint_key": cfg.taint_key,
             "nodepool_label": cfg.nodepool_label,
@@ -226,6 +327,7 @@ def main() -> int:
     client = Client()
     shutdown = False
     taint_times: dict[str, float] = {}
+    fleet_cooldown_times: dict[str, float] = {}
 
     def handle_signal(signum, frame):
         nonlocal shutdown
@@ -243,7 +345,7 @@ def main() -> int:
     while not shutdown:
         try:
             with m.reconcile_duration_seconds.time():
-                reconcile(client, cfg, taint_times)
+                reconcile(client, cfg, taint_times, fleet_cooldown_times)
             m.reconcile_cycles_total.labels(status="success").inc()
         except Exception:
             m.reconcile_cycles_total.labels(status="error").inc()

@@ -10,21 +10,21 @@ from models import Config, NodeState, pod_cpu_request, pod_memory_request
 log = logging.getLogger("compactor")
 
 
-def _pod_matches_node(pod, node: NodeState, node_taints: list) -> bool:
+def _pod_matches_node(pod, node_state: NodeState) -> bool:
     """Check if a pending pod could run on a given node.
 
-    Performs basic matching: checks that the pod tolerates the node's
-    instance-type taint (all runner nodes have one). Full scheduler
-    simulation is not attempted.
+    Checks scheduling constraints:
+    1. Tolerations — pod must tolerate all node taints
+    2. nodeSelector — every key=value must match node labels
+    3. Node affinity (requiredDuringSchedulingIgnoredDuringExecution)
+    4. Resource fit — pod requests must fit in remaining node capacity
     """
-    # Collect pod tolerations
-    tolerations = []
-    if pod.spec and pod.spec.tolerations:
-        tolerations = pod.spec.tolerations
+    if not pod.spec:
+        return not bool(node_state.node_taints)
 
-    # Check that the pod tolerates all node taints
-    # (nodeSelector matching is skipped -- NodeState doesn't carry labels)
-    for taint in node_taints:
+    # --- 1. Taint tolerations ---
+    tolerations = pod.spec.tolerations or []
+    for taint in node_state.node_taints:
         tolerated = False
         for tol in tolerations:
             # A toleration matches if the key matches (or key is empty with Exists operator)
@@ -43,6 +43,77 @@ def _pod_matches_node(pod, node: NodeState, node_taints: list) -> bool:
         if not tolerated:
             return False
 
+    # --- 2. nodeSelector ---
+    node_selector = getattr(pod.spec, "nodeSelector", None)
+    if node_selector:
+        for key, value in node_selector.items():
+            if node_state.labels.get(key) != value:
+                return False
+
+    # --- 3. Node affinity (required only) ---
+    affinity = getattr(pod.spec, "affinity", None)
+    if affinity:
+        node_affinity = getattr(affinity, "nodeAffinity", None)
+        if node_affinity:
+            required = getattr(node_affinity, "requiredDuringSchedulingIgnoredDuringExecution", None)
+            if required:
+                terms = getattr(required, "nodeSelectorTerms", None) or []
+                if terms and not _any_term_matches(terms, node_state.labels):
+                    return False
+
+    # --- 4. Resource fit ---
+    remaining_cpu = node_state.allocatable_cpu - node_state.total_cpu_used
+    remaining_memory = node_state.allocatable_memory - node_state.total_memory_used
+    if pod_cpu_request(pod) > remaining_cpu:
+        return False
+    return not pod_memory_request(pod) > remaining_memory
+
+
+def _any_term_matches(terms: list, node_labels: dict) -> bool:
+    """Check if any nodeSelectorTerm matches (terms are OR'd)."""
+    for term in terms:
+        expressions = getattr(term, "matchExpressions", None) or []
+        if _all_expressions_match(expressions, node_labels):
+            return True
+    return False
+
+
+def _all_expressions_match(expressions: list, node_labels: dict) -> bool:
+    """Check if all matchExpressions in a term match (AND'd)."""
+    for expr in expressions:
+        key = expr.key
+        operator = expr.operator
+        values = getattr(expr, "values", None) or []
+        node_value = node_labels.get(key)
+
+        if operator == "In":
+            if node_value is None or node_value not in values:
+                return False
+        elif operator == "NotIn":
+            if node_value is not None and node_value in values:
+                return False
+        elif operator == "Exists":
+            if key not in node_labels:
+                return False
+        elif operator == "DoesNotExist":
+            if key in node_labels:
+                return False
+        elif operator == "Gt":
+            if node_value is None:
+                return False
+            try:
+                if int(node_value) <= int(values[0]):
+                    return False
+            except (ValueError, IndexError):
+                return False
+        elif operator == "Lt":
+            if node_value is None:
+                return False
+            try:
+                if int(node_value) >= int(values[0]):
+                    return False
+            except (ValueError, IndexError):
+                return False
     return True
 
 
@@ -63,17 +134,27 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
     if not tainted_nodes:
         return set()
 
-    # Build taint map from node_states (excluding our compactor taint)
-    node_taints_map: dict[str, list] = {}
+    # Build NodeState views with compactor taint removed (simulates untainting)
+    untainted_views: dict[str, NodeState] = {}
     for tnode in tainted_nodes:
-        node_taints_map[tnode.name] = [t for t in tnode.node_taints if t.key != cfg.taint_key]
+        remaining_taints = [t for t in tnode.node_taints if t.key != cfg.taint_key]
+        untainted_views[tnode.name] = NodeState(
+            name=tnode.name,
+            nodepool=tnode.nodepool,
+            allocatable_cpu=tnode.allocatable_cpu,
+            allocatable_memory=tnode.allocatable_memory,
+            creation_time=tnode.creation_time,
+            pods=tnode.pods,
+            is_tainted=tnode.is_tainted,
+            node_taints=remaining_taints,
+            labels=tnode.labels,
+        )
 
     # Only count demand from pods that actually match compatible tainted nodes
     compatible_pending = []
     for pod in pending_pods:
         for tnode in tainted_nodes:
-            remaining_taints = node_taints_map.get(tnode.name, [])
-            if _pod_matches_node(pod, tnode, remaining_taints):
+            if _pod_matches_node(pod, untainted_views[tnode.name]):
                 compatible_pending.append(pod)
                 break
 
@@ -84,8 +165,7 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
     # Filter tainted nodes to those that pending pods could actually run on
     compatible_tainted: list[NodeState] = []
     for tnode in tainted_nodes:
-        remaining_taints = node_taints_map.get(tnode.name, [])
-        if any(_pod_matches_node(pod, tnode, remaining_taints) for pod in compatible_pending):
+        if any(_pod_matches_node(pod, untainted_views[tnode.name]) for pod in compatible_pending):
             compatible_tainted.append(tnode)
 
     if not compatible_tainted:
@@ -106,8 +186,8 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
     for tnode in compatible_tainted:
         nodes_to_untaint.add(tnode.name)
         # Available capacity = allocatable minus currently used
-        cumulative_cpu += tnode.allocatable_cpu - tnode.cpu_used
-        cumulative_mem += tnode.allocatable_memory - tnode.memory_used
+        cumulative_cpu += tnode.allocatable_cpu - tnode.total_cpu_used
+        cumulative_mem += tnode.allocatable_memory - tnode.total_memory_used
 
         if cumulative_cpu >= total_cpu_demand and cumulative_mem >= total_mem_demand:
             break

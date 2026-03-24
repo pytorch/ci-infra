@@ -182,6 +182,11 @@ def compactor_setup(
         "COMPACTOR_INTERVAL": "10",
         "COMPACTOR_TAINT_COOLDOWN": "30",
         "COMPACTOR_MIN_NODE_AGE": "0",
+        # Disable anti-flap controls for deterministic e2e behavior
+        "COMPACTOR_TAINT_RATE": "1.0",
+        "COMPACTOR_FLEET_COOLDOWN": "0",
+        "COMPACTOR_SPARE_CAPACITY_NODES": "0",
+        "COMPACTOR_SPARE_CAPACITY_RATIO": "0",
     }
 
     log.info("Patching compactor Deployment for e2e testing...")

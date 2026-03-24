@@ -30,6 +30,11 @@ def make_config(**overrides):
         "dry_run": False,
         "taint_cooldown": 300,
         "min_node_age": 900,
+        "fleet_cooldown": 900,
+        "taint_rate": 0.3,
+        "spare_capacity_nodes": 3,
+        "spare_capacity_ratio": 0.15,
+        "spare_capacity_threshold": 0.4,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -52,16 +57,39 @@ def make_toleration(key=None, operator="Equal", value=None, effect=None):
     return tol
 
 
-def make_pod(tolerations=None, cpu="1", memory="1Gi", has_spec=True):
+def make_match_expression(key, operator, values=None):
+    expr = MagicMock()
+    expr.key = key
+    expr.operator = operator
+    expr.values = values or []
+    return expr
+
+
+def make_node_selector_term(match_expressions):
+    term = MagicMock()
+    term.matchExpressions = match_expressions
+    return term
+
+
+def make_pod(tolerations=None, cpu="1", memory="1Gi", has_spec=True, node_selector=None, affinity=None):
     pod = MagicMock()
     if not has_spec:
         pod.spec = None
         return pod
     pod.spec.tolerations = tolerations
+    pod.spec.nodeSelector = node_selector
+    pod.spec.affinity = affinity
     container = MagicMock()
     container.resources.requests = {"cpu": cpu, "memory": memory}
     pod.spec.containers = [container]
     return pod
+
+
+def make_node_affinity_required(terms):
+    """Build a pod affinity object with requiredDuringSchedulingIgnoredDuringExecution."""
+    affinity = MagicMock()
+    affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms = terms
+    return affinity
 
 
 def make_node_state(
@@ -72,6 +100,7 @@ def make_node_state(
     allocatable_cpu=8.0,
     allocatable_memory=32 * GiB,
     pods=None,
+    labels=None,
 ):
     return NodeState(
         name=name,
@@ -82,11 +111,12 @@ def make_node_state(
         pods=pods or [],
         is_tainted=is_tainted,
         node_taints=node_taints or [],
+        labels=labels or {},
     )
 
 
 # ============================================================================
-# _pod_matches_node tests
+# _pod_matches_node tests — toleration checks (existing, updated signature)
 # ============================================================================
 
 
@@ -96,64 +126,69 @@ class TestPodMatchesNode(unittest.TestCase):
 
     def test_no_taints_matches_all(self):
         pod = make_pod()
-        self.assertTrue(_pod_matches_node(pod, self.node, []))
+        self.assertTrue(_pod_matches_node(pod, self.node))
 
     def test_no_tolerations_with_taints_fails(self):
         pod = make_pod(tolerations=None)
-        taint = make_taint()
-        self.assertFalse(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[make_taint()])
+        self.assertFalse(_pod_matches_node(pod, node))
 
     def test_pod_no_spec_with_taints_fails(self):
         pod = make_pod(has_spec=False)
-        taint = make_taint()
-        self.assertFalse(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[make_taint()])
+        self.assertFalse(_pod_matches_node(pod, node))
 
     def test_matching_key_value_toleration(self):
         taint = make_taint(key="k1", value="v1", effect="NoSchedule")
         tol = make_toleration(key="k1", operator="Equal", value="v1", effect="NoSchedule")
         pod = make_pod(tolerations=[tol])
-        self.assertTrue(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
 
     def test_exists_operator_no_key_wildcard(self):
         taint = make_taint(key="anything", value="val", effect="NoSchedule")
         tol = make_toleration(key=None, operator="Exists")
         pod = make_pod(tolerations=[tol])
-        self.assertTrue(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
 
     def test_exists_operator_specific_key(self):
         taint = make_taint(key="k1", value="v1", effect="NoSchedule")
         tol = make_toleration(key="k1", operator="Exists")
         pod = make_pod(tolerations=[tol])
-        self.assertTrue(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
 
     def test_effect_mismatch_continues(self):
         """Toleration effect doesn't match taint effect; should continue to next toleration."""
         taint = make_taint(key="k1", value="v1", effect="NoSchedule")
-        # First toleration: right key but wrong effect
         tol_wrong_effect = make_toleration(key="k1", operator="Equal", value="v1", effect="NoExecute")
-        # Second toleration: right key, right effect
         tol_correct = make_toleration(key="k1", operator="Equal", value="v1", effect="NoSchedule")
         pod = make_pod(tolerations=[tol_wrong_effect, tol_correct])
-        self.assertTrue(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
 
     def test_effect_mismatch_only_toleration_fails(self):
         taint = make_taint(key="k1", value="v1", effect="NoSchedule")
         tol = make_toleration(key="k1", operator="Equal", value="v1", effect="NoExecute")
         pod = make_pod(tolerations=[tol])
-        self.assertFalse(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[taint])
+        self.assertFalse(_pod_matches_node(pod, node))
 
     def test_value_mismatch(self):
         taint = make_taint(key="k1", value="v1", effect="NoSchedule")
         tol = make_toleration(key="k1", operator="Equal", value="wrong", effect="NoSchedule")
         pod = make_pod(tolerations=[tol])
-        self.assertFalse(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[taint])
+        self.assertFalse(_pod_matches_node(pod, node))
 
     def test_toleration_no_effect_matches_any_effect(self):
         """Toleration with no effect (None/empty) matches taint regardless of effect."""
         taint = make_taint(key="k1", value="v1", effect="NoSchedule")
         tol = make_toleration(key="k1", operator="Equal", value="v1", effect=None)
         pod = make_pod(tolerations=[tol])
-        self.assertTrue(_pod_matches_node(pod, self.node, [taint]))
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
 
     def test_multiple_taints_all_tolerated(self):
         taints = [
@@ -165,7 +200,8 @@ class TestPodMatchesNode(unittest.TestCase):
             make_toleration(key="k2", operator="Equal", value="v2", effect="NoSchedule"),
         ]
         pod = make_pod(tolerations=tols)
-        self.assertTrue(_pod_matches_node(pod, self.node, taints))
+        node = make_node_state(node_taints=taints)
+        self.assertTrue(_pod_matches_node(pod, node))
 
     def test_multiple_taints_one_not_tolerated(self):
         taints = [
@@ -176,7 +212,337 @@ class TestPodMatchesNode(unittest.TestCase):
             make_toleration(key="k1", operator="Equal", value="v1", effect="NoSchedule"),
         ]
         pod = make_pod(tolerations=tols)
-        self.assertFalse(_pod_matches_node(pod, self.node, taints))
+        node = make_node_state(node_taints=taints)
+        self.assertFalse(_pod_matches_node(pod, node))
+
+
+# ============================================================================
+# _pod_matches_node tests — nodeSelector checks
+# ============================================================================
+
+
+class TestPodMatchesNodeSelector(unittest.TestCase):
+    def test_node_selector_match(self):
+        pod = make_pod(node_selector={"tier": "gpu", "zone": "us-east-1a"})
+        node = make_node_state(labels={"tier": "gpu", "zone": "us-east-1a", "extra": "val"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_node_selector_mismatch_value(self):
+        pod = make_pod(node_selector={"tier": "gpu"})
+        node = make_node_state(labels={"tier": "cpu"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_node_selector_missing_label(self):
+        pod = make_pod(node_selector={"tier": "gpu"})
+        node = make_node_state(labels={})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_no_node_selector_matches(self):
+        """Pod without nodeSelector should match any node."""
+        pod = make_pod(node_selector=None)
+        node = make_node_state(labels={"anything": "value"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_empty_node_selector_matches(self):
+        """Pod with empty nodeSelector should match any node."""
+        pod = make_pod(node_selector={})
+        node = make_node_state(labels={"anything": "value"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+
+# ============================================================================
+# _pod_matches_node tests — node affinity checks
+# ============================================================================
+
+
+class TestPodMatchesNodeAffinity(unittest.TestCase):
+    def test_affinity_in_operator_match(self):
+        expr = make_match_expression("gpu-type", "In", ["a100", "h100"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu-type": "a100"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_affinity_in_operator_no_match(self):
+        expr = make_match_expression("gpu-type", "In", ["a100", "h100"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu-type": "v100"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_affinity_not_in_operator_match(self):
+        expr = make_match_expression("gpu-type", "NotIn", ["v100"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu-type": "a100"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_affinity_not_in_operator_no_match(self):
+        expr = make_match_expression("gpu-type", "NotIn", ["a100"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu-type": "a100"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_affinity_not_in_missing_label_matches(self):
+        """NotIn with missing label should match (label not present = not in the set)."""
+        expr = make_match_expression("gpu-type", "NotIn", ["a100"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_affinity_exists_operator_match(self):
+        expr = make_match_expression("gpu", "Exists")
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu": "true"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_affinity_exists_operator_no_match(self):
+        expr = make_match_expression("gpu", "Exists")
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_affinity_does_not_exist_match(self):
+        expr = make_match_expression("spot", "DoesNotExist")
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu": "true"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_affinity_does_not_exist_no_match(self):
+        expr = make_match_expression("spot", "DoesNotExist")
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"spot": "true"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_affinity_gt_operator_match(self):
+        expr = make_match_expression("gpu-count", "Gt", ["3"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu-count": "8"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_affinity_gt_operator_no_match_equal(self):
+        expr = make_match_expression("gpu-count", "Gt", ["8"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu-count": "8"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_affinity_gt_operator_missing_label(self):
+        expr = make_match_expression("gpu-count", "Gt", ["3"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_affinity_lt_operator_match(self):
+        expr = make_match_expression("gpu-count", "Lt", ["8"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu-count": "4"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_affinity_lt_operator_no_match_equal(self):
+        expr = make_match_expression("gpu-count", "Lt", ["4"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"gpu-count": "4"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_multiple_terms_or_logic_first_matches(self):
+        """Multiple nodeSelectorTerms are OR'd — first term matches."""
+        expr1 = make_match_expression("tier", "In", ["gpu"])
+        expr2 = make_match_expression("tier", "In", ["cpu"])
+        term1 = make_node_selector_term([expr1])
+        term2 = make_node_selector_term([expr2])
+        affinity = make_node_affinity_required([term1, term2])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"tier": "gpu"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_multiple_terms_or_logic_second_matches(self):
+        """Multiple nodeSelectorTerms are OR'd — second term matches."""
+        expr1 = make_match_expression("tier", "In", ["gpu"])
+        expr2 = make_match_expression("tier", "In", ["cpu"])
+        term1 = make_node_selector_term([expr1])
+        term2 = make_node_selector_term([expr2])
+        affinity = make_node_affinity_required([term1, term2])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"tier": "cpu"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_multiple_terms_or_logic_none_match(self):
+        """Multiple nodeSelectorTerms are OR'd — none match."""
+        expr1 = make_match_expression("tier", "In", ["gpu"])
+        expr2 = make_match_expression("tier", "In", ["cpu"])
+        term1 = make_node_selector_term([expr1])
+        term2 = make_node_selector_term([expr2])
+        affinity = make_node_affinity_required([term1, term2])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"tier": "storage"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_multiple_expressions_and_logic_all_match(self):
+        """Multiple matchExpressions in a term are AND'd — all match."""
+        expr1 = make_match_expression("tier", "In", ["gpu"])
+        expr2 = make_match_expression("zone", "In", ["us-east-1a"])
+        term = make_node_selector_term([expr1, expr2])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"tier": "gpu", "zone": "us-east-1a"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_multiple_expressions_and_logic_one_fails(self):
+        """Multiple matchExpressions in a term are AND'd — one fails."""
+        expr1 = make_match_expression("tier", "In", ["gpu"])
+        expr2 = make_match_expression("zone", "In", ["us-west-2a"])
+        term = make_node_selector_term([expr1, expr2])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"tier": "gpu", "zone": "us-east-1a"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_no_affinity_matches(self):
+        """Pod without affinity matches any node."""
+        pod = make_pod(affinity=None)
+        node = make_node_state(labels={"anything": "value"})
+        self.assertTrue(_pod_matches_node(pod, node))
+
+
+# ============================================================================
+# _pod_matches_node tests — resource fit checks
+# ============================================================================
+
+
+class TestPodMatchesNodeResources(unittest.TestCase):
+    def test_pod_fits_in_remaining_capacity(self):
+        """Pod fits within remaining CPU and memory."""
+        # 8 CPU, 32 GiB allocatable; 2 CPU, 4 GiB used -> 6 CPU, 28 GiB remaining
+        node = make_node_state(
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * GiB,
+            pods=[PodInfo("p1", "ns", 2.0, 4 * GiB, "node-1", False, NOW)],
+        )
+        pod = make_pod(cpu="4", memory="16Gi")
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_pod_exceeds_cpu_capacity(self):
+        """Pod doesn't fit — not enough CPU."""
+        node = make_node_state(
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * GiB,
+            pods=[PodInfo("p1", "ns", 7.0, 1 * GiB, "node-1", False, NOW)],
+        )
+        pod = make_pod(cpu="2", memory="1Gi")
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_pod_exceeds_memory_capacity(self):
+        """Pod doesn't fit — not enough memory."""
+        node = make_node_state(
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * GiB,
+            pods=[PodInfo("p1", "ns", 1.0, 30 * GiB, "node-1", False, NOW)],
+        )
+        pod = make_pod(cpu="1", memory="4Gi")
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_daemonset_pods_count_toward_used(self):
+        """DaemonSet pod CPU/memory counts toward total_used for resource fit."""
+        node = make_node_state(
+            allocatable_cpu=4.0,
+            allocatable_memory=8 * GiB,
+            pods=[PodInfo("ds", "ns", 3.0, 6 * GiB, "node-1", True, NOW)],
+        )
+        pod = make_pod(cpu="2", memory="1Gi")
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_empty_node_fits_any_pod(self):
+        """Empty node has full capacity available."""
+        node = make_node_state(allocatable_cpu=8.0, allocatable_memory=32 * GiB, pods=[])
+        pod = make_pod(cpu="8", memory="32Gi")
+        self.assertTrue(_pod_matches_node(pod, node))
+
+
+# ============================================================================
+# _pod_matches_node tests — combined constraint checks
+# ============================================================================
+
+
+class TestPodMatchesNodeCombined(unittest.TestCase):
+    def test_tolerations_pass_but_selector_fails(self):
+        """Pod tolerates taints but nodeSelector doesn't match."""
+        taint = make_taint(key="gpu", value="true", effect="NoSchedule")
+        tol = make_toleration(key="gpu", operator="Equal", value="true", effect="NoSchedule")
+        pod = make_pod(tolerations=[tol], node_selector={"tier": "gpu"})
+        node = make_node_state(node_taints=[taint], labels={"tier": "cpu"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_selector_passes_but_tolerations_fail(self):
+        """nodeSelector matches but pod can't tolerate taints."""
+        taint = make_taint(key="gpu", value="true", effect="NoSchedule")
+        pod = make_pod(tolerations=None, node_selector={"tier": "gpu"})
+        node = make_node_state(node_taints=[taint], labels={"tier": "gpu"})
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_all_constraints_pass(self):
+        """Pod passes all: tolerations, nodeSelector, affinity, resource fit."""
+        taint = make_taint(key="gpu", value="true", effect="NoSchedule")
+        tol = make_toleration(key="gpu", operator="Equal", value="true", effect="NoSchedule")
+        expr = make_match_expression("zone", "In", ["us-east-1a"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(
+            tolerations=[tol],
+            node_selector={"tier": "gpu"},
+            affinity=affinity,
+            cpu="2",
+            memory="4Gi",
+        )
+        node = make_node_state(
+            node_taints=[taint],
+            labels={"tier": "gpu", "zone": "us-east-1a"},
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * GiB,
+        )
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_affinity_passes_but_resources_fail(self):
+        """Pod passes affinity + tolerations + selector but doesn't fit."""
+        taint = make_taint(key="gpu", value="true", effect="NoSchedule")
+        tol = make_toleration(key="gpu", operator="Equal", value="true", effect="NoSchedule")
+        pod = make_pod(
+            tolerations=[tol],
+            node_selector={"tier": "gpu"},
+            cpu="16",
+            memory="1Gi",
+        )
+        node = make_node_state(
+            node_taints=[taint],
+            labels={"tier": "gpu"},
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * GiB,
+        )
+        self.assertFalse(_pod_matches_node(pod, node))
 
 
 # ============================================================================
@@ -306,7 +672,7 @@ class TestCheckPendingPods(unittest.TestCase):
         # Second pass (filtering compatible_tainted): 1 node x 1 pod = call 2 -> False
         call_count = {"n": 0}
 
-        def controlled_match(p, node, taints):
+        def controlled_match(p, node_state):
             call_count["n"] += 1
             return call_count["n"] == 1
 

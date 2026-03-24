@@ -30,6 +30,11 @@ def make_config(**overrides) -> Config:
         "dry_run": False,
         "taint_cooldown": 300,
         "min_node_age": 900,
+        "fleet_cooldown": 900,
+        "taint_rate": 1.0,
+        "spare_capacity_nodes": 0,
+        "spare_capacity_ratio": 0.0,
+        "spare_capacity_threshold": 0.4,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -421,7 +426,7 @@ class TestPodsFitOnNodes:
 class TestComputeTaints:
     def test_empty_states(self):
         cfg = make_config()
-        to_taint, to_untaint, mandatory = compute_taints({}, cfg)
+        to_taint, to_untaint, mandatory, _rate_limited = compute_taints({}, cfg)
         assert to_taint == set()
         assert to_untaint == set()
         assert mandatory == set()
@@ -434,7 +439,7 @@ class TestComputeTaints:
         }
         for n in nodes.values():
             n.pods = [make_pod(f"p-{n.name}", cpu=8.0, node_name=n.name)]
-        to_taint, to_untaint, mandatory = compute_taints(nodes, cfg)
+        to_taint, to_untaint, mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert to_taint == set()
         assert to_untaint == {"n1", "n2"}
         assert mandatory == {"n1", "n2"}
@@ -447,7 +452,7 @@ class TestComputeTaints:
             nodes[f"n{i}"] = n
         # 1 pod total -> needs 1 node -> surplus 3
         nodes["n0"].pods = [make_pod("p1", cpu=4.0, node_name="n0")]
-        to_taint, to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert len(to_taint) == 3
         assert len(to_taint) + len(to_untaint.intersection(set(nodes.keys()) - to_taint)) >= 0
 
@@ -458,7 +463,7 @@ class TestComputeTaints:
             n = make_node(f"n{i}", cpu=16.0)
             nodes[f"n{i}"] = n
         # No pods -> bin_pack returns 0, but min_nodes=3 -> surplus = 1
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert len(to_taint) == 1
 
     def test_old_nodes_tainted_first(self):
@@ -467,7 +472,7 @@ class TestComputeTaints:
         young_node = make_node("young", cpu=16.0, creation_time=NOW - timedelta(hours=2))
         nodes = {"old": old_node, "young": young_node}
         # No pods -> both surplus, but min_nodes=1, surplus=1
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert "old" in to_taint
         assert "young" not in to_taint
 
@@ -483,7 +488,7 @@ class TestComputeTaints:
         # 3 nodes, all pods fit on 2 -> surplus=1 (after max with min_nodes=1)
         # Actually bin_pack: total 22 CPU in pods, 16 CPU per node -> need 2
         # surplus = 1, n2 has lowest util -> tainted
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert "n2" in to_taint
 
     def test_already_tainted_surplus_stays_tainted(self):
@@ -492,7 +497,7 @@ class TestComputeTaints:
         n2 = make_node("n2", cpu=16.0, is_tainted=True)
         nodes = {"n1": n1, "n2": n2}
         # No pods, surplus = 1 -> one node tainted
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert len(to_taint) == 1
 
     def test_sole_candidate_safety(self):
@@ -505,7 +510,7 @@ class TestComputeTaints:
         n2.pods = [make_pod("p2", cpu=10.0, node_name="n2")]
         nodes = {"n1": n1, "n2": n2}
         # bin_pack: 2 pods * 10 CPU = 20, need 2 nodes -> surplus=0 -> untaint
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert len(to_taint) == 0
 
     def test_safety_check_prevents_taint_when_pods_cant_move(self):
@@ -524,7 +529,7 @@ class TestComputeTaints:
         # bin_pack: 3 pods * 9 CPU = 27, nodes have 16 each -> need 2
         # surplus = 1, but safety check: taint candidate's pod (9 CPU) can't fit
         # on remaining 2 nodes (each has only 7 CPU free). Skip the taint.
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert len(to_taint) == 0
 
     def test_multiple_pools_independent(self):
@@ -535,7 +540,7 @@ class TestComputeTaints:
         n4 = make_node("n4", nodepool="pool-b", cpu=16.0)
         nodes = {"n1": n1, "n2": n2, "n3": n3, "n4": n4}
         # No pods in either pool -> surplus=1 per pool (min_nodes=1)
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         pool_a_tainted = to_taint & {"n1", "n2"}
         pool_b_tainted = to_taint & {"n3", "n4"}
         assert len(pool_a_tainted) == 1
@@ -563,7 +568,7 @@ class TestComputeTaints:
         # bin_pack: 3 pods * 14 = 42 CPU. 16 per node -> need 3. surplus=1
         # n0 is the candidate (empty, lowest util). It has no workload pods,
         # so no safety check needed -> tainted.
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert "n0" in to_taint
         assert len(to_taint) == 1
 
@@ -573,7 +578,7 @@ class TestComputeTaints:
         old1 = make_node("old1", cpu=16.0)
         old2 = make_node("old2", cpu=16.0)
         nodes = {"young": young, "old1": old1, "old2": old2}
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         # Young node must not be tainted
         assert "young" not in to_taint
         # 3 nodes, 0 pods -> min_needed=1, surplus=2
@@ -585,7 +590,7 @@ class TestComputeTaints:
         young = make_node("young", cpu=16.0, is_tainted=True, creation_time=NOW - timedelta(seconds=120))
         old = make_node("old", cpu=16.0)
         nodes = {"young": young, "old": old}
-        _to_taint, to_untaint, mandatory = compute_taints(nodes, cfg)
+        _to_taint, to_untaint, mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert "young" in to_untaint
         assert "young" in mandatory
 
@@ -595,7 +600,7 @@ class TestComputeTaints:
         n2 = make_node("n2", cpu=16.0, creation_time=NOW - timedelta(seconds=60))
         n3 = make_node("n3", cpu=16.0, creation_time=NOW - timedelta(seconds=60))
         nodes = {"n1": n1, "n2": n2, "n3": n3}
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert len(to_taint) == 0
 
     def test_min_node_age_zero_disables_grace_period(self):
@@ -604,7 +609,7 @@ class TestComputeTaints:
         old1 = make_node("old1", cpu=16.0)
         old2 = make_node("old2", cpu=16.0)
         nodes = {"young": young, "old1": old1, "old2": old2}
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         # All 3 eligible, min_nodes=1 -> surplus=2
         assert len(to_taint) == 2
 
@@ -763,7 +768,7 @@ class TestComputeTaintsSafetySkipUntaint:
 
         nodes = {"n0": n0, "n1": n1, "n2": n2, "n3": n3}
 
-        to_taint, to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert "n0" in to_taint, "Empty node should be tainted"
         assert "n1" in to_untaint, "Already-tainted node whose pods can't fit should be untainted"
         assert "n1" not in to_taint, "n1 should NOT be tainted (safety check failed)"
@@ -805,7 +810,7 @@ class TestComputeTaintsSafetySkipUntaint:
         #
         # surplus reached.
 
-        to_taint, _to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert "n4" in to_taint
         assert "n2" in to_taint
         assert len(to_taint) == 2
@@ -835,7 +840,7 @@ class TestComputeTaintsSafetySkipUntaint:
 
         nodes = {"n0": n0, "n1": n1, "n2": n2, "n3": n3}
 
-        to_taint, to_untaint, _mandatory = compute_taints(nodes, cfg)
+        to_taint, to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         assert "n0" in to_taint
         # n1 fails safety check but is NOT tainted, so should not be in to_untaint
         assert "n1" not in to_untaint
@@ -937,7 +942,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default", "n2": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n2"}, {"n1"}, set())
+        mock_compute.return_value = ({"n2"}, {"n1"}, set(), set())
 
         reconcile(client, cfg, taint_times)
 
@@ -975,7 +980,7 @@ class TestReconcile:
         mock_build.return_value = (node_states, [])
         # burst_untaint includes n1 -- should bypass cooldown
         mock_check.return_value = {"n1"}
-        mock_compute.return_value = (set(), set(), set())
+        mock_compute.return_value = (set(), set(), set(), set())
 
         reconcile(client, cfg, taint_times)
 
@@ -1010,7 +1015,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()  # no burst untaint
-        mock_compute.return_value = (set(), {"n1"}, set())  # compute says untaint n1
+        mock_compute.return_value = (set(), {"n1"}, set(), set())  # compute says untaint n1
 
         reconcile(client, cfg, taint_times)
 
@@ -1047,7 +1052,7 @@ class TestReconcile:
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()  # no burst untaint
         # compute says untaint n1, and it's mandatory (min_nodes)
-        mock_compute.return_value = (set(), {"n1"}, {"n1"})
+        mock_compute.return_value = (set(), {"n1"}, {"n1"}, set())
 
         reconcile(client, cfg, taint_times)
 
@@ -1082,7 +1087,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1"}, set())
+        mock_compute.return_value = (set(), {"n1"}, set(), set())
 
         reconcile(client, cfg, taint_times)
 
@@ -1115,7 +1120,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default", "n2": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1", "n2"}, set())
+        mock_compute.return_value = (set(), {"n1", "n2"}, set(), set())
 
         # First untaint raises 404, second succeeds
         mock_remove.side_effect = [_make_api_error(404), None]
@@ -1152,7 +1157,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set(), set())
+        mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         mock_apply.side_effect = _make_api_error(404)
 
@@ -1190,7 +1195,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set(), set())
+        mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         mock_apply.side_effect = _make_api_error(409)
 
@@ -1226,7 +1231,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1"}, set())
+        mock_compute.return_value = (set(), {"n1"}, set(), set())
 
         mock_remove.side_effect = RuntimeError("connection lost")
 
@@ -1261,7 +1266,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set(), set())
+        mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         mock_apply.side_effect = RuntimeError("timeout")
 
@@ -1299,7 +1304,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set(), set())
+        mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         before = time.time()
         reconcile(client, cfg, taint_times)
@@ -1335,7 +1340,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1"}, set())
+        mock_compute.return_value = (set(), {"n1"}, set(), set())
 
         reconcile(client, cfg, {})
 
@@ -1368,7 +1373,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = ({"n1"}, set(), set())
+        mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         reconcile(client, cfg, {})
 
@@ -1400,7 +1405,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), set(), set())
+        mock_compute.return_value = (set(), set(), set(), set())
 
         reconcile(client, cfg, {})
 
@@ -1434,7 +1439,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = {"n1"}  # burst wants untaint
-        mock_compute.return_value = ({"n1"}, set(), set())  # compute wants taint
+        mock_compute.return_value = ({"n1"}, set(), set(), set())  # compute wants taint
 
         reconcile(client, cfg, {})
 
@@ -1468,7 +1473,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
-        mock_compute.return_value = (set(), {"n1"}, set())
+        mock_compute.return_value = (set(), {"n1"}, set(), set())
 
         mock_remove.side_effect = _make_api_error(500)
 
@@ -1476,6 +1481,273 @@ class TestReconcile:
 
         mock_remove.assert_called_once()
         mock_touch.assert_called_once()
+
+
+# ============================================================================
+# Fleet cooldown tests
+# ============================================================================
+
+
+class TestFleetCooldown:
+    """Tests for fleet-level cooldown after burst untaint."""
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_burst_untaint_triggers_fleet_cooldown_blocks_subsequent_taint(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """After burst untaint in a pool, subsequent taints in that pool are blocked."""
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=900)
+        taint_times: dict[str, float] = {}
+        fleet_cooldown_times: dict[str, float] = {}
+
+        # Iteration 1: burst untaint happens on n1 in pool "default"
+        n1 = make_node("n1", nodepool="default", is_tainted=True)
+        n2 = make_node("n2", nodepool="default", is_tainted=False)
+        node_states = {"n1": n1, "n2": n2}
+
+        mock_discover.return_value = {"n1": "default", "n2": "default"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = {"n1"}  # burst untaint for n1
+        mock_compute.return_value = (set(), set(), set(), set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # Fleet cooldown should be recorded for pool "default"
+        assert "default" in fleet_cooldown_times
+
+        # Iteration 2: compactor wants to taint n2, but fleet cooldown blocks it
+        mock_discover.reset_mock()
+        mock_build.reset_mock()
+        mock_check.reset_mock()
+        mock_compute.reset_mock()
+        mock_apply.reset_mock()
+        mock_remove.reset_mock()
+
+        n1_iter2 = make_node("n1", nodepool="default", is_tainted=False)
+        n2_iter2 = make_node("n2", nodepool="default", is_tainted=False)
+        node_states_2 = {"n1": n1_iter2, "n2": n2_iter2}
+
+        mock_discover.return_value = {"n1": "default", "n2": "default"}
+        mock_build.return_value = (node_states_2, [])
+        mock_check.return_value = set()  # no burst this time
+        mock_compute.return_value = ({"n2"}, set(), set(), set())  # wants to taint n2
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # n2 should NOT be tainted due to fleet cooldown
+        mock_apply.assert_not_called()
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_fleet_cooldown_expired_allows_taint(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """After fleet_cooldown seconds elapse, tainting resumes."""
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=900)
+        taint_times: dict[str, float] = {}
+        # Fleet cooldown expired 1000 seconds ago
+        fleet_cooldown_times: dict[str, float] = {"default": time.time() - 1000}
+
+        n1 = make_node("n1", nodepool="default", is_tainted=False)
+        node_states = {"n1": n1}
+
+        mock_discover.return_value = {"n1": "default"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        mock_compute.return_value = ({"n1"}, set(), set(), set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # Taint should proceed because cooldown expired
+        mock_apply.assert_called_once_with(client, "n1", cfg.taint_key, cfg.dry_run)
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_fleet_cooldown_surplus_override_halves_cooldown(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """When >50% of pool is surplus, cooldown is halved."""
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=900)
+        taint_times: dict[str, float] = {}
+        # Fleet cooldown was 500 seconds ago -- past half (450s) but within full (900s)
+        fleet_cooldown_times: dict[str, float] = {"default": time.time() - 500}
+
+        # 4 nodes, 3 already tainted + 1 to be tainted = 4/4 surplus (100% > 50%)
+        n1 = make_node("n1", nodepool="default", is_tainted=True)
+        n2 = make_node("n2", nodepool="default", is_tainted=True)
+        n3 = make_node("n3", nodepool="default", is_tainted=True)
+        n4 = make_node("n4", nodepool="default", is_tainted=False)
+        node_states = {"n1": n1, "n2": n2, "n3": n3, "n4": n4}
+
+        mock_discover.return_value = {
+            "n1": "default",
+            "n2": "default",
+            "n3": "default",
+            "n4": "default",
+        }
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        mock_compute.return_value = ({"n4"}, set(), set(), set())  # wants to taint n4
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # With >50% surplus, effective cooldown is 450s. 500s elapsed > 450s,
+        # so taint should proceed
+        mock_apply.assert_called_once_with(client, "n4", cfg.taint_key, cfg.dry_run)
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_fleet_cooldown_only_affects_burst_pool(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """Fleet cooldown only blocks taints in the pool that had the burst."""
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=900)
+        taint_times: dict[str, float] = {}
+        # Only pool "pool-a" has fleet cooldown active
+        fleet_cooldown_times: dict[str, float] = {"pool-a": time.time()}
+
+        n1 = make_node("n1", nodepool="pool-a", is_tainted=False)
+        n2 = make_node("n2", nodepool="pool-b", is_tainted=False)
+        node_states = {"n1": n1, "n2": n2}
+
+        mock_discover.return_value = {"n1": "pool-a", "n2": "pool-b"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        mock_compute.return_value = ({"n1", "n2"}, set(), set(), set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # n1 (pool-a) should be blocked, n2 (pool-b) should be tainted
+        apply_calls = [c[0][1] for c in mock_apply.call_args_list]
+        assert "n2" in apply_calls
+        assert "n1" not in apply_calls
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_mandatory_untaint_not_affected_by_fleet_cooldown(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """Fleet cooldown only blocks desired_taint, not untaint operations."""
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=900)
+        taint_times: dict[str, float] = {}
+        fleet_cooldown_times: dict[str, float] = {"default": time.time()}
+
+        n1 = make_node("n1", nodepool="default", is_tainted=True)
+        node_states = {"n1": n1}
+
+        mock_discover.return_value = {"n1": "default"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        # mandatory untaint for n1
+        mock_compute.return_value = (set(), {"n1"}, {"n1"}, set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # Mandatory untaint should proceed despite fleet cooldown
+        mock_remove.assert_called_once_with(client, "n1", cfg.taint_key, cfg.dry_run)
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_fleet_cooldown_zero_disables_feature(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """fleet_cooldown=0 disables the fleet cooldown feature entirely."""
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=0)
+        taint_times: dict[str, float] = {}
+        # Fleet cooldown recorded just now -- but feature is disabled
+        fleet_cooldown_times: dict[str, float] = {"default": time.time()}
+
+        n1 = make_node("n1", nodepool="default", is_tainted=False)
+        node_states = {"n1": n1}
+
+        mock_discover.return_value = {"n1": "default"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        mock_compute.return_value = ({"n1"}, set(), set(), set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # Taint should proceed because fleet_cooldown=0 disables it
+        mock_apply.assert_called_once_with(client, "n1", cfg.taint_key, cfg.dry_run)
 
 
 # ============================================================================
@@ -1512,7 +1784,7 @@ class TestMain:
         # signal handler and invoking it
         call_count = 0
 
-        def reconcile_side_effect(client, config, taint_times):
+        def reconcile_side_effect(client, config, taint_times, fleet_cooldown_times=None):
             nonlocal call_count
             call_count += 1
             if call_count >= 1:
@@ -1634,3 +1906,92 @@ class TestMain:
 
         assert result == 0
         mock_cleanup.assert_called_once()
+
+
+# ============================================================================
+# compute_taints -- rate limiting tests
+# ============================================================================
+
+
+class TestComputeTaintsRateLimiting:
+    """Tests for the taint_rate rate-limiting feature."""
+
+    def test_rate_limit_caps_new_taints(self):
+        """10 nodes, surplus=9, taint_rate=0.3: ceil(9*0.3)=3 new taints."""
+        cfg = make_config(min_nodes=1, taint_rate=0.3, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        nodes = {}
+        for i in range(10):
+            n = make_node(f"node-{i}", nodepool="pool")
+            nodes[f"node-{i}"] = n
+        # 10 nodes, no pods -> bin_pack_min_nodes returns 0, min_nodes=1
+        # surplus = 10 - 1 = 9; max_new_taints = ceil(9 * 0.3) = 3
+        # Rate-limited nodes don't increment taint_count, so all
+        # remaining candidates after the cap are rate-limited.
+
+        to_taint, _to_untaint, _mandatory, rate_limited = compute_taints(nodes, cfg)
+
+        assert len(to_taint) == 3
+        assert len(rate_limited) == 7  # 10 total - 3 tainted = 7 rate-limited
+
+    def test_rate_limit_small_pool(self):
+        """3 nodes, 2 surplus, taint_rate=0.3: ceil(2*0.3)=ceil(0.6)=1 new taint."""
+        cfg = make_config(min_nodes=1, taint_rate=0.3, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        nodes = {}
+        for i in range(3):
+            n = make_node(f"node-{i}", nodepool="pool")
+            nodes[f"node-{i}"] = n
+
+        to_taint, _to_untaint, _mandatory, rate_limited = compute_taints(nodes, cfg)
+
+        assert len(to_taint) == 1
+        assert len(rate_limited) == 2  # rate-limited nodes don't advance taint_count
+
+    def test_already_tainted_nodes_dont_count_toward_cap(self):
+        """Already-tainted nodes within surplus are retained without consuming the rate cap."""
+        cfg = make_config(min_nodes=1, taint_rate=0.3, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        nodes = {}
+        # 6 nodes total: 3 already tainted, 3 untainted
+        for i in range(3):
+            n = make_node(f"tainted-{i}", nodepool="pool", is_tainted=True)
+            nodes[f"tainted-{i}"] = n
+        for i in range(3):
+            n = make_node(f"fresh-{i}", nodepool="pool", is_tainted=False)
+            nodes[f"fresh-{i}"] = n
+
+        # surplus = 6 - 1 = 5; max_new_taints = ceil(5 * 0.3) = 2
+        to_taint, _to_untaint, _mandatory, rate_limited = compute_taints(nodes, cfg)
+
+        # All 3 already-tainted stay in to_taint (they don't consume new taint cap)
+        already_tainted_in_result = {n for n in to_taint if n.startswith("tainted-")}
+        new_tainted_in_result = {n for n in to_taint if n.startswith("fresh-")}
+        assert len(already_tainted_in_result) == 3
+        assert len(new_tainted_in_result) == 2  # only 2 new taints allowed
+        assert len(rate_limited) == 0  # surplus=5, 3 already tainted + 2 new = 5, no excess
+
+    def test_rate_1_disables_limiting(self):
+        """taint_rate=1.0 means all surplus nodes are tainted in one iteration."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        nodes = {}
+        for i in range(10):
+            n = make_node(f"node-{i}", nodepool="pool")
+            nodes[f"node-{i}"] = n
+
+        to_taint, _to_untaint, _mandatory, rate_limited = compute_taints(nodes, cfg)
+
+        # surplus = 9; max_new_taints = ceil(9 * 1.0) = 9
+        assert len(to_taint) == 9
+        assert len(rate_limited) == 0
+
+    def test_rate_0_allows_at_least_one(self):
+        """taint_rate=0.0 should still allow at least 1 new taint (max(1, ...))."""
+        cfg = make_config(min_nodes=1, taint_rate=0.0, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        nodes = {}
+        for i in range(5):
+            n = make_node(f"node-{i}", nodepool="pool")
+            nodes[f"node-{i}"] = n
+
+        to_taint, _to_untaint, _mandatory, rate_limited = compute_taints(nodes, cfg)
+
+        # surplus = 4; max_new_taints = max(1, ceil(4 * 0.0)) = max(1, 0) = 1
+        assert len(to_taint) == 1
+        assert len(rate_limited) == 4  # rate-limited nodes don't advance taint_count
