@@ -473,11 +473,7 @@ def _compactor_pod_running(client: Client) -> bool:
         namespace=COMPACTOR_NAMESPACE,
         labels={"app.kubernetes.io/name": "node-compactor"},
     ):
-        if (
-            pod.status
-            and pod.status.phase == "Running"
-            and not (pod.metadata and pod.metadata.deletionTimestamp)
-        ):
+        if pod.status and pod.status.phase == "Running" and not (pod.metadata and pod.metadata.deletionTimestamp):
             return True
     return False
 
