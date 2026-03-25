@@ -16,6 +16,8 @@ from run import (
     has_module,
     load_cluster_config,
     resolve,
+    run_cmd_with_retry,
+    safe_json_loads,
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -340,6 +342,31 @@ class TestPreparePr:
         assert dockerfile.exists()
         assert dockerfile.read_text() == "FROM alpine\n"
 
+    @patch("phases.run_cmd")
+    def test_pr_url_parse_failure(self, mock_run, workflow_template, tmp_path):
+        canary = tmp_path / "canary"
+        canary.mkdir()
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # git fetch
+            MagicMock(returncode=0),  # git checkout
+            MagicMock(returncode=0),  # git add
+            MagicMock(returncode=1),  # git diff --cached --quiet → changes
+            MagicMock(returncode=0),  # git commit
+            MagicMock(returncode=0),  # git push
+            MagicMock(returncode=0, stdout="not-a-url\n", stderr=""),  # gh pr create → garbage
+        ]
+
+        result = prepare_pr(
+            canary_path=canary,
+            upstream_dir=workflow_template,
+            workflow_content="name: test\n",
+            branch="osdc-integration-test-arc-staging",
+            dry_run=False,
+        )
+
+        assert result is None
+
 
 # ── ensure_canary_repo ───────────────────────────────────────────────────
 
@@ -357,11 +384,22 @@ class TestEnsureCanaryRepo:
         assert result == upstream / ".scratch" / "pytorch-canary"
         assert (upstream / ".scratch").is_dir()
 
-        # Should have called gh repo clone
-        clone_call = mock_run.call_args_list[0]
+        # Call order: gh auth setup-git, gh repo clone, git config user.name, git config user.email
+        assert mock_run.call_count == 4
+
+        setup_call = mock_run.call_args_list[0]
+        assert setup_call[0][0] == ["gh", "auth", "setup-git"]
+
+        clone_call = mock_run.call_args_list[1]
         cmd = clone_call[0][0]
         assert "clone" in cmd
         assert "pytorch/pytorch-canary" in cmd
+
+        # git config calls after clone
+        name_call = mock_run.call_args_list[2]
+        assert name_call[0][0] == ["git", "config", "user.name", "OSDC Integration Test"]
+        email_call = mock_run.call_args_list[3]
+        assert email_call[0][0] == ["git", "config", "user.email", "osdc-integration-test@pytorch.org"]
 
     @patch("phases.run_cmd")
     def test_fetches_when_exists(self, mock_run, tmp_path):
@@ -375,11 +413,84 @@ class TestEnsureCanaryRepo:
 
         assert result == canary
 
-        # Should have called git fetch, not clone
-        fetch_call = mock_run.call_args_list[0]
+        # Call order: gh auth, rev-parse, fetch, git config x2
+        assert mock_run.call_count == 5
+
+        setup_call = mock_run.call_args_list[0]
+        assert setup_call[0][0] == ["gh", "auth", "setup-git"]
+
+        # rev-parse to verify integrity
+        revparse_call = mock_run.call_args_list[1]
+        assert revparse_call[0][0] == ["git", "rev-parse", "--git-dir"]
+
+        # fetch
+        fetch_call = mock_run.call_args_list[2]
         cmd = fetch_call[0][0]
         assert "fetch" in cmd
         assert "clone" not in cmd
+
+        # git config calls after fetch
+        name_call = mock_run.call_args_list[3]
+        assert name_call[0][0] == ["git", "config", "user.name", "OSDC Integration Test"]
+
+    @patch("phases.run_cmd")
+    def test_reclones_when_corrupt(self, mock_run, tmp_path):
+        upstream = tmp_path / "upstream"
+        canary = upstream / ".scratch" / "pytorch-canary"
+        canary.mkdir(parents=True)
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0),              # gh auth setup-git
+            MagicMock(returncode=128),             # rev-parse fails (corrupt)
+            MagicMock(returncode=0),               # gh repo clone
+            MagicMock(returncode=0),               # git config user.name
+            MagicMock(returncode=0),               # git config user.email
+        ]
+
+        # shutil.rmtree will actually remove the directory (not mocked),
+        # so the "if not canary_path.exists()" branch triggers the clone.
+        result = ensure_canary_repo(upstream)
+
+        assert result == canary
+
+        # After real rmtree, should clone fresh
+        clone_call = mock_run.call_args_list[2]
+        cmd = clone_call[0][0]
+        assert "clone" in cmd
+
+    @patch("phases.run_cmd")
+    def test_removes_stale_lock(self, mock_run, tmp_path):
+        upstream = tmp_path / "upstream"
+        canary = upstream / ".scratch" / "pytorch-canary"
+        git_dir = canary / ".git"
+        git_dir.mkdir(parents=True)
+        lock_file = git_dir / "index.lock"
+        lock_file.touch()
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        ensure_canary_repo(upstream)
+
+        # Lock file should have been removed
+        assert not lock_file.exists()
+
+    @patch("phases.run_cmd")
+    def test_auth_setup_failure_logs_warning(self, mock_run, tmp_path, caplog):
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr="not logged in"),  # gh auth fails
+            MagicMock(returncode=0),  # clone
+            MagicMock(returncode=0),  # git config user.name
+            MagicMock(returncode=0),  # git config user.email
+        ]
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            ensure_canary_repo(upstream)
+
+        assert "gh auth setup-git failed" in caplog.text
 
 
 # ── branch_name ──────────────────────────────────────────────────────────
@@ -388,3 +499,63 @@ class TestEnsureCanaryRepo:
 def test_branch_name():
     assert branch_name("arc-staging") == "osdc-integration-test-arc-staging"
     assert branch_name("arc-cbr-production") == "osdc-integration-test-arc-cbr-production"
+
+
+# ── run_cmd_with_retry ───────────────────────────────────────────────────
+
+
+class TestRunCmdWithRetry:
+    @patch("run.run_cmd")
+    def test_succeeds_first_try(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        result = run_cmd_with_retry(["echo", "hi"], max_retries=3)
+        assert result.returncode == 0
+        assert mock_run.call_count == 1
+
+    @patch("run.time.sleep")
+    @patch("run.run_cmd")
+    def test_retries_on_failure(self, mock_run, mock_sleep):
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout="", stderr="err1"),
+            MagicMock(returncode=1, stdout="", stderr="err2"),
+            MagicMock(returncode=1, stdout="", stderr="err3"),
+        ]
+        result = run_cmd_with_retry(["gh", "api"], max_retries=3, base_delay=5.0)
+        assert result.returncode == 1
+        assert mock_run.call_count == 3
+        assert mock_sleep.call_count == 2  # no sleep after last attempt
+
+    @patch("run.time.sleep")
+    @patch("run.run_cmd")
+    def test_exponential_backoff(self, mock_run, mock_sleep):
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout="", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="ok", stderr=""),
+        ]
+        result = run_cmd_with_retry(["cmd"], max_retries=3, base_delay=5.0)
+        assert result.returncode == 0
+        assert mock_sleep.call_count == 2
+        # First delay: 5.0 * 2^0 = 5.0, second: 5.0 * 2^1 = 10.0
+        mock_sleep.assert_any_call(5.0)
+        mock_sleep.assert_any_call(10.0)
+
+
+# ── safe_json_loads ──────────────────────────────────────────────────────
+
+
+class TestSafeJsonLoads:
+    def test_valid_json(self):
+        assert safe_json_loads('{"key": "value"}') == {"key": "value"}
+        assert safe_json_loads("[1, 2, 3]") == [1, 2, 3]
+
+    def test_invalid_json(self):
+        result = safe_json_loads("not json at all", context="test")
+        assert result is None
+
+    def test_empty_string(self):
+        assert safe_json_loads("") is None
+        assert safe_json_loads("   ") is None
+
+    def test_none_input(self):
+        assert safe_json_loads(None) is None

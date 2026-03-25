@@ -35,7 +35,5 @@ data:
     DCGM_FI_DEV_XID_ERRORS,       gauge, Last XID error code
     # Tier 2 — Diagnostic
     DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, counter, NVLink total bandwidth (bytes)
-    DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL, counter, NVLink replay error count
     DCGM_FI_DEV_PSTATE,           gauge, Performance state (0-15)
-    DCGM_FI_DEV_FAN_SPEED,        gauge, Fan speed (%)
     DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Row remap failure (0=ok 1=fail)

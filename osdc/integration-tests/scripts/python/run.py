@@ -89,6 +89,47 @@ def run_cmd(cmd: list[str], *, check: bool = True, capture: bool = True, **kwarg
     return subprocess.run(cmd, check=check, capture_output=capture, text=True, **kwargs)
 
 
+def run_cmd_with_retry(
+    cmd: list[str],
+    *,
+    max_retries: int = 3,
+    base_delay: float = 5.0,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """Run a command with exponential backoff retry on failure."""
+    last_err = None
+    for attempt in range(max_retries):
+        result = run_cmd(cmd, check=False, **kwargs)
+        if result.returncode == 0:
+            return result
+        last_err = result
+        if attempt < max_retries - 1:
+            delay = base_delay * (2 ** attempt)
+            log.warning(
+                "Command failed (attempt %d/%d, exit %d), retrying in %.0fs: %s",
+                attempt + 1, max_retries, result.returncode, delay, " ".join(cmd),
+            )
+            time.sleep(delay)
+    log.warning(
+        "Command failed after %d attempts (exit %d): %s",
+        max_retries, last_err.returncode, " ".join(cmd),
+    )
+    return last_err
+
+
+def safe_json_loads(text: str | None, context: str = "") -> dict | list | None:
+    """Parse JSON with error handling. Returns None on parse failure."""
+    if not text or not text.strip():
+        return None
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError) as e:
+        ctx = f" ({context})" if context else ""
+        log.warning("Failed to parse JSON%s: %s", ctx, e)
+        log.debug("Raw content: %s", text[:500])
+        return None
+
+
 def gh_api(endpoint: str, method: str = "GET", **kwargs) -> dict | list | None:
     """Call GitHub API via gh CLI."""
     cmd = ["gh", "api", endpoint, "--method", method]
@@ -98,9 +139,7 @@ def gh_api(endpoint: str, method: str = "GET", **kwargs) -> dict | list | None:
     if result.returncode != 0:
         log.warning("gh api %s failed: %s", endpoint, result.stderr.strip())
         return None
-    if result.stdout.strip():
-        return json.loads(result.stdout)
-    return None
+    return safe_json_loads(result.stdout, context=f"gh api {endpoint}")
 
 
 def format_duration(seconds: float) -> str:
@@ -206,6 +245,14 @@ def main():
             workflow_results, validation_results,
         )
 
+    except subprocess.CalledProcessError as e:
+        log.error("Command failed with exit code %d: %s", e.returncode, " ".join(e.cmd))
+        if e.stderr:
+            log.error("stderr: %s", e.stderr.strip())
+        if e.stdout:
+            log.info("stdout: %s", e.stdout.strip())
+        overall_pass = False
+
     except KeyboardInterrupt:
         log.warning("Interrupted! Printing available results...")
 
@@ -228,7 +275,7 @@ def main():
 
     finally:
         if pr_number is not None and not args.keep_pr:
-            close_pr(pr_number)
+            close_pr(pr_number, branch=branch)
         elif pr_number is not None and args.keep_pr:
             log.info("Keeping PR #%d open (--keep-pr).", pr_number)
 

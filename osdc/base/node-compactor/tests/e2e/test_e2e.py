@@ -23,8 +23,8 @@ from helpers import (
     get_pods_by_node,
     get_pool_nodes,
     get_tainted_nodes,
-    get_untainted_nodes,
-    restart_compactor_pod,
+    partition_pool_nodes,
+    scale_compactor_deployment,
     wait_for,
     wait_for_stable,
 )
@@ -121,10 +121,15 @@ class TestPhase1ScaleUpBaseline(_CompactorE2EBase):
             poll_s=5,
         )
 
-        # Wait for compactor taint state to stabilise (replaces fixed 30s sleep)
+        # Wait for compactor taint state AND node count to stabilise.
+        # Tracking node count ensures Karpenter topology changes (node
+        # deletions) also reset the stability window.
         wait_for_stable(
             "compactor taint state after scale-up",
-            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            lambda: (
+                sorted(get_tainted_nodes(self.client, self.pool)),
+                len(get_pool_nodes(self.client, self.pool)),
+            ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
         )
@@ -133,9 +138,7 @@ class TestPhase1ScaleUpBaseline(_CompactorE2EBase):
         # Karpenter may over-provision (e.g. 5 nodes for 9 pods). The compactor
         # correctly taints surplus nodes via bin-packing — that's fine as long as
         # NoSchedule doesn't evict existing pods.
-        nodes = get_pool_nodes(self.client, self.pool)
-        tainted = get_tainted_nodes(self.client, self.pool)
-        untainted = get_untainted_nodes(self.client, self.pool)
+        nodes, tainted, untainted = partition_pool_nodes(self.client, self.pool)
         log.info(
             "Phase 1 result: %d nodes, %d tainted, %d untainted",
             len(nodes),
@@ -187,20 +190,27 @@ class TestPhase2ScaleDownTriggersTaint(_CompactorE2EBase):
         # in the tainted set regardless of whether they were already tainted)
         drained_set = set(nodes_to_drain)
         wait_for(
-            f"drained nodes {drained_set} tainted",
-            lambda: drained_set.issubset(set(get_tainted_nodes(self.client, self.pool))),
+            f"drained nodes {drained_set} tainted or deleted",
+            lambda: all(
+                n in set(get_tainted_nodes(self.client, self.pool))
+                or n not in {nd.metadata.name for nd in get_pool_nodes(self.client, self.pool)}
+                for n in drained_set
+            ),
             timeout_s=TAINT_TIMEOUT,
         )
 
-        tainted = get_tainted_nodes(self.client, self.pool)
-        untainted = get_untainted_nodes(self.client, self.pool)
+        nodes, tainted, untainted = partition_pool_nodes(self.client, self.pool)
         log.info(
-            "Phase 2 result: %d tainted, %d untainted",
+            "Phase 2 result: %d nodes, %d tainted, %d untainted",
+            len(nodes),
             len(tainted),
             len(untainted),
         )
-        # All drained nodes must be tainted
-        assert drained_set.issubset(set(tainted)), f"Expected drained nodes {drained_set} in tainted set {tainted}"
+        # All drained nodes must be tainted or deleted by Karpenter
+        surviving_drained = drained_set & {n.metadata.name for n in nodes}
+        assert surviving_drained.issubset(set(tainted)), (
+            f"Expected surviving drained nodes {surviving_drained} in tainted set {tainted}"
+        )
         assert len(untainted) >= 1, f"Expected >= 1 untainted, got {len(untainted)}"
 
 
@@ -224,8 +234,7 @@ class TestPhase3KarpenterDeletesEmptyNodes(_CompactorE2EBase):
             poll_s=5,
         )
 
-        nodes = get_pool_nodes(self.client, self.pool)
-        tainted = get_tainted_nodes(self.client, self.pool)
+        nodes, tainted, _untainted = partition_pool_nodes(self.client, self.pool)
         log.info("Phase 3 result: %d nodes remain, %d tainted", len(nodes), len(tainted))
         # Only nodes with remaining pods should survive
         assert len(nodes) >= 1, f"Expected >= 1 surviving node, got {len(nodes)}"
@@ -271,10 +280,15 @@ class TestPhase4BurstAbsorption(_CompactorE2EBase):
                 poll_s=5,
             )
 
-        # Wait for compactor taint state to stabilise
+        # Wait for compactor taint state AND node count to stabilise.
+        # Tracking node count ensures Karpenter topology changes (node
+        # deletions) also reset the stability window.
         wait_for_stable(
             "compactor taint state before burst drain",
-            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            lambda: (
+                sorted(get_tainted_nodes(self.client, self.pool)),
+                len(get_pool_nodes(self.client, self.pool)),
+            ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
         )
@@ -338,19 +352,25 @@ class TestPhase5MinNodesEnforcement(_CompactorE2EBase):
         log.info("Phase 5: Deleting all test pods...")
         delete_all_pods(self.client, self.ns)
 
-        # Wait for compactor taint state to stabilise after pod deletion
+        # Wait for compactor taint state AND node count to stabilise.
+        # Tracking both signals prevents a race where Karpenter deletes
+        # the untainted node (changing topology) without changing the
+        # tainted-node list, causing wait_for_stable to exit before the
+        # compactor's next cycle can restore the min_nodes invariant.
         wait_for_stable(
             "compactor taint state after pod deletion",
-            lambda: sorted(get_tainted_nodes(self.client, self.pool)),
+            lambda: (
+                sorted(get_tainted_nodes(self.client, self.pool)),
+                len(get_pool_nodes(self.client, self.pool)),
+            ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
         )
 
-        nodes = get_pool_nodes(self.client, self.pool)
+        nodes, _tainted, untainted = partition_pool_nodes(self.client, self.pool)
         if len(nodes) == 0:
             pytest.skip("Pool has 0 nodes (Karpenter scaled down); min_nodes only applies to existing nodes")
 
-        untainted = get_untainted_nodes(self.client, self.pool)
         assert len(untainted) >= 1, f"Expected >= 1 untainted (min_nodes), got {len(untainted)}"
 
 
@@ -363,21 +383,83 @@ class TestPhase6GracefulShutdownCleanup(_CompactorE2EBase):
     """Verify SIGTERM triggers removal of all compactor taints."""
 
     def test_sigterm_removes_taints(self) -> None:
-        """Delete compactor pod -> taints cleaned up -> new pod starts."""
-        # Record current tainted nodes (if any)
-        initial_tainted = get_tainted_nodes(self.client, self.pool)
-        log.info("Phase 6: Tainted nodes before shutdown: %s", initial_tainted)
+        """Scale compactor to 0 -> SIGTERM cleanup -> verify taints removed."""
+        # Ensure there are nodes with taints to clean up.
+        # If the pool is empty (Karpenter scaled everything down), we can't
+        # test the cleanup behaviour — skip instead of false-passing.
+        nodes, tainted, _untainted = partition_pool_nodes(self.client, self.pool)
+        if len(nodes) == 0:
+            pytest.skip("Pool has 0 nodes; cannot verify taint cleanup")
 
-        # Delete the compactor pod (SIGTERM -> cleanup_stale_taints)
-        log.info("Phase 6: Deleting compactor pod (SIGTERM)...")
-        restart_compactor_pod(self.client)
+        if not tainted:
+            # Need at least one tainted node to verify cleanup.
+            # Wait briefly — compactor may taint empty nodes shortly.
+            log.info("Phase 6: No tainted nodes yet, waiting for compactor cycle...")
+            try:
+                wait_for(
+                    "at least 1 tainted node for cleanup test",
+                    lambda: len(get_tainted_nodes(self.client, self.pool)) > 0,
+                    timeout_s=TAINT_TIMEOUT,
+                    poll_s=5,
+                )
+            except TimeoutError:
+                pytest.skip("No tainted nodes available to verify cleanup")
 
-        # The old pod's SIGTERM handler calls cleanup_stale_taints() which
-        # removes all compactor taints. This happens asynchronously during
-        # pod termination, so poll until the taints are cleared.
-        wait_for(
-            "all compactor taints cleared after graceful shutdown",
-            lambda: len(get_tainted_nodes(self.client, self.pool)) == 0,
-            timeout_s=TAINT_TIMEOUT,
-            poll_s=5,
+        # Record pre-shutdown state
+        nodes_before, tainted_before, _ = partition_pool_nodes(self.client, self.pool)
+        node_names_before = {n.metadata.name for n in nodes_before}
+        log.info(
+            "Phase 6: %d nodes, %d tainted before shutdown: %s",
+            len(nodes_before),
+            len(tainted_before),
+            tainted_before,
         )
+
+        # Scale to 0 — SIGTERM fires, cleanup handler runs, NO replacement
+        # pod starts.  This prevents the new compactor from re-tainting
+        # before we can verify the cleanup.
+        #
+        # try/finally guarantees the compactor is scaled back to 1 even if
+        # an assertion fails — otherwise conftest teardown (which calls
+        # restart_compactor_pod) would hang waiting for a pod that never
+        # starts because the deployment has 0 replicas.
+        log.info("Phase 6: Scaling compactor to 0 (SIGTERM)...")
+        scale_compactor_deployment(self.client, 0)
+        try:
+            # Verify taints were removed AND nodes still exist.
+            # If taints are gone because Karpenter deleted the nodes (not
+            # because cleanup ran), that's a false positive.
+            wait_for(
+                "all compactor taints cleared after graceful shutdown",
+                lambda: len(get_tainted_nodes(self.client, self.pool)) == 0,
+                timeout_s=TAINT_TIMEOUT,
+                poll_s=5,
+            )
+
+            # Confirm cleanup actually ran — at least some of the previously-
+            # tainted nodes must still exist (untainted).
+            nodes_after, tainted_after, untainted_after = partition_pool_nodes(self.client, self.pool)
+            surviving_tainted = node_names_before & set(tainted_before)
+            surviving_nodes = {n.metadata.name for n in nodes_after}
+            cleaned = surviving_tainted & surviving_nodes
+            log.info(
+                "Phase 6 result: %d nodes remain, %d were tainted and survived, %d now untainted",
+                len(nodes_after),
+                len(cleaned),
+                len(untainted_after),
+            )
+            if cleaned:
+                # Nodes that were tainted before shutdown and still exist must
+                # now be untainted — proving the SIGTERM handler ran.
+                assert not cleaned.intersection(set(tainted_after)), (
+                    f"Nodes {cleaned & set(tainted_after)} still tainted after "
+                    f"graceful shutdown — cleanup handler may not have run"
+                )
+
+            assert len(tainted_after) == 0, (
+                f"Expected 0 tainted after cleanup, got {len(tainted_after)}: {tainted_after}"
+            )
+        finally:
+            # Always restore compactor — conftest teardown depends on it running
+            log.info("Phase 6: Scaling compactor back to 1...")
+            scale_compactor_deployment(self.client, 1)

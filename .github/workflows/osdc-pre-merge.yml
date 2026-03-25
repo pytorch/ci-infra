@@ -8,6 +8,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  actions: write
 
 concurrency:
   group: osdc-pre-merge
@@ -68,6 +69,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
           aws-region: us-west-1
+          role-duration-seconds: 7200
 
       - name: Deploy to staging
         run: just deploy "$CLUSTER"
@@ -102,6 +104,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
           aws-region: us-west-1
+          role-duration-seconds: 7200
 
       - name: Run smoke tests
         run: just smoke "$CLUSTER"
@@ -130,6 +133,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
           aws-region: us-west-1
+          role-duration-seconds: 7200
 
       - name: Run compactor e2e tests
         run: just test-compactor "$CLUSTER"
@@ -153,11 +157,17 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
+      - name: Verify gh CLI
+        run: gh --version
+        env:
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
           aws-region: us-west-1
+          role-duration-seconds: 7200
 
       - name: Run integration tests
         run: just integration-test "$CLUSTER" --skip-drain --skip-smoke --skip-compactor
