@@ -46,34 +46,48 @@ def branch_name(cluster_id: str) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OSDC Load Test Orchestrator")
     parser.add_argument(
-        "--cluster-id", required=True, help="Cluster ID from clusters.yaml",
+        "--cluster-id",
+        required=True,
+        help="Cluster ID from clusters.yaml",
     )
     parser.add_argument(
-        "--clusters-yaml", required=True, type=Path,
+        "--clusters-yaml",
+        required=True,
+        type=Path,
         help="Path to clusters.yaml",
     )
     parser.add_argument(
-        "--upstream-dir", required=True, type=Path,
+        "--upstream-dir",
+        required=True,
+        type=Path,
         help="OSDC upstream directory",
     )
     parser.add_argument(
-        "--root-dir", required=True, type=Path,
+        "--root-dir",
+        required=True,
+        type=Path,
         help="OSDC root directory (consumer or upstream)",
     )
     parser.add_argument(
-        "--jobs", type=int, default=DEFAULT_TOTAL_JOBS,
+        "--jobs",
+        type=int,
+        default=DEFAULT_TOTAL_JOBS,
         help=f"Total number of jobs to distribute (default: {DEFAULT_TOTAL_JOBS})",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Generate workflow but don't push/PR",
     )
     parser.add_argument(
-        "--keep-pr", action="store_true",
+        "--keep-pr",
+        action="store_true",
         help="Don't close PR after test",
     )
     parser.add_argument(
-        "--timeout", type=int, default=120,
+        "--timeout",
+        type=int,
+        default=120,
         help="Timeout in minutes (default: 120)",
     )
     args = parser.parse_args()
@@ -98,8 +112,7 @@ def _print_distribution(allocations: list, cluster_id: str) -> None:
         if a.is_gpu and a.gpu_count > 1:
             rtype = f"GPU*{a.gpu_count}"
         print(
-            f"  {a.osdc_label:<40s} {a.job_count:>6d} "
-            f"{a.source_job_count:>12,d} {a.proportion:>6.1%} {rtype:>6s}",
+            f"  {a.osdc_label:<40s} {a.job_count:>6d} {a.source_job_count:>12,d} {a.proportion:>6.1%} {rtype:>6s}",
         )
         total_jobs += a.job_count
 
@@ -128,7 +141,8 @@ def main() -> None:
 
     # Phase 1: Compute distribution
     available = get_available_runners(
-        args.upstream_dir, args.root_dir,
+        args.upstream_dir,
+        args.root_dir,
     )
     log.info("  Available runner types: %d", len(available))
 
@@ -156,7 +170,10 @@ def main() -> None:
     canary_path = ensure_canary_repo(args.upstream_dir)
     pr_created_at = datetime.now(tz=UTC)
     pr_number = _prepare_load_test_pr(
-        canary_path, args.upstream_dir, workflow_content, branch,
+        canary_path,
+        args.upstream_dir,
+        workflow_content,
+        branch,
     )
 
     if pr_number is None:
@@ -167,17 +184,21 @@ def main() -> None:
     overall_pass = False
     try:
         results = wait_for_load_test(
-            branch, pr_created_at, allocations, timeout_minutes=args.timeout,
+            branch,
+            pr_created_at,
+            allocations,
+            timeout_minutes=args.timeout,
         )
         overall_pass = print_load_test_report(
-            args.cluster_id, cluster_name, results,
+            args.cluster_id,
+            cluster_name,
+            results,
         )
     finally:
         if not args.keep_pr:
             log.info("Closing PR #%d...", pr_number)
             run_cmd(
-                ["gh", "pr", "close", str(pr_number),
-                 "--repo", CANARY_REPO, "--delete-branch"],
+                ["gh", "pr", "close", str(pr_number), "--repo", CANARY_REPO, "--delete-branch"],
                 check=False,
             )
         else:
@@ -212,7 +233,9 @@ def _prepare_load_test_pr(
     # Commit
     run_cmd(["git", "add", "-A"], cwd=canary_path)
     result = run_cmd(
-        ["git", "diff", "--cached", "--quiet"], cwd=canary_path, check=False,
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=canary_path,
+        check=False,
     )
     if result.returncode != 0:
         now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -226,14 +249,23 @@ def _prepare_load_test_pr(
 
     # Open PR
     now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M")
-    result = run_cmd([
-        "gh", "pr", "create",
-        "--repo", CANARY_REPO,
-        "--title", f"{LOAD_TEST_PR_TITLE_PREFIX} {now}",
-        "--body", "Automated load test from OSDC. Do not review or merge.",
-        "--head", branch,
-        "--base", "main",
-    ])
+    result = run_cmd(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            CANARY_REPO,
+            "--title",
+            f"{LOAD_TEST_PR_TITLE_PREFIX} {now}",
+            "--body",
+            "Automated load test from OSDC. Do not review or merge.",
+            "--head",
+            branch,
+            "--base",
+            "main",
+        ]
+    )
     pr_url = result.stdout.strip()
     pr_number = int(pr_url.rstrip("/").split("/")[-1])
     log.info("PR #%d created: %s", pr_number, pr_url)

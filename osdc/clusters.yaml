@@ -73,6 +73,7 @@ defaults:
     grafana_cloud_read_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
   logging:
     grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
+  alloy_chart_version: "1.6.2"
 
 clusters:
   arc-staging:
@@ -123,8 +124,10 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - cache-enforcer
       - buildkit
       - monitoring
+      - logging
 
   arc-production:
     cluster_name: pytorch-arc-production
@@ -151,5 +154,7 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - cache-enforcer
       - buildkit
       - monitoring
+      - logging

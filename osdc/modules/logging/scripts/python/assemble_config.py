@@ -147,8 +147,14 @@ def main(argv: list[str] | None = None) -> None:
     modules = load_cluster_modules(args.clusters_yaml, args.cluster)
 
     # Discover pipeline files for each module
+    # Skip 'logging' itself — the logging module owns the base pipeline, not a
+    # per-module pipeline.  Without this filter the assembler would look for
+    # modules/logging/logging/pipeline.alloy which doesn't exist (harmless but
+    # confusing) or, worse, could pick up an accidental file at that path.
     module_pipelines: dict[str, str] = {}
     for mod_name in modules:
+        if mod_name == "logging":
+            continue
         content = discover_pipeline(mod_name, args.modules_dir, args.upstream_modules_dir)
         if content is not None:
             module_pipelines[mod_name] = content

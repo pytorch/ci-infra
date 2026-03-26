@@ -519,6 +519,27 @@ class TestMain:
         assert "stale-runner.yaml" not in names
         assert "runner-a.yaml" in names
 
+    def test_no_def_files_exits_1(self, tmp_path, monkeypatch):
+        """Lines 226-227: empty defs directory exits with error."""
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(FAKE_CLUSTERS_YAML, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        # defs_dir is empty — no *.yaml files
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
+            assert main() == 1
+
     def test_missing_template_exits_1(self, tmp_path, monkeypatch):
         p = tmp_path / "clusters.yaml"
         p.write_text(yaml.dump(FAKE_CLUSTERS_YAML, default_flow_style=False))

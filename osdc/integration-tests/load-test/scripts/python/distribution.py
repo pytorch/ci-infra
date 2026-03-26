@@ -208,9 +208,7 @@ def compute_distribution(
         for i, label in enumerate(sorted(active)):
             is_gpu, is_arm64, gpu_count = classify_runner(label)
             total_source = sum(active.values())
-            proportion = (
-                active[label] / total_source if total_source > 0 else 1 / num_types
-            )
+            proportion = active[label] / total_source if total_source > 0 else 1 / num_types
             result.append(
                 RunnerAllocation(
                     osdc_label=label,
@@ -250,9 +248,7 @@ def compute_distribution(
     result = []
     for label in sorted(active):
         is_gpu, is_arm64, gpu_count = classify_runner(label)
-        proportion = (
-            active[label] / total_source if total_source > 0 else 1 / num_types
-        )
+        proportion = active[label] / total_source if total_source > 0 else 1 / num_types
         result.append(
             RunnerAllocation(
                 osdc_label=label,

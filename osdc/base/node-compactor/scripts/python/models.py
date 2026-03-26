@@ -11,6 +11,13 @@ from lightkube.resources.core_v1 import Pod
 log = logging.getLogger("compactor")
 
 # ============================================================================
+# Annotation keys
+# ============================================================================
+
+ANNOTATION_CAPACITY_RESERVED = "node-compactor.osdc.io/capacity-reserved"
+ANNOTATION_DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
+
+# ============================================================================
 # Configuration
 # ============================================================================
 
@@ -28,6 +35,7 @@ DEFAULTS = {
     "COMPACTOR_SPARE_CAPACITY_NODES": "3",
     "COMPACTOR_SPARE_CAPACITY_RATIO": "0.15",
     "COMPACTOR_SPARE_CAPACITY_THRESHOLD": "0.4",
+    "COMPACTOR_CAPACITY_RESERVATION_NODES": "0",
 }
 
 
@@ -46,6 +54,7 @@ class Config:
     spare_capacity_nodes: int
     spare_capacity_ratio: float
     spare_capacity_threshold: float
+    capacity_reservation_nodes: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -66,6 +75,7 @@ class Config:
             spare_capacity_nodes=int(env("COMPACTOR_SPARE_CAPACITY_NODES")),
             spare_capacity_ratio=float(env("COMPACTOR_SPARE_CAPACITY_RATIO")),
             spare_capacity_threshold=float(env("COMPACTOR_SPARE_CAPACITY_THRESHOLD")),
+            capacity_reservation_nodes=int(env("COMPACTOR_CAPACITY_RESERVATION_NODES")),
         )
 
 
@@ -99,8 +109,10 @@ class NodeState:
     creation_time: datetime
     pods: list[PodInfo] = field(default_factory=list)
     is_tainted: bool = False
+    is_reserved: bool = False  # has capacity-reservation annotation
     node_taints: list = field(default_factory=list)  # raw taint objects from API
     labels: dict = field(default_factory=dict)  # node metadata labels
+    annotations: dict = field(default_factory=dict)  # node metadata annotations
 
     @property
     def workload_pods(self) -> list[PodInfo]:

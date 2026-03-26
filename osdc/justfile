@@ -286,10 +286,6 @@ deploy-base cluster:
     just _deploy-harbor "$CLUSTER"
 
     echo ""
-    echo "━━━ BASE: Deploy Logging ━━━"
-    {{UPSTREAM}}/base/logging/deploy.sh "$CLUSTER"
-
-    echo ""
     echo "━━━ BASE: Deploy Node Compactor ━━━"
     {{UPSTREAM}}/base/node-compactor/deploy.sh "$CLUSTER"
 
@@ -801,7 +797,7 @@ test:
         short_dir="${dir#{{UPSTREAM}}/}"
         echo "━━━ Testing: ${short_dir} ━━━"
         # Install test dependencies inline (script deps handled by uv)
-        (cd "$dir" && uv run pytest --tb=short -q) || { ERRORS=$((ERRORS + 1)); FAILED_DIRS+=("${short_dir}"); }
+        (cd "$dir" && uv run pytest --tb=short -q --cov=. --cov-config="{{UPSTREAM}}/pyproject.toml" --cov-report=term-missing:skip-covered) || { ERRORS=$((ERRORS + 1)); FAILED_DIRS+=("${short_dir}"); }
         echo ""
     done
 

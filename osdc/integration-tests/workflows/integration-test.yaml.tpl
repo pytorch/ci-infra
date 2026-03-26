@@ -36,13 +36,34 @@ jobs:
             echo "FAIL: AVX-512 flags not found in /proc/cpuinfo"
             exit 1
           fi
-      - name: Verify resources
+      - name: Verify CPU count
         run: |
-          echo "=== Memory ==="
-          free -h
-          echo ""
-          echo "=== Disk ==="
-          df -h
+          EXPECTED=8
+          ACTUAL=$(nproc)
+          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
+          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
+            exit 1
+          fi
+          echo "PASS: CPU count matches"
+      - name: Verify memory
+        run: |
+          EXPECTED_GI=32
+          if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory.max)
+          elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+          else
+            BYTES=$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)
+          fi
+          ACTUAL_GI=$((BYTES / 1073741824))
+          echo "Memory: ${ACTUAL_GI}Gi (expected: ${EXPECTED_GI}Gi)"
+          MIN_GI=$((EXPECTED_GI * 90 / 100))
+          if [ "$ACTUAL_GI" -lt "$MIN_GI" ]; then
+            echo "FAIL: Memory below expected (${ACTUAL_GI}Gi < ${MIN_GI}Gi minimum)"
+            exit 1
+          fi
+          echo "PASS: Memory within expected range"
       - name: Verify environment
         run: |
           echo "=== Environment ==="
@@ -77,13 +98,34 @@ jobs:
           else
             echo "WARN: AMX flags not found (may not be exposed in container)"
           fi
-      - name: Verify resources
+      - name: Verify CPU count
         run: |
-          echo "=== Memory ==="
-          free -h
-          echo ""
-          echo "=== Disk ==="
-          df -h
+          EXPECTED=8
+          ACTUAL=$(nproc)
+          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
+          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
+            exit 1
+          fi
+          echo "PASS: CPU count matches"
+      - name: Verify memory
+        run: |
+          EXPECTED_GI=32
+          if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory.max)
+          elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+          else
+            BYTES=$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)
+          fi
+          ACTUAL_GI=$((BYTES / 1073741824))
+          echo "Memory: ${ACTUAL_GI}Gi (expected: ${EXPECTED_GI}Gi)"
+          MIN_GI=$((EXPECTED_GI * 90 / 100))
+          if [ "$ACTUAL_GI" -lt "$MIN_GI" ]; then
+            echo "FAIL: Memory below expected (${ACTUAL_GI}Gi < ${MIN_GI}Gi minimum)"
+            exit 1
+          fi
+          echo "PASS: Memory within expected range"
 
   test-cpu-arm64:
     runs-on: {{PREFIX}}l-arm64g3-16-62
@@ -100,13 +142,34 @@ jobs:
             exit 1
           fi
           echo "PASS: Architecture is $ARCH"
-      - name: Verify resources
+      - name: Verify CPU count
         run: |
-          echo "=== Memory ==="
-          free -h
-          echo ""
-          echo "=== Disk ==="
-          df -h
+          EXPECTED=16
+          ACTUAL=$(nproc)
+          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
+          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
+            exit 1
+          fi
+          echo "PASS: CPU count matches"
+      - name: Verify memory
+        run: |
+          EXPECTED_GI=62
+          if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory.max)
+          elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+          else
+            BYTES=$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)
+          fi
+          ACTUAL_GI=$((BYTES / 1073741824))
+          echo "Memory: ${ACTUAL_GI}Gi (expected: ${EXPECTED_GI}Gi)"
+          MIN_GI=$((EXPECTED_GI * 90 / 100))
+          if [ "$ACTUAL_GI" -lt "$MIN_GI" ]; then
+            echo "FAIL: Memory below expected (${ACTUAL_GI}Gi < ${MIN_GI}Gi minimum)"
+            exit 1
+          fi
+          echo "PASS: Memory within expected range"
       - name: Verify environment
         run: |
           echo "CHECKOUT_GIT_CACHE_DIR=${CHECKOUT_GIT_CACHE_DIR:-NOT SET}"

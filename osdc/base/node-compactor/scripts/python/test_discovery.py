@@ -31,6 +31,7 @@ def make_config(**overrides) -> Config:
         "spare_capacity_nodes": 2,
         "spare_capacity_ratio": 0.15,
         "spare_capacity_threshold": 0.4,
+        "capacity_reservation_nodes": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -80,11 +81,13 @@ def make_mock_pod(
     tolerations: list | None = None,
     creation_timestamp: datetime | None = None,
     scheduling_gates: list | None = None,
+    deletion_timestamp: datetime | None = None,
 ):
     pod = MagicMock()
     pod.metadata.name = name
     pod.metadata.namespace = namespace
     pod.metadata.creationTimestamp = creation_timestamp or NOW - timedelta(minutes=5)
+    pod.metadata.deletionTimestamp = deletion_timestamp
     pod.metadata.ownerReferences = []
     if owner_kind:
         ref = MagicMock()
@@ -1029,3 +1032,111 @@ class TestPendingPodExclusionFilters:
         _, pending = self._run_with_pending_pod(pod)
         assert len(pending) == 1
         assert pending[0].metadata.name == "unschedulable-pod"
+
+
+# ============================================================================
+# Terminating pod filtering tests
+# ============================================================================
+
+
+class TestTerminatingPodFiltering:
+    """Tests for filtering pods with deletionTimestamp set (Terminating pods)."""
+
+    def test_terminating_running_pod_excluded_from_node(self):
+        """Running pod with deletionTimestamp set is excluded from node's pod list."""
+        cfg = make_config()
+        client = MagicMock()
+
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
+
+        running_pod = make_mock_pod("running-pod", node_name="node-1", phase="Running")
+        terminating_pod = make_mock_pod(
+            "terminating-pod",
+            node_name="node-1",
+            phase="Running",
+            deletion_timestamp=NOW,
+        )
+
+        client.list.side_effect = [[node], [], [running_pod, terminating_pod]]
+
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert len(states["node-1"].pods) == 1
+        assert states["node-1"].pods[0].name == "running-pod"
+
+    def test_terminating_daemonset_pod_excluded_from_node(self):
+        """DaemonSet pod with deletionTimestamp set is also excluded."""
+        cfg = make_config()
+        client = MagicMock()
+
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
+
+        ds_pod = make_mock_pod(
+            "ds-terminating",
+            node_name="node-1",
+            phase="Running",
+            owner_kind="DaemonSet",
+            deletion_timestamp=NOW,
+        )
+
+        client.list.side_effect = [[node], [], [ds_pod]]
+
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert len(states["node-1"].pods) == 0
+
+    def test_non_terminating_pod_still_included(self):
+        """Pod without deletionTimestamp is still included normally."""
+        cfg = make_config()
+        client = MagicMock()
+
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
+
+        pod = make_mock_pod("normal-pod", node_name="node-1", phase="Running")
+
+        client.list.side_effect = [[node], [], [pod]]
+
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert len(states["node-1"].pods) == 1
+        assert states["node-1"].pods[0].name == "normal-pod"
+
+    def test_terminating_pending_pod_excluded_from_pending_list(self):
+        """Pending pod with deletionTimestamp set is excluded from pending list."""
+        cfg = make_config()
+        client = MagicMock()
+
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
+
+        pending_pod = make_mock_pod(
+            "terminating-pending",
+            node_name=None,
+            phase="Pending",
+            deletion_timestamp=NOW,
+        )
+
+        client.list.side_effect = [[node], [], [pending_pod]]
+
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert len(pending) == 0
+
+    def test_mix_of_terminating_and_active_pods(self):
+        """Only non-terminating pods are counted in node state."""
+        cfg = make_config()
+        client = MagicMock()
+
+        node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
+
+        active_pod = make_mock_pod("active", node_name="node-1", phase="Running")
+        term_pod1 = make_mock_pod("term-1", node_name="node-1", phase="Running", deletion_timestamp=NOW)
+        term_pod2 = make_mock_pod(
+            "term-2", node_name="node-1", phase="Running", deletion_timestamp=NOW - timedelta(seconds=30)
+        )
+
+        client.list.side_effect = [[node], [], [active_pod, term_pod1, term_pod2]]
+
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+
+        assert len(states["node-1"].pods) == 1
+        assert states["node-1"].pods[0].name == "active"

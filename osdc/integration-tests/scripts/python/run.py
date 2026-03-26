@@ -104,15 +104,21 @@ def run_cmd_with_retry(
             return result
         last_err = result
         if attempt < max_retries - 1:
-            delay = base_delay * (2 ** attempt)
+            delay = base_delay * (2**attempt)
             log.warning(
                 "Command failed (attempt %d/%d, exit %d), retrying in %.0fs: %s",
-                attempt + 1, max_retries, result.returncode, delay, " ".join(cmd),
+                attempt + 1,
+                max_retries,
+                result.returncode,
+                delay,
+                " ".join(cmd),
             )
             time.sleep(delay)
     log.warning(
         "Command failed after %d attempts (exit %d): %s",
-        max_retries, last_err.returncode, " ".join(cmd),
+        max_retries,
+        last_err.returncode,
+        " ".join(cmd),
     )
     return last_err
 
@@ -162,7 +168,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-smoke", action="store_true", help="Skip smoke tests")
     parser.add_argument("--skip-compactor", action="store_true", help="Skip node-compactor e2e tests")
     parser.add_argument("--dry-run", action="store_true", help="Generate workflows but don't push/PR")
-    parser.add_argument("--keep-pr", action="store_true", help="Don't close PR after test (useful for debugging failures)")
+    parser.add_argument(
+        "--keep-pr", action="store_true", help="Don't close PR after test (useful for debugging failures)"
+    )
     parser.add_argument("--force", action="store_true", help="Skip interactive prompts (e.g. staging pool clear)")
     parser.add_argument("--skip-drain", action="store_true", help="Skip staging pool drain entirely")
     return parser.parse_args()
@@ -221,7 +229,11 @@ def main():
 
         # Phase 2: Prepare PR
         workflow_content = generate_workflow(
-            args.upstream_dir, prefix, args.cluster_id, cluster_name, b200_enabled,
+            args.upstream_dir,
+            prefix,
+            args.cluster_id,
+            cluster_name,
+            b200_enabled,
         )
         pr_created_at = datetime.now(tz=UTC)
         pr_number = prepare_pr(canary_path, args.upstream_dir, workflow_content, args.dry_run, branch)
@@ -232,8 +244,12 @@ def main():
 
         # Phase 3: Parallel validation
         validation_results = run_parallel_validation(
-            args.cluster_id, args.root_dir, args.upstream_dir,
-            args.skip_smoke, args.skip_compactor, cfg,
+            args.cluster_id,
+            args.root_dir,
+            args.upstream_dir,
+            args.skip_smoke,
+            args.skip_compactor,
+            cfg,
         )
 
         # Phase 4: Collect workflow results
@@ -241,8 +257,10 @@ def main():
 
         # Phase 5: Report
         overall_pass = print_report(
-            args.cluster_id, cluster_name,
-            workflow_results, validation_results,
+            args.cluster_id,
+            cluster_name,
+            workflow_results,
+            validation_results,
         )
 
     except subprocess.CalledProcessError as e:
@@ -268,8 +286,10 @@ def main():
                 pass  # double Ctrl+C — skip fetch, print what we have
 
         overall_pass = print_report(
-            args.cluster_id, cluster_name,
-            workflow_results, validation_results,
+            args.cluster_id,
+            cluster_name,
+            workflow_results,
+            validation_results,
             interrupted=True,
         )
 

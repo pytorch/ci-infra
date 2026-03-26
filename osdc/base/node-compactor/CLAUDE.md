@@ -13,6 +13,7 @@ This achieves cost savings without disrupting running CI jobs.
 | `scripts/python/discovery.py` | NodePool and node discovery logic |
 | `scripts/python/packing.py` | Bin-packing algorithm for node consolidation |
 | `scripts/python/taints.py` | Taint management (apply, remove, SIGTERM cleanup) |
+| `scripts/python/reservations.py` | Capacity reservation annotation management (do-not-disrupt) |
 | `scripts/python/phantom.py` | Phantom load simulation for pending pods |
 | `scripts/python/test_compactor.py` | Unit tests for main controller |
 | `scripts/python/test_discovery.py` | Unit tests for discovery module |
@@ -20,6 +21,7 @@ This achieves cost savings without disrupting running CI jobs.
 | `scripts/python/test_models_pod_helpers.py` | Unit tests for pod helper functions |
 | `scripts/python/test_phantom.py` | Unit tests for phantom load simulation |
 | `scripts/python/test_spare_capacity.py` | Unit tests for spare capacity feature |
+| `scripts/python/test_reservations.py` | Unit tests for capacity reservation feature |
 | `kubernetes/deployment.yaml` | Deployment manifest (runs in `kube-system`) |
 | `kubernetes/rbac.yaml` | RBAC — node get/list/patch, pod list, NodePool list |
 | `kubernetes/serviceaccount.yaml` | ServiceAccount |
@@ -45,6 +47,7 @@ All config comes from `clusters.yaml` under `node_compactor:` and is injected as
 | `node_compactor.spare_capacity_nodes` | `COMPACTOR_SPARE_CAPACITY_NODES` | `3` | Minimum low-utilization nodes to keep untainted per pool (floor) |
 | `node_compactor.spare_capacity_ratio` | `COMPACTOR_SPARE_CAPACITY_RATIO` | `0.15` | Fraction of pool size to keep as spare capacity (scales with pool) |
 | `node_compactor.spare_capacity_threshold` | `COMPACTOR_SPARE_CAPACITY_THRESHOLD` | `0.4` | Max utilization for a node to count as "spare capacity" |
+| `node_compactor.capacity_reservation_nodes` | `COMPACTOR_CAPACITY_RESERVATION_NODES` | `0` | Number of young, low-utilization nodes per pool to protect from Karpenter deletion via `do-not-disrupt` annotation |
 
 ## How it works with Karpenter
 
@@ -53,6 +56,7 @@ All config comes from `clusters.yaml` under `node_compactor:` and is injected as
 3. Underutilized nodes get tainted `NoSchedule` — pods already running are unaffected
 4. As pods complete, tainted nodes drain naturally
 5. When a tainted node has zero non-DaemonSet pods, Karpenter's `WhenEmpty` policy deletes it after `consolidateAfter` (2 minutes)
+6. Optionally, the compactor annotates a configurable number of young, low-utilization nodes with `karpenter.sh/do-not-disrupt` to prevent Karpenter from deleting them even when empty — maintaining ready-to-use capacity
 
 ## Safety properties
 
@@ -64,6 +68,7 @@ All config comes from `clusters.yaml` under `node_compactor:` and is injected as
 - Spare capacity floor: keeps at least `max(spare_capacity_nodes, ceil(pool_size * spare_capacity_ratio))` low-utilization nodes untainted
 - Graceful shutdown: catches SIGTERM and removes all taints it applied before exiting
 - Dry-run mode for safe testing
+- Capacity reservation: annotates up to N young, low-utilization nodes per pool with `karpenter.sh/do-not-disrupt` to prevent Karpenter WhenEmpty deletion, maintaining ready-to-use capacity (disabled by default, `capacity_reservation_nodes=0`)
 
 ## Debugging
 

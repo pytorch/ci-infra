@@ -35,6 +35,7 @@ def make_config(**overrides) -> Config:
         "spare_capacity_nodes": 0,
         "spare_capacity_ratio": 0.0,
         "spare_capacity_threshold": 0.4,
+        "capacity_reservation_nodes": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)

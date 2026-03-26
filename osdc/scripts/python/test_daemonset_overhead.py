@@ -12,6 +12,7 @@ from daemonset_overhead import (
     _extract_container_resources,
     _is_gpu_only,
     discover_daemonsets,
+    main,
     parse_cpu_millicores,
     parse_memory_mib,
 )
@@ -501,3 +502,112 @@ class TestRealManifests:
         # hooks-warmer: 10m CPU, 32Mi
         assert by_name["runner-hooks-warmer"].cpu_millicores == 10
         assert by_name["runner-hooks-warmer"].memory_mib == 32
+
+
+# ---------------------------------------------------------------------------
+# _discover_from_yaml - YAML error handling + non-dict docs
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverYamlEdgeCases:
+    def test_invalid_yaml_skipped(self, tmp_path):
+        """Files with invalid YAML are silently skipped (lines 149-150)."""
+        (tmp_path / "bad.yaml").write_text(": : : invalid: [yaml")
+        results = _discover_from_yaml([tmp_path])
+        assert results == []
+
+    def test_non_dict_doc_skipped(self, tmp_path):
+        """Non-dict documents (e.g., bare string) are skipped (line 154)."""
+        content = "---\njust a string\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: d\n"
+        (tmp_path / "mixed.yaml").write_text(content)
+        results = _discover_from_yaml([tmp_path])
+        # The string doc is skipped, the Deployment doc is not a DaemonSet
+        assert results == []
+
+    def test_null_doc_skipped(self, tmp_path):
+        """A YAML file that yields None docs is handled (line 154)."""
+        content = "---\n---\napiVersion: apps/v1\nkind: DaemonSet\nmetadata:\n  name: after-null\nspec:\n  template:\n    spec:\n      containers:\n        - name: app\n          resources:\n            requests:\n              cpu: 10m\n              memory: 16Mi\n"
+        (tmp_path / "null_doc.yaml").write_text(content)
+        results = _discover_from_yaml([tmp_path])
+        assert len(results) == 1
+        assert results[0].name == "after-null"
+
+    def test_os_error_skipped(self, tmp_path):
+        """Files that raise OSError are skipped (lines 149-150)."""
+        bad_file = tmp_path / "unreadable.yaml"
+        bad_file.write_text("kind: DaemonSet")
+        bad_file.chmod(0o000)
+        try:
+            results = _discover_from_yaml([tmp_path])
+            # Should not crash; the file is skipped
+            assert isinstance(results, list)
+        finally:
+            bad_file.chmod(0o644)
+
+
+# ---------------------------------------------------------------------------
+# main (CLI entry point, lines 229-275)
+# ---------------------------------------------------------------------------
+
+
+class TestMainCli:
+    def test_default_upstream_resolution(self, capsys):
+        """main() with no args resolves upstream from __file__ location."""
+        result = main([])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Discovered" in output
+        assert "DaemonSets" in output
+        # Should show totals
+        assert "Total (all nodes)" in output
+        assert "Total (GPU nodes)" in output
+
+    def test_explicit_upstream_dir(self, capsys, tmp_path):
+        """main() with --upstream-dir pointing to minimal structure."""
+        base_k8s = tmp_path / "base" / "kubernetes"
+        base_k8s.mkdir(parents=True)
+        modules = tmp_path / "modules"
+        modules.mkdir()
+        result = main(["--upstream-dir", str(tmp_path)])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Discovered" in output
+
+    def test_no_eks_addons_flag(self, capsys, tmp_path):
+        """main() with --no-eks-addons excludes EKS addon DaemonSets."""
+        base_k8s = tmp_path / "base" / "kubernetes"
+        base_k8s.mkdir(parents=True)
+        modules = tmp_path / "modules"
+        modules.mkdir()
+        result = main(["--upstream-dir", str(tmp_path), "--no-eks-addons"])
+        assert result == 0
+        output = capsys.readouterr().out
+        # EKS addon names should NOT appear
+        for ds in EKS_ADDON_DAEMONSETS:
+            assert ds.name not in output
+
+    def test_no_helm_flag(self, capsys, tmp_path):
+        """main() with --no-helm excludes Helm-deployed DaemonSets."""
+        base_k8s = tmp_path / "base" / "kubernetes"
+        base_k8s.mkdir(parents=True)
+        modules = tmp_path / "modules"
+        modules.mkdir()
+        result = main(["--upstream-dir", str(tmp_path), "--no-helm"])
+        assert result == 0
+        output = capsys.readouterr().out
+        for ds in HELM_DAEMONSETS:
+            assert ds.name not in output
+
+    def test_gpu_only_tagged_in_output(self, capsys):
+        """GPU-only DaemonSets are tagged with [GPU-only]."""
+        result = main([])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "[GPU-only]" in output
+
+    def test_shows_source_paths(self, capsys):
+        """Each DaemonSet shows its source path."""
+        result = main([])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "source:" in output

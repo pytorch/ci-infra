@@ -58,14 +58,27 @@ def ensure_canary_repo(upstream_dir: Path) -> Path:
 
     if not canary_path.exists():
         log.info("  Cloning %s into %s...", CANARY_REPO, canary_path)
-        run_cmd([
-            "gh", "repo", "clone", CANARY_REPO, str(canary_path),
-            "--", "--filter=blob:none",
-        ], capture=False)
+        run_cmd(
+            [
+                "gh",
+                "repo",
+                "clone",
+                CANARY_REPO,
+                str(canary_path),
+                "--",
+                "--filter=blob:none",
+            ],
+            capture=False,
+        )
 
     # Configure git identity for commits made by the test orchestrator
     run_cmd(["git", "config", "user.name", "OSDC Integration Test"], cwd=canary_path, capture=False, check=False)
-    run_cmd(["git", "config", "user.email", "osdc-integration-test@pytorch.org"], cwd=canary_path, capture=False, check=False)
+    run_cmd(
+        ["git", "config", "user.email", "osdc-integration-test@pytorch.org"],
+        cwd=canary_path,
+        capture=False,
+        check=False,
+    )
 
     return canary_path
 
@@ -79,8 +92,7 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
 
     # Find open PRs matching our title pattern
     result = run_cmd(
-        ["gh", "pr", "list", "--repo", CANARY_REPO, "--author", "@me",
-         "--state", "open", "--json", "number,title"],
+        ["gh", "pr", "list", "--repo", CANARY_REPO, "--author", "@me", "--state", "open", "--json", "number,title"],
         check=False,
     )
     if result.returncode != 0:
@@ -98,8 +110,7 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
 
     # Cancel any running workflows on our branch
     result = run_cmd(
-        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-         "--status", "queued", "--json", "databaseId"],
+        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch, "--status", "queued", "--json", "databaseId"],
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
@@ -109,8 +120,19 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
             run_cmd(["gh", "run", "cancel", str(r["databaseId"]), "--repo", CANARY_REPO], check=False)
 
     result = run_cmd(
-        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-         "--status", "in_progress", "--json", "databaseId"],
+        [
+            "gh",
+            "run",
+            "list",
+            "--repo",
+            CANARY_REPO,
+            "--branch",
+            branch,
+            "--status",
+            "in_progress",
+            "--json",
+            "databaseId",
+        ],
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
@@ -263,14 +285,23 @@ def prepare_pr(
 
     # Open PR
     now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M")
-    result = run_cmd([
-        "gh", "pr", "create",
-        "--repo", CANARY_REPO,
-        "--title", f"{PR_TITLE_PREFIX} {now}",
-        "--body", "Automated integration test from OSDC. Do not review or merge.",
-        "--head", branch,
-        "--base", "main",
-    ])
+    result = run_cmd(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            CANARY_REPO,
+            "--title",
+            f"{PR_TITLE_PREFIX} {now}",
+            "--body",
+            "Automated integration test from OSDC. Do not review or merge.",
+            "--head",
+            branch,
+            "--base",
+            "main",
+        ]
+    )
     # Extract PR number from URL.
     # If parsing fails, return None — the caller (main()) will skip polling
     # and cleanup_stale_prs() will close the orphaned PR on the next run.

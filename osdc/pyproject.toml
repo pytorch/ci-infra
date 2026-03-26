@@ -38,3 +38,12 @@ markers = [
   "aws: requires AWS CLI access",
   "offline: no cluster needed",
 ]
+
+[tool.coverage.run]
+omit = ["test_*.py", "conftest.py"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+skip_covered = true
+exclude_lines = ["if __name__", "pragma: no cover"]

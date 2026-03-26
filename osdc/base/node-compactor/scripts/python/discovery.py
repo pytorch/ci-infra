@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Namespace, Node, Pod
 from models import (
+    ANNOTATION_CAPACITY_RESERVED,
     Config,
     NodeState,
     PodInfo,
@@ -90,6 +91,7 @@ def build_node_states(
             continue
 
         labels = (node.metadata and node.metadata.labels) or {}
+        annotations = (node.metadata and node.metadata.annotations) or {}
         alloc = node.status.allocatable or {} if node.status else {}
         creation = node.metadata.creationTimestamp if node.metadata else None
         if not creation:
@@ -97,6 +99,7 @@ def build_node_states(
 
         taints = node.spec.taints or [] if node.spec else []
         is_tainted = any(t.key == cfg.taint_key for t in taints)
+        is_reserved = annotations.get(ANNOTATION_CAPACITY_RESERVED) == "true"
 
         node_states[name] = NodeState(
             name=name,
@@ -105,8 +108,10 @@ def build_node_states(
             allocatable_memory=parse_memory(alloc.get("memory", "0")),
             creation_time=creation,
             is_tainted=is_tainted,
+            is_reserved=is_reserved,
             node_taints=list(taints),
             labels=dict(labels),
+            annotations=dict(annotations),
         )
 
     # Build a set of terminating namespaces to exclude pending pods from.
@@ -130,6 +135,10 @@ def build_node_states(
         if phase == "Pending":
             # Only consider pods not yet assigned to a node
             if pod.spec and pod.spec.nodeName:
+                continue
+
+            # Skip Terminating pods — resources will be freed imminently
+            if pod.metadata and pod.metadata.deletionTimestamp:
                 continue
 
             # --- Exclusion filter 1: scheduling gates ---
@@ -183,6 +192,9 @@ def build_node_states(
         if node_name not in node_states:
             continue
         if phase in ("Succeeded", "Failed"):
+            continue
+        # Skip Terminating pods — resources will be freed imminently
+        if pod.metadata and pod.metadata.deletionTimestamp:
             continue
 
         start_time = None

@@ -1,0 +1,25 @@
+# Restrict pypi-cache ingress to arc-runners namespace only.
+# Prevents cache poisoning from compromised pods in other namespaces.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pypi-cache-ingress
+  namespace: pypi-cache
+  labels:
+    app: pypi-cache
+    app.kubernetes.io/name: pypi-cache
+    app.kubernetes.io/component: package-cache
+spec:
+  podSelector:
+    matchLabels:
+      app: pypi-cache
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: arc-runners
+      ports:
+        - protocol: TCP
+          port: 8080
