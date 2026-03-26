@@ -194,7 +194,44 @@ def clear_staging_pools(cluster_id: str, force: bool = False):
 # ── Phase 2: Prepare PR ────────────────────────────────────────────────
 
 
-def generate_workflow(upstream_dir: Path, prefix: str, cluster_id: str, cluster_name: str, b200_enabled: bool) -> str:
+def _strip_conditional_block(content: str, tag: str, keep: bool) -> str:
+    """Remove or keep a # BEGIN_<tag> / # END_<tag> conditional block.
+
+    When *keep* is False the block (markers + content) is stripped entirely.
+    When *keep* is True the content is kept but the marker comments are removed.
+    """
+    begin = f"# BEGIN_{tag}"
+    end = f"# END_{tag}"
+    if not keep:
+        lines = content.split("\n")
+        filtered = []
+        inside = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped == begin:
+                inside = True
+                continue
+            if stripped == end:
+                inside = False
+                continue
+            if not inside:
+                filtered.append(line)
+        return "\n".join(filtered)
+    # keep=True — remove markers, keep content
+    content = content.replace(f"  {begin}\n", "")
+    content = content.replace(f"  {end}\n", "")
+    return content
+
+
+def generate_workflow(
+    upstream_dir: Path,
+    prefix: str,
+    cluster_id: str,
+    cluster_name: str,
+    b200_enabled: bool,
+    cache_enforcer_enabled: bool = False,
+    pypi_cache_slugs: str = "cpu cu121 cu124",
+) -> str:
     """Generate the integration test workflow from template."""
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
     content = template_path.read_text()
@@ -203,27 +240,11 @@ def generate_workflow(upstream_dir: Path, prefix: str, cluster_id: str, cluster_
     content = content.replace("{{PREFIX}}", prefix)
     content = content.replace("{{CLUSTER_ID}}", cluster_id)
     content = content.replace("{{CLUSTER_NAME}}", cluster_name)
+    content = content.replace("{{PYPI_CACHE_SLUGS}}", pypi_cache_slugs)
 
-    # Handle B200 conditional blocks
-    if not b200_enabled:
-        lines = content.split("\n")
-        filtered = []
-        in_b200_block = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped == "# BEGIN_B200":
-                in_b200_block = True
-                continue
-            if stripped == "# END_B200":
-                in_b200_block = False
-                continue
-            if not in_b200_block:
-                filtered.append(line)
-        content = "\n".join(filtered)
-    else:
-        # Remove the marker comments but keep the content
-        content = content.replace("  # BEGIN_B200\n", "")
-        content = content.replace("  # END_B200\n", "")
+    # Handle conditional blocks
+    content = _strip_conditional_block(content, "B200", keep=b200_enabled)
+    content = _strip_conditional_block(content, "CACHE_ENFORCER", keep=cache_enforcer_enabled)
 
     return content
 

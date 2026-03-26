@@ -42,6 +42,42 @@ def normalize_name(name):
     return name.replace(".", "-").replace("_", "-")
 
 
+# Kubernetes resource quantity suffixes → multiplier (bytes)
+_K8S_MEMORY_SUFFIXES = {
+    "Ki": 1024,
+    "Mi": 1024**2,
+    "Gi": 1024**3,
+    "Ti": 1024**4,
+    "K": 1000,
+    "M": 1000**2,
+    "G": 1000**3,
+    "T": 1000**4,
+}
+
+
+def parse_memory_bytes(memory_str):
+    """Convert a Kubernetes memory quantity string to bytes.
+
+    Supports binary (Ki, Mi, Gi, Ti) and decimal (K, M, G, T) suffixes,
+    as well as plain integer strings (already in bytes).
+
+    >>> parse_memory_bytes("115Gi")
+    123480309760
+    >>> parse_memory_bytes("512Mi")
+    536870912
+    >>> parse_memory_bytes("1024")
+    1024
+    """
+    s = str(memory_str)
+    # Try two-char suffix first (Ki, Mi, Gi, Ti), then one-char (K, M, G, T)
+    for suffix_len in (2, 1):
+        if len(s) > suffix_len:
+            suffix = s[-suffix_len:]
+            if suffix in _K8S_MEMORY_SUFFIXES:
+                return int(s[:-suffix_len]) * _K8S_MEMORY_SUFFIXES[suffix]
+    return int(s)
+
+
 def load_clusters_yaml(repo_root):
     """Load clusters.yaml from the repository root."""
     config_path = repo_root / "clusters.yaml"
@@ -145,6 +181,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{INSTANCE_TYPE}}": instance_type,
         "{{VCPU}}": str(vcpu),
         "{{MEMORY}}": str(memory),
+        "{{MEMORY_BYTES}}": str(parse_memory_bytes(memory)),
         "{{DISK_SIZE}}": f"{disk_size}Gi",
         "{{GPU_TOLERATIONS}}": gpu_tolerations,
         "{{GPU_JOB_TOLERATIONS}}": gpu_job_tolerations,

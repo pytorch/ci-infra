@@ -99,6 +99,15 @@ def workflow_template(tmp_path):
         "    steps:\n"
         "      - run: echo B200\n"
         "  # END_B200\n"
+        "  # BEGIN_CACHE_ENFORCER\n"
+        "  cache-enforcer-job:\n"
+        "    runs-on: {{PREFIX}}enforcer-runner\n"
+        "    steps:\n"
+        "      - run: echo enforcer\n"
+        "  # END_CACHE_ENFORCER\n"
+        "  pypi-job:\n"
+        "    steps:\n"
+        "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
     )
     (wf_dir / "integration-test.yaml.tpl").write_text(template)
 
@@ -212,6 +221,58 @@ class TestGenerateWorkflow:
         # Marker comments should be stripped
         assert "BEGIN_B200" not in result
         assert "END_B200" not in result
+
+    def test_cache_enforcer_removed_when_disabled(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+            cache_enforcer_enabled=False,
+        )
+        assert "cache-enforcer-job" not in result
+        assert "BEGIN_CACHE_ENFORCER" not in result
+        assert "END_CACHE_ENFORCER" not in result
+        assert "basic:" in result
+
+    def test_cache_enforcer_preserved_when_enabled(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+            cache_enforcer_enabled=True,
+        )
+        assert "cache-enforcer-job:" in result
+        assert "echo enforcer" in result
+        assert "runs-on: cbrenforcer-runner" in result
+        assert "BEGIN_CACHE_ENFORCER" not in result
+        assert "END_CACHE_ENFORCER" not in result
+
+    def test_pypi_cache_slugs_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+            pypi_cache_slugs="cpu cu121 cu124",
+        )
+        assert "echo cpu cu121 cu124" in result
+        assert "{{PYPI_CACHE_SLUGS}}" not in result
+
+    def test_pypi_cache_slugs_default(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+        )
+        # Default value should be substituted
+        assert "echo cpu cu121 cu124" in result
 
 
 # ── format_duration ───────────────────────────────────────────────────────
@@ -666,6 +727,8 @@ class TestParseArgs:
         assert str(args.clusters_yaml) == "/tmp/c.yaml"
         assert str(args.upstream_dir) == "/tmp/upstream"
         assert str(args.root_dir) == "/tmp/root"
+        assert args.run_smoke is False
+        assert args.run_compactor is False
         assert args.skip_smoke is False
         assert args.skip_compactor is False
         assert args.dry_run is False
@@ -686,6 +749,8 @@ class TestParseArgs:
                 "/u",
                 "--root-dir",
                 "/r",
+                "--run-smoke",
+                "--run-compactor",
                 "--skip-smoke",
                 "--skip-compactor",
                 "--dry-run",
@@ -695,6 +760,8 @@ class TestParseArgs:
             ],
         ):
             args = parse_args()
+        assert args.run_smoke is True
+        assert args.run_compactor is True
         assert args.skip_smoke is True
         assert args.skip_compactor is True
         assert args.dry_run is True
@@ -923,6 +990,8 @@ class TestMain:
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
             skip_smoke=True,
             skip_compactor=True,
             dry_run=False,
@@ -960,6 +1029,8 @@ class TestMain:
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
             skip_smoke=True,
             skip_compactor=True,
             dry_run=False,
@@ -998,6 +1069,8 @@ class TestMain:
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
             skip_smoke=True,
             skip_compactor=True,
             dry_run=False,
@@ -1032,6 +1105,8 @@ class TestMain:
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
             skip_smoke=True,
             skip_compactor=True,
             dry_run=True,

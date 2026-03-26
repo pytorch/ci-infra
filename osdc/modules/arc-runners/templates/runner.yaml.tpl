@@ -256,6 +256,8 @@ data:
               value: "/opt/git-cache/pytorch"
             - name: GIT_CONFIG_SYSTEM
               value: "/opt/git-cache/.gitconfig"
+            - name: TORCH_CI_MAX_MEMORY
+              value: "{{MEMORY_BYTES}}"
           # Workflow container gets the actual compute resources
           resources:
             requests:

@@ -337,3 +337,143 @@ jobs:
             echo "INFO: /etc/containerd/certs.d not visible from container (expected)"
             echo "PASS: Container pulled successfully through Harbor"
           fi
+
+  # BEGIN_CACHE_ENFORCER
+  # ── Cache Enforcer Test ──────────────────────────────────────────────
+  test-cache-enforcer:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    steps:
+      - name: Verify blocked registry domains
+        run: |
+          echo "=== Cache Enforcer: Registry Domain Blocking ==="
+          BLOCKED_REGISTRIES="
+            docker.io
+            registry-1.docker.io
+            auth.docker.io
+            production.cloudflare.docker.com
+            ghcr.io
+            nvcr.io
+            quay.io
+            registry.k8s.io
+          "
+          FAIL=0
+          for domain in $BLOCKED_REGISTRIES; do
+            [ -z "$domain" ] && continue
+            if curl --connect-timeout 5 --max-time 10 -s -o /dev/null "https://$domain/" 2>/dev/null; then
+              echo "FAIL: $domain is reachable (should be blocked)"
+              FAIL=1
+            else
+              echo "PASS: $domain is blocked"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more registry domains were reachable"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All registry domains blocked by cache-enforcer"
+      - name: Verify blocked PyPI domains
+        run: |
+          echo "=== Cache Enforcer: PyPI Domain Blocking ==="
+          BLOCKED_PYPI="
+            pypi.org
+            files.pythonhosted.org
+          "
+          FAIL=0
+          for domain in $BLOCKED_PYPI; do
+            [ -z "$domain" ] && continue
+            if curl --connect-timeout 5 --max-time 10 -s -o /dev/null "https://$domain/" 2>/dev/null; then
+              echo "FAIL: $domain is reachable (should be blocked)"
+              FAIL=1
+            else
+              echo "PASS: $domain is blocked"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more PyPI domains were reachable"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All PyPI domains blocked by cache-enforcer"
+      - name: Verify non-blocked domains work
+        run: |
+          echo "=== Cache Enforcer: Non-blocked Domain Validation ==="
+          ALLOWED_DOMAINS="
+            public.ecr.aws
+            github.com
+          "
+          FAIL=0
+          for domain in $ALLOWED_DOMAINS; do
+            [ -z "$domain" ] && continue
+            HTTP_CODE=$(curl --connect-timeout 10 --max-time 15 -s -o /dev/null -w "%{http_code}" "https://$domain/" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "000" ]; then
+              echo "FAIL: $domain is unreachable (should NOT be blocked)"
+              FAIL=1
+            else
+              echo "PASS: $domain is reachable (HTTP $HTTP_CODE)"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: Non-blocked domains are unreachable — possible network issue"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: Non-blocked domains are accessible"
+  # END_CACHE_ENFORCER
+
+  # ── PyPI Proxy Test ──────────────────────────────────────────────────
+  test-pypi-proxy:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify pypi-cache service health
+        run: |
+          echo "=== PyPI Cache: Service Health Check ==="
+          SLUGS="{{PYPI_CACHE_SLUGS}}"
+          FAIL=0
+          for slug in $SLUGS; do
+            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/simple/"
+            HTTP_CODE=$(curl --connect-timeout 10 --max-time 15 -s -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE"
+            else
+              echo "FAIL: pypi-cache-${slug} returned HTTP $HTTP_CODE (expected 200)"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more pypi-cache services are unhealthy"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All pypi-cache services healthy"
+      - name: Verify pip install via each proxy
+        run: |
+          echo "=== PyPI Cache: Install Verification ==="
+          SLUGS="{{PYPI_CACHE_SLUGS}}"
+          FAIL=0
+          for slug in $SLUGS; do
+            echo "--- Testing pypi-cache-${slug} ---"
+            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/simple/"
+            if PIP_INDEX_URL="$URL" pip install --no-cache-dir --quiet six 2>&1; then
+              echo "PASS: pip install via pypi-cache-${slug} succeeded"
+            else
+              echo "FAIL: pip install via pypi-cache-${slug} failed"
+              FAIL=1
+            fi
+            pip uninstall -y six 2>/dev/null || true
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: pip install failed for one or more pypi-cache services"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: pip install works through all pypi-cache services"

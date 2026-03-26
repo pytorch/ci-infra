@@ -5,7 +5,7 @@ Runs a full integration test against an OSDC cluster by:
 1. Cleaning up stale PRs on pytorch/pytorch-canary
 2. Optionally clearing staging pools (arc-staging only)
 3. Opening a PR with test workflows that exercise every cluster capability
-4. Running smoke tests and node-compactor tests in parallel
+4. Optionally running smoke tests and node-compactor tests in parallel
 5. Collecting workflow results and reporting
 6. Cleaning up
 """
@@ -165,8 +165,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clusters-yaml", required=True, type=Path, help="Path to clusters.yaml")
     parser.add_argument("--upstream-dir", required=True, type=Path, help="OSDC upstream directory")
     parser.add_argument("--root-dir", required=True, type=Path, help="OSDC root directory (consumer or upstream)")
-    parser.add_argument("--skip-smoke", action="store_true", help="Skip smoke tests")
-    parser.add_argument("--skip-compactor", action="store_true", help="Skip node-compactor e2e tests")
+    parser.add_argument("--run-smoke", action="store_true", help="Run smoke tests (skipped by default)")
+    parser.add_argument("--run-compactor", action="store_true", help="Run node-compactor e2e tests (skipped by default)")
+    parser.add_argument("--skip-smoke", action="store_true", help="Skip smoke tests (overrides --run-smoke)")
+    parser.add_argument("--skip-compactor", action="store_true", help="Skip node-compactor e2e tests (overrides --run-compactor)")
     parser.add_argument("--dry-run", action="store_true", help="Generate workflows but don't push/PR")
     parser.add_argument(
         "--keep-pr", action="store_true", help="Don't close PR after test (useful for debugging failures)"
@@ -203,11 +205,25 @@ def main():
     cluster_name = resolve(cfg, "cluster_name")
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
     b200_enabled = has_module(cfg, "nodepools-b200") and has_module(cfg, "arc-runners-b200")
+    cache_enforcer_enabled = has_module(cfg, "cache-enforcer")
+
+    # Build pypi-cache slug list: always "cpu", plus one per configured CUDA version
+    cuda_versions = resolve(cfg, "pypi-cache.cuda_versions", [])
+    pypi_cache_slugs = " ".join(["cpu"] + [f"cu{str(v).replace('.', '')}" for v in cuda_versions])
+
+    # Effective skip flags: skip by default, --run-X opts in, --skip-X overrides
+    skip_smoke = not args.run_smoke or args.skip_smoke
+    skip_compactor = not args.run_compactor or args.skip_compactor
+
     branch = branch_name(args.cluster_id)
 
     log.info("Integration test for cluster: %s (%s)", args.cluster_id, cluster_name)
     log.info("  Runner prefix: '%s'", prefix)
     log.info("  B200 enabled: %s", b200_enabled)
+    log.info("  Cache enforcer: %s", cache_enforcer_enabled)
+    log.info("  PyPI cache slugs: %s", pypi_cache_slugs)
+    log.info("  Smoke tests: %s", "skip" if skip_smoke else "run")
+    log.info("  Compactor tests: %s", "skip" if skip_compactor else "run")
     log.info("  Branch: %s", branch)
 
     start_time = time.monotonic()
@@ -234,6 +250,8 @@ def main():
             args.cluster_id,
             cluster_name,
             b200_enabled,
+            cache_enforcer_enabled=cache_enforcer_enabled,
+            pypi_cache_slugs=pypi_cache_slugs,
         )
         pr_created_at = datetime.now(tz=UTC)
         pr_number = prepare_pr(canary_path, args.upstream_dir, workflow_content, args.dry_run, branch)
@@ -247,8 +265,8 @@ def main():
             args.cluster_id,
             args.root_dir,
             args.upstream_dir,
-            args.skip_smoke,
-            args.skip_compactor,
+            skip_smoke,
+            skip_compactor,
             cfg,
         )
 

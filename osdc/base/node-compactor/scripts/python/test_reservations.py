@@ -470,6 +470,28 @@ class TestCleanupReservations:
         cleanup_reservations(client)
         mock_remove.assert_not_called()
 
+    @patch("reservations.remove_reservation", return_value=False)
+    def test_counts_failed_removals(self, mock_remove):
+        """Tracks nodes where remove_reservation returns False."""
+        client = MagicMock()
+        node = _mock_node("n-0", {ANNOTATION_CAPACITY_RESERVED: "true"})
+        client.list.return_value = [node]
+
+        cleanup_reservations(client)
+        mock_remove.assert_called_once_with(client, "n-0", dry_run=False)
+
+    @patch("reservations.remove_reservation", side_effect=RuntimeError("API error"))
+    def test_handles_remove_exception(self, mock_remove):
+        """Continues cleanup when remove_reservation raises an exception."""
+        client = MagicMock()
+        n0 = _mock_node("n-0", {ANNOTATION_CAPACITY_RESERVED: "true"})
+        n1 = _mock_node("n-1", {ANNOTATION_CAPACITY_RESERVED: "true"})
+        client.list.return_value = [n0, n1]
+
+        # Should not raise — exception is caught internally
+        cleanup_reservations(client)
+        assert mock_remove.call_count == 2
+
 
 # ============================================================================
 # compute_taints integration with reserved_nodes

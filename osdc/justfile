@@ -778,9 +778,7 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
-    ERRORS=0
     SECONDS=0
-    FAILED_DIRS=()
 
     # Find all directories containing test_*.py files (exclude e2e and smoke tests)
     TEST_DIRS=$(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -path '*/.venv' -prune -o -path '*/tests/e2e' -prune -o -path '*/tests/smoke' -prune -o -name 'test_*.py' -exec dirname {} \; | sort -u)
@@ -793,19 +791,53 @@ test:
         exit 0
     fi
 
+    # Build --cov flags for each source directory
+    echo "Test directories:"
+    COV_FLAGS=""
     for dir in $TEST_DIRS; do
-        short_dir="${dir#{{UPSTREAM}}/}"
-        echo "━━━ Testing: ${short_dir} ━━━"
-        # Install test dependencies inline (script deps handled by uv)
-        (cd "$dir" && uv run pytest --tb=short -q --cov=. --cov-config="{{UPSTREAM}}/pyproject.toml" --cov-report=term-missing:skip-covered) || { ERRORS=$((ERRORS + 1)); FAILED_DIRS+=("${short_dir}"); }
-        echo ""
+        echo "  - ${dir#{{UPSTREAM}}/}"
+        COV_FLAGS="$COV_FLAGS --cov=$dir"
     done
+    echo ""
+
+    # Run all tests in parallel (pytest-xdist -n auto), single invocation
+    # Same pattern as 'just smoke' — xdist distributes tests across CPU cores
+    uv run pytest $TEST_DIRS \
+        -n auto \
+        --tb=short -q \
+        $COV_FLAGS \
+        --cov-config="{{UPSTREAM}}/pyproject.toml" \
+        --cov-report=term-missing:skip-covered \
+        --cov-report=json \
+        --rootdir="{{UPSTREAM}}" \
+        && rc=0 || rc=$?
+
+    # Per-file coverage check (only if pytest passed)
+    if [[ $rc -eq 0 && -f coverage.json ]]; then
+        python3 << 'COVERAGE_CHECK' || rc=$?
+    import json, sys
+    with open("coverage.json") as f:
+        data = json.load(f)
+    threshold = 95
+    failures = []
+    for fname, fdata in sorted(data.get("files", {}).items()):
+        pct = fdata["summary"]["percent_covered"]
+        if pct < threshold:
+            failures.append((fname, pct))
+    if failures:
+        print(f"Per-file coverage below {threshold}%:")
+        for fname, pct in failures:
+            print(f"  {fname}: {pct:.0f}%")
+        sys.exit(1)
+    COVERAGE_CHECK
+    fi
+
+    rm -f coverage.json
 
     if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi
-    if [[ $ERRORS -gt 0 ]]; then
-        echo "FAILED test dirs: $(printf '%s, ' "${FAILED_DIRS[@]}" | sed 's/, $//')"
-        echo "Tests FAILED in $ERRORS directory(ies). (${elapsed})"
-        exit 1
+    if [[ $rc -ne 0 ]]; then
+        echo "Tests FAILED. (${elapsed})"
+        exit $rc
     fi
     echo "All tests passed. (${elapsed})"
 
@@ -952,7 +984,7 @@ simulate-cluster *args:
 # LINTING
 # ============================================================================
 
-# Lint all code (fast checks — blocks CI)
+# Lint all code (fast checks — blocks CI, runs all 13 linters in parallel)
 lint:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -960,8 +992,7 @@ lint:
     export OSDC_ROOT="{{ROOT}}"
     export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
-    ERRORS=0
-    FAILED_LINTERS=()
+    SECONDS=0
 
     # Helper: collect source directories (upstream + consumer if different)
     _src_dirs() {
@@ -972,152 +1003,256 @@ lint:
         fi
     }
 
-    # --- Terraform formatting ---
-    echo "━━━ tofu fmt ━━━"
-    for dir in $(_src_dirs modules); do
-        tofu fmt -check -recursive "$dir" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("tofu fmt"); }
-    done
+    WORK=$(mktemp -d)
+    trap 'rm -rf "$WORK"' EXIT
 
-    # --- Shell: lint ---
-    echo "━━━ shellcheck ━━━"
-    SHELL_FILES=()
-    for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
-        while IFS= read -r -d '' f; do SHELL_FILES+=("$f"); done \
-            < <(find "$dir" -path '*/.scratch' -prune -o -name '*.sh' -print0 2>/dev/null)
-    done
-    if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
-        shellcheck "${SHELL_FILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("shellcheck"); }
-    fi
+    # ── Linter definitions ──────────────────────────────────────────────
+    # Each function returns 0 on success, non-zero on failure.
+    # stdout/stderr are captured by the parallel runner below.
 
-    # --- Shell: formatting ---
-    echo "━━━ shfmt ━━━"
-    if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
-        shfmt -d -i 2 -ci -bn "${SHELL_FILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("shfmt"); }
-    fi
-
-    # --- Python ---
-    echo "━━━ ruff ━━━"
-    PYTHON_DIRS=()
-    for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
-        PYTHON_DIRS+=("$dir")
-    done
-    ruff check --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("ruff check"); }
-    ruff format --check --config "{{UPSTREAM}}/ruff.toml" "${PYTHON_DIRS[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("ruff format"); }
-
-    # --- Dockerfiles ---
-    echo "━━━ hadolint ━━━"
-    DOCKERFILES=()
-    for dir in $(_src_dirs base) $(_src_dirs modules); do
-        while IFS= read -r -d '' f; do DOCKERFILES+=("$f"); done \
-            < <(find "$dir" -path '*/.scratch' -prune -o -name 'Dockerfile' -print0 2>/dev/null)
-    done
-    if [[ ${#DOCKERFILES[@]} -gt 0 ]]; then
-        hadolint --config "{{UPSTREAM}}/.hadolint.yaml" "${DOCKERFILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("hadolint"); }
-    fi
-
-    # --- YAML ---
-    echo "━━━ yamllint ━━━"
-    YAML_DIRS=()
-    for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes) $(_src_dirs base/helm); do
-        YAML_DIRS+=("$dir")
-    done
-    # Add module kubernetes/ and helm/ dirs
-    for parent in $(_src_dirs modules); do
-        for sub in "$parent"/*/kubernetes/ "$parent"/*/helm/; do
-            [[ -d "$sub" ]] && YAML_DIRS+=("$sub")
+    lint_tofu_fmt() {
+        local rc=0
+        for dir in $(_src_dirs modules); do
+            tofu fmt -check -recursive "$dir" || rc=1
         done
-        # Also lint module defs/ dirs (runner/nodepool definitions)
-        for sub in "$parent"/*/defs/; do
-            [[ -d "$sub" ]] && YAML_DIRS+=("$sub")
+        return $rc
+    }
+
+    lint_shellcheck() {
+        local files=()
+        for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
+            while IFS= read -r -d '' f; do files+=("$f"); done \
+                < <(find "$dir" -path '*/.scratch' -prune -o -name '*.sh' -print0 2>/dev/null)
         done
-    done
-    if [[ ${#YAML_DIRS[@]} -gt 0 ]]; then
-        uv run yamllint -c "{{UPSTREAM}}/.yamllint.yaml" "${YAML_DIRS[@]}" "{{CLUSTERS_YAML}}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("yamllint"); }
-    fi
+        [[ ${#files[@]} -eq 0 ]] && return 0
+        shellcheck "${files[@]}"
+    }
 
-    # --- TOML ---
-    echo "━━━ taplo ━━━"
-    TOML_FILES=()
-    while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
-        < <(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
-    if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
-        while IFS= read -r -d '' f; do TOML_FILES+=("$f"); done \
-            < <(find "{{ROOT}}" -maxdepth 1 -name '*.toml' -print0 2>/dev/null)
-    fi
-    if [[ ${#TOML_FILES[@]} -gt 0 ]]; then
-        taplo check "${TOML_FILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("taplo check"); }
-        taplo fmt --check "${TOML_FILES[@]}" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("taplo fmt"); }
-    fi
+    lint_shfmt() {
+        local files=()
+        for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
+            while IFS= read -r -d '' f; do files+=("$f"); done \
+                < <(find "$dir" -path '*/.scratch' -prune -o -name '*.sh' -print0 2>/dev/null)
+        done
+        [[ ${#files[@]} -eq 0 ]] && return 0
+        shfmt -d -i 2 -ci -bn "${files[@]}"
+    }
 
-    # --- Kubernetes manifests (schema validation) ---
-    echo "━━━ kubeconform ━━━"
-    KUSTOMIZE_DIRS=()
-    for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes); do
-        [[ -f "$dir/kustomization.yaml" ]] && KUSTOMIZE_DIRS+=("$dir")
-    done
-    for parent in $(_src_dirs modules); do
-        while IFS= read -r -d '' f; do
-            KUSTOMIZE_DIRS+=("$(dirname "$f")")
-        done < <(find "$parent" -path '*/.scratch' -prune -o -name 'kustomization.yaml' -print0 2>/dev/null)
-    done
-    # Build kubeconform CRD schema URL (uses Go template syntax — avoid just brace interpolation)
-    LB='{''{'  # left brace pair
-    RB='}''}'  # right brace pair
-    CRDS_SCHEMA="https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/${LB}.Group${RB}/${LB}.ResourceKind${RB}_${LB}.ResourceAPIVersion${RB}.json"
-    for dir in "${KUSTOMIZE_DIRS[@]}"; do
-        echo "  validating: ${dir#{{UPSTREAM}}/}"
-        kubectl kustomize "$dir" 2>/dev/null \
-            | kubeconform -strict -summary \
-                -schema-location default \
-                -schema-location "$CRDS_SCHEMA" \
-                -ignore-missing-schemas \
-                -output pretty \
-            || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("kubeconform"); }
-    done
+    lint_ruff_check() {
+        local dirs=()
+        for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
+            dirs+=("$dir")
+        done
+        ruff check --config "{{UPSTREAM}}/ruff.toml" "${dirs[@]}"
+    }
 
-    # --- Kubernetes best practices ---
-    echo "━━━ kube-linter ━━━"
-    for dir in "${KUSTOMIZE_DIRS[@]}"; do
-        echo "  checking: ${dir#{{UPSTREAM}}/}"
-        kube-linter lint "$dir" --config "{{UPSTREAM}}/.kube-linter.yaml" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("kube-linter"); }
-    done
+    lint_ruff_format() {
+        local dirs=()
+        for dir in $(_src_dirs base) $(_src_dirs modules) $(_src_dirs scripts); do
+            dirs+=("$dir")
+        done
+        ruff format --check --config "{{UPSTREAM}}/ruff.toml" "${dirs[@]}"
+    }
 
-    # --- Terraform static analysis ---
-    echo "━━━ tflint ━━━"
-    TF_ROOTS=()
-    for parent in $(_src_dirs modules); do
-        while IFS= read -r -d '' f; do
-            TF_ROOTS+=("$(dirname "$f")")
-        done < <(find "$parent" -path '*/.scratch' -prune -o -name 'main.tf' -not -path '*/modules/*' -print0 2>/dev/null)
-    done
-    if [[ ${#TF_ROOTS[@]} -gt 0 ]]; then
+    lint_hadolint() {
+        local files=()
+        for dir in $(_src_dirs base) $(_src_dirs modules); do
+            while IFS= read -r -d '' f; do files+=("$f"); done \
+                < <(find "$dir" -path '*/.scratch' -prune -o -name 'Dockerfile' -print0 2>/dev/null)
+        done
+        [[ ${#files[@]} -eq 0 ]] && return 0
+        hadolint --config "{{UPSTREAM}}/.hadolint.yaml" "${files[@]}"
+    }
+
+    lint_yamllint() {
+        local dirs=()
+        for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes) $(_src_dirs base/helm); do
+            dirs+=("$dir")
+        done
+        for parent in $(_src_dirs modules); do
+            for sub in "$parent"/*/kubernetes/ "$parent"/*/helm/; do
+                [[ -d "$sub" ]] && dirs+=("$sub")
+            done
+            for sub in "$parent"/*/defs/; do
+                [[ -d "$sub" ]] && dirs+=("$sub")
+            done
+        done
+        [[ ${#dirs[@]} -eq 0 ]] && return 0
+        uv run yamllint -c "{{UPSTREAM}}/.yamllint.yaml" "${dirs[@]}" "{{CLUSTERS_YAML}}"
+    }
+
+    lint_taplo_check() {
+        local files=()
+        while IFS= read -r -d '' f; do files+=("$f"); done \
+            < <(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
+        if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
+            while IFS= read -r -d '' f; do files+=("$f"); done \
+                < <(find "{{ROOT}}" -maxdepth 1 -name '*.toml' -print0 2>/dev/null)
+        fi
+        [[ ${#files[@]} -eq 0 ]] && return 0
+        taplo check "${files[@]}"
+    }
+
+    lint_taplo_fmt() {
+        local files=()
+        while IFS= read -r -d '' f; do files+=("$f"); done \
+            < <(find "{{UPSTREAM}}" -path '*/.scratch' -prune -o -name '*.toml' -not -path '*/.venv/*' -not -path '*/.terraform/*' -print0)
+        if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]]; then
+            while IFS= read -r -d '' f; do files+=("$f"); done \
+                < <(find "{{ROOT}}" -maxdepth 1 -name '*.toml' -print0 2>/dev/null)
+        fi
+        [[ ${#files[@]} -eq 0 ]] && return 0
+        taplo fmt --check "${files[@]}"
+    }
+
+    lint_kubeconform() {
+        local dirs=()
+        for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes); do
+            [[ -f "$dir/kustomization.yaml" ]] && dirs+=("$dir")
+        done
+        for parent in $(_src_dirs modules); do
+            while IFS= read -r -d '' f; do
+                dirs+=("$(dirname "$f")")
+            done < <(find "$parent" -path '*/.scratch' -prune -o -name 'kustomization.yaml' -print0 2>/dev/null)
+        done
+        [[ ${#dirs[@]} -eq 0 ]] && return 0
+        local LB='{''{'
+        local RB='}''}'
+        local CRDS_SCHEMA="https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/${LB}.Group${RB}/${LB}.ResourceKind${RB}_${LB}.ResourceAPIVersion${RB}.json"
+        local rc=0
+        for dir in "${dirs[@]}"; do
+            echo "  validating: ${dir#{{UPSTREAM}}/}"
+            kubectl kustomize "$dir" 2>/dev/null \
+                | kubeconform -strict -summary \
+                    -schema-location default \
+                    -schema-location "$CRDS_SCHEMA" \
+                    -ignore-missing-schemas \
+                    -output pretty \
+                || rc=1
+        done
+        return $rc
+    }
+
+    lint_kube_linter() {
+        local dirs=()
+        for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes); do
+            [[ -f "$dir/kustomization.yaml" ]] && dirs+=("$dir")
+        done
+        for parent in $(_src_dirs modules); do
+            while IFS= read -r -d '' f; do
+                dirs+=("$(dirname "$f")")
+            done < <(find "$parent" -path '*/.scratch' -prune -o -name 'kustomization.yaml' -print0 2>/dev/null)
+        done
+        [[ ${#dirs[@]} -eq 0 ]] && return 0
+        local rc=0
+        for dir in "${dirs[@]}"; do
+            echo "  checking: ${dir#{{UPSTREAM}}/}"
+            kube-linter lint "$dir" --config "{{UPSTREAM}}/.kube-linter.yaml" || rc=1
+        done
+        return $rc
+    }
+
+    lint_tflint() {
+        local roots=()
+        for parent in $(_src_dirs modules); do
+            while IFS= read -r -d '' f; do
+                roots+=("$(dirname "$f")")
+            done < <(find "$parent" -path '*/.scratch' -prune -o -name 'main.tf' -not -path '*/modules/*' -print0 2>/dev/null)
+        done
+        [[ ${#roots[@]} -eq 0 ]] && return 0
         tflint --init --config "{{UPSTREAM}}/.tflint.hcl" 2>/dev/null || true
-        for dir in "${TF_ROOTS[@]}"; do
+        local rc=0
+        for dir in "${roots[@]}"; do
             echo "  linting: ${dir#{{UPSTREAM}}/}"
-            tflint --chdir="$dir" --config "{{UPSTREAM}}/.tflint.hcl" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("tflint"); }
+            tflint --chdir="$dir" --config "{{UPSTREAM}}/.tflint.hcl" || rc=1
+        done
+        return $rc
+    }
+
+    lint_trivy() {
+        local rc=0
+        for dir in $(_src_dirs base) $(_src_dirs modules); do
+            trivy config --severity HIGH,CRITICAL --exit-code 1 \
+                --misconfig-scanners terraform,dockerfile,kubernetes \
+                --ignorefile "{{UPSTREAM}}/.trivyignore" \
+                --skip-dirs '.scratch' \
+                "$dir" || rc=1
+        done
+        return $rc
+    }
+
+    # ── Run all linters in parallel ─────────────────────────────────────
+    # Format: "display name:function_name"
+    LINTERS=(
+        "tofu fmt:lint_tofu_fmt"
+        "shellcheck:lint_shellcheck"
+        "shfmt:lint_shfmt"
+        "ruff check:lint_ruff_check"
+        "ruff format:lint_ruff_format"
+        "hadolint:lint_hadolint"
+        "yamllint:lint_yamllint"
+        "taplo check:lint_taplo_check"
+        "taplo fmt:lint_taplo_fmt"
+        "kubeconform:lint_kubeconform"
+        "kube-linter:lint_kube_linter"
+        "tflint:lint_tflint"
+        "trivy:lint_trivy"
+    )
+
+    echo "Running ${#LINTERS[@]} linters in parallel..."
+
+    PIDS=()
+    LINTER_NAMES=()
+    for entry in "${LINTERS[@]}"; do
+        name="${entry%%:*}"
+        func="${entry##*:}"
+        safe="${name// /_}"
+        LINTER_NAMES+=("$name")
+        (
+            set +e
+            "$func"
+            echo $? > "$WORK/${safe}.rc"
+        ) > "$WORK/${safe}.out" 2>&1 &
+        PIDS+=($!)
+    done
+
+    # Wait for all linters and collect results
+    FAIL_COUNT=0
+    FAILED_NAMES=()
+    PASSED_NAMES=()
+    for i in "${!PIDS[@]}"; do
+        wait "${PIDS[$i]}" 2>/dev/null || true
+        name="${LINTER_NAMES[$i]}"
+        safe="${name// /_}"
+        rc=$(cat "$WORK/${safe}.rc" 2>/dev/null || echo 1)
+        if [[ "$rc" -eq 0 ]]; then
+            PASSED_NAMES+=("$name")
+        else
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            FAILED_NAMES+=("$name")
+        fi
+    done
+    echo ""
+
+    # Print output only for failed linters
+    if [[ $FAIL_COUNT -gt 0 ]]; then
+        for name in "${FAILED_NAMES[@]}"; do
+            safe="${name// /_}"
+            echo "━━━ ${name} FAILED ━━━"
+            cat "$WORK/${safe}.out"
+            echo ""
         done
     fi
 
-    # --- IaC security scanning ---
-    echo "━━━ trivy (IaC) ━━━"
-    for dir in $(_src_dirs base) $(_src_dirs modules); do
-        trivy config --severity HIGH,CRITICAL --exit-code 1 \
-            --misconfig-scanners terraform,dockerfile,kubernetes \
-            --ignorefile "{{UPSTREAM}}/.trivyignore" \
-            --skip-dirs '.scratch' \
-            "$dir" || { ERRORS=$((ERRORS + 1)); FAILED_LINTERS+=("trivy"); }
-    done
-
-    # --- Summary ---
-    echo ""
-    if [[ $ERRORS -gt 0 ]]; then
-        # Deduplicate linter names (a linter running on multiple dirs may fail more than once)
-        UNIQUE_FAILED=$(printf '%s\n' "${FAILED_LINTERS[@]}" | sort -u | paste -sd', ' -)
+    # Summary
+    if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi
+    if [[ $FAIL_COUNT -gt 0 ]]; then
+        UNIQUE_FAILED=$(printf '%s, ' "${FAILED_NAMES[@]}" | sed 's/, $//')
         echo "FAILED linters: ${UNIQUE_FAILED}"
-        echo "Lint FAILED with $ERRORS error(s)."
+        echo "Lint FAILED: ${#PASSED_NAMES[@]}/${#LINTERS[@]} passed, ${FAIL_COUNT} failed. (${elapsed})"
         exit 1
     fi
-    echo "All lint checks passed."
+    echo "All ${#LINTERS[@]} lint checks passed. (${elapsed})"
 
 # Auto-fix lint issues where possible
 lint-fix:

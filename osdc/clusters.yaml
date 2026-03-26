@@ -119,6 +119,11 @@ clusters:
     buildkit:
       replicas_per_arch: 2
       arm64_instance_type: m7gd.16xlarge
+    pypi_cache:
+      replicas: 1
+      cuda_versions:
+        - "12.8"
+        - "13.0"
     modules:
       - karpenter
       - arc
@@ -126,6 +131,7 @@ clusters:
       - arc-runners
       - cache-enforcer
       - buildkit
+      - pypi-cache
       - monitoring
       - logging
 

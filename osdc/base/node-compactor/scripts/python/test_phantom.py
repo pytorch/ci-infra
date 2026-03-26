@@ -11,7 +11,6 @@ from phantom import (
     apply_pending_phantom_load,
 )
 
-NOW = datetime.now(UTC)
 GiB = 1024**3
 
 
@@ -51,7 +50,7 @@ def make_node_state(
         nodepool=nodepool,
         allocatable_cpu=allocatable_cpu,
         allocatable_memory=allocatable_memory,
-        creation_time=NOW - timedelta(hours=24),
+        creation_time=datetime.now(UTC) - timedelta(hours=24),
         pods=pods or [],
         is_tainted=is_tainted,
         node_taints=node_taints or [],
@@ -64,7 +63,7 @@ def make_pending_pod(name="pending-1", namespace="default", cpu="1", memory="1Gi
     pod = MagicMock()
     pod.metadata.name = name
     pod.metadata.namespace = namespace
-    pod.metadata.creationTimestamp = NOW - timedelta(seconds=age_seconds)
+    pod.metadata.creationTimestamp = datetime.now(UTC) - timedelta(seconds=age_seconds)
     pod.spec.tolerations = []
     pod.spec.nodeSelector = None
     pod.spec.affinity = None
@@ -127,14 +126,14 @@ class TestPhantomLeastUtilized(unittest.TestCase):
             name="node-a",
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("w1", "ns", 4.0, 1 * GiB, "node-a", False, NOW)],
+            pods=[PodInfo("w1", "ns", 4.0, 1 * GiB, "node-a", False, datetime.now(UTC))],
         )
         # node-b: 12.5% utilized (1/8 CPU)
         node_b = make_node_state(
             name="node-b",
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("w2", "ns", 1.0, 1 * GiB, "node-b", False, NOW)],
+            pods=[PodInfo("w2", "ns", 1.0, 1 * GiB, "node-b", False, datetime.now(UTC))],
         )
         states = {"node-a": node_a, "node-b": node_b}
         pod = make_pending_pod(cpu="1", memory="1Gi", age_seconds=60)
@@ -288,7 +287,7 @@ class TestPhantomLoadCap(unittest.TestCase):
             name="node-1",
             allocatable_cpu=10.0,
             allocatable_memory=100 * GiB,
-            pods=[PodInfo("real-1", "ns", 5.0, 1 * GiB, "node-1", False, NOW)],
+            pods=[PodInfo("real-1", "ns", 5.0, 1 * GiB, "node-1", False, datetime.now(UTC))],
         )
         states = {"node-1": node}
 

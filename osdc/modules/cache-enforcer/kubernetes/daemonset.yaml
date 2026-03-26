@@ -94,7 +94,12 @@ spec:
           image: public.ecr.aws/amazonlinux/amazonlinux:2023
           command: ["/bin/bash", "-c"]
           args:
-            - /scripts/enforce-cache.sh
+            # hostPID gives access to host's PID 1 root filesystem.
+            # nsenter runs the script in the host's mount namespace where
+            # modprobe, iptables, and all kernel modules are available.
+            # stdin redirection reads the script from the container's
+            # ConfigMap mount before nsenter switches namespaces.
+            - /proc/1/root/usr/bin/nsenter -t 1 -m -u -i -n -- /bin/bash < /scripts/enforce-cache.sh
 
           securityContext:
             privileged: true
