@@ -36,8 +36,10 @@ import time
 
 import pytest
 from helpers import (
+    COMPACTOR_DEPLOYMENT,
     COMPACTOR_NAMESPACE,
     COMPACTOR_NODEPOOL_LABEL,
+    cleanup_stale_cluster_state,
     delete_all_pods,
     delete_pool_nodes,
     drain_pool_workloads,
@@ -46,12 +48,14 @@ from helpers import (
     patch_compactor_env,
     restart_compactor_pod,
     restore_compactor_env,
+    scale_compactor_deployment,
     wait_for,
     wait_for_compactor_rollout,
 )
 from lightkube import Client
 from lightkube.generic_resource import create_global_resource
 from lightkube.models.meta_v1 import ObjectMeta
+from lightkube.resources.apps_v1 import Deployment as DeploymentResource
 from lightkube.resources.core_v1 import Namespace
 
 LOG_FILE = os.path.join(tempfile.gettempdir(), "compactor-e2e.log")
@@ -93,8 +97,8 @@ GROUP_B_MIN_AGE_CONFIG = {
 GROUP_B_RATE_COOLDOWN_CONFIG = {
     **GROUP_A_CONFIG,
     "COMPACTOR_MIN_NODE_AGE": "0",
-    "COMPACTOR_TAINT_RATE": "0.34",
-    "COMPACTOR_FLEET_COOLDOWN": "20",
+    "COMPACTOR_TAINT_RATE": "0.25",
+    "COMPACTOR_FLEET_COOLDOWN": "90",
 }
 
 # Group C: reservation behaviour
@@ -320,6 +324,21 @@ def compactor_setup(
     compactor_logs: CompactorLogCollector,
 ) -> None:
     """Patch compactor for fast testing cycles, restore on exit."""
+    # Guard: if a previous run crashed after scaling to 0, restore replicas
+    dep = client.get(
+        DeploymentResource,
+        name=COMPACTOR_DEPLOYMENT,
+        namespace=COMPACTOR_NAMESPACE,
+    )
+    if dep.spec and dep.spec.replicas is not None and dep.spec.replicas == 0:
+        log.info("Compactor scaled to 0 (stale from crashed run) — restoring to 1")
+        scale_compactor_deployment(client, 1)
+
+    # Clean stale taints and reservation annotations from pool nodes
+    # left behind by a crashed previous run.
+    log.info("Cleaning stale cluster state from pool %s...", target_nodepool_name)
+    cleanup_stale_cluster_state(client, target_nodepool_name)
+
     # Override env vars for fast iteration
     test_overrides = GROUP_A_CONFIG
 
@@ -391,13 +410,23 @@ def compactor_setup(
             return
         restored = True
         compactor_logs.stop()
-        log.info("Restoring compactor Deployment env vars...")
+        log.info("Restoring compactor Deployment (env vars + replicas)...")
         try:
+            # Ensure replicas=1 before restoring env (a crashed test may
+            # have left the deployment scaled to 0).
+            dep = client.get(
+                DeploymentResource,
+                name=COMPACTOR_DEPLOYMENT,
+                namespace=COMPACTOR_NAMESPACE,
+            )
+            if dep.spec and dep.spec.replicas is not None and dep.spec.replicas == 0:
+                log.info("  Replicas=0 detected, scaling back to 1...")
+                scale_compactor_deployment(client, 1)
             restore_compactor_env(client, originals)
             restart_compactor_pod(client)
             log.info("  Compactor restored.")
         except Exception:
-            log.exception("  Failed to restore compactor env!")
+            log.exception("  Failed to restore compactor!")
 
     # Register cleanup via multiple mechanisms for robustness
     atexit.register(restore)

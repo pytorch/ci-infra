@@ -19,6 +19,7 @@ from lightkube.models.meta_v1 import ObjectMeta
 from lightkube.resources.apps_v1 import Deployment as DeploymentResource
 from lightkube.resources.core_v1 import Node
 from lightkube.resources.core_v1 import Pod as PodResource
+from lightkube.types import PatchType
 
 log = logging.getLogger("e2e")
 
@@ -700,6 +701,58 @@ def get_do_not_disrupt_nodes(client: Client, nodepool_name: str) -> set[str]:
         if annotations.get("karpenter.sh/do-not-disrupt") == "true":
             result.add(node.metadata.name)
     return result
+
+
+def cleanup_stale_cluster_state(client: Client, nodepool_name: str) -> None:
+    """Remove stale compactor taints and reservation annotations from pool nodes.
+
+    A crashed previous test run may leave behind:
+    - ``node-compactor.osdc.io/consolidating`` NoSchedule taints
+    - ``node-compactor.osdc.io/capacity-reserved`` annotations
+    - ``karpenter.sh/do-not-disrupt`` annotations (set by the compactor)
+
+    This cleans them in-place without deleting nodes or NodeClaims.
+    """
+    nodes = get_pool_nodes(client, nodepool_name)
+    for node in nodes:
+        if not node.metadata or not node.metadata.name:
+            continue
+        name = node.metadata.name
+
+        # Remove compactor taint if present
+        if _node_has_taint(node, COMPACTOR_TAINT_KEY):
+            log.info("Cleanup: removing stale compactor taint from %s", name)
+            try:
+                fresh = client.get(Node, name)
+                taints = fresh.spec.taints or [] if fresh.spec else []
+                new_taints = [
+                    {"key": t.key, "effect": t.effect, **({"value": t.value} if t.value else {})}
+                    for t in taints
+                    if t.key != COMPACTOR_TAINT_KEY
+                ]
+                patch = {
+                    "metadata": {"resourceVersion": fresh.metadata.resourceVersion},
+                    "spec": {"taints": new_taints or None},
+                }
+                client.patch(Node, name, patch, patch_type=PatchType.MERGE)
+            except Exception:
+                log.warning("Cleanup: failed to remove taint from %s", name)
+
+        # Remove stale reservation annotations
+        annotations = node.metadata.annotations or {}
+        stale_keys = []
+        if annotations.get("node-compactor.osdc.io/capacity-reserved") == "true":
+            stale_keys.append("node-compactor.osdc.io/capacity-reserved")
+        if annotations.get("karpenter.sh/do-not-disrupt") == "true":
+            stale_keys.append("karpenter.sh/do-not-disrupt")
+
+        if stale_keys:
+            log.info("Cleanup: removing stale annotations from %s: %s", name, stale_keys)
+            patch = {"metadata": {"annotations": dict.fromkeys(stale_keys)}}
+            try:
+                client.patch(Node, name, patch, patch_type=PatchType.MERGE)
+            except Exception:
+                log.warning("Cleanup: failed to remove annotations from %s", name)
 
 
 def search_compactor_logs(collector: object, pattern: str, since_line: int = 0) -> list[str]:

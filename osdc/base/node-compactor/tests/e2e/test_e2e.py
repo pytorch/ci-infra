@@ -355,6 +355,19 @@ class TestGroupA_Bare(_CompactorE2EBase):
             timeout_s=TAINT_TIMEOUT,
         )
 
+        # Poll for min_nodes enforcement — the compactor may need an extra
+        # cycle to stabilize after Karpenter scales down empty tainted nodes.
+        def _check_min_nodes() -> bool:
+            ns, _t, ut = partition_pool_nodes(self.client, self.pool)
+            return len(ns) == 0 or len(ut) >= 1
+
+        wait_for(
+            "at least 1 untainted node (min_nodes enforcement)",
+            _check_min_nodes,
+            timeout_s=TAINT_TIMEOUT,
+            poll_s=5,
+        )
+
         nodes, _tainted, untainted = partition_pool_nodes(self.client, self.pool)
         if len(nodes) == 0:
             pytest.skip("Pool has 0 nodes (Karpenter scaled down)")
@@ -483,12 +496,26 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
 
     # B2
     def test_rate_limiting(self) -> None:
-        """taint_rate=0.34 caps new taints per iteration."""
+        """taint_rate=0.25 caps new taints per iteration."""
         log.info("B2: Switching to GROUP_B_RATE_COOLDOWN_CONFIG...")
         reconfigure_compactor(self.client, GROUP_B_RATE_COOLDOWN_CONFIG, self.logs)
 
-        # Ensure 9 pods / 3+ nodes
-        _ensure_pods_and_nodes(self.client, self.ns, self.pool, self.itype, prefix="b2")
+        # Use 15 pods / 5 nodes so the surplus is large enough to guarantee
+        # rate-limiting even when the compactor races and taints a node during
+        # sequential pod deletion.
+        #   pool_size=5, min_nodes=1 -> surplus=4
+        #   max_new_taints = max(1, ceil(4 * 0.25)) = 1
+        #   Even if 1 node gets race-tainted, 3 new nodes still need tainting
+        #   but the cap is 1, so at least 2 MUST be rate-limited.
+        _ensure_pods_and_nodes(
+            self.client,
+            self.ns,
+            self.pool,
+            self.itype,
+            prefix="b2",
+            target_pods=15,
+            min_nodes=5,
+        )
 
         wait_for_stable(
             "compactor stabilized before rate limit test",
@@ -503,10 +530,10 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
         # Record log position before the test action
         log_pos = len(self.logs.lines)
 
-        # Delete ALL pods simultaneously — 3 surplus nodes
-        # taint_rate=0.34 -> ceil(3*0.34) = 2 max new taints/cycle
-        # So 1 node MUST be rate-limited on cycle 1
-        log.info("B2: Deleting all pods to create 3 surplus nodes...")
+        # Delete ALL pods simultaneously — 4 surplus nodes (5 - min_nodes=1)
+        # taint_rate=0.25 -> max_new_taints = max(1, ceil(4*0.25)) = 1
+        # So at least 3 nodes MUST be rate-limited on cycle 1
+        log.info("B2: Deleting all pods to create 4 surplus nodes...")
         delete_all_pods(self.client, self.ns)
 
         # Wait for all surplus nodes to eventually be tainted (may take 2+ cycles)
@@ -520,13 +547,13 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
             timeout_s=TAINT_TIMEOUT,
         )
 
-        # Assert: rate limiting fired (deterministic: 3 surplus, cap is 2).
+        # Assert: rate limiting fired (deterministic: 4 surplus, cap is 1).
         # Poll instead of asserting immediately — log lines may be delayed
         # by pipe buffering between kubectl and the collector thread.
         wait_for(
             "Rate-limited log entry captured",
             lambda: len(search_compactor_logs(self.logs, r"Rate-limited", log_pos)) > 0,
-            timeout_s=30,
+            timeout_s=60,
             poll_s=2,
         )
         rate_limited_lines = search_compactor_logs(self.logs, r"Rate-limited", log_pos)
@@ -562,8 +589,9 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
         delete_pods(self.client, self.ns, pods_to_delete)
         wait_for_pods_deleted(self.client, self.ns, pods_to_delete)
 
-        # Wait for those nodes to eventually be tainted
-        # (fleet_cooldown=20s blocks first ~4 cycles, then taints proceed)
+        # Wait for those nodes to eventually be tainted.
+        # fleet_cooldown=90s blocks tainting for ~90s after burst untaint,
+        # then compactor proceeds. Use a longer timeout to account for this.
         drained_set = set(nodes_to_drain)
         wait_for(
             f"drained nodes {drained_set} tainted or deleted after fleet cooldown",
@@ -572,7 +600,7 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
                 or n not in {nd.metadata.name for nd in get_pool_nodes(self.client, self.pool)}
                 for n in drained_set
             ),
-            timeout_s=TAINT_TIMEOUT,
+            timeout_s=180,
             on_timeout=self._taint_diagnostics,
         )
 

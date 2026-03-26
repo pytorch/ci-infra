@@ -246,7 +246,13 @@ def remove_taint(client: Client, node_name: str, taint_key: str, dry_run: bool, 
     for attempt in range(max_retries):
         node = client.get(Node, node_name)
         taints = node.spec.taints or [] if node.spec else []
-        new_taints = [t for t in taints if t.key != taint_key]
+        # Convert lightkube Taint objects to plain dicts for JSON merge
+        # patch serialization (Taint objects are not JSON-serializable).
+        new_taints = [
+            {"key": t.key, "effect": t.effect, **({"value": t.value} if t.value else {})}
+            for t in taints
+            if t.key != taint_key
+        ]
 
         patch = {
             "metadata": {"resourceVersion": node.metadata.resourceVersion},

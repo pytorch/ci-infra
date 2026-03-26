@@ -78,15 +78,16 @@ def remove_reservation(client: Client, node_name: str, dry_run: bool, max_retrie
             log.debug("Node %s not owned by us, skipping unreserve", node_name)
             return True
 
-        # Build new annotations dict without our two keys
-        new_annotations = {
-            k: v for k, v in annotations.items() if k not in (ANNOTATION_CAPACITY_RESERVED, ANNOTATION_DO_NOT_DISRUPT)
-        }
-
+        # Explicitly null out our two keys so JSON merge patch deletes them.
+        # Merge patch only removes keys set to null — omitting them leaves
+        # them unchanged.
         patch = {
             "metadata": {
                 "resourceVersion": node.metadata.resourceVersion,
-                "annotations": new_annotations if new_annotations else None,
+                "annotations": {
+                    ANNOTATION_CAPACITY_RESERVED: None,
+                    ANNOTATION_DO_NOT_DISRUPT: None,
+                },
             }
         }
         try:

@@ -271,9 +271,10 @@ class TestRemoveReservation:
         client.patch.assert_called_once()
         patch_data = client.patch.call_args[0][2]
         new_annotations = patch_data["metadata"]["annotations"]
-        assert ANNOTATION_CAPACITY_RESERVED not in new_annotations
-        assert ANNOTATION_DO_NOT_DISRUPT not in new_annotations
-        assert new_annotations["other-annotation"] == "keep"
+        assert new_annotations[ANNOTATION_CAPACITY_RESERVED] is None
+        assert new_annotations[ANNOTATION_DO_NOT_DISRUPT] is None
+        # Other annotations are not included — merge patch only nulls our keys
+        assert "other-annotation" not in new_annotations
 
     def test_skips_without_ownership(self):
         """Returns True but no patch when our marker is absent."""
@@ -367,7 +368,7 @@ class TestRemoveReservation:
             remove_reservation(client, "node-0", dry_run=False)
 
     def test_empty_annotations_after_removal(self):
-        """Sets annotations to None when only our two keys existed."""
+        """Nulls our two annotation keys even when they are the only ones."""
         client = MagicMock()
         node = _mock_node(
             "node-0",
@@ -380,8 +381,10 @@ class TestRemoveReservation:
 
         assert remove_reservation(client, "node-0", dry_run=False) is True
         patch_data = client.patch.call_args[0][2]
-        # When all annotations are removed, the value is None (not empty dict)
-        assert patch_data["metadata"]["annotations"] is None
+        # Merge patch requires explicit null to delete keys
+        ann = patch_data["metadata"]["annotations"]
+        assert ann[ANNOTATION_CAPACITY_RESERVED] is None
+        assert ann[ANNOTATION_DO_NOT_DISRUPT] is None
 
 
 # ============================================================================

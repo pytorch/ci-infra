@@ -739,9 +739,11 @@ class TestRemoveTaint(unittest.TestCase):
         client.patch.assert_called_once()
         patch_arg = client.patch.call_args[0][2]
         self.assertEqual(patch_arg["metadata"]["resourceVersion"], "123")
-        # Only the other taint should remain
+        # Only the other taint should remain (as a plain dict, not Taint object)
         self.assertEqual(len(patch_arg["spec"]["taints"]), 1)
-        self.assertEqual(patch_arg["spec"]["taints"][0].key, "other")
+        self.assertEqual(patch_arg["spec"]["taints"][0]["key"], "other")
+        self.assertEqual(patch_arg["spec"]["taints"][0]["effect"], "NoSchedule")
+        self.assertEqual(patch_arg["spec"]["taints"][0]["value"], "val")
 
     def test_dry_run(self):
         client = MagicMock()
