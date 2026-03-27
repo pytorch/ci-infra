@@ -161,6 +161,7 @@ def wait_for_workflows(
 
     deadline = time.time() + effective_timeout * 60
     completed_runs = []
+    logged_run_ids: set[int] = set()
 
     try:
         while time.time() < deadline:
@@ -191,6 +192,14 @@ def wait_for_workflows(
                 log.info("  No runs found yet, waiting...")
                 time.sleep(POLL_INTERVAL_SECONDS)
                 continue
+
+            # Log URLs for newly discovered runs
+            for r in runs:
+                run_id = r.get("databaseId")
+                if run_id and run_id not in logged_run_ids:
+                    logged_run_ids.add(run_id)
+                    run_url = f"https://github.com/{CANARY_REPO}/actions/runs/{run_id}"
+                    log.info("  Run: %s — %s", r.get("name", "?"), run_url)
 
             all_done = all(r.get("status") == "completed" for r in runs)
             in_progress = sum(1 for r in runs if r.get("status") != "completed")

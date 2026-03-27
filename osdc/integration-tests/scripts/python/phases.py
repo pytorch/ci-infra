@@ -231,6 +231,7 @@ def generate_workflow(
     b200_enabled: bool,
     cache_enforcer_enabled: bool = False,
     pypi_cache_slugs: str = "cpu cu121 cu124",
+    pypi_cache_cuda_version: str = "12.8.1",
 ) -> str:
     """Generate the integration test workflow from template."""
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
@@ -241,6 +242,7 @@ def generate_workflow(
     content = content.replace("{{CLUSTER_ID}}", cluster_id)
     content = content.replace("{{CLUSTER_NAME}}", cluster_name)
     content = content.replace("{{PYPI_CACHE_SLUGS}}", pypi_cache_slugs)
+    content = content.replace("{{PYPI_CACHE_CUDA_VERSION}}", pypi_cache_cuda_version)
 
     # Handle conditional blocks
     content = _strip_conditional_block(content, "B200", keep=b200_enabled)

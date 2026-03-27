@@ -108,6 +108,7 @@ def workflow_template(tmp_path):
         "  pypi-job:\n"
         "    steps:\n"
         "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
+        "      - run: echo {{PYPI_CACHE_CUDA_VERSION}}\n"
     )
     (wf_dir / "integration-test.yaml.tpl").write_text(template)
 
@@ -273,6 +274,29 @@ class TestGenerateWorkflow:
         )
         # Default value should be substituted
         assert "echo cpu cu121 cu124" in result
+
+    def test_pypi_cache_cuda_version_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+            pypi_cache_cuda_version="13.0.2",
+        )
+        assert "echo 13.0.2" in result
+        assert "{{PYPI_CACHE_CUDA_VERSION}}" not in result
+
+    def test_pypi_cache_cuda_version_default(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+        )
+        # Default value should be substituted
+        assert "echo 12.8.1" in result
 
 
 # ── format_duration ───────────────────────────────────────────────────────

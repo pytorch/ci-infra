@@ -224,13 +224,47 @@ jobs:
           fi
           echo "PASS: Required env vars present"
 
-  # ── Pip Install Test ─────────────────────────────────────────────────
-  test-pip-install:
+  # ── PyPI Cache: Default Pod Environment ─────────────────────────────
+  # Validates runner pod-level defaults: pip install, uv install,
+  # download.pytorch.org proxy, and URL rewriting — all without the
+  # setup-pypi-cache composite action.
+  test-pypi-cache-defaults:
     runs-on: {{PREFIX}}l-x86iamx-8-32
     container:
       image: python:3.12-slim
     steps:
-      - name: Verify pip install
+      - name: Verify pypi-cache service health
+        run: |
+          echo "=== PyPI Cache: Service Health Check ==="
+          SLUGS="{{PYPI_CACHE_SLUGS}}"
+          FAIL=0
+          for slug in $SLUGS; do
+            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/simple/"
+            HTTP_CODE=$(python3 -c "
+          import urllib.request, sys
+          try:
+              r = urllib.request.urlopen('$URL', timeout=15)
+              print(r.status)
+          except Exception as e:
+              print(f'000 ({e})', file=sys.stderr)
+              print('000')
+          ")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE"
+            else
+              echo "FAIL: pypi-cache-${slug} returned HTTP $HTTP_CODE (expected 200)"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more pypi-cache services are unhealthy"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All pypi-cache services healthy"
+
+      - name: Verify pip install (pypi.org proxy)
         run: |
           echo "=== Pip Install Test ==="
           pip install --no-cache-dir six packaging typing-extensions
@@ -239,56 +273,332 @@ jobs:
           python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
           echo "PASS: pip install and import succeeded"
 
-  # ── UV Install Test ────────────────────────────────────────────────────
-  # uv has two distinct resolution paths (pip-interface and project-interface)
-  # that resolve indexes differently. Test both to verify UV_DEFAULT_INDEX works.
-  test-uv-pip-install:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
-    container:
-      image: python:3.12-slim
-    steps:
+      - name: Verify download.pytorch.org proxy
+        run: |
+          echo "=== download.pytorch.org Proxy Test ==="
+          echo "PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-<not set>}"
+          echo "UV_INDEX=${UV_INDEX:-<not set>}"
+          python3 -c "
+          import urllib.request, os, sys
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          if not url:
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              sys.exit(1)
+          r = urllib.request.urlopen(url, timeout=30)
+          body = r.read().decode()
+          print(f'HTTP {r.status} — index page length: {len(body)} bytes')
+          if 'torch' not in body.lower():
+              print('FAIL: torch not found in /whl/ index')
+              sys.exit(1)
+          print('PASS: download.pytorch.org proxy responds and contains torch')
+          "
+
+      - name: Install uv
+        run: pip install --no-cache-dir uv
+
       - name: Verify uv pip install
         run: |
           echo "=== UV pip install Test ==="
-          pip install --no-cache-dir uv
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
           uv pip install --system --no-cache six packaging typing-extensions
           python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
-          python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
-          python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
           echo "PASS: uv pip install succeeded"
 
-  test-uv-pip-compile-sync:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
-    container:
-      image: python:3.12-slim
-    steps:
-      - name: Verify uv pip compile and sync
+      - name: Verify uv pip compile + sync
         run: |
           echo "=== UV pip compile + sync Test ==="
-          pip install --no-cache-dir uv
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
           printf 'six\npackaging\ntyping-extensions\n' > requirements.in
           uv pip compile --no-cache --no-config requirements.in -o requirements.txt
           uv pip sync --system --no-cache --no-config requirements.txt
           python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
-          python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
-          python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
           echo "PASS: uv pip compile + sync succeeded"
 
-  test-uv-project:
+      - name: Verify uv project interface
+        run: |
+          echo "=== UV project interface Test ==="
+          uv init --no-cache test-project && cd test-project
+          uv add --no-cache six packaging typing-extensions
+          uv run --no-cache python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv project interface succeeded"
+
+      - name: Verify URL rewriting (sub_filter)
+        run: |
+          echo "=== PyPI Cache: URL Rewriting Verification ==="
+          SLUG=$(echo "{{PYPI_CACHE_SLUGS}}" | awk '{print $1}')
+          URL="http://pypi-cache-${SLUG}.pypi-cache.svc.cluster.local:8080/simple/six/"
+          FAILED=0
+          for CONTENT_TYPE in "text/html" "application/vnd.pypi.simple.v1+json"; do
+            echo ""
+            echo "--- Testing with Accept: ${CONTENT_TYPE} ---"
+            BODY=$(python3 -c "
+          import urllib.request
+          req = urllib.request.Request('$URL', headers={'Accept': '${CONTENT_TYPE}'})
+          r = urllib.request.urlopen(req, timeout=15)
+          print(r.read().decode())
+          ")
+            echo "Checking for unrewritten URLs..."
+            DIRECT_COUNT=$(echo "$BODY" | grep -c 'files.pythonhosted.org' || true)
+            if [ "$DIRECT_COUNT" -ne 0 ]; then
+              echo "FAIL: Found $DIRECT_COUNT unrewritten files.pythonhosted.org URLs"
+              echo "$BODY" | grep 'files.pythonhosted.org' | head -3
+              FAILED=1
+            else
+              echo "PASS: No files.pythonhosted.org URLs in response"
+            fi
+            echo "Checking for rewritten /packages/ URLs..."
+            PKG_COUNT=$(echo "$BODY" | grep -c '/packages/' || true)
+            if [ "$PKG_COUNT" -eq 0 ]; then
+              echo "FAIL: No /packages/ URLs found in response"
+              FAILED=1
+            else
+              echo "PASS: Found $PKG_COUNT rewritten /packages/ URLs"
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "FAIL: URL rewriting verification failed for one or more content types"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: URL rewriting verified for both text/html and PEP 691 JSON"
+
+      - name: Verify torch CPU install (pip)
+        run: |
+          echo "=== Torch CPU Install (pip, defaults) ==="
+          pip install --no-cache-dir torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is not None:
+              print(f'FAIL: Expected CPU build (cuda=None), got cuda={cuda}')
+              sys.exit(1)
+          print('PASS: torch is CPU build')
+          "
+
+      - name: Verify torch CPU install (uv)
+        run: |
+          echo "=== Torch CPU Install (uv, defaults) ==="
+          pip uninstall -y torch >/dev/null 2>&1 || true
+          uv pip install --system --no-cache torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is not None:
+              print(f'FAIL: Expected CPU build (cuda=None), got cuda={cuda}')
+              sys.exit(1)
+          print('PASS: torch is CPU build (uv)')
+          "
+
+  # ── PyPI Cache: setup-pypi-cache Action (CPU) ──────────────────────
+  # Validates the composite action overrides pod-level defaults correctly
+  # for CPU configuration.
+  test-pypi-cache-action-cpu:
     runs-on: {{PREFIX}}l-x86iamx-8-32
     container:
       image: python:3.12-slim
     steps:
-      - name: Verify uv add and run
+      # TODO: update to @main after pytorch/test-infra#7900 merges
+      - uses: pytorch/test-infra/.github/actions/setup-pypi-cache@jeanschmidt/define_pip_cuda
+        with:
+          cuda-version: "cpu"
+
+      - name: Verify env vars point to CPU service
         run: |
-          echo "=== UV project interface Test ==="
+          echo "=== Verify CPU Action Environment ==="
+          FAIL=0
+          for var in PIP_INDEX_URL PIP_EXTRA_INDEX_URL UV_DEFAULT_INDEX UV_INDEX PIP_TRUSTED_HOST UV_INSECURE_HOST; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "pypi-cache-cpu"; then
+              echo "FAIL: $var does not contain 'pypi-cache-cpu': $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: All env vars point to CPU pypi-cache service"
+
+      - name: Verify pip install via action-configured cache
+        run: |
+          echo "=== Pip Install (CPU action) ==="
+          pip install --no-cache-dir six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: pip install via CPU action succeeded"
+
+      - name: Verify download.pytorch.org proxy via action
+        run: |
+          echo "=== download.pytorch.org Proxy (CPU action) ==="
+          python3 -c "
+          import urllib.request, os, sys
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          if not url:
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              sys.exit(1)
+          r = urllib.request.urlopen(url, timeout=30)
+          body = r.read().decode()
+          print(f'HTTP {r.status} — index page length: {len(body)} bytes')
+          if 'torch' not in body.lower():
+              print('FAIL: torch not found in /whl/cpu/ index')
+              sys.exit(1)
+          print('PASS: download.pytorch.org proxy via CPU action works')
+          "
+
+      - name: Verify uv pip install via action
+        run: |
+          echo "=== UV pip install (CPU action) ==="
           pip install --no-cache-dir uv
-          uv init --no-cache test-project && cd test-project
-          uv add --no-cache six packaging typing-extensions
-          uv run --no-cache python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
-          uv run --no-cache python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
-          uv run --no-cache python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
-          echo "PASS: uv project interface succeeded"
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          uv pip install --system --no-cache six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv pip install via CPU action succeeded"
+
+      - name: Verify torch CPU install (pip, action)
+        run: |
+          echo "=== Torch CPU Install (pip, CPU action) ==="
+          pip install --no-cache-dir torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is not None:
+              print(f'FAIL: Expected CPU build (cuda=None), got cuda={cuda}')
+              sys.exit(1)
+          print('PASS: torch is CPU build')
+          "
+
+      - name: Verify torch CPU install (uv, action)
+        run: |
+          echo "=== Torch CPU Install (uv, CPU action) ==="
+          pip uninstall -y torch >/dev/null 2>&1 || true
+          uv pip install --system --no-cache torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is not None:
+              print(f'FAIL: Expected CPU build (cuda=None), got cuda={cuda}')
+              sys.exit(1)
+          print('PASS: torch is CPU build (uv)')
+          "
+
+  # ── PyPI Cache: setup-pypi-cache Action (CUDA) ─────────────────────
+  # Validates the composite action correctly configures CUDA-specific
+  # pypi-cache service and pytorch wheel index.
+  test-pypi-cache-action-cuda:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      # TODO: update to @main after pytorch/test-infra#7900 merges
+      - uses: pytorch/test-infra/.github/actions/setup-pypi-cache@jeanschmidt/define_pip_cuda
+        with:
+          cuda-version: "{{PYPI_CACHE_CUDA_VERSION}}"
+
+      - name: Verify env vars point to CUDA service
+        run: |
+          echo "=== Verify CUDA Action Environment ==="
+          FAIL=0
+          for var in PIP_INDEX_URL UV_DEFAULT_INDEX; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "pypi-cache-cu"; then
+              echo "FAIL: $var does not point to CUDA service: $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          for var in PIP_EXTRA_INDEX_URL UV_INDEX; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "/whl/cu"; then
+              echo "FAIL: $var does not point to CUDA wheel index: $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          for var in PIP_TRUSTED_HOST UV_INSECURE_HOST; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "pypi-cache-cu"; then
+              echo "FAIL: $var does not reference CUDA service: $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: All env vars point to CUDA pypi-cache service"
+
+      - name: Verify pip install via CUDA action
+        run: |
+          echo "=== Pip Install (CUDA action) ==="
+          pip install --no-cache-dir six
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: pip install via CUDA action succeeded"
+
+      - name: Verify CUDA pytorch wheel index accessible
+        run: |
+          echo "=== CUDA PyTorch Wheel Index ==="
+          python3 -c "
+          import urllib.request, os, sys
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          if not url:
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              sys.exit(1)
+          r = urllib.request.urlopen(url, timeout=30)
+          body = r.read().decode()
+          print(f'HTTP {r.status} — index page length: {len(body)} bytes')
+          if 'torch' not in body.lower():
+              print('FAIL: torch not found in CUDA wheel index')
+              sys.exit(1)
+          print('PASS: CUDA pytorch wheel index accessible')
+          "
+
+      - name: Verify torch CUDA install (pip, action)
+        run: |
+          echo "=== Torch CUDA Install (pip, CUDA action) ==="
+          pip install --no-cache-dir torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is None:
+              print('FAIL: Expected CUDA build, got CPU build (cuda=None)')
+              sys.exit(1)
+          print(f'PASS: torch is CUDA build (cuda={cuda})')
+          "
+
+      - name: Install uv for CUDA torch test
+        run: pip install --no-cache-dir uv
+
+      - name: Verify torch CUDA install (uv, action)
+        run: |
+          echo "=== Torch CUDA Install (uv, CUDA action) ==="
+          pip uninstall -y torch >/dev/null 2>&1 || true
+          uv pip install --system --no-cache torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is None:
+              print('FAIL: Expected CUDA build, got CPU build (cuda=None)')
+              sys.exit(1)
+          print(f'PASS: torch is CUDA build (cuda={cuda}, uv)')
+          "
 
   # ── Git Cache Test ────────────────────────────────────────────────────
   test-git-cache:
@@ -582,92 +892,3 @@ jobs:
           echo "PASS: Non-blocked domains are accessible"
   # END_CACHE_ENFORCER
 
-  # ── PyPI Proxy Test ──────────────────────────────────────────────────
-  test-pypi-proxy:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
-    container:
-      image: python:3.12-slim
-    steps:
-      - name: Verify pypi-cache service health
-        run: |
-          echo "=== PyPI Cache: Service Health Check ==="
-          SLUGS="{{PYPI_CACHE_SLUGS}}"
-          FAIL=0
-          for slug in $SLUGS; do
-            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/simple/"
-            HTTP_CODE=$(python3 -c "
-          import urllib.request, sys
-          try:
-              r = urllib.request.urlopen('$URL', timeout=15)
-              print(r.status)
-          except Exception as e:
-              print(f'000 ({e})', file=sys.stderr)
-              print('000')
-          ")
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE"
-            else
-              echo "FAIL: pypi-cache-${slug} returned HTTP $HTTP_CODE (expected 200)"
-              FAIL=1
-            fi
-          done
-          if [ "$FAIL" -ne 0 ]; then
-            echo ""
-            echo "FAIL: One or more pypi-cache services are unhealthy"
-            exit 1
-          fi
-          echo ""
-          echo "PASS: All pypi-cache services healthy"
-      - name: Verify pip install via pypi-cache
-        run: |
-          echo "=== PyPI Cache: Install Verification ==="
-          echo "PIP_INDEX_URL=${PIP_INDEX_URL:-<not set>}"
-          echo "PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST:-<not set>}"
-          echo ""
-          echo "--- bare pip install (should use pod-level env vars) ---"
-          pip install --no-cache-dir six
-          echo "PASS: pip install via pypi-cache succeeded"
-          pip uninstall -y six >/dev/null 2>&1
-      - name: Verify URL rewriting (sub_filter)
-        run: |
-          echo "=== PyPI Cache: URL Rewriting Verification ==="
-          SLUG=$(echo "{{PYPI_CACHE_SLUGS}}" | awk '{print $1}')
-          URL="http://pypi-cache-${SLUG}.pypi-cache.svc.cluster.local:8080/simple/six/"
-          FAILED=0
-
-          for CONTENT_TYPE in "text/html" "application/vnd.pypi.simple.v1+json"; do
-            echo ""
-            echo "--- Testing with Accept: ${CONTENT_TYPE} ---"
-            BODY=$(python3 -c "
-          import urllib.request
-          req = urllib.request.Request('$URL', headers={'Accept': '${CONTENT_TYPE}'})
-          r = urllib.request.urlopen(req, timeout=15)
-          print(r.read().decode())
-          ")
-            echo "Checking for unrewritten URLs..."
-            DIRECT_COUNT=$(echo "$BODY" | grep -c 'files.pythonhosted.org' || true)
-            if [ "$DIRECT_COUNT" -ne 0 ]; then
-              echo "FAIL: Found $DIRECT_COUNT unrewritten files.pythonhosted.org URLs"
-              echo "$BODY" | grep 'files.pythonhosted.org' | head -3
-              FAILED=1
-            else
-              echo "PASS: No files.pythonhosted.org URLs in response"
-            fi
-
-            echo "Checking for rewritten /packages/ URLs..."
-            PKG_COUNT=$(echo "$BODY" | grep -c '/packages/' || true)
-            if [ "$PKG_COUNT" -eq 0 ]; then
-              echo "FAIL: No /packages/ URLs found in response"
-              FAILED=1
-            else
-              echo "PASS: Found $PKG_COUNT rewritten /packages/ URLs"
-            fi
-          done
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo ""
-            echo "FAIL: URL rewriting verification failed for one or more content types"
-            exit 1
-          fi
-          echo ""
-          echo "PASS: URL rewriting verified for both text/html and PEP 691 JSON"

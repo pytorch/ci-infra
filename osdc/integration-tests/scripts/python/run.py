@@ -208,8 +208,10 @@ def main():
     cache_enforcer_enabled = has_module(cfg, "cache-enforcer")
 
     # Build pypi-cache slug list: always "cpu", plus one per configured CUDA version
-    cuda_versions = resolve(cfg, "pypi-cache.cuda_versions", [])
+    cuda_versions = resolve(cfg, "pypi_cache.cuda_versions", [])
     pypi_cache_slugs = " ".join(["cpu"] + [f"cu{str(v).replace('.', '')}" for v in cuda_versions])
+    # First CUDA version for integration test action verification
+    pypi_cache_cuda_version = str(cuda_versions[0]) if cuda_versions else "12.8.1"
 
     # Effective skip flags: skip by default, --run-X opts in, --skip-X overrides
     skip_smoke = not args.run_smoke or args.skip_smoke
@@ -252,6 +254,7 @@ def main():
             b200_enabled,
             cache_enforcer_enabled=cache_enforcer_enabled,
             pypi_cache_slugs=pypi_cache_slugs,
+            pypi_cache_cuda_version=pypi_cache_cuda_version,
         )
         pr_created_at = datetime.now(tz=UTC)
         pr_number = prepare_pr(canary_path, args.upstream_dir, workflow_content, args.dry_run, branch)
