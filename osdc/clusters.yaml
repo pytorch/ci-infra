@@ -24,6 +24,7 @@ defaults:
   base_node_count: 5
   base_node_instance_type: m7i.4xlarge
   base_node_max_unavailable_percentage: 33
+  base_node_ami_version: "v20260318"
   eks_version: "1.35"
   single_nat_gateway: false
 
@@ -155,6 +156,8 @@ clusters:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-production
       runner_name_prefix: ""
+    pypi_cache:
+      replicas: 2
     modules:
       - karpenter
       - arc
@@ -162,5 +165,6 @@ clusters:
       - arc-runners
       - cache-enforcer
       - buildkit
+      - pypi-cache
       - monitoring
       - logging

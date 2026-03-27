@@ -102,8 +102,11 @@ resource "aws_iam_role" "efs_csi_driver" {
       }
       Condition = {
         StringEquals = {
-          "${local.oidc_provider}:sub" = "system:serviceaccount:kube-system:efs-csi-controller-sa"
           "${local.oidc_provider}:aud" = "sts.amazonaws.com"
+          "${local.oidc_provider}:sub" = [
+            "system:serviceaccount:kube-system:efs-csi-controller-sa",
+            "system:serviceaccount:kube-system:efs-csi-node-sa",
+          ]
         }
       }
     }]

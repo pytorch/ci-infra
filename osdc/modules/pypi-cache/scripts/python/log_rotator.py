@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.9"
 # dependencies = []
 # ///
 """Stdin-to-file log rotator with date-based rotation.
@@ -39,7 +39,7 @@ def cleanup_old_logs(log_dir: Path, prefix: str, max_age_days: int) -> None:
     """Remove log files older than max_age_days."""
     if not log_dir.is_dir():
         return
-    cutoff = datetime.datetime.now(datetime.UTC).date() - datetime.timedelta(days=max_age_days)
+    cutoff = datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=max_age_days)  # noqa: UP017 — datetime.UTC requires Python 3.11+, pypiserver image runs 3.9
     for entry in log_dir.iterdir():
         if not entry.is_file():
             continue
@@ -63,7 +63,7 @@ def run(args: argparse.Namespace, stdin=None, stdout=None, now_fn=None) -> None:
     if stdout is None:
         stdout = sys.stdout
     if now_fn is None:
-        now_fn = lambda: datetime.datetime.now(datetime.UTC)  # noqa: E731
+        now_fn = lambda: datetime.datetime.now(datetime.timezone.utc)  # noqa: E731, UP017 — datetime.UTC requires Python 3.11+
 
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)

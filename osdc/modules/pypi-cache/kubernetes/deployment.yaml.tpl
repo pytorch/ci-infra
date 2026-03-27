@@ -1,9 +1,10 @@
 # pypi-cache Deployment template (per-CUDA version).
 # One Deployment is generated per CUDA slug by scripts/python/generate_manifests.py.
 # Populated from clusters.yaml config.
-# Placeholders: __NAMESPACE__, __CUDA_SLUG__, __REPLICAS__, __IMAGE__,
-#   __SERVER_PORT__, __CPU_REQUEST__, __CPU_LIMIT__, __MEMORY_REQUEST__,
-#   __MEMORY_LIMIT__, __LOG_MAX_AGE_DAYS__
+# Placeholders: NAMESPACE, CUDA_SLUG, REPLICAS, IMAGE, NGINX_IMAGE,
+#   INTERNAL_PORT, WORKERS, NGINX_CPU, NGINX_MEMORY, NGINX_CACHE_SIZE,
+#   SERVER_CPU, SERVER_MEMORY, LOG_MAX_AGE_DAYS, NODE_SELECTOR_BLOCK,
+#   TOLERATIONS_ENTRIES
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,10 +48,9 @@ spec:
                     cuda-version: __CUDA_SLUG__
                 topologyKey: kubernetes.io/hostname
 
+      __NODE_SELECTOR_BLOCK__
       tolerations:
-        - key: CriticalAddonsOnly
-          operator: Exists
-          effect: NoSchedule
+__TOLERATIONS_ENTRIES__
 
       initContainers:
         - name: init-dirs
@@ -61,26 +61,12 @@ spec:
               mountPath: /data
 
       containers:
-        - name: server
-          image: __IMAGE__
-          command: ["/bin/sh", "-c"]
-          args:
-            - >-
-              pypi-server run
-              -p __SERVER_PORT__
-              --backend simple-dir
-              --server gunicorn
-              --fallback-url https://pypi.org/simple/
-              --health-endpoint /health
-              -P . -a .
-              /data/wheelhouse/__CUDA_SLUG__/
-              2>&1 | python3 /scripts/log_rotator.py
-              --log-dir /data/logs/__CUDA_SLUG__/
-              --max-age-days __LOG_MAX_AGE_DAYS__
+        - name: nginx
+          image: __NGINX_IMAGE__
 
           ports:
             - name: http
-              containerPort: __SERVER_PORT__
+              containerPort: 8080
               protocol: TCP
 
           securityContext:
@@ -89,25 +75,13 @@ spec:
             capabilities:
               drop: ["ALL"]
 
-          env:
-            - name: PYTHONUNBUFFERED
-              value: "1"
-            - name: SERVER_PORT
-              value: "__SERVER_PORT__"
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: CUDA_SLUG
-              value: "__CUDA_SLUG__"
-
           resources:
             requests:
-              cpu: __CPU_REQUEST__
-              memory: __MEMORY_REQUEST__
+              cpu: __NGINX_CPU__
+              memory: __NGINX_MEMORY__
             limits:
-              cpu: __CPU_LIMIT__
-              memory: __MEMORY_LIMIT__
+              cpu: __NGINX_CPU__
+              memory: __NGINX_MEMORY__
 
           readinessProbe:
             httpGet:
@@ -124,12 +98,70 @@ spec:
             periodSeconds: 30
 
           volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-tmp
+              mountPath: /tmp
+
+        - name: pypiserver
+          image: __IMAGE__
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              pypi-server run
+              -p __INTERNAL_PORT__
+              --backend simple-dir
+              --server gunicorn
+              --disable-fallback
+              --health-endpoint /health
+              -P . -a .
+              /data/wheelhouse/__CUDA_SLUG__/
+              2>&1 | python3 /scripts/log_rotator.py
+              --log-dir /data/logs/__CUDA_SLUG__/
+              --max-age-days __LOG_MAX_AGE_DAYS__
+
+          ports:
+            - name: pypi-internal
+              containerPort: __INTERNAL_PORT__
+              protocol: TCP
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: GUNICORN_CMD_ARGS
+              value: "--workers __WORKERS__ --timeout 300"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CUDA_SLUG
+              value: "__CUDA_SLUG__"
+
+          resources:
+            requests:
+              cpu: __SERVER_CPU__
+              memory: __SERVER_MEMORY__
+            limits:
+              cpu: __SERVER_CPU__
+              memory: __SERVER_MEMORY__
+
+          volumeMounts:
             - name: data
               mountPath: /data
             - name: scripts
               mountPath: /scripts
               readOnly: true
-            - name: tmp
+            - name: pypiserver-tmp
               mountPath: /tmp
 
       volumes:
@@ -140,7 +172,17 @@ spec:
           configMap:
             name: pypi-cache-scripts
             defaultMode: 0755
-        - name: tmp
+        - name: nginx-config
+          configMap:
+            name: pypi-cache-nginx-config
+        - name: nginx-cache
+          emptyDir:
+            sizeLimit: __NGINX_CACHE_SIZE__
+        - name: nginx-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: pypiserver-tmp
           emptyDir:
             medium: Memory
             sizeLimit: 64Mi

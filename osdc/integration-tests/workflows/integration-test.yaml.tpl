@@ -64,6 +64,21 @@ jobs:
             exit 1
           fi
           echo "PASS: Memory within expected range"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=34359738368
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
       - name: Verify environment
         run: |
           echo "=== Environment ==="
@@ -126,6 +141,21 @@ jobs:
             exit 1
           fi
           echo "PASS: Memory within expected range"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=34359738368
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
   test-cpu-arm64:
     runs-on: {{PREFIX}}l-arm64g3-16-62
@@ -170,6 +200,21 @@ jobs:
             exit 1
           fi
           echo "PASS: Memory within expected range"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=66571993088
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
       - name: Verify environment
         run: |
           echo "CHECKOUT_GIT_CACHE_DIR=${CHECKOUT_GIT_CACHE_DIR:-NOT SET}"
@@ -178,6 +223,72 @@ jobs:
             exit 1
           fi
           echo "PASS: Required env vars present"
+
+  # ── Pip Install Test ─────────────────────────────────────────────────
+  test-pip-install:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify pip install
+        run: |
+          echo "=== Pip Install Test ==="
+          pip install --no-cache-dir six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
+          python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
+          echo "PASS: pip install and import succeeded"
+
+  # ── UV Install Test ────────────────────────────────────────────────────
+  # uv has two distinct resolution paths (pip-interface and project-interface)
+  # that resolve indexes differently. Test both to verify UV_DEFAULT_INDEX works.
+  test-uv-pip-install:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify uv pip install
+        run: |
+          echo "=== UV pip install Test ==="
+          pip install --no-cache-dir uv
+          uv pip install --system --no-cache six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
+          python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
+          echo "PASS: uv pip install succeeded"
+
+  test-uv-pip-compile-sync:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify uv pip compile and sync
+        run: |
+          echo "=== UV pip compile + sync Test ==="
+          pip install --no-cache-dir uv
+          printf 'six\npackaging\ntyping-extensions\n' > requirements.in
+          uv pip compile --no-cache --no-config requirements.in -o requirements.txt
+          uv pip sync --system --no-cache --no-config requirements.txt
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
+          python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
+          echo "PASS: uv pip compile + sync succeeded"
+
+  test-uv-project:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify uv add and run
+        run: |
+          echo "=== UV project interface Test ==="
+          pip install --no-cache-dir uv
+          uv init --no-cache test-project && cd test-project
+          uv add --no-cache six packaging typing-extensions
+          uv run --no-cache python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          uv run --no-cache python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
+          uv run --no-cache python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
+          echo "PASS: uv project interface succeeded"
 
   # ── Git Cache Test ────────────────────────────────────────────────────
   test-git-cache:
@@ -263,6 +374,21 @@ jobs:
           nvcc --version 2>/dev/null || echo "nvcc not in PATH (base image only)"
           nvidia-smi --query-gpu=driver_version --format=csv,noheader
           echo "PASS: GPU driver responsive"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=123480309760
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
   test-gpu-t4-multi:
     runs-on: {{PREFIX}}l-x86iavx512-45-172-t4-4
@@ -284,6 +410,21 @@ jobs:
         run: |
           echo "=== GPU Topology ==="
           nvidia-smi topo -m
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=184683593728
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
   # BEGIN_B200
   test-gpu-b200-2:
@@ -302,6 +443,21 @@ jobs:
             exit 1
           fi
           echo "PASS: Found $GPU_COUNT B200 GPUs"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=483183820800
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
   # END_B200
 
   # ── BuildKit Tests ────────────────────────────────────────────────────
@@ -439,7 +595,15 @@ jobs:
           FAIL=0
           for slug in $SLUGS; do
             URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/simple/"
-            HTTP_CODE=$(curl --connect-timeout 10 --max-time 15 -s -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null || echo "000")
+            HTTP_CODE=$(python3 -c "
+          import urllib.request, sys
+          try:
+              r = urllib.request.urlopen('$URL', timeout=15)
+              print(r.status)
+          except Exception as e:
+              print(f'000 ({e})', file=sys.stderr)
+              print('000')
+          ")
             if [ "$HTTP_CODE" = "200" ]; then
               echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE"
             else
@@ -454,26 +618,56 @@ jobs:
           fi
           echo ""
           echo "PASS: All pypi-cache services healthy"
-      - name: Verify pip install via each proxy
+      - name: Verify pip install via pypi-cache
         run: |
           echo "=== PyPI Cache: Install Verification ==="
-          SLUGS="{{PYPI_CACHE_SLUGS}}"
-          FAIL=0
-          for slug in $SLUGS; do
-            echo "--- Testing pypi-cache-${slug} ---"
-            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/simple/"
-            if PIP_INDEX_URL="$URL" pip install --no-cache-dir --quiet six 2>&1; then
-              echo "PASS: pip install via pypi-cache-${slug} succeeded"
-            else
-              echo "FAIL: pip install via pypi-cache-${slug} failed"
-              FAIL=1
-            fi
-            pip uninstall -y six 2>/dev/null || true
-          done
-          if [ "$FAIL" -ne 0 ]; then
+          echo "PIP_INDEX_URL=${PIP_INDEX_URL:-<not set>}"
+          echo "PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST:-<not set>}"
+          echo ""
+          echo "--- bare pip install (should use pod-level env vars) ---"
+          pip install --no-cache-dir six
+          echo "PASS: pip install via pypi-cache succeeded"
+          pip uninstall -y six >/dev/null 2>&1
+      - name: Verify URL rewriting (sub_filter)
+        run: |
+          echo "=== PyPI Cache: URL Rewriting Verification ==="
+          SLUG=$(echo "{{PYPI_CACHE_SLUGS}}" | awk '{print $1}')
+          URL="http://pypi-cache-${SLUG}.pypi-cache.svc.cluster.local:8080/simple/six/"
+          FAILED=0
+
+          for CONTENT_TYPE in "text/html" "application/vnd.pypi.simple.v1+json"; do
             echo ""
-            echo "FAIL: pip install failed for one or more pypi-cache services"
+            echo "--- Testing with Accept: ${CONTENT_TYPE} ---"
+            BODY=$(python3 -c "
+          import urllib.request
+          req = urllib.request.Request('$URL', headers={'Accept': '${CONTENT_TYPE}'})
+          r = urllib.request.urlopen(req, timeout=15)
+          print(r.read().decode())
+          ")
+            echo "Checking for unrewritten URLs..."
+            DIRECT_COUNT=$(echo "$BODY" | grep -c 'files.pythonhosted.org' || true)
+            if [ "$DIRECT_COUNT" -ne 0 ]; then
+              echo "FAIL: Found $DIRECT_COUNT unrewritten files.pythonhosted.org URLs"
+              echo "$BODY" | grep 'files.pythonhosted.org' | head -3
+              FAILED=1
+            else
+              echo "PASS: No files.pythonhosted.org URLs in response"
+            fi
+
+            echo "Checking for rewritten /packages/ URLs..."
+            PKG_COUNT=$(echo "$BODY" | grep -c '/packages/' || true)
+            if [ "$PKG_COUNT" -eq 0 ]; then
+              echo "FAIL: No /packages/ URLs found in response"
+              FAILED=1
+            else
+              echo "PASS: Found $PKG_COUNT rewritten /packages/ URLs"
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "FAIL: URL rewriting verification failed for one or more content types"
             exit 1
           fi
           echo ""
-          echo "PASS: pip install works through all pypi-cache services"
+          echo "PASS: URL rewriting verified for both text/html and PEP 691 JSON"

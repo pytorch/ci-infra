@@ -29,6 +29,7 @@ FAKE_CONFIG = {
         "base_node_count": 3,
         "base_node_instance_type": "m5.xlarge",
         "base_node_max_unavailable_percentage": 33,
+        "base_node_ami_version": "v20260318",
         "eks_version": "1.35",
         "harbor": {
             "core_replicas": 2,
@@ -163,6 +164,7 @@ class TestTfvars:
         assert '-var="base_node_count=3"' in out
         assert '-var="base_node_instance_type=m5.xlarge"' in out
         assert '-var="base_node_max_unavailable_percentage=33"' in out
+        assert '-var="base_node_ami_version=v*"' in out
         assert '-var="eks_version=1.35"' in out
 
     def test_cluster_overrides(self, capsys):
@@ -175,6 +177,7 @@ class TestTfvars:
                 "base_node_count": 6,
                 "base_node_instance_type": "m6i.2xlarge",
                 "base_node_max_unavailable_percentage": 50,
+                "base_node_ami_version": "v20260318",
                 "eks_version": "1.36",
             },
         }
@@ -190,6 +193,7 @@ class TestTfvars:
         assert '-var="base_node_count=6"' in out
         assert '-var="base_node_instance_type=m6i.2xlarge"' in out
         assert '-var="base_node_max_unavailable_percentage=50"' in out
+        assert '-var="base_node_ami_version=v20260318"' in out
         assert '-var="eks_version=1.36"' in out
 
     def test_bool_formatting(self, capsys):

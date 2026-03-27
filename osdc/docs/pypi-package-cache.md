@@ -275,7 +275,7 @@ DaemonSet per node (on NVMe):
 1. Composite GitHub Action sets `PIP_INDEX_URL=http://localhost:8080/{cuda_slug}/simple/` for the job (see "CI integration" below)
 2. pip/uv queries `localhost:8080/{cuda_slug}/simple/{package}/`
 3. pypiserver checks the corresponding wheelhouse (`wheelhouse-{cuda_slug}/`) — if a matching `.whl` exists, serves it directly
-4. If not found, pypiserver redirects to `pypi.org/simple/{package}/` (transparent fallback)
+4. If not found, pypiserver returns 404; nginx intercepts and proxies to `pypi.org` server-side (transparent fallback — no client-side redirect)
 5. Access log records every request regardless of hit/miss
 
 ### Self-learning convergence

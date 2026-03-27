@@ -9,19 +9,35 @@ Reads cluster configuration and Kubernetes templates, substitutes placeholders,
 and outputs manifests for the Deployment+EFS architecture (one Deployment per
 CUDA version plus CPU).
 
+When ``instance_type`` is configured, also generates Karpenter NodePool +
+EC2NodeClass manifests for dedicated pypi-cache nodes and computes pod resources
+dynamically (same formula as BuildKit).
+
 Outputs:
   storageclass.yaml   — EFS-backed StorageClass
   pvc.yaml            — Shared PersistentVolumeClaim
   deployments.yaml    — Multi-doc YAML (one Deployment per CUDA slug)
   services.yaml       — Multi-doc YAML (one Service per CUDA slug)
+  nodepools.yaml      — Karpenter NodePool + EC2NodeClass (when instance_type set)
 """
 
 import argparse
 import copy
+import math
 import sys
 from pathlib import Path
 
 import yaml
+
+# analyze_node_utilization and instance_specs live in scripts/python/ at the
+# repo root.  Add it to sys.path so the import works both when run directly
+# (deploy.sh) and when run via pytest (conftest.py also adds it).
+_scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
+if _scripts_python not in sys.path:
+    sys.path.insert(0, _scripts_python)
+
+from analyze_node_utilization import kubelet_reserved  # noqa: E402
+from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -31,18 +47,75 @@ NC = "\033[0m"
 DEFAULTS = {
     "namespace": "pypi-cache",
     "server_port": 8080,
+    "internal_port": 8081,
     "image": "pypiserver/pypiserver:v2.4.1",
+    "nginx_image": "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
     "cuda_versions": ["12.1", "12.4"],
     "storage_request": "1Ti",
     "replicas": 2,
     "log_max_age_days": 30,
+    "workers": 4,
+    "instance_type": "r7i.12xlarge",
+    "nginx": {
+        "cpu": 2,
+        "memory_gi": 2,
+        "cache_size": "30Gi",
+    },
     "server": {
-        "cpu_request": "100m",
-        "cpu_limit": "500m",
-        "memory_request": "256Mi",
-        "memory_limit": "512Mi",
+        "cpu": "500m",
+        "memory": "768Mi",
     },
 }
+
+# ---------------------------------------------------------------------------
+# Overhead constants (milliCPU and MiB)
+# ---------------------------------------------------------------------------
+# DaemonSet overhead measured from running clusters.  On pypi-cache nodes the
+# active DaemonSets are: node-exporter, alloy-logging, efs-csi-node,
+# ebs-csi-node, kube-proxy, vpc-cni.  The 10% margin absorbs drift.
+DAEMONSET_OVERHEAD_CPU_M = 300
+DAEMONSET_OVERHEAD_MEM_MI = 440
+
+# Margin factor — 10% headroom for future growth in DaemonSets/kubelet reserved
+MARGIN = 0.90
+
+
+def compute_pod_resources(instance_type: str, pods_per_node: int) -> dict:
+    """Compute per-pod CPU and memory for Guaranteed QoS.
+
+    Formula:
+      allocatable = total - kubelet_reserved
+      usable = allocatable - daemonset_overhead
+      per_pod = floor(usable * margin / pods_per_node)
+
+    Returns dict with ``cpu`` (whole vCPUs) and ``memory_gi`` (whole GiB).
+    """
+    spec = INSTANCE_SPECS[instance_type]
+    vcpu = spec["vcpu"]
+    memory_gib = spec["memory_gib"]
+    memory_mi = spec["memory_mi"]
+
+    max_pods = ENI_MAX_PODS.get(instance_type, vcpu)
+    reserved_cpu_m, reserved_mem_mi = kubelet_reserved(vcpu, memory_gib, max_pods)
+
+    allocatable_cpu_m = vcpu * 1000 - reserved_cpu_m
+    allocatable_mem_mi = memory_mi - reserved_mem_mi
+
+    usable_cpu_m = allocatable_cpu_m - DAEMONSET_OVERHEAD_CPU_M
+    usable_mem_mi = allocatable_mem_mi - DAEMONSET_OVERHEAD_MEM_MI
+
+    pod_cpu = math.floor(usable_cpu_m * MARGIN / pods_per_node)
+    pod_mem_mi = math.floor(usable_mem_mi * MARGIN / pods_per_node)
+
+    # Truncate to whole vCPU and GiB for clean Guaranteed QoS values.
+    pod_mem_gi = pod_mem_mi // 1024
+
+    return {
+        "cpu": pod_cpu // 1000,
+        "memory_gi": pod_mem_gi,
+        "allocatable_cpu_m": allocatable_cpu_m,
+        "allocatable_mem_mi": allocatable_mem_mi,
+    }
 
 
 def log_info(msg):
@@ -119,13 +192,119 @@ def generate_pvc(config: dict, template_path: Path) -> str:
     return content
 
 
+def generate_nodepool(config: dict, template_path: Path) -> str:
+    """Generate Karpenter NodePool manifest from template.
+
+    Computes resource limits from replicas and instance specs to allow
+    headroom for rolling updates (2x the minimum nodes needed).
+    """
+    instance_type = config["instance_type"]
+    spec = INSTANCE_SPECS[instance_type]
+
+    # Nodes needed = ceil(replicas * slugs / pods_per_node) — but since
+    # pods_per_node == len(slugs), this simplifies to replicas.
+    # Add 100% headroom for rolling updates.
+    nodes_needed = config["replicas"]
+    max_nodes = nodes_needed * 2
+    cpu_limit = max_nodes * spec["vcpu"]
+    memory_limit_gi = max_nodes * spec["memory_gib"]
+
+    content = template_path.read_text()
+    content = content.replace("__INSTANCE_TYPE__", instance_type)
+    content = content.replace("__CPU_LIMIT__", str(cpu_limit))
+    content = content.replace("__MEMORY_LIMIT__", f"{memory_limit_gi}Gi")
+    return content
+
+
+def generate_ec2nodeclass(config: dict, template_path: Path) -> str:
+    """Generate EC2NodeClass manifest from template.
+
+    CLUSTER_NAME_PLACEHOLDER is left in — sed-substituted at deploy time.
+    """
+    instance_type = config["instance_type"]
+    content = template_path.read_text()
+    content = content.replace("__INSTANCE_TYPE__", instance_type)
+    return content
+
+
+def generate_nodepools(config: dict, template_dir: Path) -> str:
+    """Generate combined NodePool + EC2NodeClass multi-doc YAML."""
+    nodepool = generate_nodepool(config, template_dir / "nodepool.yaml.tpl")
+    ec2nodeclass = generate_ec2nodeclass(config, template_dir / "ec2nodeclass.yaml.tpl")
+    return nodepool + "\n---\n" + ec2nodeclass
+
+
 def generate_deployments(config: dict, template_path: Path) -> str:
     """Generate Deployment manifests for all CUDA slugs.
+
+    Each pod has two containers: nginx (caching reverse proxy) and
+    pypiserver (gunicorn backend).  When ``instance_type`` is set,
+    computes pod resources dynamically — nginx gets a fixed allocation
+    and pypiserver gets the remainder.  When absent, uses manual config
+    for both containers and CriticalAddonsOnly toleration for shared
+    base-infrastructure nodes.
 
     Returns a multi-document YAML string with --- separators.
     """
     slugs = get_slugs(config)
-    server = config.get("server", DEFAULTS["server"])
+    instance_type = config.get("instance_type") or ""
+    nginx_cfg = config.get("nginx", DEFAULTS["nginx"])
+
+    if instance_type:
+        # Dedicated nodes: compute resources from instance specs
+        pods_per_node = len(slugs)
+        res = compute_pod_resources(instance_type, pods_per_node)
+
+        # nginx gets fixed allocation; pypiserver gets the remainder
+        nginx_cpu = nginx_cfg["cpu"]
+        nginx_mem_gi = nginx_cfg["memory_gi"]
+        server_cpu = res["cpu"] - nginx_cpu
+        server_mem_gi = res["memory_gi"] - nginx_mem_gi
+
+        if server_cpu <= 0 or server_mem_gi <= 0:
+            log_error(
+                f"nginx allocation ({nginx_cpu} vCPU, {nginx_mem_gi}Gi) exceeds "
+                f"pod total ({res['cpu']} vCPU, {res['memory_gi']}Gi) — "
+                f"reduce nginx.cpu/nginx.memory_gi or use a larger instance_type"
+            )
+            sys.exit(1)
+
+        nginx_cpu_str = str(nginx_cpu)
+        nginx_mem_str = f"{nginx_mem_gi}Gi"
+        server_cpu_str = str(server_cpu)
+        server_mem_str = f"{server_mem_gi}Gi"
+
+        log_info(
+            f"Dedicated nodes ({instance_type}): {res['cpu']} vCPU, "
+            f"{res['memory_gi']}Gi per pod ({pods_per_node} pods/node)"
+        )
+        log_info(f"  nginx: {nginx_cpu} vCPU, {nginx_mem_gi}Gi — pypiserver: {server_cpu} vCPU, {server_mem_gi}Gi")
+
+        # nodeSelector block — no leading indent on first line because the
+        # template already has 6-space indent before __NODE_SELECTOR_BLOCK__
+        node_selector_block = (
+            f'nodeSelector:\n        workload-type: pypi-cache\n        instance-type: "{instance_type}"'
+        )
+        # Toleration entries (8-space indent for list items under tolerations:)
+        tolerations_entries = (
+            "        - key: instance-type\n"
+            "          operator: Equal\n"
+            f'          value: "{instance_type}"\n'
+            "          effect: NoSchedule"
+        )
+    else:
+        # Shared base nodes: use manual config values
+        server = config.get("server", DEFAULTS["server"])
+        nginx_cpu_str = str(nginx_cfg["cpu"])
+        nginx_mem_str = f"{nginx_cfg['memory_gi']}Gi"
+        server_cpu_str = server["cpu"]
+        server_mem_str = server["memory"]
+
+        node_selector_block = ""
+        tolerations_entries = (
+            "        - key: CriticalAddonsOnly\n          operator: Exists\n          effect: NoSchedule"
+        )
+
     docs = []
     for slug in slugs:
         content = template_path.read_text()
@@ -133,12 +312,17 @@ def generate_deployments(config: dict, template_path: Path) -> str:
         content = content.replace("__CUDA_SLUG__", slug)
         content = content.replace("__REPLICAS__", str(config["replicas"]))
         content = content.replace("__IMAGE__", config["image"])
-        content = content.replace("__SERVER_PORT__", str(config["server_port"]))
+        content = content.replace("__NGINX_IMAGE__", config["nginx_image"])
+        content = content.replace("__INTERNAL_PORT__", str(config["internal_port"]))
+        content = content.replace("__WORKERS__", str(config["workers"]))
         content = content.replace("__LOG_MAX_AGE_DAYS__", str(config["log_max_age_days"]))
-        content = content.replace("__CPU_REQUEST__", server["cpu_request"])
-        content = content.replace("__CPU_LIMIT__", server["cpu_limit"])
-        content = content.replace("__MEMORY_REQUEST__", server["memory_request"])
-        content = content.replace("__MEMORY_LIMIT__", server["memory_limit"])
+        content = content.replace("__NGINX_CPU__", nginx_cpu_str)
+        content = content.replace("__NGINX_MEMORY__", nginx_mem_str)
+        content = content.replace("__NGINX_CACHE_SIZE__", nginx_cfg["cache_size"])
+        content = content.replace("__SERVER_CPU__", server_cpu_str)
+        content = content.replace("__SERVER_MEMORY__", server_mem_str)
+        content = content.replace("__NODE_SELECTOR_BLOCK__", node_selector_block)
+        content = content.replace("__TOLERATIONS_ENTRIES__", tolerations_entries)
         docs.append(content)
     return "\n---\n".join(docs)
 
@@ -165,6 +349,7 @@ def main():
     parser.add_argument("--clusters-yaml", required=True, help="Path to clusters.yaml")
     parser.add_argument("--efs-filesystem-id", help="EFS filesystem ID from terraform output")
     parser.add_argument("--output-dir", help="Directory to write generated YAML files")
+    parser.add_argument("--instance-type", help="Override instance type (empty = use config)")
     parser.add_argument(
         "--list-slugs",
         action="store_true",
@@ -174,6 +359,10 @@ def main():
 
     clusters_yaml = Path(args.clusters_yaml)
     config = load_config(clusters_yaml, args.cluster)
+
+    # CLI --instance-type overrides config
+    if args.instance_type is not None:
+        config["instance_type"] = args.instance_type
 
     if args.list_slugs:
         for slug in get_slugs(config):
@@ -191,9 +380,12 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    instance_type = config.get("instance_type") or ""
     log_info(f"Generating pypi-cache manifests for cluster '{args.cluster}'")
     log_info(f"  slugs: {', '.join(get_slugs(config))}")
     log_info(f"  replicas: {config['replicas']}, image: {config['image']}")
+    if instance_type:
+        log_info(f"  instance_type: {instance_type} (dedicated nodes)")
 
     # StorageClass
     sc_path = output_dir / "storageclass.yaml"
@@ -214,6 +406,12 @@ def main():
     svc_path = output_dir / "services.yaml"
     svc_path.write_text(generate_services(config, template_dir / "service.yaml.tpl"))
     print(svc_path)
+
+    # NodePools (only when instance_type is configured)
+    if instance_type:
+        nodepools_path = output_dir / "nodepools.yaml"
+        nodepools_path.write_text(generate_nodepools(config, template_dir))
+        print(nodepools_path)
 
     return 0
 
