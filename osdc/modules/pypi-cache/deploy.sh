@@ -64,8 +64,16 @@ kubectl create configmap pypi-cache-scripts \
 DNS_RESOLVER=$(kubectl get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')
 echo "[pypi-cache] kube-dns ClusterIP: ${DNS_RESOLVER}"
 
+# Compute nginx max cache size from instance specs (NVMe or emptyDir fallback)
+NGINX_MAX_CACHE_SIZE=$(uv run "$MODULE_DIR/scripts/python/generate_manifests.py" \
+  --cluster "$CLUSTER" --clusters-yaml "$CLUSTERS_YAML" \
+  --print-nginx-max-cache-size)
+echo "[pypi-cache] nginx max_cache_size: ${NGINX_MAX_CACHE_SIZE}"
+
 echo "[pypi-cache] Creating pypi-cache-nginx-config ConfigMap..."
-sed "s/__DNS_RESOLVER__/${DNS_RESOLVER}/g" "$MODULE_DIR/kubernetes/nginx.conf" \
+sed -e "s/__DNS_RESOLVER__/${DNS_RESOLVER}/g" \
+  -e "s/__NGINX_MAX_CACHE_SIZE__/${NGINX_MAX_CACHE_SIZE}/g" \
+  "$MODULE_DIR/kubernetes/nginx.conf" \
   | kubectl create configmap pypi-cache-nginx-config \
     --from-file=nginx.conf=/dev/stdin \
     -n "$NAMESPACE" \

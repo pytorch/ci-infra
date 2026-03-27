@@ -15,6 +15,7 @@ from unittest.mock import patch
 import yaml
 from generate_manifests import (
     DEFAULTS,
+    compute_nginx_cache_size,
     compute_pod_resources,
     cuda_slug,
     generate_deployments,
@@ -76,7 +77,7 @@ class TestGetSlugs:
     def test_default_config(self):
         config = _default_config()
         slugs = get_slugs(config)
-        assert slugs == ["cpu", "cu121", "cu124"]
+        assert slugs == ["cpu"]
 
     def test_custom_cuda_versions(self):
         config = _default_config()
@@ -118,7 +119,48 @@ class TestLoadConfig:
         assert config["namespace"] == "pypi-cache"
         assert config["replicas"] == 2
         assert config["image"] == "pypiserver/pypiserver:v2.4.1"
-        assert config["cuda_versions"] == ["12.1", "12.4"]
+        # cuda_versions and python_versions are no longer in DEFAULTS;
+        # they must be set explicitly in clusters.yaml
+        assert "cuda_versions" not in config
+        assert "python_versions" not in config
+
+    def test_python_versions_override(self, tmp_path: Path):
+        """Cluster-level python_versions override takes effect."""
+        cy = _write_clusters_yaml(
+            tmp_path,
+            """\
+            clusters:
+              test-cluster:
+                region: us-west-2
+                pypi_cache:
+                  python_versions:
+                    - "3.12"
+                    - "3.13"
+            """,
+        )
+        config = load_config(cy, "test-cluster")
+        assert config["python_versions"] == ["3.12", "3.13"]
+        # cuda_versions is no longer in DEFAULTS; not present unless set explicitly
+        assert "cuda_versions" not in config
+
+    def test_python_versions_preserved_when_other_keys_overridden(self, tmp_path: Path):
+        """Overriding unrelated keys does not drop python_versions when set in YAML."""
+        cy = _write_clusters_yaml(
+            tmp_path,
+            """\
+            clusters:
+              test-cluster:
+                region: us-west-2
+                pypi_cache:
+                  replicas: 5
+                  python_versions:
+                    - "3.12"
+                    - "3.13"
+            """,
+        )
+        config = load_config(cy, "test-cluster")
+        assert config["replicas"] == 5
+        assert config["python_versions"] == ["3.12", "3.13"]
 
     def test_cluster_overrides(self, tmp_path: Path):
         """Cluster-level pypi_cache overrides take effect."""
@@ -237,12 +279,12 @@ class TestLoadConfig:
     def test_defaults_structure(self):
         """DEFAULTS has the expected keys for the nginx sidecar architecture."""
         config = _default_config()
-        assert config["instance_type"] == "r7i.12xlarge"
+        assert config["instance_type"] == "r5d.12xlarge"
         assert config["internal_port"] == 8081
         assert config["server_port"] == 8080
         assert config["workers"] == 4
         assert config["nginx_image"] == "docker.io/nginxinc/nginx-unprivileged:1.27-alpine"
-        assert config["nginx"]["cpu"] == 2
+        assert config["nginx"]["cpu"] == 8
         assert config["nginx"]["memory_gi"] == 2
         assert config["nginx"]["cache_size"] == "30Gi"
         assert config["server"]["cpu"] == "500m"
@@ -328,9 +370,10 @@ class TestGenerateDeployments:
 
     def test_correct_number_of_documents(self):
         config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
-        # Default: cpu + cu121 + cu124 = 3
+        # cpu + cu121 + cu124 = 3
         assert len(docs) == 3
 
     def test_all_valid_yaml(self):
@@ -561,6 +604,7 @@ class TestGenerateDeployments:
 
     def test_each_deployment_has_correct_cuda_label(self):
         config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         expected_slugs = ["cpu", "cu121", "cu124"]
@@ -580,9 +624,9 @@ class TestGenerateDeployments:
         for doc in docs:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
             resources = nginx["resources"]
-            assert resources["requests"]["cpu"] == 2
+            assert resources["requests"]["cpu"] == 8
             assert resources["requests"]["memory"] == "2Gi"
-            assert resources["limits"]["cpu"] == 2
+            assert resources["limits"]["cpu"] == 8
             assert resources["limits"]["memory"] == "2Gi"
 
     def test_resource_limits_shared_nodes_pypiserver(self):
@@ -609,19 +653,19 @@ class TestGenerateDeployments:
         for doc in docs:
             ns = doc["spec"]["template"]["spec"]["nodeSelector"]
             assert ns["workload-type"] == "pypi-cache"
-            assert ns["instance-type"] == "r7i.12xlarge"
+            assert ns["instance-type"] == "r5d.12xlarge"
 
-    def test_dedicated_instance_type_toleration(self):
-        """With instance_type, deployments tolerate the instance-type taint."""
+    def test_dedicated_workload_toleration(self):
+        """With instance_type, deployments tolerate workload=pypi-cache taint."""
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             tolerations = doc["spec"]["template"]["spec"]["tolerations"]
-            instance_tol = [t for t in tolerations if t.get("key") == "instance-type"]
-            assert len(instance_tol) == 1
-            assert instance_tol[0]["value"] == "r7i.12xlarge"
-            assert instance_tol[0]["effect"] == "NoSchedule"
+            workload_tol = [t for t in tolerations if t.get("key") == "workload"]
+            assert len(workload_tol) == 1
+            assert workload_tol[0]["value"] == "pypi-cache"
+            assert workload_tol[0]["effect"] == "NoSchedule"
 
     def test_dedicated_guaranteed_qos_nginx(self):
         """With instance_type, nginx requests == limits (Guaranteed QoS)."""
@@ -646,38 +690,40 @@ class TestGenerateDeployments:
             assert resources["requests"]["memory"] == resources["limits"]["memory"]
 
     def test_dedicated_computed_resources_total(self):
-        """With r7i.12xlarge, total pod resources are 14 vCPU / 105 GiB."""
+        """With r5d.12xlarge, total pod resources are 14 vCPU / 105 GiB."""
         config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             containers = doc["spec"]["template"]["spec"]["containers"]
             nginx_res = containers[0]["resources"]
             server_res = containers[1]["resources"]
-            # nginx: 2 vCPU, 2 GiB + pypiserver: 12 vCPU, 103 GiB = 14 vCPU, 105 GiB
+            # nginx: 8 vCPU, 2 GiB + pypiserver: 6 vCPU, 103 GiB = 14 vCPU, 105 GiB
             total_cpu = nginx_res["requests"]["cpu"] + server_res["requests"]["cpu"]
             assert total_cpu == 14
 
     def test_dedicated_computed_resources_nginx(self):
-        """With r7i.12xlarge, nginx gets fixed 2 vCPU / 2 GiB."""
+        """With r5d.12xlarge, nginx gets fixed 8 vCPU / 2 GiB."""
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
             resources = nginx["resources"]
-            assert resources["requests"]["cpu"] == 2
+            assert resources["requests"]["cpu"] == 8
             assert resources["requests"]["memory"] == "2Gi"
 
     def test_dedicated_computed_resources_pypiserver(self):
-        """With r7i.12xlarge, pypiserver gets remainder: 12 vCPU / 103 GiB."""
+        """With r5d.12xlarge, pypiserver gets remainder: 6 vCPU / 103 GiB."""
         config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             pypiserver = doc["spec"]["template"]["spec"]["containers"][1]
             resources = pypiserver["resources"]
-            assert resources["requests"]["cpu"] == 12
+            assert resources["requests"]["cpu"] == 6
             assert resources["requests"]["memory"] == "103Gi"
 
     def test_dedicated_nginx_exceeds_pod_total_cpu_exits(self):
@@ -733,9 +779,24 @@ class TestGenerateDeployments:
             assert "nginx-config" in vol_map
             assert vol_map["nginx-config"]["configMap"]["name"] == "pypi-cache-nginx-config"
 
-    def test_volumes_nginx_cache(self):
-        """nginx-cache volume is emptyDir with configured size limit."""
+    def test_volumes_nginx_cache_nvme_hostpath(self):
+        """With NVMe instance, nginx-cache uses hostPath per-slug directories."""
         config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
+        result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
+        docs = self._parse_docs(result)
+        expected_slugs = ["cpu", "cu121", "cu124"]
+        for doc, slug in zip(docs, expected_slugs, strict=True):
+            volumes = doc["spec"]["template"]["spec"]["volumes"]
+            vol_map = {v["name"]: v for v in volumes}
+            assert "nginx-cache" in vol_map
+            assert vol_map["nginx-cache"]["hostPath"]["path"] == f"/mnt/k8s-disks/0/nginx-cache-{slug}"
+            assert vol_map["nginx-cache"]["hostPath"]["type"] == "DirectoryOrCreate"
+
+    def test_volumes_nginx_cache_non_nvme_emptydir(self):
+        """Without NVMe, nginx-cache falls back to emptyDir."""
+        config = _default_config()
+        config["instance_type"] = "r7i.12xlarge"
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
@@ -790,6 +851,32 @@ class TestGenerateDeployments:
             assert "scripts" in mount_names
             assert "pypiserver-tmp" in mount_names
 
+    # --- NVMe init container ---
+
+    def test_nvme_init_container_present(self):
+        """With NVMe instance (r5d), init-nginx-cache container is generated."""
+        config = _default_config()
+        result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
+        docs = self._parse_docs(result)
+        for doc in docs:
+            init_containers = doc["spec"]["template"]["spec"]["initContainers"]
+            names = [c["name"] for c in init_containers]
+            assert "init-nginx-cache" in names
+            cache_init = next(c for c in init_containers if c["name"] == "init-nginx-cache")
+            assert cache_init["securityContext"]["runAsUser"] == 0
+            assert cache_init["securityContext"]["runAsNonRoot"] is False
+
+    def test_non_nvme_no_cache_init_container(self):
+        """Without NVMe (r7i), no init-nginx-cache container."""
+        config = _default_config()
+        config["instance_type"] = "r7i.12xlarge"
+        result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
+        docs = self._parse_docs(result)
+        for doc in docs:
+            init_containers = doc["spec"]["template"]["spec"]["initContainers"]
+            names = [c["name"] for c in init_containers]
+            assert "init-nginx-cache" not in names
+
 
 # ============================================================================
 # generate_services
@@ -802,6 +889,7 @@ class TestGenerateServices:
 
     def test_correct_number_of_documents(self):
         config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_services(config, TEMPLATE_DIR / "service.yaml.tpl")
         docs = self._parse_docs(result)
         assert len(docs) == 3
@@ -815,6 +903,7 @@ class TestGenerateServices:
 
     def test_service_names_match_slugs(self):
         config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_services(config, TEMPLATE_DIR / "service.yaml.tpl")
         docs = self._parse_docs(result)
         expected_names = ["pypi-cache-cpu", "pypi-cache-cu121", "pypi-cache-cu124"]
@@ -823,6 +912,7 @@ class TestGenerateServices:
 
     def test_selector_matches_deployment_labels(self):
         config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_services(config, TEMPLATE_DIR / "service.yaml.tpl")
         docs = self._parse_docs(result)
         expected_slugs = ["cpu", "cu121", "cu124"]
@@ -853,7 +943,7 @@ class TestListSlugs:
         """The --list-slugs path uses get_slugs; verify it returns expected values."""
         config = _default_config()
         slugs = get_slugs(config)
-        assert slugs == ["cpu", "cu121", "cu124"]
+        assert slugs == ["cpu"]
 
     def test_list_slugs_custom_cuda(self):
         config = _default_config()
@@ -929,6 +1019,33 @@ class TestComputePodResources:
 
 
 # ============================================================================
+# compute_nginx_cache_size
+# ============================================================================
+
+
+class TestComputeNginxCacheSize:
+    def test_r5d_12xlarge_3_pods(self):
+        """r5d.12xlarge (1800 GiB NVMe) with 3 pods: floor(1800 * 0.95 / 3) = 570."""
+        result = compute_nginx_cache_size("r5d.12xlarge", 3)
+        assert result == 570
+
+    def test_non_nvme_returns_none(self):
+        """Instance without NVMe returns None."""
+        result = compute_nginx_cache_size("r7i.12xlarge", 1)
+        assert result is None
+
+    def test_scales_with_pods_per_node(self):
+        """More pods per node = less cache per pod."""
+        result_1 = compute_nginx_cache_size("r5d.12xlarge", 1)
+        result_3 = compute_nginx_cache_size("r5d.12xlarge", 3)
+        result_6 = compute_nginx_cache_size("r5d.12xlarge", 6)
+        assert result_1 is not None
+        assert result_3 is not None
+        assert result_6 is not None
+        assert result_1 > result_3 > result_6
+
+
+# ============================================================================
 # generate_nodepool
 # ============================================================================
 
@@ -953,7 +1070,7 @@ class TestGenerateNodepool:
         reqs = parsed["spec"]["template"]["spec"]["requirements"]
         instance_req = [r for r in reqs if r["key"] == "node.kubernetes.io/instance-type"]
         assert len(instance_req) == 1
-        assert "r7i.12xlarge" in instance_req[0]["values"]
+        assert "r5d.12xlarge" in instance_req[0]["values"]
 
     def test_workload_type_label(self):
         config = _default_config()
@@ -962,15 +1079,16 @@ class TestGenerateNodepool:
         labels = parsed["spec"]["template"]["metadata"]["labels"]
         assert labels["workload-type"] == "pypi-cache"
 
-    def test_instance_type_taint(self):
+    def test_workload_taint(self):
+        """NodePool taint is workload=pypi-cache (decoupled from instance type)."""
         config = _default_config()
         result = generate_nodepool(config, TEMPLATE_DIR / "nodepool.yaml.tpl")
         parsed = yaml.safe_load(result)
         taints = parsed["spec"]["template"]["spec"]["taints"]
-        instance_taint = [t for t in taints if t["key"] == "instance-type"]
-        assert len(instance_taint) == 1
-        assert instance_taint[0]["value"] == "r7i.12xlarge"
-        assert instance_taint[0]["effect"] == "NoSchedule"
+        workload_taint = [t for t in taints if t["key"] == "workload"]
+        assert len(workload_taint) == 1
+        assert workload_taint[0]["value"] == "pypi-cache"
+        assert workload_taint[0]["effect"] == "NoSchedule"
 
     def test_no_startup_taints(self):
         """pypi-cache nodes have no startup taints (unlike runner/buildkit nodes)."""
@@ -1001,7 +1119,7 @@ class TestGenerateNodepool:
         config = _default_config()
         result = generate_nodepool(config, TEMPLATE_DIR / "nodepool.yaml.tpl")
         parsed = yaml.safe_load(result)
-        # Default replicas=2, r7i.12xlarge=48 vCPU, max_nodes=4
+        # Default replicas=2, r5d.12xlarge=48 vCPU, max_nodes=4
         assert parsed["spec"]["limits"]["cpu"] == "192"
 
     def test_memory_limit_computed(self):
@@ -1044,11 +1162,20 @@ class TestGenerateEc2NodeClass:
         result = generate_ec2nodeclass(config, TEMPLATE_DIR / "ec2nodeclass.yaml.tpl")
         assert "CLUSTER_NAME_PLACEHOLDER" in result
 
-    def test_no_instance_store_policy(self):
-        """r7i is EBS-only — no instanceStorePolicy (unlike BuildKit NVMe nodes)."""
+    def test_instance_store_policy_nvme(self):
+        """r5d has NVMe — instanceStorePolicy: RAID0 for Karpenter auto-discovery."""
         config = _default_config()
         result = generate_ec2nodeclass(config, TEMPLATE_DIR / "ec2nodeclass.yaml.tpl")
-        assert "instanceStorePolicy" not in result
+        parsed = yaml.safe_load(result)
+        assert parsed["spec"]["instanceStorePolicy"] == "RAID0"
+
+    def test_no_instance_store_policy_non_nvme(self):
+        """Non-NVMe instance has no instanceStorePolicy."""
+        config = _default_config()
+        config["instance_type"] = "r7i.12xlarge"
+        result = generate_ec2nodeclass(config, TEMPLATE_DIR / "ec2nodeclass.yaml.tpl")
+        parsed = yaml.safe_load(result)
+        assert "instanceStorePolicy" not in parsed["spec"]
 
     def test_no_cpu_manager_policy(self):
         """pypiserver is I/O-bound — no cpuManagerPolicy (no CPU pinning)."""
@@ -1060,7 +1187,7 @@ class TestGenerateEc2NodeClass:
         config = _default_config()
         result = generate_ec2nodeclass(config, TEMPLATE_DIR / "ec2nodeclass.yaml.tpl")
         parsed = yaml.safe_load(result)
-        assert parsed["spec"]["tags"]["InstanceType"] == "r7i.12xlarge"
+        assert parsed["spec"]["tags"]["InstanceType"] == "r5d.12xlarge"
 
     def test_no_remaining_generator_placeholders(self):
         config = _default_config()
@@ -1357,6 +1484,57 @@ class TestMain:
 
         assert ret == 0
         assert not (output_dir / "nodepools.yaml").exists()
+
+    def test_print_nginx_max_cache_size_nvme_output(self, tmp_path: Path, capsys):
+        """--print-nginx-max-cache-size with NVMe instance prints computed size."""
+        cy = self._clusters_yaml(tmp_path)
+        with patch(
+            "sys.argv",
+            [
+                "generate_manifests.py",
+                "--cluster",
+                "test-cluster",
+                "--clusters-yaml",
+                str(cy),
+                "--print-nginx-max-cache-size",
+            ],
+        ):
+            ret = main()
+        assert ret == 0
+        output = capsys.readouterr().out.strip()
+        # r5d.12xlarge with 2 slugs (cpu + cu121): floor(1800 * 0.95 / 2) = 855
+        assert output == "855g"
+
+    def test_print_nginx_max_cache_size_non_nvme(self, tmp_path: Path, capsys):
+        """--print-nginx-max-cache-size without NVMe prints fallback from cache_size."""
+        cy = _write_clusters_yaml(
+            tmp_path,
+            """\
+            clusters:
+              test-cluster:
+                region: us-west-2
+                pypi_cache:
+                  instance_type: "r7i.12xlarge"
+                  cuda_versions:
+                    - "12.1"
+            """,
+        )
+        with patch(
+            "sys.argv",
+            [
+                "generate_manifests.py",
+                "--cluster",
+                "test-cluster",
+                "--clusters-yaml",
+                str(cy),
+                "--print-nginx-max-cache-size",
+            ],
+        ):
+            ret = main()
+        assert ret == 0
+        output = capsys.readouterr().out.strip()
+        # Default cache_size is 30Gi, so max_size = 30 - 5 = 25g
+        assert output == "25g"
 
     def test_instance_type_cli_override(self, tmp_path: Path):
         """--instance-type CLI arg overrides config."""

@@ -45,6 +45,6 @@ spec:
         name: pypi-cache
 
       taints:
-        - key: instance-type
-          value: "__INSTANCE_TYPE__"
+        - key: workload
+          value: "pypi-cache"
           effect: NoSchedule

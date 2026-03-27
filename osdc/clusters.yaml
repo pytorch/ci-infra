@@ -75,6 +75,21 @@ defaults:
   logging:
     grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
   alloy_chart_version: "1.6.2"
+  pypi_cache:
+    cuda_versions:
+      - "12.8.1"
+      - "13.0.2"
+    # NOTE: python_versions is not consumed by manifest generation yet.
+    # Reserved for future self-learning builder that will compile wheels
+    # for each (cuda_version, python_version) combination.
+    python_versions:
+      - "3.10"
+      - "3.11"
+      - "3.12"
+      - "3.13"
+      - "3.13t"
+      - "3.14"
+      - "3.14t"
 
 clusters:
   arc-staging:
@@ -122,17 +137,14 @@ clusters:
       arm64_instance_type: m7gd.16xlarge
     pypi_cache:
       replicas: 1
-      cuda_versions:
-        - "12.8"
-        - "13.0"
     modules:
       - karpenter
       - arc
       - nodepools
       - arc-runners
-      - cache-enforcer
       - buildkit
       - pypi-cache
+      - cache-enforcer
       - monitoring
       - logging
 
@@ -163,8 +175,8 @@ clusters:
       - arc
       - nodepools
       - arc-runners
-      - cache-enforcer
       - buildkit
       - pypi-cache
+      - cache-enforcer
       - monitoring
       - logging

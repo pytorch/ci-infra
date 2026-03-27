@@ -59,6 +59,7 @@ __TOLERATIONS_ENTRIES__
           volumeMounts:
             - name: data
               mountPath: /data
+__INIT_NVME_BLOCK__
 
       containers:
         - name: nginx
@@ -175,9 +176,7 @@ __TOLERATIONS_ENTRIES__
         - name: nginx-config
           configMap:
             name: pypi-cache-nginx-config
-        - name: nginx-cache
-          emptyDir:
-            sizeLimit: __NGINX_CACHE_SIZE__
+__NGINX_CACHE_VOLUME__
         - name: nginx-tmp
           emptyDir:
             medium: Memory

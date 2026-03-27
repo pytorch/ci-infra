@@ -50,14 +50,13 @@ DEFAULTS = {
     "internal_port": 8081,
     "image": "pypiserver/pypiserver:v2.4.1",
     "nginx_image": "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
-    "cuda_versions": ["12.1", "12.4"],
     "storage_request": "1Ti",
     "replicas": 2,
     "log_max_age_days": 30,
     "workers": 4,
-    "instance_type": "r7i.12xlarge",
+    "instance_type": "r5d.12xlarge",
     "nginx": {
-        "cpu": 2,
+        "cpu": 8,
         "memory_gi": 2,
         "cache_size": "30Gi",
     },
@@ -118,6 +117,19 @@ def compute_pod_resources(instance_type: str, pods_per_node: int) -> dict:
     }
 
 
+def compute_nginx_cache_size(instance_type: str, pods_per_node: int) -> int | None:
+    """Compute per-pod nginx cache size in GiB from NVMe storage.
+
+    Returns the usable cache size per pod (95% of NVMe divided by pods),
+    or None if the instance has no NVMe storage.
+    """
+    spec = INSTANCE_SPECS[instance_type]
+    nvme_gib = spec.get("nvme_gib", 0)
+    if not nvme_gib:
+        return None
+    return math.floor(nvme_gib * 0.95 / pods_per_node)
+
+
 def log_info(msg):
     print(f"{GREEN}\u2192{NC} {msg}")
 
@@ -137,7 +149,7 @@ def get_slugs(config: dict) -> list[str]:
     Always starts with 'cpu', then each cuda_version converted to slug.
     """
     slugs = ["cpu"]
-    for ver in config.get("cuda_versions", DEFAULTS["cuda_versions"]):
+    for ver in config.get("cuda_versions", []):
         slugs.append(cuda_slug(ver))
     return slugs
 
@@ -220,10 +232,16 @@ def generate_ec2nodeclass(config: dict, template_path: Path) -> str:
     """Generate EC2NodeClass manifest from template.
 
     CLUSTER_NAME_PLACEHOLDER is left in — sed-substituted at deploy time.
+    Adds instanceStorePolicy: RAID0 for NVMe-equipped instances.
     """
     instance_type = config["instance_type"]
+    spec = INSTANCE_SPECS[instance_type]
     content = template_path.read_text()
     content = content.replace("__INSTANCE_TYPE__", instance_type)
+    if spec.get("nvme_gib", 0) > 0:
+        content = content.replace("__INSTANCE_STORE_POLICY__", "  instanceStorePolicy: RAID0")
+    else:
+        content = content.replace("__INSTANCE_STORE_POLICY__\n", "")
     return content
 
 
@@ -280,6 +298,11 @@ def generate_deployments(config: dict, template_path: Path) -> str:
         )
         log_info(f"  nginx: {nginx_cpu} vCPU, {nginx_mem_gi}Gi — pypiserver: {server_cpu} vCPU, {server_mem_gi}Gi")
 
+        # NVMe cache sizing
+        nvme_cache_gi = compute_nginx_cache_size(instance_type, pods_per_node)
+        if nvme_cache_gi:
+            log_info(f"  nginx cache: {nvme_cache_gi}Gi per pod (NVMe hostPath)")
+
         # nodeSelector block — no leading indent on first line because the
         # template already has 6-space indent before __NODE_SELECTOR_BLOCK__
         node_selector_block = (
@@ -287,9 +310,9 @@ def generate_deployments(config: dict, template_path: Path) -> str:
         )
         # Toleration entries (8-space indent for list items under tolerations:)
         tolerations_entries = (
-            "        - key: instance-type\n"
+            "        - key: workload\n"
             "          operator: Equal\n"
-            f'          value: "{instance_type}"\n'
+            '          value: "pypi-cache"\n'
             "          effect: NoSchedule"
         )
     else:
@@ -300,6 +323,7 @@ def generate_deployments(config: dict, template_path: Path) -> str:
         server_cpu_str = server["cpu"]
         server_mem_str = server["memory"]
 
+        nvme_cache_gi = None
         node_selector_block = ""
         tolerations_entries = (
             "        - key: CriticalAddonsOnly\n          operator: Exists\n          effect: NoSchedule"
@@ -308,6 +332,33 @@ def generate_deployments(config: dict, template_path: Path) -> str:
     docs = []
     for slug in slugs:
         content = template_path.read_text()
+
+        # NVMe: hostPath volume with per-slug directory, init container for chown
+        # Non-NVMe: emptyDir volume, no init container
+        if nvme_cache_gi:
+            nginx_cache_volume = (
+                f"        - name: nginx-cache\n"
+                f"          hostPath:\n"
+                f"            path: /mnt/k8s-disks/0/nginx-cache-{slug}\n"
+                f"            type: DirectoryOrCreate"
+            )
+            init_nvme_block = (
+                "        - name: init-nginx-cache\n"
+                "          image: busybox:1.36\n"
+                '          command: ["chown", "-R", "65534:65534", "/var/cache/nginx"]\n'
+                "          securityContext:\n"
+                "            runAsNonRoot: false\n"
+                "            runAsUser: 0\n"
+                "          volumeMounts:\n"
+                "            - name: nginx-cache\n"
+                "              mountPath: /var/cache/nginx\n"
+            )
+        else:
+            nginx_cache_volume = (
+                f"        - name: nginx-cache\n          emptyDir:\n            sizeLimit: {nginx_cfg['cache_size']}"
+            )
+            init_nvme_block = ""
+
         content = content.replace("__NAMESPACE__", config["namespace"])
         content = content.replace("__CUDA_SLUG__", slug)
         content = content.replace("__REPLICAS__", str(config["replicas"]))
@@ -318,11 +369,16 @@ def generate_deployments(config: dict, template_path: Path) -> str:
         content = content.replace("__LOG_MAX_AGE_DAYS__", str(config["log_max_age_days"]))
         content = content.replace("__NGINX_CPU__", nginx_cpu_str)
         content = content.replace("__NGINX_MEMORY__", nginx_mem_str)
-        content = content.replace("__NGINX_CACHE_SIZE__", nginx_cfg["cache_size"])
         content = content.replace("__SERVER_CPU__", server_cpu_str)
         content = content.replace("__SERVER_MEMORY__", server_mem_str)
         content = content.replace("__NODE_SELECTOR_BLOCK__", node_selector_block)
         content = content.replace("__TOLERATIONS_ENTRIES__", tolerations_entries)
+        content = content.replace("__NGINX_CACHE_VOLUME__", nginx_cache_volume)
+        # Remove __INIT_NVME_BLOCK__ line entirely when empty, preserve content when set
+        if init_nvme_block:
+            content = content.replace("__INIT_NVME_BLOCK__", init_nvme_block)
+        else:
+            content = content.replace("__INIT_NVME_BLOCK__\n", "")
         docs.append(content)
     return "\n---\n".join(docs)
 
@@ -355,6 +411,11 @@ def main():
         action="store_true",
         help="Print CUDA slugs only (one per line), then exit",
     )
+    parser.add_argument(
+        "--print-nginx-max-cache-size",
+        action="store_true",
+        help="Print nginx max_size value (e.g. '601g') and exit",
+    )
     args = parser.parse_args()
 
     clusters_yaml = Path(args.clusters_yaml)
@@ -367,6 +428,20 @@ def main():
     if args.list_slugs:
         for slug in get_slugs(config):
             print(slug)
+        return 0
+
+    if args.print_nginx_max_cache_size:
+        instance_type = config.get("instance_type") or ""
+        if instance_type:
+            slugs = get_slugs(config)
+            nvme_cache_gi = compute_nginx_cache_size(instance_type, len(slugs))
+            if nvme_cache_gi:
+                print(f"{nvme_cache_gi}g")
+                return 0
+        # Fallback: derive from emptyDir cache_size (e.g. "30Gi" -> "25g")
+        nginx_cfg = config.get("nginx", DEFAULTS["nginx"])
+        cache_gi = int(nginx_cfg["cache_size"].rstrip("Gi"))
+        print(f"{cache_gi - 5}g")
         return 0
 
     if not args.efs_filesystem_id:

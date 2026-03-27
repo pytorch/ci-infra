@@ -23,7 +23,7 @@ builder.
 | `scripts/python/generate_manifests.py` | Reads clusters.yaml + templates, outputs StorageClass/PVC/Deployments/Services YAML |
 | `scripts/python/log_rotator.py` | Stdin-to-file log rotator with date-based rotation (mounted via ConfigMap) |
 | `scripts/python/conftest.py` | pytest path setup for cross-module imports |
-| `kubernetes/nginx.conf` | Static nginx caching proxy config (no template placeholders) |
+| `kubernetes/nginx.conf` | nginx caching proxy config template (`__DNS_RESOLVER__`, `__NGINX_MAX_CACHE_SIZE__` placeholders) |
 | `kubernetes/nodepool.yaml.tpl` | Karpenter NodePool template (dedicated pypi-cache nodes) |
 | `kubernetes/ec2nodeclass.yaml.tpl` | EC2NodeClass template (AWS node config for Karpenter) |
 | `docker/Dockerfile` | Reserved for future builder image |
@@ -41,19 +41,22 @@ defaults:
     workers: 4
     replicas: 2
     log_max_age_days: 30
-    cuda_versions:
-      - "12.1"
-      - "12.4"
-    instance_type: r7i.12xlarge
+    instance_type: r5d.12xlarge
     storage_request: "1Ti"
     server:
       cpu: "500m"
       memory: "768Mi"
     nginx:
-      cpu: 2
+      cpu: 8
       memory_gi: 2
       cache_size: "30Gi"
 ```
+
+**`cuda_versions` and `python_versions` are NOT module defaults.** They must be
+configured in `clusters.yaml` — either under `defaults.pypi_cache` or per-cluster
+under `clusters.<id>.pypi_cache`. The module's Python `DEFAULTS` dict does not
+contain these keys; omitting them from `clusters.yaml` will result in no CUDA
+slugs being generated.
 
 Per-cluster overrides work the usual way:
 
@@ -61,16 +64,14 @@ Per-cluster overrides work the usual way:
 clusters:
   arc-cbr-production:
     pypi_cache:
-      cuda_versions:
-        - "12.1"
-        - "12.4"
+      replicas: 3
     modules:
       - pypi-cache
 ```
 
 ## Dynamic pod sizing
 
-When `instance_type` is set (default: `r7i.12xlarge`), pod resources are computed
+When `instance_type` is set (default: `r5d.12xlarge`), pod resources are computed
 dynamically from instance specs — same formula as BuildKit:
 
 1. Look up total vCPU + memory for the instance type
@@ -84,11 +85,11 @@ dynamically from instance specs — same formula as BuildKit:
 This gives Guaranteed QoS (requests == limits) for predictable memory allocation
 and effective OS page cache utilization.
 
-Default sizing (r7i.12xlarge, 3 pods/node):
+Default sizing (r5d.12xlarge, 3 pods/node):
 - Total per pod: 14 vCPU, 105 GiB
-- nginx container: 2 vCPU, 2 GiB (fixed allocation)
-- pypiserver container: 12 vCPU, 103 GiB (remainder)
-- Pods: cpu, cu121, cu124
+- nginx container: 8 vCPU, 2 GiB (fixed allocation)
+- pypiserver container: 6 vCPU, 103 GiB (remainder)
+- Actual CUDA slugs (and therefore pods per node) depend on `cuda_versions` in `clusters.yaml`
 
 When `instance_type` is empty/unset, falls back to manual `server.*` config
 values and runs on shared base infrastructure nodes.
@@ -180,7 +181,14 @@ One Deployment + Service per CUDA version:
 
 ### nginx caching behavior
 
-- **proxy_cache_lock**: Only one request per cache key hits pypiserver; concurrent
+- **Full-path caching**: nginx caches ALL responses — both pypiserver (local wheels)
+  and upstream (pypi.org, download.pytorch.org). Cache keys use a `local:` prefix for
+  pypiserver responses to prevent collision with upstream fallback entries for the same URI
+- **pypiserver index caching**: `/simple/` responses cached 5m (short TTL so new
+  wheels appear quickly after upload to EFS). Key: `local:$request_uri|$http_accept`
+- **pypiserver wheel caching**: `.whl`, `.tar.gz`, `.zip` downloads cached 30d
+  (wheels are immutable once built). Key: `local:$request_uri`
+- **proxy_cache_lock**: Only one request per cache key hits the backend; concurrent
   duplicates wait for the first response (thundering herd protection, 10s timeout)
 - **PEP 691 content negotiation**: The `Accept` header is included in the cache key
   so `application/vnd.pypi.simple.v1+json` and `text/html` responses are cached separately
@@ -195,8 +203,10 @@ One Deployment + Service per CUDA version:
   Index pages cached 10m, wheel files cached 1 month (immutable)
 - **proxy_cache_use_stale**: Serves stale cached responses when pypiserver is
   temporarily unavailable (error, timeout, updating)
-- **Cache storage**: 30 GiB emptyDir volume per pod (ephemeral, survives container
-  restarts but not pod rescheduling)
+- **Cache storage**: On NVMe instances (r5d.12xlarge), ~570 GiB hostPath per pod
+  (`/mnt/k8s-disks/0/nginx-cache-{slug}`); Karpenter auto-formats NVMe as RAID0.
+  On non-NVMe instances, falls back to 30 GiB emptyDir. Both are ephemeral (survive
+  container restarts but not pod rescheduling)
 
 ## Self-learning loop
 
@@ -232,7 +242,7 @@ Alloy log filtering (INFO suppression) is a follow-up task.
 
 - Base must be deployed (EKS cluster, VPC, subnets)
 - Terraform creates EFS + CSI driver (runs before k8s manifests)
-- Pods run on dedicated r7i.12xlarge nodes (Karpenter NodePool `pypi-cache`)
+- Pods run on dedicated r5d.12xlarge nodes (Karpenter NodePool `pypi-cache`, taint `workload=pypi-cache:NoSchedule`)
 - When `instance_type` is unset, falls back to base infrastructure nodes (`CriticalAddonsOnly` taint)
 
 ## Portability boundary

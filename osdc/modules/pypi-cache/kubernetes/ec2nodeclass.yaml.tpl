@@ -55,6 +55,7 @@ spec:
     httpPutResponseHopLimit: 1
     httpTokens: required
 
+__INSTANCE_STORE_POLICY__
   tags:
     Name: "CLUSTER_NAME_PLACEHOLDER-pypi-cache"
     ManagedBy: "karpenter"
