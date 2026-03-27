@@ -544,3 +544,69 @@ class TestMain:
         assert result == 0
         output = capsys.readouterr().out
         assert "All runner types achieve" in output
+
+    def test_consumer_runner_defs_discovered(self, tmp_path, monkeypatch, capsys):
+        """main() discovers runner defs from consumer modules/ when OSDC_ROOT is set."""
+        # Create a fake consumer root with a module containing runner defs
+        consumer = tmp_path / "consumer"
+        defs = consumer / "modules" / "custom-runners" / "defs"
+        defs.mkdir(parents=True)
+        (defs / "big-runner.yaml").write_text(
+            yaml.dump(
+                {
+                    "runner": {
+                        "name": "consumer-big",
+                        "instance_type": "c7a.48xlarge",
+                        "vcpu": 96,
+                        "memory": "192Gi",
+                        "gpu": 0,
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("OSDC_ROOT", str(consumer))
+        result = main(["--threshold", "1"])
+        assert result in (0, 1)
+        output = capsys.readouterr().out
+        assert str(defs) in output
+
+    def test_consumer_nodepool_defs_discovered(self, tmp_path, monkeypatch, capsys):
+        """main() discovers nodepool defs from consumer modules/ when OSDC_ROOT is set."""
+        consumer = tmp_path / "consumer"
+        defs = consumer / "modules" / "custom-nodepools" / "defs"
+        defs.mkdir(parents=True)
+        (defs / "big-pool.yaml").write_text(
+            yaml.dump(
+                {
+                    "nodepool": {
+                        "name": "consumer-pool",
+                        "instance_type": "c7a.48xlarge",
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("OSDC_ROOT", str(consumer))
+        result = main(["--threshold", "1"])
+        assert result in (0, 1)
+        output = capsys.readouterr().out
+        assert str(defs) in output
+
+    def test_consumer_module_without_defs_ignored(self, tmp_path, monkeypatch, capsys):
+        """Consumer modules without a defs/ directory are silently skipped."""
+        consumer = tmp_path / "consumer"
+        (consumer / "modules" / "no-defs-module").mkdir(parents=True)
+        monkeypatch.setenv("OSDC_ROOT", str(consumer))
+        result = main(["--threshold", "1"])
+        assert result in (0, 1)
+
+    def test_consumer_module_non_runner_yaml_ignored(self, tmp_path, monkeypatch, capsys):
+        """Consumer module defs with non-runner/nodepool YAMLs are not added."""
+        consumer = tmp_path / "consumer"
+        defs = consumer / "modules" / "other-module" / "defs"
+        defs.mkdir(parents=True)
+        (defs / "config.yaml").write_text(yaml.dump({"something_else": True}))
+        monkeypatch.setenv("OSDC_ROOT", str(consumer))
+        result = main(["--threshold", "1"])
+        assert result in (0, 1)
+        output = capsys.readouterr().out
+        assert str(defs) not in output
