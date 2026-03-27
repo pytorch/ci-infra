@@ -832,7 +832,7 @@ test:
     COVERAGE_CHECK
     fi
 
-    rm -f coverage.json
+    rm -f coverage.json .coverage
 
     if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi
     if [[ $rc -ne 0 ]]; then
