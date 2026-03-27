@@ -148,6 +148,8 @@ One Deployment + Service per CUDA version:
 
 ## Request flow
 
+### PyPI packages (default)
+
 1. Composite GitHub Action sets `PIP_INDEX_URL` / `UV_INDEX_URL` for the job
 2. pip/uv queries `pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/simple/{package}/`
 3. nginx checks its local cache — serves response immediately on cache hit
@@ -163,18 +165,34 @@ One Deployment + Service per CUDA version:
 9. nginx caches index responses (10m) and package downloads (1 month)
 10. Access log records every request (the telemetry for self-learning)
 
+### PyTorch packages (download.pytorch.org)
+
+1. Composite GitHub Action sets `PIP_EXTRA_INDEX_URL` to
+   `http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/whl/{cuda}/`
+2. pip queries the `/whl/{cuda}/` index — nginx proxies directly to
+   `download.pytorch.org` (no pypiserver involved) and caches index pages (10m)
+3. **nginx rewrites absolute `https://download.pytorch.org/...` URLs in
+   index responses to relative `/whl/...` paths** (`sub_filter`)
+4. pip requests `/whl/{cuda}/torch-xxx.whl` — nginx proxies to
+   `download.pytorch.org` and caches the wheel (1 month, immutable)
+5. cache-enforcer blocks direct access to `download.pytorch.org` on runner nodes,
+   forcing all traffic through this proxy
+
 ### nginx caching behavior
 
 - **proxy_cache_lock**: Only one request per cache key hits pypiserver; concurrent
   duplicates wait for the first response (thundering herd protection, 10s timeout)
 - **PEP 691 content negotiation**: The `Accept` header is included in the cache key
   so `application/vnd.pypi.simple.v1+json` and `text/html` responses are cached separately
-- **sub_filter URL rewriting**: Absolute `https://files.pythonhosted.org` URLs in
-  pypi.org responses are rewritten to relative `/packages/...` paths so pip downloads
-  go through the proxy (required for cache-enforcer compatibility)
+- **sub_filter URL rewriting**: Absolute `https://files.pythonhosted.org` and
+  `https://download.pytorch.org` URLs in upstream responses are rewritten to relative
+  paths (`/packages/...` and `/whl/...` respectively) so pip downloads go through the
+  proxy (required for cache-enforcer compatibility)
 - **`/packages/` proxy**: Rewritten download URLs are proxied to `files.pythonhosted.org`
   and cached for 1 month (packages are immutable). Cache key is `$request_uri` only
   (no Accept header for binary downloads)
+- **`/whl/` proxy**: PyTorch index and downloads proxied to `download.pytorch.org`.
+  Index pages cached 10m, wheel files cached 1 month (immutable)
 - **proxy_cache_use_stale**: Serves stale cached responses when pypiserver is
   temporarily unavailable (error, timeout, updating)
 - **Cache storage**: 30 GiB emptyDir volume per pod (ephemeral, survives container

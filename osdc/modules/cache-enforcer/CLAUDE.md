@@ -17,7 +17,7 @@ internal caches already running on each node.
 | Traffic | Blocked destinations | Forced through |
 |---------|---------------------|----------------|
 | Container pulls | docker.io, registry-1.docker.io, auth.docker.io, production.cloudflare.docker.com, ghcr.io, nvcr.io, quay.io, registry.k8s.io | Harbor (localhost:30002) |
-| Python packages | pypi.org, files.pythonhosted.org | pypi-cache (localhost:8080) |
+| Python packages | pypi.org, files.pythonhosted.org, download.pytorch.org | pypi-cache (localhost:8080) |
 
 `public.ecr.aws` is NOT blocked — no rate limits and not proxied through Harbor.
 

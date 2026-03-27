@@ -44,6 +44,7 @@ EXPECTED_REGISTRY_DOMAINS = [
 EXPECTED_PYPI_DOMAINS = [
     "pypi.org",
     "files.pythonhosted.org",
+    "download.pytorch.org",
 ]
 
 # Domains that must NOT be blocked (no rate limits, used for bootstrap).
