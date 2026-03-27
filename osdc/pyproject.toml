@@ -28,6 +28,7 @@ testpaths = [
   "modules/buildkit/scripts/python",
   "integration-tests/scripts/python",
   "integration-tests/load-test/scripts/python",
+  "actions/setup-pypi-cache",
 ]
 addopts = "--tb=short -q"
 filterwarnings = [

@@ -264,6 +264,10 @@ data:
               value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
             - name: UV_INSECURE_HOST
               value: "pypi-cache-cpu.pypi-cache.svc.cluster.local:8080"
+            - name: PIP_EXTRA_INDEX_URL
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+            - name: UV_INDEX
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
             - name: TORCH_CI_MAX_MEMORY
               value: "{{MEMORY_BYTES}}"
           # Workflow container gets the actual compute resources
