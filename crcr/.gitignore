@@ -1,0 +1,14 @@
+__pycache__/
+.DS_Store
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+**/.terraform/*
+**/.venv/
+**/venv/
+tf-modules/
+assets/*/*.zip
+aws/*/*/backend.tf
+aws/*/*/dyn_locals.tf
+crash.log
