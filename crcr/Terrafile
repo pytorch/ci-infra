@@ -1,0 +1,10 @@
+terraform-aws-vpc:
+  source: "jeanschmidt/terraform-aws-vpc"
+  rev: "8fdd56aa6467a28471f696e5fb0c4174de2c1367"
+crcr:
+  source: "pytorch/test-infra"
+  tag: "v20260326-custom"
+  assets:
+    - "cross-repo-ci-webhook.zip"
+  asset-folders:
+    - assets/lambdas-download
