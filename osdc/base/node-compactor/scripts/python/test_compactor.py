@@ -216,19 +216,21 @@ class TestNodeState:
         assert node.youngest_pod_age_seconds == math.inf
 
     def test_youngest_pod_age_with_pods(self):
+        now = datetime.now(UTC)
         node = make_node("n1")
         node.pods = [
-            make_pod("p1", node_name="n1", start_time=NOW - timedelta(minutes=30)),
-            make_pod("p2", node_name="n1", start_time=NOW - timedelta(minutes=5)),
+            make_pod("p1", node_name="n1", start_time=now - timedelta(minutes=30)),
+            make_pod("p2", node_name="n1", start_time=now - timedelta(minutes=5)),
         ]
         # Youngest pod is 5 minutes old
         assert node.youngest_pod_age_seconds == pytest.approx(300, abs=5)
 
     def test_youngest_pod_age_ignores_none_start_time(self):
+        now = datetime.now(UTC)
         node = make_node("n1")
         node.pods = [
             make_pod("p1", node_name="n1", start_time=None),
-            make_pod("p2", node_name="n1", start_time=NOW - timedelta(minutes=10)),
+            make_pod("p2", node_name="n1", start_time=now - timedelta(minutes=10)),
         ]
         assert node.youngest_pod_age_seconds == pytest.approx(600, abs=5)
 
