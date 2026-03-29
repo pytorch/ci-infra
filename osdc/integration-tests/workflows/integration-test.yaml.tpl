@@ -36,13 +36,49 @@ jobs:
             echo "FAIL: AVX-512 flags not found in /proc/cpuinfo"
             exit 1
           fi
-      - name: Verify resources
+      - name: Verify CPU count
         run: |
-          echo "=== Memory ==="
-          free -h
-          echo ""
-          echo "=== Disk ==="
-          df -h
+          EXPECTED=8
+          ACTUAL=$(nproc)
+          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
+          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
+            exit 1
+          fi
+          echo "PASS: CPU count matches"
+      - name: Verify memory
+        run: |
+          EXPECTED_GI=32
+          if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory.max)
+          elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+          else
+            BYTES=$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)
+          fi
+          ACTUAL_GI=$((BYTES / 1073741824))
+          echo "Memory: ${ACTUAL_GI}Gi (expected: ${EXPECTED_GI}Gi)"
+          MIN_GI=$((EXPECTED_GI * 90 / 100))
+          if [ "$ACTUAL_GI" -lt "$MIN_GI" ]; then
+            echo "FAIL: Memory below expected (${ACTUAL_GI}Gi < ${MIN_GI}Gi minimum)"
+            exit 1
+          fi
+          echo "PASS: Memory within expected range"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=34359738368
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
       - name: Verify environment
         run: |
           echo "=== Environment ==="
@@ -77,13 +113,49 @@ jobs:
           else
             echo "WARN: AMX flags not found (may not be exposed in container)"
           fi
-      - name: Verify resources
+      - name: Verify CPU count
         run: |
-          echo "=== Memory ==="
-          free -h
-          echo ""
-          echo "=== Disk ==="
-          df -h
+          EXPECTED=8
+          ACTUAL=$(nproc)
+          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
+          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
+            exit 1
+          fi
+          echo "PASS: CPU count matches"
+      - name: Verify memory
+        run: |
+          EXPECTED_GI=32
+          if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory.max)
+          elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+          else
+            BYTES=$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)
+          fi
+          ACTUAL_GI=$((BYTES / 1073741824))
+          echo "Memory: ${ACTUAL_GI}Gi (expected: ${EXPECTED_GI}Gi)"
+          MIN_GI=$((EXPECTED_GI * 90 / 100))
+          if [ "$ACTUAL_GI" -lt "$MIN_GI" ]; then
+            echo "FAIL: Memory below expected (${ACTUAL_GI}Gi < ${MIN_GI}Gi minimum)"
+            exit 1
+          fi
+          echo "PASS: Memory within expected range"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=34359738368
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
   test-cpu-arm64:
     runs-on: {{PREFIX}}l-arm64g3-16-62
@@ -100,13 +172,49 @@ jobs:
             exit 1
           fi
           echo "PASS: Architecture is $ARCH"
-      - name: Verify resources
+      - name: Verify CPU count
         run: |
-          echo "=== Memory ==="
-          free -h
-          echo ""
-          echo "=== Disk ==="
-          df -h
+          EXPECTED=16
+          ACTUAL=$(nproc)
+          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
+          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
+            exit 1
+          fi
+          echo "PASS: CPU count matches"
+      - name: Verify memory
+        run: |
+          EXPECTED_GI=62
+          if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory.max)
+          elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+            BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+          else
+            BYTES=$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)
+          fi
+          ACTUAL_GI=$((BYTES / 1073741824))
+          echo "Memory: ${ACTUAL_GI}Gi (expected: ${EXPECTED_GI}Gi)"
+          MIN_GI=$((EXPECTED_GI * 90 / 100))
+          if [ "$ACTUAL_GI" -lt "$MIN_GI" ]; then
+            echo "FAIL: Memory below expected (${ACTUAL_GI}Gi < ${MIN_GI}Gi minimum)"
+            exit 1
+          fi
+          echo "PASS: Memory within expected range"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=66571993088
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
       - name: Verify environment
         run: |
           echo "CHECKOUT_GIT_CACHE_DIR=${CHECKOUT_GIT_CACHE_DIR:-NOT SET}"
@@ -115,6 +223,404 @@ jobs:
             exit 1
           fi
           echo "PASS: Required env vars present"
+
+  # ── PyPI Cache: Default Pod Environment ─────────────────────────────
+  # Validates runner pod-level defaults: pip install, uv install,
+  # download.pytorch.org proxy, and URL rewriting — all without the
+  # setup-pypi-cache composite action.
+  test-pypi-cache-defaults:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify pypi-cache service health
+        run: |
+          echo "=== PyPI Cache: Service Health Check ==="
+          SLUGS="{{PYPI_CACHE_SLUGS}}"
+          FAIL=0
+          for slug in $SLUGS; do
+            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/simple/"
+            HTTP_CODE=$(python3 -c "
+          import urllib.request, sys
+          try:
+              r = urllib.request.urlopen('$URL', timeout=15)
+              print(r.status)
+          except Exception as e:
+              print(f'000 ({e})', file=sys.stderr)
+              print('000')
+          ")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE"
+            else
+              echo "FAIL: pypi-cache-${slug} returned HTTP $HTTP_CODE (expected 200)"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more pypi-cache services are unhealthy"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All pypi-cache services healthy"
+
+      - name: Verify pip install (pypi.org proxy)
+        run: |
+          echo "=== Pip Install Test ==="
+          pip install --no-cache-dir six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
+          python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
+          echo "PASS: pip install and import succeeded"
+
+      - name: Verify download.pytorch.org proxy
+        run: |
+          echo "=== download.pytorch.org Proxy Test ==="
+          echo "PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-<not set>}"
+          echo "UV_INDEX=${UV_INDEX:-<not set>}"
+          python3 -c "
+          import urllib.request, os, sys
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          if not url:
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              sys.exit(1)
+          r = urllib.request.urlopen(url, timeout=30)
+          body = r.read().decode()
+          print(f'HTTP {r.status} — index page length: {len(body)} bytes')
+          if 'torch' not in body.lower():
+              print('FAIL: torch not found in /whl/ index')
+              sys.exit(1)
+          print('PASS: download.pytorch.org proxy responds and contains torch')
+          "
+
+      - name: Install uv
+        run: pip install --no-cache-dir uv
+
+      - name: Verify uv pip install
+        run: |
+          echo "=== UV pip install Test ==="
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          uv pip install --system --no-cache six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv pip install succeeded"
+
+      - name: Verify uv pip compile + sync
+        run: |
+          echo "=== UV pip compile + sync Test ==="
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          printf 'six\npackaging\ntyping-extensions\n' > requirements.in
+          uv pip compile --no-cache --no-config requirements.in -o requirements.txt
+          uv pip sync --system --no-cache --no-config requirements.txt
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv pip compile + sync succeeded"
+
+      - name: Verify uv project interface
+        run: |
+          echo "=== UV project interface Test ==="
+          uv init --no-cache test-project && cd test-project
+          uv add --no-cache six packaging typing-extensions
+          uv run --no-cache python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv project interface succeeded"
+
+      - name: Verify URL rewriting (sub_filter)
+        run: |
+          echo "=== PyPI Cache: URL Rewriting Verification ==="
+          SLUG=$(echo "{{PYPI_CACHE_SLUGS}}" | awk '{print $1}')
+          URL="http://pypi-cache-${SLUG}.pypi-cache.svc.cluster.local:8080/simple/six/"
+          FAILED=0
+          for CONTENT_TYPE in "text/html" "application/vnd.pypi.simple.v1+json"; do
+            echo ""
+            echo "--- Testing with Accept: ${CONTENT_TYPE} ---"
+            BODY=$(python3 -c "
+          import urllib.request
+          req = urllib.request.Request('$URL', headers={'Accept': '${CONTENT_TYPE}'})
+          r = urllib.request.urlopen(req, timeout=15)
+          print(r.read().decode())
+          ")
+            echo "Checking for unrewritten URLs..."
+            DIRECT_COUNT=$(echo "$BODY" | grep -c 'files.pythonhosted.org' || true)
+            if [ "$DIRECT_COUNT" -ne 0 ]; then
+              echo "FAIL: Found $DIRECT_COUNT unrewritten files.pythonhosted.org URLs"
+              echo "$BODY" | grep 'files.pythonhosted.org' | head -3
+              FAILED=1
+            else
+              echo "PASS: No files.pythonhosted.org URLs in response"
+            fi
+            echo "Checking for rewritten /packages/ URLs..."
+            PKG_COUNT=$(echo "$BODY" | grep -c '/packages/' || true)
+            if [ "$PKG_COUNT" -eq 0 ]; then
+              echo "FAIL: No /packages/ URLs found in response"
+              FAILED=1
+            else
+              echo "PASS: Found $PKG_COUNT rewritten /packages/ URLs"
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "FAIL: URL rewriting verification failed for one or more content types"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: URL rewriting verified for both text/html and PEP 691 JSON"
+
+      - name: Verify UV_INDEX_STRATEGY
+        run: |
+          echo "=== UV_INDEX_STRATEGY ==="
+          EXPECTED="unsafe-best-match"
+          ACTUAL="${UV_INDEX_STRATEGY:-}"
+          echo "UV_INDEX_STRATEGY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: UV_INDEX_STRATEGY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: UV_INDEX_STRATEGY mismatch"
+            exit 1
+          fi
+          echo "PASS: UV_INDEX_STRATEGY is correct"
+
+      - name: Verify torch CPU install (pip)
+        run: |
+          echo "=== Torch CPU Install (pip, defaults) ==="
+          pip install --no-cache-dir torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is not None:
+              print(f'FAIL: Expected CPU build (cuda=None), got cuda={cuda}')
+              sys.exit(1)
+          print('PASS: torch is CPU build')
+          "
+
+      - name: Verify torch CPU install (uv)
+        run: |
+          echo "=== Torch CPU Install (uv, defaults) ==="
+          pip uninstall -y torch >/dev/null 2>&1 || true
+          uv pip install --system --no-cache torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is not None:
+              print(f'FAIL: Expected CPU build (cuda=None), got cuda={cuda}')
+              sys.exit(1)
+          print('PASS: torch is CPU build (uv)')
+          "
+
+  # ── PyPI Cache: setup-pypi-cache Action (CPU) ──────────────────────
+  # Validates the composite action overrides pod-level defaults correctly
+  # for CPU configuration.
+  test-pypi-cache-action-cpu:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      # TODO: update to @main after pytorch/test-infra#7900 merges
+      - uses: pytorch/test-infra/.github/actions/setup-pypi-cache@jeanschmidt/define_pip_cuda
+        with:
+          cuda-version: "cpu"
+
+      - name: Verify env vars point to CPU service
+        run: |
+          echo "=== Verify CPU Action Environment ==="
+          FAIL=0
+          for var in PIP_INDEX_URL PIP_EXTRA_INDEX_URL UV_DEFAULT_INDEX UV_INDEX PIP_TRUSTED_HOST UV_INSECURE_HOST; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "pypi-cache-cpu"; then
+              echo "FAIL: $var does not contain 'pypi-cache-cpu': $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: All env vars point to CPU pypi-cache service"
+
+      - name: Verify pip install via action-configured cache
+        run: |
+          echo "=== Pip Install (CPU action) ==="
+          pip install --no-cache-dir six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: pip install via CPU action succeeded"
+
+      - name: Verify download.pytorch.org proxy via action
+        run: |
+          echo "=== download.pytorch.org Proxy (CPU action) ==="
+          python3 -c "
+          import urllib.request, os, sys
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          if not url:
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              sys.exit(1)
+          r = urllib.request.urlopen(url, timeout=30)
+          body = r.read().decode()
+          print(f'HTTP {r.status} — index page length: {len(body)} bytes')
+          if 'torch' not in body.lower():
+              print('FAIL: torch not found in /whl/cpu/ index')
+              sys.exit(1)
+          print('PASS: download.pytorch.org proxy via CPU action works')
+          "
+
+      - name: Verify uv pip install via action
+        run: |
+          echo "=== UV pip install (CPU action) ==="
+          pip install --no-cache-dir uv
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          uv pip install --system --no-cache six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv pip install via CPU action succeeded"
+
+      - name: Verify torch CPU install (pip, action)
+        run: |
+          echo "=== Torch CPU Install (pip, CPU action) ==="
+          pip install --no-cache-dir torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is not None:
+              print(f'FAIL: Expected CPU build (cuda=None), got cuda={cuda}')
+              sys.exit(1)
+          print('PASS: torch is CPU build')
+          "
+
+      - name: Verify torch CPU install (uv, action)
+        run: |
+          echo "=== Torch CPU Install (uv, CPU action) ==="
+          pip uninstall -y torch >/dev/null 2>&1 || true
+          uv pip install --system --no-cache torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is not None:
+              print(f'FAIL: Expected CPU build (cuda=None), got cuda={cuda}')
+              sys.exit(1)
+          print('PASS: torch is CPU build (uv)')
+          "
+
+  # ── PyPI Cache: setup-pypi-cache Action (CUDA) ─────────────────────
+  # Validates the composite action correctly configures CUDA-specific
+  # pypi-cache service and pytorch wheel index.
+  test-pypi-cache-action-cuda:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: python:3.12-slim
+    steps:
+      # TODO: update to @main after pytorch/test-infra#7900 merges
+      - uses: pytorch/test-infra/.github/actions/setup-pypi-cache@jeanschmidt/define_pip_cuda
+        with:
+          cuda-version: "{{PYPI_CACHE_CUDA_VERSION}}"
+
+      - name: Verify env vars point to CUDA service
+        run: |
+          echo "=== Verify CUDA Action Environment ==="
+          FAIL=0
+          # Primary index (pypi.org proxy) — must point to CUDA service's /simple/
+          for var in PIP_INDEX_URL UV_DEFAULT_INDEX; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "pypi-cache-cu"; then
+              echo "FAIL: $var does not point to CUDA service: $val"
+              FAIL=1
+            elif ! echo "$val" | grep -q "/simple/"; then
+              echo "FAIL: $var does not point to /simple/ index: $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          # Extra index (pytorch wheel proxy) — must point to CUDA /whl/cu*/
+          for var in PIP_EXTRA_INDEX_URL UV_INDEX; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "/whl/cu"; then
+              echo "FAIL: $var does not point to CUDA wheel index: $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          # Trust/insecure host — must reference CUDA service
+          for var in PIP_TRUSTED_HOST UV_INSECURE_HOST; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "pypi-cache-cu"; then
+              echo "FAIL: $var does not reference CUDA service: $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: All env vars point to CUDA pypi-cache service"
+
+      - name: Verify pip install via CUDA action
+        run: |
+          echo "=== Pip Install (CUDA action) ==="
+          pip install --no-cache-dir six
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: pip install via CUDA action succeeded"
+
+      - name: Verify CUDA pytorch wheel index accessible
+        run: |
+          echo "=== CUDA PyTorch Wheel Index ==="
+          python3 -c "
+          import urllib.request, os, sys
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          if not url:
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              sys.exit(1)
+          r = urllib.request.urlopen(url, timeout=30)
+          body = r.read().decode()
+          print(f'HTTP {r.status} — index page length: {len(body)} bytes')
+          if 'torch' not in body.lower():
+              print('FAIL: torch not found in CUDA wheel index')
+              sys.exit(1)
+          print('PASS: CUDA pytorch wheel index accessible')
+          "
+
+      - name: Verify torch CUDA install (pip, action)
+        run: |
+          echo "=== Torch CUDA Install (pip, CUDA action) ==="
+          pip install --no-cache-dir torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is None:
+              print('FAIL: Expected CUDA build, got CPU build (cuda=None)')
+              sys.exit(1)
+          print(f'PASS: torch is CUDA build (cuda={cuda})')
+          "
+
+      - name: Install uv for CUDA torch test
+        run: pip install --no-cache-dir uv
+
+      - name: Verify torch CUDA install (uv, action)
+        run: |
+          echo "=== Torch CUDA Install (uv, CUDA action) ==="
+          pip uninstall -y torch >/dev/null 2>&1 || true
+          uv pip install --system --no-cache torch==2.11.0
+          python3 -c "
+          import torch, sys
+          cuda = torch.version.cuda
+          print(f'torch=={torch.__version__}, cuda={cuda}')
+          if cuda is None:
+              print('FAIL: Expected CUDA build, got CPU build (cuda=None)')
+              sys.exit(1)
+          print(f'PASS: torch is CUDA build (cuda={cuda}, uv)')
+          "
 
   # ── Git Cache Test ────────────────────────────────────────────────────
   test-git-cache:
@@ -200,6 +706,21 @@ jobs:
           nvcc --version 2>/dev/null || echo "nvcc not in PATH (base image only)"
           nvidia-smi --query-gpu=driver_version --format=csv,noheader
           echo "PASS: GPU driver responsive"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=123480309760
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
   test-gpu-t4-multi:
     runs-on: {{PREFIX}}l-x86iavx512-45-172-t4-4
@@ -221,6 +742,21 @@ jobs:
         run: |
           echo "=== GPU Topology ==="
           nvidia-smi topo -m
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=184683593728
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
   # BEGIN_B200
   test-gpu-b200-2:
@@ -239,6 +775,21 @@ jobs:
             exit 1
           fi
           echo "PASS: Found $GPU_COUNT B200 GPUs"
+      - name: Verify TORCH_CI_MAX_MEMORY
+        run: |
+          echo "=== TORCH_CI_MAX_MEMORY ==="
+          EXPECTED=483183820800
+          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+            exit 1
+          fi
+          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
   # END_B200
 
   # ── BuildKit Tests ────────────────────────────────────────────────────
@@ -274,3 +825,92 @@ jobs:
             echo "INFO: /etc/containerd/certs.d not visible from container (expected)"
             echo "PASS: Container pulled successfully through Harbor"
           fi
+
+  # BEGIN_CACHE_ENFORCER
+  # ── Cache Enforcer Test ──────────────────────────────────────────────
+  test-cache-enforcer:
+    runs-on: {{PREFIX}}l-x86iamx-8-32
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    steps:
+      - name: Verify blocked registry domains
+        run: |
+          echo "=== Cache Enforcer: Registry Domain Blocking ==="
+          BLOCKED_REGISTRIES="
+            docker.io
+            registry-1.docker.io
+            auth.docker.io
+            production.cloudflare.docker.com
+            ghcr.io
+            nvcr.io
+            quay.io
+            registry.k8s.io
+          "
+          FAIL=0
+          for domain in $BLOCKED_REGISTRIES; do
+            [ -z "$domain" ] && continue
+            if curl --connect-timeout 5 --max-time 10 -s -o /dev/null "https://$domain/" 2>/dev/null; then
+              echo "FAIL: $domain is reachable (should be blocked)"
+              FAIL=1
+            else
+              echo "PASS: $domain is blocked"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more registry domains were reachable"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All registry domains blocked by cache-enforcer"
+      - name: Verify blocked PyPI domains
+        run: |
+          echo "=== Cache Enforcer: PyPI Domain Blocking ==="
+          BLOCKED_PYPI="
+            pypi.org
+            files.pythonhosted.org
+          "
+          FAIL=0
+          for domain in $BLOCKED_PYPI; do
+            [ -z "$domain" ] && continue
+            if curl --connect-timeout 5 --max-time 10 -s -o /dev/null "https://$domain/" 2>/dev/null; then
+              echo "FAIL: $domain is reachable (should be blocked)"
+              FAIL=1
+            else
+              echo "PASS: $domain is blocked"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more PyPI domains were reachable"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All PyPI domains blocked by cache-enforcer"
+      - name: Verify non-blocked domains work
+        run: |
+          echo "=== Cache Enforcer: Non-blocked Domain Validation ==="
+          ALLOWED_DOMAINS="
+            public.ecr.aws
+            github.com
+          "
+          FAIL=0
+          for domain in $ALLOWED_DOMAINS; do
+            [ -z "$domain" ] && continue
+            HTTP_CODE=$(curl --connect-timeout 10 --max-time 15 -s -o /dev/null -w "%{http_code}" "https://$domain/" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "000" ]; then
+              echo "FAIL: $domain is unreachable (should NOT be blocked)"
+              FAIL=1
+            else
+              echo "PASS: $domain is reachable (HTTP $HTTP_CODE)"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: Non-blocked domains are unreachable — possible network issue"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: Non-blocked domains are accessible"
+  # END_CACHE_ENFORCER
+

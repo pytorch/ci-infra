@@ -43,7 +43,7 @@ HELM_DAEMONSETS: list[DaemonSetOverhead] = [
     # Values from modules/monitoring/helm/values.yaml
     DaemonSetOverhead("node-exporter", 15, 32, False, "constant:helm:kube-prometheus-stack"),
     # Alloy logging DaemonSet
-    # Values from base/logging/helm/alloy-logging-values.yaml
+    # Values from modules/logging/helm/alloy-logging-values.yaml
     DaemonSetOverhead("alloy-logging", 100, 256, False, "constant:helm:alloy-logging"),
 ]
 

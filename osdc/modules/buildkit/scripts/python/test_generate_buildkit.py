@@ -233,7 +233,12 @@ class TestGenerateDeploymentYaml:
         for d in docs:
             tolerations = d["spec"]["template"]["spec"]["tolerations"]
             assert len(tolerations) >= 1
-            assert tolerations[0]["key"] == "instance-type"
+            name = d["metadata"]["name"]
+            if name == "buildkitd-arm64":
+                assert tolerations[0]["key"] == "workload/buildkit-arm64"
+            else:
+                assert tolerations[0]["key"] == "workload/buildkit-amd64"
+            assert tolerations[0]["value"] == "true"
 
     def test_guaranteed_qos_requests_eq_limits(self):
         output = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
@@ -381,7 +386,11 @@ class TestGenerateNodepoolsYaml:
         for np in nodepools:
             taints = np["spec"]["template"]["spec"]["taints"]
             taint_keys = [t["key"] for t in taints]
-            assert "instance-type" in taint_keys
+            name = np["metadata"]["name"]
+            if name == "buildkit-arm64":
+                assert "workload/buildkit-arm64" in taint_keys
+            else:
+                assert "workload/buildkit-amd64" in taint_keys
 
     def test_startup_taints(self):
         output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)

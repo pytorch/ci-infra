@@ -256,6 +256,26 @@ data:
               value: "/opt/git-cache/pytorch"
             - name: GIT_CONFIG_SYSTEM
               value: "/opt/git-cache/.gitconfig"
+            - name: PIP_INDEX_URL
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
+            - name: PIP_TRUSTED_HOST
+              value: "pypi-cache-cpu.pypi-cache.svc.cluster.local"
+            - name: PIP_EXTRA_INDEX_URL
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+            - name: UV_DEFAULT_INDEX
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
+            - name: UV_INSECURE_HOST
+              value: "pypi-cache-cpu.pypi-cache.svc.cluster.local:8080"
+            - name: UV_INDEX
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+            - name: UV_INDEX_STRATEGY
+              value: "unsafe-best-match"
+            - name: PYPI_CACHE_SIMPLE_URL
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
+            - name: PYPI_CACHE_WHL_URL
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+            - name: TORCH_CI_MAX_MEMORY
+              value: "{{MEMORY_BYTES}}"
           # Workflow container gets the actual compute resources
           resources:
             requests:

@@ -20,14 +20,14 @@ locals {
   cluster_admin_roles = var.cluster_admin_role_names != "" ? split(",", var.cluster_admin_role_names) : []
 }
 
-# Get latest EKS-optimized AMI for Amazon Linux 2023
+# Get EKS-optimized AMI for Amazon Linux 2023 (pin version via base_node_ami_version)
 data "aws_ami" "eks_optimized_al2023" {
   most_recent = true
   owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = ["amazon-eks-node-al2023-x86_64-standard-${var.cluster_version}-v*"]
+    values = ["amazon-eks-node-al2023-x86_64-standard-${var.cluster_version}-${var.base_node_ami_version}"]
   }
 
   filter {

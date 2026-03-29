@@ -71,7 +71,7 @@ Prometheus, Grafana, and AlertManager are all `enabled: false`.
 
 ## Log parsing pipeline
 
-This module can contribute log parsing rules for the centralized logging system (`base/logging/`). Place a `logging/pipeline.alloy` file containing `stage.match` blocks in this module directory. The logging `assemble_config.py` script discovers it at deploy time and inserts the blocks into the base Alloy config. See `base/logging/CLAUDE.md` and `docs/observability.md` for details.
+This module can contribute log parsing rules for the centralized logging system (`modules/logging/`). Place a `logging/pipeline.alloy` file containing `stage.match` blocks in this module directory. The logging `assemble_config.py` script discovers it at deploy time and inserts the blocks into the Alloy config. See `modules/logging/CLAUDE.md` and `docs/observability.md` for details.
 
 ## Credential setup
 

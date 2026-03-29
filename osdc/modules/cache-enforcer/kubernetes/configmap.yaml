@@ -1,0 +1,143 @@
+# Cache Enforcer — iptables configuration script.
+# Blocks direct outbound access to external package and container image
+# registries, forcing runner processes to use internal caches:
+#   - Harbor pull-through cache (localhost:30002) for container images
+#   - pypi-cache DaemonSet (localhost:8080) for Python packages
+#
+# Mechanism: xt_string matches domain names in TLS ClientHello SNI fields
+# (port 443) and HTTP Host headers (port 80) in both OUTPUT (host processes)
+# and FORWARD (pod traffic routed through host with VPC CNI) chains.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cache-enforcer-script
+  namespace: kube-system
+data:
+  enforce-cache.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    CHAIN="CACHE_ENFORCER"
+
+    echo "=== Cache Enforcer ==="
+    echo "Node: $(hostname 2>/dev/null || echo 'unknown')"
+    echo "Date: $(date)"
+    echo ""
+
+    # =========================================================================
+    # Verify xt_string kernel module is available
+    # =========================================================================
+    echo "[preflight] Loading xt_string kernel module..."
+    if ! modprobe xt_string 2>/dev/null; then
+      echo "ERROR: xt_string kernel module not available."
+      echo "       Cannot enforce cache policy without TLS SNI string matching."
+      echo "       Expected AL2023 kernel — check node AMI."
+      exit 1
+    fi
+    echo "  xt_string module loaded."
+    echo ""
+
+    # =========================================================================
+    # Blocked domains — container registries (forced through Harbor :30002)
+    # =========================================================================
+    REGISTRY_DOMAINS="
+    docker.io
+    registry-1.docker.io
+    auth.docker.io
+    production.cloudflare.docker.com
+    ghcr.io
+    nvcr.io
+    quay.io
+    registry.k8s.io
+    "
+
+    # =========================================================================
+    # Blocked domains — PyPI (forced through pypi-cache :8080)
+    # Requires pypi-cache module deployed on same cluster.
+    # =========================================================================
+    PYPI_DOMAINS="
+    pypi.org
+    files.pythonhosted.org
+    download.pytorch.org
+    "
+
+    ALL_DOMAINS="$REGISTRY_DOMAINS $PYPI_DOMAINS"
+
+    # =========================================================================
+    # apply_rules — install iptables rules for one binary (iptables/ip6tables)
+    # =========================================================================
+    apply_rules() {
+      local ipt="$1"
+
+      if ! "$ipt" -L -n >/dev/null 2>&1; then
+        echo "  $ipt: not functional, skipping."
+        return 0
+      fi
+      echo "  --- $ipt ---"
+
+      # Create or flush the CACHE_ENFORCER chain
+      if "$ipt" -n -L "$CHAIN" >/dev/null 2>&1; then
+        echo "  Flushing existing $CHAIN chain..."
+        "$ipt" -F "$CHAIN"
+      else
+        echo "  Creating $CHAIN chain..."
+        "$ipt" -N "$CHAIN"
+      fi
+
+      # Populate chain with per-domain REJECT rules
+      for domain in $ALL_DOMAINS; do
+        [ -z "$domain" ] && continue
+        for port in 443 80; do
+          "$ipt" -A "$CHAIN" \
+            -p tcp --dport "$port" \
+            -m string --string "$domain" --algo bm --to 65535 \
+            -j REJECT --reject-with tcp-reset
+        done
+        echo "    REJECT $domain :443/:80"
+      done
+
+      # Insert jump rules from OUTPUT and FORWARD (idempotent)
+      for parent in OUTPUT FORWARD; do
+        if ! "$ipt" -C "$parent" -j "$CHAIN" 2>/dev/null; then
+          "$ipt" -I "$parent" 1 -j "$CHAIN"
+          echo "  Inserted jump: $parent -> $CHAIN"
+        else
+          echo "  Jump $parent -> $CHAIN already present."
+        fi
+      done
+    }
+
+    # =========================================================================
+    # Apply to IPv4
+    # =========================================================================
+    echo "[1/2] Configuring iptables (IPv4)..."
+    apply_rules iptables
+    echo ""
+
+    # =========================================================================
+    # Apply to IPv6 (best-effort)
+    # =========================================================================
+    echo "[2/2] Configuring ip6tables (IPv6)..."
+    if command -v ip6tables >/dev/null 2>&1; then
+      apply_rules ip6tables
+    else
+      echo "  ip6tables not found, skipping IPv6."
+    fi
+    echo ""
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+    echo "=== Cache Enforcer Complete ==="
+    echo "Blocked registries (use Harbor at localhost:30002):"
+    for domain in $REGISTRY_DOMAINS; do
+      [ -z "$domain" ] && continue
+      echo "  - $domain"
+    done
+    echo "Blocked PyPI (use pypi-cache at localhost:8080):"
+    for domain in $PYPI_DOMAINS; do
+      [ -z "$domain" ] && continue
+      echo "  - $domain"
+    done
+    echo ""
+    echo "Chain $CHAIN active in OUTPUT + FORWARD."

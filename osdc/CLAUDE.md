@@ -8,6 +8,17 @@ Modular Kubernetes infrastructure platform on AWS EKS. A shared `base/` provides
 
 Working directory: `osdc/`. Run all commands from here.
 
+## Clusters Configuration (IMPORTANT)
+
+**All paths below are relative to this CLAUDE.md file.**
+
+Two `clusters.yaml` files exist — always check both when investigating module deployment:
+
+- **`./clusters.yaml`** — upstream cluster definitions (the platform's own clusters)
+- **`../../clusters.yaml`** — consumer repo cluster definitions (consumer-specific clusters)
+
+Modules may be deployed in upstream clusters but not consumer clusters, or vice versa. Never conclude a module is "not deployed" without checking both files.
+
 ## NEVER USE TERRAFORM — USE TOFU ONLY
 
 This project uses **OpenTofu** (`tofu`), NOT Terraform. Running `terraform` commands **will corrupt the state file** and can destroy infrastructure. There is no recovery.

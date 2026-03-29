@@ -66,6 +66,17 @@ variable "base_node_max_unavailable_percentage" {
   default     = 100
 }
 
+variable "base_node_ami_version" {
+  description = "EKS-optimized AMI version suffix (e.g. 'v20260318'). Use 'v*' for latest (not recommended). Must update when changing eks_version."
+  type        = string
+  default     = "v*"
+
+  validation {
+    condition     = can(regex("^v([0-9]{8}|\\*)$", var.base_node_ami_version))
+    error_message = "base_node_ami_version must be 'v*' or 'vYYYYMMDD' (e.g. 'v20260318')"
+  }
+}
+
 variable "enable_secrets_encryption" {
   description = "Enable KMS envelope encryption for Kubernetes secrets at rest"
   type        = bool

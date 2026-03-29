@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -18,6 +19,7 @@ from lightkube.models.meta_v1 import ObjectMeta
 from lightkube.resources.apps_v1 import Deployment as DeploymentResource
 from lightkube.resources.core_v1 import Node
 from lightkube.resources.core_v1 import Pod as PodResource
+from lightkube.types import PatchType
 
 log = logging.getLogger("e2e")
 
@@ -44,8 +46,14 @@ def wait_for(
     check_fn: Callable[[], bool],
     timeout_s: int = 300,
     poll_s: int = 10,
+    on_timeout: Callable[[], str] | None = None,
 ) -> None:
-    """Poll ``check_fn`` until it returns True or *timeout_s* expires."""
+    """Poll ``check_fn`` until it returns True or *timeout_s* expires.
+
+    If *on_timeout* is provided, it is called when the timeout fires and
+    its return value is appended to the ``TimeoutError`` message — useful
+    for dumping diagnostic state (nodes, pods, taints) on failure.
+    """
     deadline = time.monotonic() + timeout_s
     log.info("Waiting for: %s (timeout %ds)", description, timeout_s)
     while True:
@@ -54,7 +62,10 @@ def wait_for(
             return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError(f"Timed out after {timeout_s}s waiting for: {description}")
+            msg = f"Timed out after {timeout_s}s waiting for: {description}"
+            if on_timeout:
+                msg += f"\nDiagnostics:\n{on_timeout()}"
+            raise TimeoutError(msg)
         time.sleep(min(poll_s, remaining))
 
 
@@ -64,12 +75,16 @@ def wait_for_stable(
     stable_s: float = 20,
     timeout_s: int = 120,
     poll_s: int = 5,
+    on_timeout: Callable[[], str] | None = None,
 ) -> None:
     """Poll ``state_fn`` until its return value is unchanged for *stable_s*.
 
     Use instead of hard ``time.sleep`` when waiting for a controller to
     stabilise — this returns as soon as the state is genuinely stable
     rather than waiting a fixed duration.
+
+    If *on_timeout* is provided, it is called when the timeout fires and
+    its return value is appended to the ``TimeoutError`` message.
     """
     deadline = time.monotonic() + timeout_s
     log.info("Waiting for stable: %s (stable %gs, timeout %ds)", description, stable_s, timeout_s)
@@ -79,10 +94,13 @@ def wait_for_stable(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             elapsed_stable = time.monotonic() - stable_since
-            raise TimeoutError(
+            msg = (
                 f"Timed out after {timeout_s}s waiting for stable: {description} "
                 f"(last change {elapsed_stable:.0f}s ago)"
             )
+            if on_timeout:
+                msg += f"\nDiagnostics:\n{on_timeout()}"
+            raise TimeoutError(msg)
         time.sleep(min(poll_s, remaining))
         current = state_fn()
         if current != last_state:
@@ -92,6 +110,23 @@ def wait_for_stable(
         if elapsed_stable >= stable_s:
             log.info("  Stable: %s (unchanged for %gs)", description, elapsed_stable)
             return
+
+
+def wait_for_pods_deleted(client: Client, namespace: str, names: list[str], timeout_s: int = 60) -> None:
+    """Wait for pods to be fully removed from the API (not just Terminating)."""
+
+    def _pods_gone() -> bool:
+        existing = {
+            p.metadata.name for p in client.list(PodResource, namespace=namespace) if p.metadata and p.metadata.name
+        }
+        return not existing.intersection(names)
+
+    wait_for(
+        f"pods deleted: {names}",
+        _pods_gone,
+        timeout_s=timeout_s,
+        poll_s=2,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +469,51 @@ def restart_compactor_pod(client: Client) -> None:
     )
 
 
+def get_compactor_pod_names(client: Client) -> set[str]:
+    """Return names of all non-terminating compactor pods."""
+    names: set[str] = set()
+    for pod in client.list(
+        PodResource,
+        namespace=COMPACTOR_NAMESPACE,
+        labels={"app.kubernetes.io/name": "node-compactor"},
+    ):
+        if pod.metadata and pod.metadata.name and not pod.metadata.deletionTimestamp:
+            names.add(pod.metadata.name)
+    return names
+
+
+def wait_for_compactor_rollout(client: Client, old_pod_names: set[str], timeout_s: int = 120) -> None:
+    """Wait for the Deployment rollout to replace old pods with a new Running pod.
+
+    After ``patch_compactor_env`` modifies the pod template, Kubernetes
+    automatically creates a new ReplicaSet and pod.  This waits for a
+    Running pod whose name is NOT in *old_pod_names*.
+    """
+
+    def _new_pod_running() -> bool:
+        for pod in client.list(
+            PodResource,
+            namespace=COMPACTOR_NAMESPACE,
+            labels={"app.kubernetes.io/name": "node-compactor"},
+        ):
+            if not pod.metadata or not pod.metadata.name:
+                continue
+            if pod.metadata.deletionTimestamp:
+                continue
+            if pod.metadata.name in old_pod_names:
+                continue
+            if pod.status and pod.status.phase == "Running":
+                return True
+        return False
+
+    wait_for(
+        "new compactor pod running after rollout",
+        _new_pod_running,
+        timeout_s=timeout_s,
+        poll_s=5,
+    )
+
+
 def scale_compactor_deployment(client: Client, replicas: int) -> None:
     """Scale the compactor Deployment to *replicas* and wait for rollout.
 
@@ -476,6 +556,39 @@ def _compactor_pod_running(client: Client) -> bool:
         if pod.status and pod.status.phase == "Running" and not (pod.metadata and pod.metadata.deletionTimestamp):
             return True
     return False
+
+
+def _no_compactor_pods(client: Client) -> bool:
+    """Check that no compactor pods exist at all (including terminating ones).
+
+    Unlike _compactor_pod_running, this returns True only when pods are
+    fully removed from the API — not just when they have a deletionTimestamp.
+    Use this to wait for shutdown cleanup to complete before verifying results.
+    """
+    pods = list(
+        client.list(
+            PodResource,
+            namespace=COMPACTOR_NAMESPACE,
+            labels={"app.kubernetes.io/name": "node-compactor"},
+        )
+    )
+    return len(pods) == 0
+
+
+def wait_for_compactor_fully_terminated(client: Client, timeout_s: int = 180) -> None:
+    """Wait until all compactor pods are completely gone.
+
+    scale_compactor_deployment(client, 0) returns as soon as pods have a
+    deletionTimestamp, but the container may still be running its shutdown
+    handler (taint + reservation cleanup). This waits for the pod to be
+    fully deleted from the API server.
+    """
+    wait_for(
+        "compactor pod fully terminated",
+        lambda: _no_compactor_pods(client),
+        timeout_s=timeout_s,
+        poll_s=2,
+    )
 
 
 def delete_pool_nodes(client: Client, nodepool_name: str) -> None:
@@ -536,3 +649,123 @@ def drain_pool_workloads(client: Client, nodepool_name: str, test_namespace: str
                 pod.metadata.namespace,
                 pod.metadata.name,
             )
+
+
+# ---------------------------------------------------------------------------
+# Config switching and log search
+# ---------------------------------------------------------------------------
+
+
+def reconfigure_compactor(
+    client: Client,
+    env_overrides: dict[str, str],
+    compactor_logs: object,
+) -> dict[str, str]:
+    """Switch compactor config: patch env, wait for rollout, wait for first reconcile.
+
+    Returns the original env values (for optional restore).
+    The *compactor_logs* parameter is the CompactorLogCollector — its ``stop``
+    and ``start`` methods are called to reconnect to the new pod.
+    """
+    old_pod_names = get_compactor_pod_names(client)
+    originals = patch_compactor_env(client, env_overrides)
+
+    # Check for no-op (idempotent patch)
+    patch_is_noop = all(str(originals.get(k, "")) == str(v) for k, v in env_overrides.items())
+    if not patch_is_noop:
+        wait_for_compactor_rollout(client, old_pod_names)
+        # Reconnect log stream to new pod
+        compactor_logs.stop()
+        compactor_logs.start()
+
+    # Wait for at least one reconciliation cycle
+    time.sleep(15)
+    return originals
+
+
+def get_reserved_nodes(client: Client, nodepool_name: str) -> set[str]:
+    """Return names of nodes with the capacity-reserved annotation."""
+    result: set[str] = set()
+    for node in get_pool_nodes(client, nodepool_name):
+        annotations = (node.metadata and node.metadata.annotations) or {}
+        if annotations.get("node-compactor.osdc.io/capacity-reserved") == "true":
+            result.add(node.metadata.name)
+    return result
+
+
+def get_do_not_disrupt_nodes(client: Client, nodepool_name: str) -> set[str]:
+    """Return names of nodes with karpenter.sh/do-not-disrupt=true."""
+    result: set[str] = set()
+    for node in get_pool_nodes(client, nodepool_name):
+        annotations = (node.metadata and node.metadata.annotations) or {}
+        if annotations.get("karpenter.sh/do-not-disrupt") == "true":
+            result.add(node.metadata.name)
+    return result
+
+
+def cleanup_stale_cluster_state(client: Client, nodepool_name: str) -> None:
+    """Remove stale compactor taints and reservation annotations from pool nodes.
+
+    A crashed previous test run may leave behind:
+    - ``node-compactor.osdc.io/consolidating`` NoSchedule taints
+    - ``node-compactor.osdc.io/capacity-reserved`` annotations
+    - ``karpenter.sh/do-not-disrupt`` annotations (set by the compactor)
+
+    This cleans them in-place without deleting nodes or NodeClaims.
+    """
+    nodes = get_pool_nodes(client, nodepool_name)
+    for node in nodes:
+        if not node.metadata or not node.metadata.name:
+            continue
+        name = node.metadata.name
+
+        # Remove compactor taint if present
+        if _node_has_taint(node, COMPACTOR_TAINT_KEY):
+            log.info("Cleanup: removing stale compactor taint from %s", name)
+            try:
+                fresh = client.get(Node, name)
+                taints = fresh.spec.taints or [] if fresh.spec else []
+                new_taints = [
+                    {"key": t.key, "effect": t.effect, **({"value": t.value} if t.value else {})}
+                    for t in taints
+                    if t.key != COMPACTOR_TAINT_KEY
+                ]
+                patch = {
+                    "metadata": {"resourceVersion": fresh.metadata.resourceVersion},
+                    "spec": {"taints": new_taints or None},
+                }
+                client.patch(Node, name, patch, patch_type=PatchType.MERGE)
+            except Exception:
+                log.warning("Cleanup: failed to remove taint from %s", name)
+
+        # Remove stale reservation annotations
+        annotations = node.metadata.annotations or {}
+        stale_keys = []
+        if annotations.get("node-compactor.osdc.io/capacity-reserved") == "true":
+            stale_keys.append("node-compactor.osdc.io/capacity-reserved")
+        if annotations.get("karpenter.sh/do-not-disrupt") == "true":
+            stale_keys.append("karpenter.sh/do-not-disrupt")
+
+        if stale_keys:
+            log.info("Cleanup: removing stale annotations from %s: %s", name, stale_keys)
+            patch = {"metadata": {"annotations": dict.fromkeys(stale_keys)}}
+            try:
+                client.patch(Node, name, patch, patch_type=PatchType.MERGE)
+            except Exception:
+                log.warning("Cleanup: failed to remove annotations from %s", name)
+
+
+def search_compactor_logs(collector: object, pattern: str, since_line: int = 0) -> list[str]:
+    """Search captured compactor log lines for a regex pattern.
+
+    Args:
+        collector: CompactorLogCollector with a `lines` property.
+        pattern: Regex pattern to search for.
+        since_line: Start searching from this line index (0-based).
+
+    Returns:
+        List of matching log lines.
+    """
+    compiled = re.compile(pattern)
+    lines = collector.lines
+    return [line for line in lines[since_line:] if compiled.search(line)]

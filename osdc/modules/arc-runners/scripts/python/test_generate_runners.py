@@ -12,6 +12,7 @@ from generate_runners import (
     load_clusters_yaml,
     main,
     normalize_name,
+    parse_memory_bytes,
     resolve_value,
 )
 
@@ -67,6 +68,23 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
               effect: NoSchedule{{GPU_JOB_TOLERATIONS}}
           containers:
             - name: "$job"
+              env:
+                - name: PIP_INDEX_URL
+                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+                - name: PIP_TRUSTED_HOST
+                  value: "pypi-cache-cpu.pypi-cache.svc.cluster.local"
+                - name: UV_DEFAULT_INDEX
+                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+                - name: UV_INSECURE_HOST
+                  value: "pypi-cache-cpu.pypi-cache.svc.cluster.local:8080"
+                - name: PIP_EXTRA_INDEX_URL
+                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
+                - name: UV_INDEX
+                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
+                - name: UV_INDEX_STRATEGY
+                  value: "unsafe-best-match"
+                - name: TORCH_CI_MAX_MEMORY
+                  value: "{{MEMORY_BYTES}}"
               resources:
                 requests:
                   cpu: "{{VCPU}}"
@@ -146,6 +164,43 @@ class TestNormalizeName:
 
     def test_empty_string(self):
         assert normalize_name("") == ""
+
+
+# ============================================================================
+# parse_memory_bytes
+# ============================================================================
+
+
+class TestParseMemoryBytes:
+    def test_gibibytes(self):
+        assert parse_memory_bytes("115Gi") == 115 * 1024**3
+
+    def test_mebibytes(self):
+        assert parse_memory_bytes("512Mi") == 512 * 1024**2
+
+    def test_tebibytes(self):
+        assert parse_memory_bytes("1Ti") == 1 * 1024**4
+
+    def test_kibibytes(self):
+        assert parse_memory_bytes("256Ki") == 256 * 1024
+
+    def test_decimal_gigabytes(self):
+        assert parse_memory_bytes("10G") == 10 * 1000**3
+
+    def test_decimal_megabytes(self):
+        assert parse_memory_bytes("500M") == 500 * 1000**2
+
+    def test_plain_integer(self):
+        assert parse_memory_bytes("1024") == 1024
+
+    def test_integer_input(self):
+        assert parse_memory_bytes(1024) == 1024
+
+    def test_common_runner_values(self):
+        """Verify against real runner def values."""
+        assert parse_memory_bytes("4Gi") == 4 * 1024**3
+        assert parse_memory_bytes("16Gi") == 16 * 1024**3
+        assert parse_memory_bytes("768Gi") == 768 * 1024**3
 
 
 # ============================================================================
@@ -380,6 +435,55 @@ class TestGenerateRunner:
         assert container["resources"]["requests"]["memory"] == "96Gi"
         assert container["resources"]["requests"]["ephemeral-storage"] == "200Gi"
 
+    def test_memory_bytes_env_var(self, tmp_path):
+        """TORCH_CI_MAX_MEMORY env var contains memory in bytes."""
+        def_file = make_def_file(tmp_path, "mem-test", "c6i.12xlarge", 48, 96, disk_size=200)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "mem-test.yaml").read_text()))
+
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        container = cm_data["spec"]["containers"][0]
+        env_vars = {e["name"]: e["value"] for e in container["env"]}
+        assert "TORCH_CI_MAX_MEMORY" in env_vars
+        assert env_vars["TORCH_CI_MAX_MEMORY"] == str(96 * 1024**3)
+
+    def test_pypi_cache_env_vars(self, tmp_path):
+        """All pypi-cache env vars are present with correct CPU defaults."""
+        def_file = make_def_file(tmp_path, "cache-test", "m5.xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "cache-test.yaml").read_text()))
+
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        container = cm_data["spec"]["containers"][0]
+        env_vars = {e["name"]: e["value"] for e in container["env"]}
+
+        host = "pypi-cache-cpu.pypi-cache.svc.cluster.local"
+        base = f"http://{host}:8080"
+
+        assert env_vars["PIP_INDEX_URL"] == f"{base}/whl/cpu/"
+        assert env_vars["PIP_TRUSTED_HOST"] == host
+        assert env_vars["PIP_EXTRA_INDEX_URL"] == f"{base}/simple/"
+        assert env_vars["UV_DEFAULT_INDEX"] == f"{base}/whl/cpu/"
+        assert env_vars["UV_INSECURE_HOST"] == f"{host}:8080"
+        assert env_vars["UV_INDEX"] == f"{base}/simple/"
+        assert env_vars["UV_INDEX_STRATEGY"] == "unsafe-best-match"
+
     def test_default_disk_size(self, tmp_path):
         """When disk_size is omitted from def, default 100 is used."""
         p = tmp_path / "nodisk.yaml"
@@ -518,6 +622,27 @@ class TestMain:
         names = [f.name for f in generated]
         assert "stale-runner.yaml" not in names
         assert "runner-a.yaml" in names
+
+    def test_no_def_files_exits_1(self, tmp_path, monkeypatch):
+        """Lines 226-227: empty defs directory exits with error."""
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(FAKE_CLUSTERS_YAML, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        # defs_dir is empty — no *.yaml files
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
+            assert main() == 1
 
     def test_missing_template_exits_1(self, tmp_path, monkeypatch):
         p = tmp_path / "clusters.yaml"

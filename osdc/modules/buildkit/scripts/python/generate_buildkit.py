@@ -147,9 +147,9 @@ spec:
         instance-type: "{instance_type}"
 
       tolerations:
-        - key: instance-type
+        - key: workload/buildkit-{arch}
           operator: Equal
-          value: "{instance_type}"
+          value: "true"
           effect: NoSchedule
 
       containers:
@@ -322,8 +322,8 @@ spec:
         name: buildkit-{arch}
 
       taints:
-        - key: instance-type
-          value: "{instance_type}"
+        - key: workload/buildkit-{arch}
+          value: "true"
           effect: NoSchedule
 
       startupTaints:

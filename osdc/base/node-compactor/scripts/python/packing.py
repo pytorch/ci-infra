@@ -89,7 +89,45 @@ def _pods_fit_on_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> bool:
     return True
 
 
-def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[str], set[str], set[str], set[str]]:
+def select_reserved_nodes(pool_nodes: dict[str, list[NodeState]], cfg: Config) -> dict[str, set[str]]:
+    """Select nodes per pool for capacity reservation (do-not-disrupt).
+
+    Only young nodes (< max_uptime_hours) are eligible. Selection priority:
+    lowest utilization first (ready-to-use capacity), then oldest
+    youngest-pod age (closer to draining), then newest node as tiebreaker.
+
+    Returns {pool_name: {node_names}} with up to
+    cfg.capacity_reservation_nodes per pool.
+    """
+    if cfg.capacity_reservation_nodes <= 0:
+        return {}
+
+    result: dict[str, set[str]] = {}
+    for pool_name, nodes in pool_nodes.items():
+        young = [n for n in nodes if n.uptime_hours < cfg.max_uptime_hours]
+        if not young:
+            continue
+
+        # Sort: lowest utilization, then oldest youngest-pod (closer to
+        # draining), then newest node (most recently provisioned = freshest)
+        young.sort(
+            key=lambda n: (
+                n.utilization,
+                -n.youngest_pod_age_seconds,
+                -n.uptime_seconds,
+            )
+        )
+
+        selected = {n.name for n in young[: cfg.capacity_reservation_nodes]}
+        if selected:
+            result[pool_name] = selected
+
+    return result
+
+
+def compute_taints(
+    node_states: dict[str, NodeState], cfg: Config, reserved_nodes: set[str] | None = None
+) -> tuple[set[str], set[str], set[str], set[str]]:
     """Decide which nodes to taint and which to untaint.
 
     Returns (nodes_to_taint, nodes_to_untaint, mandatory_untaint, rate_limited).
@@ -112,6 +150,8 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
     to_untaint: set[str] = set()
     mandatory_untaint: set[str] = set()
     rate_limited: set[str] = set()
+
+    reserved = reserved_nodes or set()
 
     for _pool_name, pool_nodes in pools.items():
         all_workload_pods = []
@@ -140,11 +180,18 @@ def compute_taints(node_states: dict[str, NodeState], cfg: Config) -> tuple[set[
             math.ceil(len(pool_nodes) * cfg.spare_capacity_ratio),
         )
 
-        # Exclude young nodes from taint candidates — they may not have
-        # received pods yet (race between Karpenter provisioning and the
-        # compactor's reconcile cycle).
+        # Exclude young nodes and reserved nodes from taint candidates.
+        # Young nodes may not have received pods yet (race between Karpenter
+        # provisioning and the compactor's reconcile cycle). Reserved nodes
+        # are protected from disruption to maintain ready-to-use capacity.
         eligible = []
         for node in pool_nodes:
+            if node.name in reserved:
+                log.debug("Skipping %s: capacity-reserved", node.name)
+                if node.is_tainted:
+                    to_untaint.add(node.name)
+                    mandatory_untaint.add(node.name)
+                continue
             if node.uptime_seconds < cfg.min_node_age:
                 log.debug("Skipping %s: too young (%.0fs < %ds)", node.name, node.uptime_seconds, cfg.min_node_age)
                 if node.is_tainted:

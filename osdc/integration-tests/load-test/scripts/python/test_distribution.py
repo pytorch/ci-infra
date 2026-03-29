@@ -80,9 +80,7 @@ class TestMapping:
     def test_all_osdc_labels_are_valid(self):
         """Every mapped OSDC label should be a plausible runner name."""
         for old, osdc in OLD_TO_OSDC_LABEL.items():
-            assert osdc.startswith("l-"), (
-                f"Bad OSDC label for {old}: {osdc}"
-            )
+            assert osdc.startswith("l-"), f"Bad OSDC label for {old}: {osdc}"
 
     def test_many_to_one_collapse(self):
         """Multiple old labels should map to the same OSDC label."""
@@ -92,9 +90,7 @@ class TestMapping:
     def test_memory_collapse(self):
         """r5 and r7i labels collapse to same OSDC label."""
         assert (
-            OLD_TO_OSDC_LABEL["linux.r7i.2xlarge"]
-            == OLD_TO_OSDC_LABEL["linux.2xlarge.memory"]
-            == "l-x86iavx512-8-64"
+            OLD_TO_OSDC_LABEL["linux.r7i.2xlarge"] == OLD_TO_OSDC_LABEL["linux.2xlarge.memory"] == "l-x86iavx512-8-64"
         )
 
     def test_production_counts_coverage(self):
@@ -103,9 +99,7 @@ class TestMapping:
         for old_label, count in PRODUCTION_JOB_COUNTS.items():
             if old_label not in OLD_TO_OSDC_LABEL:
                 unmapped_with_traffic.append((old_label, count))
-        assert unmapped_with_traffic == [], (
-            f"Old labels with traffic but no mapping: {unmapped_with_traffic}"
-        )
+        assert unmapped_with_traffic == [], f"Old labels with traffic but no mapping: {unmapped_with_traffic}"
 
 
 # ── _aggregate_production_counts ────────────────────────────────────────
@@ -153,7 +147,6 @@ class TestGetAvailableRunners:
         result = get_available_runners(upstream, root)
         assert "l-x86iavx512-8-16" in result
         assert "l-custom-runner" in result
-
 
 
 # ── compute_distribution ─────────────────────────────────────────────────

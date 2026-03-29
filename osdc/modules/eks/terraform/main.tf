@@ -76,6 +76,7 @@ module "eks" {
   base_node_count                      = var.base_node_count
   base_node_instance_type              = var.base_node_instance_type
   base_node_max_unavailable_percentage = var.base_node_max_unavailable_percentage
+  base_node_ami_version                = var.base_node_ami_version
 
   authentication_mode      = var.authentication_mode
   cluster_admin_role_names = var.cluster_admin_role_names

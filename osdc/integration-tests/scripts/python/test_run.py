@@ -1,11 +1,13 @@
 """Unit tests for the OSDC integration test orchestrator (run.py + phases.py)."""
 
 import json
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 from phases import (
     cleanup_stale_prs,
+    clear_staging_pools,
     ensure_canary_repo,
     generate_workflow,
     prepare_pr,
@@ -13,8 +15,10 @@ from phases import (
 from run import (
     branch_name,
     format_duration,
+    gh_api,
     has_module,
     load_cluster_config,
+    parse_args,
     resolve,
     run_cmd_with_retry,
     safe_json_loads,
@@ -43,7 +47,15 @@ def clusters_yaml(tmp_path):
             "arc-production": {
                 "cluster_name": "pytorch-arc-production",
                 "aws_region": "us-east-2",
-                "modules": ["eks", "karpenter", "nodepools", "arc", "arc-runners", "nodepools-b200", "arc-runners-b200"],
+                "modules": [
+                    "eks",
+                    "karpenter",
+                    "nodepools",
+                    "arc",
+                    "arc-runners",
+                    "nodepools-b200",
+                    "arc-runners-b200",
+                ],
             },
         },
     }
@@ -87,6 +99,16 @@ def workflow_template(tmp_path):
         "    steps:\n"
         "      - run: echo B200\n"
         "  # END_B200\n"
+        "  # BEGIN_CACHE_ENFORCER\n"
+        "  cache-enforcer-job:\n"
+        "    runs-on: {{PREFIX}}enforcer-runner\n"
+        "    steps:\n"
+        "      - run: echo enforcer\n"
+        "  # END_CACHE_ENFORCER\n"
+        "  pypi-job:\n"
+        "    steps:\n"
+        "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
+        "      - run: echo {{PYPI_CACHE_CUDA_VERSION}}\n"
     )
     (wf_dir / "integration-test.yaml.tpl").write_text(template)
 
@@ -160,7 +182,11 @@ class TestHasModule:
 class TestGenerateWorkflow:
     def test_template_substitution(self, workflow_template):
         result = generate_workflow(
-            workflow_template, "cbr", "arc-production", "pytorch-arc-production", b200_enabled=True,
+            workflow_template,
+            "cbr",
+            "arc-production",
+            "pytorch-arc-production",
+            b200_enabled=True,
         )
         assert "name: cbr integration test" in result
         assert "runs-on: pytorch-arc-production" in result
@@ -168,7 +194,11 @@ class TestGenerateWorkflow:
 
     def test_b200_removed_when_disabled(self, workflow_template):
         result = generate_workflow(
-            workflow_template, "cbr", "arc-staging", "pytorch-arc-staging", b200_enabled=False,
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
         )
         assert "b200-job" not in result
         assert "BEGIN_B200" not in result
@@ -178,7 +208,11 @@ class TestGenerateWorkflow:
 
     def test_b200_preserved_when_enabled(self, workflow_template):
         result = generate_workflow(
-            workflow_template, "cbr", "arc-production", "pytorch-arc-production", b200_enabled=True,
+            workflow_template,
+            "cbr",
+            "arc-production",
+            "pytorch-arc-production",
+            b200_enabled=True,
         )
         assert "b200-job:" in result
         assert "echo B200" in result
@@ -188,6 +222,81 @@ class TestGenerateWorkflow:
         # Marker comments should be stripped
         assert "BEGIN_B200" not in result
         assert "END_B200" not in result
+
+    def test_cache_enforcer_removed_when_disabled(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+            cache_enforcer_enabled=False,
+        )
+        assert "cache-enforcer-job" not in result
+        assert "BEGIN_CACHE_ENFORCER" not in result
+        assert "END_CACHE_ENFORCER" not in result
+        assert "basic:" in result
+
+    def test_cache_enforcer_preserved_when_enabled(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+            cache_enforcer_enabled=True,
+        )
+        assert "cache-enforcer-job:" in result
+        assert "echo enforcer" in result
+        assert "runs-on: cbrenforcer-runner" in result
+        assert "BEGIN_CACHE_ENFORCER" not in result
+        assert "END_CACHE_ENFORCER" not in result
+
+    def test_pypi_cache_slugs_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+            pypi_cache_slugs="cpu cu121 cu124",
+        )
+        assert "echo cpu cu121 cu124" in result
+        assert "{{PYPI_CACHE_SLUGS}}" not in result
+
+    def test_pypi_cache_slugs_default(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+        )
+        # Default value should be substituted
+        assert "echo cpu cu121 cu124" in result
+
+    def test_pypi_cache_cuda_version_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+            pypi_cache_cuda_version="13.0",
+        )
+        assert "echo 13.0" in result
+        assert "{{PYPI_CACHE_CUDA_VERSION}}" not in result
+
+    def test_pypi_cache_cuda_version_default(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-staging",
+            "pytorch-arc-staging",
+            b200_enabled=False,
+        )
+        # Default value should be substituted
+        assert "echo 12.8" in result
 
 
 # ── format_duration ───────────────────────────────────────────────────────
@@ -214,10 +323,12 @@ class TestFormatDuration:
 class TestCleanupStalePrs:
     @patch("phases.run_cmd")
     def test_closes_matching_prs_and_cancels_runs(self, mock_run):
-        pr_list_stdout = json.dumps([
-            {"number": 10, "title": "[NO REVIEW][NO MERGE] ARC smoke tests 2026-03-18"},
-            {"number": 11, "title": "Unrelated PR"},
-        ])
+        pr_list_stdout = json.dumps(
+            [
+                {"number": 10, "title": "[NO REVIEW][NO MERGE] ARC smoke tests 2026-03-18"},
+                {"number": 11, "title": "Unrelated PR"},
+            ]
+        )
         queued_runs = json.dumps([{"databaseId": 100}])
         in_progress_runs = json.dumps([{"databaseId": 200}])
 
@@ -266,9 +377,9 @@ class TestCleanupStalePrs:
         empty_runs = json.dumps([])
 
         mock_run.side_effect = [
-            MagicMock(returncode=0, stdout=pr_list),       # pr list
-            MagicMock(returncode=0, stdout=empty_runs),    # queued runs
-            MagicMock(returncode=0, stdout=empty_runs),    # in_progress runs
+            MagicMock(returncode=0, stdout=pr_list),  # pr list
+            MagicMock(returncode=0, stdout=empty_runs),  # queued runs
+            MagicMock(returncode=0, stdout=empty_runs),  # in_progress runs
         ]
 
         cleanup_stale_prs("osdc-integration-test-arc-staging")
@@ -440,11 +551,11 @@ class TestEnsureCanaryRepo:
         canary.mkdir(parents=True)
 
         mock_run.side_effect = [
-            MagicMock(returncode=0),              # gh auth setup-git
-            MagicMock(returncode=128),             # rev-parse fails (corrupt)
-            MagicMock(returncode=0),               # gh repo clone
-            MagicMock(returncode=0),               # git config user.name
-            MagicMock(returncode=0),               # git config user.email
+            MagicMock(returncode=0),  # gh auth setup-git
+            MagicMock(returncode=128),  # rev-parse fails (corrupt)
+            MagicMock(returncode=0),  # gh repo clone
+            MagicMock(returncode=0),  # git config user.name
+            MagicMock(returncode=0),  # git config user.email
         ]
 
         # shutil.rmtree will actually remove the directory (not mocked),
@@ -487,6 +598,7 @@ class TestEnsureCanaryRepo:
         ]
 
         import logging
+
         with caplog.at_level(logging.WARNING):
             ensure_canary_repo(upstream)
 
@@ -559,3 +671,486 @@ class TestSafeJsonLoads:
 
     def test_none_input(self):
         assert safe_json_loads(None) is None
+
+
+# ── gh_api ────────────────────────────────────────────────────────────────
+
+
+class TestGhApi:
+    @patch("run.run_cmd")
+    def test_success(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"id": 1}',
+            stderr="",
+        )
+        result = gh_api("/repos/test")
+        assert result == {"id": 1}
+        cmd = mock_run.call_args[0][0]
+        assert "gh" in cmd
+        assert "api" in cmd
+        assert "/repos/test" in cmd
+
+    @patch("run.run_cmd")
+    def test_with_method_and_fields(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"ok": true}',
+            stderr="",
+        )
+        result = gh_api("/repos/test", method="POST", title="hello")
+        assert result == {"ok": True}
+        cmd = mock_run.call_args[0][0]
+        assert "--method" in cmd
+        assert "POST" in cmd
+        assert "-f" in cmd
+        assert "title=hello" in cmd
+
+    @patch("run.run_cmd")
+    def test_failure_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="Not Found",
+        )
+        result = gh_api("/repos/nonexistent")
+        assert result is None
+
+    @patch("run.run_cmd")
+    def test_invalid_json_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="not-json",
+            stderr="",
+        )
+        result = gh_api("/repos/test")
+        assert result is None
+
+
+# ── parse_args ────────────────────────────────────────────────────────────
+
+
+class TestParseArgs:
+    def test_required_args(self):
+        with patch(
+            "sys.argv",
+            [
+                "run.py",
+                "--cluster-id",
+                "arc-staging",
+                "--clusters-yaml",
+                "/tmp/c.yaml",
+                "--upstream-dir",
+                "/tmp/upstream",
+                "--root-dir",
+                "/tmp/root",
+            ],
+        ):
+            args = parse_args()
+        assert args.cluster_id == "arc-staging"
+        assert str(args.clusters_yaml) == "/tmp/c.yaml"
+        assert str(args.upstream_dir) == "/tmp/upstream"
+        assert str(args.root_dir) == "/tmp/root"
+        assert args.run_smoke is False
+        assert args.run_compactor is False
+        assert args.skip_smoke is False
+        assert args.skip_compactor is False
+        assert args.dry_run is False
+        assert args.keep_pr is False
+        assert args.force is False
+        assert args.skip_drain is False
+
+    def test_all_flags(self):
+        with patch(
+            "sys.argv",
+            [
+                "run.py",
+                "--cluster-id",
+                "prod",
+                "--clusters-yaml",
+                "/c.yaml",
+                "--upstream-dir",
+                "/u",
+                "--root-dir",
+                "/r",
+                "--run-smoke",
+                "--run-compactor",
+                "--skip-smoke",
+                "--skip-compactor",
+                "--dry-run",
+                "--keep-pr",
+                "--force",
+                "--skip-drain",
+            ],
+        ):
+            args = parse_args()
+        assert args.run_smoke is True
+        assert args.run_compactor is True
+        assert args.skip_smoke is True
+        assert args.skip_compactor is True
+        assert args.dry_run is True
+        assert args.keep_pr is True
+        assert args.force is True
+        assert args.skip_drain is True
+
+    def test_missing_required_exits(self):
+        with patch("sys.argv", ["run.py"]), pytest.raises(SystemExit):
+            parse_args()
+
+
+# ── clear_staging_pools ──────────────────────────────────────────────────
+
+
+class TestClearStagingPools:
+    @patch("phases.run_cmd")
+    def test_skips_non_staging(self, mock_run):
+        """Should return immediately for non-staging clusters."""
+        clear_staging_pools("arc-production")
+        mock_run.assert_not_called()
+
+    @patch("phases.run_cmd")
+    def test_no_active_pods_skips(self, mock_run):
+        """When no runner pods are found, skip pool clear."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="\n", stderr="")
+        clear_staging_pools("arc-staging")
+        # Only the initial kubectl get pods call
+        assert mock_run.call_count == 1
+
+    @patch("phases.run_cmd")
+    def test_kubectl_failure_returns(self, mock_run):
+        """If kubectl get pods fails, log warning and return."""
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="connection refused",
+        )
+        clear_staging_pools("arc-staging")
+        assert mock_run.call_count == 1
+
+    @patch("phases.time.sleep")
+    @patch("phases.run_cmd")
+    def test_force_drains_and_redeploys(self, mock_run, mock_sleep):
+        """With force=True, delete pods, nodepools, wait for drain, redeploy."""
+        mock_run.side_effect = [
+            # kubectl get pods (has active pods)
+            MagicMock(returncode=0, stdout="pod1 Running\npod2 Running\n", stderr=""),
+            # kubectl delete pods
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # kubectl delete nodepools
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # kubectl get nodes (first check — nodes still exist)
+            MagicMock(returncode=0, stdout="node1 Ready\n", stderr=""),
+            # kubectl get nodes (second check — drained)
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # just deploy-module
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        clear_staging_pools("arc-staging", force=True)
+
+        assert mock_run.call_count == 6
+        # Verify delete pods call
+        delete_pods = mock_run.call_args_list[1][0][0]
+        assert "delete" in delete_pods
+        assert "pods" in delete_pods
+        # Verify delete nodepools call
+        delete_np = mock_run.call_args_list[2][0][0]
+        assert "delete" in delete_np
+        assert "nodepools" in delete_np
+        # Verify redeploy call
+        deploy_call = mock_run.call_args_list[5][0][0]
+        assert "deploy-module" in deploy_call
+        # Sleep called once while waiting for drain
+        assert mock_sleep.call_count == 1
+        mock_sleep.assert_called_with(10)
+
+    @patch("builtins.input", return_value="n")
+    @patch("phases.run_cmd")
+    def test_interactive_decline_skips(self, mock_run, mock_input):
+        """Without force, declining the prompt skips pool clear."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="pod1 Running\n",
+            stderr="",
+        )
+        clear_staging_pools("arc-staging", force=False)
+        # Only the get-pods call, no delete/drain/redeploy
+        assert mock_run.call_count == 1
+
+    @patch("builtins.input", return_value="y")
+    @patch("phases.time.sleep")
+    @patch("phases.run_cmd")
+    def test_interactive_accept_proceeds(self, mock_run, mock_sleep, mock_input):
+        """Answering 'y' to the prompt proceeds with drain."""
+        mock_run.side_effect = [
+            # kubectl get pods (active)
+            MagicMock(returncode=0, stdout="pod1 Running\n", stderr=""),
+            # kubectl delete pods
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # kubectl delete nodepools
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # kubectl get nodes (empty = drained)
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # just deploy-module
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        clear_staging_pools("arc-staging", force=False)
+
+        assert mock_run.call_count == 5
+        # Verify the drain and redeploy happened
+        deploy_call = mock_run.call_args_list[4][0][0]
+        assert "deploy-module" in deploy_call
+
+
+# ── prepare_pr (additional edge cases) ────────────────────────────────────
+
+
+class TestPreparePrAdditional:
+    @patch("phases.run_cmd")
+    def test_no_changes_skips_commit(self, mock_run, workflow_template, tmp_path):
+        """When git diff --cached --quiet returns 0, skip commit."""
+        canary = tmp_path / "canary"
+        canary.mkdir()
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # git fetch
+            MagicMock(returncode=0),  # git checkout
+            MagicMock(returncode=0),  # git add
+            MagicMock(returncode=0),  # git diff --cached --quiet → no changes
+            # No commit call expected; next is dry-run exit
+        ]
+
+        result = prepare_pr(
+            canary_path=canary,
+            upstream_dir=workflow_template,
+            workflow_content="name: test\n",
+            branch="osdc-integration-test-arc-staging",
+            dry_run=True,
+        )
+
+        assert result is None
+        # Only 4 calls: fetch, checkout, add, diff (no commit)
+        assert mock_run.call_count == 4
+
+    @patch("phases.run_cmd")
+    def test_existing_workflows_dir_removed(self, mock_run, workflow_template, tmp_path):
+        """When .github/workflows already exists, it gets removed before writing."""
+        canary = tmp_path / "canary"
+        canary.mkdir()
+        old_wf_dir = canary / ".github" / "workflows"
+        old_wf_dir.mkdir(parents=True)
+        (old_wf_dir / "stale-workflow.yaml").write_text("old content")
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # git fetch
+            MagicMock(returncode=0),  # git checkout
+            MagicMock(returncode=0),  # git add
+            MagicMock(returncode=1),  # git diff --cached --quiet → changes exist
+            MagicMock(returncode=0),  # git commit
+        ]
+
+        prepare_pr(
+            canary_path=canary,
+            upstream_dir=workflow_template,
+            workflow_content="name: new test\n",
+            branch="osdc-integration-test-arc-staging",
+            dry_run=True,
+        )
+
+        # Stale file should be gone
+        assert not (old_wf_dir / "stale-workflow.yaml").exists()
+        # New workflow should be written
+        assert (old_wf_dir / "integration-test.yaml").read_text() == "name: new test\n"
+
+    @patch("phases.run_cmd")
+    def test_successful_pr_returns_number(self, mock_run, workflow_template, tmp_path):
+        """Full non-dry-run flow returns parsed PR number."""
+        canary = tmp_path / "canary"
+        canary.mkdir()
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # git fetch
+            MagicMock(returncode=0),  # git checkout
+            MagicMock(returncode=0),  # git add
+            MagicMock(returncode=1),  # git diff --cached → changes
+            MagicMock(returncode=0),  # git commit
+            MagicMock(returncode=0),  # git push
+            MagicMock(returncode=0, stdout="https://github.com/pytorch/pytorch-canary/pull/42\n", stderr=""),
+        ]
+
+        result = prepare_pr(
+            canary_path=canary,
+            upstream_dir=workflow_template,
+            workflow_content="name: test\n",
+            branch="osdc-integration-test-arc-staging",
+            dry_run=False,
+        )
+
+        assert result == 42
+
+
+# ── main() ───────────────────────────────────────────────────────────────
+
+
+class TestMain:
+    @patch("sys.exit")
+    @patch("run.main")
+    def test_main_dry_run(self, mock_main, mock_exit):
+        """Verify main() is callable (import-level sanity check)."""
+        # main() relies on imports of phases and phases_validation inside the
+        # function body, so we just verify it's importable and callable.
+        from run import main as main_fn
+
+        assert callable(main_fn)
+
+    @patch("run.parse_args")
+    def test_main_called_process_error(self, mock_parse_args, clusters_yaml, tmp_path):
+        """main() catches CalledProcessError and exits 1."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="arc-staging",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=False,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+        )
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo"),
+            patch("phases.generate_workflow", return_value="wf content"),
+            patch(
+                "phases.prepare_pr",
+                side_effect=subprocess.CalledProcessError(
+                    1,
+                    ["git", "push"],
+                    stderr="auth fail",
+                ),
+            ),
+            patch("phases_validation.print_report"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+
+    @patch("run.parse_args")
+    def test_main_keyboard_interrupt(self, mock_parse_args, clusters_yaml, tmp_path):
+        """main() catches KeyboardInterrupt, prints partial report, and exits."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="arc-staging",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=False,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+        )
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("phases.generate_workflow", return_value="wf"),
+            patch("phases.prepare_pr", return_value=99),
+            patch("phases_validation.run_parallel_validation", side_effect=KeyboardInterrupt),
+            patch("phases_validation._fetch_latest_runs", return_value=[]),
+            patch("phases_validation._collect_run_details", return_value=[]),
+            patch("phases_validation.print_report", return_value=False) as mock_report,
+            patch("phases_validation.close_pr") as mock_close,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        mock_report.assert_called_once()
+        # interrupted flag should be set
+        assert mock_report.call_args[1].get("interrupted") is True or mock_report.call_args[0][-1] is True  # positional
+        mock_close.assert_called_once()
+
+    @patch("run.parse_args")
+    def test_main_keep_pr_flag(self, mock_parse_args, clusters_yaml, tmp_path):
+        """With --keep-pr, main() does not close the PR."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="arc-staging",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=False,
+            keep_pr=True,
+            force=True,
+            skip_drain=True,
+        )
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("phases.generate_workflow", return_value="wf"),
+            patch("phases.prepare_pr", return_value=99),
+            patch("phases_validation.run_parallel_validation", return_value={}),
+            patch("phases_validation.wait_for_workflows", return_value=[]),
+            patch("phases_validation.print_report", return_value=True),
+            patch("phases_validation.close_pr") as mock_close,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 0
+        mock_close.assert_not_called()
+
+    @patch("run.parse_args")
+    def test_main_dry_run_exits_early(self, mock_parse_args, clusters_yaml, tmp_path):
+        """With --dry-run, main() exits after prepare_pr without polling."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="arc-staging",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=False,
+        )
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.clear_staging_pools") as mock_clear,
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("phases.generate_workflow", return_value="wf"),
+            patch("phases.prepare_pr", return_value=None),
+            patch("phases_validation.run_parallel_validation") as mock_validation,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 0
+        # dry_run skips drain and validation
+        mock_clear.assert_not_called()
+        mock_validation.assert_not_called()

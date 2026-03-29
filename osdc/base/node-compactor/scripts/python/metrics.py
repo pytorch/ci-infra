@@ -68,6 +68,12 @@ spare_capacity_required = Gauge(
     ["nodepool"],
 )
 
+reserved_nodes = Gauge(
+    "compactor_reserved_nodes",
+    "Nodes protected from Karpenter deletion via do-not-disrupt annotation",
+    ["nodepool"],
+)
+
 # --- Counters ---
 
 reconcile_cycles_total = Counter(

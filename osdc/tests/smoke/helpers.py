@@ -10,26 +10,31 @@ import time
 import urllib.parse
 import urllib.request
 
-DEFAULT_TIMEOUT = 60
+DEFAULT_TIMEOUT = 90
 READY_RETRIES = 6
 READY_RETRY_DELAY = 15  # seconds
 MIN_NODE_AGE_SECONDS = 120  # Nodes must be Ready for 2+ min to count as stable
 
 
 def _proxy_bypass_env() -> dict[str, str]:
-    """Return an env dict that bypasses corporate proxy for AWS API calls.
+    """Return an env dict that bypasses corporate proxy for AWS and EKS API calls.
 
     The Meta corporate proxy intercepts HTTPS connections, which causes
     kubectl/helm to fail with 'Unauthorized' when talking to EKS, and
     AWS CLI calls to fail for services like ECR, IAM, SQS, EventBridge.
-    Using '.amazonaws.com' covers all AWS service endpoints at once.
+
+    Bypasses:
+      .amazonaws.com  — all AWS service endpoints (EC2, IAM, SQS, etc.)
+      .eks.amazonaws.com — EKS Kubernetes API server (kubectl/helm)
     """
     env = os.environ.copy()
-    aws_suffix = ".amazonaws.com"
+    suffixes = [".amazonaws.com", ".eks.amazonaws.com"]
     for key in ("NO_PROXY", "no_proxy"):
         current = env.get(key, "")
-        if aws_suffix not in current:
-            env[key] = f"{current},{aws_suffix}" if current else aws_suffix
+        for suffix in suffixes:
+            if suffix not in current:
+                current = f"{current},{suffix}" if current else suffix
+        env[key] = current
     return env
 
 

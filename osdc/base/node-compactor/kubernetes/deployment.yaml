@@ -21,6 +21,9 @@ spec:
         app.kubernetes.io/component: controller
     spec:
       serviceAccountName: node-compactor
+      # Allow enough time for SIGTERM handler to clean up taints and
+      # reservation annotations across all managed nodes before SIGKILL.
+      terminationGracePeriodSeconds: 120
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -50,6 +53,8 @@ spec:
               value: "COMPACTOR_MIN_NODES_PLACEHOLDER"
             - name: COMPACTOR_MIN_NODE_AGE
               value: "COMPACTOR_MIN_NODE_AGE_PLACEHOLDER"
+            - name: COMPACTOR_CAPACITY_RESERVATION_NODES
+              value: "COMPACTOR_CAPACITY_RESERVATION_NODES_PLACEHOLDER"
           resources:
             requests:
               cpu: "50m"

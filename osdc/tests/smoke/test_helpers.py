@@ -32,9 +32,7 @@ class TestAssertMetricFreshInMimir:
             "data": {"result": [{"value": [now - 30, "1"]}]},
         }
         with patch("helpers.query_mimir", return_value=mock_result):
-            assert_metric_fresh_in_mimir(
-                "http://mimir/api/v1/query", "up{}", "user", "pass", description="test"
-            )
+            assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
 
     def test_stale_data_retries_then_raises(self) -> None:
         """Persistently stale data should retry then raise AssertionError."""
@@ -78,9 +76,7 @@ class TestAssertMetricFreshInMimir:
             return stale_result if call_count == 1 else fresh_result
 
         with patch("helpers.query_mimir", side_effect=side_effect), patch("helpers.time.sleep"):
-            assert_metric_fresh_in_mimir(
-                "http://mimir/api/v1/query", "up{}", "user", "pass", description="test"
-            )
+            assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
         assert call_count == 2
 
     def test_no_data_retries_then_raises(self) -> None:
@@ -91,9 +87,7 @@ class TestAssertMetricFreshInMimir:
             patch("helpers.time.sleep"),
             pytest.raises(AssertionError, match="No metric series found"),
         ):
-            assert_metric_fresh_in_mimir(
-                "http://mimir/api/v1/query", "up{}", "user", "pass", description="test"
-            )
+            assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
         assert mock_query.call_count == REMOTE_RETRIES
 
     def test_no_data_then_fresh_recovers(self) -> None:
@@ -113,9 +107,7 @@ class TestAssertMetricFreshInMimir:
             return empty_result if call_count == 1 else fresh_result
 
         with patch("helpers.query_mimir", side_effect=side_effect), patch("helpers.time.sleep"):
-            assert_metric_fresh_in_mimir(
-                "http://mimir/api/v1/query", "up{}", "user", "pass", description="test"
-            )
+            assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
         assert call_count == 2
 
     def test_network_error_retries_then_skips(self) -> None:
@@ -123,9 +115,7 @@ class TestAssertMetricFreshInMimir:
         with patch("helpers.query_mimir", return_value=None) as mock_query:
             mock_query.last_error = "Connection refused"
             with patch("helpers.time.sleep"), pytest.raises(pytest.skip.Exception):
-                assert_metric_fresh_in_mimir(
-                    "http://mimir/api/v1/query", "up{}", "user", "pass", description="test"
-                )
+                assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
             assert mock_query.call_count == REMOTE_RETRIES
 
     def test_retry_succeeds_on_second_attempt(self) -> None:
@@ -148,18 +138,17 @@ class TestAssertMetricFreshInMimir:
         with patch("helpers.query_mimir", side_effect=side_effect) as mock_query:
             mock_query.last_error = "timeout"
             with patch("helpers.time.sleep"):
-                assert_metric_fresh_in_mimir(
-                    "http://mimir/api/v1/query", "up{}", "user", "pass", description="test"
-                )
+                assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
         assert call_count == 2
 
     def test_bad_status_raises(self) -> None:
         """Non-success status from Mimir should raise AssertionError."""
         mock_result = {"status": "error", "data": {"result": []}}
-        with patch("helpers.query_mimir", return_value=mock_result), pytest.raises(AssertionError, match="status 'error'"):
-            assert_metric_fresh_in_mimir(
-                "http://mimir/api/v1/query", "up{}", "user", "pass", description="test"
-            )
+        with (
+            patch("helpers.query_mimir", return_value=mock_result),
+            pytest.raises(AssertionError, match="status 'error'"),
+        ):
+            assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
 
 
 # ============================================================================
