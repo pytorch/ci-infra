@@ -122,6 +122,7 @@ class TestRunnerConfigMapEnvVars:
             "UV_DEFAULT_INDEX",
             "UV_INSECURE_HOST",
             "UV_INDEX",
+            "UV_INDEX_STRATEGY",
         }
     )
 

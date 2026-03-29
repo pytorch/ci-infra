@@ -70,17 +70,19 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
             - name: "$job"
               env:
                 - name: PIP_INDEX_URL
-                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
+                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
                 - name: PIP_TRUSTED_HOST
                   value: "pypi-cache-cpu.pypi-cache.svc.cluster.local"
                 - name: UV_DEFAULT_INDEX
-                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
+                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
                 - name: UV_INSECURE_HOST
                   value: "pypi-cache-cpu.pypi-cache.svc.cluster.local:8080"
                 - name: PIP_EXTRA_INDEX_URL
-                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
                 - name: UV_INDEX
-                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+                  value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
+                - name: UV_INDEX_STRATEGY
+                  value: "unsafe-best-match"
                 - name: TORCH_CI_MAX_MEMORY
                   value: "{{MEMORY_BYTES}}"
               resources:
@@ -454,7 +456,7 @@ class TestGenerateRunner:
         assert env_vars["TORCH_CI_MAX_MEMORY"] == str(96 * 1024**3)
 
     def test_pypi_cache_env_vars(self, tmp_path):
-        """All 6 pypi-cache env vars are present with correct CPU defaults."""
+        """All pypi-cache env vars are present with correct CPU defaults."""
         def_file = make_def_file(tmp_path, "cache-test", "m5.xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -474,12 +476,13 @@ class TestGenerateRunner:
         host = "pypi-cache-cpu.pypi-cache.svc.cluster.local"
         base = f"http://{host}:8080"
 
-        assert env_vars["PIP_INDEX_URL"] == f"{base}/simple/"
+        assert env_vars["PIP_INDEX_URL"] == f"{base}/whl/cpu/"
         assert env_vars["PIP_TRUSTED_HOST"] == host
-        assert env_vars["PIP_EXTRA_INDEX_URL"] == f"{base}/whl/cpu/"
-        assert env_vars["UV_DEFAULT_INDEX"] == f"{base}/simple/"
+        assert env_vars["PIP_EXTRA_INDEX_URL"] == f"{base}/simple/"
+        assert env_vars["UV_DEFAULT_INDEX"] == f"{base}/whl/cpu/"
         assert env_vars["UV_INSECURE_HOST"] == f"{host}:8080"
-        assert env_vars["UV_INDEX"] == f"{base}/whl/cpu/"
+        assert env_vars["UV_INDEX"] == f"{base}/simple/"
+        assert env_vars["UV_INDEX_STRATEGY"] == "unsafe-best-match"
 
     def test_default_disk_size(self, tmp_path):
         """When disk_size is omitted from def, default 100 is used."""

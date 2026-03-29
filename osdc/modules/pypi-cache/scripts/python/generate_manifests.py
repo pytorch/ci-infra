@@ -139,8 +139,14 @@ def log_error(msg):
 
 
 def cuda_slug(version: str) -> str:
-    """Convert CUDA version to slug: '12.1' -> 'cu121', '11.8' -> 'cu118'."""
-    return "cu" + version.replace(".", "")
+    """Convert CUDA version to slug using major.minor only.
+
+    '12.1' -> 'cu121', '12.8.1' -> 'cu128', '11.8' -> 'cu118'.
+    Patch version is ignored to align with PyTorch convention
+    (download.pytorch.org uses /whl/cu128/, not /whl/cu1281/).
+    """
+    parts = version.split(".")
+    return f"cu{parts[0]}{parts[1]}"
 
 
 def get_slugs(config: dict) -> list[str]:

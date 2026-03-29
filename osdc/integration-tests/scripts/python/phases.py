@@ -231,7 +231,7 @@ def generate_workflow(
     b200_enabled: bool,
     cache_enforcer_enabled: bool = False,
     pypi_cache_slugs: str = "cpu cu121 cu124",
-    pypi_cache_cuda_version: str = "12.8.1",
+    pypi_cache_cuda_version: str = "12.8",
 ) -> str:
     """Generate the integration test workflow from template."""
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"

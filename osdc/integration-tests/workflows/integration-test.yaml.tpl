@@ -276,13 +276,13 @@ jobs:
       - name: Verify download.pytorch.org proxy
         run: |
           echo "=== download.pytorch.org Proxy Test ==="
-          echo "PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-<not set>}"
-          echo "UV_INDEX=${UV_INDEX:-<not set>}"
+          echo "PIP_INDEX_URL=${PIP_INDEX_URL:-<not set>}"
+          echo "UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX:-<not set>}"
           python3 -c "
           import urllib.request, os, sys
-          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          url = os.environ.get('PIP_INDEX_URL', '')
           if not url:
-              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              print('FAIL: PIP_INDEX_URL not set')
               sys.exit(1)
           r = urllib.request.urlopen(url, timeout=30)
           body = r.read().decode()
@@ -363,6 +363,22 @@ jobs:
           echo ""
           echo "PASS: URL rewriting verified for both text/html and PEP 691 JSON"
 
+      - name: Verify UV_INDEX_STRATEGY
+        run: |
+          echo "=== UV_INDEX_STRATEGY ==="
+          EXPECTED="unsafe-best-match"
+          ACTUAL="${UV_INDEX_STRATEGY:-}"
+          echo "UV_INDEX_STRATEGY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: UV_INDEX_STRATEGY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: UV_INDEX_STRATEGY mismatch"
+            exit 1
+          fi
+          echo "PASS: UV_INDEX_STRATEGY is correct"
+
       - name: Verify torch CPU install (pip)
         run: |
           echo "=== Torch CPU Install (pip, defaults) ==="
@@ -436,9 +452,9 @@ jobs:
           echo "=== download.pytorch.org Proxy (CPU action) ==="
           python3 -c "
           import urllib.request, os, sys
-          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          url = os.environ.get('PIP_INDEX_URL', '')
           if not url:
-              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              print('FAIL: PIP_INDEX_URL not set')
               sys.exit(1)
           r = urllib.request.urlopen(url, timeout=30)
           body = r.read().decode()
@@ -509,8 +525,8 @@ jobs:
             if [ -z "$val" ]; then
               echo "FAIL: $var is not set"
               FAIL=1
-            elif ! echo "$val" | grep -q "pypi-cache-cu"; then
-              echo "FAIL: $var does not point to CUDA service: $val"
+            elif ! echo "$val" | grep -q "/whl/cu"; then
+              echo "FAIL: $var does not point to CUDA wheel index: $val"
               FAIL=1
             else
               echo "PASS: $var=$val"
@@ -521,8 +537,8 @@ jobs:
             if [ -z "$val" ]; then
               echo "FAIL: $var is not set"
               FAIL=1
-            elif ! echo "$val" | grep -q "/whl/cu"; then
-              echo "FAIL: $var does not point to CUDA wheel index: $val"
+            elif ! echo "$val" | grep -q "pypi-cache-cu"; then
+              echo "FAIL: $var does not point to CUDA service: $val"
               FAIL=1
             else
               echo "PASS: $var=$val"
@@ -555,9 +571,9 @@ jobs:
           echo "=== CUDA PyTorch Wheel Index ==="
           python3 -c "
           import urllib.request, os, sys
-          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
+          url = os.environ.get('PIP_INDEX_URL', '')
           if not url:
-              print('FAIL: PIP_EXTRA_INDEX_URL not set')
+              print('FAIL: PIP_INDEX_URL not set')
               sys.exit(1)
           r = urllib.request.urlopen(url, timeout=30)
           body = r.read().decode()

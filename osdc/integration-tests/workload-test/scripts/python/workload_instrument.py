@@ -252,20 +252,23 @@ def _cleanup_needs_references(content: str, removed_jobs: set[str]) -> str:
 
 
 def rewrite_cross_repo_refs(content: str) -> str:
-    """Rewrite ``pytorch/pytorch`` cross-repo references to local paths.
+    """Rewrite ``pytorch/pytorch`` cross-repo workflow references to local paths.
 
     ``uses: pytorch/pytorch/.github/workflows/<X>@<ref>`` becomes
-    ``uses: ./.github/workflows/<X>`` (and similarly for actions).
+    ``uses: ./.github/workflows/<X>``.
+
+    Action references (``pytorch/pytorch/.github/actions/<X>@<ref>``) are
+    intentionally **not** rewritten.  Local action refs (``uses: ./.github/…``)
+    require the repository to be already checked out, but
+    ``checkout-pytorch`` *is* the checkout action — rewriting it to a local
+    path creates a circular dependency.  Remote action refs work because
+    GitHub fetches them directly from the source repo.
+
     Third-party refs (``pytorch/test-infra``, ``actions/*``) are unchanged.
     """
     content = re.sub(
         r"uses:\s*pytorch/pytorch/\.github/workflows/([^@]+)@\S+",
         r"uses: ./.github/workflows/\1",
-        content,
-    )
-    content = re.sub(
-        r"uses:\s*pytorch/pytorch/\.github/actions/([^@]+)@\S+",
-        r"uses: ./.github/actions/\1",
         content,
     )
     return content
@@ -348,6 +351,33 @@ def generate_determinator_stub(target_prefix: str) -> str:
 def generate_determinator_script(target_prefix: str) -> str:
     """Return a minimal ``runner_determinator.py`` that forces *target_prefix*."""
     return _DETERMINATOR_SCRIPT.replace("TARGET_PREFIX_PLACEHOLDER", target_prefix)
+
+
+# ── PyPI cache injection ─────────────────────────────────────────────
+
+
+def inject_pypi_cache_step(content: str, action_ref: str) -> str:
+    """Inject a ``setup-pypi-cache`` step as the first step in every job.
+
+    Finds each ``steps:`` key in the workflow and inserts the action
+    immediately after it, before any existing steps.  Idempotent — skips
+    files that already reference the action.
+    """
+    if "setup-pypi-cache" in content:
+        return content
+
+    lines = content.split("\n")
+    result: list[str] = []
+    for line in lines:
+        result.append(line)
+        if line.strip() == "steps:":
+            indent = len(line) - len(line.lstrip())
+            si = " " * (indent + 2)  # step-item indent
+            result.append(f"{si}- name: Setup PyPI cache")
+            result.append(f"{si}  uses: {action_ref}")
+            result.append(f"{si}  with:")
+            result.append(f"{si}    build-environment: ${{{{ inputs.build-environment || inputs.build_environment || '' }}}}")
+    return "\n".join(result)
 
 
 # ── Helpers for instrument_workflows ──────────────────────────────────

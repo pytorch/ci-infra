@@ -67,6 +67,12 @@ class TestCudaSlug:
     def test_11_8(self):
         assert cuda_slug("11.8") == "cu118"
 
+    def test_12_8_1_three_component(self):
+        assert cuda_slug("12.8.1") == "cu128"
+
+    def test_13_0_2_three_component(self):
+        assert cuda_slug("13.0.2") == "cu130"
+
 
 # ============================================================================
 # get_slugs

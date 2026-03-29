@@ -21,6 +21,10 @@ from pathlib import Path
 
 import yaml
 
+# Add pypi-cache module to path for cuda_slug import (single source of truth)
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "pypi-cache" / "scripts" / "python"))
+from generate_manifests import cuda_slug  # noqa: E402
+
 log = logging.getLogger("osdc-integration-test")
 
 CANARY_REPO = "pytorch/pytorch-canary"
@@ -209,9 +213,13 @@ def main():
 
     # Build pypi-cache slug list: always "cpu", plus one per configured CUDA version
     cuda_versions = resolve(cfg, "pypi_cache.cuda_versions", [])
-    pypi_cache_slugs = " ".join(["cpu"] + [f"cu{str(v).replace('.', '')}" for v in cuda_versions])
-    # First CUDA version for integration test action verification
-    pypi_cache_cuda_version = str(cuda_versions[0]) if cuda_versions else "12.8.1"
+    pypi_cache_slugs = " ".join(
+        ["cpu"] + [cuda_slug(str(v)) for v in cuda_versions]
+    )
+    # First CUDA version for integration test action verification (major.minor only)
+    raw_ver = str(cuda_versions[0]) if cuda_versions else "12.8"
+    parts = raw_ver.split(".")
+    pypi_cache_cuda_version = f"{parts[0]}.{parts[1]}"
 
     # Effective skip flags: skip by default, --run-X opts in, --skip-X overrides
     skip_smoke = not args.run_smoke or args.skip_smoke

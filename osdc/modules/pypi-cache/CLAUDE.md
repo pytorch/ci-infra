@@ -58,6 +58,12 @@ under `clusters.<id>.pypi_cache`. The module's Python `DEFAULTS` dict does not
 contain these keys; omitting them from `clusters.yaml` will result in no CUDA
 slugs being generated.
 
+**CUDA slug normalization:** `cuda_slug()` normalizes versions to **major.minor
+only**. A `clusters.yaml` entry of `"12.8.1"` produces slug `cu128`, not `cu1281`.
+This aligns with the PyTorch convention (`download.pytorch.org/whl/cu128/`) and
+with the `setup-pypi-cache` action's auto-detection from `build-environment`
+strings (which contain only major.minor, e.g., `cuda12.8`).
+
 Per-cluster overrides work the usual way:
 
 ```yaml
@@ -98,7 +104,7 @@ values and runs on shared base infrastructure nodes.
 
 ```
 Job pods set PIP_INDEX_URL per CUDA version:
-  http://pypi-cache-cu121.pypi-cache.svc.cluster.local:8080/simple/
+  http://pypi-cache-cu121.pypi-cache.svc.cluster.local:8080/whl/cu121/
 
             +--- ClusterIP Service ----+
             |  pypi-cache-cu121:8080   |
@@ -151,7 +157,7 @@ One Deployment + Service per CUDA version:
 
 ### PyPI packages (default)
 
-1. Composite GitHub Action sets `PIP_INDEX_URL` / `UV_INDEX_URL` for the job
+1. Composite GitHub Action sets `PIP_EXTRA_INDEX_URL` / `UV_INDEX` for the job
 2. pip/uv queries `pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/simple/{package}/`
 3. nginx checks its local cache — serves response immediately on cache hit
 4. On cache miss, nginx forwards to pypiserver on port 8081
@@ -168,7 +174,7 @@ One Deployment + Service per CUDA version:
 
 ### PyTorch packages (download.pytorch.org)
 
-1. Composite GitHub Action sets `PIP_EXTRA_INDEX_URL` to
+1. Composite GitHub Action sets `PIP_INDEX_URL` / `UV_DEFAULT_INDEX` to
    `http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/whl/{cuda}/`
 2. pip queries the `/whl/{cuda}/` index — nginx proxies directly to
    `download.pytorch.org` (no pypiserver involved) and caches index pages (10m)

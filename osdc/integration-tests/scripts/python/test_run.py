@@ -282,9 +282,9 @@ class TestGenerateWorkflow:
             "arc-staging",
             "pytorch-arc-staging",
             b200_enabled=False,
-            pypi_cache_cuda_version="13.0.2",
+            pypi_cache_cuda_version="13.0",
         )
-        assert "echo 13.0.2" in result
+        assert "echo 13.0" in result
         assert "{{PYPI_CACHE_CUDA_VERSION}}" not in result
 
     def test_pypi_cache_cuda_version_default(self, workflow_template):
@@ -296,7 +296,7 @@ class TestGenerateWorkflow:
             b200_enabled=False,
         )
         # Default value should be substituted
-        assert "echo 12.8.1" in result
+        assert "echo 12.8" in result
 
 
 # ── format_duration ───────────────────────────────────────────────────────

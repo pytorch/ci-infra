@@ -25,6 +25,7 @@ from workload_instrument import (
     filter_non_arc_jobs,
     generate_determinator_script,
     generate_determinator_stub,
+    inject_pypi_cache_step,
     replace_runner_prefix,
     rewrite_cross_repo_refs,
     rewrite_repo_guards,
@@ -38,6 +39,8 @@ PYTORCH_REPO = "pytorch/pytorch"
 KEEP_WORKFLOWS = ["lint.yml"]
 PR_TITLE_PREFIX = "[NO REVIEW][NO MERGE] OSDC workload test"
 SCRATCH_DIR_NAME = ".scratch"
+# TODO: Move to @main once pytorch/test-infra PR is merged
+PYPI_CACHE_ACTION_REF = "pytorch/test-infra/.github/actions/setup-pypi-cache@jeanschmidt/define_pip_cuda"
 
 
 # ── Phase 1: Prepare repos ───────────────────────────────────────────
@@ -186,6 +189,13 @@ def instrument_workflows(
     apply_to_all_workflows(
         workflows_dir,
         lambda c: replace_runner_prefix(c, SOURCE_RUNNER_PREFIX, target_prefix),
+    )
+
+    # 3g: Inject PyPI cache setup into all workflows with steps
+    log.info("  3g: Injecting PyPI cache setup (auto-detect from build-environment)...")
+    apply_to_all_workflows(
+        workflows_dir,
+        lambda c: inject_pypi_cache_step(c, PYPI_CACHE_ACTION_REF),
     )
 
 
