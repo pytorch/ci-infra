@@ -276,13 +276,13 @@ jobs:
       - name: Verify download.pytorch.org proxy
         run: |
           echo "=== download.pytorch.org Proxy Test ==="
-          echo "PIP_INDEX_URL=${PIP_INDEX_URL:-<not set>}"
-          echo "UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX:-<not set>}"
+          echo "PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-<not set>}"
+          echo "UV_INDEX=${UV_INDEX:-<not set>}"
           python3 -c "
           import urllib.request, os, sys
-          url = os.environ.get('PIP_INDEX_URL', '')
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
           if not url:
-              print('FAIL: PIP_INDEX_URL not set')
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
               sys.exit(1)
           r = urllib.request.urlopen(url, timeout=30)
           body = r.read().decode()
@@ -452,9 +452,9 @@ jobs:
           echo "=== download.pytorch.org Proxy (CPU action) ==="
           python3 -c "
           import urllib.request, os, sys
-          url = os.environ.get('PIP_INDEX_URL', '')
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
           if not url:
-              print('FAIL: PIP_INDEX_URL not set')
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
               sys.exit(1)
           r = urllib.request.urlopen(url, timeout=30)
           body = r.read().decode()
@@ -520,7 +520,24 @@ jobs:
         run: |
           echo "=== Verify CUDA Action Environment ==="
           FAIL=0
+          # Primary index (pypi.org proxy) — must point to CUDA service's /simple/
           for var in PIP_INDEX_URL UV_DEFAULT_INDEX; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "pypi-cache-cu"; then
+              echo "FAIL: $var does not point to CUDA service: $val"
+              FAIL=1
+            elif ! echo "$val" | grep -q "/simple/"; then
+              echo "FAIL: $var does not point to /simple/ index: $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          # Extra index (pytorch wheel proxy) — must point to CUDA /whl/cu*/
+          for var in PIP_EXTRA_INDEX_URL UV_INDEX; do
             val=$(eval echo "\$$var")
             if [ -z "$val" ]; then
               echo "FAIL: $var is not set"
@@ -532,18 +549,7 @@ jobs:
               echo "PASS: $var=$val"
             fi
           done
-          for var in PIP_EXTRA_INDEX_URL UV_INDEX; do
-            val=$(eval echo "\$$var")
-            if [ -z "$val" ]; then
-              echo "FAIL: $var is not set"
-              FAIL=1
-            elif ! echo "$val" | grep -q "pypi-cache-cu"; then
-              echo "FAIL: $var does not point to CUDA service: $val"
-              FAIL=1
-            else
-              echo "PASS: $var=$val"
-            fi
-          done
+          # Trust/insecure host — must reference CUDA service
           for var in PIP_TRUSTED_HOST UV_INSECURE_HOST; do
             val=$(eval echo "\$$var")
             if [ -z "$val" ]; then
@@ -571,9 +577,9 @@ jobs:
           echo "=== CUDA PyTorch Wheel Index ==="
           python3 -c "
           import urllib.request, os, sys
-          url = os.environ.get('PIP_INDEX_URL', '')
+          url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
           if not url:
-              print('FAIL: PIP_INDEX_URL not set')
+              print('FAIL: PIP_EXTRA_INDEX_URL not set')
               sys.exit(1)
           r = urllib.request.urlopen(url, timeout=30)
           body = r.read().decode()
