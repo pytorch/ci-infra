@@ -21,11 +21,16 @@ builder.
 | `kubernetes/service.yaml.tpl` | Per-CUDA ClusterIP Service template |
 | `kubernetes/serviceaccount.yaml` | SA for pypi-cache pods |
 | `scripts/python/generate_manifests.py` | Reads clusters.yaml + templates, outputs StorageClass/PVC/Deployments/Services YAML |
-| `scripts/python/log_rotator.py` | Stdin-to-file log rotator with date-based rotation (mounted via ConfigMap) |
+| `scripts/python/log_rotator.py` | Stdin-to-file log rotator with date-based rotation (no longer deployed; nginx logs upstream requests directly) |
+| `scripts/python/wants_collector.py` | Log scanner + PyPI filter + S3 uploader (mounted as ConfigMap) |
+| `scripts/python/test_wants_collector.py` | Unit tests for wants_collector.py |
 | `scripts/python/conftest.py` | pytest path setup for cross-module imports |
 | `kubernetes/nginx.conf` | nginx caching proxy config template (`__DNS_RESOLVER__`, `__NGINX_MAX_CACHE_SIZE__` placeholders) |
+| `kubernetes/wants-collector-sa.yaml` | ServiceAccount for wants-collector (IRSA-annotated by deploy.sh) |
+| `kubernetes/wants-collector-deployment.yaml.tpl` | Wants-collector Deployment template (sed placeholders) |
 | `kubernetes/nodepool.yaml.tpl` | Karpenter NodePool template (dedicated pypi-cache nodes) |
 | `kubernetes/ec2nodeclass.yaml.tpl` | EC2NodeClass template (AWS node config for Karpenter) |
+| `terraform/wheel-cache-bucket/` | Standalone tofu root for shared S3 bucket (one-time setup) |
 | `docker/Dockerfile` | Reserved for future builder image |
 
 ## Configuration (clusters.yaml)
@@ -40,7 +45,6 @@ defaults:
     nginx_image: docker.io/nginxinc/nginx-unprivileged:1.27-alpine
     workers: 4
     replicas: 2
-    log_max_age_days: 30
     instance_type: r5d.12xlarge
     storage_request: "1Ti"
     server:
@@ -50,6 +54,9 @@ defaults:
       cpu: 8
       memory_gi: 2
       cache_size: "30Gi"
+    target_architectures: ["x86_64", "aarch64"]
+    target_manylinux: "2_17"
+    log_max_age_days: 30
 ```
 
 **`cuda_versions` and `python_versions` are NOT module defaults.** They must be
@@ -148,9 +155,7 @@ One Deployment + Service per CUDA version:
     cu121/         # CUDA 12.1 wheels
     cu124/         # CUDA 12.4 wheels
   logs/
-    cpu/           # access logs (access.YYYY-MM-DD.log)
-    cu121/
-    cu124/
+    upstream/      # nginx fallback logs (fallback.log)
 ```
 
 ## Request flow
@@ -224,25 +229,99 @@ EFS so the builder can be added later without changing the serving infrastructur
 3. Builder runs `pip wheel foo==1.0` for each configured CUDA version
 4. Next job gets pre-built wheel — instant install
 
+## Wants collector
+
+The wants-collector is the first step of the self-learning loop. It runs as a
+single-replica Deployment (`pypi-wants-collector`) in the `pypi-cache` namespace,
+scanning nginx fallback logs on EFS to determine which packages are requested.
+
+### How it works
+
+Each cycle (every 2 minutes):
+1. Scans nginx fallback logs in `/data/logs/upstream/` (EFS, read-only mount)
+2. Extracts unique `(package, version)` pairs from download requests
+3. Downloads the shared prebuilt cache from S3 (`prebuilt-cache.txt`)
+4. For packages not in the cache, queries the PyPI JSON API to check wheel
+   availability
+5. Filters: packages with compatible pre-built wheels for the full target matrix
+   are added to the prebuilt cache. Packages missing any wheel are added to the
+   wants list.
+6. Uploads `wants/<cluster-id>.txt` and `prebuilt-cache.txt` to S3
+7. Touches `/tmp/last-success` for liveness probe, then sleeps
+
+### PyPI filtering
+
+The target matrix is defined in `clusters.yaml` under `pypi_cache`:
+- `python_versions`: Python versions to check (e.g., 3.10, 3.11, 3.12)
+- `target_architectures`: CPU architectures (e.g., x86_64, aarch64)
+- `target_manylinux`: Minimum manylinux version (e.g., 2_17 = glibc 2.17)
+
+A package is excluded from the wants list if:
+- It has a `py3-none-any` wheel (pure Python)
+- Compatible manylinux wheels exist for every (python x arch) combination
+- It returns 404 from PyPI (unknown/internal package)
+
+A package is included if any combination is missing a compatible wheel.
+
+### S3 bucket layout
+
+```
+s3://pytorch-pypi-wheel-cache/
+├── wants/
+│   ├── arc-staging.txt
+│   ├── arc-production.txt
+│   └── arc-cbr-production.txt
+└── prebuilt-cache.txt
+```
+
+- `wants/<cluster-id>.txt` — per-cluster, expires after 7 days, contains
+  `package==version` entries
+- `prebuilt-cache.txt` — shared across clusters, no expiry, grows monotonically
+
+### One-time S3 bucket setup
+
+The S3 bucket is a shared resource created once (not per-cluster). To create it:
+
+```bash
+cd modules/pypi-cache/terraform/wheel-cache-bucket
+tofu init
+tofu apply
+```
+
+### Known limitations
+
+- nginx cache hits are invisible to the wants-collector. Acceptable: every cached
+  response was a cache miss at some point, so it was logged on first request.
+- Fallback logs rotate daily (`fallback.YYYY-MM-DD.log` via nginx `map $time_iso8601`).
+  The wants-collector deletes files older than 30 days (configurable via `log_max_age_days`).
+- PyTorch wheels (`/whl/` path) are proxied directly by nginx to
+  `download.pytorch.org` and never reach pypiserver. Excluded from wants list.
+- Packages not on PyPI are silently skipped (can't be built from PyPI sources).
+- Prebuilt cache is shared across clusters — concurrent updates may cause a
+  redundant PyPI lookup on the next cycle (no data loss, S3 PutObject is atomic).
+
 ## Log capture
 
-pypiserver stdout is piped through `log_rotator.py` which provides dual logging:
+nginx logs upstream-bound requests (fallbacks to pypi.org and downloads from
+files.pythonhosted.org) to `/data/logs/upstream/fallback.YYYY-MM-DD.log` on EFS
+(daily rotation via `map $time_iso8601`). The wants-collector reads all `*.log`
+files in this directory and deletes files older than 30 days after each cycle.
 
-- **stdout** — echoes every line to stdout for Kubernetes log collection (Alloy)
-- **EFS files** — writes date-stamped files (`access.YYYY-MM-DD.log`) to `/data/logs/{slug}/`
-
-The rotator automatically cleans up log files older than `log_max_age_days` (default 30).
-Alloy log filtering (INFO suppression) is a follow-up task.
+pypiserver runs without the `-v` flag; its stdout goes only to Kubernetes/Alloy
+(no EFS log files).
 
 ## Deploy ordering
 
 1. Terraform creates EFS filesystem, mount targets, security group, CSI driver addon
 2. `deploy.sh` reads terraform outputs (EFS filesystem ID)
 3. Kustomize applies base resources (namespace, ServiceAccount)
-4. ConfigMap created from `log_rotator.py` script
-5. `generate_manifests.py` produces StorageClass, PVC, Deployments, Services, NodePools
-6. Manifests applied in dependency order: StorageClass -> PVC -> **NodePools** -> Services -> Deployments
-7. Waits for all Deployment rollouts
+4. `generate_manifests.py` produces StorageClass, PVC, Deployments, Services, NodePools
+5. Manifests applied in dependency order: StorageClass -> PVC -> **NodePools** -> Services -> Deployments
+6. Waits for all Deployment rollouts
+7. Annotates wants-collector SA with IRSA role ARN
+8. Creates wants-collector-scripts ConfigMap
+9. Applies wants-collector Deployment (sed template substitution)
+10. Waits for wants-collector rollout
 
 ## Dependencies
 

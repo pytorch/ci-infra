@@ -137,3 +137,55 @@ resource "aws_eks_addon" "efs_csi_driver" {
     aws_iam_role_policy_attachment.efs_csi_driver,
   ]
 }
+
+# --- Wants Collector IAM Role (IRSA) ---
+
+resource "aws_iam_role" "wants_collector" {
+  name = "${var.cluster_name}-pypi-wants-collector-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Effect = "Allow"
+      Principal = {
+        Federated = local.oidc_provider_arn
+      }
+      Condition = {
+        StringEquals = {
+          "${local.oidc_provider}:aud" = "sts.amazonaws.com"
+          "${local.oidc_provider}:sub" = "system:serviceaccount:pypi-cache:pypi-wants-collector"
+        }
+      }
+    }]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_policy" "wants_collector" {
+  name = "${var.cluster_name}-pypi-wants-collector-s3"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:ListBucket",
+      ]
+      Resource = [
+        "arn:aws:s3:::pytorch-pypi-wheel-cache",
+        "arn:aws:s3:::pytorch-pypi-wheel-cache/*",
+      ]
+    }]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "wants_collector" {
+  policy_arn = aws_iam_policy.wants_collector.arn
+  role       = aws_iam_role.wants_collector.name
+}

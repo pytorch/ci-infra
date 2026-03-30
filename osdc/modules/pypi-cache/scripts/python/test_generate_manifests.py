@@ -518,15 +518,14 @@ class TestGenerateDeployments:
             args = doc["spec"]["template"]["spec"]["containers"][1]["args"][0]
             assert "--log-file" not in args
 
-    def test_command_pipes_through_log_rotator(self):
+    def test_command_does_not_pipe_through_log_rotator(self):
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             args = doc["spec"]["template"]["spec"]["containers"][1]["args"][0]
-            assert "log_rotator.py" in args
-            assert "--log-dir" in args
-            assert "--max-age-days" in args
+            assert "log_rotator.py" not in args
+            assert "--max-age-days" not in args
 
     # --- Gunicorn env and workers ---
 
@@ -846,7 +845,7 @@ class TestGenerateDeployments:
             assert "nginx-tmp" in mount_names
 
     def test_pypiserver_volume_mounts(self):
-        """pypiserver container mounts data, scripts, and pypiserver-tmp."""
+        """pypiserver container mounts data and pypiserver-tmp (no scripts)."""
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
@@ -854,7 +853,7 @@ class TestGenerateDeployments:
             pypiserver = doc["spec"]["template"]["spec"]["containers"][1]
             mount_names = [m["name"] for m in pypiserver["volumeMounts"]]
             assert "data" in mount_names
-            assert "scripts" in mount_names
+            assert "scripts" not in mount_names
             assert "pypiserver-tmp" in mount_names
 
     # --- NVMe init container ---

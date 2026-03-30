@@ -52,7 +52,6 @@ DEFAULTS = {
     "nginx_image": "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
     "storage_request": "1Ti",
     "replicas": 2,
-    "log_max_age_days": 30,
     "workers": 4,
     "instance_type": "r5d.12xlarge",
     "nginx": {
@@ -372,7 +371,6 @@ def generate_deployments(config: dict, template_path: Path) -> str:
         content = content.replace("__NGINX_IMAGE__", config["nginx_image"])
         content = content.replace("__INTERNAL_PORT__", str(config["internal_port"]))
         content = content.replace("__WORKERS__", str(config["workers"]))
-        content = content.replace("__LOG_MAX_AGE_DAYS__", str(config["log_max_age_days"]))
         content = content.replace("__NGINX_CPU__", nginx_cpu_str)
         content = content.replace("__NGINX_MEMORY__", nginx_mem_str)
         content = content.replace("__SERVER_CPU__", server_cpu_str)

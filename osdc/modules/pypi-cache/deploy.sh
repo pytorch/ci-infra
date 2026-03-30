@@ -31,6 +31,10 @@ CLUSTERS_YAML="${CLUSTERS_YAML:-$UPSTREAM_ROOT/clusters.yaml}"
 # --- Read pypi_cache config ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" pypi_cache.namespace pypi-cache)
 INSTANCE_TYPE=$(uv run "$CFG" "$CLUSTER" pypi_cache.instance_type "")
+TARGET_PYTHON=$(uv run "$CFG" "$CLUSTER" pypi_cache.python_versions "3.10,3.11,3.12" | tr -d "[]' ")
+TARGET_ARCH=$(uv run "$CFG" "$CLUSTER" pypi_cache.target_architectures "x86_64,aarch64" | tr -d "[]' ")
+TARGET_MANYLINUX=$(uv run "$CFG" "$CLUSTER" pypi_cache.target_manylinux "2_17")
+LOG_MAX_AGE_DAYS=$(uv run "$CFG" "$CLUSTER" pypi_cache.log_max_age_days "30")
 BUCKET=$(uv run "$CFG" "$CLUSTER" state_bucket)
 STATE_REGION="us-west-2"
 
@@ -44,19 +48,20 @@ tofu init -reconfigure \
   -backend-config="dynamodb_table=ciforge-terraform-locks" \
   >/dev/null 2>&1
 EFS_FS_ID=$(tofu output -raw efs_filesystem_id)
+WANTS_COLLECTOR_ROLE_ARN=$(tofu output -raw wants_collector_role_arn)
 cd - >/dev/null
 echo "[pypi-cache] EFS filesystem ID: ${EFS_FS_ID}"
+echo "[pypi-cache] Wants collector role ARN: ${WANTS_COLLECTOR_ROLE_ARN}"
 
 # --- Apply base k8s resources (namespace, SA) ---
 echo "[pypi-cache] Applying base resources (namespace, ServiceAccount)..."
 kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/"
 
+echo "[pypi-cache] Annotating wants-collector ServiceAccount..."
+kubectl annotate sa pypi-wants-collector -n "$NAMESPACE" \
+  eks.amazonaws.com/role-arn="$WANTS_COLLECTOR_ROLE_ARN" --overwrite
+
 # --- Create ConfigMaps (must exist before Deployments reference them) ---
-echo "[pypi-cache] Creating pypi-cache-scripts ConfigMap..."
-kubectl create configmap pypi-cache-scripts \
-  --from-file="$MODULE_DIR/scripts/python/log_rotator.py" \
-  -n "$NAMESPACE" \
-  --dry-run=client -o yaml | kubectl apply -f -
 
 # Look up kube-dns ClusterIP for nginx resolver directive.
 # Different EKS clusters use different service CIDRs, so this
@@ -78,6 +83,12 @@ sed -e "s/__DNS_RESOLVER__/${DNS_RESOLVER}/g" \
     --from-file=nginx.conf=/dev/stdin \
     -n "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f -
+
+echo "[pypi-cache] Creating pypi-wants-collector-scripts ConfigMap..."
+kubectl create configmap pypi-wants-collector-scripts \
+  --from-file=wants_collector.py="$MODULE_DIR/scripts/python/wants_collector.py" \
+  -n "$NAMESPACE" \
+  --dry-run=client -o yaml | kubectl apply -f -
 
 # --- Generate manifests from clusters.yaml config ---
 GENERATED_DIR="$MODULE_DIR/generated"
@@ -115,16 +126,45 @@ kubectl_apply_if_changed -f "$GENERATED_DIR/services.yaml"
 echo "[pypi-cache] Applying Deployments..."
 kubectl_apply_if_changed -f "$GENERATED_DIR/deployments.yaml"
 
-# --- Restart deployments to pick up ConfigMap changes ---
-# subPath volume mounts do not auto-update when the underlying ConfigMap
-# changes.  Force a rolling restart so pods always run with the latest
-# nginx.conf (e.g. DNS resolver IP discovered at deploy time).
-echo "[pypi-cache] Restarting deployments to pick up ConfigMap changes..."
+# --- Compute slugs (used by cache-clear and restart loops) ---
 SLUGS=$(uv run "$MODULE_DIR/scripts/python/generate_manifests.py" \
   --cluster "$CLUSTER" \
   --clusters-yaml "$CLUSTERS_YAML" \
   --list-slugs)
 
+# --- Optionally clear nginx cache before restart ---
+# PYPI_CACHE_CLEAR=yes  → clear without prompt
+# PYPI_CACHE_CLEAR=no   → skip without prompt
+# unset + CI=true       → skip (non-interactive environment)
+# unset + interactive    → prompt user
+if [[ "${PYPI_CACHE_CLEAR:-}" == "yes" ]]; then
+  _do_clear=1
+elif [[ "${PYPI_CACHE_CLEAR:-}" == "no" ]] || [[ "${CI:-}" == "true" ]]; then
+  _do_clear=0
+else
+  _do_clear=0
+  if [ -t 0 ]; then
+    read -r -p "[pypi-cache] Clear nginx cache before restart? (y/N) " _answer
+    if [[ "${_answer}" =~ ^[Yy]$ ]]; then
+      _do_clear=1
+    fi
+  fi
+fi
+
+if [[ "$_do_clear" == "1" ]]; then
+  echo "[pypi-cache] Clearing nginx cache..."
+  for slug in $SLUGS; do
+    echo "[pypi-cache]   Clearing cache for pypi-cache-${slug}..."
+    kubectl exec "deployment/pypi-cache-${slug}" -n "$NAMESPACE" -c nginx -- \
+      find /var/cache/nginx/pypi -type f -delete 2>/dev/null || true
+  done
+fi
+
+# --- Restart deployments to pick up ConfigMap changes ---
+# subPath volume mounts do not auto-update when the underlying ConfigMap
+# changes.  Force a rolling restart so pods always run with the latest
+# nginx.conf (e.g. DNS resolver IP discovered at deploy time).
+echo "[pypi-cache] Restarting deployments to pick up ConfigMap changes..."
 for slug in $SLUGS; do
   kubectl rollout restart deployment "pypi-cache-${slug}" -n "$NAMESPACE"
 done
@@ -140,5 +180,26 @@ for slug in $SLUGS; do
     echo "[pypi-cache] Check: kubectl get pods -n $NAMESPACE -l cuda-version=${slug}"
   }
 done
+
+# --- Deploy wants-collector ---
+echo "[pypi-cache] Applying wants-collector deployment..."
+sed -e "s/__CLUSTER_ID__/${CLUSTER}/g" \
+  -e "s/__NAMESPACE__/${NAMESPACE}/g" \
+  -e "s/__TARGET_PYTHON_VERSIONS__/${TARGET_PYTHON}/g" \
+  -e "s/__TARGET_ARCHITECTURES__/${TARGET_ARCH}/g" \
+  -e "s/__TARGET_MANYLINUX__/${TARGET_MANYLINUX}/g" \
+  -e "s/__LOG_MAX_AGE_DAYS__/${LOG_MAX_AGE_DAYS}/g" \
+  "$MODULE_DIR/kubernetes/wants-collector-deployment.yaml.tpl" \
+  | kubectl_apply_if_changed -f -
+
+echo "[pypi-cache] Restarting wants-collector..."
+kubectl rollout restart deployment pypi-wants-collector -n "$NAMESPACE"
+
+echo "[pypi-cache] Waiting for wants-collector rollout..."
+kubectl rollout status deployment pypi-wants-collector \
+  -n "$NAMESPACE" --timeout=120s || {
+  echo "[pypi-cache] WARNING: wants-collector rollout did not complete within timeout"
+  echo "[pypi-cache] Check: kubectl get pods -n $NAMESPACE -l app=pypi-wants-collector"
+}
 
 echo "[pypi-cache] Deployed — EFS-backed Deployments serving per-CUDA package caches."

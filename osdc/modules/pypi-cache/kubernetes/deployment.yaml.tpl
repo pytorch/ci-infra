@@ -3,7 +3,7 @@
 # Populated from clusters.yaml config.
 # Placeholders: NAMESPACE, CUDA_SLUG, REPLICAS, IMAGE, NGINX_IMAGE,
 #   INTERNAL_PORT, WORKERS, NGINX_CPU, NGINX_MEMORY, NGINX_CACHE_SIZE,
-#   SERVER_CPU, SERVER_MEMORY, LOG_MAX_AGE_DAYS, NODE_SELECTOR_BLOCK,
+#   SERVER_CPU, SERVER_MEMORY, NODE_SELECTOR_BLOCK,
 #   TOLERATIONS_ENTRIES
 apiVersion: apps/v1
 kind: Deployment
@@ -55,7 +55,7 @@ __TOLERATIONS_ENTRIES__
       initContainers:
         - name: init-dirs
           image: busybox:1.36
-          command: ["mkdir", "-p", "/data/wheelhouse/__CUDA_SLUG__", "/data/logs/__CUDA_SLUG__"]
+          command: ["mkdir", "-p", "/data/wheelhouse/__CUDA_SLUG__", "/data/logs/__CUDA_SLUG__", "/data/logs/upstream"]
           volumeMounts:
             - name: data
               mountPath: /data
@@ -107,6 +107,9 @@ __INIT_NVME_BLOCK__
               mountPath: /var/cache/nginx
             - name: nginx-tmp
               mountPath: /tmp
+            - name: data
+              mountPath: /data/logs/upstream
+              subPath: logs/upstream
 
         - name: pypiserver
           image: __IMAGE__
@@ -121,9 +124,6 @@ __INIT_NVME_BLOCK__
               --health-endpoint /health
               -P . -a .
               /data/wheelhouse/__CUDA_SLUG__/
-              2>&1 | python3 /scripts/log_rotator.py
-              --log-dir /data/logs/__CUDA_SLUG__/
-              --max-age-days __LOG_MAX_AGE_DAYS__
 
           ports:
             - name: pypi-internal
@@ -159,9 +159,6 @@ __INIT_NVME_BLOCK__
           volumeMounts:
             - name: data
               mountPath: /data
-            - name: scripts
-              mountPath: /scripts
-              readOnly: true
             - name: pypiserver-tmp
               mountPath: /tmp
 
@@ -169,10 +166,6 @@ __INIT_NVME_BLOCK__
         - name: data
           persistentVolumeClaim:
             claimName: pypi-cache-data
-        - name: scripts
-          configMap:
-            name: pypi-cache-scripts
-            defaultMode: 0755
         - name: nginx-config
           configMap:
             name: pypi-cache-nginx-config

@@ -90,6 +90,10 @@ defaults:
       - "3.13t"
       - "3.14"
       - "3.14t"
+    target_architectures:
+      - "x86_64"
+      - "aarch64"
+    target_manylinux: "2_17"
 
 clusters:
   arc-staging:
