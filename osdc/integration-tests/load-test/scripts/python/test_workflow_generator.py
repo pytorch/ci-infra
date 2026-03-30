@@ -122,7 +122,7 @@ class TestGenerateWorkflow:
         result = generate_workflow(allocs, "", "test")
 
         assert "Report metadata" in result
-        assert 'runner_type=l-x86iavx512-8-16' in result
+        assert "runner_type=l-x86iavx512-8-16" in result
 
     def test_valid_yaml(self):
         """Generated workflow should be valid YAML."""
@@ -149,9 +149,6 @@ class TestGenerateWorkflow:
         data = yaml.safe_load(result)
         part0 = data["jobs"]["load-l-x86iavx512-8-16-part0"]
         part1 = data["jobs"]["load-l-x86iavx512-8-16-part1"]
-        total = (
-            len(part0["strategy"]["matrix"]["index"])
-            + len(part1["strategy"]["matrix"]["index"])
-        )
+        total = len(part0["strategy"]["matrix"]["index"]) + len(part1["strategy"]["matrix"]["index"])
         assert total == 300
         assert len(part0["strategy"]["matrix"]["index"]) <= MAX_MATRIX_SIZE

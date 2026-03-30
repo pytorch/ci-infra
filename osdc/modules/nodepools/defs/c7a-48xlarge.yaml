@@ -2,6 +2,8 @@
 # Compute-optimized pool for AVX-512 runners with ~2 GiB/core ratio
 # AMD EPYC (Genoa) — AVX-512 support, no AMX
 # Node disk: worst case 21x 150Gi pods + 100Gi OS = 3250Gi
+# NOTE: c7a.48xlarge is NOT available in us-west-1 (arc-staging region).
+#       Runners using this nodepool will fail to schedule on arc-staging.
 nodepool:
   name: c7a-48xlarge
   instance_type: c7a.48xlarge

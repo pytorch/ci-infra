@@ -1,4 +1,4 @@
-# base/logging/ — Centralized Log Collection
+# modules/logging/ — Centralized Log Collection
 
 Deploys Grafana Alloy in two modes: a DaemonSet for pod logs and system journal collection from every node, and a single-replica Deployment for Kubernetes Event collection. Both push to Grafana Cloud Loki. Only installed when a `grafana-cloud-credentials` secret exists in the logging namespace.
 
@@ -53,9 +53,7 @@ During deploy, `assemble_config.py`:
 
 ## Deploy order
 
-Within `deploy-base`, logging runs after Harbor (so images pull through the cache) and before Node Compactor:
-
-1. Terraform → 2. Mirror images → 3. Base k8s → 4. Harbor → **5. Logging** → 6. Node Compactor
+Logging is deployed as a module via `just deploy-module <cluster> logging` (or as part of `just deploy <cluster>`). It should be deployed after base (so Harbor is available for image pulls).
 
 ## Credential setup (one-time per cluster)
 
@@ -86,7 +84,7 @@ To add log parsing for a module:
 
 1. Create `modules/<name>/logging/pipeline.alloy` containing `stage.match` blocks
 2. The `selector` must use labels available at the `// MODULE_PIPELINES` marker point (namespace, container, app, pod, node)
-3. Redeploy: `just deploy-base <cluster>` (the assembly script discovers the file automatically)
+3. Redeploy: `just deploy-module <cluster> logging` (the assembly script discovers the file automatically)
 
 Consumer repos can override or suppress upstream pipelines by placing a file at the same path in their `modules/` directory. An empty file = opt-out (upstream pipeline is NOT used as fallback).
 

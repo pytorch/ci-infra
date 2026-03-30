@@ -35,6 +35,7 @@ def make_config(**overrides) -> Config:
         "spare_capacity_nodes": 0,
         "spare_capacity_ratio": 0.0,
         "spare_capacity_threshold": 0.4,
+        "capacity_reservation_nodes": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -215,19 +216,21 @@ class TestNodeState:
         assert node.youngest_pod_age_seconds == math.inf
 
     def test_youngest_pod_age_with_pods(self):
+        now = datetime.now(UTC)
         node = make_node("n1")
         node.pods = [
-            make_pod("p1", node_name="n1", start_time=NOW - timedelta(minutes=30)),
-            make_pod("p2", node_name="n1", start_time=NOW - timedelta(minutes=5)),
+            make_pod("p1", node_name="n1", start_time=now - timedelta(minutes=30)),
+            make_pod("p2", node_name="n1", start_time=now - timedelta(minutes=5)),
         ]
         # Youngest pod is 5 minutes old
         assert node.youngest_pod_age_seconds == pytest.approx(300, abs=5)
 
     def test_youngest_pod_age_ignores_none_start_time(self):
+        now = datetime.now(UTC)
         node = make_node("n1")
         node.pods = [
             make_pod("p1", node_name="n1", start_time=None),
-            make_pod("p2", node_name="n1", start_time=NOW - timedelta(minutes=10)),
+            make_pod("p2", node_name="n1", start_time=now - timedelta(minutes=10)),
         ]
         assert node.youngest_pod_age_seconds == pytest.approx(600, abs=5)
 
@@ -1482,6 +1485,98 @@ class TestReconcile:
         mock_remove.assert_called_once()
         mock_touch.assert_called_once()
 
+    @patch("compactor.reconcile_reservations")
+    @patch("compactor.select_reserved_nodes")
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_reconcile_with_capacity_reservations(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+        mock_select_reserved,
+        mock_reconcile_res,
+    ):
+        """reconcile() calls select_reserved_nodes and reconcile_reservations when enabled."""
+        client = MagicMock()
+        cfg = make_config(capacity_reservation_nodes=2)
+
+        n1 = make_node("n1", nodepool="pool-a")
+        n2 = make_node("n2", nodepool="pool-a")
+        node_states = {"n1": n1, "n2": n2}
+
+        mock_discover.return_value = {"n1": "pool-a", "n2": "pool-a"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        mock_select_reserved.return_value = {"pool-a": {"n1"}}
+        mock_compute.return_value = (set(), set(), set(), set())
+
+        reconcile(client, cfg, {})
+
+        mock_select_reserved.assert_called_once()
+        # reserved_nodes={"n1"} should be passed to compute_taints
+        call_kwargs = mock_compute.call_args
+        assert call_kwargs[1].get("reserved_nodes") == {"n1"} or (
+            len(call_kwargs[0]) > 2 and call_kwargs[0][2] == {"n1"}
+        )
+        # reconcile_reservations called at the end
+        mock_reconcile_res.assert_called_once_with(
+            client,
+            list(node_states.values()),
+            {"n1"},
+            cfg.dry_run,
+        )
+
+    @patch("compactor.m.rate_limit_blocks")
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_reconcile_with_rate_limited_nodes(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+        mock_rate_limit_blocks,
+    ):
+        """reconcile() logs and emits per-pool metrics for rate-limited nodes."""
+        client = MagicMock()
+        cfg = make_config()
+
+        n1 = make_node("n1", nodepool="pool-a")
+        n2 = make_node("n2", nodepool="pool-a")
+        n3 = make_node("n3", nodepool="pool-b")
+        node_states = {"n1": n1, "n2": n2, "n3": n3}
+
+        mock_discover.return_value = {"n1": "pool-a", "n2": "pool-a", "n3": "pool-b"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        # Return n2, n3 as rate-limited
+        mock_compute.return_value = ({"n1"}, set(), set(), {"n2", "n3"})
+
+        reconcile(client, cfg, {})
+
+        # Verify per-pool rate-limit metrics were emitted
+        mock_rate_limit_blocks.labels.assert_called()
+        pool_labels = {c[1]["nodepool"] for c in mock_rate_limit_blocks.labels.call_args_list}
+        assert pool_labels == {"pool-a", "pool-b"}
+
 
 # ============================================================================
 # Fleet cooldown tests
@@ -1906,6 +2001,41 @@ class TestMain:
 
         assert result == 0
         mock_cleanup.assert_called_once()
+
+    @patch("compactor.cleanup_reservations")
+    @patch("compactor.cleanup_stale_taints")
+    @patch("compactor.reconcile")
+    @patch("compactor.Client")
+    @patch("compactor.Config.from_env")
+    @patch("compactor.signal.signal")
+    @patch("compactor.time.sleep")
+    def test_main_cleanup_reservations_exception_does_not_crash(
+        self,
+        mock_sleep,
+        mock_signal_fn,
+        mock_from_env,
+        mock_client_cls,
+        mock_reconcile,
+        mock_cleanup_taints,
+        mock_cleanup_reservations,
+        _mock_http_server,
+    ):
+        """cleanup_reservations raising during shutdown does not crash main()."""
+        mock_from_env.return_value = make_config()
+        mock_client_cls.return_value = MagicMock()
+
+        def set_shutdown(*args, **kwargs):
+            for c in mock_signal_fn.call_args_list:
+                if c[0][0] == signal.SIGTERM:
+                    c[0][1](signal.SIGTERM, None)
+
+        mock_reconcile.side_effect = set_shutdown
+        mock_cleanup_reservations.side_effect = RuntimeError("reservations cleanup failed")
+
+        result = main()
+
+        assert result == 0
+        mock_cleanup_reservations.assert_called_once()
 
 
 # ============================================================================

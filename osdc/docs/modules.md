@@ -170,6 +170,15 @@ ARC runner scale sets for GitHub Actions self-hosted runners. Requires `arc` (co
 - **scripts/validate-runner-qos.sh**: Pre-deploy validation (Guaranteed QoS, requests == limits)
 - **deploy.sh**: Generates configs, validates QoS, applies ConfigMaps + Helm releases (enforces `arc` module presence)
 
+### logging
+
+Centralized log collection — Grafana Alloy DaemonSet (pod logs + journal) and Events Deployment → Grafana Cloud Loki.
+
+- **pipelines/base.alloy**: Base Alloy River config — pod log collection, journal collection, loki.write output
+- **helm/**: Helm values for DaemonSet mode Alloy (`alloy-logging-values.yaml`) and Events Deployment (`alloy-events-values.yaml`)
+- **scripts/python/assemble_config.py**: Assembles base pipeline + per-module `stage.match` blocks into a ConfigMap
+- **deploy.sh**: Secret-gated Alloy install (DaemonSet for logs + Deployment for events)
+
 ### buildkit
 
 Dual-architecture container build service with HAProxy load balancing.

@@ -100,7 +100,7 @@ alloy:
       value: "${CNAME}"
 EOF
 
-  ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" monitoring.alloy_chart_version 1.6.2)
+  ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" alloy_chart_version 1.6.2)
   helm_upgrade_if_changed alloy "$NAMESPACE" \
     --history-max 3 \
     -f "$MODULE_DIR/helm/alloy-values.yaml" \

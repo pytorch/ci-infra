@@ -39,7 +39,7 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
 
 | Aspect | Monitoring Alloy | Logging Alloy | Events Alloy |
 |--------|-----------------|---------------|--------------|
-| **Location** | `modules/monitoring/` (opt-in module) | `base/logging/` (every cluster) | `base/logging/` (every cluster) |
+| **Location** | `modules/monitoring/` (opt-in module) | `modules/logging/` (opt-in module) | `modules/logging/` (opt-in module) |
 | **Controller type** | Deployment (2 replicas) | DaemonSet (1 per node) | Deployment (1 replica) |
 | **Namespace** | `monitoring` | `logging` | `logging` |
 | **Helm release** | `alloy` | `alloy-logging` | `alloy-events` |
@@ -54,7 +54,7 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
 
 1. **Different controller types** — metrics scraping works with a clustered Deployment (Alloy's built-in clustering distributes scrape targets). Log collection requires a DaemonSet (each node's logs are local files). Event collection needs a single-replica Deployment (to avoid duplicate events).
 2. **RBAC isolation** — each Alloy needs ClusterRole/ClusterRoleBinding for Kubernetes API access. Without `fullnameOverride`, Helm creates identically-named RBAC resources that collide.
-3. **Independent lifecycle** — metrics and logs can be enabled/disabled separately. Logging is base infrastructure (always deployed). Monitoring is a module (opt-in).
+3. **Independent lifecycle** — metrics and logs can be enabled/disabled separately. Both logging and monitoring are modules (opt-in).
 4. **Config complexity** — monitoring Alloy config is driven by CRD discovery (ServiceMonitor/PodMonitor). Logging Alloy config is assembled from base + per-module pipeline files. Events Alloy uses inline config for `loki.source.kubernetes_events`. Mixing these in one config would be fragile.
 
 ## Monitoring Pipeline (Metrics)
@@ -254,9 +254,9 @@ See [observability-estimates.md](observability-estimates.md#log-volume-estimatio
 3. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors, PodMonitors, and PrometheusRules — alerts are included via kustomization, requires CRDs from step 2)
 4. `deploy.sh` conditionally installs Alloy (if `grafana-cloud-credentials` secret exists)
 
-### Logging (base — runs during `deploy-base`)
+### Logging (module — runs during `deploy-module`)
 
-Within the base deploy sequence: Terraform → Mirror images → Base k8s → Harbor → **Logging** → Node Compactor (matches justfile order)
+Deployed via `just deploy-module <cluster> logging` (or as part of `just deploy <cluster>`).
 
 1. Creates `logging` namespace
 2. Gates on `grafana-cloud-credentials` secret (exits cleanly if missing)
@@ -318,7 +318,7 @@ kubectl get secret grafana-cloud-credentials -n logging  # Verify credentials ex
 | No metrics in Grafana Cloud | `grafana-cloud-credentials` secret missing in `monitoring` ns | Create the secret, redeploy |
 | No logs in Grafana Cloud | `grafana-cloud-credentials` secret missing in `logging` ns | Create the secret, redeploy |
 | No K8s events in Loki | `alloy-events` pod not running or secret missing | Check `kubectl get pods -n logging`, verify secret |
-| Alloy logging pods not running | Secret missing — deploy exits cleanly | Create secret, run `just deploy-base <cluster>` |
+| Alloy logging pods not running | Secret missing — deploy exits cleanly | Create secret, run `just deploy-module <cluster> logging` |
 | Missing logs from a namespace | Module `pipeline.alloy` has broken regex in `stage.match` | Check the assembled ConfigMap for syntax errors |
 | Alloy OOMKilled | High-throughput nodes exceeding 2Gi limit | Increase `resources.limits.memory` in logging Helm values |
 | RBAC errors in Alloy logs | ClusterRole collision between monitoring and logging Alloy | Verify `fullnameOverride` on all three Alloy releases |

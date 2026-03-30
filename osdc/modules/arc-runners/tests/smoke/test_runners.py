@@ -107,6 +107,64 @@ class TestRunnerConfigMaps:
 
 
 # ============================================================================
+# Live: Runner ConfigMap Environment Variables
+# ============================================================================
+
+
+class TestRunnerConfigMapEnvVars:
+    """Verify ConfigMaps contain required pypi-cache environment variables."""
+
+    REQUIRED_ENV_VARS: frozenset[str] = frozenset(
+        {
+            "PIP_INDEX_URL",
+            "PIP_TRUSTED_HOST",
+            "PIP_EXTRA_INDEX_URL",
+            "UV_DEFAULT_INDEX",
+            "UV_INSECURE_HOST",
+            "UV_INDEX",
+            "UV_INDEX_STRATEGY",
+        }
+    )
+
+    def test_pypi_cache_env_vars_present(self, upstream_dir: Path, enabled_modules: list[str]) -> None:
+        """Each runner ConfigMap's job-pod.yaml has all pypi-cache env vars."""
+        if "arc-runners" not in enabled_modules:
+            pytest.skip("arc-runners module not enabled")
+
+        defs = _load_all_defs(upstream_dir)
+        result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL, "-o", "json"], namespace=NAMESPACE)
+
+        missing_vars: list[str] = []
+        for d in defs:
+            cm_name = f"arc-runner-hook-{_normalize_name(d['name'])}"
+            cm = None
+            for item in result.get("items", []):
+                if item["metadata"]["name"] == cm_name:
+                    cm = item
+                    break
+            if cm is None:
+                continue  # TestRunnerConfigMaps covers missing CMs
+
+            job_pod_yaml = cm.get("data", {}).get("job-pod.yaml", "")
+            if not job_pod_yaml:
+                missing_vars.append(f"{cm_name}: no job-pod.yaml data")
+                continue
+
+            pod_data = yaml.safe_load(job_pod_yaml)
+            containers = pod_data.get("spec", {}).get("containers", [])
+            if not containers:
+                missing_vars.append(f"{cm_name}: no containers in job-pod.yaml")
+                continue
+
+            env_names = {e["name"] for e in containers[0].get("env", [])}
+            missing = self.REQUIRED_ENV_VARS - env_names
+            if missing:
+                missing_vars.append(f"{cm_name}: missing {missing}")
+
+        assert not missing_vars, "ConfigMaps with missing pypi-cache env vars:\n" + "\n".join(missing_vars)
+
+
+# ============================================================================
 # Live: Runner Helm Releases
 # ============================================================================
 

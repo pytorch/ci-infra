@@ -42,11 +42,13 @@ def run_parallel_validation(
     procs = {}
 
     env = os.environ.copy()
-    env.update({
-        "OSDC_ROOT": str(root_dir),
-        "OSDC_UPSTREAM": str(upstream_dir),
-        "CLUSTERS_YAML": str(root_dir / "clusters.yaml"),
-    })
+    env.update(
+        {
+            "OSDC_ROOT": str(root_dir),
+            "OSDC_UPSTREAM": str(upstream_dir),
+            "CLUSTERS_YAML": str(root_dir / "clusters.yaml"),
+        }
+    )
 
     if not skip_smoke:
         log.info("  Starting smoke tests...")
@@ -148,20 +150,33 @@ def wait_for_workflows(
     CLEANUP_BUFFER_MINUTES = 10
     effective_timeout = max(WORKFLOW_TIMEOUT_MINUTES - CLEANUP_BUFFER_MINUTES, 10)
 
-    log.info("Phase 4: Waiting for PR workflow runs (timeout: %d min, buffer: %d min)...",
-             effective_timeout, CLEANUP_BUFFER_MINUTES)
+    log.info(
+        "Phase 4: Waiting for PR workflow runs (timeout: %d min, buffer: %d min)...",
+        effective_timeout,
+        CLEANUP_BUFFER_MINUTES,
+    )
     log.info("  Filtering to runs created after %s", pr_created_at.isoformat())
     if workflow_name:
         log.info("  Filtering to workflow name: %s", workflow_name)
 
     deadline = time.time() + effective_timeout * 60
     completed_runs = []
+    logged_run_ids: set[int] = set()
 
     try:
         while time.time() < deadline:
             result = run_cmd(
-                ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-                 "--json", "databaseId,status,conclusion,name,createdAt"],
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--repo",
+                    CANARY_REPO,
+                    "--branch",
+                    branch,
+                    "--json",
+                    "databaseId,status,conclusion,name,createdAt",
+                ],
                 check=False,
             )
             if result.returncode != 0:
@@ -177,6 +192,14 @@ def wait_for_workflows(
                 log.info("  No runs found yet, waiting...")
                 time.sleep(POLL_INTERVAL_SECONDS)
                 continue
+
+            # Log URLs for newly discovered runs
+            for r in runs:
+                run_id = r.get("databaseId")
+                if run_id and run_id not in logged_run_ids:
+                    logged_run_ids.add(run_id)
+                    run_url = f"https://github.com/{CANARY_REPO}/actions/runs/{run_id}"
+                    log.info("  Run: %s — %s", r.get("name", "?"), run_url)
 
             all_done = all(r.get("status") == "completed" for r in runs)
             in_progress = sum(1 for r in runs if r.get("status") != "completed")
@@ -202,8 +225,17 @@ def wait_for_workflows(
 def _fetch_latest_runs(branch: str, pr_created_at: datetime) -> list[dict]:
     """Fetch the latest run list from GitHub (used on timeout and interrupt)."""
     result = run_cmd(
-        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-         "--json", "databaseId,status,conclusion,name,createdAt"],
+        [
+            "gh",
+            "run",
+            "list",
+            "--repo",
+            CANARY_REPO,
+            "--branch",
+            branch,
+            "--json",
+            "databaseId,status,conclusion,name,createdAt",
+        ],
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
@@ -239,14 +271,16 @@ def _collect_run_details(runs: list[dict]) -> list[dict]:
             if log_result.returncode == 0:
                 failure_log = log_result.stdout[:5000]  # Truncate to 5k chars
 
-        results.append({
-            "run_id": run_id,
-            "name": run.get("name", "unknown"),
-            "status": run.get("status", "unknown"),
-            "conclusion": conclusion,
-            "jobs": jobs,
-            "failure_log": failure_log,
-        })
+        results.append(
+            {
+                "run_id": run_id,
+                "name": run.get("name", "unknown"),
+                "status": run.get("status", "unknown"),
+                "conclusion": conclusion,
+                "jobs": jobs,
+                "failure_log": failure_log,
+            }
+        )
 
     return results
 
@@ -264,8 +298,19 @@ def close_pr(pr_number: int, branch: str | None = None):
     if branch:
         for status in ("queued", "in_progress"):
             result = run_cmd(
-                ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-                 "--status", status, "--json", "databaseId"],
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--repo",
+                    CANARY_REPO,
+                    "--branch",
+                    branch,
+                    "--status",
+                    status,
+                    "--json",
+                    "databaseId",
+                ],
                 check=False,
             )
             if result.returncode != 0 or not result.stdout.strip():
@@ -276,8 +321,7 @@ def close_pr(pr_number: int, branch: str | None = None):
             for r in runs:
                 log.info("  Cancelling %s run %s", status, r["databaseId"])
                 run_cmd(
-                    ["gh", "run", "cancel", str(r["databaseId"]),
-                     "--repo", CANARY_REPO],
+                    ["gh", "run", "cancel", str(r["databaseId"]), "--repo", CANARY_REPO],
                     check=False,
                 )
 

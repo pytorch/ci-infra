@@ -28,10 +28,16 @@ import metrics as m
 from discovery import build_node_states, discover_managed_nodes
 from lightkube import ApiError, Client
 from models import Config
-from packing import compute_taints
+from packing import _count_spare_nodes, compute_taints, select_reserved_nodes
 from phantom import apply_pending_phantom_load
 from prometheus_client import start_http_server
-from taints import apply_taint, check_pending_pods, cleanup_stale_taints, remove_taint
+from reservations import cleanup_reservations, reconcile_reservations
+from taints import (
+    apply_taint,
+    check_pending_pods,
+    cleanup_stale_taints,
+    remove_taint,
+)
 
 log = logging.getLogger("compactor")
 
@@ -58,9 +64,7 @@ def reconcile(
             had a burst untaint. Updated in-place. If None, fleet cooldown
             is effectively disabled.
     """
-    # Touch healthcheck file at the start of every cycle so the liveness
-    # probe passes even when there are no managed nodes (controller is
-    # healthy, just idle).
+    # Touch healthcheck file so liveness probe passes even with no managed nodes.
     pathlib.Path("/tmp/healthy").touch()
 
     managed_names = discover_managed_nodes(client, cfg)
@@ -125,7 +129,29 @@ def reconcile(
             if ns:
                 fleet_cooldown_times[ns.nodepool] = time.time()
 
-    desired_taint, desired_untaint, mandatory_untaint, rate_limited = compute_taints(node_states, cfg)
+    # Build pool_groups once — used by reservations, spare capacity, fleet cooldown.
+    pool_groups: dict[str, list] = {}
+    for node_name, ns in node_states.items():
+        pool = managed_names.get(node_name, "unknown")
+        pool_groups.setdefault(pool, []).append(ns)
+
+    # Capacity reservation: protect nodes from Karpenter deletion (before compute_taints).
+    all_reserved: set[str] = set()
+    if cfg.capacity_reservation_nodes > 0:
+        pool_reserved = select_reserved_nodes(pool_groups, cfg)
+        for names in pool_reserved.values():
+            all_reserved |= names
+
+    # Instrumentation: reserved nodes per pool
+    reserved_counts: dict[tuple[str, ...], float] = {}
+    if cfg.capacity_reservation_nodes > 0:
+        for pool, nodes_list in pool_groups.items():
+            reserved_counts[(pool,)] = float(sum(1 for n in nodes_list if n.name in all_reserved))
+    m.refresh_gauge(m.reserved_nodes, reserved_counts)
+
+    desired_taint, desired_untaint, mandatory_untaint, rate_limited = compute_taints(
+        node_states, cfg, reserved_nodes=all_reserved
+    )
 
     # Log and emit metrics for rate-limited nodes
     if rate_limited:
@@ -139,15 +165,9 @@ def reconcile(
         for pool, count in pool_rate_limited.items():
             m.rate_limit_blocks.labels(nodepool=pool).inc(count)
 
-    # Instrumentation point: spare capacity per pool
-    from packing import _count_spare_nodes
-
+    # Instrumentation: spare capacity per pool
     spare_actual: dict[tuple[str, ...], float] = {}
     spare_req: dict[tuple[str, ...], float] = {}
-    pool_groups: dict[str, list] = {}
-    for node_name, ns in node_states.items():
-        pool = managed_names.get(node_name, "unknown")
-        pool_groups.setdefault(pool, []).append(ns)
     for pool, nodes_in_pool in pool_groups.items():
         required = max(
             cfg.spare_capacity_nodes,
@@ -165,8 +185,6 @@ def reconcile(
     desired_taint -= burst_untaint
 
     # Fleet cooldown: block new taints in pools that recently had a burst untaint.
-    # This prevents the compactor from immediately re-tainting nodes after a burst
-    # event, giving the pool time to stabilize.
     now_fleet = time.time()
     fleet_blocked: set[str] = set()
     if fleet_cooldown_times is not None and cfg.fleet_cooldown > 0:
@@ -217,10 +235,8 @@ def reconcile(
             pool_taint_counts[pool] = pool_taint_counts.get(pool, 0) + 1
     m.refresh_gauge(m.tainted_nodes, {(pool_name,): count for pool_name, count in pool_taint_counts.items()})
 
-    # Apply cooldown: don't untaint nodes that were recently tainted.
-    # Bypass cooldown for:
-    #   - burst untaint (urgent need overrides hysteresis)
-    #   - mandatory untaint (min_nodes enforcement is a safety invariant)
+    # Apply cooldown: skip untaint for recently tainted nodes.
+    # Exempt: burst untaint (urgent) and mandatory untaint (min_nodes safety).
     cooldown_exempt = burst_untaint | mandatory_untaint
     now = time.time()
     cooldown_blocked: set[str] = set()
@@ -287,6 +303,15 @@ def reconcile(
     else:
         log.debug("No taint changes needed")
 
+    # Reconcile capacity-reservation annotations after taints are applied.
+    if cfg.capacity_reservation_nodes > 0:
+        reconcile_reservations(
+            client,
+            list(node_states.values()),
+            all_reserved,
+            cfg.dry_run,
+        )
+
 
 def main() -> int:
     logging.basicConfig(
@@ -298,13 +323,25 @@ def main() -> int:
     cfg = Config.from_env()
     log.info("Node Compactor starting")
     log.info(
-        "Config: interval=%ds, max_uptime=%dh, min_nodes=%d, taint_cooldown=%ds, fleet_cooldown=%ds, dry_run=%s",
+        "Config: interval=%ds, max_uptime=%dh, min_nodes=%d, dry_run=%s, "
+        "min_node_age=%ds, taint_cooldown=%ds, taint_rate=%.2f, fleet_cooldown=%ds, "
+        "spare_capacity_nodes=%d, spare_capacity_ratio=%.2f, "
+        "spare_capacity_threshold=%.2f, capacity_reservation_nodes=%d, "
+        "nodepool_label=%s, taint_key=%s",
         cfg.interval,
         cfg.max_uptime_hours,
         cfg.min_nodes,
-        cfg.taint_cooldown,
-        cfg.fleet_cooldown,
         cfg.dry_run,
+        cfg.min_node_age,
+        cfg.taint_cooldown,
+        cfg.taint_rate,
+        cfg.fleet_cooldown,
+        cfg.spare_capacity_nodes,
+        cfg.spare_capacity_ratio,
+        cfg.spare_capacity_threshold,
+        cfg.capacity_reservation_nodes,
+        cfg.nodepool_label,
+        cfg.taint_key,
     )
 
     # Expose Prometheus metrics on :8080/metrics
@@ -356,12 +393,16 @@ def main() -> int:
                 break
             time.sleep(0.1)
 
-    # Clean up all compactor taints on graceful shutdown
-    log.info("Cleaning up taints before shutdown...")
+    # Clean up all compactor taints and reservations on graceful shutdown
+    log.info("Cleaning up taints and reservations before shutdown...")
     try:
         cleanup_stale_taints(client, cfg)
     except Exception:
         log.exception("Failed to clean up taints during shutdown")
+    try:
+        cleanup_reservations(client)
+    except Exception:
+        log.exception("Failed to clean up reservations during shutdown")
 
     log.info("Node Compactor stopped")
     return 0

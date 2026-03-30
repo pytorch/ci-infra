@@ -139,10 +139,15 @@ def _get_filtered_runs(
     """Get workflow runs on the branch created at or after not_before."""
     result = run_cmd(
         [
-            "gh", "run", "list",
-            "--repo", CANARY_REPO,
-            "--branch", branch,
-            "--json", "databaseId,status,conclusion,name,createdAt",
+            "gh",
+            "run",
+            "list",
+            "--repo",
+            CANARY_REPO,
+            "--branch",
+            branch,
+            "--json",
+            "databaseId,status,conclusion,name,createdAt",
         ],
         check=False,
     )
@@ -180,9 +185,14 @@ def _collect_job_results(
 
         result = run_cmd(
             [
-                "gh", "run", "view", str(run_id),
-                "--repo", CANARY_REPO,
-                "--json", "jobs",
+                "gh",
+                "run",
+                "view",
+                str(run_id),
+                "--repo",
+                CANARY_REPO,
+                "--json",
+                "jobs",
             ],
             check=False,
         )
@@ -198,11 +208,13 @@ def _collect_job_results(
                 continue
             conclusion = job.get("conclusion", "unknown")
             runner_type = label_lookup.get(runner_key, runner_key)
-            jobs.append(JobResult(
-                name=name,
-                conclusion=conclusion,
-                runner_type=runner_type,
-            ))
+            jobs.append(
+                JobResult(
+                    name=name,
+                    conclusion=conclusion,
+                    runner_type=runner_type,
+                )
+            )
 
     return jobs, run_ids
 

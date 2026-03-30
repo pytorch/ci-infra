@@ -10,7 +10,6 @@ Everything here is deployed to **every** cluster. If it's optional, it belongs i
 | `helm/harbor/` | Harbor Helm values. Component images overridden via `--set` (no `global.imageRegistry` in chart). |
 | `docker/runner-base/` | Base container image for runner pods |
 | `scripts/bootstrap/` | EKS node bootstrap (registry mirrors, sysctl tuning) |
-| `logging/` | Centralized log collection — Alloy DaemonSet collects pod logs + journal entries, pushes to Grafana Cloud Loki. Secret-gated. See `logging/CLAUDE.md` for details. |
 | `node-compactor/` | Node consolidation controller — taints underutilized Karpenter nodes to compact workloads without eviction |
 
 ## Key constraints

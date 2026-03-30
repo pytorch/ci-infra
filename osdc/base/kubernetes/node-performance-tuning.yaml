@@ -335,6 +335,14 @@ spec:
           operator: Exists
           effect: NoSchedule
 
+        # BuildKit workload taints (service-specific isolation)
+        - key: workload/buildkit-arm64
+          operator: Exists
+          effect: NoSchedule
+        - key: workload/buildkit-amd64
+          operator: Exists
+          effect: NoSchedule
+
         # Git cache startup taint (removed by git-cache-warmer after warm-up)
         - key: git-cache-not-ready
           operator: Exists

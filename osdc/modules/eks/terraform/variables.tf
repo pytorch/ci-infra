@@ -41,6 +41,12 @@ variable "base_node_max_unavailable_percentage" {
   default     = 33
 }
 
+variable "base_node_ami_version" {
+  description = "EKS-optimized AMI version suffix (e.g. 'v20260318'). Use 'v*' for latest (not recommended)."
+  type        = string
+  default     = "v*"
+}
+
 variable "eks_version" {
   description = "EKS Kubernetes version"
   type        = string

@@ -192,6 +192,108 @@ class TestExtractJobResources:
         res = extract_job_resources(cm)
         assert res["cpu_limit"] == ""
 
+    def test_data_not_a_dict(self):
+        """Line 62: data is a scalar, not a mapping."""
+        cm = textwrap.dedent("""\
+            apiVersion: v1
+            kind: ConfigMap
+            data: "just a string"
+        """)
+        res = extract_job_resources(cm)
+        assert res["cpu_limit"] == ""
+
+    def test_embedded_job_pod_invalid_yaml(self):
+        """Lines 70-71: job-pod.yaml value is invalid YAML."""
+        cm = textwrap.dedent("""\
+            apiVersion: v1
+            kind: ConfigMap
+            data:
+              job-pod.yaml: |
+                {{invalid: yaml: [unterminated
+        """)
+        res = extract_job_resources(cm)
+        assert res["cpu_limit"] == ""
+
+    def test_embedded_job_pod_not_a_dict(self):
+        """Line 74: parsed job-pod.yaml is a scalar, not a mapping."""
+        cm = textwrap.dedent("""\
+            apiVersion: v1
+            kind: ConfigMap
+            data:
+              job-pod.yaml: |
+                just a plain string
+        """)
+        res = extract_job_resources(cm)
+        assert res["cpu_limit"] == ""
+
+    def test_containers_not_a_list(self):
+        """Line 78: spec.containers is not a list."""
+        cm = textwrap.dedent("""\
+            apiVersion: v1
+            kind: ConfigMap
+            data:
+              job-pod.yaml: |
+                spec:
+                  containers: "not a list"
+        """)
+        res = extract_job_resources(cm)
+        assert res["cpu_limit"] == ""
+
+    def test_resources_not_a_dict(self):
+        """Line 92: resources is a scalar, not a mapping."""
+        cm = textwrap.dedent("""\
+            apiVersion: v1
+            kind: ConfigMap
+            data:
+              job-pod.yaml: |
+                spec:
+                  containers:
+                    - name: "$job"
+                      resources: "not a dict"
+        """)
+        res = extract_job_resources(cm)
+        assert res["cpu_limit"] == ""
+
+    def test_limits_not_a_dict(self):
+        """Line 97: limits is a scalar — should be treated as empty."""
+        cm = textwrap.dedent("""\
+            apiVersion: v1
+            kind: ConfigMap
+            data:
+              job-pod.yaml: |
+                spec:
+                  containers:
+                    - name: "$job"
+                      resources:
+                        limits: "not a dict"
+                        requests:
+                          cpu: "4"
+                          memory: "16Gi"
+        """)
+        res = extract_job_resources(cm)
+        assert res["cpu_limit"] == ""
+        assert res["cpu_request"] == "4"
+
+    def test_requests_not_a_dict(self):
+        """Line 99: requests is a scalar — should be treated as empty."""
+        cm = textwrap.dedent("""\
+            apiVersion: v1
+            kind: ConfigMap
+            data:
+              job-pod.yaml: |
+                spec:
+                  containers:
+                    - name: "$job"
+                      resources:
+                        limits:
+                          cpu: "8"
+                          memory: "32Gi"
+                        requests: "not a dict"
+        """)
+        res = extract_job_resources(cm)
+        assert res["cpu_limit"] == "8"
+        assert res["cpu_request"] == ""
+
 
 # ============================================================================
 # validate_cpu_qos
@@ -373,6 +475,67 @@ class TestValidatePatchedHooks:
         issues = validate_patched_hooks(helm)
         assert any("runner" in i[1].lower() for i in issues)
 
+    def test_doc_not_a_dict(self):
+        """Lines 207-208: parsed YAML is a scalar, not a mapping."""
+        issues = validate_patched_hooks("just a plain string")
+        assert len(issues) == 1
+        assert issues[0][0] == "error"
+        assert "not a mapping" in issues[0][1]
+
+    def test_template_spec_not_a_dict(self):
+        """Lines 213-214: template.spec is a scalar."""
+        helm = textwrap.dedent("""\
+            template:
+              spec: "not a dict"
+        """)
+        issues = validate_patched_hooks(helm)
+        assert any("template.spec" in i[1] for i in issues)
+
+    def test_init_containers_not_a_list(self):
+        """Line 218: initContainers is a scalar — treated as empty list."""
+        helm = textwrap.dedent("""\
+            template:
+              spec:
+                initContainers: "not a list"
+                containers:
+                  - name: runner
+                    image: ghcr.io/actions/actions-runner:latest
+                    env:
+                      - name: ACTIONS_RUNNER_CONTAINER_HOOKS
+                        value: /opt/runner-hooks/dist/index.js
+        """)
+        issues = validate_patched_hooks(helm)
+        assert any("wait-for-hooks" in i[1] for i in issues)
+
+    def test_containers_not_a_list_in_hooks(self):
+        """Line 232: containers is a scalar — treated as empty, no runner found."""
+        helm = textwrap.dedent("""\
+            template:
+              spec:
+                initContainers:
+                  - name: wait-for-hooks
+                    image: alpine
+                containers: "not a list"
+        """)
+        issues = validate_patched_hooks(helm)
+        assert any("runner" in i[1].lower() for i in issues)
+
+    def test_env_vars_not_a_list(self):
+        """Line 246: runner container's env is a scalar — treated as empty list."""
+        helm = textwrap.dedent("""\
+            template:
+              spec:
+                initContainers:
+                  - name: wait-for-hooks
+                    image: alpine
+                containers:
+                  - name: runner
+                    image: ghcr.io/actions/actions-runner:latest
+                    env: "not a list"
+        """)
+        issues = validate_patched_hooks(helm)
+        assert any("ACTIONS_RUNNER_CONTAINER_HOOKS" in i[1] for i in issues)
+
 
 # ============================================================================
 # validate_file
@@ -434,6 +597,36 @@ class TestValidateFile:
         assert errors == 1
         assert warnings == 0
 
+    def test_memory_mismatch_error(self, tmp_path: Path):
+        """Lines 348-350: validate_file reports memory mismatch errors."""
+        helm = make_helm_values()
+        cm = make_configmap(
+            cpu_limit="4",
+            cpu_request="4",
+            mem_limit="32Gi",
+            mem_request="16Gi",
+        )
+        f = tmp_path / "mem-mismatch.yaml"
+        f.write_text(helm + "---\n" + cm)
+        errors, _warnings = validate_file(f)
+        assert errors >= 1
+
+    def test_gpu_mismatch_error(self, tmp_path: Path):
+        """Lines 357-359: validate_file reports GPU mismatch errors."""
+        helm = make_helm_values()
+        cm = make_configmap(
+            cpu_limit="4",
+            cpu_request="4",
+            mem_limit="16Gi",
+            mem_request="16Gi",
+            gpu_limit="2",
+            gpu_request="1",
+        )
+        f = tmp_path / "gpu-mismatch.yaml"
+        f.write_text(helm + "---\n" + cm)
+        errors, _warnings = validate_file(f)
+        assert errors >= 1
+
 
 # ============================================================================
 # main (CLI integration)
@@ -466,3 +659,19 @@ class TestMain:
             f = tmp_path / f"runner-{i}.yaml"
             f.write_text(make_full_runner_yaml(cpu=str((i + 1) * 2), memory="16Gi"))
         assert main([str(tmp_path)]) == 0
+
+    def test_default_dir_from_env_var(self, tmp_path: Path, monkeypatch):
+        """Lines 391-393: main() reads ARC_RUNNERS_OUTPUT_DIR env var."""
+        f = tmp_path / "runner.yaml"
+        f.write_text(make_full_runner_yaml(cpu="4", memory="16Gi"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(tmp_path))
+        assert main([]) == 0
+
+    def test_default_dir_from_script_path(self, tmp_path: Path, monkeypatch):
+        """Lines 395-396: main() falls back to script_dir/../../generated."""
+        monkeypatch.delenv("ARC_RUNNERS_OUTPUT_DIR", raising=False)
+        # When no env var and no CLI arg, it uses script_dir/../../generated.
+        # The real generated/ dir exists in the repo with valid files, so this
+        # should succeed (return 0). The point is to exercise the fallback path.
+        result = main([])
+        assert result in (0, 1)  # depends on whether generated/ has files

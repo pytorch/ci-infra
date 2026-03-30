@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #
-# Logging base component deploy script.
-# Called from the justfile's deploy-base recipe.
-#
-# Args: $1=cluster-id
+# Logging module deploy script.
+# Called by: just deploy-module <cluster> logging
+# Args: $1=cluster-id  $2=cluster-name  $3=region
 #
 # Deploys:
 #   1. Logging namespace
@@ -13,20 +12,22 @@ set -euo pipefail
 #   4. Grafana Alloy Deployment for Kubernetes Event collection
 
 CLUSTER="$1"
+export CNAME="$2"
+export REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
-OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$MODULE_DIR/../.." && pwd)}"
+REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
+UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 # shellcheck source=/dev/null
-source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
+source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 # shellcheck source=/dev/null
-source "$OSDC_UPSTREAM/scripts/helm-upgrade.sh"
+source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
 # shellcheck source=/dev/null
-source "$OSDC_UPSTREAM/scripts/kubectl-apply.sh"
-CFG="$OSDC_UPSTREAM/scripts/cluster-config.py"
-CLUSTERS_YAML="${CLUSTERS_YAML:-$OSDC_UPSTREAM/clusters.yaml}"
+source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
+CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
+CLUSTERS_YAML="${CLUSTERS_YAML:-$UPSTREAM_ROOT/clusters.yaml}"
 
 # --- Read per-installation logging config ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" logging.namespace logging)
-CNAME=$(uv run "$CFG" "$CLUSTER" cluster_name)
 LOKI_URL=$(uv run "$CFG" "$CLUSTER" logging.grafana_cloud_loki_url "")
 
 if [[ -z "$LOKI_URL" ]]; then
@@ -56,14 +57,13 @@ cleanup() {
 trap cleanup EXIT
 
 # --- Assemble Alloy config ConfigMap ---
-OSDC_ROOT="${OSDC_ROOT:-$OSDC_UPSTREAM}"
 CONFIGMAP_FILE=$(mktemp)
 
 echo "Assembling Alloy logging config..."
 uv run "$MODULE_DIR/scripts/python/assemble_config.py" \
   --base-pipeline "$MODULE_DIR/pipelines/base.alloy" \
-  --modules-dir "$OSDC_ROOT/modules" \
-  --upstream-modules-dir "$OSDC_UPSTREAM/modules" \
+  --modules-dir "$REPO_ROOT/modules" \
+  --upstream-modules-dir "$UPSTREAM_ROOT/modules" \
   --cluster "$CLUSTER" \
   --clusters-yaml "$CLUSTERS_YAML" \
   --namespace "$NAMESPACE" \
@@ -109,7 +109,7 @@ echo "Installing Alloy logging DaemonSet (pushing to ${LOKI_URL})..."
 helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
 helm repo update grafana
 
-ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" monitoring.alloy_chart_version 1.6.2)
+ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" alloy_chart_version 1.6.2)
 helm_upgrade_if_changed alloy-logging "$NAMESPACE" \
   --history-max 3 \
   -f "$MODULE_DIR/helm/alloy-logging-values.yaml" \

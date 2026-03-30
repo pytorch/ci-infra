@@ -144,6 +144,43 @@ class TestEnsureRegistryEndpoint:
 
         assert result is False
 
+    def test_recreate_delete_project_fails(self):
+        """Recreate path: delete_project fails -> return False (line 258)."""
+        session = MagicMock()
+        existing_no_creds = {"id": 7, "name": "dockerhub", "credential": {}}
+        credentials = {"type": "basic", "access_key": "u", "access_secret": "p"}
+
+        # get_registry_info returns existing (no creds)
+        session.get.side_effect = [
+            make_response(200, [existing_no_creds]),  # get_registry_info
+            make_response(200, []),  # delete_project: list repos
+        ]
+        # delete_project's DELETE returns 500 -> delete_project returns False
+        session.delete.return_value = make_response(500, text="error")
+
+        result = ensure_registry_endpoint(session, HARBOR_URL, SAMPLE_REGISTRY, credentials=credentials)
+
+        assert result is False
+
+    def test_recreate_delete_endpoint_fails(self):
+        """Recreate path: delete_registry_endpoint fails -> return False (line 260)."""
+        session = MagicMock()
+        existing_no_creds = {"id": 7, "name": "dockerhub", "credential": {}}
+        credentials = {"type": "basic", "access_key": "u", "access_secret": "p"}
+
+        session.get.side_effect = [
+            make_response(200, [existing_no_creds]),  # get_registry_info
+            make_response(200, []),  # delete_project: list repos
+        ]
+        session.delete.side_effect = [
+            make_response(200),  # delete_project succeeds
+            make_response(500, text="error"),  # delete_registry_endpoint fails
+        ]
+
+        result = ensure_registry_endpoint(session, HARBOR_URL, SAMPLE_REGISTRY, credentials=credentials)
+
+        assert result is False
+
 
 # ---------------------------------------------------------------------------
 # create_proxy_cache_project
@@ -272,6 +309,36 @@ class TestDeleteProject:
         result = delete_project(session, HARBOR_URL, "dockerhub-cache")
 
         assert result is False
+
+    def test_repo_listing_non_200_breaks(self):
+        """Non-200, non-404 status on repo listing breaks the loop (line 201)."""
+        session = MagicMock()
+        session.get.return_value = make_response(500)  # repo listing fails
+        session.delete.return_value = make_response(200)  # project delete succeeds
+
+        result = delete_project(session, HARBOR_URL, "dockerhub-cache")
+
+        assert result is True
+        # Should still attempt to delete the project itself
+        session.delete.assert_called_once()
+
+    def test_repo_delete_failure_warns(self, capsys):
+        """Repo delete failure logs a warning but continues (line 218)."""
+        session = MagicMock()
+        repos = [{"name": "proj/img1"}]
+        session.get.side_effect = [
+            make_response(200, repos),  # page 1: one repo
+            make_response(200, []),  # page 2: empty
+        ]
+        session.delete.side_effect = [
+            make_response(500, text="error"),  # repo delete fails
+            make_response(200),  # project delete succeeds
+        ]
+
+        result = delete_project(session, HARBOR_URL, "proj")
+
+        assert result is True
+        assert session.delete.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +653,116 @@ class TestMain:
         result = main()
 
         assert result == 1
+
+    @patch("configure_harbor_projects.create_proxy_cache_project")
+    @patch("configure_harbor_projects.ensure_registry_endpoint", return_value=True)
+    @patch("configure_harbor_projects.fetch_csrf_token")
+    @patch("configure_harbor_projects.wait_for_harbor", return_value=True)
+    @patch("configure_harbor_projects.create_session")
+    @patch("configure_harbor_projects.argparse.ArgumentParser.parse_args")
+    def test_create_proxy_cache_failure_returns_1(
+        self,
+        mock_parse_args,
+        mock_create_session,
+        mock_wait,
+        mock_csrf,
+        mock_ensure,
+        mock_create_proj,
+    ):
+        """main() returns 1 when create_proxy_cache_project fails (line 395)."""
+        mock_parse_args.return_value = argparse.Namespace(
+            harbor_url=HARBOR_URL,
+            admin_password="pw",
+            dockerhub_username=None,
+            dockerhub_token=None,
+            github_username=None,
+            github_token=None,
+            no_wait=True,
+        )
+        mock_create_session.return_value = MagicMock()
+        mock_create_proj.return_value = False
+
+        result = main()
+
+        assert result == 1
+
+    @patch("configure_harbor_projects.create_proxy_cache_project", return_value=True)
+    @patch("configure_harbor_projects.ensure_registry_endpoint", return_value=True)
+    @patch("configure_harbor_projects.fetch_csrf_token")
+    @patch("configure_harbor_projects.wait_for_harbor", return_value=False)
+    @patch("configure_harbor_projects.create_session")
+    @patch("configure_harbor_projects.argparse.ArgumentParser.parse_args")
+    def test_wait_for_harbor_failure_returns_1(
+        self,
+        mock_parse_args,
+        mock_create_session,
+        mock_wait,
+        mock_csrf,
+        mock_ensure,
+        mock_create_proj,
+    ):
+        """main() returns 1 when wait_for_harbor returns False (line 380)."""
+        mock_parse_args.return_value = argparse.Namespace(
+            harbor_url=HARBOR_URL,
+            admin_password="pw",
+            dockerhub_username=None,
+            dockerhub_token=None,
+            github_username=None,
+            github_token=None,
+            no_wait=False,
+        )
+        mock_create_session.return_value = MagicMock()
+
+        result = main()
+
+        assert result == 1
+        mock_wait.assert_called_once()
+        # Should not proceed to endpoints or projects
+        mock_ensure.assert_not_called()
+
+    @patch("configure_harbor_projects.create_proxy_cache_project", return_value=True)
+    @patch("configure_harbor_projects.ensure_registry_endpoint", return_value=True)
+    @patch("configure_harbor_projects.fetch_csrf_token")
+    @patch("configure_harbor_projects.wait_for_harbor", return_value=True)
+    @patch("configure_harbor_projects.create_session")
+    @patch("configure_harbor_projects.argparse.ArgumentParser.parse_args")
+    def test_github_credentials_passed(
+        self,
+        mock_parse_args,
+        mock_create_session,
+        mock_wait,
+        mock_csrf,
+        mock_ensure,
+        mock_create_proj,
+    ):
+        """main() passes GitHub credentials when provided (lines 369-374)."""
+        mock_parse_args.return_value = argparse.Namespace(
+            harbor_url=HARBOR_URL,
+            admin_password="pw",
+            dockerhub_username=None,
+            dockerhub_token=None,
+            github_username="ghuser",
+            github_token="ghtoken",
+            no_wait=True,
+        )
+        mock_create_session.return_value = MagicMock()
+
+        result = main()
+
+        assert result == 0
+        # Find the call for the ghcr registry
+        for call in mock_ensure.call_args_list:
+            _session, _url, reg = call[0][:3]
+            creds = call[0][3] if len(call[0]) > 3 else call[1].get("credentials")
+            if reg["name"] == "ghcr":
+                assert creds == {
+                    "type": "basic",
+                    "access_key": "ghuser",
+                    "access_secret": "ghtoken",
+                }
+                break
+        else:
+            pytest.fail("ghcr registry call not found")
 
     @patch("configure_harbor_projects.create_proxy_cache_project", return_value=True)
     @patch("configure_harbor_projects.ensure_registry_endpoint", return_value=True)

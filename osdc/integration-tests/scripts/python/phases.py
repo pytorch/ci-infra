@@ -58,14 +58,27 @@ def ensure_canary_repo(upstream_dir: Path) -> Path:
 
     if not canary_path.exists():
         log.info("  Cloning %s into %s...", CANARY_REPO, canary_path)
-        run_cmd([
-            "gh", "repo", "clone", CANARY_REPO, str(canary_path),
-            "--", "--filter=blob:none",
-        ], capture=False)
+        run_cmd(
+            [
+                "gh",
+                "repo",
+                "clone",
+                CANARY_REPO,
+                str(canary_path),
+                "--",
+                "--filter=blob:none",
+            ],
+            capture=False,
+        )
 
     # Configure git identity for commits made by the test orchestrator
     run_cmd(["git", "config", "user.name", "OSDC Integration Test"], cwd=canary_path, capture=False, check=False)
-    run_cmd(["git", "config", "user.email", "osdc-integration-test@pytorch.org"], cwd=canary_path, capture=False, check=False)
+    run_cmd(
+        ["git", "config", "user.email", "osdc-integration-test@pytorch.org"],
+        cwd=canary_path,
+        capture=False,
+        check=False,
+    )
 
     return canary_path
 
@@ -79,8 +92,7 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
 
     # Find open PRs matching our title pattern
     result = run_cmd(
-        ["gh", "pr", "list", "--repo", CANARY_REPO, "--author", "@me",
-         "--state", "open", "--json", "number,title"],
+        ["gh", "pr", "list", "--repo", CANARY_REPO, "--author", "@me", "--state", "open", "--json", "number,title"],
         check=False,
     )
     if result.returncode != 0:
@@ -98,8 +110,7 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
 
     # Cancel any running workflows on our branch
     result = run_cmd(
-        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-         "--status", "queued", "--json", "databaseId"],
+        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch, "--status", "queued", "--json", "databaseId"],
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
@@ -109,8 +120,19 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
             run_cmd(["gh", "run", "cancel", str(r["databaseId"]), "--repo", CANARY_REPO], check=False)
 
     result = run_cmd(
-        ["gh", "run", "list", "--repo", CANARY_REPO, "--branch", branch,
-         "--status", "in_progress", "--json", "databaseId"],
+        [
+            "gh",
+            "run",
+            "list",
+            "--repo",
+            CANARY_REPO,
+            "--branch",
+            branch,
+            "--status",
+            "in_progress",
+            "--json",
+            "databaseId",
+        ],
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
@@ -172,7 +194,45 @@ def clear_staging_pools(cluster_id: str, force: bool = False):
 # ── Phase 2: Prepare PR ────────────────────────────────────────────────
 
 
-def generate_workflow(upstream_dir: Path, prefix: str, cluster_id: str, cluster_name: str, b200_enabled: bool) -> str:
+def _strip_conditional_block(content: str, tag: str, keep: bool) -> str:
+    """Remove or keep a # BEGIN_<tag> / # END_<tag> conditional block.
+
+    When *keep* is False the block (markers + content) is stripped entirely.
+    When *keep* is True the content is kept but the marker comments are removed.
+    """
+    begin = f"# BEGIN_{tag}"
+    end = f"# END_{tag}"
+    if not keep:
+        lines = content.split("\n")
+        filtered = []
+        inside = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped == begin:
+                inside = True
+                continue
+            if stripped == end:
+                inside = False
+                continue
+            if not inside:
+                filtered.append(line)
+        return "\n".join(filtered)
+    # keep=True — remove markers, keep content
+    content = content.replace(f"  {begin}\n", "")
+    content = content.replace(f"  {end}\n", "")
+    return content
+
+
+def generate_workflow(
+    upstream_dir: Path,
+    prefix: str,
+    cluster_id: str,
+    cluster_name: str,
+    b200_enabled: bool,
+    cache_enforcer_enabled: bool = False,
+    pypi_cache_slugs: str = "cpu cu121 cu124",
+    pypi_cache_cuda_version: str = "12.8",
+) -> str:
     """Generate the integration test workflow from template."""
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
     content = template_path.read_text()
@@ -181,27 +241,12 @@ def generate_workflow(upstream_dir: Path, prefix: str, cluster_id: str, cluster_
     content = content.replace("{{PREFIX}}", prefix)
     content = content.replace("{{CLUSTER_ID}}", cluster_id)
     content = content.replace("{{CLUSTER_NAME}}", cluster_name)
+    content = content.replace("{{PYPI_CACHE_SLUGS}}", pypi_cache_slugs)
+    content = content.replace("{{PYPI_CACHE_CUDA_VERSION}}", pypi_cache_cuda_version)
 
-    # Handle B200 conditional blocks
-    if not b200_enabled:
-        lines = content.split("\n")
-        filtered = []
-        in_b200_block = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped == "# BEGIN_B200":
-                in_b200_block = True
-                continue
-            if stripped == "# END_B200":
-                in_b200_block = False
-                continue
-            if not in_b200_block:
-                filtered.append(line)
-        content = "\n".join(filtered)
-    else:
-        # Remove the marker comments but keep the content
-        content = content.replace("  # BEGIN_B200\n", "")
-        content = content.replace("  # END_B200\n", "")
+    # Handle conditional blocks
+    content = _strip_conditional_block(content, "B200", keep=b200_enabled)
+    content = _strip_conditional_block(content, "CACHE_ENFORCER", keep=cache_enforcer_enabled)
 
     return content
 
@@ -263,14 +308,23 @@ def prepare_pr(
 
     # Open PR
     now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M")
-    result = run_cmd([
-        "gh", "pr", "create",
-        "--repo", CANARY_REPO,
-        "--title", f"{PR_TITLE_PREFIX} {now}",
-        "--body", "Automated integration test from OSDC. Do not review or merge.",
-        "--head", branch,
-        "--base", "main",
-    ])
+    result = run_cmd(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            CANARY_REPO,
+            "--title",
+            f"{PR_TITLE_PREFIX} {now}",
+            "--body",
+            "Automated integration test from OSDC. Do not review or merge.",
+            "--head",
+            branch,
+            "--base",
+            "main",
+        ]
+    )
     # Extract PR number from URL.
     # If parsing fails, return None — the caller (main()) will skip polling
     # and cleanup_stale_prs() will close the orphaned PR on the next run.

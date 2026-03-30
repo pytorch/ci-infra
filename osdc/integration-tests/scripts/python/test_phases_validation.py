@@ -151,8 +151,12 @@ class TestPrintReport:
         assert result is False
 
     def test_interrupted_header(self, capsys):
-        result = self.print_report(
-            "arc-staging", "pytorch-arc-staging", [], {}, interrupted=True,
+        self.print_report(
+            "arc-staging",
+            "pytorch-arc-staging",
+            [],
+            {},
+            interrupted=True,
         )
         out = capsys.readouterr().out
         assert "(interrupted)" in out
@@ -163,7 +167,11 @@ class TestPrintReport:
             "compactor": {"status": "interrupted"},
         }
         result = self.print_report(
-            "arc-staging", "pytorch-arc-staging", [], validation, interrupted=True,
+            "arc-staging",
+            "pytorch-arc-staging",
+            [],
+            validation,
+            interrupted=True,
         )
         assert result is True
         out = capsys.readouterr().out
@@ -181,7 +189,11 @@ class TestPrintReport:
         ]
         validation = {"smoke": {"status": "passed"}, "compactor": {"status": "passed"}}
         result = self.print_report(
-            "arc-staging", "pytorch-arc-staging", workflow_results, validation, interrupted=True,
+            "arc-staging",
+            "pytorch-arc-staging",
+            workflow_results,
+            validation,
+            interrupted=True,
         )
         assert result is True
         out = capsys.readouterr().out
@@ -200,7 +212,11 @@ class TestPrintReport:
         ]
         validation = {"smoke": {"status": "passed"}, "compactor": {"status": "passed"}}
         result = self.print_report(
-            "arc-staging", "pytorch-arc-staging", workflow_results, validation, interrupted=True,
+            "arc-staging",
+            "pytorch-arc-staging",
+            workflow_results,
+            validation,
+            interrupted=True,
         )
         assert result is True
         out = capsys.readouterr().out
@@ -247,7 +263,11 @@ class TestPrintReport:
             "compactor": {"status": "interrupted"},
         }
         result = self.print_report(
-            "arc-staging", "pytorch-arc-staging", workflow_results, validation, interrupted=True,
+            "arc-staging",
+            "pytorch-arc-staging",
+            workflow_results,
+            validation,
+            interrupted=True,
         )
         assert result is False
 
@@ -285,8 +305,12 @@ class TestRunParallelValidationInterrupt:
 
             with pytest.raises(KeyboardInterrupt):
                 run_parallel_validation(
-                    "test-cluster", Path("/root"), Path("/upstream"),
-                    skip_smoke=False, skip_compactor=False, cfg=cfg,
+                    "test-cluster",
+                    Path("/root"),
+                    Path("/upstream"),
+                    skip_smoke=False,
+                    skip_compactor=False,
+                    cfg=cfg,
                 )
 
         # compactor proc should have been terminated
@@ -317,16 +341,17 @@ class TestRunParallelValidationInterrupt:
 
         cfg = {"cluster": {"node_compactor": {"enabled": True}}, "defaults": {}}
 
-        with patch("subprocess.Popen", side_effect=fake_popen):
-            import pytest
+        import contextlib
 
-            try:
-                run_parallel_validation(
-                    "test-cluster", Path("/root"), Path("/upstream"),
-                    skip_smoke=False, skip_compactor=False, cfg=cfg,
-                )
-            except KeyboardInterrupt:
-                pass
+        with patch("subprocess.Popen", side_effect=fake_popen), contextlib.suppress(KeyboardInterrupt):
+            run_parallel_validation(
+                "test-cluster",
+                Path("/root"),
+                Path("/upstream"),
+                skip_smoke=False,
+                skip_compactor=False,
+                cfg=cfg,
+            )
 
         # compactor proc should have been terminated
         proc_compactor.terminate.assert_called_once()
@@ -356,12 +381,24 @@ class TestWaitForWorkflows:
         """When workflow_name is set, only matching runs are tracked."""
         from phases_validation import wait_for_workflows
 
-        runs_json = json.dumps([
-            {"databaseId": 1, "status": "completed", "conclusion": "success",
-             "name": "target-wf", "createdAt": "2026-03-20T13:00:00Z"},
-            {"databaseId": 2, "status": "completed", "conclusion": "success",
-             "name": "other-wf", "createdAt": "2026-03-20T13:00:00Z"},
-        ])
+        runs_json = json.dumps(
+            [
+                {
+                    "databaseId": 1,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "name": "target-wf",
+                    "createdAt": "2026-03-20T13:00:00Z",
+                },
+                {
+                    "databaseId": 2,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "name": "other-wf",
+                    "createdAt": "2026-03-20T13:00:00Z",
+                },
+            ]
+        )
 
         mock_run.side_effect = [
             # gh run list
@@ -421,13 +458,16 @@ class TestClosePr:
 
         # Verify cancel calls happened before pr close
         cancel_1 = mock_run.call_args_list[1][0][0]
-        assert "cancel" in cancel_1 and "100" in cancel_1
+        assert "cancel" in cancel_1
+        assert "100" in cancel_1
 
         cancel_2 = mock_run.call_args_list[3][0][0]
-        assert "cancel" in cancel_2 and "200" in cancel_2
+        assert "cancel" in cancel_2
+        assert "200" in cancel_2
 
         pr_close = mock_run.call_args_list[4][0][0]
-        assert "close" in pr_close and "42" in pr_close
+        assert "close" in pr_close
+        assert "42" in pr_close
 
     @patch("phases_validation.run_cmd")
     def test_works_without_branch(self, mock_run):
@@ -441,7 +481,8 @@ class TestClosePr:
         # Only the pr close call
         assert mock_run.call_count == 1
         cmd = mock_run.call_args_list[0][0][0]
-        assert "close" in cmd and "42" in cmd
+        assert "close" in cmd
+        assert "42" in cmd
 
     @patch("phases_validation.run_cmd")
     def test_handles_no_running_workflows(self, mock_run):
@@ -465,3 +506,544 @@ class TestClosePr:
         # Last call should be pr close
         cmd = mock_run.call_args_list[2][0][0]
         assert "close" in cmd
+
+    @patch("phases_validation.run_cmd")
+    def test_handles_run_list_failure(self, mock_run):
+        """When gh run list returns non-zero, skip cancel and just close PR."""
+        from phases_validation import close_pr
+
+        mock_run.side_effect = [
+            # gh run list --status queued (fails)
+            MagicMock(returncode=1, stdout="", stderr="api error"),
+            # gh run list --status in_progress (fails)
+            MagicMock(returncode=1, stdout="", stderr="api error"),
+            # gh pr close
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        close_pr(42, branch="test-branch")
+
+        assert mock_run.call_count == 3
+        # No cancel calls — only list + close
+        for call in mock_run.call_args_list[:2]:
+            assert "cancel" not in call[0][0]
+
+    @patch("phases_validation.run_cmd")
+    def test_handles_empty_stdout(self, mock_run):
+        """When gh run list returns 0 but empty stdout, skip cancel."""
+        from phases_validation import close_pr
+
+        mock_run.side_effect = [
+            # gh run list --status queued (success but empty)
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # gh run list --status in_progress (success but empty)
+            MagicMock(returncode=0, stdout="", stderr=""),
+            # gh pr close
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        close_pr(42, branch="test-branch")
+
+        assert mock_run.call_count == 3
+
+    @patch("phases_validation.run_cmd")
+    def test_handles_json_parse_failure_in_runs(self, mock_run):
+        """When run list returns invalid JSON, skip cancel gracefully."""
+        from phases_validation import close_pr
+
+        mock_run.side_effect = [
+            # gh run list --status queued (success, invalid JSON)
+            MagicMock(returncode=0, stdout="not-json", stderr=""),
+            # gh run list --status in_progress (success, invalid JSON)
+            MagicMock(returncode=0, stdout="not-json", stderr=""),
+            # gh pr close
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        close_pr(42, branch="test-branch")
+
+        assert mock_run.call_count == 3
+
+
+# ── run_parallel_validation (skip paths) ──────────────────────────────
+
+
+class TestRunParallelValidationSkipPaths:
+    """Test the skip_smoke and skip_compactor branches."""
+
+    @patch("subprocess.Popen")
+    def test_skip_smoke(self, mock_popen):
+        """When skip_smoke=True, smoke is marked skipped, only compactor runs."""
+        from pathlib import Path
+
+        from phases_validation import run_parallel_validation
+
+        proc = MagicMock()
+        proc.communicate.return_value = ("compactor output", None)
+        proc.returncode = 0
+        mock_popen.return_value = proc
+
+        cfg = {"cluster": {"node_compactor": {"enabled": True}}, "defaults": {}}
+
+        results = run_parallel_validation(
+            "test-cluster",
+            Path("/root"),
+            Path("/upstream"),
+            skip_smoke=True,
+            skip_compactor=False,
+            cfg=cfg,
+        )
+
+        assert results["smoke"]["status"] == "skipped"
+        assert results["compactor"]["status"] == "passed"
+        # Only one Popen call (compactor)
+        assert mock_popen.call_count == 1
+
+    @patch("subprocess.Popen")
+    def test_skip_compactor(self, mock_popen):
+        """When skip_compactor=True, compactor is marked skipped, only smoke runs."""
+        from pathlib import Path
+
+        from phases_validation import run_parallel_validation
+
+        proc = MagicMock()
+        proc.communicate.return_value = ("smoke output", None)
+        proc.returncode = 0
+        mock_popen.return_value = proc
+
+        cfg = {"cluster": {"node_compactor": {"enabled": True}}, "defaults": {}}
+
+        results = run_parallel_validation(
+            "test-cluster",
+            Path("/root"),
+            Path("/upstream"),
+            skip_smoke=False,
+            skip_compactor=True,
+            cfg=cfg,
+        )
+
+        assert results["smoke"]["status"] == "passed"
+        assert results["compactor"]["status"] == "skipped"
+        assert mock_popen.call_count == 1
+
+    @patch("subprocess.Popen")
+    def test_skip_both(self, mock_popen):
+        """When both are skipped, no Popen calls, both marked skipped."""
+        from pathlib import Path
+
+        from phases_validation import run_parallel_validation
+
+        cfg = {"cluster": {"node_compactor": {"enabled": True}}, "defaults": {}}
+
+        results = run_parallel_validation(
+            "test-cluster",
+            Path("/root"),
+            Path("/upstream"),
+            skip_smoke=True,
+            skip_compactor=True,
+            cfg=cfg,
+        )
+
+        assert results["smoke"]["status"] == "skipped"
+        assert results["compactor"]["status"] == "skipped"
+        mock_popen.assert_not_called()
+
+    @patch("subprocess.Popen")
+    def test_compactor_disabled_in_config(self, mock_popen):
+        """When node_compactor.enabled=False in config, compactor is skipped."""
+        from pathlib import Path
+
+        from phases_validation import run_parallel_validation
+
+        proc = MagicMock()
+        proc.communicate.return_value = ("smoke output", None)
+        proc.returncode = 0
+        mock_popen.return_value = proc
+
+        cfg = {"cluster": {"node_compactor": {"enabled": False}}, "defaults": {}}
+
+        results = run_parallel_validation(
+            "test-cluster",
+            Path("/root"),
+            Path("/upstream"),
+            skip_smoke=False,
+            skip_compactor=False,
+            cfg=cfg,
+        )
+
+        assert results["smoke"]["status"] == "passed"
+        assert results["compactor"]["status"] == "skipped"
+        assert mock_popen.call_count == 1
+
+
+class TestRunParallelValidationKillBranch:
+    """Test the TimeoutExpired branch in interrupt handling."""
+
+    def test_kill_after_timeout_expired(self):
+        """When proc.wait(timeout=5) raises TimeoutExpired, proc.kill() is called."""
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from phases_validation import run_parallel_validation
+
+        proc = MagicMock()
+        proc.communicate.side_effect = KeyboardInterrupt
+        # First wait(timeout=5) raises TimeoutExpired, second wait() (after kill) succeeds
+        proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="test", timeout=5),
+            None,
+        ]
+
+        cfg = {"cluster": {}, "defaults": {}}
+
+        with patch("subprocess.Popen", return_value=proc), pytest.raises(KeyboardInterrupt):
+            run_parallel_validation(
+                "test-cluster",
+                Path("/root"),
+                Path("/upstream"),
+                skip_smoke=False,
+                skip_compactor=True,
+                cfg=cfg,
+            )
+
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+
+
+# ── wait_for_workflows (polling branches) ─────────────────────────────
+
+
+def _make_time_sequence(*values):
+    """Create a time.time() mock that returns values in sequence, then repeats the last.
+
+    This is needed because Python's logging module also calls time.time() internally
+    for log record timestamps, consuming extra calls beyond our explicit usage.
+    """
+    it = iter(values)
+    last = values[-1]
+
+    def fake_time():
+        nonlocal last
+        try:
+            val = next(it)
+            last = val
+            return val
+        except StopIteration:
+            return last
+
+    return fake_time
+
+
+class TestWaitForWorkflowsPolling:
+    @patch("phases_validation.time.time")
+    @patch("phases_validation.time.sleep")
+    @patch("phases_validation.run_cmd")
+    def test_run_list_failure_retries(self, mock_run, mock_sleep, mock_time):
+        """When gh run list fails, it logs a warning, sleeps, and retries."""
+        from phases_validation import wait_for_workflows
+
+        # Use a function that returns increasing values; last value repeats for logging calls
+        mock_time.side_effect = _make_time_sequence(0, 100, 200, 9999)
+
+        completed_run = {
+            "databaseId": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "name": "test",
+            "createdAt": "2026-03-20T13:00:00Z",
+        }
+
+        mock_run.side_effect = [
+            # First poll: failure
+            MagicMock(returncode=1, stdout="", stderr="network error"),
+            # Second poll: success with completed run
+            MagicMock(returncode=0, stdout=json.dumps([completed_run]), stderr=""),
+            # gh run view for collecting details
+            MagicMock(returncode=0, stdout=json.dumps({"jobs": []}), stderr=""),
+        ]
+
+        results = wait_for_workflows(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+        )
+
+        assert len(results) == 1
+        # Sleep called once after the failure
+        assert mock_sleep.call_count == 1
+
+    @patch("phases_validation.time.time")
+    @patch("phases_validation.time.sleep")
+    @patch("phases_validation.run_cmd")
+    def test_no_runs_found_waits(self, mock_run, mock_sleep, mock_time):
+        """When no runs are found, log and wait before retrying."""
+        from phases_validation import wait_for_workflows
+
+        mock_time.side_effect = _make_time_sequence(0, 100, 200, 9999)
+
+        completed_run = {
+            "databaseId": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "name": "test",
+            "createdAt": "2026-03-20T13:00:00Z",
+        }
+
+        mock_run.side_effect = [
+            # First poll: no runs
+            MagicMock(returncode=0, stdout="[]", stderr=""),
+            # Second poll: run found and completed
+            MagicMock(returncode=0, stdout=json.dumps([completed_run]), stderr=""),
+            # gh run view
+            MagicMock(returncode=0, stdout=json.dumps({"jobs": []}), stderr=""),
+        ]
+
+        results = wait_for_workflows(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+        )
+
+        assert len(results) == 1
+        assert mock_sleep.call_count == 1
+
+    @patch("phases_validation.time.time")
+    @patch("phases_validation.time.sleep")
+    @patch("phases_validation.run_cmd")
+    def test_in_progress_runs_wait(self, mock_run, mock_sleep, mock_time):
+        """When runs exist but not all completed, wait and poll again."""
+        from phases_validation import wait_for_workflows
+
+        mock_time.side_effect = _make_time_sequence(0, 100, 200, 9999)
+
+        in_progress_run = {
+            "databaseId": 1,
+            "status": "in_progress",
+            "conclusion": None,
+            "name": "test",
+            "createdAt": "2026-03-20T13:00:00Z",
+        }
+        completed_run = {
+            "databaseId": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "name": "test",
+            "createdAt": "2026-03-20T13:00:00Z",
+        }
+
+        mock_run.side_effect = [
+            # First poll: in progress
+            MagicMock(returncode=0, stdout=json.dumps([in_progress_run]), stderr=""),
+            # Second poll: completed
+            MagicMock(returncode=0, stdout=json.dumps([completed_run]), stderr=""),
+            # gh run view
+            MagicMock(returncode=0, stdout=json.dumps({"jobs": []}), stderr=""),
+        ]
+
+        results = wait_for_workflows(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+        )
+
+        assert len(results) == 1
+        assert results[0]["conclusion"] == "success"
+        # One sleep while waiting for in-progress run
+        assert mock_sleep.call_count == 1
+
+    @patch("phases_validation._fetch_latest_runs")
+    @patch("phases_validation._collect_run_details")
+    @patch("phases_validation.time.time")
+    @patch("phases_validation.time.sleep")
+    @patch("phases_validation.run_cmd")
+    def test_timeout_collects_partial(self, mock_run, mock_sleep, mock_time, mock_collect, mock_fetch):
+        """When timeout is reached, fetch latest runs and return partial results."""
+        from phases_validation import wait_for_workflows
+
+        # Immediately past deadline: first call sets deadline, all others exceed it
+        mock_time.side_effect = _make_time_sequence(0, 999999)
+
+        partial_run = {
+            "databaseId": 1,
+            "status": "in_progress",
+            "conclusion": None,
+            "name": "test",
+            "createdAt": "2026-03-20T13:00:00Z",
+        }
+        mock_fetch.return_value = [partial_run]
+        mock_collect.return_value = [{"run_id": 1, "conclusion": "in_progress"}]
+
+        results = wait_for_workflows(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+        )
+
+        assert len(results) == 1
+        mock_fetch.assert_called_once()
+        mock_collect.assert_called_once()
+
+
+# ── _fetch_latest_runs ────────────────────────────────────────────────
+
+
+class TestFetchLatestRuns:
+    @patch("phases_validation.run_cmd")
+    def test_success(self, mock_run):
+        from phases_validation import _fetch_latest_runs
+
+        runs = [
+            {"databaseId": 1, "createdAt": "2026-03-20T13:00:00Z"},
+            {"databaseId": 2, "createdAt": "2026-03-20T11:00:00Z"},  # before cutoff
+        ]
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(runs),
+            stderr="",
+        )
+
+        result = _fetch_latest_runs(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+        )
+
+        assert len(result) == 1
+        assert result[0]["databaseId"] == 1
+
+    @patch("phases_validation.run_cmd")
+    def test_failure_returns_empty(self, mock_run):
+        from phases_validation import _fetch_latest_runs
+
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="error",
+        )
+
+        result = _fetch_latest_runs(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+        )
+
+        assert result == []
+
+    @patch("phases_validation.run_cmd")
+    def test_empty_stdout_returns_empty(self, mock_run):
+        from phases_validation import _fetch_latest_runs
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+        result = _fetch_latest_runs(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+        )
+
+        assert result == []
+
+    @patch("phases_validation.run_cmd")
+    def test_invalid_json_returns_empty(self, mock_run):
+        from phases_validation import _fetch_latest_runs
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="not-json",
+            stderr="",
+        )
+
+        result = _fetch_latest_runs(
+            "test-branch",
+            datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC),
+        )
+
+        assert result == []
+
+
+# ── _collect_run_details ───────────────────────────────────────────────
+
+
+class TestCollectRunDetails:
+    @patch("phases_validation.run_cmd")
+    def test_collects_jobs_and_failure_log(self, mock_run):
+        from phases_validation import _collect_run_details
+
+        runs = [
+            {"databaseId": 10, "conclusion": "failure", "name": "build", "status": "completed"},
+        ]
+
+        mock_run.side_effect = [
+            # gh run view (job details)
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps({"jobs": [{"name": "build", "conclusion": "failure"}]}),
+                stderr="",
+            ),
+            # gh run view --log-failed
+            MagicMock(returncode=0, stdout="Error on line 42\nStack trace...\n", stderr=""),
+        ]
+
+        results = _collect_run_details(runs)
+
+        assert len(results) == 1
+        assert results[0]["run_id"] == 10
+        assert results[0]["conclusion"] == "failure"
+        assert len(results[0]["jobs"]) == 1
+        assert "Error on line 42" in results[0]["failure_log"]
+
+    @patch("phases_validation.run_cmd")
+    def test_success_no_failure_log(self, mock_run):
+        from phases_validation import _collect_run_details
+
+        runs = [
+            {"databaseId": 20, "conclusion": "success", "name": "test", "status": "completed"},
+        ]
+
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps({"jobs": [{"name": "test", "conclusion": "success"}]}),
+                stderr="",
+            ),
+        ]
+
+        results = _collect_run_details(runs)
+
+        assert len(results) == 1
+        assert results[0]["failure_log"] == ""
+        # Only one call (no --log-failed for success)
+        assert mock_run.call_count == 1
+
+    @patch("phases_validation.run_cmd")
+    def test_run_view_failure_empty_jobs(self, mock_run):
+        from phases_validation import _collect_run_details
+
+        runs = [
+            {"databaseId": 30, "conclusion": "success", "name": "test", "status": "completed"},
+        ]
+
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
+
+        results = _collect_run_details(runs)
+
+        assert len(results) == 1
+        assert results[0]["jobs"] == []
+
+    @patch("phases_validation.run_cmd")
+    def test_null_conclusion_treated_as_in_progress(self, mock_run):
+        from phases_validation import _collect_run_details
+
+        runs = [
+            {"databaseId": 40, "conclusion": None, "name": "test", "status": "in_progress"},
+        ]
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({"jobs": []}),
+            stderr="",
+        )
+
+        results = _collect_run_details(runs)
+
+        assert results[0]["conclusion"] == "in_progress"
+        # No --log-failed call for in_progress
+        assert mock_run.call_count == 1
