@@ -1141,12 +1141,12 @@ class TestGenerateNodepool:
         parsed = yaml.safe_load(result)
         assert parsed["spec"]["disruption"]["consolidationPolicy"] == "WhenEmpty"
 
-    def test_disruption_budget_zero(self):
-        """Budget of 0 means no voluntary disruption."""
+    def test_disruption_budget_one(self):
+        """Budget of 1 allows Karpenter to disrupt one node at a time (drift replacement)."""
         config = _default_config()
         result = generate_nodepool(config, TEMPLATE_DIR / "nodepool.yaml.tpl")
         parsed = yaml.safe_load(result)
-        assert parsed["spec"]["disruption"]["budgets"][0]["nodes"] == "0"
+        assert parsed["spec"]["disruption"]["budgets"][0]["nodes"] == "1"
 
 
 # ============================================================================
