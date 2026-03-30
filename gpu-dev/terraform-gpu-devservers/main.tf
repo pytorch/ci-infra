@@ -264,7 +264,7 @@ locals {
         { key = "cr2", id = null, instance_count = 2 },                   # H200 on-demand (2 instances)
       ]
       b200 = [
-        { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
+        { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 0 }, # B200 reservation (disabled - CR expired)
         { key = "cr1", id = "cr-08e7fee0b8dc3de5e", instance_count = 3 }, # B200 reservation (3 instances)
         { key = "cr2", id = null, instance_count = 2 },                   # B200 on-demand (2 instances)
       ]
@@ -285,7 +285,7 @@ locals {
     }
     prod = {
       # Production environment subnet assignments
-      b200      = "primary"
+      b200      = "secondary"  # us-east-2b (on-demand B200 capacity available here; CR-based ASGs override via capacity_reservation_azs)
       h200      = "tertiary" # us-east-2c for H200 capacity reservation
       h100      = "tertiary" # us-east-2c for H100 capacity reservation
       a100      = "primary"

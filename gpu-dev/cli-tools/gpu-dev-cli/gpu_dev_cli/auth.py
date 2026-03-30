@@ -95,7 +95,6 @@ def validate_ssh_key_matches_github_user(config: Config, live=None) -> Dict[str,
             # Restart the spinner
             if live:
                 live.start()
-                live.update(Spinner("dots", text="🔐 Validating SSH key..."))
 
             # Check if we got the expected GitHub response
             if "Hi " in ssh_output and "You've successfully authenticated" in ssh_output:

@@ -647,8 +647,8 @@ def migrate_ebs_across_az(user_id, current_volume_id, current_az, target_az):
             AvailabilityZone=target_az,
             SnapshotId=snapshot_id,
             VolumeType="gp3",
-            Iops=3000,
-            Throughput=125,
+            Iops=16000,
+            Throughput=1000,
             TagSpecifications=[{
                 "ResourceType": "volume",
                 "Tags": [
@@ -730,8 +730,8 @@ def restore_ebs_from_existing_snapshot(snapshot_id, target_az, user_id):
             AvailabilityZone=target_az,
             SnapshotId=snapshot_id,
             VolumeType="gp3",
-            Iops=3000,
-            Throughput=125,
+            Iops=16000,
+            Throughput=1000,
             TagSpecifications=[{
                 "ResourceType": "volume",
                 "Tags": [
@@ -2965,7 +2965,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
 
             for attempt in range(max_retries):
                 logs = v1.read_namespaced_pod_log(
-                    name=pod_name, namespace="gpu-dev", tail_lines=100  # Increased from 50
+                    name=pod_name, namespace="gpu-dev", container="gpu-dev", tail_lines=100
                 )
                 if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
                     logger.info(
@@ -4293,6 +4293,8 @@ EFAEOF
                                 echo "[STARTUP] ✗ Source file /devserver-setup/.npmrc does not exist"
                             fi
 
+                            # Fix ownership of all copied files (new disk only, dirs are small)
+                            chown -R 1081:1081 /home/dev/.oh-my-zsh /home/dev/.jupyter /home/dev/.npm-global 2>/dev/null || true
                             echo "[STARTUP] Shell configuration files and user directories copied to persistent disk"
 
                         elif [ "$CREATE_SH_ENV" = "true" ]; then
@@ -4412,8 +4414,16 @@ EOF_ZSHRC_EXT
                         done
                         echo "[STARTUP] ✓ Shell extension sourcing configured"
 
-                        # Ensure correct ownership
-                        chown -R dev:dev /home/dev
+                        # Fix ownership - recursive only for new disks (fast, empty disk)
+                        # For existing disks, only fix the specific files we just created/modified
+                        if [ "$CREATE_SH_ENV" = "true" ]; then
+                            echo "[STARTUP] New disk - setting ownership of all files..."
+                            chown -R 1081:1081 /home/dev
+                        else
+                            chown 1081:1081 /home/dev/.bashrc_ext /home/dev/.zshrc_ext 2>/dev/null || true
+                            chown 1081:1081 /home/dev/.bashrc /home/dev/.zshrc /home/dev/.bash_profile /home/dev/.profile /home/dev/.zprofile 2>/dev/null || true
+                            chown 1081:1081 /home/dev/.shell_env /home/dev/.npmrc /home/dev/.disk_initialized 2>/dev/null || true
+                        fi
 
                         echo "[STARTUP] Setting up shared personal storage..."
                         # Set up /shared-personal directory with proper permissions for user collaboration  
@@ -4745,8 +4755,10 @@ EOF
                         fi
 
                         echo "[STARTUP] Setting up dev user home directory..."
-                        # Ensure all shell config files have correct ownership
-                        chown -R 1081:1081 /home/dev
+                        # Fix ownership of .ssh and dotfiles only (NOT recursive - avoids 30-120s on large disks)
+                        chown -R 1081:1081 /home/dev/.ssh 2>/dev/null || true
+                        chown 1081:1081 /home/dev/.bashrc /home/dev/.zshrc /home/dev/.bashrc_ext /home/dev/.zshrc_ext 2>/dev/null || true
+                        chown 1081:1081 /home/dev/.bash_profile /home/dev/.profile /home/dev/.zprofile /home/dev/.shell_env 2>/dev/null || true
 
                         # Verify SSH keys were set up by init container
                         if [ -f /home/dev/.ssh/authorized_keys ]; then
@@ -4756,6 +4768,25 @@ EOF
                         else
                             echo "[STARTUP] WARNING: No SSH keys found from init container!"
                         fi
+
+                        # === START SSH DAEMON EARLY ===
+                        # Start sshd as soon as SSH config is ready, do remaining setup after
+                        echo "[STARTUP] Starting SSH daemon..."
+                        if $SSHD_PATH -t; then
+                            echo "[STARTUP] SSH configuration is valid"
+                        else
+                            echo "[STARTUP] ❌ ERROR: SSH configuration is invalid"
+                            echo "[STARTUP] Check the logs above for details"
+                            exit 1
+                        fi
+
+                        # Start sshd in background so remaining setup can continue
+                        echo "[STARTUP] SSH daemon starting on port 22 using $SSHD_PATH"
+                        $SSHD_PATH -D -e &
+                        SSHD_PID=$!
+                        echo "[STARTUP] Container ready for SSH connections (remaining setup continues in background)"
+
+                        # === REMAINING SETUP (runs while sshd is already accepting connections) ===
 
                         # Copy SSH keys to other existing users (ubuntu, etc.) for convenience
                         echo "[STARTUP] Copying SSH keys to other existing users for multi-user SSH access..."
@@ -4783,7 +4814,7 @@ EOF
                         fi
 
                         echo "[STARTUP] Setting up MOTD with dynamic storage info..."
-                        
+
                         # Use the existing MOTD from Docker image and append dynamic storage status
                         # Pass storage information to the Docker MOTD script
                         if [ "$TEMPORARY_DISK_WARNING" = "true" ]; then
@@ -4793,11 +4824,11 @@ EOF
                         fi
                         echo "USE_PERSISTENT_DISK=$USE_PERSISTENT_DISK" >> /etc/gpu-dev-flags
                         echo "GPU_DEV_CONTAINER_IMAGE={GPU_DEV_CONTAINER_IMAGE}" >> /etc/gpu-dev-flags
-                        
+
                         # Debug: check if MOTD script exists and is executable
                         echo "[STARTUP] Checking MOTD script..."
                         ls -la /etc/update-motd.d/ || echo "[STARTUP] update-motd.d directory not found"
-                        
+
                         # The Docker image should have the MOTD script, but Lambda startup might have removed it
                         # Let's restore it if missing
                         if [ ! -f /etc/update-motd.d/00-custom ]; then
@@ -4810,22 +4841,22 @@ EOF
                                 echo "[STARTUP] Could not find backup MOTD script"
                             fi
                         fi
-                        
+
                         # Check if flags file exists and show contents
                         echo "[STARTUP] GPU dev flags:"
                         cat /etc/gpu-dev-flags || echo "No flags file found"
-                        
+
                         # The Docker image already has the MOTD script, just regenerate it with our flags
                         if [ -f /etc/update-motd.d/00-custom ]; then
                             echo "[STARTUP] MOTD script found, making executable..."
                             chmod +x /etc/update-motd.d/00-custom
-                            
+
                             echo "[STARTUP] Testing MOTD script syntax..."
                             if bash -n /etc/update-motd.d/00-custom; then
                                 echo "[STARTUP] Syntax OK, executing MOTD script..."
                                 echo "[STARTUP] Running: /etc/update-motd.d/00-custom"
                                 /etc/update-motd.d/00-custom > /tmp/motd_output.log 2>/tmp/motd_error.log
-                                
+
                                 if [ $? -eq 0 ]; then
                                     echo "[STARTUP] ✓ MOTD script executed successfully"
                                     cat /tmp/motd_output.log > /etc/motd
@@ -4916,11 +4947,11 @@ EOF
 
                             # Set up signal handler to backup dotfiles on graceful shutdown
                             if [ -f "/usr/local/bin/dotfiles-shutdown-handler" ]; then
-                                trap '/usr/local/bin/dotfiles-shutdown-handler; exit 0' TERM INT
+                                trap '/usr/local/bin/dotfiles-shutdown-handler; kill $SSHD_PID 2>/dev/null; exit 0' TERM INT
                                 echo "[STARTUP] Shutdown backup handler configured"
                             else
                                 echo "[STARTUP] No shutdown backup handler found - using default signal handling"
-                                trap 'exit 0' TERM INT
+                                trap 'kill $SSHD_PID 2>/dev/null; exit 0' TERM INT
                             fi
 
                             # Also set up periodic backup every 30 minutes if shared storage is available
@@ -4941,6 +4972,7 @@ EOF
                             echo "[STARTUP] ✓ Automatic dotfiles backup configured"
                         else
                             echo "[STARTUP] No shared storage - skipping backup setup"
+                            trap 'kill $SSHD_PID 2>/dev/null; exit 0' TERM INT
                         fi
 
                         # Run user's custom startup script if it exists
@@ -4984,34 +5016,22 @@ EOF
                             echo "[STARTUP] No user startup script found at $STARTUP_SCRIPT (this is normal)"
                         fi
 
-                        echo "[STARTUP] Starting SSH daemon..."
-                        # Test SSH config first
-                        if $SSHD_PATH -t; then
-                            echo "[STARTUP] SSH configuration is valid"
-                        else
-                            echo "[STARTUP] ❌ ERROR: SSH configuration is invalid"
-                            echo "[STARTUP] Check the logs above for details"
-                            exit 1
-                        fi
+                        echo "[STARTUP] All setup complete, waiting for SSH daemon..."
 
-                        # Start SSH daemon with auto-restart capability
-                        echo "[STARTUP] SSH daemon starting on port 22 using $SSHD_PATH"
-                        echo "[STARTUP] Container ready for SSH connections"
-
-                        # Run SSH daemon with automatic restart in case of crashes
+                        # Keep container alive - restart sshd if it crashes
                         while true; do
-                            echo "[STARTUP] Starting SSH daemon..."
-                            $SSHD_PATH -D -e
+                            wait $SSHD_PID 2>/dev/null
                             EXIT_CODE=$?
                             echo "[STARTUP] SSH daemon exited with code $EXIT_CODE"
 
-                            # If SSH daemon exits, wait a moment and restart it
                             if [ $EXIT_CODE -eq 0 ]; then
                                 echo "[STARTUP] SSH daemon exited normally"
                                 break
                             else
                                 echo "[STARTUP] SSH daemon crashed, restarting in 5 seconds..."
                                 sleep 5
+                                $SSHD_PATH -D -e &
+                                SSHD_PID=$!
                             fi
                         done
                         """,
@@ -5085,33 +5105,41 @@ EOF
                         echo "[DISK-WARM] Starting background EBS warming (non-blocking)..."
                         START_TIME=$(date +%s)
 
-                        # Stage 1: Warm filesystem metadata (enables fast ls/find)
-                        echo "[DISK-WARM] Stage 1: Warming filesystem metadata..."
-                        find /home/dev -type f -o -type d > /dev/null 2>&1
+                        # Stage 1: Find ALL .git dirs dynamically (not just hardcoded paths)
+                        echo "[DISK-WARM] Stage 1: Finding git repos..."
+                        GIT_DIRS=$(find /home/dev -maxdepth 4 -name .git -type d 2>/dev/null)
                         STAGE1_TIME=$(date +%s)
                         echo "[DISK-WARM] Stage 1 complete in $((STAGE1_TIME - START_TIME))s"
+                        if [ -n "$GIT_DIRS" ]; then
+                            echo "[DISK-WARM] Found git repos: $GIT_DIRS"
+                        fi
 
                         # Stage 2: PRIORITY - Warm git repos for fast git status
+                        # Uses xargs for batched cat (much faster than -exec cat {} \\;)
                         echo "[DISK-WARM] Stage 2: Warming git repos (priority)..."
-                        for dir in /home/dev/.git /home/dev/pytorch/.git /home/dev/fbsource/.git; do
-                            if [ -d "$dir" ]; then
-                                echo "[DISK-WARM]   Warming $dir..."
-                                find "$dir" -type f -exec cat {} > /dev/null 2>&1 \\;
-                            fi
+                        for dir in $GIT_DIRS; do
+                            echo "[DISK-WARM]   Warming $dir..."
+                            find "$dir" -type f -print0 2>/dev/null | xargs -0 cat > /dev/null 2>&1
                         done
                         STAGE2_TIME=$(date +%s)
                         echo "[DISK-WARM] Stage 2 complete in $((STAGE2_TIME - STAGE1_TIME))s"
 
-                        # Stage 3: Warm remaining files (skip .cache - ccache is in EFS)
-                        echo "[DISK-WARM] Stage 3: Warming remaining files (background)..."
+                        # Stage 3: Warm all filesystem metadata (inodes) for fast stat/ls
+                        # git status does lstat() on every tracked file - this warms those blocks
+                        echo "[DISK-WARM] Stage 3: Warming filesystem metadata..."
+                        find /home/dev -not -path '/home/dev/.cache/*' > /dev/null 2>&1
+                        STAGE3_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 3 complete in $((STAGE3_TIME - STAGE2_TIME))s"
+
+                        # Stage 4: Warm remaining file contents (skip already-warmed git + cache)
+                        echo "[DISK-WARM] Stage 4: Warming remaining files..."
                         find /home/dev -type f \\
-                            -not -path '/home/dev/.git/*' \\
+                            -not -name '*.git*' \\
+                            -not -path '*/.git/*' \\
                             -not -path '/home/dev/.cache/*' \\
-                            -not -path '/home/dev/pytorch/.git/*' \\
-                            -not -path '/home/dev/fbsource/.git/*' \\
-                            -exec cat {} > /dev/null 2>&1 \\;
+                            -print0 2>/dev/null | xargs -0 cat > /dev/null 2>&1
                         END_TIME=$(date +%s)
-                        echo "[DISK-WARM] Stage 3 complete in $((END_TIME - STAGE2_TIME))s"
+                        echo "[DISK-WARM] Stage 4 complete in $((END_TIME - STAGE3_TIME))s"
 
                         TOTAL_TIME=$((END_TIME - START_TIME))
                         echo "[DISK-WARM] Complete: disk warming finished in ${TOTAL_TIME}s"
@@ -5742,8 +5770,8 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 SnapshotId=snapshot_id,
                 Size=1024,  # Always create 1TB volumes (expands snapshot if needed)
                 VolumeType="gp3",
-                Iops=3000,
-                Throughput=125,
+                Iops=16000,
+                Throughput=1000,
                 TagSpecifications=[{
                     "ResourceType": "volume",
                     "Tags": [
@@ -5780,8 +5808,8 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 AvailabilityZone=availability_zone,
                 Size=1024,  # 1TB
                 VolumeType="gp3",
-                Iops=3000,
-                Throughput=125,
+                Iops=16000,
+                Throughput=1000,
                 TagSpecifications=[{
                     "ResourceType": "volume",
                     "Tags": [
@@ -5909,8 +5937,8 @@ def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -
             AvailabilityZone=availability_zone,
             Size=1024,  # 1TB (1024GB)
             VolumeType="gp3",
-            Iops=3000,
-            Throughput=125,
+            Iops=16000,
+            Throughput=1000,
             TagSpecifications=[
                 {
                     "ResourceType": "volume",
@@ -5994,8 +6022,8 @@ def create_or_find_persistent_disk(user_id: str) -> tuple[str, bool]:
             AvailabilityZone=PRIMARY_AVAILABILITY_ZONE,
             Size=1024,  # 1TB (1024GB)
             VolumeType="gp3",
-            Iops=3000,
-            Throughput=125,
+            Iops=16000,
+            Throughput=1000,
             TagSpecifications=[
                 {
                     "ResourceType": "volume",
@@ -7105,7 +7133,7 @@ def wait_for_ssh_service(
             try:
                 # Check logs for SSH daemon startup
                 logs = v1.read_namespaced_pod_log(
-                    name=pod_name, namespace="gpu-dev", tail_lines=50
+                    name=pod_name, namespace="gpu-dev", container="gpu-dev", tail_lines=50
                 )
 
                 if "SSH daemon starting on port 22" in logs:
