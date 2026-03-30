@@ -292,7 +292,7 @@ spec:
     consolidationPolicy: WhenEmpty
     consolidateAfter: 5m
     budgets:
-      - nodes: "0"
+      - nodes: "1"
 
   template:
     metadata:
