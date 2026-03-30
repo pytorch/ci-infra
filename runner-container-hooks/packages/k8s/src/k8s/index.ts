@@ -41,6 +41,25 @@ const ENV_WAIT_FOR_NODE_TAINTS_TIMEOUT =
   'ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS'
 const DEFAULT_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS = 300
 
+// Workspace copy verification: disabled by default to reduce runner pod memory
+// pressure. The verification loop runs `find -exec stat` across all workspace
+// files, accumulates the output as a JS string, and retries — each retry
+// re-running the full scan. For large repos this causes OOM kills in the
+// 512Mi runner pod. The verification is best-effort anyway (silently continues
+// after exhausting retries), so disabling it loses no hard guarantees.
+//
+// WARNING: If re-enabling verification, ensure NODE_OPTIONS --max-old-space-size
+// is >= 256 MB, otherwise the `find` output accumulation will crash V8 with a
+// FATAL ERROR for large workspaces (e.g. pytorch/pytorch).
+const COPY_VERIFY_ENABLED =
+  (
+    process.env.ACTIONS_RUNNER_COPY_VERIFY_ENABLED || 'false'
+  ).toLowerCase() === 'true'
+const COPY_VERIFY_RETRIES = parseInt(
+  process.env.ACTIONS_RUNNER_COPY_VERIFY_RETRIES || '3',
+  10
+)
+
 /**
  * Wait for configurable startup taints to be removed from the runner's node.
  *
@@ -568,34 +587,42 @@ export async function execCpToPod(
     }
   }
 
-  let attempts = 15
-  const delay = 1000
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const want = await localCalculateOutputHashSorted([
-        'sh',
-        '-c',
-        listDirAllCommand(runnerPath)
-      ])
+  // Workspace copy verification: disabled by default to avoid OOM in memory-constrained
+  // runner pods (512Mi shared by .NET + Node.js). The verification runs `find -exec stat`
+  // across all workspace files, accumulates the output as a JS string, and retries —
+  // each retry re-runs the full scan on both sides. This is best-effort (silently
+  // continues after exhausting retries) and is the biggest memory spike contributor.
+  // WARNING: If re-enabling, ensure NODE_OPTIONS --max-old-space-size >= 256 or
+  // V8 will crash (FATAL ERROR) instead of graceful OOM on large workspaces.
+  if (COPY_VERIFY_ENABLED) {
+    const delay = 1000
+    for (let i = 0; i < COPY_VERIFY_RETRIES; i++) {
+      try {
+        const want = await localCalculateOutputHashSorted([
+          'sh',
+          '-c',
+          listDirAllCommand(runnerPath)
+        ])
 
-      const got = await execCalculateOutputHashSorted(
-        podName,
-        JOB_CONTAINER_NAME,
-        ['sh', '-c', listDirAllCommand(containerPath)]
-      )
-
-      if (got !== want) {
-        core.debug(
-          `The hash of the directory does not match the expected value; want='${want}' got='${got}'`
+        const got = await execCalculateOutputHashSorted(
+          podName,
+          JOB_CONTAINER_NAME,
+          ['sh', '-c', listDirAllCommand(containerPath)]
         )
-        await sleep(delay)
-        continue
-      }
 
-      break
-    } catch (error) {
-      core.debug(`Attempt ${i + 1} failed: ${error}`)
-      await sleep(delay)
+        if (got !== want) {
+          core.debug(
+            `The hash of the directory does not match the expected value; want='${want}' got='${got}'`
+          )
+          await sleep(delay)
+          continue
+        }
+
+        break
+      } catch (error) {
+        core.debug(`Attempt ${i + 1} failed: ${error}`)
+        await sleep(delay)
+      }
     }
   }
 }
@@ -665,34 +692,36 @@ export async function execCpFromPod(
     }
   }
 
-  let attempts = 15
-  const delay = 1000
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const want = await execCalculateOutputHashSorted(
-        podName,
-        JOB_CONTAINER_NAME,
-        ['sh', '-c', listDirAllCommand(containerPath)]
-      )
-
-      const got = await localCalculateOutputHashSorted([
-        'sh',
-        '-c',
-        listDirAllCommand(targetRunnerPath)
-      ])
-
-      if (got !== want) {
-        core.debug(
-          `The hash of the directory does not match the expected value; want='${want}' got='${got}'`
+  // Workspace copy verification: see comment in execCpToPod for rationale.
+  if (COPY_VERIFY_ENABLED) {
+    const delay = 1000
+    for (let i = 0; i < COPY_VERIFY_RETRIES; i++) {
+      try {
+        const want = await execCalculateOutputHashSorted(
+          podName,
+          JOB_CONTAINER_NAME,
+          ['sh', '-c', listDirAllCommand(containerPath)]
         )
-        await sleep(delay)
-        continue
-      }
 
-      break
-    } catch (error) {
-      core.debug(`Attempt ${i + 1} failed: ${error}`)
-      await sleep(delay)
+        const got = await localCalculateOutputHashSorted([
+          'sh',
+          '-c',
+          listDirAllCommand(targetRunnerPath)
+        ])
+
+        if (got !== want) {
+          core.debug(
+            `The hash of the directory does not match the expected value; want='${want}' got='${got}'`
+          )
+          await sleep(delay)
+          continue
+        }
+
+        break
+      } catch (error) {
+        core.debug(`Attempt ${i + 1} failed: ${error}`)
+        await sleep(delay)
+      }
     }
   }
 }
