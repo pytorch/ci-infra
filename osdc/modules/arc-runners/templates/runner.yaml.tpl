@@ -161,9 +161,30 @@ template:
             value: "git-cache-not-ready"
           - name: ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS
             value: "720"
+          # Memory management: the runner pod shares 512Mi between the .NET
+          # runner agent and Node.js container hooks. Without explicit caps,
+          # .NET claims 75% (384Mi) and Node.js claims 50% (256Mi) of the
+          # cgroup — combined 640Mi > 512Mi, guaranteed OOM.
+          # GCHeapHardLimit is hex: 0xC800000 = 200 MiB managed heap
+          - name: DOTNET_GCHeapHardLimit
+            value: "C800000"
+          # Scale 0-9: higher = more aggressive GC, less memory, more pauses
+          - name: DOTNET_GCConserveMemory
+            value: "5"
+          # Cap Node.js V8 old-space (hooks process). Note: does not cover
+          # native allocations (tar stream buffers), only V8 heap.
+          - name: NODE_OPTIONS
+            value: "--max-old-space-size=128"
+          # Re-enable post-copy hash verification for workspace tar copies.
+          # Without verification, corrupted copies silently break $GITHUB_ENV
+          # propagation between steps (env vars from prior steps are lost).
+          - name: ACTIONS_RUNNER_COPY_VERIFY_ENABLED
+            value: "true"
+          - name: ACTIONS_RUNNER_COPY_VERIFY_RETRIES
+            value: "3"
         resources:
           # Runner pod needs enough CPU for the k8s-novolume hook's
-          # workspace copy verification (find -exec stat over all files)
+          # workspace tar copy/extract and permission fixups
           limits:
             cpu: "750m"
             memory: "512Mi"

@@ -151,6 +151,10 @@ spec:
           operator: Equal
           value: "true"
           effect: NoSchedule
+        - key: instance-type
+          operator: Equal
+          value: "{instance_type}"
+          effect: NoSchedule
 
       containers:
         - name: buildkitd
@@ -324,6 +328,9 @@ spec:
       taints:
         - key: workload/buildkit-{arch}
           value: "true"
+          effect: NoSchedule
+        - key: instance-type
+          value: "{instance_type}"
           effect: NoSchedule
 
       startupTaints:
