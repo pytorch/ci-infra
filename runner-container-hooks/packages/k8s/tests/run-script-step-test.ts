@@ -49,11 +49,13 @@ describe('Run script step', () => {
     ).resolves.not.toThrow()
   })
 
-  it('should fail if the working directory does not exist', async () => {
+  it('should return non-zero exit code if the working directory does not exist', async () => {
     runScriptStepDefinition.args.workingDirectory = '/foo/bar'
-    await expect(
-      runScriptStep(runScriptStepDefinition.args, prepareJobOutputData.state)
-    ).rejects.toThrow()
+    const exitCode = await runScriptStep(
+      runScriptStepDefinition.args,
+      prepareJobOutputData.state
+    )
+    expect(exitCode).not.toBe(0)
   })
 
   it('should shold have env variables available', async () => {

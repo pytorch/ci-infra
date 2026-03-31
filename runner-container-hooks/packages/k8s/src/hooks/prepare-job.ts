@@ -121,11 +121,16 @@ export async function prepareJob(
   await execCpToPod(createdPod.metadata.name, runnerWorkspace, '/__w')
 
   if (prepareScript) {
-    await execPodStep(
+    const prepareRc = await execPodStep(
       ['sh', '-e', prepareScript.containerPath],
       createdPod.metadata.name,
       JOB_CONTAINER_NAME
     )
+    if (prepareRc !== 0) {
+      throw new Error(
+        `prepare-job script failed with exit code ${prepareRc}`
+      )
+    }
 
     const promises: Promise<void>[] = []
     for (const vol of args?.container?.userMountVolumes || []) {

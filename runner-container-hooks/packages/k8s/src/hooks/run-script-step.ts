@@ -11,7 +11,7 @@ import * as shlex from 'shlex'
 export async function runScriptStep(
   args: RunScriptStepArgs,
   state
-): Promise<void> {
+): Promise<number> {
   // Write the entrypoint first. This will be later coppied to the workflow pod
   const { entryPoint, entryPointArgs, environmentVariables } = args
   const { containerPath, runnerPath } = writeRunScript(
@@ -27,7 +27,7 @@ export async function runScriptStep(
   const containerTemp = '/__w/_temp'
   const containerTempSrc = '/__w/_temp_pre'
   // Ensure base and staging dirs exist before copying
-  await execPodStep(
+  const mkdirRc = await execPodStep(
     [
       'sh',
       '-c',
@@ -36,6 +36,11 @@ export async function runScriptStep(
     state.jobPod,
     JOB_CONTAINER_NAME
   )
+  if (mkdirRc !== 0) {
+    throw new Error(
+      `Infrastructure command failed with exit code ${mkdirRc}: mkdir temp dirs`
+    )
+  }
   await execCpToPod(state.jobPod, runnerTemp, containerTempSrc)
 
   // Copy GitHub directories from temp to /github
@@ -60,22 +65,29 @@ export async function runScriptStep(
   ]
 
   try {
-    await execPodStep(
+    const mergeRc = await execPodStep(
       ['sh', '-c', mergeCommands.join(' && ')],
       state.jobPod,
       JOB_CONTAINER_NAME
     )
+    if (mergeRc !== 0) {
+      throw new Error(
+        `Infrastructure command failed with exit code ${mergeRc}: merge temp dirs`
+      )
+    }
   } catch (err) {
     core.debug(`Failed to merge temp directories: ${JSON.stringify(err)}`)
     const message = (err as any)?.response?.body?.message || err
     throw new Error(`failed to merge temp dirs: ${message}`)
   }
 
-  // Execute the entrypoint script
+  // Execute the entrypoint script — propagate exit code to the caller
+  // so the runner can mark the step as failed when the user's script fails.
+  let exitCode: number
   args.entryPoint = 'sh'
   args.entryPointArgs = ['-e', containerPath]
   try {
-    await execPodStep(
+    exitCode = await execPodStep(
       [args.entryPoint, ...args.entryPointArgs],
       state.jobPod,
       JOB_CONTAINER_NAME
@@ -104,4 +116,6 @@ export async function runScriptStep(
   } catch (error) {
     core.warning('Failed to copy _temp from pod')
   }
+
+  return exitCode
 }

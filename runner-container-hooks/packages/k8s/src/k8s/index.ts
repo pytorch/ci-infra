@@ -393,6 +393,19 @@ export async function deletePod(name: string): Promise<void> {
   })
 }
 
+/**
+ * Extract the numeric exit code from a K8s exec V1Status response.
+ * The exit code is buried in `details.causes` with `reason: "ExitCode"`.
+ * Returns null if no exit code is found (infrastructure error, not a process exit).
+ */
+export function extractExitCode(resp: k8s.V1Status): number | null {
+  if (!resp?.details?.causes) return null
+  const cause = resp.details.causes.find(c => c.reason === 'ExitCode')
+  if (!cause?.message) return null
+  const code = parseInt(cause.message, 10)
+  return Number.isNaN(code) ? null : code
+}
+
 export async function execPodStep(
   command: string[],
   podName: string,
@@ -403,6 +416,7 @@ export async function execPodStep(
 
   command = fixArgs(command)
   return await new Promise(function (resolve, reject) {
+    let settled = false
     exec
       .exec(
         namespace(),
@@ -414,9 +428,10 @@ export async function execPodStep(
         stdin ?? null,
         false /* tty */,
         resp => {
+          settled = true
           core.debug(`execPodStep response: ${JSON.stringify(resp)}`)
           if (resp.status === 'Success') {
-            resolve(resp.code || 0)
+            resolve(0)
           } else {
             core.debug(
               JSON.stringify({
@@ -424,11 +439,50 @@ export async function execPodStep(
                 details: resp?.details
               })
             )
-            reject(new Error(resp?.message || 'execPodStep failed'))
+            // Extract exit code from the Failure response. K8s returns exit
+            // codes in details.causes with reason "ExitCode". If found,
+            // resolve with the code (not reject) so callers can propagate it.
+            // Only reject for true infrastructure errors (no exit code).
+            const exitCode = extractExitCode(resp)
+            if (exitCode !== null) {
+              resolve(exitCode)
+            } else {
+              reject(new Error(resp?.message || 'execPodStep failed'))
+            }
           }
         }
       )
-      .catch(e => reject(e))
+      .then(ws => {
+        // Handle WebSocket disconnect without a status callback.
+        // This happens when the container is killed (e.g. cgroup OOM) —
+        // the WebSocket drops before K8s can send a status response.
+        if (ws) {
+          ws.on('close', () => {
+            if (!settled) {
+              settled = true
+              core.warning(
+                'execPodStep: WebSocket closed without status response — container may have been killed'
+              )
+              resolve(1)
+            }
+          })
+          ws.on('error', (err: Error) => {
+            if (!settled) {
+              settled = true
+              core.warning(
+                `execPodStep: WebSocket error without status response: ${err.message}`
+              )
+              resolve(1)
+            }
+          })
+        }
+      })
+      .catch(e => {
+        if (!settled) {
+          settled = true
+          reject(e)
+        }
+      })
   })
 }
 
@@ -987,9 +1041,8 @@ export async function isPodContainerAlpine(
   podName: string,
   containerName: string
 ): Promise<boolean> {
-  let isAlpine = true
   try {
-    await execPodStep(
+    const exitCode = await execPodStep(
       [
         'sh',
         '-c',
@@ -998,11 +1051,11 @@ export async function isPodContainerAlpine(
       podName,
       containerName
     )
+    return exitCode === 0
   } catch {
-    isAlpine = false
+    // Infrastructure error (e.g. pod not found) — default to non-Alpine
+    return false
   }
-
-  return isAlpine
 }
 
 export function namespace(): string {
