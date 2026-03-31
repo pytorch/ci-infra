@@ -121,7 +121,17 @@ def _ensure_pods_and_nodes(
     """Ensure at least *target_pods* Running and *min_nodes* in pool.
 
     Creates only the shortfall. Waits for provisioning if needed.
+    Stabilises the pool first to avoid racing with Karpenter WhenEmpty
+    consolidation (empty nodes left by a prior group may still be
+    mid-deletion).
     """
+    wait_for_stable(
+        "pool node count stabilised (WhenEmpty settling)",
+        lambda: len(get_pool_nodes(client, nodepool)),
+        stable_s=20,
+        timeout_s=300,
+        poll_s=5,
+    )
     running = _count_running_pods(client, namespace)
     shortfall = max(0, target_pods - running)
     if shortfall > 0:
