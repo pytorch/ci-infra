@@ -96,9 +96,16 @@ class TestCacheEnforcerDaemonSet:
     def test_daemonset_healthy(self, all_daemonsets: dict, all_nodes: dict) -> None:
         """DaemonSet desired == ready, tolerating node churn.
 
-        Uses node_selector so 0/0 is accepted when no runner nodes exist
-        (e.g. Karpenter has scaled the runner pool to zero).
+        Skips when no runner nodes exist (desired == 0), matching the
+        pattern used by init-container and pod-phase tests below.
         """
+        ds_list = filter_daemonsets(all_daemonsets, namespace=NAMESPACE, name=DAEMONSET_NAME)
+        assert len(ds_list) >= 1, f"DaemonSet '{DAEMONSET_NAME}' not found in {NAMESPACE}"
+
+        desired = ds_list[0].get("status", {}).get("desiredNumberScheduled", 0)
+        if desired == 0:
+            pytest.skip("No cache-enforcer pods desired (no runner nodes in cluster)")
+
         assert_daemonset_healthy(
             all_daemonsets,
             all_nodes,

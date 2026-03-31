@@ -76,6 +76,15 @@ if kubectl get deployment git-cache-central -n kube-system &>/dev/null; then
   sleep 5
 fi
 
+# --- Migration: delete orphaned git-cache-server StatefulSet ---
+# git-cache-server was an earlier iteration replaced by git-cache-central.
+# Clean it up if still present.
+if kubectl get statefulset git-cache-server -n kube-system &>/dev/null; then
+  echo "Deleting orphaned git-cache-server StatefulSet..."
+  kubectl delete statefulset git-cache-server -n kube-system --wait=false
+  sleep 5
+fi
+
 # --- Apply static resources (kustomize) ---
 echo "Applying static git-cache resources..."
 kubectl_apply_if_changed -k "$SCRIPT_DIR/"

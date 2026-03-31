@@ -303,16 +303,16 @@ class TestPypiCachePodSpec:
             "Wants-collector container missing livenessProbe. A stalled collector will not be restarted automatically."
         )
 
-    def test_wants_collector_pod_pvc_readonly(self, wants_collector_pod_spec: dict) -> None:
-        """Wants-collector must mount the EFS PVC read-only (it only reads logs)."""
+    def test_wants_collector_pod_pvc_readwrite(self, wants_collector_pod_spec: dict) -> None:
+        """Wants-collector must mount the EFS PVC read-write (it prunes old log files)."""
         containers = wants_collector_pod_spec.get("containers", [])
         assert containers, "No containers in wants-collector pod"
         mounts = containers[0].get("volumeMounts", [])
         data_mounts = [m for m in mounts if m.get("name") == "data"]
         assert data_mounts, "Wants-collector missing 'data' volume mount"
-        assert data_mounts[0].get("readOnly") is True, (
-            "Wants-collector 'data' volume must be mounted read-only. "
-            "It should only read access logs, never write to the EFS filesystem."
+        assert data_mounts[0].get("readOnly") is not True, (
+            "Wants-collector 'data' volume must be mounted read-write. "
+            "It needs write access to prune log files older than the configured retention period."
         )
 
     def test_cache_pod_tolerates_workload_taint(self, cache_pod_spec: dict, instance_type: str) -> None:
