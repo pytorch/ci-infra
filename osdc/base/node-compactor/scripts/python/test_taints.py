@@ -688,30 +688,168 @@ class TestCheckPendingPods(unittest.TestCase):
 
 
 class TestApplyTaint(unittest.TestCase):
-    def test_normal_apply(self):
+    def _make_node_obj(self, taints=None, labels=None, resource_version="100"):
+        node = MagicMock()
+        node.spec.taints = taints
+        node.metadata.labels = labels or {}
+        node.metadata.resourceVersion = resource_version
+        return node
+
+    def test_appends_via_json_patch(self):
+        """Appends taint to existing taints list using RFC 6902 JSON Patch."""
+        existing = [make_taint(key="other", value="val")]
+        node_obj = self._make_node_obj(taints=existing)
         client = MagicMock()
+        client.get.return_value = node_obj
+
         apply_taint(client, "node-1", "my-taint", dry_run=False)
+
+        client.get.assert_called_once_with(Node, "node-1")
         client.patch.assert_called_once_with(
             Node,
             "node-1",
-            {
-                "spec": {
-                    "taints": [
-                        {
-                            "key": "my-taint",
-                            "value": "true",
-                            "effect": "NoSchedule",
-                        }
-                    ]
-                }
-            },
-            patch_type=PatchType.STRATEGIC,
+            [
+                {"op": "test", "path": "/metadata/resourceVersion", "value": "100"},
+                {
+                    "op": "add",
+                    "path": "/spec/taints/-",
+                    "value": {"key": "my-taint", "value": "true", "effect": "NoSchedule"},
+                },
+            ],
+            patch_type=PatchType.JSON,
         )
+
+    def test_creates_array_when_taints_null(self):
+        """When spec.taints is None, creates the array instead of appending."""
+        node_obj = self._make_node_obj(taints=None)
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        apply_taint(client, "node-1", "my-taint", dry_run=False)
+
+        client.patch.assert_called_once_with(
+            Node,
+            "node-1",
+            [
+                {"op": "test", "path": "/metadata/resourceVersion", "value": "100"},
+                {
+                    "op": "add",
+                    "path": "/spec/taints",
+                    "value": [{"key": "my-taint", "value": "true", "effect": "NoSchedule"}],
+                },
+            ],
+            patch_type=PatchType.JSON,
+        )
+
+    def test_idempotent_already_tainted(self):
+        """If node already has our taint, does nothing."""
+        existing = [make_taint(key="my-taint", value="true")]
+        node_obj = self._make_node_obj(taints=existing)
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        apply_taint(client, "node-1", "my-taint", dry_run=False)
+
+        client.get.assert_called_once()
+        client.patch.assert_not_called()
 
     def test_dry_run(self):
         client = MagicMock()
         apply_taint(client, "node-1", "my-taint", dry_run=True)
+        client.get.assert_not_called()
         client.patch.assert_not_called()
+
+    def test_instance_type_guard_passes(self):
+        """Node has instance-type label AND taint — guard passes, taint applied."""
+        existing = [make_taint(key="instance-type", value="c6i.12xlarge")]
+        node_obj = self._make_node_obj(
+            taints=existing,
+            labels={"instance-type": "c6i.12xlarge"},
+        )
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        apply_taint(client, "node-1", "my-taint", dry_run=False)
+
+        client.patch.assert_called_once()
+        patch_arg = client.patch.call_args[0][2]
+        # [0] is the resourceVersion test op, [1] is the add op
+        self.assertEqual(patch_arg[0]["op"], "test")
+        self.assertEqual(patch_arg[0]["path"], "/metadata/resourceVersion")
+        self.assertEqual(patch_arg[1]["op"], "add")
+        self.assertEqual(patch_arg[1]["path"], "/spec/taints/-")
+
+    @patch("taints.time.sleep")
+    def test_instance_type_guard_aborts(self, _mock_sleep):
+        """Node has instance-type label but taint missing — aborts after retries."""
+        node_obj = self._make_node_obj(
+            taints=[],
+            labels={"instance-type": "c6i.12xlarge"},
+        )
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        apply_taint(client, "node-1", "my-taint", dry_run=False, max_retries=3)
+
+        self.assertEqual(client.get.call_count, 3)
+        client.patch.assert_not_called()
+
+    def test_no_instance_type_label_skips_guard(self):
+        """Node without instance-type label skips the guard entirely."""
+        node_obj = self._make_node_obj(taints=[], labels={})
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        apply_taint(client, "node-1", "my-taint", dry_run=False)
+
+        client.patch.assert_called_once()
+
+    def test_conflict_retry_succeeds(self):
+        """409 Conflict on patch triggers retry that succeeds."""
+        node_obj = self._make_node_obj(taints=[make_taint(key="other")])
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        resp = MagicMock()
+        err = ApiError(response=resp)
+        err.status = MagicMock(code=409)
+        client.patch.side_effect = [err, None]
+
+        apply_taint(client, "node-1", "my-taint", dry_run=False, max_retries=3)
+
+        self.assertEqual(client.get.call_count, 2)
+        self.assertEqual(client.patch.call_count, 2)
+
+    def test_422_resourceversion_mismatch_retries(self):
+        """422 from failed resourceVersion test op triggers retry."""
+        node_obj = self._make_node_obj(taints=[make_taint(key="other")])
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        resp = MagicMock()
+        err = ApiError(response=resp)
+        err.status = MagicMock(code=422)
+        client.patch.side_effect = [err, None]
+
+        apply_taint(client, "node-1", "my-taint", dry_run=False, max_retries=3)
+
+        self.assertEqual(client.get.call_count, 2)
+        self.assertEqual(client.patch.call_count, 2)
+
+    def test_conflict_on_last_attempt_raises(self):
+        """409 on final attempt raises ApiError."""
+        node_obj = self._make_node_obj(taints=[make_taint(key="other")])
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        resp = MagicMock()
+        err = ApiError(response=resp)
+        err.status = MagicMock(code=409)
+        client.patch.side_effect = err
+
+        with self.assertRaises(ApiError):
+            apply_taint(client, "node-1", "my-taint", dry_run=False, max_retries=2)
+        self.assertEqual(client.patch.call_count, 2)
 
 
 # ============================================================================
@@ -720,10 +858,11 @@ class TestApplyTaint(unittest.TestCase):
 
 
 class TestRemoveTaint(unittest.TestCase):
-    def _make_node_obj(self, taints=None, resource_version="123"):
+    def _make_node_obj(self, taints=None, resource_version="123", labels=None):
         node = MagicMock()
         node.spec.taints = taints
         node.metadata.resourceVersion = resource_version
+        node.metadata.labels = labels or {}
         return node
 
     def test_normal_remove(self):
@@ -829,6 +968,7 @@ class TestRemoveTaint(unittest.TestCase):
         node_obj = MagicMock()
         node_obj.spec = None
         node_obj.metadata.resourceVersion = "456"
+        node_obj.metadata.labels = {}
         client = MagicMock()
         client.get.return_value = node_obj
 
@@ -837,6 +977,41 @@ class TestRemoveTaint(unittest.TestCase):
         patch_arg = client.patch.call_args[0][2]
         # empty list is falsy -> None
         self.assertIsNone(patch_arg["spec"]["taints"])
+
+    def test_instance_type_guard_passes(self):
+        """Node has instance-type label AND taint — guard passes, untaint proceeds."""
+        instance_taint = make_taint(key="instance-type", value="c6i.12xlarge")
+        our_taint = make_taint(key="compactor-taint", value="true")
+        node_obj = self._make_node_obj(
+            taints=[instance_taint, our_taint],
+            labels={"instance-type": "c6i.12xlarge"},
+        )
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        remove_taint(client, "node-1", "compactor-taint", dry_run=False)
+
+        client.patch.assert_called_once()
+        patch_arg = client.patch.call_args[0][2]
+        # Only instance-type taint should remain
+        self.assertEqual(len(patch_arg["spec"]["taints"]), 1)
+        self.assertEqual(patch_arg["spec"]["taints"][0]["key"], "instance-type")
+
+    @patch("taints.time.sleep")
+    def test_instance_type_guard_aborts(self, _mock_sleep):
+        """Node has instance-type label but taint missing — aborts after retries."""
+        our_taint = make_taint(key="compactor-taint", value="true")
+        node_obj = self._make_node_obj(
+            taints=[our_taint],
+            labels={"instance-type": "c6i.12xlarge"},
+        )
+        client = MagicMock()
+        client.get.return_value = node_obj
+
+        remove_taint(client, "node-1", "compactor-taint", dry_run=False, max_retries=3)
+
+        self.assertEqual(client.get.call_count, 3)
+        client.patch.assert_not_called()
 
 
 # ============================================================================
@@ -856,6 +1031,7 @@ class TestCleanupStaleTaints(unittest.TestCase):
         fresh_node = MagicMock()
         fresh_node.spec.taints = [our_taint]
         fresh_node.metadata.resourceVersion = "100"
+        fresh_node.metadata.labels = {}
 
         client = MagicMock()
         client.list.return_value = [node_with_taint]
@@ -924,6 +1100,7 @@ class TestCleanupStaleTaints(unittest.TestCase):
         fresh_node = MagicMock()
         fresh_node.spec.taints = [our_taint]
         fresh_node.metadata.resourceVersion = "200"
+        fresh_node.metadata.labels = {}
 
         client = MagicMock()
         client.list.return_value = [tainted_node, clean_node, no_taint_node]

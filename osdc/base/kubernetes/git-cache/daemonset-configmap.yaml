@@ -62,6 +62,7 @@ data:
 
     FETCH_INTERVAL = int(os.environ.get("FETCH_INTERVAL", "300"))
     TAINT_KEY = "git-cache-not-ready"
+    INSTANCE_TYPE_TAINT_KEY = "instance-type"
     NODE_NAME = os.environ.get("NODE_NAME", "")
     METRICS_PORT = 9102
 
@@ -402,6 +403,10 @@ data:
         Uses JSON Patch (RFC 6902) to remove only our specific taint, avoiding
         race conditions with other taint managers (Karpenter, kubelet, etc.)
         that could occur with a merge patch replacing the entire taints array.
+
+        Before patching, verifies that the node's instance-type taint is
+        present (if the node has an instance-type label).  Retries with
+        back-off if missing, aborts if still missing after max retries.
         """
         import ssl
 
@@ -416,19 +421,48 @@ data:
         token = TOKEN_PATH.read_text().strip()
         ctx = ssl.create_default_context(cafile=CA_PATH)
 
-        # Get current node state
-        try:
-            req = urllib.request.Request(
-                f"{K8S_API}/api/v1/nodes/{NODE_NAME}",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            with urllib.request.urlopen(req, context=ctx) as resp:
-                node = json.loads(resp.read())
-        except Exception as exc:
-            log.warning("Failed to GET node %s: %s", NODE_NAME, exc)
-            return
+        # Retry loop: re-read the node if the instance-type taint is
+        # temporarily absent (Karpenter may not have synced it yet).
+        max_guard_retries = 5
+        node = None
+        taints = []
+        for attempt in range(max_guard_retries):
+            # Get current node state
+            try:
+                req = urllib.request.Request(
+                    f"{K8S_API}/api/v1/nodes/{NODE_NAME}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                with urllib.request.urlopen(req, context=ctx) as resp:
+                    node = json.loads(resp.read())
+            except Exception as exc:
+                log.warning("Failed to GET node %s: %s", NODE_NAME, exc)
+                return
 
-        taints = node.get("spec", {}).get("taints") or []
+            taints = node.get("spec", {}).get("taints") or []
+            labels = node.get("metadata", {}).get("labels") or {}
+
+            # Guard: verify instance-type taint is present (if expected)
+            if labels.get(INSTANCE_TYPE_TAINT_KEY):
+                if not any(t.get("key") == INSTANCE_TYPE_TAINT_KEY for t in taints):
+                    if attempt < max_guard_retries - 1:
+                        log.warning(
+                            "Node %s has instance-type label but missing "
+                            "instance-type taint (attempt %d/%d), retrying...",
+                            NODE_NAME, attempt + 1, max_guard_retries,
+                        )
+                        time.sleep(2)
+                        continue
+                    log.error(
+                        "ABORTING taint removal on node %s: instance-type "
+                        "taint missing after %d attempts",
+                        NODE_NAME, max_guard_retries,
+                    )
+                    return
+            break  # Guard passed (or not applicable)
+
+        if node is None:
+            return
 
         # Find the index of our taint for a targeted JSON Patch removal
         taint_index = None

@@ -68,5 +68,5 @@ helm_upgrade_if_changed karpenter karpenter \
   --timeout 10m \
   --wait \
   oci://public.ecr.aws/karpenter/karpenter \
-  --version 1.9.0
+  --version 1.10.0
 echo "Karpenter installed."
