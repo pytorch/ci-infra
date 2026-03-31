@@ -8153,12 +8153,14 @@ def process_add_user_action(record: dict[str, Any]) -> bool:
             logger.info(
                 f"Successfully added user {github_username} to reservation {full_reservation_id}"
             )
+            # Clear any previous error
+            update_reservation_fields(full_reservation_id, add_user_error="")
             return True
         else:
-            logger.error(
-                f"Failed to add user {github_username} to reservation {full_reservation_id}"
-            )
-            return False  # Retry on failure
+            error_msg = f"Failed to add user {github_username} - check that the GitHub user has public SSH keys at github.com/{github_username}.keys"
+            logger.error(error_msg)
+            update_reservation_fields(full_reservation_id, add_user_error=error_msg)
+            return True  # Don't retry - write error for CLI to detect
 
     except Exception as e:
         logger.error(f"Error processing add user action: {str(e)}")

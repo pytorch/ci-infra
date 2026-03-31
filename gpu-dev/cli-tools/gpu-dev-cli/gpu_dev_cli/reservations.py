@@ -1364,10 +1364,18 @@ class ReservationManager:
                             time.sleep(2)
                             continue
 
+                        # Check for error written by Lambda
+                        add_user_error = reservation.get("add_user_error", "")
+                        if add_user_error:
+                            live.stop()
+                            console.print(
+                                f"[red]❌ {add_user_error}[/red]"
+                            )
+                            return False
+
                         current_secondary_users = reservation.get(
                             "secondary_users", [])
 
-                        # Check if the user has been added
                         if github_username in current_secondary_users:
                             live.stop()
                             console.print(
