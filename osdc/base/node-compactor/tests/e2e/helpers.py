@@ -502,12 +502,16 @@ def get_compactor_pod_names(client: Client) -> set[str]:
     return names
 
 
-def wait_for_compactor_rollout(client: Client, old_pod_names: set[str], timeout_s: int = 120) -> None:
+def wait_for_compactor_rollout(client: Client, old_pod_names: set[str], timeout_s: int = 200) -> None:
     """Wait for the Deployment rollout to replace old pods with a new Running pod.
 
     After ``patch_compactor_env`` modifies the pod template, Kubernetes
     automatically creates a new ReplicaSet and pod.  This waits for a
     Running pod whose name is NOT in *old_pod_names*.
+
+    The default timeout (200s) must exceed ``terminationGracePeriodSeconds``
+    (120s) because the Recreate strategy requires the old pod to fully
+    terminate before the new pod can start.
     """
 
     def _new_pod_running() -> bool:
