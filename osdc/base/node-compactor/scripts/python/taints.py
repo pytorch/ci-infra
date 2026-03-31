@@ -1,6 +1,7 @@
 """Taint management and pending pod detection for the Node Compactor."""
 
 import logging
+import time
 
 from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Node
@@ -13,6 +14,12 @@ from models import (
 )
 
 log = logging.getLogger("compactor")
+
+# Critical taint key: Karpenter NodePools taint nodes with
+# instance-type=<type>:NoSchedule. Workflow pods rely on this taint for
+# scheduling constraints. If lost, pods land on wrong instance types
+# (e.g., amd64 image on arm64 node → ImagePullBackOff).
+INSTANCE_TYPE_TAINT_KEY = "instance-type"
 
 
 def _pod_matches_node(pod, node_state: NodeState) -> bool:
@@ -208,25 +215,80 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
     return nodes_to_untaint
 
 
-def apply_taint(client: Client, node_name: str, taint_key: str, dry_run: bool) -> None:
-    """Add NoSchedule taint to a node."""
-    patch = {
-        "spec": {
-            "taints": [
-                {
-                    "key": taint_key,
-                    "value": "true",
-                    "effect": "NoSchedule",
-                }
-            ]
-        }
-    }
+def apply_taint(client: Client, node_name: str, taint_key: str, dry_run: bool, max_retries: int = 5) -> None:
+    """Add NoSchedule taint to a node.
+
+    Uses RFC 6902 JSON Patch to append a single taint without replacing
+    the entire taints array.  This prevents wiping critical taints
+    (e.g. instance-type) that would be lost with a strategic merge patch
+    on the atomic ``spec.taints`` list.
+
+    Before patching, verifies that the node's instance-type taint (if
+    expected based on labels) is present.  Retries with back-off if
+    missing, aborts after *max_retries* to avoid scheduling chaos.
+    """
     if dry_run:
         log.info("[DRY RUN] Would taint node %s", node_name)
         return
 
-    client.patch(Node, node_name, patch, patch_type=PatchType.STRATEGIC)
-    log.info("Tainted node %s", node_name)
+    for attempt in range(max_retries):
+        node = client.get(Node, node_name)
+        taints = node.spec.taints or [] if node.spec else []
+
+        # Idempotent: already tainted → nothing to do
+        if any(t.key == taint_key for t in taints):
+            log.info("Node %s already has taint %s, skipping", node_name, taint_key)
+            return
+
+        # Guard: verify instance-type taint is present (if node expects it)
+        labels = node.metadata.labels or {} if node.metadata else {}
+        if labels.get(INSTANCE_TYPE_TAINT_KEY) and not any(t.key == INSTANCE_TYPE_TAINT_KEY for t in taints):
+            if attempt < max_retries - 1:
+                log.warning(
+                    "Node %s has instance-type label but missing instance-type taint (attempt %d/%d), retrying...",
+                    node_name,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(2)
+                continue
+            log.error(
+                "ABORTING taint of node %s: instance-type taint missing after %d attempts",
+                node_name,
+                max_retries,
+            )
+            return
+
+        # RFC 6902 JSON Patch: append taint without replacing the array.
+        # A ``test`` op on resourceVersion provides optimistic concurrency —
+        # if another controller modified the node between our GET and PATCH,
+        # the API server rejects the entire patch, and we retry with a
+        # fresh read.  This closes the TOCTOU window where a concurrent
+        # taint removal could go undetected.
+        # When spec.taints is null/missing we must create the array
+        # (appending to a null path via /- is invalid).
+        rv = node.metadata.resourceVersion
+        new_taint = {"key": taint_key, "value": "true", "effect": "NoSchedule"}
+        rv_check = {"op": "test", "path": "/metadata/resourceVersion", "value": rv}
+        if taints:
+            patch = [rv_check, {"op": "add", "path": "/spec/taints/-", "value": new_taint}]
+        else:
+            patch = [rv_check, {"op": "add", "path": "/spec/taints", "value": [new_taint]}]
+
+        try:
+            client.patch(Node, node_name, patch, patch_type=PatchType.JSON)
+            log.info("Tainted node %s", node_name)
+            return
+        except ApiError as e:
+            if e.status.code in (409, 422) and attempt < max_retries - 1:
+                log.warning(
+                    "Conflict tainting %s (attempt %d/%d), retrying",
+                    node_name,
+                    attempt + 1,
+                    max_retries,
+                )
+                continue
+            raise
 
 
 def remove_taint(client: Client, node_name: str, taint_key: str, dry_run: bool, max_retries: int = 3) -> None:
@@ -246,6 +308,29 @@ def remove_taint(client: Client, node_name: str, taint_key: str, dry_run: bool, 
     for attempt in range(max_retries):
         node = client.get(Node, node_name)
         taints = node.spec.taints or [] if node.spec else []
+
+        # Guard: verify instance-type taint is present (if node expects it).
+        # If the instance-type taint was lost (e.g., by a racing controller),
+        # we must not patch the taints list — doing so would persist the loss.
+        labels = node.metadata.labels or {} if node.metadata else {}
+        if labels.get(INSTANCE_TYPE_TAINT_KEY) and not any(t.key == INSTANCE_TYPE_TAINT_KEY for t in taints):
+            if attempt < max_retries - 1:
+                log.warning(
+                    "Node %s has instance-type label but missing instance-type taint (attempt %d/%d), retrying...",
+                    node_name,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(1)
+                continue
+            log.error(
+                "ABORTING untaint of node %s: instance-type taint missing "
+                "after %d attempts. Refusing to patch taints list.",
+                node_name,
+                max_retries,
+            )
+            return
+
         # Convert lightkube Taint objects to plain dicts for JSON merge
         # patch serialization (Taint objects are not JSON-serializable).
         new_taints = [

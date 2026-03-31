@@ -28,6 +28,7 @@ log = logging.getLogger("e2e")
 # ---------------------------------------------------------------------------
 
 COMPACTOR_TAINT_KEY = "node-compactor.osdc.io/consolidating"
+INSTANCE_TYPE_TAINT_KEY = "instance-type"
 COMPACTOR_NODEPOOL_LABEL = "osdc.io/node-compactor"
 KARPENTER_NODEPOOL_LABEL = "karpenter.sh/nodepool"
 COMPACTOR_DEPLOYMENT = "node-compactor"
@@ -181,6 +182,25 @@ def partition_pool_nodes(
     tainted = [node.metadata.name for node in nodes if node.metadata and _node_has_taint(node, taint_key)]
     untainted = [node.metadata.name for node in nodes if node.metadata and not _node_has_taint(node, taint_key)]
     return nodes, tainted, untainted
+
+
+def assert_instance_type_taints_preserved(client: Client, nodepool_name: str) -> None:
+    """Verify every node with an instance-type label still has its instance-type taint.
+
+    Regression guard: the compactor must never wipe the instance-type taint
+    when applying or removing its own taint (the root cause of the
+    ImagePullBackOff bug that prompted the RFC 6902 JSON Patch rewrite).
+    """
+    for node in get_pool_nodes(client, nodepool_name):
+        labels = node.metadata.labels or {} if node.metadata else {}
+        expected_value = labels.get(INSTANCE_TYPE_TAINT_KEY)
+        if not expected_value:
+            continue  # node doesn't expect an instance-type taint
+        assert _node_has_taint(node, INSTANCE_TYPE_TAINT_KEY), (
+            f"Node {node.metadata.name} has instance-type label "
+            f"'{expected_value}' but is MISSING the instance-type taint. "
+            f"The compactor may have wiped it during a taint operation."
+        )
 
 
 # ---------------------------------------------------------------------------

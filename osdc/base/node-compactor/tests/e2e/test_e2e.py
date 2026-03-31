@@ -27,6 +27,7 @@ from conftest import (
 from helpers import (
     COMPACTOR_TAINT_KEY,
     all_pods_running,
+    assert_instance_type_taints_preserved,
     create_test_pod,
     delete_all_pods,
     delete_pods,
@@ -120,7 +121,17 @@ def _ensure_pods_and_nodes(
     """Ensure at least *target_pods* Running and *min_nodes* in pool.
 
     Creates only the shortfall. Waits for provisioning if needed.
+    Stabilises the pool first to avoid racing with Karpenter WhenEmpty
+    consolidation (empty nodes left by a prior group may still be
+    mid-deletion).
     """
+    wait_for_stable(
+        "pool node count stabilised (WhenEmpty settling)",
+        lambda: len(get_pool_nodes(client, nodepool)),
+        stable_s=20,
+        timeout_s=300,
+        poll_s=5,
+    )
     running = _count_running_pods(client, namespace)
     shortfall = max(0, target_pods - running)
     if shortfall > 0:
@@ -270,6 +281,9 @@ class TestGroupA_Bare(_CompactorE2EBase):
         )
         assert len(untainted) >= 1, f"Expected >= 1 untainted, got {len(untainted)}"
 
+        # Regression: compactor taint ops must never wipe instance-type taints
+        assert_instance_type_taints_preserved(self.client, self.pool)
+
     # A3
     def test_karpenter_deletes_empty_tainted_nodes(self) -> None:
         """After consolidateAfter, empty tainted nodes are removed."""
@@ -338,6 +352,9 @@ class TestGroupA_Bare(_CompactorE2EBase):
         assert all_pods_running(self.client, self.ns, total_expected), (
             f"Expected {total_expected} pods running after burst absorption"
         )
+
+        # Regression: burst untaint must not wipe instance-type taints
+        assert_instance_type_taints_preserved(self.client, self.pool)
 
     # A5
     def test_min_nodes_enforcement(self) -> None:
@@ -421,6 +438,9 @@ class TestGroupA_Bare(_CompactorE2EBase):
                     f"Nodes {cleaned & set(tainted_after)} still tainted after shutdown"
                 )
             assert len(tainted_after) == 0, f"Expected 0 tainted after cleanup, got {len(tainted_after)}"
+
+            # Regression: SIGTERM cleanup must not wipe instance-type taints
+            assert_instance_type_taints_preserved(self.client, self.pool)
         finally:
             log.info("A6: Scaling compactor back to 1...")
             scale_compactor_deployment(self.client, 1)
