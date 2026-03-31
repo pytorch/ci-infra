@@ -175,6 +175,13 @@ template:
           # native allocations (tar stream buffers), only V8 heap.
           - name: NODE_OPTIONS
             value: "--max-old-space-size=128"
+          # Re-enable post-copy hash verification for workspace tar copies.
+          # Without verification, corrupted copies silently break $GITHUB_ENV
+          # propagation between steps (env vars from prior steps are lost).
+          - name: ACTIONS_RUNNER_COPY_VERIFY_ENABLED
+            value: "true"
+          - name: ACTIONS_RUNNER_COPY_VERIFY_RETRIES
+            value: "3"
         resources:
           # Runner pod needs enough CPU for the k8s-novolume hook's
           # workspace tar copy/extract and permission fixups
