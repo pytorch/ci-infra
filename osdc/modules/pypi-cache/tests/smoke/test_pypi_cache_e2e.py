@@ -18,11 +18,11 @@ import urllib.error
 import urllib.request
 
 import pytest
-from conftest import NAMESPACE
 from helpers import run_kubectl
 
 pytestmark = [pytest.mark.live]
 
+NAMESPACE = "pypi-cache"
 S3_BUCKET_URL = "https://pytorch-pypi-wheel-cache.s3.us-east-2.amazonaws.com"
 # Pure Python package — always on PyPI, small, fast to look up
 TEST_PACKAGE = "requests"

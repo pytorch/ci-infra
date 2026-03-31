@@ -13,7 +13,8 @@ import urllib.request
 DEFAULT_TIMEOUT = 90
 READY_RETRIES = 6
 READY_RETRY_DELAY = 15  # seconds
-MIN_NODE_AGE_SECONDS = 120  # Nodes must be Ready for 2+ min to count as stable
+MIN_NODE_AGE_SECONDS = 300  # Nodes must be Ready for 5+ min to count as stable
+RECENTLY_STABLE_AGE_SECONDS = 600  # Nodes < 10 min may still have DaemonSet pods starting
 
 
 def _proxy_bypass_env() -> dict[str, str]:
@@ -219,6 +220,27 @@ def _count_unstable_nodes(all_nodes: dict) -> int:
 def get_unstable_node_names(all_nodes: dict) -> set[str]:
     """Return names of nodes that are new, NotReady, or being deleted."""
     return {node["metadata"]["name"] for node in all_nodes.get("items", []) if _is_node_unstable(node)}
+
+
+def get_recently_stable_node_names(all_nodes: dict) -> set[str]:
+    """Return names of nodes that are stable but still young.
+
+    These nodes passed the MIN_NODE_AGE_SECONDS threshold (not in the unstable
+    set) but are younger than RECENTLY_STABLE_AGE_SECONDS. DaemonSet pods on
+    these nodes may still be pulling images or creating containers — Pending
+    phase is expected and should not be treated as a failure.
+    """
+    names = set()
+    for node in all_nodes.get("items", []):
+        if _is_node_unstable(node):
+            continue
+        meta = node.get("metadata", {})
+        created = meta.get("creationTimestamp", "")
+        if created:
+            age = time.time() - _parse_k8s_timestamp(created)
+            if age < RECENTLY_STABLE_AGE_SECONDS:
+                names.add(meta["name"])
+    return names
 
 
 def _has_matching_nodes(all_nodes: dict, node_selector: dict[str, list[str]] | None) -> bool:

@@ -20,6 +20,7 @@ from helpers import (
     fetch_grafana_cloud_credentials,
     filter_pods,
     find_helm_release,
+    get_recently_stable_node_names,
     get_unstable_node_names,
     loki_read_url,
     query_loki,
@@ -154,10 +155,13 @@ class TestAlloyLogging:
         assert len(pods) > 0, f"No alloy-logging pods found (after {READY_RETRIES} retries)"
 
         unstable_names = get_unstable_node_names(nodes)
+        recently_stable_names = get_recently_stable_node_names(nodes)
         not_running = [
             p["metadata"]["name"]
             for p in pods
-            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable_names
+            if p["status"].get("phase") != "Running"
+            and p["spec"].get("nodeName") not in unstable_names
+            and not (p["status"].get("phase") == "Pending" and p["spec"].get("nodeName") in recently_stable_names)
         ]
 
         if not not_running:
@@ -170,17 +174,22 @@ class TestAlloyLogging:
             fresh_nodes = run_kubectl(["get", "nodes"])
             pods = filter_pods(fresh_pods, namespace=logging_ns, labels=alloy_labels)
             unstable_names = get_unstable_node_names(fresh_nodes)
+            recently_stable_names = get_recently_stable_node_names(fresh_nodes)
             not_running = [
                 p["metadata"]["name"]
                 for p in pods
-                if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable_names
+                if p["status"].get("phase") != "Running"
+                and p["spec"].get("nodeName") not in unstable_names
+                and not (p["status"].get("phase") == "Pending" and p["spec"].get("nodeName") in recently_stable_names)
             ]
             if not not_running:
                 return
 
         assert not not_running, (
             f"Alloy pods not Running on stable nodes: {not_running} "
-            f"({len(unstable_names)} unstable nodes excluded, after {READY_RETRIES} retries)"
+            f"({len(unstable_names)} unstable nodes excluded, "
+            f"{len(recently_stable_names)} recently-stable nodes with Pending pods tolerated, "
+            f"after {READY_RETRIES} retries)"
         )
 
 

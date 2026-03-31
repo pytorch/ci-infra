@@ -11,7 +11,6 @@ Validates that the pypi-cache infrastructure is deployed and healthy:
 from __future__ import annotations
 
 import pytest
-from conftest import NAMESPACE
 from helpers import (
     assert_deployment_ready,
     filter_deployments,
@@ -21,6 +20,7 @@ from helpers import (
 
 pytestmark = [pytest.mark.live]
 
+NAMESPACE = "pypi-cache"
 STORAGECLASS_NAME = "efs-pypi-cache"
 PVC_NAME = "pypi-cache-data"
 WANTS_COLLECTOR_DEPLOYMENT = "pypi-wants-collector"
