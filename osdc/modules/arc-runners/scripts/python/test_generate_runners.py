@@ -99,7 +99,7 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
 FAKE_CLUSTERS_YAML = {
     "defaults": {
         "arc": {
-            "runner_image_tag": "2.333.0",
+            "runner_image_tag": "2.333.1",
         },
         "arc-runners": {
             "github_config_url": "https://github.com/default-org",

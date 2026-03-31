@@ -133,7 +133,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "github_secret_name", ""
     )  # lgtm[py/clear-text-storage-sensitive-data] - K8s Secret resource name, not a credential
     runner_prefix = cluster_config.get("runner_name_prefix", "")
-    runner_image = cluster_config.get("runner_image", "ghcr.io/actions/actions-runner:2.333.0")
+    runner_image = cluster_config.get("runner_image", "ghcr.io/actions/actions-runner:2.333.1")
 
     normalized_name = normalize_name(runner_name)
 
@@ -245,7 +245,7 @@ def main():
         return 1
 
     # Resolve runner image tag from arc.runner_image_tag (shared with arc module)
-    runner_image_tag = resolve_value(cluster_cfg, defaults, "arc.runner_image_tag") or "2.333.0"
+    runner_image_tag = resolve_value(cluster_cfg, defaults, "arc.runner_image_tag") or "2.333.1"
     cluster_config["runner_image"] = f"ghcr.io/actions/actions-runner:{runner_image_tag}"
 
     # Clean output dir so removed defs don't leave stale generated files

@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub Actions Runner
-ARG RUNNER_VERSION=2.313.0
+ARG RUNNER_VERSION=2.333.1
 RUN useradd -m -s /bin/bash runner \
     && mkdir -p /home/runner/actions-runner
 
