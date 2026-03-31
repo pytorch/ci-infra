@@ -969,39 +969,17 @@ class ReservationManager:
         """Extend an active reservation by the specified number of hours"""
         try:
             # Capture current expiration BEFORE sending extension request to avoid race condition
-            response = self.reservations_table.query(
-                IndexName="UserIndex",
-                KeyConditionExpression="user_id = :user_id",
-                ExpressionAttributeValues={":user_id": user_id},
+            # Use strongly consistent read on base table
+            response = self.reservations_table.get_item(
+                Key={"reservation_id": reservation_id},
+                ConsistentRead=True,
             )
-            all_reservations = response.get("Items", [])
+            reservation = response.get("Item")
+            initial_expires_at = reservation.get("expires_at", "") if reservation else None
 
-            # Handle pagination for UserIndex query
-            while "LastEvaluatedKey" in response:
-                response = self.reservations_table.query(
-                    IndexName="UserIndex",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
-                )
-                all_reservations.extend(response.get("Items", []))
-
-            matching_reservations = [
-                res for res in all_reservations
-                if res.get("reservation_id", "").startswith(reservation_id)
-            ]
-
-            initial_expires_at = None
-            full_reservation_id = reservation_id
-            if matching_reservations:
-                initial_expires_at = matching_reservations[0].get("expires_at", "")
-                full_reservation_id = matching_reservations[0].get("reservation_id", reservation_id)
-
-            # Send message to Lambda to extend reservation
-            # Lambda will handle both the expiration timestamp update and any necessary pod updates
             message = {
                 "action": "extend_reservation",
-                "reservation_id": full_reservation_id,
+                "reservation_id": reservation_id,
                 "user_id": user_id,
                 "extension_hours": extension_hours,
                 "version": get_version(),
@@ -1016,7 +994,6 @@ class ReservationManager:
                 f"[yellow]⏳ Extension request submitted for reservation {reservation_id[:8]}...[/yellow]"
             )
 
-            # Poll for 3 minutes to show the outcome
             return self._poll_extend_action_result(
                 reservation_id, user_id, extension_hours, timeout_minutes=3, initial_expires_at=initial_expires_at
             )
@@ -1372,50 +1349,20 @@ class ReservationManager:
                     "dots", text=f"🔄 Adding user {github_username}...")
                 live.update(spinner)
 
-                initial_secondary_users = None
-
                 while time.time() - start_time < timeout_seconds:
                     try:
-                        # Get current reservation state - query by user first, then filter by prefix
-                        response = self.reservations_table.query(
-                            IndexName="UserIndex",
-                            KeyConditionExpression="user_id = :user_id",
-                            ExpressionAttributeValues={":user_id": user_id},
+                        # Use strongly consistent read on base table (not GSI which is eventually consistent)
+                        response = self.reservations_table.get_item(
+                            Key={"reservation_id": reservation_id},
+                            ConsistentRead=True,
                         )
-                        all_reservations = response.get("Items", [])
+                        reservation = response.get("Item")
 
-                        # Handle pagination for UserIndex query
-                        while "LastEvaluatedKey" in response:
-                            response = self.reservations_table.query(
-                                IndexName="UserIndex",
-                                KeyConditionExpression="user_id = :user_id",
-                                ExpressionAttributeValues={
-                                    ":user_id": user_id},
-                                ExclusiveStartKey=response["LastEvaluatedKey"]
-                            )
-                            all_reservations.extend(response.get("Items", []))
-
-                        # Filter by reservation_id prefix in memory
-                        items = [
-                            res for res in all_reservations
-                            if res.get("reservation_id", "").startswith(reservation_id)
-                        ]
-                        if len(items) == 0:
+                        if not reservation:
                             spinner.text = f"🔄 Waiting for reservation data..."
                             live.update(spinner)
                             time.sleep(2)
                             continue
-                        elif len(items) > 1:
-                            spinner.text = f"🔄 Multiple reservations found for {reservation_id}, using first match..."
-                            live.update(spinner)
-
-                        reservation = items[0]
-
-                        # Capture initial state on first iteration
-                        if initial_secondary_users is None:
-                            initial_secondary_users = reservation.get(
-                                "secondary_users", []
-                            )
 
                         current_secondary_users = reservation.get(
                             "secondary_users", [])
@@ -1430,12 +1377,6 @@ class ReservationManager:
                                 f"[cyan]👥 Secondary users:[/cyan] {', '.join(current_secondary_users)}"
                             )
                             return True
-                        elif len(current_secondary_users) != len(
-                            initial_secondary_users
-                        ):
-                            spinner.text = (
-                                f"🔄 User list updated, verifying {github_username}..."
-                            )
 
                         live.update(spinner)
                         time.sleep(3)
@@ -1476,45 +1417,22 @@ class ReservationManager:
                 )
                 live.update(spinner)
 
-                # Use pre-captured initial_expires_at if provided (to avoid race condition)
                 initial_expiration = initial_expires_at
 
                 while time.time() - start_time < timeout_seconds:
                     try:
-                        # Get current reservation state - query by user first, then filter by prefix
-                        response = self.reservations_table.query(
-                            IndexName="UserIndex",
-                            KeyConditionExpression="user_id = :user_id",
-                            ExpressionAttributeValues={":user_id": user_id},
+                        # Use strongly consistent read on base table (not GSI which is eventually consistent)
+                        response = self.reservations_table.get_item(
+                            Key={"reservation_id": reservation_id},
+                            ConsistentRead=True,
                         )
-                        all_reservations = response.get("Items", [])
+                        reservation = response.get("Item")
 
-                        # Handle pagination for UserIndex query
-                        while "LastEvaluatedKey" in response:
-                            response = self.reservations_table.query(
-                                IndexName="UserIndex",
-                                KeyConditionExpression="user_id = :user_id",
-                                ExpressionAttributeValues={
-                                    ":user_id": user_id},
-                                ExclusiveStartKey=response["LastEvaluatedKey"]
-                            )
-                            all_reservations.extend(response.get("Items", []))
-
-                        # Filter by reservation_id prefix in memory
-                        items = [
-                            res for res in all_reservations
-                            if res.get("reservation_id", "").startswith(reservation_id)
-                        ]
-                        if len(items) == 0:
+                        if not reservation:
                             spinner.text = f"🔄 Waiting for reservation data..."
                             live.update(spinner)
                             time.sleep(2)
                             continue
-                        elif len(items) > 1:
-                            spinner.text = f"🔄 Multiple reservations found for {reservation_id}, using first match..."
-                            live.update(spinner)
-
-                        reservation = items[0]
 
                         # Capture initial expiration on first iteration
                         if initial_expiration is None:
@@ -1524,11 +1442,9 @@ class ReservationManager:
                         current_expiration = reservation.get("expires_at", "")
 
                         # Check for extension failure indicators
-                        last_updated = reservation.get("last_updated", 0)
                         extension_error = reservation.get(
                             "extension_error", "")
 
-                        # If there's an extension error, fail immediately
                         if extension_error:
                             live.stop()
                             console.print(
@@ -1545,21 +1461,17 @@ class ReservationManager:
                             from datetime import datetime, timezone
 
                             try:
-                                # Treat as naive datetime and manually add UTC timezone (matches list command)
                                 naive_dt = datetime.fromisoformat(current_expiration)
                                 exp_dt_utc = naive_dt.replace(tzinfo=timezone.utc)
-                                # Convert to local timezone
                                 local_exp = exp_dt_utc.astimezone()
-                                # Format with same style as list command: month-day hour:minute
                                 formatted_expiration = local_exp.strftime("%m-%d %H:%M")
                                 console.print(
-                                    f"[green]✅ Extended reservation {reservation_id} by {extension_hours} hours -- your new expiration is {formatted_expiration}[/green]"
+                                    f"[green]✅ Extended reservation {reservation_id[:8]} by {extension_hours} hours -- your new expiration is {formatted_expiration}[/green]"
                                 )
                                 return True
                             except Exception:
-                                # Fallback to raw display if parsing fails
                                 console.print(
-                                    f"[green]✅ Extended reservation {reservation_id} by {extension_hours} hours -- your new expiration is {current_expiration}[/green]"
+                                    f"[green]✅ Extended reservation {reservation_id[:8]} by {extension_hours} hours -- your new expiration is {current_expiration}[/green]"
                                 )
                                 return True
 
@@ -1579,7 +1491,7 @@ class ReservationManager:
                 console.print(
                     f"[yellow]The extension may still be processing. Check status with: gpu-dev list[/yellow]"
                 )
-                return False  # Return failure on timeout
+                return False
 
         except Exception as e:
             console.print(

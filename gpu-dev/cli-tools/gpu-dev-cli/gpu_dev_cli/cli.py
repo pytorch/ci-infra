@@ -3515,6 +3515,9 @@ def edit(
         # Stop spinner before validation and operations
         live.stop()
 
+        # Use the full reservation_id from connection_info (not the user-provided prefix)
+        reservation_id = connection_info["reservation_id"]
+
         if connection_info["status"] != "active":
             rprint(
                 f"[red]❌ Can only edit active reservations (current status: {connection_info['status']})[/red]"
