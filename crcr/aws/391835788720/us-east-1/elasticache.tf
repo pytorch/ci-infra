@@ -2,23 +2,17 @@ resource "aws_security_group" "redis" {
   name        = "${var.environment}-allow-redis"
   description = "Allow connection on port 6379 (redis)"
   vpc_id      = module.crcr_vpc.vpc_id
+  tags        = local.tags
+}
 
-  ingress {
-    description = "Allow connection on port 6379 (redis)"
-    from_port   = 6379
-    to_port     = 6379
-    protocol    = "tcp"
-    cidr_blocks = [module.crcr_vpc.vpc_cidr]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = local.tags
+resource "aws_security_group_rule" "redis_from_lambda" {
+  type                     = "ingress"
+  from_port                = 6379
+  to_port                  = 6379
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.redis.id
+  source_security_group_id = aws_security_group.lambda.id
+  description              = "Allow Lambda to connect to Redis"
 }
 
 resource "random_password" "redis_password" {
@@ -43,6 +37,8 @@ resource "aws_elasticache_replication_group" "redis" {
   replication_group_id       = "${var.environment}-crcr-rep-group"
   security_group_ids         = [aws_security_group.redis.id]
   subnet_group_name          = aws_elasticache_subnet_group.redis.name
+  transit_encryption_enabled = true
+  auth_token                 = random_password.redis_password.result
   tags                       = local.tags
 }
 
