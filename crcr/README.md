@@ -1,72 +1,81 @@
-# Cross-Repository CI Relay (CRCR)
+# CRCR - Cross Repo CI Relay
 
-Cross-Repository CI Relay (CRCR) is a GitHub webhook relay service for PyTorch out-of-tree backends. It receives webhook events from an upstream repository via a GitHub App, validates them against a whitelist, and forwards `repository_dispatch` events to registered downstream repositories — enabling downstream CI pipelines to react to upstream changes without being tightly coupled.
+CRCR (Cross Repo CI Relay) is the infrastructure that enables PyTorch repository to automatically trigger CI workflows in downstream repositories without being tightly coupled.
 
-Architecture: GitHub App → Lambda webhook (AWS) → `repository_dispatch` → downstream repos
+When a developer creates or updates a PR in `pytorch/pytorch`, the system:
+
+1. Receives webhook events via a GitHub App
+2. Verifies the webhook signature (`X-Hub-Signature-256`)
+3. Reads the allowlist YAML to determine eligible downstream repos
+4. Dispatches `repository_dispatch` events to those repos
+5. Downstream repos pull PyTorch code, build, test, and optionally report results back
+
+Core components:
+
+- **GitHub App** - Authentication hub and event bridge under the pytorch organization
+- **AWS Lambda** - Webhook receiver and event dispatcher (Python 3.10)
+- **ElastiCache (Redis)** - Caches the allowlist to reduce GitHub API calls
+- **Secrets Manager** - Stores the GitHub App private key and webhook secret
+- **VPC** - Network isolation for Lambda and Redis
+
+For more details, see the RFC: https://github.com/pytorch/rfcs/pull/90
 
 ## Directory Structure
 
-```Text
+```text
 crcr/
-├── Makefile                          # Root orchestration: terrafile / tflint / plan / apply / clean
-├── Terrafile                         # Lambda zip asset source (pytorch/test-infra release)
-├── requirements.txt                  # Python deps for terrafile script
+├── Makefile                        # Root build orchestration (terrafile, plan, apply, clean)
+├── Terrafile                       # Module & asset dependency specification (YAML)
+├── requirements.txt                # Python dependencies (PyYAML)
 ├── scripts/
-│   └── terrafile_lambdas.py          # Downloads Lambda zip assets from GitHub releases
+│   └── terrafile_lambdas.py        # Downloads Terraform modules and Lambda ZIP assets
 ├── modules/
-│   └── backend-file/
-│       ├── backend.tf                # S3 backend template (placeholder: #AWS_REGION)
-│       └── backend-state.tf          # backend-state module template (placeholder: #AWS_REGION)
+│   ├── backend-file/               # S3 backend configuration templates
+│   │   ├── backend-state.tf
+│   │   └── backend.tf
+│   └── backend-state/              # Symlink to ../../modules/backend-state
 └── aws/
-    └── <account-id>/
-        └── <region>/
-            ├── Makefile              # Region-level: init / plan / apply / clean
-            ├── provider.tf           # AWS provider
-            ├── main.tf
-            ├── data.tf               # ElastiCache + VPC source Lambda data sources
-            ├── iam.tf                # Lambda execution role + policies
-            ├── webhook.tf            # Lambda function, Function URL, permissions
-            ├── variables.tf          # Input variables
-            └── outputs.tf            # Webhook URL output
-```
-
-Generated files (not committed):
-
-```Text
-aws/<account>/<region>/
-├── dyn_locals.tf     # aws_region / aws_account_id locals (generated from directory name)
-├── backend.tf        # Rendered S3 backend config
-├── backend-state.tf  # Rendered backend-state module
-└── .terraform/       # OpenTofu working directory
+    └── 391835788720/               # AWS Account ID
+        └── us-east-1/              # AWS Region
+            ├── Makefile            # Region-level init/plan/apply/destroy
+            ├── main.tf             # Terraform & provider version constraints
+            ├── provider.tf         # AWS provider configuration
+            ├── variables.tf        # Input variables
+            ├── locals.tf           # Computed values (secret ARN, AZs, tags)
+            ├── outputs.tf          # Outputs (webhook URL, Redis endpoint)
+            ├── vpc.tf              # VPC and subnets
+            ├── iam.tf              # Lambda execution role and policies
+            ├── elasticache.tf      # Redis replication group
+            └── webhook.tf          # Lambda function and public function URL
 ```
 
 ## Prerequisites
 
-### 1. S3 Bucket and DynamoDB Table (manual, one-time)
+### 1. Create S3 Bucket & DynamoDB Table
 
-Terraform remote state requires an S3 bucket and a DynamoDB lock table. Create them manually before the first deploy:
+Terraform remote state requires an S3 bucket and a DynamoDB table for state locking. These must be created **once** before the first `terraform init`.
 
 ```bash
 # Replace <region> with the target region, e.g. us-east-1
 aws s3api create-bucket \
-  --bucket tfstate-pyt-cross-repo-ci-relay-prod \
+  --bucket tfstate-pyt-crcr-prod \
   --region <region>
 
 aws s3api put-bucket-versioning \
-  --bucket tfstate-pyt-cross-repo-ci-relay-prod \
+  --bucket tfstate-pyt-crcr-prod \
   --versioning-configuration Status=Enabled
 
 aws dynamodb create-table \
-  --table-name tfstate-lock-pyt-cross-repo-ci-relay-prod \
+  --table-name tfstate-lock-pyt-crcr-prod \
   --attribute-definitions AttributeName=LockID,AttributeType=S \
   --key-schema AttributeName=LockID,KeyType=HASH \
   --billing-mode PAY_PER_REQUEST \
   --region <region>
 ```
 
-### 2. AWS Secrets Manager Secret
+### 2. Create Secrets Manager Secret
 
-The Lambda reads GitHub App private key and Redis credentials from a single Secrets Manager secret. Create it manually:
+The Lambda reads the GitHub App private key and webhook secret from AWS Secrets Manager at runtime. Create the secret before deploying:
 
 ```bash
 aws secretsmanager create-secret \
@@ -74,55 +83,65 @@ aws secretsmanager create-secret \
   --region <region>
 ```
 
-Then store the GitHub App private key and any other credentials in it. The default secret name used by variables.tf is `ci_secret-orSIF4`; override via `TF_VAR_secret_name` if needed.
+Then populate it with the following keys:
+- `github_app_private_key` — PEM-encoded GitHub App private key
+- `github_webhook_secret` — Webhook secret configured on the GitHub App
 
-### 3. Required Variables
-
-Pass these as environment variables (CI/CD) or `terraform.tfvars` (local):
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `TF_VAR_vpc_lambda_name` | Name of an existing Lambda in the same VPC as Redis; its subnet/security-group config is reused | `some-existing-lambda` |
-| `TF_VAR_redis_replication_group_id` | ElastiCache replication group ID | `crcr-redis-prod` |
-| `TF_VAR_redis_login` | Redis credentials in `username:password` format (Redis 6+ ACL) | `crcr-user:s3cr3t` |
-
-Variables with defaults (override as needed):
+## Configuration Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `github_app_id` | `2847493` | GitHub App ID |
-| `secret_name` | `ci_secret-orSIF4` | Secrets Manager secret name |
-| `upstream_repo` | `cosdt/UpStream` | Upstream repository in `owner/repo` format |
-| `allowlist_url` | *(upstream repo whitelist URL)* | URL to the relay whitelist YAML |
-| `allowlist_ttl` | `3600` | Whitelist cache TTL in Redis (seconds) |
+|---|---|---|
+| `github_app_id` | N/A | GitHub App ID for the CRCR relay |
+| `secret_name` | N/A | Secrets Manager secret name holding GitHub App credentials |
+| `upstream_repo` | `pytorch/pytorch` | GitHub upstream repository in `owner/repo` format |
+| `allowlist_url` | `https://github.com/pytorch/pytorch/blob/main/.github/allowlist.yml` | GitHub URL to the relay allowlist YAML |
+| `allowlist_ttl` | `1200` | Allowlist cache TTL in Redis (seconds) |
+| `environment` | `crcr-prod` | Environment name for resource tagging and naming |
+| `vpc_cidr_block` | `10.0.0.0/16` | CIDR block for the VPC |
+| `availability_zone_suffixes` | `["a", "b"]` | Availability zone letter suffixes |
 
 ## Deployment
 
-All commands run from the **root `crcr/` directory**. The root Makefile fans out to every `aws/<account>/<region>/` subdirectory automatically.
+### Local Deployment
 
 ```bash
-cd ci-infra/crcr
+pushd ci-infra/crcr
 
-# Plan (dry run)
-make plan
+# Preview changes
+make plan TERRAFORM_EXTRAS="-var github_app_id=123456 -var secret_name=secret"
 
-# Apply
-make apply
+# Apply with required variables
+make apply TERRAFORM_EXTRAS="-auto-approve -lock-timeout=15m -var github_app_id=123456 -var secret_name=secret"
 ```
 
-## CI/CD (GitHub Actions)
+> **Note**: When running locally, the regional Makefile uses `AWS_PROFILE` for authentication (skipped in GitHub Actions where IAM role assumption is used instead).
 
-| Workflow | Trigger | Action |
-|----------|---------|--------|
-| `crcr-on-pr.yml` | PR touching `crcr/**` or workflow files | TFLint + `tofu plan` |
-| `crcr-deploy-prod.yml` | Manual (`workflow_dispatch`) | `tofu apply` |
+### GitHub Actions Deployment
 
-Required GitHub repository secrets:
+The production deployment is handled via the `crcr-deploy-prod.yml` workflow (`workflow_dispatch` trigger). To deploy:
 
-| Secret | Description |
-|--------|-------------|
-| `PY_FOUNDATION_AWS_ACC_ID` | AWS account ID |
-| `PY_FOUNDATION_AWS_DEPLOY_ROLE` | IAM role name for OIDC assumption |
-| `CRCR_VPC_LAMBDA_NAME` | `TF_VAR_vpc_lambda_name` |
-| `CRCR_REDIS_REPLICATION_GROUP_ID` | `TF_VAR_redis_replication_group_id` |
-| `CRCR_REDIS_LOGIN` | `TF_VAR_redis_login` |
+1. **Configure GitHub Secrets** in the repository settings:
+   - `CRCR_GITHUB_APP_ID` - GitHub App ID
+   - `CRCR_SECRET_NAME` - Secrets Manager secret name
+
+2. **Trigger the workflow** manually from workflow_dispatch:
+
+3. The workflow will:
+   - Check out the code
+   - Install OpenTofu 1.5.7
+   - Install virtualenv
+   - Assume the AWS IAM role via OIDC
+   - Run `make apply` with `-auto-approve -lock-timeout=15m`
+
+Concurrency is controlled by the group `terraform-make-apply-crcr` (no in-progress cancellation) to prevent parallel deployments.
+
+## Feature Roadmap
+
+CRCR follows a four-level progression system. Each level adds more integration between upstream PyTorch and downstream repos.
+
+| Level | Name | Status | Description |
+|---|---|---|---|
+| **L1** | Events Only | **Current** | Webhook events are forwarded to downstream repos. No feedback to upstream PRs. Downstream repos receive `repository_dispatch` and run CI independently. |
+| **L2** | HUD Visibility | developing | Downstream CI results are written to ClickHouse and displayed on a dedicated HUD page (`hud.pytorch.org/oot/[org]/[repo]`). Upstream PRs still show no check status. |
+| **L3** | Label-Triggered PR Checks | developing | A non-blocking Check Run appears on upstream PRs when a `ciflow/oot/<name>` label is added. This is the recommended long-term target for most downstream repos. |
+| **L4** | Always-On Blocking Checks | developing | Blocking Check Run auto-triggered for every PR. Reserved for critical accelerators only. Merge is blocked on failure. |
