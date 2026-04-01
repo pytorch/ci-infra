@@ -21,7 +21,7 @@ backend-state.tf: dyn_locals.tf
 	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
 	tofu get -update
 	tofu init -backend=false
-	tofu plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state -lock-timeout=15m ; \
+	tofu plan ${TERRAFORM_EXTRAS} -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state -lock-timeout=15m ; \
 		ext_code=$$? ; \
 		if [ $$ext_code -eq 2 ] ; then \
 			if [ "$$GITHUB_ACTIONS" != "true" ] ; then \
