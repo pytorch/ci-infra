@@ -38,3 +38,11 @@ def wants_collector_pod(all_pods) -> str | None:
     matching = filter_pods(all_pods, NAMESPACE, labels={"app": "pypi-wants-collector"})
     running = [p for p in matching if p["status"]["phase"] == "Running"]
     return running[0]["metadata"]["name"] if running else None
+
+
+@pytest.fixture(scope="session")
+def wheel_syncer_pod(all_pods) -> str | None:
+    """Pod name for a Running wheel-syncer pod, or None."""
+    matching = filter_pods(all_pods, NAMESPACE, labels={"app": "pypi-wheel-syncer"})
+    running = [p for p in matching if p["status"]["phase"] == "Running"]
+    return running[0]["metadata"]["name"] if running else None

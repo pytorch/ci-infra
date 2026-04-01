@@ -28,6 +28,10 @@ builder.
 | `kubernetes/nginx.conf` | nginx caching proxy config template (`__DNS_RESOLVER__`, `__NGINX_MAX_CACHE_SIZE__` placeholders) |
 | `kubernetes/wants-collector-sa.yaml` | ServiceAccount for wants-collector (IRSA-annotated by deploy.sh) |
 | `kubernetes/wants-collector-deployment.yaml.tpl` | Wants-collector Deployment template (sed placeholders) |
+| `scripts/python/wheel_syncer.py` | S3-to-EFS wheel sync daemon (mounted as ConfigMap) |
+| `scripts/python/test_wheel_syncer.py` | Unit tests for wheel_syncer.py |
+| `kubernetes/wheel-syncer-sa.yaml` | ServiceAccount for wheel-syncer (IRSA-annotated by deploy.sh) |
+| `kubernetes/wheel-syncer-deployment.yaml.tpl` | Wheel-syncer Deployment template (sed placeholders) |
 | `kubernetes/nodepool.yaml.tpl` | Karpenter NodePool template (dedicated pypi-cache nodes) |
 | `kubernetes/ec2nodeclass.yaml.tpl` | EC2NodeClass template (AWS node config for Karpenter) |
 | `terraform/wheel-cache-bucket/` | Standalone tofu root for shared S3 bucket (one-time setup) |
@@ -221,13 +225,15 @@ One Deployment + Service per CUDA version:
 
 ## Self-learning loop
 
-The builder is a future component. The current architecture captures access logs on
-EFS so the builder can be added later without changing the serving infrastructure.
+The self-learning loop has four stages, each handled by a separate component:
 
-1. Job downloads `foo-1.0.tar.gz` via proxy (sdist = built from source)
-2. Builder (future) sees `.tar.gz` in access logs
-3. Builder runs `pip wheel foo==1.0` for each configured CUDA version
-4. Next job gets pre-built wheel — instant install
+1. Job downloads packages via proxy (logged by nginx)
+2. Wants-collector identifies packages needing builds, uploads wants
+   list to S3
+3. Builder (external workflow) builds wheels, uploads to S3 under
+   `{slug}/`
+4. Wheel syncer downloads built wheels from S3 to EFS wheelhouse
+5. Next job gets pre-built wheel — instant install
 
 ## Wants collector
 
@@ -272,13 +278,21 @@ s3://pytorch-pypi-wheel-cache/
 │   ├── arc-production.txt
 │   └── arc-cbr-production.txt
 ├── prebuilt-cache.txt
-└── needbuild.txt
+├── needbuild.txt
+├── cpu/                         # built wheels (synced to EFS by wheel-syncer)
+│   └── {package}-{version}-{tags}.whl
+├── cu121/
+│   └── {package}-{version}-{tags}.whl
+└── cu128/
+    └── {package}-{version}-{tags}.whl
 ```
 
 - `wants/<cluster-id>.txt` — per-cluster, expires after 7 days, contains
   `package==version` entries
 - `prebuilt-cache.txt` — shared across clusters, no expiry, grows monotonically
 - `needbuild.txt` — manually managed, no expiry, read-only by collector (see below)
+- `{slug}/*.whl` — built wheels uploaded by the builder, synced to EFS by
+  wheel-syncer
 
 ### Manual build override (`needbuild.txt`)
 
@@ -327,6 +341,34 @@ tofu apply
 - Prebuilt cache is shared across clusters — concurrent updates may cause a
   redundant PyPI lookup on the next cycle (no data loss, S3 PutObject is atomic).
 
+## Wheel syncer
+
+The wheel syncer is the final step of the self-learning loop. It runs as a
+single-replica Deployment (`pypi-wheel-syncer`) in the `pypi-cache` namespace,
+syncing built wheel packages from S3 to the EFS wheelhouse so pypiserver can
+serve them.
+
+### How it works
+
+Each cycle (every 60 seconds):
+1. For each configured CUDA slug (cpu, cu121, cu128, etc.):
+   a. Lists `.whl` files in `s3://pytorch-pypi-wheel-cache/{slug}/`
+   b. Compares against local wheelhouse directory `/data/wheelhouse/{slug}/`
+   c. Downloads any missing wheels
+2. Touches `/tmp/last-success` for liveness probe, then sleeps
+
+Downloads use atomic writes: files are written to `{name}.whl.tmp` first, then
+renamed to `{name}.whl`. This prevents pypiserver from serving partial files.
+
+pypiserver uses the `simple-dir` backend, which re-scans the wheelhouse directory
+on every request. New wheels are available immediately after download (subject to
+nginx's 5-minute index cache TTL).
+
+### IRSA permissions
+
+The wheel syncer has **read-only** S3 access (`s3:GetObject`, `s3:ListBucket`).
+It never writes to S3 — the builder is responsible for uploading wheels.
+
 ## Log capture
 
 nginx logs upstream-bound requests (fallbacks to pypi.org and downloads from
@@ -339,16 +381,16 @@ pypiserver runs without the `-v` flag; its stdout goes only to Kubernetes/Alloy
 
 ## Deploy ordering
 
-1. Terraform creates EFS filesystem, mount targets, security group, CSI driver addon
-2. `deploy.sh` reads terraform outputs (EFS filesystem ID)
-3. Kustomize applies base resources (namespace, ServiceAccount)
-4. `generate_manifests.py` produces StorageClass, PVC, Deployments, Services, NodePools
-5. Manifests applied in dependency order: StorageClass -> PVC -> **NodePools** -> Services -> Deployments
-6. Waits for all Deployment rollouts
-7. Annotates wants-collector SA with IRSA role ARN
-8. Creates wants-collector-scripts ConfigMap
-9. Applies wants-collector Deployment (sed template substitution)
-10. Waits for wants-collector rollout
+1. Terraform creates EFS filesystem, mount targets, security group, CSI driver addon, IRSA roles
+2. `deploy.sh` reads terraform outputs (EFS filesystem ID, IRSA role ARNs)
+3. Kustomize applies base resources (namespace, ServiceAccounts)
+4. Annotates both SAs with IRSA role ARNs (wants-collector and wheel-syncer)
+5. Creates all ConfigMaps (nginx-config, wants-collector-scripts, wheel-syncer-scripts)
+6. `generate_manifests.py` produces StorageClass, PVC, Deployments, Services, NodePools
+7. Manifests applied in dependency order: StorageClass -> PVC -> **NodePools** -> Services -> Deployments
+8. Restarts pypiserver Deployments, waits for rollouts
+9. Applies wants-collector Deployment (sed template substitution), restarts, waits for rollout
+10. Applies wheel-syncer Deployment (sed template substitution), restarts, waits for rollout
 
 ## Dependencies
 

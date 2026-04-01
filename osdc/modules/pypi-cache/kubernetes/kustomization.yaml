@@ -5,4 +5,5 @@ resources:
   - namespace.yaml
   - serviceaccount.yaml
   - wants-collector-sa.yaml
+  - wheel-syncer-sa.yaml
   - networkpolicy.yaml

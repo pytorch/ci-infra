@@ -49,9 +49,11 @@ tofu init -reconfigure \
   >/dev/null 2>&1
 EFS_FS_ID=$(tofu output -raw efs_filesystem_id)
 WANTS_COLLECTOR_ROLE_ARN=$(tofu output -raw wants_collector_role_arn)
+WHEEL_SYNCER_ROLE_ARN=$(tofu output -raw wheel_syncer_role_arn)
 cd - >/dev/null
 echo "[pypi-cache] EFS filesystem ID: ${EFS_FS_ID}"
 echo "[pypi-cache] Wants collector role ARN: ${WANTS_COLLECTOR_ROLE_ARN}"
+echo "[pypi-cache] Wheel syncer role ARN: ${WHEEL_SYNCER_ROLE_ARN}"
 
 # --- Apply base k8s resources (namespace, SA) ---
 echo "[pypi-cache] Applying base resources (namespace, ServiceAccount)..."
@@ -60,6 +62,10 @@ kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/"
 echo "[pypi-cache] Annotating wants-collector ServiceAccount..."
 kubectl annotate sa pypi-wants-collector -n "$NAMESPACE" \
   eks.amazonaws.com/role-arn="$WANTS_COLLECTOR_ROLE_ARN" --overwrite
+
+echo "[pypi-cache] Annotating wheel-syncer ServiceAccount..."
+kubectl annotate sa pypi-wheel-syncer -n "$NAMESPACE" \
+  eks.amazonaws.com/role-arn="$WHEEL_SYNCER_ROLE_ARN" --overwrite
 
 # --- Create ConfigMaps (must exist before Deployments reference them) ---
 
@@ -87,6 +93,12 @@ sed -e "s/__DNS_RESOLVER__/${DNS_RESOLVER}/g" \
 echo "[pypi-cache] Creating pypi-wants-collector-scripts ConfigMap..."
 kubectl create configmap pypi-wants-collector-scripts \
   --from-file=wants_collector.py="$MODULE_DIR/scripts/python/wants_collector.py" \
+  -n "$NAMESPACE" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+echo "[pypi-cache] Creating pypi-wheel-syncer-scripts ConfigMap..."
+kubectl create configmap pypi-wheel-syncer-scripts \
+  --from-file=wheel_syncer.py="$MODULE_DIR/scripts/python/wheel_syncer.py" \
   -n "$NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
 
@@ -200,6 +212,25 @@ kubectl rollout status deployment pypi-wants-collector \
   -n "$NAMESPACE" --timeout=120s || {
   echo "[pypi-cache] WARNING: wants-collector rollout did not complete within timeout"
   echo "[pypi-cache] Check: kubectl get pods -n $NAMESPACE -l app=pypi-wants-collector"
+}
+
+# --- Deploy wheel-syncer ---
+echo "[pypi-cache] Applying wheel-syncer deployment..."
+# SLUGS already computed above — convert space-separated to comma-separated for --slugs arg
+CUDA_SLUGS=$(echo "$SLUGS" | tr ' ' ',' | tr '\n' ',' | sed 's/,$//')
+sed -e "s/__NAMESPACE__/${NAMESPACE}/g" \
+  -e "s/__CUDA_SLUGS__/${CUDA_SLUGS}/g" \
+  "$MODULE_DIR/kubernetes/wheel-syncer-deployment.yaml.tpl" \
+  | kubectl_apply_if_changed -f -
+
+echo "[pypi-cache] Restarting wheel-syncer..."
+kubectl rollout restart deployment pypi-wheel-syncer -n "$NAMESPACE"
+
+echo "[pypi-cache] Waiting for wheel-syncer rollout..."
+kubectl rollout status deployment pypi-wheel-syncer \
+  -n "$NAMESPACE" --timeout=120s || {
+  echo "[pypi-cache] WARNING: wheel-syncer rollout did not complete within timeout"
+  echo "[pypi-cache] Check: kubectl get pods -n $NAMESPACE -l app=pypi-wheel-syncer"
 }
 
 echo "[pypi-cache] Deployed — EFS-backed Deployments serving per-CUDA package caches."

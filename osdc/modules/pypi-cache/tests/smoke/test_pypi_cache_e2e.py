@@ -4,6 +4,7 @@ Exercises the active request pipeline:
 - HTTP health and package index requests through nginx -> pypiserver per CUDA slug
 - Access log verification on EFS (nginx fallback logging to /data/logs/upstream/)
 - Wants-collector cycle health and S3 output validation
+- Wheel-syncer cycle health and EFS wheelhouse directory validation
 
 These tests use kubectl exec into pypiserver containers to make HTTP requests
 to localhost:8080 (nginx). This bypasses the NetworkPolicy (which restricts
@@ -273,4 +274,61 @@ class TestPypiCacheWantsPipeline:
                 f"  Expected: {expected}\n"
                 f"  Actual:   {actual}\n"
                 f"Matrix changed in clusters.yaml but cache was not invalidated."
+            )
+
+
+# ============================================================================
+# Wheel-Syncer Pipeline
+# ============================================================================
+
+
+class TestPypiCacheWheelSyncerPipeline:
+    """Verify the wheel-syncer is completing cycles and EFS wheelhouse directories exist.
+
+    The wheel-syncer downloads built wheels from S3 every 60 seconds, placing
+    them into /data/wheelhouse/{slug}/ on EFS. These tests validate the
+    pipeline infrastructure without requiring wheels to exist in S3.
+    """
+
+    def test_wheel_syncer_cycles_completing(self, wheel_syncer_pod: str | None) -> None:
+        """The syncer must have completed a cycle recently (/tmp/last-success < 600s)."""
+        if wheel_syncer_pod is None:
+            pytest.fail("No Running wheel-syncer pod found")
+        script = (
+            "import os, time, json\n"
+            "try:\n"
+            "    age = time.time() - os.path.getmtime('/tmp/last-success')\n"
+            "    print(json.dumps({'age_seconds': int(age)}))\n"
+            "except FileNotFoundError:\n"
+            "    print(json.dumps({'error': 'not_found'}))\n"
+        )
+        raw = _exec_in_pod(wheel_syncer_pod, "wheel-syncer", ["python3", "-c", script])
+        result = json.loads(raw)
+        if "error" in result:
+            pytest.fail(
+                "Wheel-syncer /tmp/last-success not found. "
+                "No cycle has completed yet (pod may still be in initialDelaySeconds=300s window)."
+            )
+        age = result["age_seconds"]
+        assert age < 600, (
+            f"Wheel-syncer last success was {age}s ago (threshold: 600s). "
+            f"The syncer may be stuck or S3 ListObjects calls may be failing."
+        )
+
+    def test_wheelhouse_directories_exist(self, wheel_syncer_pod: str | None, pypi_cache_slugs: list[str]) -> None:
+        """Each CUDA slug must have a wheelhouse directory on EFS."""
+        if wheel_syncer_pod is None:
+            pytest.fail("No Running wheel-syncer pod found")
+        script = (
+            "import os, json\n"
+            "slugs = os.listdir('/data/wheelhouse') if os.path.isdir('/data/wheelhouse') else []\n"
+            "print(json.dumps({'slugs': sorted(slugs)}))\n"
+        )
+        raw = _exec_in_pod(wheel_syncer_pod, "wheel-syncer", ["python3", "-c", script])
+        result = json.loads(raw)
+        existing_slugs = set(result["slugs"])
+        for slug in pypi_cache_slugs:
+            assert slug in existing_slugs, (
+                f"Wheelhouse directory '/data/wheelhouse/{slug}/' not found on EFS. "
+                f"The wheel-syncer should create this directory on its first cycle."
             )

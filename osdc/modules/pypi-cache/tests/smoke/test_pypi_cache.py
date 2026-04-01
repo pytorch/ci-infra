@@ -5,6 +5,7 @@ Validates that the pypi-cache infrastructure is deployed and healthy:
 - EFS-backed StorageClass and PVC
 - Per-CUDA Deployments and Services (dynamic from clusters.yaml)
 - Wants-collector Deployment (log scanner + S3 uploader)
+- Wheel-syncer Deployment (S3-to-EFS wheel downloader)
 - Karpenter NodePool (when instance_type is configured)
 """
 
@@ -25,6 +26,8 @@ STORAGECLASS_NAME = "efs-pypi-cache"
 PVC_NAME = "pypi-cache-data"
 WANTS_COLLECTOR_DEPLOYMENT = "pypi-wants-collector"
 WANTS_COLLECTOR_SA = "pypi-wants-collector"
+WHEEL_SYNCER_DEPLOYMENT = "pypi-wheel-syncer"
+WHEEL_SYNCER_SA = "pypi-wheel-syncer"
 
 
 # ============================================================================
@@ -80,6 +83,23 @@ class TestPypiCacheServiceAccounts:
             f"IRSA annotation value does not look like an IAM role ARN: {annotations[irsa_key]}"
         )
 
+    def test_wheel_syncer_sa_exists(self) -> None:
+        result = run_kubectl(["get", "serviceaccount", WHEEL_SYNCER_SA], namespace=NAMESPACE)
+        assert result["metadata"]["name"] == WHEEL_SYNCER_SA
+
+    def test_wheel_syncer_sa_has_irsa_annotation(self) -> None:
+        """IRSA annotation is required for the wheel-syncer to download from S3."""
+        result = run_kubectl(["get", "serviceaccount", WHEEL_SYNCER_SA], namespace=NAMESPACE)
+        annotations = result.get("metadata", {}).get("annotations", {})
+        irsa_key = "eks.amazonaws.com/role-arn"
+        assert irsa_key in annotations, (
+            f"ServiceAccount '{WHEEL_SYNCER_SA}' missing IRSA annotation '{irsa_key}'. "
+            f"The wheel-syncer will not be able to download wheels from S3."
+        )
+        assert annotations[irsa_key].startswith("arn:aws:iam::"), (
+            f"IRSA annotation value does not look like an IAM role ARN: {annotations[irsa_key]}"
+        )
+
 
 # ============================================================================
 # ConfigMaps
@@ -112,6 +132,13 @@ class TestPypiCacheConfigMaps:
         assert "wants_collector.py" in data, (
             "ConfigMap 'pypi-wants-collector-scripts' missing 'wants_collector.py'. "
             "The wants-collector pod will fail to start."
+        )
+
+    def test_wheel_syncer_scripts_configmap_exists(self) -> None:
+        result = run_kubectl(["get", "configmap", "pypi-wheel-syncer-scripts"], namespace=NAMESPACE)
+        data = result.get("data", {})
+        assert "wheel_syncer.py" in data, (
+            "ConfigMap 'pypi-wheel-syncer-scripts' missing 'wheel_syncer.py'. The wheel-syncer pod will fail to start."
         )
 
 
@@ -178,6 +205,9 @@ class TestPypiCacheDeployments:
 
     def test_wants_collector_deployment_ready(self, all_deployments: dict) -> None:
         assert_deployment_ready(all_deployments, NAMESPACE, WANTS_COLLECTOR_DEPLOYMENT)
+
+    def test_wheel_syncer_deployment_ready(self, all_deployments: dict) -> None:
+        assert_deployment_ready(all_deployments, NAMESPACE, WHEEL_SYNCER_DEPLOYMENT)
 
 
 # ============================================================================
@@ -257,12 +287,18 @@ class TestPypiCachePodSpec:
         assert deploys, f"No deployment found for pypi-cache-{slug}"
         return deploys[0]["spec"]["template"]["spec"]
 
-    @pytest.fixture
-    def wants_collector_pod_spec(self, all_deployments: dict) -> dict:
-        """Return the pod spec from the wants-collector Deployment."""
-        deploys = filter_deployments(all_deployments, namespace=NAMESPACE, name=WANTS_COLLECTOR_DEPLOYMENT)
-        assert deploys, f"Deployment '{WANTS_COLLECTOR_DEPLOYMENT}' not found"
-        return deploys[0]["spec"]["template"]["spec"]
+    @pytest.fixture(
+        params=[
+            (WANTS_COLLECTOR_DEPLOYMENT, "wants-collector"),
+            (WHEEL_SYNCER_DEPLOYMENT, "wheel-syncer"),
+        ],
+    )
+    def pipeline_pod_spec(self, request, all_deployments: dict) -> tuple[str, dict]:
+        """Return (component_label, pod_spec) for each pipeline Deployment."""
+        name, label = request.param
+        deploys = filter_deployments(all_deployments, namespace=NAMESPACE, name=name)
+        assert deploys, f"Deployment '{name}' not found"
+        return label, deploys[0]["spec"]["template"]["spec"]
 
     def test_cache_pod_has_two_containers(self, cache_pod_spec: dict) -> None:
         """Each cache pod must have nginx (proxy) and pypiserver (backend)."""
@@ -287,33 +323,33 @@ class TestPypiCachePodSpec:
         pvc_volumes = [v for v in volumes if v.get("persistentVolumeClaim", {}).get("claimName") == PVC_NAME]
         assert pvc_volumes, f"Cache pod does not mount PVC '{PVC_NAME}'"
 
-    def test_wants_collector_pod_readonly_root(self, wants_collector_pod_spec: dict) -> None:
-        for container in wants_collector_pod_spec.get("containers", []):
+    def test_pipeline_pod_readonly_root(self, pipeline_pod_spec: tuple[str, dict]) -> None:
+        label, spec = pipeline_pod_spec
+        for container in spec.get("containers", []):
             csc = container.get("securityContext", {})
             assert csc.get("readOnlyRootFilesystem") is True, (
-                f"Wants-collector container '{container['name']}' must have readOnlyRootFilesystem: true"
+                f"{label} container '{container['name']}' must have readOnlyRootFilesystem: true"
             )
 
-    def test_wants_collector_pod_has_liveness_probe(self, wants_collector_pod_spec: dict) -> None:
+    def test_pipeline_pod_has_liveness_probe(self, pipeline_pod_spec: tuple[str, dict]) -> None:
         """Liveness probe detects stalled cycles (no success in 10 minutes)."""
-        containers = wants_collector_pod_spec.get("containers", [])
-        assert containers, "No containers in wants-collector pod"
+        label, spec = pipeline_pod_spec
+        containers = spec.get("containers", [])
+        assert containers, f"No containers in {label} pod"
         probe = containers[0].get("livenessProbe")
         assert probe is not None, (
-            "Wants-collector container missing livenessProbe. A stalled collector will not be restarted automatically."
+            f"{label} container missing livenessProbe. A stalled process will not be restarted automatically."
         )
 
-    def test_wants_collector_pod_pvc_readwrite(self, wants_collector_pod_spec: dict) -> None:
-        """Wants-collector must mount the EFS PVC read-write (it prunes old log files)."""
-        containers = wants_collector_pod_spec.get("containers", [])
-        assert containers, "No containers in wants-collector pod"
+    def test_pipeline_pod_pvc_readwrite(self, pipeline_pod_spec: tuple[str, dict]) -> None:
+        """Pipeline pods must mount the EFS PVC read-write."""
+        label, spec = pipeline_pod_spec
+        containers = spec.get("containers", [])
+        assert containers, f"No containers in {label} pod"
         mounts = containers[0].get("volumeMounts", [])
         data_mounts = [m for m in mounts if m.get("name") == "data"]
-        assert data_mounts, "Wants-collector missing 'data' volume mount"
-        assert data_mounts[0].get("readOnly") is not True, (
-            "Wants-collector 'data' volume must be mounted read-write. "
-            "It needs write access to prune log files older than the configured retention period."
-        )
+        assert data_mounts, f"{label} missing 'data' volume mount"
+        assert data_mounts[0].get("readOnly") is not True, f"{label} 'data' volume must be read-write"
 
     def test_cache_pod_tolerates_workload_taint(self, cache_pod_spec: dict, instance_type: str) -> None:
         """When dedicated nodes are configured, cache pods must tolerate workload=pypi-cache taint."""
@@ -326,13 +362,13 @@ class TestPypiCachePodSpec:
             "Pods will not schedule on dedicated pypi-cache Karpenter nodes."
         )
 
-    def test_wants_collector_tolerates_critical_addons(self, wants_collector_pod_spec: dict) -> None:
-        """Wants-collector runs on base infra nodes which have CriticalAddonsOnly taint."""
-        tolerations = wants_collector_pod_spec.get("tolerations", [])
+    def test_pipeline_tolerates_critical_addons(self, pipeline_pod_spec: tuple[str, dict]) -> None:
+        """Pipeline pods run on base infra nodes which have CriticalAddonsOnly taint."""
+        label, spec = pipeline_pod_spec
+        tolerations = spec.get("tolerations", [])
         keys = {t.get("key") for t in tolerations}
         assert "CriticalAddonsOnly" in keys, (
-            "Wants-collector missing toleration for 'CriticalAddonsOnly'. "
-            "It will not schedule on base infrastructure nodes."
+            f"{label} missing toleration for 'CriticalAddonsOnly'. It will not schedule on base infrastructure nodes."
         )
 
 
