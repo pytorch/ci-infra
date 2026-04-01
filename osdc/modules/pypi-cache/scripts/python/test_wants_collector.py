@@ -28,6 +28,7 @@ from wants_collector import (
     main,
     parse_args,
     parse_log_line,
+    parse_needbuild,
     parse_prebuilt_cache,
     run,
     scan_logs,
@@ -891,3 +892,152 @@ class TestMain:
             mock_parse.assert_called_once()
             boto3_mock.client.assert_called_once_with("s3")
             mock_run.assert_called_once_with(mock_args, boto3_mock.client.return_value)
+
+
+# ---------------------------------------------------------------------------
+# TestParseNeedbuild
+# ---------------------------------------------------------------------------
+class TestParseNeedbuild:
+    """Cover: parse_needbuild() parses package names from needbuild.txt."""
+
+    def test_valid_entries(self):
+        content = "torch\ntriton\nflash-attn\n"
+        result = parse_needbuild(content)
+        assert result == {"torch", "triton", "flash-attn"}
+
+    def test_comments_skipped(self):
+        content = "# This is a comment\ntorch\n# Another comment\ntriton\n"
+        result = parse_needbuild(content)
+        assert result == {"torch", "triton"}
+
+    def test_blank_lines_skipped(self):
+        content = "torch\n\n  \ntriton\n"
+        result = parse_needbuild(content)
+        assert result == {"torch", "triton"}
+
+    def test_none_content(self):
+        assert parse_needbuild(None) == set()
+
+    def test_empty_string(self):
+        assert parse_needbuild("") == set()
+
+    def test_normalization(self):
+        """Names are PEP 503 normalized (lowercase, separators to hyphens)."""
+        content = "My_Package\nAnother.Package\nMIXED-Case\n"
+        result = parse_needbuild(content)
+        assert result == {"my-package", "another-package", "mixed-case"}
+
+
+# ---------------------------------------------------------------------------
+# TestFilterPackagesNeedbuild
+# ---------------------------------------------------------------------------
+class TestFilterPackagesNeedbuild:
+    """Cover: needbuild parameter in filter_packages()."""
+
+    def test_needbuild_overrides_prebuilt_cache(self):
+        """Package in both needbuild and prebuilt cache goes to wants."""
+        packages = {("torch", "2.5.0")}
+        matrix = {("cp310", "x86_64")}
+        existing_prebuilt = {"torch==2.5.0"}
+        http_get = MagicMock()
+
+        wants, _prebuilt = filter_packages(packages, matrix, "2_17", existing_prebuilt, http_get, needbuild={"torch"})
+        assert "torch==2.5.0" in wants
+        http_get.assert_not_called()
+
+    def test_needbuild_skips_pypi_check(self):
+        """Package in needbuild goes to wants without calling PyPI."""
+        packages = {("torch", "2.5.0"), ("requests", "2.31.0")}
+        matrix = {("cp310", "x86_64")}
+
+        def http_get(url):
+            return (
+                200,
+                json.dumps({"urls": [{"packagetype": "bdist_wheel", "filename": "requests-2.31.0-py3-none-any.whl"}]}),
+            )
+
+        wants, prebuilt = filter_packages(packages, matrix, "2_17", set(), http_get, needbuild={"torch"})
+        assert "torch==2.5.0" in wants
+        assert "requests==2.31.0" in prebuilt
+
+    def test_needbuild_none_is_noop(self):
+        """needbuild=None behaves like the original (no override)."""
+        packages = {("requests", "2.31.0")}
+        matrix = {("cp310", "x86_64")}
+
+        def http_get(url):
+            return (
+                200,
+                json.dumps({"urls": [{"packagetype": "bdist_wheel", "filename": "requests-2.31.0-py3-none-any.whl"}]}),
+            )
+
+        wants, prebuilt = filter_packages(packages, matrix, "2_17", set(), http_get, needbuild=None)
+        assert wants == set()
+        assert "requests==2.31.0" in prebuilt
+
+
+# ---------------------------------------------------------------------------
+# TestRunNeedbuild
+# ---------------------------------------------------------------------------
+class TestRunNeedbuild:
+    """Cover: run() downloads needbuild.txt from S3."""
+
+    def test_needbuild_file_downloaded(self, tmp_path):
+        """Verify needbuild.txt is downloaded and needbuild packages go to wants."""
+        log_file = tmp_path / "fallback.log"
+        log_file.write_text('10.0.0.1 - - "GET /cpu/torch-2.5.0-cp310-cp310-manylinux_2_17_x86_64.whl HTTP/1.1" 200\n')
+
+        mock_s3 = MagicMock()
+
+        def get_object(Bucket, Key):
+            if Key == "prebuilt-cache.txt":
+                return {"Body": MagicMock(read=MagicMock(return_value=b""))}
+            if Key == "needbuild.txt":
+                return {"Body": MagicMock(read=MagicMock(return_value=b"torch\n"))}
+            raise ValueError(f"Unexpected key: {Key}")
+
+        mock_s3.get_object.side_effect = get_object
+
+        # http_get returns full coverage — but needbuild should override
+        def http_get(url):
+            return (
+                200,
+                json.dumps(
+                    {
+                        "urls": [
+                            {
+                                "packagetype": "bdist_wheel",
+                                "filename": "torch-2.5.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+                            },
+                            {
+                                "packagetype": "bdist_wheel",
+                                "filename": "torch-2.5.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+                            },
+                        ]
+                    }
+                ),
+            )
+
+        args = argparse.Namespace(
+            once=True,
+            log_dir=str(tmp_path),
+            cluster_id="test",
+            bucket="test-bucket",
+            interval=120,
+            target_python="3.10",
+            target_arch="x86_64,aarch64",
+            target_manylinux="2_17",
+            max_log_age_days=30,
+        )
+        run(args, mock_s3, http_get=http_get)
+
+        # Verify S3 downloads included needbuild.txt
+        get_keys = [call.kwargs["Key"] for call in mock_s3.get_object.call_args_list]
+        assert "needbuild.txt" in get_keys
+
+        # Verify wants upload contains torch
+        put_calls = mock_s3.put_object.call_args_list
+        wants_call = [c for c in put_calls if c.kwargs.get("Key", "") == "wants/test.txt"]
+        assert len(wants_call) == 1
+        wants_body = wants_call[0].kwargs["Body"].decode("utf-8")
+        assert "torch==2.5.0" in wants_body

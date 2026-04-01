@@ -203,16 +203,24 @@ def filter_packages(
     target_manylinux: str,
     prebuilt: set[str],
     http_get,
+    needbuild: set[str] | None = None,
 ) -> tuple[set[str], set[str]]:
     """Filter packages: returns (wants_set, updated_prebuilt_set).
+
+    Packages whose name appears in needbuild are added to wants unconditionally,
+    bypassing both the prebuilt cache and the PyPI availability check.
 
     Raises on network errors (caller aborts the cycle).
     """
     wants: set[str] = set()
+    needbuild = needbuild or set()
     updated_prebuilt = set(prebuilt)
     checked = 0
     for pkg, ver in sorted(packages):
         entry = f"{pkg}=={ver}"
+        if pkg in needbuild:
+            wants.add(entry)
+            continue
         if entry in updated_prebuilt:
             continue
         if checked > 0:
@@ -246,6 +254,21 @@ def parse_prebuilt_cache(content: str | None, expected_header: str) -> set[str]:
         print(f"Prebuilt cache matrix mismatch: got '{header}', expected '{expected_header}' — invalidating cache")
         return set()
     return {line.strip() for line in lines[1:] if line.strip()}
+
+
+def parse_needbuild(content: str | None) -> set[str]:
+    """Parse needbuild.txt content. Returns set of PEP 503-normalized package names.
+
+    Lines starting with # are comments. Blank lines are skipped.
+    """
+    if not content:
+        return set()
+    result: set[str] = set()
+    for line in content.strip().splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            result.add(_normalize_name(stripped))
+    return result
 
 
 def format_prebuilt_cache(header: str, entries: set[str]) -> str:
@@ -330,9 +353,14 @@ def run(args: argparse.Namespace, s3_client, http_get=None) -> None:
         cache_content = download_from_s3(args.bucket, "prebuilt-cache.txt", s3_client)
         prebuilt = parse_prebuilt_cache(cache_content, matrix_header)
 
+        needbuild_content = download_from_s3(args.bucket, "needbuild.txt", s3_client)
+        needbuild = parse_needbuild(needbuild_content)
+        if needbuild:
+            print(f"Loaded {len(needbuild)} needbuild entries")
+
         try:
             wants, updated_prebuilt = filter_packages(
-                packages, matrix_combos, args.target_manylinux, prebuilt, http_get
+                packages, matrix_combos, args.target_manylinux, prebuilt, http_get, needbuild=needbuild
             )
         except Exception as e:
             print(f"WARNING: PyPI check failed ({e}), skipping cycle")

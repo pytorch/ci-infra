@@ -271,12 +271,39 @@ s3://pytorch-pypi-wheel-cache/
 │   ├── arc-staging.txt
 │   ├── arc-production.txt
 │   └── arc-cbr-production.txt
-└── prebuilt-cache.txt
+├── prebuilt-cache.txt
+└── needbuild.txt
 ```
 
 - `wants/<cluster-id>.txt` — per-cluster, expires after 7 days, contains
   `package==version` entries
 - `prebuilt-cache.txt` — shared across clusters, no expiry, grows monotonically
+- `needbuild.txt` — manually managed, no expiry, read-only by collector (see below)
+
+### Manual build override (`needbuild.txt`)
+
+`needbuild.txt` is a manually-managed file listing package names (one per line, no
+versions) that should always be placed into the wants list when they appear in access
+logs, bypassing both the prebuilt cache and the PyPI availability check.
+
+Use this to force building packages that have pre-built wheels on PyPI but need
+custom variants (e.g., CUDA-specific builds, custom compiler flags). The collector
+reads this file each cycle but never writes to it.
+
+Format:
+```
+# Comments start with #
+# One PEP 503-normalized package name per line (no version)
+torch
+triton
+flash-attn
+```
+
+Behavior:
+- Package in `needbuild` AND in access logs → added to wants unconditionally
+- Package in `needbuild` but NOT in access logs → ignored (only requested packages)
+- Package in `needbuild` AND in `prebuilt-cache.txt` → needbuild wins
+- File missing or empty → no effect (backward compatible)
 
 ### One-time S3 bucket setup
 

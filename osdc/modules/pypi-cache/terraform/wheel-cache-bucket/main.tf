@@ -46,6 +46,7 @@ resource "aws_s3_bucket_policy" "wheel_cache" {
       Resource = [
         "${aws_s3_bucket.wheel_cache.arn}/wants/*",
         "${aws_s3_bucket.wheel_cache.arn}/prebuilt-cache.txt",
+        "${aws_s3_bucket.wheel_cache.arn}/needbuild.txt",
       ]
     }]
   })

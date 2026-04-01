@@ -55,10 +55,12 @@ __TOLERATIONS_ENTRIES__
       initContainers:
         - name: init-dirs
           image: busybox:1.36
-          command: ["mkdir", "-p", "/data/wheelhouse/__CUDA_SLUG__", "/data/logs/__CUDA_SLUG__", "/data/logs/upstream"]
+          command: ["mkdir", "-p", "/data/wheelhouse/__CUDA_SLUG__", "/data/logs/__CUDA_SLUG__", "/data/logs/upstream", "/tmp/nginx-root"]
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: nginx-tmp
+              mountPath: /tmp
 __INIT_NVME_BLOCK__
 
       containers:

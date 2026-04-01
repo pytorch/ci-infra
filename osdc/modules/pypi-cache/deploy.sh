@@ -136,17 +136,17 @@ SLUGS=$(uv run "$MODULE_DIR/scripts/python/generate_manifests.py" \
 # PYPI_CACHE_CLEAR=yes  → clear without prompt
 # PYPI_CACHE_CLEAR=no   → skip without prompt
 # unset + CI=true       → skip (non-interactive environment)
-# unset + interactive    → prompt user
+# unset + interactive    → prompt user (default yes, 30s timeout)
 if [[ "${PYPI_CACHE_CLEAR:-}" == "yes" ]]; then
   _do_clear=1
 elif [[ "${PYPI_CACHE_CLEAR:-}" == "no" ]] || [[ "${CI:-}" == "true" ]]; then
   _do_clear=0
 else
-  _do_clear=0
+  _do_clear=1
   if [ -t 0 ]; then
-    read -r -p "[pypi-cache] Clear nginx cache before restart? (y/N) " _answer
-    if [[ "${_answer}" =~ ^[Yy]$ ]]; then
-      _do_clear=1
+    read -r -t 30 -p "[pypi-cache] Clear nginx cache before restart? (Y/n, 30s timeout=yes) " _answer || true
+    if [[ "${_answer}" =~ ^[Nn]$ ]]; then
+      _do_clear=0
     fi
   fi
 fi
