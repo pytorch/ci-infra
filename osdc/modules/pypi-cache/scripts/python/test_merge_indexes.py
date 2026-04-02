@@ -176,6 +176,8 @@ def render_json(package_name: str, files: list[dict]) -> str:
 def html_links_to_json_files(links: list[dict]) -> list[dict]:
     """Convert HTML link objects to PEP 691 JSON file objects.
 
+    Extracts hash from URL fragment (#sha256=...) into the hashes dict,
+    which is required by PEP 691 (uv strictly validates this).
     Used when pypiserver returns HTML but the client requested JSON format.
     Mirrors: htmlLinksToJsonFiles() in merge_indexes.js
     """
@@ -183,7 +185,20 @@ def html_links_to_json_files(links: list[dict]) -> list[dict]:
     for link in links:
         filename = extract_filename(link["href"])
         if filename:
-            files.append({"filename": filename, "url": link["href"]})
+            entry: dict = {
+                "filename": filename,
+                "url": link["href"],
+                "hashes": {},
+            }
+            href = link["href"]
+            hash_idx = href.find("#")
+            if hash_idx != -1:
+                fragment = href[hash_idx + 1 :]
+                if "=" in fragment:
+                    algo, digest = fragment.split("=", 1)
+                    if algo and digest:
+                        entry["hashes"] = {algo: digest}
+            files.append(entry)
     return files
 
 
@@ -1023,15 +1038,23 @@ class TestHtmlLinksToJsonFiles:
     """Tests for htmlLinksToJsonFiles() — HTML link objects to JSON file objects."""
 
     def test_basic_conversion(self):
-        """Converts standard HTML links to JSON file objects."""
+        """Converts standard HTML links to JSON file objects with hashes."""
         links = [
             {"href": "/packages/foo-1.0.whl#sha256=abc", "text": "foo-1.0.whl"},
             {"href": "/packages/bar-2.0.tar.gz", "text": "bar-2.0.tar.gz"},
         ]
         result = html_links_to_json_files(links)
         assert len(result) == 2
-        assert result[0] == {"filename": "foo-1.0.whl", "url": "/packages/foo-1.0.whl#sha256=abc"}
-        assert result[1] == {"filename": "bar-2.0.tar.gz", "url": "/packages/bar-2.0.tar.gz"}
+        assert result[0] == {
+            "filename": "foo-1.0.whl",
+            "url": "/packages/foo-1.0.whl#sha256=abc",
+            "hashes": {"sha256": "abc"},
+        }
+        assert result[1] == {
+            "filename": "bar-2.0.tar.gz",
+            "url": "/packages/bar-2.0.tar.gz",
+            "hashes": {},
+        }
 
     def test_skips_empty_filename(self):
         """Links with no extractable filename are skipped."""

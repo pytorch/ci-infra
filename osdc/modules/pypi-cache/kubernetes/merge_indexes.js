@@ -192,10 +192,25 @@ function htmlLinksToJsonFiles(links) {
     for (var i = 0; i < links.length; i++) {
         var filename = extractFilename(links[i].href);
         if (filename) {
-            files.push({
+            var entry = {
                 filename: filename,
                 url: links[i].href,
-            });
+                hashes: {},
+            };
+            // Extract hash from URL fragment (#sha256=..., #md5=..., etc.)
+            var hashIdx = links[i].href.indexOf("#");
+            if (hashIdx !== -1) {
+                var fragment = links[i].href.substring(hashIdx + 1);
+                var eqIdx = fragment.indexOf("=");
+                if (eqIdx !== -1) {
+                    var algo = fragment.substring(0, eqIdx);
+                    var digest = fragment.substring(eqIdx + 1);
+                    if (algo && digest) {
+                        entry.hashes[algo] = digest;
+                    }
+                }
+            }
+            files.push(entry);
         }
     }
     return files;
