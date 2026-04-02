@@ -1,5 +1,5 @@
 locals {
-  secret_store_arn = "arn:aws:secretsmanager:${local.aws_region}:${local.aws_account_id}:secret:${var.secret_name}"
+  secret_store_arn = aws_secretsmanager_secret.main.arn
 
   availability_zones = [
     for suffix in var.availability_zone_suffixes :

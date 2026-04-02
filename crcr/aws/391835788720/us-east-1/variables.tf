@@ -3,9 +3,16 @@ variable "github_app_id" {
   type        = string
 }
 
-variable "secret_name" {
-  description = "Secrets Manager secret name holding GitHub App credentials"
+variable "github_app_secret" {
+  description = "GitHub App webhook secret for HMAC signature verification"
   type        = string
+  sensitive   = true
+}
+
+variable "github_app_privatekey" {
+  description = "PEM-encoded GitHub App private key"
+  type        = string
+  sensitive   = true
 }
 
 variable "upstream_repo" {
