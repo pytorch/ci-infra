@@ -173,6 +173,35 @@ def render_json(package_name: str, files: list[dict]) -> str:
     )
 
 
+def html_links_to_json_files(links: list[dict]) -> list[dict]:
+    """Convert HTML link objects to PEP 691 JSON file objects.
+
+    Used when pypiserver returns HTML but the client requested JSON format.
+    Mirrors: htmlLinksToJsonFiles() in merge_indexes.js
+    """
+    files = []
+    for link in links:
+        filename = extract_filename(link["href"])
+        if filename:
+            files.append({"filename": filename, "url": link["href"]})
+    return files
+
+
+def parse_files_with_fallback(response_text: str) -> list[dict]:
+    """Parse as PEP 691 JSON; if JSON.parse fails, fall back to HTML.
+
+    If JSON.parse succeeds, the result is trusted even if files is empty.
+    Mirrors: parseFilesWithFallback() in merge_indexes.js
+    """
+    if not response_text:
+        return []
+    try:
+        data = json.loads(response_text)
+        return data.get("files", [])
+    except (json.JSONDecodeError, ValueError):
+        return html_links_to_json_files(parse_html_links(response_text))
+
+
 def rewrite_html_body(body: str) -> str:
     """Rewrite all upstream URLs in an HTML response body.
 
@@ -985,3 +1014,245 @@ class TestScenarioMatrixJson:
         assert parsed["name"] == "cffi"
         assert len(parsed["files"]) == 3
         assert parsed["meta"]["api_version"] == "1.0"
+
+
+# ---------------------------------------------------------------------------
+# TestHtmlLinksToJsonFiles
+# ---------------------------------------------------------------------------
+class TestHtmlLinksToJsonFiles:
+    """Tests for htmlLinksToJsonFiles() — HTML link objects to JSON file objects."""
+
+    def test_basic_conversion(self):
+        """Converts standard HTML links to JSON file objects."""
+        links = [
+            {"href": "/packages/foo-1.0.whl#sha256=abc", "text": "foo-1.0.whl"},
+            {"href": "/packages/bar-2.0.tar.gz", "text": "bar-2.0.tar.gz"},
+        ]
+        result = html_links_to_json_files(links)
+        assert len(result) == 2
+        assert result[0] == {"filename": "foo-1.0.whl", "url": "/packages/foo-1.0.whl#sha256=abc"}
+        assert result[1] == {"filename": "bar-2.0.tar.gz", "url": "/packages/bar-2.0.tar.gz"}
+
+    def test_skips_empty_filename(self):
+        """Links with no extractable filename are skipped."""
+        links = [
+            {"href": "/", "text": ".."},
+            {"href": "/packages/foo-1.0.whl", "text": "foo-1.0.whl"},
+        ]
+        result = html_links_to_json_files(links)
+        assert len(result) == 1
+        assert result[0]["filename"] == "foo-1.0.whl"
+
+    def test_empty_input(self):
+        """Empty link list returns empty file list."""
+        assert html_links_to_json_files([]) == []
+
+    def test_preserves_full_href_as_url(self):
+        """The url field retains the full href including hash fragment."""
+        links = [
+            {
+                "href": "/packages/numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.whl#sha256=deadbeef",
+                "text": "numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.whl",
+            },
+        ]
+        result = html_links_to_json_files(links)
+        assert result[0]["url"] == links[0]["href"]
+        assert result[0]["filename"] == "numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.whl"
+
+    def test_upstream_absolute_urls(self):
+        """Upstream absolute URLs are preserved (rewriting is a separate step)."""
+        links = [
+            {
+                "href": "https://files.pythonhosted.org/packages/fc/97/foo-1.0.whl",
+                "text": "foo-1.0.whl",
+            },
+        ]
+        result = html_links_to_json_files(links)
+        assert result[0]["url"] == links[0]["href"]
+        assert result[0]["filename"] == "foo-1.0.whl"
+
+
+# ---------------------------------------------------------------------------
+# TestParseFilesWithFallback
+# ---------------------------------------------------------------------------
+class TestParseFilesWithFallback:
+    """Tests for parseFilesWithFallback() — JSON parse with HTML fallback."""
+
+    def test_valid_json_returns_files(self):
+        """Valid PEP 691 JSON is parsed normally."""
+        body = _json_response(
+            "numpy",
+            [
+                _json_file("numpy-2.4.4.whl", "/packages/numpy-2.4.4.whl"),
+            ],
+        )
+        result = parse_files_with_fallback(body)
+        assert len(result) == 1
+        assert result[0]["filename"] == "numpy-2.4.4.whl"
+
+    def test_html_input_falls_back(self):
+        """HTML input (JSON parse fails) falls back to HTML parsing."""
+        result = parse_files_with_fallback(LOCAL_HTML_WRONG_VARIANT)
+        assert len(result) == 1
+        assert result[0]["filename"] == ("cffi-1.17.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl")
+
+    def test_empty_string_returns_empty(self):
+        """Empty string returns empty list (no fallback attempt)."""
+        assert parse_files_with_fallback("") == []
+
+    def test_json_with_empty_files_and_nonempty_body(self):
+        """JSON with empty files array returns empty (no fallback — JSON was valid)."""
+        body = _json_response("empty-pkg", [])
+        result = parse_files_with_fallback(body)
+        assert result == []
+
+    def test_garbage_input_returns_empty(self):
+        """Non-JSON, non-HTML input returns empty (HTML parse finds no links)."""
+        assert parse_files_with_fallback("this is not html or json") == []
+
+    def test_pypiserver_html_with_multiple_wheels(self):
+        """pypiserver-style HTML with multiple wheels is converted correctly."""
+        html = _html_page(
+            "torch",
+            [
+                ("/packages/torch-2.5.0-cp312-cp312-linux_x86_64.whl", "torch-2.5.0-cp312-cp312-linux_x86_64.whl"),
+                ("/packages/torch-2.5.0-cp311-cp311-linux_x86_64.whl", "torch-2.5.0-cp311-cp311-linux_x86_64.whl"),
+            ],
+        )
+        result = parse_files_with_fallback(html)
+        assert len(result) == 2
+        filenames = [f["filename"] for f in result]
+        assert "torch-2.5.0-cp312-cp312-linux_x86_64.whl" in filenames
+        assert "torch-2.5.0-cp311-cp311-linux_x86_64.whl" in filenames
+
+
+# ---------------------------------------------------------------------------
+# TestMixedFormatMerge — the exact bug scenario (PEP 691 format mismatch)
+# ---------------------------------------------------------------------------
+class TestMixedFormatMerge:
+    """Tests for the PEP 691 format mismatch bug.
+
+    Reproduces the exact failure: pip requests JSON, pypiserver returns HTML,
+    pypi.org returns JSON. Without parseFilesWithFallback, local files parse
+    as empty and upstream hash-based URLs pass through without deduplication.
+    """
+
+    # Realistic numpy HTML from pypiserver (flat local paths)
+    LOCAL_NUMPY_HTML = (
+        "<!DOCTYPE html>\n"
+        "<html><head><title>Links for numpy</title></head><body>\n"
+        "<h1>Links for numpy</h1>\n"
+        '<a href="/packages/numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64'
+        '.manylinux_2_28_x86_64.whl#sha256=aaa111">'
+        "numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64"
+        ".manylinux_2_28_x86_64.whl</a>\n"
+        '<a href="/packages/numpy-2.4.4-cp311-cp311-manylinux_2_27_x86_64'
+        '.manylinux_2_28_x86_64.whl#sha256=bbb222">'
+        "numpy-2.4.4-cp311-cp311-manylinux_2_27_x86_64"
+        ".manylinux_2_28_x86_64.whl</a>\n"
+        "</body></html>"
+    )
+
+    # Realistic numpy JSON from pypi.org (hash-based upstream paths)
+    UPSTREAM_NUMPY_JSON = _json_response(
+        "numpy",
+        [
+            _json_file(
+                "numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+                "https://files.pythonhosted.org/packages/0a/0d/0e3ecece05b7a7e87ab9fb587855548da437a061326fff64a223b6dcb78a/"
+                "numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+                hashes={"sha256": "upstream_hash_1"},
+            ),
+            _json_file(
+                "numpy-2.4.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+                "https://files.pythonhosted.org/packages/1b/2c/abcdef/"
+                "numpy-2.4.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+                hashes={"sha256": "upstream_hash_2"},
+            ),
+            _json_file(
+                "numpy-2.4.4-cp312-cp312-macosx_14_0_arm64.whl",
+                "https://files.pythonhosted.org/packages/3d/4e/fghijk/numpy-2.4.4-cp312-cp312-macosx_14_0_arm64.whl",
+                hashes={"sha256": "upstream_hash_3"},
+            ),
+        ],
+    )
+
+    def test_bug_scenario_old_behavior(self):
+        """Without fallback: local HTML parsed as JSON returns empty,
+        ALL upstream files pass through (the bug)."""
+        # Simulate the OLD broken behavior
+        local_files = parse_json_files(self.LOCAL_NUMPY_HTML)  # returns []
+        upstream_files = parse_json_files(self.UPSTREAM_NUMPY_JSON)
+
+        assert local_files == []  # This IS the bug
+        assert len(upstream_files) == 3
+
+        merged = merge_json_files(local_files, upstream_files)
+        # All 3 upstream files pass through — no dedup happened
+        assert len(merged) == 3
+
+    def test_bug_scenario_fixed_behavior(self):
+        """With parseFilesWithFallback: local HTML is converted to JSON files,
+        deduplication works, local flat paths win on collision."""
+        local_files = parse_files_with_fallback(self.LOCAL_NUMPY_HTML)
+        upstream_files = parse_files_with_fallback(self.UPSTREAM_NUMPY_JSON)
+
+        # Local HTML was successfully parsed via fallback
+        assert len(local_files) == 2
+        # Upstream JSON parsed normally
+        assert len(upstream_files) == 3
+
+        merged = merge_json_files(local_files, upstream_files)
+
+        # 2 local + 1 upstream-only (macosx) = 3 total
+        assert len(merged) == 3
+
+        filenames = {f["filename"]: f for f in merged}
+
+        # Local wheels use flat paths (local wins dedup)
+        cp312_linux = filenames["numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"]
+        assert cp312_linux["url"].startswith("/packages/numpy-")
+        assert "pythonhosted" not in cp312_linux["url"]
+
+        cp311_linux = filenames["numpy-2.4.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"]
+        assert cp311_linux["url"].startswith("/packages/numpy-")
+        assert "pythonhosted" not in cp311_linux["url"]
+
+        # Upstream-only wheel passes through with rewritten URL
+        macosx = filenames["numpy-2.4.4-cp312-cp312-macosx_14_0_arm64.whl"]
+        assert macosx["url"].startswith("/packages/3d/4e/")
+
+    def test_local_only_html_as_json(self):
+        """Local-only scenario (upstream failed): local HTML served as JSON."""
+        local_files = parse_files_with_fallback(self.LOCAL_NUMPY_HTML)
+        rendered = render_json("numpy", local_files)
+        parsed = json.loads(rendered)
+
+        assert parsed["name"] == "numpy"
+        assert len(parsed["files"]) == 2
+        assert all(f["url"].startswith("/packages/numpy-") for f in parsed["files"])
+
+    def test_upstream_only_json(self):
+        """Upstream-only scenario (local failed): upstream JSON returned with rewriting."""
+        upstream_files = parse_files_with_fallback(self.UPSTREAM_NUMPY_JSON)
+        rewritten = rewrite_json_files(upstream_files)
+        rendered = render_json("numpy", rewritten)
+        parsed = json.loads(rendered)
+
+        assert len(parsed["files"]) == 3
+        # All upstream URLs should be rewritten (pythonhosted prefix removed)
+        for f in parsed["files"]:
+            assert "pythonhosted.org" not in f["url"]
+            assert f["url"].startswith("/packages/")
+
+    def test_both_html_still_works(self):
+        """When both sources return HTML, fallback parses both correctly."""
+        local_files = parse_files_with_fallback(LOCAL_HTML_WRONG_VARIANT)
+        upstream_files = parse_files_with_fallback(UPSTREAM_HTML_FULL)
+
+        assert len(local_files) == 1
+        assert len(upstream_files) == 3
+
+        merged = merge_json_files(local_files, upstream_files)
+        # 1 local (cp312 x86_64) + 1 upstream-only (cp311 aarch64) + 1 sdist = 3
+        assert len(merged) == 3

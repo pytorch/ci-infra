@@ -181,6 +181,48 @@ function mergeJsonFiles(localFiles, upstreamFiles) {
 }
 
 /**
+ * Convert HTML link objects to PEP 691 JSON file objects.
+ * Used when pypiserver returns HTML but the client requested JSON format.
+ * pypiserver v2.x does not support PEP 691 — it always returns HTML
+ * regardless of the Accept header. This function bridges the format gap
+ * so HTML responses can participate in JSON-format merges.
+ */
+function htmlLinksToJsonFiles(links) {
+    var files = [];
+    for (var i = 0; i < links.length; i++) {
+        var filename = extractFilename(links[i].href);
+        if (filename) {
+            files.push({
+                filename: filename,
+                url: links[i].href,
+            });
+        }
+    }
+    return files;
+}
+
+/**
+ * Attempt to parse a response body as PEP 691 JSON; if JSON.parse fails
+ * (indicating the response is HTML, not JSON), fall back to parsing as
+ * HTML and converting to JSON file objects. This handles backends (like
+ * pypiserver v2.x) that return HTML regardless of the Accept header.
+ *
+ * If JSON.parse succeeds, the result is trusted even if files is empty
+ * (a valid JSON response with no files is not an HTML fallback case).
+ */
+function parseFilesWithFallback(responseText) {
+    if (!responseText || responseText.length === 0) {
+        return [];
+    }
+    try {
+        var data = JSON.parse(responseText);
+        return data.files || [];
+    } catch (e) {
+        return htmlLinksToJsonFiles(parseHtmlLinks(responseText));
+    }
+}
+
+/**
  * Render a PEP 503 HTML index page from an array of link objects.
  */
 function renderHtml(packageName, links) {
@@ -350,16 +392,22 @@ function mergeSimple(r) {
         setHeaders(r, useJson);
         var pkg = packageFromUri(r.uri);
 
-        // Only local — return as-is
+        // Only local — return as-is (convert to JSON if client wants JSON)
         if (localOk && !upstreamOk) {
-            r.return(200, localResp.responseText);
+            if (useJson) {
+                var localOnly = parseFilesWithFallback(localResp.responseText);
+                r.return(200, renderJson(
+                    { "api-version": "1.1" }, pkg, localOnly));
+            } else {
+                r.return(200, localResp.responseText);
+            }
             return;
         }
 
         // Only upstream — return with URL rewriting
         if (!localOk && upstreamOk) {
             if (useJson) {
-                var files = parseJsonFiles(upstreamResp.responseText);
+                var files = parseFilesWithFallback(upstreamResp.responseText);
                 var rewritten = rewriteJsonFileUrls(files);
                 var meta = extractJsonMeta(upstreamResp.responseText);
                 r.return(200, renderJson(meta.meta, meta.name || pkg, rewritten));
@@ -371,8 +419,8 @@ function mergeSimple(r) {
 
         // Both OK — merge and deduplicate
         if (useJson) {
-            var localFiles = parseJsonFiles(localResp.responseText);
-            var upstreamFiles = parseJsonFiles(upstreamResp.responseText);
+            var localFiles = parseFilesWithFallback(localResp.responseText);
+            var upstreamFiles = parseFilesWithFallback(upstreamResp.responseText);
             var merged = mergeJsonFiles(localFiles, upstreamFiles);
             var jsonMeta = extractJsonMeta(upstreamResp.responseText);
             if (!jsonMeta.name) {

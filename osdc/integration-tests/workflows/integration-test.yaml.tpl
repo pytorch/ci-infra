@@ -481,24 +481,15 @@ jobs:
 
           LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
           UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
-          echo "Local wheels (all): $LOCAL_COUNT"
+          echo "Local wheels: $LOCAL_COUNT"
           echo "Upstream wheels: $UPSTREAM_COUNT"
 
-          # Filter local wheels by current Python version — the wheelhouse may
-          # have wheels for other Python versions (e.g. cp313t) that pip cannot
-          # use on this runtime.  Only enable local-serving validation when
-          # there are actually compatible local wheels.
-          PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
-          LOCAL_COMPAT_COUNT=$(grep -E 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html \
-            | grep -cE "${PY_TAG}|py3-none-any" || true)
-          echo "Local wheels (${PY_TAG}-compatible): $LOCAL_COMPAT_COUNT"
-
-          if [ "${LOCAL_COMPAT_COUNT:-0}" -eq 0 ]; then
-            echo "::warning::No ${PY_TAG}-compatible local numpy wheels — skipping local wheel validation"
+          if [ "$LOCAL_COUNT" -eq 0 ]; then
+            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
             echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
           else
             echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
-            echo "PASS: Found $LOCAL_COMPAT_COUNT ${PY_TAG}-compatible local numpy wheels in wheel cache"
+            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
           fi
 
       - name: Install numpy from local wheel cache
@@ -506,7 +497,12 @@ jobs:
         run: |
           echo "=== Install numpy from local wheel cache ==="
           pip uninstall -y numpy >/dev/null 2>&1 || true
-          pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
+          # Unset PIP_EXTRA_INDEX_URL so pip resolves only from /simple/
+          # (the njs merged index where local wheels win).  The /whl/cpu/
+          # extra index proxies download.pytorch.org which also lists numpy
+          # with upstream hash-based URLs, causing pip to sometimes pick
+          # the upstream link even when a local wheel exists.
+          PIP_EXTRA_INDEX_URL="" pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
           DOWNLOAD_URL=$(grep -E 'Downloading.+numpy.+\.whl' /tmp/pip-numpy.log \
             | grep -oE 'http://[^ ]+\.whl' | head -1 || true)
           echo "Download URL: ${DOWNLOAD_URL:-not found in pip output}"
@@ -845,24 +841,15 @@ jobs:
 
           LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
           UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
-          echo "Local wheels (all): $LOCAL_COUNT"
+          echo "Local wheels: $LOCAL_COUNT"
           echo "Upstream wheels: $UPSTREAM_COUNT"
 
-          # Filter local wheels by current Python version — the wheelhouse may
-          # have wheels for other Python versions (e.g. cp313t) that pip cannot
-          # use on this runtime.  Only enable local-serving validation when
-          # there are actually compatible local wheels.
-          PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
-          LOCAL_COMPAT_COUNT=$(grep -E 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html \
-            | grep -cE "${PY_TAG}|py3-none-any" || true)
-          echo "Local wheels (${PY_TAG}-compatible): $LOCAL_COMPAT_COUNT"
-
-          if [ "${LOCAL_COMPAT_COUNT:-0}" -eq 0 ]; then
-            echo "::warning::No ${PY_TAG}-compatible local numpy wheels — skipping local wheel validation"
+          if [ "$LOCAL_COUNT" -eq 0 ]; then
+            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
             echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
           else
             echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
-            echo "PASS: Found $LOCAL_COMPAT_COUNT ${PY_TAG}-compatible local numpy wheels in wheel cache"
+            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
           fi
 
       - name: Install numpy from local wheel cache
@@ -870,7 +857,12 @@ jobs:
         run: |
           echo "=== Install numpy from local wheel cache ==="
           pip uninstall -y numpy >/dev/null 2>&1 || true
-          pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
+          # Unset PIP_EXTRA_INDEX_URL so pip resolves only from /simple/
+          # (the njs merged index where local wheels win).  The /whl/cpu/
+          # extra index proxies download.pytorch.org which also lists numpy
+          # with upstream hash-based URLs, causing pip to sometimes pick
+          # the upstream link even when a local wheel exists.
+          PIP_EXTRA_INDEX_URL="" pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
           DOWNLOAD_URL=$(grep -E 'Downloading.+numpy.+\.whl' /tmp/pip-numpy.log \
             | grep -oE 'http://[^ ]+\.whl' | head -1 || true)
           echo "Download URL: ${DOWNLOAD_URL:-not found in pip output}"
@@ -1240,24 +1232,15 @@ jobs:
 
           LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
           UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
-          echo "Local wheels (all): $LOCAL_COUNT"
+          echo "Local wheels: $LOCAL_COUNT"
           echo "Upstream wheels: $UPSTREAM_COUNT"
 
-          # Filter local wheels by current Python version — the wheelhouse may
-          # have wheels for other Python versions (e.g. cp313t) that pip cannot
-          # use on this runtime.  Only enable local-serving validation when
-          # there are actually compatible local wheels.
-          PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
-          LOCAL_COMPAT_COUNT=$(grep -E 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html \
-            | grep -cE "${PY_TAG}|py3-none-any" || true)
-          echo "Local wheels (${PY_TAG}-compatible): $LOCAL_COMPAT_COUNT"
-
-          if [ "${LOCAL_COMPAT_COUNT:-0}" -eq 0 ]; then
-            echo "::warning::No ${PY_TAG}-compatible local numpy wheels — skipping local wheel validation"
+          if [ "$LOCAL_COUNT" -eq 0 ]; then
+            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
             echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
           else
             echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
-            echo "PASS: Found $LOCAL_COMPAT_COUNT ${PY_TAG}-compatible local numpy wheels in wheel cache"
+            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
           fi
 
       - name: Install numpy from local wheel cache
@@ -1265,7 +1248,12 @@ jobs:
         run: |
           echo "=== Install numpy from local wheel cache ==="
           pip uninstall -y numpy >/dev/null 2>&1 || true
-          pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
+          # Unset PIP_EXTRA_INDEX_URL so pip resolves only from /simple/
+          # (the njs merged index where local wheels win).  The /whl/cpu/
+          # extra index proxies download.pytorch.org which also lists numpy
+          # with upstream hash-based URLs, causing pip to sometimes pick
+          # the upstream link even when a local wheel exists.
+          PIP_EXTRA_INDEX_URL="" pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
           DOWNLOAD_URL=$(grep -E 'Downloading.+numpy.+\.whl' /tmp/pip-numpy.log \
             | grep -oE 'http://[^ ]+\.whl' | head -1 || true)
           echo "Download URL: ${DOWNLOAD_URL:-not found in pip output}"
