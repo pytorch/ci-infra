@@ -40,35 +40,37 @@ alloy:
       }
 
       // Drop high-cardinality and low-value metrics before remote_write.
+      // Most filtering is done at ServiceMonitor level (keep whitelists).
+      // These rules catch anything that slips through from sources without per-monitor filtering.
       prometheus.relabel "cost_control" {
         forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 
-        // Drop noisy cadvisor metrics (network, tasks, load avg, blkio, spec)
+        // --- KSM: drop low-value metrics ---
         rule {
           action        = "drop"
           source_labels = ["__name__"]
-          regex         = "container_network_(tcp|udp)_usage_total|container_tasks_state|container_cpu_load_average_10s|container_memory_failures_total"
+          regex         = "kube_.*_created|kube_.*_metadata_resource_version|kube_secret_.*|kube_configmap_.*|kube_endpoint_.*|kube_lease_.*|kube_pod_.*"
         }
 
-        // Drop cadvisor lifecycle and spec metrics
+        // --- drop misc high-cardinality metrics ---
         rule {
           action        = "drop"
           source_labels = ["__name__"]
-          regex         = "container_blkio_device_usage_total|container_last_seen|container_start_time_seconds|container_spec_.*"
+          regex         = "kubernetes_feature_enabled"
         }
 
-        // Drop low-value KSM metrics
-        rule {
-          action        = "drop"
-          source_labels = ["__name__"]
-          regex         = "kube_.*_created|kube_.*_metadata_resource_version|kube_secret_.*|kube_configmap_.*|kube_endpoint_.*|kube_lease_.*"
-        }
-
-        // Drop ARC histogram buckets (keep sum/count)
+        // --- ARC histogram buckets (keep sum/count) ---
         rule {
           action        = "drop"
           source_labels = ["__name__"]
           regex         = "gha_job_(execution|startup)_duration_seconds_bucket"
+        }
+
+        // --- go/process/promhttp internals from any source ---
+        rule {
+          action        = "drop"
+          source_labels = ["__name__"]
+          regex         = "go_.*|process_.*|promhttp_.*"
         }
       }
 

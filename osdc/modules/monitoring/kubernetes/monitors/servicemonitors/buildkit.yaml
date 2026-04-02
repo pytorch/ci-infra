@@ -17,3 +17,20 @@ spec:
     - port: metrics
       path: /debug/metrics_prometheus
       interval: 30s
+      metricRelabelings:
+        # Drop Go runtime metrics — high cardinality, no operational value
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "go_.*"
+        # Drop process metrics — duplicated by node-exporter
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "process_.*"
+        # Drop promhttp and target_info — internal handler metrics, no value
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "promhttp_.*|target_info"
+        # Drop histogram buckets — keep _sum/_count for latency tracking
+        - action: drop
+          sourceLabels: [__name__]
+          regex: ".*_bucket"

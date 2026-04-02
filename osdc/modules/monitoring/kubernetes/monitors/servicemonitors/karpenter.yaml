@@ -15,3 +15,8 @@ spec:
   endpoints:
     - port: http-metrics
       interval: 30s
+      metricRelabelings:
+        # Keep only node/nodepool/nodeclaim lifecycle and interruption metrics
+        - action: keep
+          sourceLabels: [__name__]
+          regex: "karpenter_nodes_.*|karpenter_nodepools_.*|karpenter_nodeclaims_.*|karpenter_interruption_.*"

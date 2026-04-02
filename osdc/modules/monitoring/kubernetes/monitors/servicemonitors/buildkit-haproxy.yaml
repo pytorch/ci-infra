@@ -16,3 +16,16 @@ spec:
   endpoints:
     - port: metrics
       interval: 30s
+      metricRelabelings:
+        # Drop DNS resolver metrics — not relevant for buildkit LB
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "haproxy_resolver_.*"
+        # Drop low-value process internals
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "haproxy_process_(pipes|pool|ssl|zlib|http_comp|spliced|dropped|recv|jobs|tasks|busy|connected|active|frontend_ssl|backend_ssl|limit|hard_max|max_pipes|max_memory|max_zlib|nbproc|relative|stopping|unstoppable).*"
+        # Drop aggregate check status (redundant with server_status)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "haproxy_backend_agg_.*"

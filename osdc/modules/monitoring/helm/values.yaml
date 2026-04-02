@@ -30,6 +30,24 @@ kubeScheduler:
 kubeEtcd:
   enabled: false
 
+# --- kubelet + cadvisor ServiceMonitor ---
+kubelet:
+  enabled: true
+  serviceMonitor:
+    # cadvisor: keep only pod-level memory metrics (per pod/container series)
+    # - container_memory_working_set_bytes: active memory used by pod; K8s uses this for OOM kill decisions
+    # - container_memory_rss: physical memory (no cache); useful for spotting memory leaks
+    # NOTE: these generate one series per container, so high pod churn (e.g. runners) increases cardinality
+    cAdvisorMetricRelabelings:
+      - action: keep
+        sourceLabels: [__name__]
+        regex: "container_memory_working_set_bytes|container_memory_rss"
+    # kubelet: keep only running pod/container counts
+    metricRelabelings:
+      - action: keep
+        sourceLabels: [__name__]
+        regex: "kubelet_running_(pods|containers)|kubelet_node_name"
+
 # --- Grafana (DISABLED — use Grafana Cloud) ---
 grafana:
   enabled: false
@@ -66,11 +84,37 @@ prometheus-node-exporter:
   prometheus:
     monitor:
       interval: 60s
+      metricRelabelings:
+        # Keep only CPU (idle/iowait) and memory — drop everything else
+        - action: keep
+          sourceLabels: [__name__]
+          regex: "node_cpu_seconds_total|node_memory_MemAvailable_bytes|node_memory_MemTotal_bytes"
+        - action: drop
+          sourceLabels: [__name__, mode]
+          regex: "node_cpu_seconds_total;(user|system|nice|irq|softirq|steal)"
 
 # --- kube-state-metrics ---
 kube-state-metrics:
   extraArgs:
-    - --metric-allowlist=kube_(daemonset|deployment|pod|namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|replicaset|job)_.+
+    - --metric-allowlist=kube_(daemonset|deployment|pod|namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.+
+  prometheus:
+    monitor:
+      metricRelabelings:
+        # Drop all kube_pod_* except error indicators
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "kube_pod_(?!container_status_last_terminated_reason|container_status_last_terminated_exitcode|status_reason).*"
+        # Drop low-value node metrics
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "kube_node_status_addresses"
+        # Drop successful terminations (only keep actual errors)
+        - action: drop
+          sourceLabels: [__name__, reason]
+          regex: "kube_pod_container_status_last_terminated_reason;Completed"
+        - action: drop
+          sourceLabels: [__name__, container_exit_code]
+          regex: "kube_pod_container_status_last_terminated_exitcode;0"
   tolerations:
     - key: CriticalAddonsOnly
       operator: Equal

@@ -111,6 +111,8 @@ EOF
     grafana/alloy
 
   rm -f "$ALLOY_OVERRIDE"
+  kubectl rollout restart deployment/alloy -n "$NAMESPACE"
+  kubectl rollout status deployment/alloy -n "$NAMESPACE" --timeout=3m
   echo "Alloy installed — pushing metrics to Grafana Cloud."
 else
   echo "No grafana-cloud-credentials secret found, skipping Alloy (no remote metrics push)."

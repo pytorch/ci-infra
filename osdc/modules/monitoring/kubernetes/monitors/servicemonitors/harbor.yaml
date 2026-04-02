@@ -16,3 +16,8 @@ spec:
   endpoints:
     - port: metrics
       interval: 30s
+      metricRelabelings:
+        # Drop Go runtime and process metrics — no operational value
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "go_.*|process_.*|promhttp_.*"
