@@ -77,9 +77,14 @@ Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy 
 - **BuildKit** — all metrics except go/process/promhttp internals and histogram buckets
 - **BuildKit HAProxy** — all metrics except resolver, process internals, aggregate check status
 - **Harbor** — all metrics except go/process/promhttp internals
-- **CoreDNS** — all metrics except go/process internals and histogram buckets
+- **CoreDNS** — all metrics except go/process internals and two histogram buckets (dns_request, forward_request); other histogram buckets (health, kubernetes, proxy) are not yet dropped (~170 series, low priority)
 - **DCGM (GPU)** — curated ~26 GPU metrics, high-cardinality labels dropped
 - **git-cache / node-compactor / ARC listeners** — all metrics (custom exporters, low volume)
+
+### TODO
+- **arc-listeners PodMonitor** returns no data — listener pods may not expose a metrics port or label selector may not match. Investigate and fix or remove.
+- **CoreDNS** still has unfiltered histogram buckets (health, kubernetes, proxy) — ~170 series, low priority.
+- **git-cache / node-compactor / ARC listeners** have no metricRelabelings — volume is low (~20-30 series each), not worth filtering yet.
 
 ### Metrics cost control
 
