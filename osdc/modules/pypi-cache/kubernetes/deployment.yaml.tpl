@@ -105,6 +105,10 @@ __INIT_NVME_BLOCK__
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
               readOnly: true
+            - name: nginx-config
+              mountPath: /etc/nginx/merge_indexes.js
+              subPath: merge_indexes.js
+              readOnly: true
             - name: nginx-cache
               mountPath: /var/cache/nginx
             - name: nginx-tmp

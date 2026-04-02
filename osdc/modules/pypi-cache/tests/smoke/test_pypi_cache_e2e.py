@@ -5,6 +5,7 @@ Exercises the active request pipeline:
 - Access log verification on EFS (nginx fallback logging to /data/logs/upstream/)
 - Wants-collector cycle health and S3 output validation
 - Wheel-syncer cycle health and EFS wheelhouse directory validation
+- Merged index validation (njs merge of local + upstream, PEP 691 content negotiation)
 
 These tests use kubectl exec into pypiserver containers to make HTTP requests
 to localhost:8080 (nginx). This bypasses the NetworkPolicy (which restricts
@@ -54,6 +55,31 @@ def _http_get_in_pod(pod_name: str, path: str) -> dict:
         f"    resp = urllib.request.urlopen('http://localhost:8080{path}', timeout=10)\n"
         "    body = resp.read().decode('utf-8', errors='replace')\n"
         "    print(json.dumps({'status': resp.status, 'body': body[:2000]}))\n"
+        "except urllib.error.HTTPError as e:\n"
+        "    print(json.dumps({'status': e.code, 'error': str(e)}))\n"
+        "except Exception as e:\n"
+        "    print(json.dumps({'error': str(e)}))\n"
+        "    sys.exit(1)\n"
+    )
+    raw = _exec_in_pod(pod_name, "pypiserver", ["python3", "-c", script])
+    return json.loads(raw)
+
+
+def _http_get_in_pod_accept(pod_name: str, path: str, accept: str) -> dict:
+    """Like _http_get_in_pod but sends a custom Accept header.
+
+    Returns dict with 'status', 'body', and 'content_type' on success,
+    or 'error' on failure.
+    """
+    script = (
+        "import urllib.request, urllib.error, json, sys\n"
+        "try:\n"
+        f"    req = urllib.request.Request('http://localhost:8080{path}')\n"
+        f"    req.add_header('Accept', '{accept}')\n"
+        "    resp = urllib.request.urlopen(req, timeout=10)\n"
+        "    body = resp.read().decode('utf-8', errors='replace')\n"
+        "    ct = resp.headers.get('Content-Type', '')\n"
+        "    print(json.dumps({'status': resp.status, 'body': body[:2000], 'content_type': ct}))\n"
         "except urllib.error.HTTPError as e:\n"
         "    print(json.dumps({'status': e.code, 'error': str(e)}))\n"
         "except Exception as e:\n"
@@ -332,3 +358,77 @@ class TestPypiCacheWheelSyncerPipeline:
                 f"Wheelhouse directory '/data/wheelhouse/{slug}/' not found on EFS. "
                 f"The wheel-syncer should create this directory on its first cycle."
             )
+
+
+# ============================================================================
+# Merged Index (njs)
+# ============================================================================
+
+
+class TestPypiCacheMergedIndex:
+    """Verify the njs-merged simple index returns valid responses.
+
+    nginx uses njs to merge the local pypiserver index with the upstream
+    PyPI index into a single response. These tests validate that the merged
+    index contains upstream links and respects PEP 691 content negotiation.
+    """
+
+    def test_merged_index_contains_upstream_links(
+        self, pypi_cache_pods: dict[str, str], pypi_cache_slugs: list[str]
+    ) -> None:
+        """Request /simple/requests/ — merged index must contain download links.
+
+        The njs merge combines local wheelhouse entries with upstream PyPI
+        links. For a well-known package like 'requests', the merged response
+        must contain at least one download link from upstream.
+        """
+        slug = pypi_cache_slugs[0]
+        pod_name = pypi_cache_pods.get(slug)
+        if not pod_name:
+            pytest.fail(f"No Running pod found for pypi-cache-{slug}")
+        result = _http_get_in_pod(pod_name, f"/simple/{TEST_PACKAGE}/")
+        assert "error" not in result, f"Merged index request failed for pypi-cache-{slug}: {result.get('error')}"
+        assert result.get("status") == 200, (
+            f"Merged index for '{TEST_PACKAGE}' on pypi-cache-{slug} returned {result.get('status')}, expected 200."
+        )
+        body = result.get("body", "")
+        assert "href" in body.lower(), (
+            f"Merged index response for '{TEST_PACKAGE}' on pypi-cache-{slug} "
+            f"does not contain download links. Body preview: {body[:300]}"
+        )
+
+    def test_merged_index_content_type_html(self, pypi_cache_pods: dict[str, str], pypi_cache_slugs: list[str]) -> None:
+        """Default Accept header must return an HTML content type."""
+        slug = pypi_cache_slugs[0]
+        pod_name = pypi_cache_pods.get(slug)
+        if not pod_name:
+            pytest.fail(f"No Running pod found for pypi-cache-{slug}")
+        result = _http_get_in_pod_accept(pod_name, f"/simple/{TEST_PACKAGE}/", "text/html")
+        assert "error" not in result, f"HTML index request failed for pypi-cache-{slug}: {result.get('error')}"
+        assert result.get("status") == 200, (
+            f"HTML index for '{TEST_PACKAGE}' on pypi-cache-{slug} returned {result.get('status')}, expected 200."
+        )
+        ct = result.get("content_type", "")
+        assert "html" in ct.lower(), (
+            f"Expected HTML content type for text/html Accept header, got '{ct}' on pypi-cache-{slug}."
+        )
+
+    def test_merged_index_content_type_json(self, pypi_cache_pods: dict[str, str], pypi_cache_slugs: list[str]) -> None:
+        """PEP 691 Accept header must return a JSON content type."""
+        slug = pypi_cache_slugs[0]
+        pod_name = pypi_cache_pods.get(slug)
+        if not pod_name:
+            pytest.fail(f"No Running pod found for pypi-cache-{slug}")
+        result = _http_get_in_pod_accept(
+            pod_name,
+            f"/simple/{TEST_PACKAGE}/",
+            "application/vnd.pypi.simple.v1+json",
+        )
+        assert "error" not in result, f"JSON index request failed for pypi-cache-{slug}: {result.get('error')}"
+        assert result.get("status") == 200, (
+            f"JSON index for '{TEST_PACKAGE}' on pypi-cache-{slug} returned {result.get('status')}, expected 200."
+        )
+        ct = result.get("content_type", "")
+        assert "json" in ct.lower(), (
+            f"Expected JSON content type for PEP 691 Accept header, got '{ct}' on pypi-cache-{slug}."
+        )

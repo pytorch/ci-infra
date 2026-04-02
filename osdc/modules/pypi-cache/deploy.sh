@@ -82,13 +82,20 @@ NGINX_MAX_CACHE_SIZE=$(uv run "$MODULE_DIR/scripts/python/generate_manifests.py"
 echo "[pypi-cache] nginx max_cache_size: ${NGINX_MAX_CACHE_SIZE}"
 
 echo "[pypi-cache] Creating pypi-cache-nginx-config ConfigMap..."
+# Write rendered nginx.conf to a temp file so we can use --from-file.
+# --from-literal passes content through shell expansion, which mangles
+# nginx config content.
+NGINX_CONF_TMP=$(mktemp)
+trap 'rm -f "$NGINX_CONF_TMP"' EXIT
 sed -e "s/__DNS_RESOLVER__/${DNS_RESOLVER}/g" \
   -e "s/__NGINX_MAX_CACHE_SIZE__/${NGINX_MAX_CACHE_SIZE}/g" \
-  "$MODULE_DIR/kubernetes/nginx.conf" \
-  | kubectl create configmap pypi-cache-nginx-config \
-    --from-file=nginx.conf=/dev/stdin \
-    -n "$NAMESPACE" \
-    --dry-run=client -o yaml | kubectl apply -f -
+  "$MODULE_DIR/kubernetes/nginx.conf" >"$NGINX_CONF_TMP"
+
+kubectl create configmap pypi-cache-nginx-config \
+  --from-file=nginx.conf="$NGINX_CONF_TMP" \
+  --from-file=merge_indexes.js="$MODULE_DIR/kubernetes/merge_indexes.js" \
+  -n "$NAMESPACE" \
+  --dry-run=client -o yaml | kubectl apply -f -
 
 echo "[pypi-cache] Creating pypi-wants-collector-scripts ConfigMap..."
 kubectl create configmap pypi-wants-collector-scripts \
@@ -157,7 +164,7 @@ else
   _do_clear=1
   if [ -t 0 ]; then
     read -r -t 30 -p "[pypi-cache] Clear nginx cache before restart? (Y/n, 30s timeout=yes) " _answer || true
-    if [[ "${_answer}" =~ ^[Nn]$ ]]; then
+    if [[ "${_answer:-}" =~ ^[Nn]$ ]]; then
       _do_clear=0
     fi
   fi

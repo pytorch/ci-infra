@@ -25,7 +25,8 @@ builder.
 | `scripts/python/wants_collector.py` | Log scanner + PyPI filter + S3 uploader (mounted as ConfigMap) |
 | `scripts/python/test_wants_collector.py` | Unit tests for wants_collector.py |
 | `scripts/python/conftest.py` | pytest path setup for cross-module imports |
-| `kubernetes/nginx.conf` | nginx caching proxy config template (`__DNS_RESOLVER__`, `__NGINX_MAX_CACHE_SIZE__` placeholders) |
+| `kubernetes/nginx.conf` | nginx caching proxy config template with njs index merging (`__DNS_RESOLVER__`, `__NGINX_MAX_CACHE_SIZE__` placeholders) |
+| `kubernetes/merge_indexes.js` | njs script for merging local pypiserver + upstream pypi.org indexes (resolves BY/BZ index shadowing) |
 | `kubernetes/wants-collector-sa.yaml` | ServiceAccount for wants-collector (IRSA-annotated by deploy.sh) |
 | `kubernetes/wants-collector-deployment.yaml.tpl` | Wants-collector Deployment template (sed placeholders) |
 | `scripts/python/wheel_syncer.py` | S3-to-EFS wheel sync daemon (mounted as ConfigMap) |
@@ -168,18 +169,29 @@ One Deployment + Service per CUDA version:
 
 1. Composite GitHub Action sets `PIP_EXTRA_INDEX_URL` / `UV_INDEX` for the job
 2. pip/uv queries `pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/simple/{package}/`
-3. nginx checks its local cache — serves response immediately on cache hit
-4. On cache miss, nginx forwards to pypiserver on port 8081
-5. pypiserver checks the corresponding wheelhouse — serves wheel if found
-6. If not found, pypiserver returns 404 (or 500); nginx intercepts and proxies to
-   `pypi.org` server-side (transparent fallback — no client-side redirect)
-7. **nginx rewrites absolute `https://files.pythonhosted.org/packages/...` URLs in
-   the response body to relative `/packages/...` paths** (`sub_filter`). This
-   ensures pip fetches downloads through the proxy, not directly.
-8. pip requests `/packages/...` from the proxy; nginx proxies to
-   `files.pythonhosted.org` and caches the result (immutable packages cached 1 month)
-9. nginx caches index responses (10m) and package downloads (1 month)
-10. Access log records every request (the telemetry for self-learning)
+3. nginx's `/simple/` location invokes `merge_indexes.mergeSimple` (njs)
+4. The njs handler issues two subrequests in parallel:
+   - `/_internal/local/simple/{package}/` — proxied to pypiserver (local wheelhouse)
+   - `/_internal/upstream/simple/{package}/` — proxied to pypi.org
+5. The handler merges both index responses: deduplicates by filename (local wins
+   on collision), rewrites upstream absolute URLs to relative paths, and returns
+   the combined index to the client
+6. If only one source returns 200, that response is used (with URL rewriting for
+   upstream). If both fail, nginx returns 404.
+7. pip selects the best matching distribution from the merged index
+8. pip requests the download URL — routed by nginx to pypiserver (flat paths)
+   or `files.pythonhosted.org` (hash-based `/packages/` paths)
+9. nginx caches index responses (local 5m, upstream 10m) and downloads (1 month)
+10. Upstream fallback requests are logged to EFS for the wants-collector
+
+#### merge_indexes.js (njs)
+
+The njs script (`kubernetes/merge_indexes.js`) resolves the index shadowing
+problem where pypiserver returns HTTP 200 with wrong-variant wheels, preventing
+the upstream PyPI index from being consulted. By merging both indexes, clients
+always see the full set of available packages regardless of which variants are
+in the local wheelhouse. Supports both PEP 503 HTML and PEP 691 JSON formats.
+See `docs/nginx-routing-analysis.md` for the full scenario analysis.
 
 ### PyTorch packages (download.pytorch.org)
 
@@ -197,10 +209,12 @@ One Deployment + Service per CUDA version:
 ### nginx caching behavior
 
 - **Full-path caching**: nginx caches ALL responses — both pypiserver (local wheels)
-  and upstream (pypi.org, download.pytorch.org). Cache keys use a `local:` prefix for
-  pypiserver responses to prevent collision with upstream fallback entries for the same URI
-- **pypiserver index caching**: `/simple/` responses cached 5m (short TTL so new
-  wheels appear quickly after upload to EFS). Key: `local:$request_uri|$http_accept`
+  and upstream (pypi.org, download.pytorch.org). Cache keys use `local:` and
+  `upstream:` prefixes to prevent collision between sources for the same URI
+- **Index caching (njs subrequests)**: The `/simple/` location uses njs to merge
+  local and upstream indexes. Each subrequest is cached independently:
+  local responses cached 5m (`local:` prefix), upstream responses cached 10m
+  (`upstream:` prefix). Key includes `$http_accept` for PEP 691 content negotiation
 - **pypiserver wheel caching**: `.whl`, `.tar.gz`, `.zip` downloads cached 30d
   (wheels are immutable once built). Key: `local:$request_uri`
 - **proxy_cache_lock**: Only one request per cache key hits the backend; concurrent
