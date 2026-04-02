@@ -57,7 +57,7 @@ defaults:
       memory: "768Mi"
     nginx:
       cpu: 8
-      memory_gi: 2
+      memory_gi: 64
       cache_size: "30Gi"
     target_architectures: ["x86_64", "aarch64"]
     target_manylinux: "2_17"
@@ -105,8 +105,8 @@ and effective OS page cache utilization.
 
 Default sizing (r5d.12xlarge, 3 pods/node):
 - Total per pod: 14 vCPU, 105 GiB
-- nginx container: 8 vCPU, 2 GiB (fixed allocation)
-- pypiserver container: 6 vCPU, 103 GiB (remainder)
+- nginx container: 8 vCPU, 64 GiB (fixed allocation — njs subrequest buffers need headroom)
+- pypiserver container: 6 vCPU, 41 GiB (remainder)
 - Actual CUDA slugs (and therefore pods per node) depend on `cuda_versions` in `clusters.yaml`
 
 When `instance_type` is empty/unset, falls back to manual `server.*` config

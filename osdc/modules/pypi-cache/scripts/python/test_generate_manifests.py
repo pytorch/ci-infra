@@ -265,7 +265,7 @@ class TestLoadConfig:
         # Overridden field
         assert config["nginx"]["cpu"] == 4
         # Non-overridden fields preserved from DEFAULTS
-        assert config["nginx"]["memory_gi"] == 2
+        assert config["nginx"]["memory_gi"] == 64
         assert config["nginx"]["cache_size"] == "30Gi"
 
     def test_unknown_cluster_raises_system_exit(self, tmp_path: Path):
@@ -291,7 +291,7 @@ class TestLoadConfig:
         assert config["workers"] == 4
         assert config["nginx_image"] == "docker.io/nginxinc/nginx-unprivileged:1.27-alpine"
         assert config["nginx"]["cpu"] == 8
-        assert config["nginx"]["memory_gi"] == 2
+        assert config["nginx"]["memory_gi"] == 64
         assert config["nginx"]["cache_size"] == "30Gi"
         assert config["server"]["cpu"] == "500m"
         assert config["server"]["memory"] == "768Mi"
@@ -630,9 +630,9 @@ class TestGenerateDeployments:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
             resources = nginx["resources"]
             assert resources["requests"]["cpu"] == 8
-            assert resources["requests"]["memory"] == "2Gi"
+            assert resources["requests"]["memory"] == "64Gi"
             assert resources["limits"]["cpu"] == 8
-            assert resources["limits"]["memory"] == "2Gi"
+            assert resources["limits"]["memory"] == "64Gi"
 
     def test_resource_limits_shared_nodes_pypiserver(self):
         """Without instance_type, pypiserver uses manual server config values."""
@@ -704,12 +704,12 @@ class TestGenerateDeployments:
             containers = doc["spec"]["template"]["spec"]["containers"]
             nginx_res = containers[0]["resources"]
             server_res = containers[1]["resources"]
-            # nginx: 8 vCPU, 2 GiB + pypiserver: 6 vCPU, 103 GiB = 14 vCPU, 105 GiB
+            # nginx: 8 vCPU, 64 GiB + pypiserver: 6 vCPU, 41 GiB = 14 vCPU, 105 GiB
             total_cpu = nginx_res["requests"]["cpu"] + server_res["requests"]["cpu"]
             assert total_cpu == 14
 
     def test_dedicated_computed_resources_nginx(self):
-        """With r5d.12xlarge, nginx gets fixed 8 vCPU / 2 GiB."""
+        """With r5d.12xlarge, nginx gets fixed 8 vCPU / 64 GiB."""
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
@@ -717,10 +717,10 @@ class TestGenerateDeployments:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
             resources = nginx["resources"]
             assert resources["requests"]["cpu"] == 8
-            assert resources["requests"]["memory"] == "2Gi"
+            assert resources["requests"]["memory"] == "64Gi"
 
     def test_dedicated_computed_resources_pypiserver(self):
-        """With r5d.12xlarge, pypiserver gets remainder: 6 vCPU / 103 GiB."""
+        """With r5d.12xlarge, pypiserver gets remainder: 6 vCPU / 41 GiB."""
         config = _default_config()
         config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
@@ -729,7 +729,7 @@ class TestGenerateDeployments:
             pypiserver = doc["spec"]["template"]["spec"]["containers"][1]
             resources = pypiserver["resources"]
             assert resources["requests"]["cpu"] == 6
-            assert resources["requests"]["memory"] == "103Gi"
+            assert resources["requests"]["memory"] == "41Gi"
 
     def test_dedicated_nginx_exceeds_pod_total_cpu_exits(self):
         """If nginx CPU allocation exceeds pod total, generate_deployments exits."""

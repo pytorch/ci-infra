@@ -481,15 +481,24 @@ jobs:
 
           LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
           UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
-          echo "Local wheels: $LOCAL_COUNT"
+          echo "Local wheels (all): $LOCAL_COUNT"
           echo "Upstream wheels: $UPSTREAM_COUNT"
 
-          if [ "$LOCAL_COUNT" -eq 0 ]; then
-            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
+          # Filter local wheels by current Python version — the wheelhouse may
+          # have wheels for other Python versions (e.g. cp313t) that pip cannot
+          # use on this runtime.  Only enable local-serving validation when
+          # there are actually compatible local wheels.
+          PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
+          LOCAL_COMPAT_COUNT=$(grep -E 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html \
+            | grep -cE "${PY_TAG}|py3-none-any" || true)
+          echo "Local wheels (${PY_TAG}-compatible): $LOCAL_COMPAT_COUNT"
+
+          if [ "${LOCAL_COMPAT_COUNT:-0}" -eq 0 ]; then
+            echo "::warning::No ${PY_TAG}-compatible local numpy wheels — skipping local wheel validation"
             echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
           else
             echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
-            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
+            echo "PASS: Found $LOCAL_COMPAT_COUNT ${PY_TAG}-compatible local numpy wheels in wheel cache"
           fi
 
       - name: Install numpy from local wheel cache
@@ -836,15 +845,24 @@ jobs:
 
           LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
           UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
-          echo "Local wheels: $LOCAL_COUNT"
+          echo "Local wheels (all): $LOCAL_COUNT"
           echo "Upstream wheels: $UPSTREAM_COUNT"
 
-          if [ "$LOCAL_COUNT" -eq 0 ]; then
-            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
+          # Filter local wheels by current Python version — the wheelhouse may
+          # have wheels for other Python versions (e.g. cp313t) that pip cannot
+          # use on this runtime.  Only enable local-serving validation when
+          # there are actually compatible local wheels.
+          PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
+          LOCAL_COMPAT_COUNT=$(grep -E 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html \
+            | grep -cE "${PY_TAG}|py3-none-any" || true)
+          echo "Local wheels (${PY_TAG}-compatible): $LOCAL_COMPAT_COUNT"
+
+          if [ "${LOCAL_COMPAT_COUNT:-0}" -eq 0 ]; then
+            echo "::warning::No ${PY_TAG}-compatible local numpy wheels — skipping local wheel validation"
             echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
           else
             echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
-            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
+            echo "PASS: Found $LOCAL_COMPAT_COUNT ${PY_TAG}-compatible local numpy wheels in wheel cache"
           fi
 
       - name: Install numpy from local wheel cache
@@ -1222,15 +1240,24 @@ jobs:
 
           LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
           UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
-          echo "Local wheels: $LOCAL_COUNT"
+          echo "Local wheels (all): $LOCAL_COUNT"
           echo "Upstream wheels: $UPSTREAM_COUNT"
 
-          if [ "$LOCAL_COUNT" -eq 0 ]; then
-            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
+          # Filter local wheels by current Python version — the wheelhouse may
+          # have wheels for other Python versions (e.g. cp313t) that pip cannot
+          # use on this runtime.  Only enable local-serving validation when
+          # there are actually compatible local wheels.
+          PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
+          LOCAL_COMPAT_COUNT=$(grep -E 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html \
+            | grep -cE "${PY_TAG}|py3-none-any" || true)
+          echo "Local wheels (${PY_TAG}-compatible): $LOCAL_COMPAT_COUNT"
+
+          if [ "${LOCAL_COMPAT_COUNT:-0}" -eq 0 ]; then
+            echo "::warning::No ${PY_TAG}-compatible local numpy wheels — skipping local wheel validation"
             echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
           else
             echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
-            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
+            echo "PASS: Found $LOCAL_COMPAT_COUNT ${PY_TAG}-compatible local numpy wheels in wheel cache"
           fi
 
       - name: Install numpy from local wheel cache

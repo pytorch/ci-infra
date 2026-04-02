@@ -56,7 +56,14 @@ DEFAULTS = {
     "instance_type": "r5d.12xlarge",
     "nginx": {
         "cpu": 8,
-        "memory_gi": 2,
+        # njs index merging (merge_indexes.js) holds full subrequest response
+        # bodies in memory.  subrequest_output_buffer_size is 100m per
+        # subrequest; each /simple/ request issues 2 subrequests (~200 MB).
+        # With worker_processes=auto (8 on an 8-CPU allocation), worst-case
+        # concurrent buffer usage alone is ~1.6 GB.  64 GiB leaves ample
+        # headroom for proxy buffers, njs VM, nginx proxy cache metadata,
+        # and base nginx overhead under sustained concurrent load.
+        "memory_gi": 64,
         "cache_size": "30Gi",
     },
     "server": {
