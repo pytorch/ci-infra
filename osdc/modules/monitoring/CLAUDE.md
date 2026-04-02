@@ -31,13 +31,66 @@ defaults:
 
 **Grafana Alloy** is the primary (and only) metrics pipeline. It discovers ServiceMonitor/PodMonitor CRDs, scrapes targets, applies cost-control relabeling, and pushes to Grafana Cloud via `prometheus.remote_write`.
 
+### What we collect
+
+Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy `cost_control` acts as a safety net for anything not filtered at the source.
+
+#### Node-level (node-exporter)
+- `node_cpu_seconds_total` (idle, iowait modes only) — node CPU utilization and IO wait
+- `node_memory_MemAvailable_bytes` — available memory on node
+- `node_memory_MemTotal_bytes` — total memory on node
+
+#### Pod-level (cadvisor)
+- `container_memory_working_set_bytes` — active memory per pod; K8s uses this for OOM kill decisions
+- `container_memory_rss` — physical memory per pod (no cache); useful for spotting memory leaks
+- **NOTE:** per-container series — high pod churn (e.g. runners) increases cardinality
+
+#### Kubernetes state (kube-state-metrics)
+- `kube_daemonset_*`, `kube_deployment_*`, `kube_namespace_*`, `kube_node_*`, `kube_statefulset_*`, `kube_persistentvolume_*`, `kube_horizontalpodautoscaler_*`, `kube_job_*` — full metrics
+- `kube_pod_*` — **error-only:**
+  - `container_status_last_terminated_reason` (non-Completed)
+  - `container_status_last_terminated_exitcode` (non-zero)
+  - `status_reason`
+- **Dropped:** replicaset, `kube_node_status_addresses`, `*_created`, `*_metadata_resource_version`, secrets, configmaps, endpoints, leases
+
+#### Kubelet
+- `kubelet_running_pods` — number of running pods per node
+- `kubelet_running_containers` — number of running containers per node
+- `kubelet_node_name` — node name mapping
+
+#### API server
+- `apiserver_request_total` — request count by verb/resource/code (error rate)
+- `apiserver_request_terminations_total` — terminated requests
+
+#### ARC (Actions Runner Controller)
+- `gha_controller_*` — runner scheduling, pending count, scale set status
+- `controller_runtime_reconcile_errors_total` — controller errors
+- `gha_job_*_sum/_count` — job duration averages (buckets dropped)
+
+#### Karpenter
+- `karpenter_nodes_*` — node count, status, allocatable resources
+- `karpenter_nodepools_*` — nodepool limits and usage
+- `karpenter_nodeclaims_*` — nodeclaim lifecycle
+- `karpenter_interruption_*` — spot interruption events
+
+#### Other services
+- **BuildKit** — all metrics except go/process/promhttp internals and histogram buckets
+- **BuildKit HAProxy** — all metrics except resolver, process internals, aggregate check status
+- **Harbor** — all metrics except go/process/promhttp internals
+- **CoreDNS** — all metrics except go/process internals and histogram buckets
+- **DCGM (GPU)** — curated ~26 GPU metrics, high-cardinality labels dropped
+- **git-cache / node-compactor / ARC listeners** — all metrics (custom exporters, low volume)
+
 ### Metrics cost control
 
-A `prometheus.relabel "cost_control"` stage sits between discovery and remote_write. It drops high-cardinality, low-value metrics before they leave the cluster:
+Filtering is applied in two layers:
 
-- **cadvisor**: network tcp/udp usage, tasks state, cpu load average, memory failures, blkio device usage, last_seen, start_time, spec_*
-- **KSM**: *_created, *_metadata_resource_version, secret/configmap/endpoint/lease metrics
-- **ARC histograms**: job execution/startup duration buckets (prevents unbounded series growth)
+1. **ServiceMonitor `metricRelabelings`** (at scrape time) — `keep` whitelists on node-exporter, cadvisor, kubelet, apiserver, karpenter; `drop` rules on KSM, buildkit, harbor, coredns
+2. **Alloy `cost_control`** (before remote_write) — safety net for anything not filtered at source:
+   - `kube_pod_*`, `kube_*_created`, `kube_*_metadata_resource_version`, secrets, configmaps, endpoints, leases
+   - `kubernetes_feature_enabled`
+   - `gha_job_*_bucket`
+   - `go_*`, `process_*`, `promhttp_*`
 
 ### DCGM custom metrics
 
