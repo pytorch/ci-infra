@@ -13,7 +13,7 @@ When a developer creates or updates a PR in `pytorch/pytorch`, the system:
 Core components:
 
 - **GitHub App** - Authentication hub and event bridge under the pytorch organization
-- **AWS Lambda** - Webhook receiver and event dispatcher (Python 3.10)
+- **AWS Lambda** - Webhook receiver and event dispatcher (Python 3.13)
 - **ElastiCache (Redis)** - Caches the allowlist to reduce GitHub API calls
 - **Secrets Manager** - Stores the GitHub App private key and webhook secret
 - **VPC** - Network isolation for Lambda and Redis
@@ -45,6 +45,7 @@ crcr/
             ├── outputs.tf          # Outputs (webhook URL, Redis endpoint)
             ├── vpc.tf              # VPC and subnets
             ├── iam.tf              # Lambda execution role and policies
+            ├── secretmanager.tf    # Secrets Manager secret and version
             ├── elasticache.tf      # Redis replication group
             └── webhook.tf          # Lambda function and public function URL
 ```
@@ -73,26 +74,13 @@ aws dynamodb create-table \
   --region <region>
 ```
 
-### 2. Create Secrets Manager Secret
-
-The Lambda reads the GitHub App private key and webhook secret from AWS Secrets Manager at runtime. Create the secret before deploying:
-
-```bash
-aws secretsmanager create-secret \
-  --name <secret_name> \
-  --region <region>
-```
-
-Then populate it with the following keys:
-- `github_app_private_key` — PEM-encoded GitHub App private key
-- `github_webhook_secret` — Webhook secret configured on the GitHub App
-
 ## Configuration Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `github_app_id` | N/A | GitHub App ID for the CRCR relay |
-| `secret_name` | N/A | Secrets Manager secret name holding GitHub App credentials |
+| `github_app_secret` | N/A | GitHub App webhook secret for HMAC signature verification (sensitive) |
+| `github_app_privatekey` | N/A | PEM-encoded GitHub App private key (sensitive) |
 | `upstream_repo` | `pytorch/pytorch` | GitHub upstream repository in `owner/repo` format |
 | `allowlist_url` | `https://github.com/pytorch/pytorch/blob/main/.github/allowlist.yml` | GitHub URL to the relay allowlist YAML |
 | `allowlist_ttl` | `1200` | Allowlist cache TTL in Redis (seconds) |
@@ -108,10 +96,10 @@ Then populate it with the following keys:
 pushd ci-infra/crcr
 
 # Preview changes
-make plan TERRAFORM_EXTRAS="-var github_app_id=123456 -var secret_name=secret"
+make plan TERRAFORM_EXTRAS="-var github_app_id=123456 -var github_app_secret=<webhook_secret> -var github_app_privatekey=<pem_key>"
 
 # Apply with required variables
-make apply TERRAFORM_EXTRAS="-auto-approve -lock-timeout=15m -var github_app_id=123456 -var secret_name=secret"
+make apply TERRAFORM_EXTRAS="-auto-approve -lock-timeout=15m -var github_app_id=123456 -var github_app_secret=<webhook_secret> -var github_app_privatekey=<pem_key>"
 ```
 
 > **Note**: When running locally, the regional Makefile uses `AWS_PROFILE` for authentication (skipped in GitHub Actions where IAM role assumption is used instead).
@@ -122,7 +110,8 @@ The production deployment is handled via the `crcr-deploy-prod.yml` workflow (`w
 
 1. **Configure GitHub Secrets** in the repository settings:
    - `CRCR_GITHUB_APP_ID` - GitHub App ID
-   - `CRCR_SECRET_NAME` - Secrets Manager secret name
+   - `CRCR_GITHUB_APP_SECRET` - GitHub App webhook secret
+   - `CRCR_GITHUB_APP_PRIVATEKEY` - PEM-encoded GitHub App private key
 
 2. **Trigger the workflow** manually from workflow_dispatch:
 

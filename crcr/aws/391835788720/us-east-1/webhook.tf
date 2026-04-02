@@ -3,7 +3,7 @@ locals {
 }
 
 resource "aws_security_group" "lambda" {
-  name        = "${var.environment}-lambda"
+  name        = "${var.environment}-crcr-lambda-sg"
   description = "Security group for Lambda function"
   vpc_id      = module.crcr_vpc.vpc_id
   tags        = local.tags
@@ -29,23 +29,25 @@ resource "aws_security_group_rule" "lambda_to_https" {
   description       = "Allow HTTPS for Secrets Manager and GitHub API"
 }
 
-resource "aws_lambda_function" "cross_repo_ci_webhook" {
-  function_name = "cross_repo_ci_webhook"
-  role          = aws_iam_role.cross_repo_ci_relay.arn
+resource "aws_lambda_function" "webhook" {
+  function_name = "${var.environment}-crcr-webhook"
+  role          = aws_iam_role.lambda.arn
 
-  runtime          = "python3.10"
+  runtime          = "python3.13"
   handler          = "lambda_function.lambda_handler"
   filename         = local.webhook_zip
   source_code_hash = filebase64sha256(local.webhook_zip)
 
-  timeout     = 60
-  memory_size = 512
+  timeout                        = 60
+  memory_size                    = 512
+  reserved_concurrent_executions = 50
+  tags                           = local.tags
 
   environment {
     variables = {
       GITHUB_APP_ID         = var.github_app_id
       REDIS_ENDPOINT        = aws_elasticache_replication_group.redis.primary_endpoint_address
-      REDIS_LOGIN           = random_password.redis_password.result
+      REDIS_SECRET_ARN      = aws_secretsmanager_secret.main.arn
       SECRET_STORE_ARN      = local.secret_store_arn
       UPSTREAM_REPO         = var.upstream_repo
       ALLOWLIST_URL         = var.allowlist_url
@@ -59,8 +61,14 @@ resource "aws_lambda_function" "cross_repo_ci_webhook" {
   }
 }
 
-resource "aws_lambda_function_url" "cross_repo_ci_webhook" {
-  function_name      = aws_lambda_function.cross_repo_ci_webhook.function_name
+resource "aws_cloudwatch_log_group" "webhook" {
+  name              = "/aws/lambda/${aws_lambda_function.webhook.function_name}"
+  retention_in_days = 30
+  tags              = local.tags
+}
+
+resource "aws_lambda_function_url" "webhook" {
+  function_name      = aws_lambda_function.webhook.function_name
   authorization_type = "NONE"
 }
 
@@ -70,8 +78,9 @@ resource "aws_lambda_function_url" "cross_repo_ci_webhook" {
 # Using CloudFormation because aws provider <6.28 lacks invoked_via_function_url support.
 # See: https://docs.aws.amazon.com/lambda/latest/dg/urls-auth.html
 # See: https://github.com/hashicorp/terraform-provider-aws/issues/44829
-resource "aws_cloudformation_stack" "cross_repo_ci_webhook_permissions" {
-  name = "cross-repo-ci-webhook-permissions"
+resource "aws_cloudformation_stack" "webhook_permissions" {
+  name = "${var.environment}-crcr-webhook-permissions"
+  tags = local.tags
 
   template_body = jsonencode({
     AWSTemplateFormatVersion = "2010-09-09"
@@ -79,7 +88,7 @@ resource "aws_cloudformation_stack" "cross_repo_ci_webhook_permissions" {
       FunctionUrlInvoke = {
         Type = "AWS::Lambda::Permission"
         Properties = {
-          FunctionName       = aws_lambda_function.cross_repo_ci_webhook.function_name
+          FunctionName       = aws_lambda_function.webhook.function_name
           Action             = "lambda:InvokeFunctionUrl"
           Principal          = "*"
           FunctionUrlAuthType = "NONE"
@@ -88,7 +97,7 @@ resource "aws_cloudformation_stack" "cross_repo_ci_webhook_permissions" {
       FunctionInvoke = {
         Type = "AWS::Lambda::Permission"
         Properties = {
-          FunctionName           = aws_lambda_function.cross_repo_ci_webhook.function_name
+          FunctionName           = aws_lambda_function.webhook.function_name
           Action                 = "lambda:InvokeFunction"
           Principal              = "*"
           InvokedViaFunctionUrl  = true

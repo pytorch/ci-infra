@@ -54,4 +54,5 @@ jobs:
       env:
         TERRAFORM_EXTRAS: -lock-timeout=15m
         TF_VAR_github_app_id: ${{ secrets.CRCR_GITHUB_APP_ID }}
-        TF_VAR_secret_name: ${{ secrets.CRCR_SECRET_NAME }}
+        TF_VAR_github_app_secret: ${{ secrets.CRCR_GITHUB_APP_SECRET }}
+        TF_VAR_github_app_privatekey: ${{ secrets.CRCR_GITHUB_APP_PRIVATEKEY }}
