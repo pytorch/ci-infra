@@ -41,10 +41,3 @@ resource "aws_elasticache_replication_group" "redis" {
   auth_token                 = random_password.redis_password.result
   tags                       = local.tags
 }
-
-resource "aws_elasticache_cluster" "redis" {
-  apply_immediately    = true
-  cluster_id           = "${var.environment}-crcr-redis"
-  replication_group_id = aws_elasticache_replication_group.redis.id
-  tags                 = local.tags
-}

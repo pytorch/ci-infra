@@ -47,7 +47,6 @@ resource "aws_lambda_function" "webhook" {
     variables = {
       GITHUB_APP_ID         = var.github_app_id
       REDIS_ENDPOINT        = aws_elasticache_replication_group.redis.primary_endpoint_address
-      REDIS_SECRET_ARN      = aws_secretsmanager_secret.main.arn
       SECRET_STORE_ARN      = local.secret_store_arn
       UPSTREAM_REPO         = var.upstream_repo
       ALLOWLIST_URL         = var.allowlist_url
@@ -63,7 +62,7 @@ resource "aws_lambda_function" "webhook" {
 
 resource "aws_cloudwatch_log_group" "webhook" {
   name              = "/aws/lambda/${aws_lambda_function.webhook.function_name}"
-  retention_in_days = 30
+  retention_in_days = 90
   tags              = local.tags
 }
 
