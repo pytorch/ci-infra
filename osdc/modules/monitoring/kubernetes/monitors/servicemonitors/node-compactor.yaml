@@ -14,4 +14,4 @@ spec:
       app.kubernetes.io/name: node-compactor
   endpoints:
     - port: metrics
-      interval: 30s
+      interval: 60s

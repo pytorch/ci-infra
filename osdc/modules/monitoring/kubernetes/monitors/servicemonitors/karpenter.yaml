@@ -14,4 +14,10 @@ spec:
       app.kubernetes.io/name: karpenter
   endpoints:
     - port: http-metrics
-      interval: 30s
+      interval: 60s
+      metricRelabelings:
+        # Keep only operationally important metrics (alerts + capacity + interruptions)
+        # Drops all histogram buckets and low-value gauges (~400-500 series saved)
+        - action: keep
+          sourceLabels: [__name__]
+          regex: "karpenter_nodeclaims_created_total|karpenter_nodes_created_total|karpenter_nodes_terminated_total|karpenter_nodepools_usage|karpenter_nodepools_limit|karpenter_nodes_allocatable|karpenter_interruption_received_messages_total"

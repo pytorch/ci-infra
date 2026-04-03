@@ -30,6 +30,28 @@ kubeScheduler:
 kubeEtcd:
   enabled: false
 
+# --- kubelet + cadvisor ServiceMonitor ---
+kubelet:
+  enabled: true
+  serviceMonitor:
+    interval: 60s
+    # Disable /metrics/probes scraping — generates ~1440 high-cardinality
+    # prober_probe_duration_seconds_bucket series with no alerting value
+    probes: false
+    # cadvisor: keep only pod-level memory metrics (per pod/container series)
+    # - container_memory_working_set_bytes: active memory used by pod; K8s uses this for OOM kill decisions
+    # - container_memory_rss: physical memory (no cache); useful for spotting memory leaks
+    # NOTE: these generate one series per container, so high pod churn (e.g. runners) increases cardinality
+    cAdvisorMetricRelabelings:
+      - action: keep
+        sourceLabels: [__name__]
+        regex: "container_memory_working_set_bytes|container_memory_rss"
+    # kubelet: keep only running pod/container counts
+    metricRelabelings:
+      - action: keep
+        sourceLabels: [__name__]
+        regex: "kubelet_running_(pods|containers)|kubelet_node_name"
+
 # --- Grafana (DISABLED — use Grafana Cloud) ---
 grafana:
   enabled: false
@@ -66,11 +88,48 @@ prometheus-node-exporter:
   prometheus:
     monitor:
       interval: 60s
+      metricRelabelings:
+        # Keep only CPU (idle/iowait) and memory — drop everything else
+        - action: keep
+          sourceLabels: [__name__]
+          regex: "node_cpu_seconds_total|node_memory_MemAvailable_bytes|node_memory_MemTotal_bytes"
+        - action: drop
+          sourceLabels: [__name__, mode]
+          regex: "node_cpu_seconds_total;(user|system|nice|irq|softirq|steal)"
 
 # --- kube-state-metrics ---
 kube-state-metrics:
   extraArgs:
-    - --metric-allowlist=kube_(daemonset|deployment|pod|namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|replicaset|job)_.+
+    - --metric-allowlist=kube_(daemonset|deployment|pod|namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.+
+  prometheus:
+    monitor:
+      interval: 60s
+      metricRelabelings:
+        # Keep only the KSM metrics we actually use (single rule — multiple keeps are ANDed).
+        # RE2 engine (no lookahead), so we use an explicit allowlist.
+        #   daemonset: health status (desired/ready/available/unavailable)
+        #   deployment: replica status + conditions + desired count
+        #   namespace/node/statefulset/pv/hpa/job: all metrics (low cardinality)
+        #   pod: info (node mapping), error indicators, status reasons
+        - action: keep
+          sourceLabels: [__name__]
+          regex: "kube_daemonset_status_(desired_number_scheduled|number_ready|number_available|number_unavailable)|kube_deployment_status_(replicas_ready|replicas_available|replicas_unavailable|condition)|kube_deployment_spec_replicas|kube_(namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.*|kube_pod_info|kube_pod_container_status_last_terminated_reason|kube_pod_container_status_last_terminated_exitcode|kube_pod_status_reason"
+        # Drop low-value node metrics
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "kube_node_status_addresses"
+        # Drop successful terminations (only keep actual errors)
+        - action: drop
+          sourceLabels: [__name__, reason]
+          regex: "kube_pod_container_status_last_terminated_reason;Completed"
+        - action: drop
+          sourceLabels: [__name__, container_exit_code]
+          regex: "kube_pod_container_status_last_terminated_exitcode;0"
+        # Drop routine pod status reasons (spot reclaim, scheduling changes)
+        # Keep only non-routine errors: Evicted, NodeLost, UnexpectedAdmissionError
+        - action: drop
+          sourceLabels: [__name__, reason]
+          regex: "kube_pod_status_reason;(Shutdown|NodeAffinity)"
   tolerations:
     - key: CriticalAddonsOnly
       operator: Equal

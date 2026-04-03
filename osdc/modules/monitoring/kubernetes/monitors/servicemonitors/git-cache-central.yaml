@@ -14,4 +14,4 @@ spec:
       app: git-cache-central
   endpoints:
     - port: metrics
-      interval: 30s
+      interval: 60s

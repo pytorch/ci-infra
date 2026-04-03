@@ -14,7 +14,7 @@ spec:
       app.kubernetes.io/name: dcgm-exporter
   endpoints:
     - port: metrics
-      interval: 30s
+      interval: 60s
       metricRelabelings:
         - action: labeldrop
           regex: UUID
