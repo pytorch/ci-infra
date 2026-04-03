@@ -16,7 +16,8 @@ spec:
     - port: http-metrics
       interval: 30s
       metricRelabelings:
-        # Keep only node/nodepool/nodeclaim lifecycle and interruption metrics
+        # Keep only operationally important metrics (alerts + capacity + interruptions)
+        # Drops all histogram buckets and low-value gauges (~400-500 series saved)
         - action: keep
           sourceLabels: [__name__]
-          regex: "karpenter_nodes_.*|karpenter_nodepools_.*|karpenter_nodeclaims_.*|karpenter_interruption_.*"
+          regex: "karpenter_nodeclaims_created_total|karpenter_nodes_created_total|karpenter_nodes_terminated_total|karpenter_nodepools_usage|karpenter_nodepools_limit|karpenter_nodes_allocatable|karpenter_interruption_received_messages_total"

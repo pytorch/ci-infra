@@ -34,6 +34,9 @@ kubeEtcd:
 kubelet:
   enabled: true
   serviceMonitor:
+    # Disable /metrics/probes scraping — generates ~1440 high-cardinality
+    # prober_probe_duration_seconds_bucket series with no alerting value
+    probes: false
     # cadvisor: keep only pod-level memory metrics (per pod/container series)
     # - container_memory_working_set_bytes: active memory used by pod; K8s uses this for OOM kill decisions
     # - container_memory_rss: physical memory (no cache); useful for spotting memory leaks

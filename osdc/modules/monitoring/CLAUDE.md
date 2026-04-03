@@ -57,6 +57,7 @@ Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy 
 - `kubelet_running_pods` — number of running pods per node
 - `kubelet_running_containers` — number of running containers per node
 - `kubelet_node_name` — node name mapping
+- `/metrics/probes` scraping is **disabled** (`probes: false`) — the `prober_probe_*` metrics are high-cardinality (~1800 series) with no alerting value
 
 #### API server
 - `apiserver_request_total` — request count by verb/resource/code (error rate)
@@ -68,10 +69,14 @@ Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy 
 - `gha_job_*_sum/_count` — job duration averages (buckets dropped)
 
 #### Karpenter
-- `karpenter_nodes_*` — node count, status, allocatable resources
-- `karpenter_nodepools_*` — nodepool limits and usage
-- `karpenter_nodeclaims_*` — nodeclaim lifecycle
-- `karpenter_interruption_*` — spot interruption events
+- `karpenter_nodeclaims_created_total` — nodeclaim creation count (used in KarpenterNodeClaimNotReady alert)
+- `karpenter_nodes_created_total` — node creation count (used in KarpenterNodeClaimNotReady alert)
+- `karpenter_nodes_terminated_total` — node termination count
+- `karpenter_nodes_allocatable` — per-node allocatable resources
+- `karpenter_nodepools_usage` — nodepool current resource usage
+- `karpenter_nodepools_limit` — nodepool resource limits
+- `karpenter_interruption_received_messages_total` — spot interruption events
+- All histogram buckets and other gauges are **dropped** to reduce cardinality (~400-500 series saved)
 
 #### Other services
 - **BuildKit** — all metrics except go/process/promhttp internals and histogram buckets
