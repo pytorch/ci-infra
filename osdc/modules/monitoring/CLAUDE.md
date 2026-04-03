@@ -31,6 +31,10 @@ defaults:
 
 **Grafana Alloy** is the primary (and only) metrics pipeline. It discovers ServiceMonitor/PodMonitor CRDs, scrapes targets, applies cost-control relabeling, and pushes to Grafana Cloud via `prometheus.remote_write`.
 
+### Scrape interval
+
+**All monitors use a 60s scrape interval** (Grafana recommendation — halves DPM vs 30s, directly reduces billing). The only exception is `arc-listeners` at 3m (listener metrics change very slowly). Do not add new monitors with intervals below 60s without explicit justification.
+
 ### What we collect
 
 Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy `cost_control` acts as a safety net for anything not filtered at the source.

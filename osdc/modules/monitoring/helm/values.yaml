@@ -34,6 +34,7 @@ kubeEtcd:
 kubelet:
   enabled: true
   serviceMonitor:
+    interval: 60s
     # Disable /metrics/probes scraping — generates ~1440 high-cardinality
     # prober_probe_duration_seconds_bucket series with no alerting value
     probes: false
@@ -102,6 +103,7 @@ kube-state-metrics:
     - --metric-allowlist=kube_(daemonset|deployment|pod|namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.+
   prometheus:
     monitor:
+      interval: 60s
       metricRelabelings:
         # Keep only the KSM metrics we actually use (single rule — multiple keeps are ANDed).
         # RE2 engine (no lookahead), so we use an explicit allowlist.

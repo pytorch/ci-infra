@@ -14,7 +14,7 @@ spec:
       app.kubernetes.io/name: karpenter
   endpoints:
     - port: http-metrics
-      interval: 30s
+      interval: 60s
       metricRelabelings:
         # Keep only operationally important metrics (alerts + capacity + interruptions)
         # Drops all histogram buckets and low-value gauges (~400-500 series saved)

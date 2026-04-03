@@ -14,7 +14,7 @@ spec:
       app.kubernetes.io/name: gha-rs-controller
   endpoints:
     - port: metrics
-      interval: 30s
+      interval: 60s
       metricRelabelings:
         # Keep only ARC operational metrics and reconcile errors — drop everything else
         - action: keep

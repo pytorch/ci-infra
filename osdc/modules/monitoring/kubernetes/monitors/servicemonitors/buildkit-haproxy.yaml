@@ -15,7 +15,7 @@ spec:
       app.kubernetes.io/component: load-balancer
   endpoints:
     - port: metrics
-      interval: 30s
+      interval: 60s
       metricRelabelings:
         # Keep only operationally important HAProxy metrics
         - action: keep
