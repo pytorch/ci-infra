@@ -49,7 +49,7 @@ alloy:
         rule {
           action        = "drop"
           source_labels = ["__name__"]
-          regex         = "kube_.*_created|kube_.*_metadata_resource_version|kube_secret_.*|kube_configmap_.*|kube_endpoint_.*|kube_lease_.*|kube_pod_.*"
+          regex         = "kube_.*_created|kube_.*_metadata_resource_version|kube_secret_.*|kube_configmap_.*|kube_endpoint_.*|kube_lease_.*"
         }
 
         // --- drop misc high-cardinality metrics ---
