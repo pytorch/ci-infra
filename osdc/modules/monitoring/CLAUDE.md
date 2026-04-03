@@ -46,19 +46,24 @@ Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy 
 - **NOTE:** per-container series — high pod churn (e.g. runners) increases cardinality
 
 #### Kubernetes state (kube-state-metrics)
-- `kube_daemonset_*`, `kube_deployment_*`, `kube_namespace_*`, `kube_node_*`, `kube_statefulset_*`, `kube_persistentvolume_*`, `kube_horizontalpodautoscaler_*`, `kube_job_*` — full metrics
-- `kube_pod_info` — pod-to-node mapping (one series per pod); enables correlating pod failures with specific nodes to detect bad nodes that fail runner jobs repeatedly. Query example:
-  ```promql
-  count(
-    kube_pod_container_status_last_terminated_exitcode{container_exit_code!="0"}
-    * on(namespace, pod) group_left(node) kube_pod_info
-  ) by (node)
-  ```
-- `kube_pod_*` — **error-only:**
+
+KSM filtering uses a `keep` allowlist in metricRelabelings (RE2 — no lookahead support).
+
+- **daemonset** — health status only: `desired_number_scheduled`, `number_ready`, `number_available`, `number_unavailable`
+- **deployment** — replica status + conditions: `replicas_ready`, `replicas_available`, `replicas_unavailable`, `status_condition`, `spec_replicas`
+- **namespace/node/statefulset/persistentvolume/hpa/job** — all metrics (low cardinality)
+- **pod:**
+  - `kube_pod_info` — pod-to-node mapping; enables bad node detection:
+    ```promql
+    count(
+      kube_pod_container_status_last_terminated_exitcode{container_exit_code!="0"}
+      * on(namespace, pod) group_left(node) kube_pod_info
+    ) by (node)
+    ```
   - `container_status_last_terminated_reason` (non-Completed)
   - `container_status_last_terminated_exitcode` (non-zero)
-  - `status_reason`
-- **Dropped:** replicaset, `kube_node_status_addresses`, `*_created`, `*_metadata_resource_version`, secrets, configmaps, endpoints, leases
+  - `status_reason` (non-routine only: Evicted, NodeLost, UnexpectedAdmissionError — Shutdown and NodeAffinity dropped)
+- **Dropped:** all other daemonset/deployment/pod metrics, replicaset, `kube_node_status_addresses`, `*_created`, `*_metadata_resource_version`, secrets, configmaps, endpoints, leases
 
 #### Kubelet
 - `kubelet_running_pods` — number of running pods per node
@@ -87,7 +92,7 @@ Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy 
 
 #### Other services
 - **BuildKit** — all metrics except go/process/promhttp internals and histogram buckets
-- **BuildKit HAProxy** — all metrics except resolver, process internals, aggregate check status
+- **BuildKit HAProxy** — keep-list: `haproxy_server_status`, `haproxy_server_current_sessions`, `haproxy_server_connection_errors_total`, `haproxy_backend_current_sessions`
 - **Harbor** — all metrics except go/process/promhttp internals
 - **CoreDNS** — all metrics except go/process internals and two histogram buckets (dns_request, forward_request); other histogram buckets (health, kubernetes, proxy) are not yet dropped (~170 series, low priority)
 - **DCGM (GPU)** — curated ~26 GPU metrics, high-cardinality labels dropped

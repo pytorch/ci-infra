@@ -66,11 +66,11 @@ alloy:
           regex         = "gha_job_(execution|startup)_duration_seconds_bucket"
         }
 
-        // --- go/process/promhttp internals from any source ---
+        // --- go/process/promhttp/prometheus_operator internals from any source ---
         rule {
           action        = "drop"
           source_labels = ["__name__"]
-          regex         = "go_.*|process_.*|promhttp_.*"
+          regex         = "go_.*|process_.*|promhttp_.*|prometheus_operator_.*"
         }
       }
 
