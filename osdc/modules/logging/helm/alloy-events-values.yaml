@@ -22,14 +22,6 @@ controller:
       value: "true"
       effect: NoSchedule
 
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
-
 serviceAccount:
   create: true
 
@@ -40,6 +32,14 @@ alloy:
   mounts:
     varlog: false
     dockercontainers: false
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
 
   clustering:
     enabled: false                # Single replica — no clustering needed

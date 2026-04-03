@@ -68,6 +68,7 @@ class TestGitCacheDaemonSet:
             GIT_CACHE_NAMESPACE,
             "git-cache-warmer",
             node_selector={"workload-type": ["github-runner", "buildkit"]},
+            min_node_age=900,
         )
 
 

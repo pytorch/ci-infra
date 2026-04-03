@@ -30,22 +30,6 @@ controller:
           path: /var/alloy-logging/positions
           type: DirectoryOrCreate
 
-  mounts:
-    extra:
-      - name: journal
-        mountPath: /var/log/journal
-        readOnly: true
-      - name: positions
-        mountPath: /var/alloy-logging/positions
-
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: "3"
-      memory: 2Gi               # High-throughput CI nodes need headroom
-
 serviceAccount:
   create: true
 
@@ -60,6 +44,20 @@ alloy:
   mounts:
     varlog: true                 # /var/log for pod logs
     dockercontainers: false      # containerd, not Docker
+    extra:
+      - name: journal
+        mountPath: /var/log/journal
+        readOnly: true
+      - name: positions
+        mountPath: /var/alloy-logging/positions
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "3"
+      memory: 2Gi               # High-throughput CI nodes need headroom
 
   clustering:
     enabled: false               # DaemonSet — each pod handles its own node

@@ -29,6 +29,19 @@ AWS-0132
 # already restrict inbound traffic.
 AWS-0164
 
+# PyPI wheel cache S3 bucket is intentionally public-read. The bucket stores
+# only package availability lists (wants/*.txt) and a prebuilt cache — no
+# sensitive data. Public access lets any cluster read the shared cache without
+# cross-account IAM.
+AWS-0086
+AWS-0087
+AWS-0088
+AWS-0089
+AWS-0090
+AWS-0091
+AWS-0093
+AWS-0094
+
 # =============================================================================
 # Kubernetes — privileged access (intentional for system DaemonSets)
 # =============================================================================

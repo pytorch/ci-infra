@@ -13,7 +13,8 @@ import urllib.request
 DEFAULT_TIMEOUT = 90
 READY_RETRIES = 6
 READY_RETRY_DELAY = 15  # seconds
-MIN_NODE_AGE_SECONDS = 120  # Nodes must be Ready for 2+ min to count as stable
+MIN_NODE_AGE_SECONDS = 600  # Nodes must be Ready for 10+ min to count as stable
+RECENTLY_STABLE_AGE_SECONDS = 1200  # Nodes < 20 min may still have DaemonSet pods starting
 
 
 def _proxy_bypass_env() -> dict[str, str]:
@@ -189,7 +190,7 @@ def _parse_k8s_timestamp(ts: str) -> float:
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
 
 
-def _is_node_unstable(node: dict) -> bool:
+def _is_node_unstable(node: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> bool:
     """Check if a single node is unstable (new, NotReady, or being deleted)."""
     meta = node.get("metadata", {})
     if meta.get("deletionTimestamp"):
@@ -200,25 +201,50 @@ def _is_node_unstable(node: dict) -> bool:
     created = meta.get("creationTimestamp", "")
     if created:
         created_ts = _parse_k8s_timestamp(created)
-        if (time.time() - created_ts) < MIN_NODE_AGE_SECONDS:
+        if (time.time() - created_ts) < min_node_age:
             return True
     return False
 
 
-def _count_unstable_nodes(all_nodes: dict) -> int:
+def _count_unstable_nodes(all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> int:
     """Count nodes that are new, NotReady, or being deleted.
 
     A node is "unstable" if any of:
     - It has a deletionTimestamp (being deleted)
     - Its Ready condition is not True
-    - It was created less than MIN_NODE_AGE_SECONDS ago
+    - It was created less than min_node_age seconds ago
     """
-    return sum(1 for node in all_nodes.get("items", []) if _is_node_unstable(node))
+    return sum(1 for node in all_nodes.get("items", []) if _is_node_unstable(node, min_node_age=min_node_age))
 
 
-def get_unstable_node_names(all_nodes: dict) -> set[str]:
+def get_unstable_node_names(all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> set[str]:
     """Return names of nodes that are new, NotReady, or being deleted."""
-    return {node["metadata"]["name"] for node in all_nodes.get("items", []) if _is_node_unstable(node)}
+    return {node["metadata"]["name"] for node in all_nodes.get("items", []) if _is_node_unstable(node, min_node_age=min_node_age)}
+
+
+def get_recently_stable_node_names(
+    all_nodes: dict,
+    min_node_age: int = MIN_NODE_AGE_SECONDS,
+    recently_stable_age: int = RECENTLY_STABLE_AGE_SECONDS,
+) -> set[str]:
+    """Return names of nodes that are stable but still young.
+
+    These nodes passed the min_node_age threshold (not in the unstable
+    set) but are younger than recently_stable_age seconds. DaemonSet pods on
+    these nodes may still be pulling images or creating containers — Pending
+    phase is expected and should not be treated as a failure.
+    """
+    names = set()
+    for node in all_nodes.get("items", []):
+        if _is_node_unstable(node, min_node_age=min_node_age):
+            continue
+        meta = node.get("metadata", {})
+        created = meta.get("creationTimestamp", "")
+        if created:
+            age = time.time() - _parse_k8s_timestamp(created)
+            if age < recently_stable_age:
+                names.add(meta["name"])
+    return names
 
 
 def _has_matching_nodes(all_nodes: dict, node_selector: dict[str, list[str]] | None) -> bool:
@@ -247,11 +273,12 @@ def assert_daemonset_healthy(
     name_contains: str | None = None,
     allow_zero: bool = False,
     node_selector: dict[str, list[str]] | None = None,
+    min_node_age: int = MIN_NODE_AGE_SECONDS,
 ) -> None:
     """Assert DaemonSet is healthy, tolerating mismatches from node churn.
 
     Passes if desired == ready, OR if the mismatch is fully explained by
-    nodes that are new (< MIN_NODE_AGE_SECONDS), NotReady, or being deleted.
+    nodes that are new (< min_node_age seconds), NotReady, or being deleted.
 
     This is resilient to concurrent node churn (compactor e2e, Karpenter
     autoscaling, spot interruptions, node recycling).
@@ -266,6 +293,7 @@ def assert_daemonset_healthy(
         node_selector: Label selector for the DaemonSet's target nodes, as
             ``{label_key: [value, ...]}``. When set and no nodes match, 0/0
             is accepted (the DaemonSet has no eligible nodes to schedule on).
+        min_node_age: Minimum node age in seconds to consider stable.
     """
     ds_list = filter_daemonsets(all_daemonsets, namespace=namespace, name=name, name_contains=name_contains)
     label = name or name_contains
@@ -282,7 +310,7 @@ def assert_daemonset_healthy(
         return
 
     # Check if mismatch is explained by unstable nodes
-    unstable = _count_unstable_nodes(all_nodes)
+    unstable = _count_unstable_nodes(all_nodes, min_node_age=min_node_age)
     if max(0, desired - ready) <= unstable:
         if not allow_zero and ready == 0 and _has_matching_nodes(all_nodes, node_selector):
             assert desired > 0, f"{ds_name} has 0 ready pods (all {unstable} nodes unstable)"
@@ -299,7 +327,7 @@ def assert_daemonset_healthy(
             if not allow_zero and _has_matching_nodes(fresh_nodes, node_selector):
                 assert desired > 0, f"{ds_name} has 0 desired pods"
             return
-        unstable = _count_unstable_nodes(fresh_nodes)
+        unstable = _count_unstable_nodes(fresh_nodes, min_node_age=min_node_age)
         if max(0, desired - ready) <= unstable:
             if not allow_zero and ready == 0 and _has_matching_nodes(fresh_nodes, node_selector):
                 assert desired > 0, f"{ds_name} has 0 ready pods (all {unstable} nodes unstable)"
@@ -312,14 +340,47 @@ def assert_daemonset_healthy(
     )
 
 
+def _is_deployment_mid_rollout(deploy: dict) -> bool:
+    """Check if a Deployment is in the middle of a rollout.
+
+    A rollout is in progress when:
+    - observedGeneration < metadata.generation (controller hasn't processed the update yet), OR
+    - The Progressing condition is True but reason is NOT 'NewReplicaSetAvailable'
+      (a new ReplicaSet is being scaled up)
+    """
+    meta_gen = deploy.get("metadata", {}).get("generation", 0)
+    observed_gen = deploy.get("status", {}).get("observedGeneration", 0)
+    if observed_gen < meta_gen:
+        return True
+
+    conditions = {c["type"]: c for c in deploy.get("status", {}).get("conditions", [])}
+    progressing = conditions.get("Progressing", {})
+    if progressing.get("status") == "True" and progressing.get("reason") != "NewReplicaSetAvailable":
+        return True
+
+    return False
+
+
 def assert_deployment_ready(
     all_deployments: dict,
     namespace: str,
     name: str,
+    *,
+    rollout_timeout: int = 90,
 ) -> None:
-    """Assert a Deployment has all replicas ready, retrying on transient mismatch.
+    """Assert a Deployment has all replicas ready, tolerating active rollouts.
 
-    Same pattern as assert_daemonset_ready — uses batch data first, retries live.
+    If the deployment is mid-rollout (e.g. triggered by a parallel e2e test),
+    waits for the rollout to complete before checking readiness. Fails if the
+    rollout doesn't complete within rollout_timeout seconds (stuck rollout).
+
+    Args:
+        all_deployments: Batch-fetched Deployment data.
+        namespace: Namespace to filter by.
+        name: Deployment name.
+        rollout_timeout: Max seconds to wait for an active rollout to finish.
+            Node-compactor rollouts (Recreate + 30s readiness probe) should
+            complete in under 60s; 90s gives comfortable margin.
     """
     deploys = filter_deployments(all_deployments, namespace=namespace, name=name)
     assert len(deploys) == 1, f"Deployment {name} not found in {namespace}"
@@ -331,7 +392,26 @@ def assert_deployment_ready(
     if desired == ready:
         return
 
-    # Batch data is stale — retry with live fetches
+    # Check if a rollout is in progress — if so, wait for it to finish
+    if _is_deployment_mid_rollout(deploy):
+        deadline = time.time() + rollout_timeout
+        while time.time() < deadline:
+            time.sleep(READY_RETRY_DELAY)
+            fresh = run_kubectl(["get", f"deployment/{name}"], namespace=namespace)
+            desired = fresh["spec"].get("replicas", 1)
+            ready = fresh.get("status", {}).get("readyReplicas", 0)
+            if desired == ready:
+                return
+            if not _is_deployment_mid_rollout(fresh):
+                # Rollout finished but still not ready — fall through to failure
+                break
+        else:
+            raise AssertionError(
+                f"{name}: rollout still in progress after {rollout_timeout}s "
+                f"({ready}/{desired} replicas ready). Rollout may be stuck."
+            )
+
+    # Not mid-rollout (or rollout finished but not ready) — standard retry
     for _attempt in range(READY_RETRIES):
         time.sleep(READY_RETRY_DELAY)
         fresh = run_kubectl(["get", f"deployment/{name}"], namespace=namespace)

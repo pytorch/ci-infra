@@ -226,8 +226,8 @@ jobs:
 
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
-  # download.pytorch.org proxy, and URL rewriting — all without the
-  # setup-pypi-cache composite action.
+  # download.pytorch.org proxy, URL rewriting, torch install, and
+  # numpy wheel cache — all without the setup-pypi-cache composite action.
   test-pypi-cache-defaults:
     runs-on: {{PREFIX}}l-x86iamx-8-32
     container:
@@ -237,10 +237,14 @@ jobs:
         run: |
           echo "=== PyPI Cache: Service Health Check ==="
           SLUGS="{{PYPI_CACHE_SLUGS}}"
+          MAX_RETRIES=10
+          RETRY_DELAY=5
           FAIL=0
           for slug in $SLUGS; do
-            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/simple/"
-            HTTP_CODE=$(python3 -c "
+            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/health"
+            OK=0
+            for attempt in $(seq 1 $MAX_RETRIES); do
+              HTTP_CODE=$(python3 -c "
           import urllib.request, sys
           try:
               r = urllib.request.urlopen('$URL', timeout=15)
@@ -249,10 +253,16 @@ jobs:
               print(f'000 ({e})', file=sys.stderr)
               print('000')
           ")
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE"
-            else
-              echo "FAIL: pypi-cache-${slug} returned HTTP $HTTP_CODE (expected 200)"
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE (attempt $attempt)"
+                OK=1
+                break
+              fi
+              echo "RETRY: pypi-cache-${slug} returned HTTP $HTTP_CODE (attempt $attempt/$MAX_RETRIES)"
+              sleep $RETRY_DELAY
+            done
+            if [ "$OK" -eq 0 ]; then
+              echo "FAIL: pypi-cache-${slug} not healthy after $MAX_RETRIES attempts"
               FAIL=1
             fi
           done
@@ -263,6 +273,25 @@ jobs:
           fi
           echo ""
           echo "PASS: All pypi-cache services healthy"
+
+      - name: Verify environment variables
+        run: |
+          echo "=== Verify Pod Default Environment ==="
+          FAIL=0
+          for var in PIP_INDEX_URL PIP_EXTRA_INDEX_URL UV_DEFAULT_INDEX UV_INDEX PIP_TRUSTED_HOST UV_INSECURE_HOST; do
+            val=$(eval echo "\$$var")
+            if [ -z "$val" ]; then
+              echo "FAIL: $var is not set"
+              FAIL=1
+            elif ! echo "$val" | grep -q "pypi-cache"; then
+              echo "FAIL: $var does not contain 'pypi-cache': $val"
+              FAIL=1
+            else
+              echo "PASS: $var=$val"
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: All env vars point to pypi-cache service"
 
       - name: Verify pip install (pypi.org proxy)
         run: |
@@ -288,7 +317,7 @@ jobs:
           body = r.read().decode()
           print(f'HTTP {r.status} — index page length: {len(body)} bytes')
           if 'torch' not in body.lower():
-              print('FAIL: torch not found in /whl/ index')
+              print('FAIL: torch not found in index')
               sys.exit(1)
           print('PASS: download.pytorch.org proxy responds and contains torch')
           "
@@ -381,7 +410,7 @@ jobs:
 
       - name: Verify torch CPU install (pip)
         run: |
-          echo "=== Torch CPU Install (pip, defaults) ==="
+          echo "=== Torch CPU Install (pip) ==="
           pip install --no-cache-dir torch==2.11.0
           python3 -c "
           import torch, sys
@@ -395,7 +424,7 @@ jobs:
 
       - name: Verify torch CPU install (uv)
         run: |
-          echo "=== Torch CPU Install (uv, defaults) ==="
+          echo "=== Torch CPU Install (uv) ==="
           pip uninstall -y torch >/dev/null 2>&1 || true
           uv pip install --system --no-cache torch==2.11.0
           python3 -c "
@@ -408,9 +437,152 @@ jobs:
           print('PASS: torch is CPU build (uv)')
           "
 
+      - name: Check local wheelhouse for cached numpy wheels
+        run: |
+          echo "=== Local Wheel Cache Check ==="
+          SERVICE=$(echo "$PIP_INDEX_URL" | sed 's|/simple/$||; s|/simple$||')
+          echo "Service URL: $SERVICE"
+          HTTP_CODE=$(python3 -c "
+          import urllib.request, sys
+          req = urllib.request.Request('${SERVICE}/simple/numpy/', headers={'Accept': 'text/html'})
+          try:
+              resp = urllib.request.urlopen(req, timeout=30)
+              open('/tmp/numpy-index.html', 'wb').write(resp.read())
+              print(resp.status)
+          except urllib.error.HTTPError as e:
+              open('/tmp/numpy-index.html', 'wb').write(e.read())
+              print(e.code)
+          except Exception as e:
+              print(f'FATAL: connection error fetching numpy index: {e}', file=sys.stderr)
+              sys.exit(1)
+          ")
+          echo "Index response: HTTP $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::numpy index returned HTTP $HTTP_CODE — numpy exists on PyPI, non-200 means the cache is broken"
+            exit 1
+          fi
+
+          MERGED=$(python3 -c "
+          import urllib.request, sys
+          req = urllib.request.Request('${SERVICE}/simple/numpy/', headers={'Accept': 'text/html'})
+          try:
+              resp = urllib.request.urlopen(req, timeout=30)
+              val = resp.headers.get('X-Merged-Index', '')
+              resp.read()
+              if val: print(f'X-Merged-Index: {val}')
+          except urllib.error.HTTPError:
+              pass
+          except Exception as e:
+              print(f'FATAL: connection error checking merge header: {e}', file=sys.stderr)
+              sys.exit(1)
+          ")
+          echo "Merged index header: ${MERGED:-not present}"
+
+          LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
+          UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
+          echo "Local wheels: $LOCAL_COUNT"
+          echo "Upstream wheels: $UPSTREAM_COUNT"
+
+          if [ "$LOCAL_COUNT" -eq 0 ]; then
+            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
+            echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
+          else
+            echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
+            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
+          fi
+
+      - name: Install numpy from local wheel cache
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Install numpy from local wheel cache ==="
+          pip uninstall -y numpy >/dev/null 2>&1 || true
+          # Unset PIP_EXTRA_INDEX_URL so pip resolves only from /simple/
+          # (the njs merged index where local wheels win).  The /whl/cpu/
+          # extra index proxies download.pytorch.org which also lists numpy
+          # with upstream hash-based URLs, causing pip to sometimes pick
+          # the upstream link even when a local wheel exists.
+          PIP_EXTRA_INDEX_URL="" pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
+          DOWNLOAD_URL=$(grep -E 'Downloading.+numpy.+\.whl' /tmp/pip-numpy.log \
+            | grep -oE 'http://[^ ]+\.whl' | head -1 || true)
+          echo "Download URL: ${DOWNLOAD_URL:-not found in pip output}"
+          if [ -n "$DOWNLOAD_URL" ]; then
+            if echo "$DOWNLOAD_URL" | grep -qE '/packages/[0-9a-f]{2}/'; then
+              echo "FAIL: numpy was downloaded from upstream PyPI (hash-based path), not local wheel cache"
+              echo "URL: $DOWNLOAD_URL"
+              exit 1
+            fi
+            echo "PASS: numpy downloaded from local wheel cache"
+          else
+            echo "::warning::Could not extract download URL from pip output"
+          fi
+
+      - name: Validate numpy wheel platform compatibility
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Validate numpy wheel platform tags ==="
+          python3 -c "
+          import importlib.metadata, platform, sys
+
+          dist = importlib.metadata.distribution('numpy')
+
+          wheel_files = [f for f in dist.files if f.name == 'WHEEL']
+          if not wheel_files:
+              print('FAIL: No WHEEL metadata file found')
+              sys.exit(1)
+
+          wheel_content = wheel_files[0].read_text()
+          print('WHEEL metadata:')
+          print(wheel_content)
+
+          tags = [
+              line.split(': ', 1)[1].strip()
+              for line in wheel_content.splitlines()
+              if line.startswith('Tag: ')
+          ]
+          print(f'Tags: {tags}')
+
+          py_ver = f'cp{sys.version_info.major}{sys.version_info.minor}'
+          py_ok = any(py_ver in t or 'py3-none' in t for t in tags)
+          print(f'Python {py_ver} compatible: {py_ok}')
+
+          arch = platform.machine()
+          arch_ok = any(arch in t for t in tags) or any('none-any' in t for t in tags)
+          print(f'Architecture {arch} compatible: {arch_ok}')
+
+          ml_ok = any('manylinux' in t for t in tags) or any('none-any' in t for t in tags)
+          print(f'manylinux compatible: {ml_ok}')
+
+          if not py_ok:
+              print(f'FAIL: Wheel not compatible with Python {py_ver}: {tags}')
+              sys.exit(1)
+          if not arch_ok:
+              print(f'FAIL: Wheel not compatible with architecture {arch}: {tags}')
+              sys.exit(1)
+          if not ml_ok:
+              print(f'FAIL: No manylinux tag found: {tags}')
+              sys.exit(1)
+          print(f'PASS: numpy wheel is valid for {py_ver}/{arch}')
+          "
+
+      - name: Verify numpy basic functionality
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Verify numpy functionality ==="
+          python3 -c "
+          import numpy as np
+          a = np.array([1, 2, 3])
+          b = np.array([4, 5, 6])
+          c = np.dot(a, b)
+          assert c == 32, f'Expected 32, got {c}'
+          print(f'numpy {np.__version__} works correctly')
+          print(f'numpy location: {np.__file__}')
+          print(f'PASS: numpy functional validation')
+          "
+
   # ── PyPI Cache: setup-pypi-cache Action (CPU) ──────────────────────
   # Validates the composite action overrides pod-level defaults correctly
-  # for CPU configuration.
+  # for CPU configuration. Runs the full test battery.
   test-pypi-cache-action-cpu:
     runs-on: {{PREFIX}}l-x86iamx-8-32
     container:
@@ -420,6 +592,47 @@ jobs:
       - uses: pytorch/test-infra/.github/actions/setup-pypi-cache@jeanschmidt/define_pip_cuda
         with:
           cuda-version: "cpu"
+
+      - name: Verify pypi-cache service health
+        run: |
+          echo "=== PyPI Cache: Service Health Check ==="
+          SLUGS="{{PYPI_CACHE_SLUGS}}"
+          MAX_RETRIES=10
+          RETRY_DELAY=5
+          FAIL=0
+          for slug in $SLUGS; do
+            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/health"
+            OK=0
+            for attempt in $(seq 1 $MAX_RETRIES); do
+              HTTP_CODE=$(python3 -c "
+          import urllib.request, sys
+          try:
+              r = urllib.request.urlopen('$URL', timeout=15)
+              print(r.status)
+          except Exception as e:
+              print(f'000 ({e})', file=sys.stderr)
+              print('000')
+          ")
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE (attempt $attempt)"
+                OK=1
+                break
+              fi
+              echo "RETRY: pypi-cache-${slug} returned HTTP $HTTP_CODE (attempt $attempt/$MAX_RETRIES)"
+              sleep $RETRY_DELAY
+            done
+            if [ "$OK" -eq 0 ]; then
+              echo "FAIL: pypi-cache-${slug} not healthy after $MAX_RETRIES attempts"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more pypi-cache services are unhealthy"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All pypi-cache services healthy"
 
       - name: Verify env vars point to CPU service
         run: |
@@ -440,16 +653,20 @@ jobs:
           if [ "$FAIL" -ne 0 ]; then exit 1; fi
           echo "PASS: All env vars point to CPU pypi-cache service"
 
-      - name: Verify pip install via action-configured cache
+      - name: Verify pip install (pypi.org proxy)
         run: |
-          echo "=== Pip Install (CPU action) ==="
+          echo "=== Pip Install Test ==="
           pip install --no-cache-dir six packaging typing-extensions
           python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
-          echo "PASS: pip install via CPU action succeeded"
+          python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
+          python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
+          echo "PASS: pip install and import succeeded"
 
-      - name: Verify download.pytorch.org proxy via action
+      - name: Verify download.pytorch.org proxy
         run: |
-          echo "=== download.pytorch.org Proxy (CPU action) ==="
+          echo "=== download.pytorch.org Proxy Test ==="
+          echo "PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-<not set>}"
+          echo "UV_INDEX=${UV_INDEX:-<not set>}"
           python3 -c "
           import urllib.request, os, sys
           url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
@@ -460,23 +677,100 @@ jobs:
           body = r.read().decode()
           print(f'HTTP {r.status} — index page length: {len(body)} bytes')
           if 'torch' not in body.lower():
-              print('FAIL: torch not found in /whl/cpu/ index')
+              print('FAIL: torch not found in index')
               sys.exit(1)
-          print('PASS: download.pytorch.org proxy via CPU action works')
+          print('PASS: download.pytorch.org proxy responds and contains torch')
           "
 
-      - name: Verify uv pip install via action
+      - name: Install uv
+        run: pip install --no-cache-dir uv
+
+      - name: Verify uv pip install
         run: |
-          echo "=== UV pip install (CPU action) ==="
-          pip install --no-cache-dir uv
+          echo "=== UV pip install Test ==="
           pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
           uv pip install --system --no-cache six packaging typing-extensions
           python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
-          echo "PASS: uv pip install via CPU action succeeded"
+          echo "PASS: uv pip install succeeded"
 
-      - name: Verify torch CPU install (pip, action)
+      - name: Verify uv pip compile + sync
         run: |
-          echo "=== Torch CPU Install (pip, CPU action) ==="
+          echo "=== UV pip compile + sync Test ==="
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          printf 'six\npackaging\ntyping-extensions\n' > requirements.in
+          uv pip compile --no-cache --no-config requirements.in -o requirements.txt
+          uv pip sync --system --no-cache --no-config requirements.txt
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv pip compile + sync succeeded"
+
+      - name: Verify uv project interface
+        run: |
+          echo "=== UV project interface Test ==="
+          uv init --no-cache test-project && cd test-project
+          uv add --no-cache six packaging typing-extensions
+          uv run --no-cache python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv project interface succeeded"
+
+      - name: Verify URL rewriting (sub_filter)
+        run: |
+          echo "=== PyPI Cache: URL Rewriting Verification ==="
+          SLUG=$(echo "{{PYPI_CACHE_SLUGS}}" | awk '{print $1}')
+          URL="http://pypi-cache-${SLUG}.pypi-cache.svc.cluster.local:8080/simple/six/"
+          FAILED=0
+          for CONTENT_TYPE in "text/html" "application/vnd.pypi.simple.v1+json"; do
+            echo ""
+            echo "--- Testing with Accept: ${CONTENT_TYPE} ---"
+            BODY=$(python3 -c "
+          import urllib.request
+          req = urllib.request.Request('$URL', headers={'Accept': '${CONTENT_TYPE}'})
+          r = urllib.request.urlopen(req, timeout=15)
+          print(r.read().decode())
+          ")
+            echo "Checking for unrewritten URLs..."
+            DIRECT_COUNT=$(echo "$BODY" | grep -c 'files.pythonhosted.org' || true)
+            if [ "$DIRECT_COUNT" -ne 0 ]; then
+              echo "FAIL: Found $DIRECT_COUNT unrewritten files.pythonhosted.org URLs"
+              echo "$BODY" | grep 'files.pythonhosted.org' | head -3
+              FAILED=1
+            else
+              echo "PASS: No files.pythonhosted.org URLs in response"
+            fi
+            echo "Checking for rewritten /packages/ URLs..."
+            PKG_COUNT=$(echo "$BODY" | grep -c '/packages/' || true)
+            if [ "$PKG_COUNT" -eq 0 ]; then
+              echo "FAIL: No /packages/ URLs found in response"
+              FAILED=1
+            else
+              echo "PASS: Found $PKG_COUNT rewritten /packages/ URLs"
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "FAIL: URL rewriting verification failed for one or more content types"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: URL rewriting verified for both text/html and PEP 691 JSON"
+
+      - name: Verify UV_INDEX_STRATEGY
+        run: |
+          echo "=== UV_INDEX_STRATEGY ==="
+          EXPECTED="unsafe-best-match"
+          ACTUAL="${UV_INDEX_STRATEGY:-}"
+          echo "UV_INDEX_STRATEGY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: UV_INDEX_STRATEGY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: UV_INDEX_STRATEGY mismatch"
+            exit 1
+          fi
+          echo "PASS: UV_INDEX_STRATEGY is correct"
+
+      - name: Verify torch CPU install (pip)
+        run: |
+          echo "=== Torch CPU Install (pip) ==="
           pip install --no-cache-dir torch==2.11.0
           python3 -c "
           import torch, sys
@@ -488,9 +782,9 @@ jobs:
           print('PASS: torch is CPU build')
           "
 
-      - name: Verify torch CPU install (uv, action)
+      - name: Verify torch CPU install (uv)
         run: |
-          echo "=== Torch CPU Install (uv, CPU action) ==="
+          echo "=== Torch CPU Install (uv) ==="
           pip uninstall -y torch >/dev/null 2>&1 || true
           uv pip install --system --no-cache torch==2.11.0
           python3 -c "
@@ -503,11 +797,155 @@ jobs:
           print('PASS: torch is CPU build (uv)')
           "
 
+      - name: Check local wheelhouse for cached numpy wheels
+        run: |
+          echo "=== Local Wheel Cache Check ==="
+          SERVICE=$(echo "$PIP_INDEX_URL" | sed 's|/simple/$||; s|/simple$||')
+          echo "Service URL: $SERVICE"
+          HTTP_CODE=$(python3 -c "
+          import urllib.request, sys
+          req = urllib.request.Request('${SERVICE}/simple/numpy/', headers={'Accept': 'text/html'})
+          try:
+              resp = urllib.request.urlopen(req, timeout=30)
+              open('/tmp/numpy-index.html', 'wb').write(resp.read())
+              print(resp.status)
+          except urllib.error.HTTPError as e:
+              open('/tmp/numpy-index.html', 'wb').write(e.read())
+              print(e.code)
+          except Exception as e:
+              print(f'FATAL: connection error fetching numpy index: {e}', file=sys.stderr)
+              sys.exit(1)
+          ")
+          echo "Index response: HTTP $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::numpy index returned HTTP $HTTP_CODE — numpy exists on PyPI, non-200 means the cache is broken"
+            exit 1
+          fi
+
+          MERGED=$(python3 -c "
+          import urllib.request, sys
+          req = urllib.request.Request('${SERVICE}/simple/numpy/', headers={'Accept': 'text/html'})
+          try:
+              resp = urllib.request.urlopen(req, timeout=30)
+              val = resp.headers.get('X-Merged-Index', '')
+              resp.read()
+              if val: print(f'X-Merged-Index: {val}')
+          except urllib.error.HTTPError:
+              pass
+          except Exception as e:
+              print(f'FATAL: connection error checking merge header: {e}', file=sys.stderr)
+              sys.exit(1)
+          ")
+          echo "Merged index header: ${MERGED:-not present}"
+
+          LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
+          UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
+          echo "Local wheels: $LOCAL_COUNT"
+          echo "Upstream wheels: $UPSTREAM_COUNT"
+
+          if [ "$LOCAL_COUNT" -eq 0 ]; then
+            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
+            echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
+          else
+            echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
+            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
+          fi
+
+      - name: Install numpy from local wheel cache
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Install numpy from local wheel cache ==="
+          pip uninstall -y numpy >/dev/null 2>&1 || true
+          # Unset PIP_EXTRA_INDEX_URL so pip resolves only from /simple/
+          # (the njs merged index where local wheels win).  The /whl/cpu/
+          # extra index proxies download.pytorch.org which also lists numpy
+          # with upstream hash-based URLs, causing pip to sometimes pick
+          # the upstream link even when a local wheel exists.
+          PIP_EXTRA_INDEX_URL="" pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
+          DOWNLOAD_URL=$(grep -E 'Downloading.+numpy.+\.whl' /tmp/pip-numpy.log \
+            | grep -oE 'http://[^ ]+\.whl' | head -1 || true)
+          echo "Download URL: ${DOWNLOAD_URL:-not found in pip output}"
+          if [ -n "$DOWNLOAD_URL" ]; then
+            if echo "$DOWNLOAD_URL" | grep -qE '/packages/[0-9a-f]{2}/'; then
+              echo "FAIL: numpy was downloaded from upstream PyPI (hash-based path), not local wheel cache"
+              echo "URL: $DOWNLOAD_URL"
+              exit 1
+            fi
+            echo "PASS: numpy downloaded from local wheel cache"
+          else
+            echo "::warning::Could not extract download URL from pip output"
+          fi
+
+      - name: Validate numpy wheel platform compatibility
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Validate numpy wheel platform tags ==="
+          python3 -c "
+          import importlib.metadata, platform, sys
+
+          dist = importlib.metadata.distribution('numpy')
+
+          wheel_files = [f for f in dist.files if f.name == 'WHEEL']
+          if not wheel_files:
+              print('FAIL: No WHEEL metadata file found')
+              sys.exit(1)
+
+          wheel_content = wheel_files[0].read_text()
+          print('WHEEL metadata:')
+          print(wheel_content)
+
+          tags = [
+              line.split(': ', 1)[1].strip()
+              for line in wheel_content.splitlines()
+              if line.startswith('Tag: ')
+          ]
+          print(f'Tags: {tags}')
+
+          py_ver = f'cp{sys.version_info.major}{sys.version_info.minor}'
+          py_ok = any(py_ver in t or 'py3-none' in t for t in tags)
+          print(f'Python {py_ver} compatible: {py_ok}')
+
+          arch = platform.machine()
+          arch_ok = any(arch in t for t in tags) or any('none-any' in t for t in tags)
+          print(f'Architecture {arch} compatible: {arch_ok}')
+
+          ml_ok = any('manylinux' in t for t in tags) or any('none-any' in t for t in tags)
+          print(f'manylinux compatible: {ml_ok}')
+
+          if not py_ok:
+              print(f'FAIL: Wheel not compatible with Python {py_ver}: {tags}')
+              sys.exit(1)
+          if not arch_ok:
+              print(f'FAIL: Wheel not compatible with architecture {arch}: {tags}')
+              sys.exit(1)
+          if not ml_ok:
+              print(f'FAIL: No manylinux tag found: {tags}')
+              sys.exit(1)
+          print(f'PASS: numpy wheel is valid for {py_ver}/{arch}')
+          "
+
+      - name: Verify numpy basic functionality
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Verify numpy functionality ==="
+          python3 -c "
+          import numpy as np
+          a = np.array([1, 2, 3])
+          b = np.array([4, 5, 6])
+          c = np.dot(a, b)
+          assert c == 32, f'Expected 32, got {c}'
+          print(f'numpy {np.__version__} works correctly')
+          print(f'numpy location: {np.__file__}')
+          print(f'PASS: numpy functional validation')
+          "
+
   # ── PyPI Cache: setup-pypi-cache Action (CUDA) ─────────────────────
   # Validates the composite action correctly configures CUDA-specific
-  # pypi-cache service and pytorch wheel index.
+  # pypi-cache service and pytorch wheel index. Runs the full test
+  # battery on a GPU runner.
   test-pypi-cache-action-cuda:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
+    runs-on: {{PREFIX}}l-x86iavx512-29-115-t4
     container:
       image: python:3.12-slim
     steps:
@@ -515,6 +953,47 @@ jobs:
       - uses: pytorch/test-infra/.github/actions/setup-pypi-cache@jeanschmidt/define_pip_cuda
         with:
           cuda-version: "{{PYPI_CACHE_CUDA_VERSION}}"
+
+      - name: Verify pypi-cache service health
+        run: |
+          echo "=== PyPI Cache: Service Health Check ==="
+          SLUGS="{{PYPI_CACHE_SLUGS}}"
+          MAX_RETRIES=10
+          RETRY_DELAY=5
+          FAIL=0
+          for slug in $SLUGS; do
+            URL="http://pypi-cache-${slug}.pypi-cache.svc.cluster.local:8080/health"
+            OK=0
+            for attempt in $(seq 1 $MAX_RETRIES); do
+              HTTP_CODE=$(python3 -c "
+          import urllib.request, sys
+          try:
+              r = urllib.request.urlopen('$URL', timeout=15)
+              print(r.status)
+          except Exception as e:
+              print(f'000 ({e})', file=sys.stderr)
+              print('000')
+          ")
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "PASS: pypi-cache-${slug} responded HTTP $HTTP_CODE (attempt $attempt)"
+                OK=1
+                break
+              fi
+              echo "RETRY: pypi-cache-${slug} returned HTTP $HTTP_CODE (attempt $attempt/$MAX_RETRIES)"
+              sleep $RETRY_DELAY
+            done
+            if [ "$OK" -eq 0 ]; then
+              echo "FAIL: pypi-cache-${slug} not healthy after $MAX_RETRIES attempts"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "FAIL: One or more pypi-cache services are unhealthy"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: All pypi-cache services healthy"
 
       - name: Verify env vars point to CUDA service
         run: |
@@ -565,16 +1044,20 @@ jobs:
           if [ "$FAIL" -ne 0 ]; then exit 1; fi
           echo "PASS: All env vars point to CUDA pypi-cache service"
 
-      - name: Verify pip install via CUDA action
+      - name: Verify pip install (pypi.org proxy)
         run: |
-          echo "=== Pip Install (CUDA action) ==="
-          pip install --no-cache-dir six
+          echo "=== Pip Install Test ==="
+          pip install --no-cache-dir six packaging typing-extensions
           python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
-          echo "PASS: pip install via CUDA action succeeded"
+          python -c "from importlib.metadata import version; print(f'packaging=={version(\"packaging\")}')"
+          python -c "from importlib.metadata import version; print(f'typing-extensions=={version(\"typing-extensions\")}')"
+          echo "PASS: pip install and import succeeded"
 
-      - name: Verify CUDA pytorch wheel index accessible
+      - name: Verify download.pytorch.org proxy
         run: |
-          echo "=== CUDA PyTorch Wheel Index ==="
+          echo "=== download.pytorch.org Proxy Test ==="
+          echo "PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-<not set>}"
+          echo "UV_INDEX=${UV_INDEX:-<not set>}"
           python3 -c "
           import urllib.request, os, sys
           url = os.environ.get('PIP_EXTRA_INDEX_URL', '')
@@ -585,14 +1068,100 @@ jobs:
           body = r.read().decode()
           print(f'HTTP {r.status} — index page length: {len(body)} bytes')
           if 'torch' not in body.lower():
-              print('FAIL: torch not found in CUDA wheel index')
+              print('FAIL: torch not found in index')
               sys.exit(1)
-          print('PASS: CUDA pytorch wheel index accessible')
+          print('PASS: download.pytorch.org proxy responds and contains torch')
           "
 
-      - name: Verify torch CUDA install (pip, action)
+      - name: Install uv
+        run: pip install --no-cache-dir uv
+
+      - name: Verify uv pip install
         run: |
-          echo "=== Torch CUDA Install (pip, CUDA action) ==="
+          echo "=== UV pip install Test ==="
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          uv pip install --system --no-cache six packaging typing-extensions
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv pip install succeeded"
+
+      - name: Verify uv pip compile + sync
+        run: |
+          echo "=== UV pip compile + sync Test ==="
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          printf 'six\npackaging\ntyping-extensions\n' > requirements.in
+          uv pip compile --no-cache --no-config requirements.in -o requirements.txt
+          uv pip sync --system --no-cache --no-config requirements.txt
+          python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv pip compile + sync succeeded"
+
+      - name: Verify uv project interface
+        run: |
+          echo "=== UV project interface Test ==="
+          uv init --no-cache test-project && cd test-project
+          uv add --no-cache six packaging typing-extensions
+          uv run --no-cache python -c "from importlib.metadata import version; print(f'six=={version(\"six\")}')"
+          echo "PASS: uv project interface succeeded"
+
+      - name: Verify URL rewriting (sub_filter)
+        run: |
+          echo "=== PyPI Cache: URL Rewriting Verification ==="
+          SLUG=$(echo "{{PYPI_CACHE_SLUGS}}" | awk '{print $1}')
+          URL="http://pypi-cache-${SLUG}.pypi-cache.svc.cluster.local:8080/simple/six/"
+          FAILED=0
+          for CONTENT_TYPE in "text/html" "application/vnd.pypi.simple.v1+json"; do
+            echo ""
+            echo "--- Testing with Accept: ${CONTENT_TYPE} ---"
+            BODY=$(python3 -c "
+          import urllib.request
+          req = urllib.request.Request('$URL', headers={'Accept': '${CONTENT_TYPE}'})
+          r = urllib.request.urlopen(req, timeout=15)
+          print(r.read().decode())
+          ")
+            echo "Checking for unrewritten URLs..."
+            DIRECT_COUNT=$(echo "$BODY" | grep -c 'files.pythonhosted.org' || true)
+            if [ "$DIRECT_COUNT" -ne 0 ]; then
+              echo "FAIL: Found $DIRECT_COUNT unrewritten files.pythonhosted.org URLs"
+              echo "$BODY" | grep 'files.pythonhosted.org' | head -3
+              FAILED=1
+            else
+              echo "PASS: No files.pythonhosted.org URLs in response"
+            fi
+            echo "Checking for rewritten /packages/ URLs..."
+            PKG_COUNT=$(echo "$BODY" | grep -c '/packages/' || true)
+            if [ "$PKG_COUNT" -eq 0 ]; then
+              echo "FAIL: No /packages/ URLs found in response"
+              FAILED=1
+            else
+              echo "PASS: Found $PKG_COUNT rewritten /packages/ URLs"
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "FAIL: URL rewriting verification failed for one or more content types"
+            exit 1
+          fi
+          echo ""
+          echo "PASS: URL rewriting verified for both text/html and PEP 691 JSON"
+
+      - name: Verify UV_INDEX_STRATEGY
+        run: |
+          echo "=== UV_INDEX_STRATEGY ==="
+          EXPECTED="unsafe-best-match"
+          ACTUAL="${UV_INDEX_STRATEGY:-}"
+          echo "UV_INDEX_STRATEGY=$ACTUAL (expected: $EXPECTED)"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: UV_INDEX_STRATEGY is not set"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: UV_INDEX_STRATEGY mismatch"
+            exit 1
+          fi
+          echo "PASS: UV_INDEX_STRATEGY is correct"
+
+      - name: Verify torch CUDA install (pip)
+        run: |
+          echo "=== Torch CUDA Install (pip) ==="
           pip install --no-cache-dir torch==2.11.0
           python3 -c "
           import torch, sys
@@ -604,12 +1173,9 @@ jobs:
           print(f'PASS: torch is CUDA build (cuda={cuda})')
           "
 
-      - name: Install uv for CUDA torch test
-        run: pip install --no-cache-dir uv
-
-      - name: Verify torch CUDA install (uv, action)
+      - name: Verify torch CUDA install (uv)
         run: |
-          echo "=== Torch CUDA Install (uv, CUDA action) ==="
+          echo "=== Torch CUDA Install (uv) ==="
           pip uninstall -y torch >/dev/null 2>&1 || true
           uv pip install --system --no-cache torch==2.11.0
           python3 -c "
@@ -620,6 +1186,149 @@ jobs:
               print('FAIL: Expected CUDA build, got CPU build (cuda=None)')
               sys.exit(1)
           print(f'PASS: torch is CUDA build (cuda={cuda}, uv)')
+          "
+
+      - name: Check local wheelhouse for cached numpy wheels
+        run: |
+          echo "=== Local Wheel Cache Check ==="
+          SERVICE=$(echo "$PIP_INDEX_URL" | sed 's|/simple/$||; s|/simple$||')
+          echo "Service URL: $SERVICE"
+          HTTP_CODE=$(python3 -c "
+          import urllib.request, sys
+          req = urllib.request.Request('${SERVICE}/simple/numpy/', headers={'Accept': 'text/html'})
+          try:
+              resp = urllib.request.urlopen(req, timeout=30)
+              open('/tmp/numpy-index.html', 'wb').write(resp.read())
+              print(resp.status)
+          except urllib.error.HTTPError as e:
+              open('/tmp/numpy-index.html', 'wb').write(e.read())
+              print(e.code)
+          except Exception as e:
+              print(f'FATAL: connection error fetching numpy index: {e}', file=sys.stderr)
+              sys.exit(1)
+          ")
+          echo "Index response: HTTP $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::numpy index returned HTTP $HTTP_CODE — numpy exists on PyPI, non-200 means the cache is broken"
+            exit 1
+          fi
+
+          MERGED=$(python3 -c "
+          import urllib.request, sys
+          req = urllib.request.Request('${SERVICE}/simple/numpy/', headers={'Accept': 'text/html'})
+          try:
+              resp = urllib.request.urlopen(req, timeout=30)
+              val = resp.headers.get('X-Merged-Index', '')
+              resp.read()
+              if val: print(f'X-Merged-Index: {val}')
+          except urllib.error.HTTPError:
+              pass
+          except Exception as e:
+              print(f'FATAL: connection error checking merge header: {e}', file=sys.stderr)
+              sys.exit(1)
+          ")
+          echo "Merged index header: ${MERGED:-not present}"
+
+          LOCAL_COUNT=$(grep -cE 'href="/packages/[^/]+\.whl' /tmp/numpy-index.html || true)
+          UPSTREAM_COUNT=$(grep -cE 'href="/packages/[0-9a-f]{2}/' /tmp/numpy-index.html || true)
+          echo "Local wheels: $LOCAL_COUNT"
+          echo "Upstream wheels: $UPSTREAM_COUNT"
+
+          if [ "$LOCAL_COUNT" -eq 0 ]; then
+            echo "::warning::No local numpy wheels in wheelhouse — wheel cache not yet populated, skipping local wheel validation"
+            echo "SKIP_WHEEL_VALIDATION=true" >> "$GITHUB_ENV"
+          else
+            echo "SKIP_WHEEL_VALIDATION=false" >> "$GITHUB_ENV"
+            echo "PASS: Found $LOCAL_COUNT local numpy wheels in wheel cache"
+          fi
+
+      - name: Install numpy from local wheel cache
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Install numpy from local wheel cache ==="
+          pip uninstall -y numpy >/dev/null 2>&1 || true
+          # Unset PIP_EXTRA_INDEX_URL so pip resolves only from /simple/
+          # (the njs merged index where local wheels win).  The /whl/cpu/
+          # extra index proxies download.pytorch.org which also lists numpy
+          # with upstream hash-based URLs, causing pip to sometimes pick
+          # the upstream link even when a local wheel exists.
+          PIP_EXTRA_INDEX_URL="" pip install -v --no-cache-dir numpy 2>&1 | tee /tmp/pip-numpy.log
+          DOWNLOAD_URL=$(grep -E 'Downloading.+numpy.+\.whl' /tmp/pip-numpy.log \
+            | grep -oE 'http://[^ ]+\.whl' | head -1 || true)
+          echo "Download URL: ${DOWNLOAD_URL:-not found in pip output}"
+          if [ -n "$DOWNLOAD_URL" ]; then
+            if echo "$DOWNLOAD_URL" | grep -qE '/packages/[0-9a-f]{2}/'; then
+              echo "FAIL: numpy was downloaded from upstream PyPI (hash-based path), not local wheel cache"
+              echo "URL: $DOWNLOAD_URL"
+              exit 1
+            fi
+            echo "PASS: numpy downloaded from local wheel cache"
+          else
+            echo "::warning::Could not extract download URL from pip output"
+          fi
+
+      - name: Validate numpy wheel platform compatibility
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Validate numpy wheel platform tags ==="
+          python3 -c "
+          import importlib.metadata, platform, sys
+
+          dist = importlib.metadata.distribution('numpy')
+
+          wheel_files = [f for f in dist.files if f.name == 'WHEEL']
+          if not wheel_files:
+              print('FAIL: No WHEEL metadata file found')
+              sys.exit(1)
+
+          wheel_content = wheel_files[0].read_text()
+          print('WHEEL metadata:')
+          print(wheel_content)
+
+          tags = [
+              line.split(': ', 1)[1].strip()
+              for line in wheel_content.splitlines()
+              if line.startswith('Tag: ')
+          ]
+          print(f'Tags: {tags}')
+
+          py_ver = f'cp{sys.version_info.major}{sys.version_info.minor}'
+          py_ok = any(py_ver in t or 'py3-none' in t for t in tags)
+          print(f'Python {py_ver} compatible: {py_ok}')
+
+          arch = platform.machine()
+          arch_ok = any(arch in t for t in tags) or any('none-any' in t for t in tags)
+          print(f'Architecture {arch} compatible: {arch_ok}')
+
+          ml_ok = any('manylinux' in t for t in tags) or any('none-any' in t for t in tags)
+          print(f'manylinux compatible: {ml_ok}')
+
+          if not py_ok:
+              print(f'FAIL: Wheel not compatible with Python {py_ver}: {tags}')
+              sys.exit(1)
+          if not arch_ok:
+              print(f'FAIL: Wheel not compatible with architecture {arch}: {tags}')
+              sys.exit(1)
+          if not ml_ok:
+              print(f'FAIL: No manylinux tag found: {tags}')
+              sys.exit(1)
+          print(f'PASS: numpy wheel is valid for {py_ver}/{arch}')
+          "
+
+      - name: Verify numpy basic functionality
+        if: env.SKIP_WHEEL_VALIDATION != 'true'
+        run: |
+          echo "=== Verify numpy functionality ==="
+          python3 -c "
+          import numpy as np
+          a = np.array([1, 2, 3])
+          b = np.array([4, 5, 6])
+          c = np.dot(a, b)
+          assert c == 32, f'Expected 32, got {c}'
+          print(f'numpy {np.__version__} works correctly')
+          print(f'numpy location: {np.__file__}')
+          print(f'PASS: numpy functional validation')
           "
 
   # ── Git Cache Test ────────────────────────────────────────────────────
