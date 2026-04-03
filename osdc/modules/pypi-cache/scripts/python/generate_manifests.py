@@ -52,12 +52,18 @@ DEFAULTS = {
     "nginx_image": "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
     "storage_request": "1Ti",
     "replicas": 2,
-    "log_max_age_days": 30,
     "workers": 4,
     "instance_type": "r5d.12xlarge",
     "nginx": {
         "cpu": 8,
-        "memory_gi": 2,
+        # njs index merging (merge_indexes.js) holds full subrequest response
+        # bodies in memory.  subrequest_output_buffer_size is 100m per
+        # subrequest; each /simple/ request issues 2 subrequests (~200 MB).
+        # With worker_processes=auto (8 on an 8-CPU allocation), worst-case
+        # concurrent buffer usage alone is ~1.6 GB.  64 GiB leaves ample
+        # headroom for proxy buffers, njs VM, nginx proxy cache metadata,
+        # and base nginx overhead under sustained concurrent load.
+        "memory_gi": 64,
         "cache_size": "30Gi",
     },
     "server": {
@@ -372,7 +378,6 @@ def generate_deployments(config: dict, template_path: Path) -> str:
         content = content.replace("__NGINX_IMAGE__", config["nginx_image"])
         content = content.replace("__INTERNAL_PORT__", str(config["internal_port"]))
         content = content.replace("__WORKERS__", str(config["workers"]))
-        content = content.replace("__LOG_MAX_AGE_DAYS__", str(config["log_max_age_days"]))
         content = content.replace("__NGINX_CPU__", nginx_cpu_str)
         content = content.replace("__NGINX_MEMORY__", nginx_mem_str)
         content = content.replace("__SERVER_CPU__", server_cpu_str)
