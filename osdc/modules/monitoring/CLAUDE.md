@@ -47,6 +47,13 @@ Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy 
 
 #### Kubernetes state (kube-state-metrics)
 - `kube_daemonset_*`, `kube_deployment_*`, `kube_namespace_*`, `kube_node_*`, `kube_statefulset_*`, `kube_persistentvolume_*`, `kube_horizontalpodautoscaler_*`, `kube_job_*` — full metrics
+- `kube_pod_info` — pod-to-node mapping (one series per pod); enables correlating pod failures with specific nodes to detect bad nodes that fail runner jobs repeatedly. Query example:
+  ```promql
+  count(
+    kube_pod_container_status_last_terminated_exitcode{container_exit_code!="0"}
+    * on(namespace, pod) group_left(node) kube_pod_info
+  ) by (node)
+  ```
 - `kube_pod_*` — **error-only:**
   - `container_status_last_terminated_reason` (non-Completed)
   - `container_status_last_terminated_exitcode` (non-zero)

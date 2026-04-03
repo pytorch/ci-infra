@@ -103,10 +103,13 @@ kube-state-metrics:
   prometheus:
     monitor:
       metricRelabelings:
-        # Drop all kube_pod_* except error indicators
+        # Drop all kube_pod_* except error indicators and pod info.
+        # kube_pod_info provides the `node` label needed to correlate pod failures
+        # with specific nodes — enables detecting bad nodes that fail runner jobs
+        # repeatedly (join exitcode/reason metrics with kube_pod_info by node).
         - action: drop
           sourceLabels: [__name__]
-          regex: "kube_pod_(?!container_status_last_terminated_reason|container_status_last_terminated_exitcode|status_reason).*"
+          regex: "kube_pod_(?!container_status_last_terminated_reason|container_status_last_terminated_exitcode|status_reason|info).*"
         # Drop low-value node metrics
         - action: drop
           sourceLabels: [__name__]
