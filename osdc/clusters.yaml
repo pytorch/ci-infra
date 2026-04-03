@@ -77,6 +77,7 @@ defaults:
   alloy_chart_version: "1.6.2"
   pypi_cache:
     cuda_versions:
+      - "12.6.3"
       - "12.8.1"
       - "13.0.2"
     # NOTE: python_versions is not consumed by manifest generation yet.
@@ -93,7 +94,7 @@ defaults:
     target_architectures:
       - "x86_64"
       - "aarch64"
-    target_manylinux: "2_17"
+    target_manylinux: "2_28"
 
 clusters:
   arc-staging:
