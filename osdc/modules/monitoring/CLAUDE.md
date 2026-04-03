@@ -93,10 +93,6 @@ Most filtering is done at the ServiceMonitor level via `keep` whitelists. Alloy 
 - **DCGM (GPU)** — curated ~26 GPU metrics, high-cardinality labels dropped
 - **git-cache / node-compactor / ARC listeners** — all metrics (custom exporters, low volume)
 
-### TODO
-- **arc-listeners PodMonitor** returns no data — listener pods may not expose a metrics port or label selector may not match. Investigate and fix or remove.
-- **CoreDNS** still has unfiltered histogram buckets (health, kubernetes, proxy) — ~170 series, low priority.
-- **git-cache / node-compactor / ARC listeners** have no metricRelabelings — volume is low (~20-30 series each), not worth filtering yet.
 
 ### Metrics cost control
 
