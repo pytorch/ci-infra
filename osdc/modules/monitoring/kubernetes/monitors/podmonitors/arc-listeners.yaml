@@ -14,7 +14,7 @@ spec:
       app.kubernetes.io/component: runner-scale-set-listener
   podMetricsEndpoints:
     - port: metrics
-      interval: 30s
+      interval: 3m
       scrapeTimeout: 10s
       metricRelabelings:
         # Keep only operationally important listener metrics
@@ -22,3 +22,6 @@ spec:
         - action: keep
           sourceLabels: [__name__]
           regex: "gha_assigned_jobs|gha_completed_jobs_total|gha_started_jobs_total|gha_running_jobs|gha_job_execution_duration_seconds_(sum|count)|gha_job_startup_duration_seconds_(sum|count)"
+        # Drop instance label — pod IP changes on restart, adds no value
+        - action: labeldrop
+          regex: "instance"
