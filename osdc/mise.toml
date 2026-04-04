@@ -7,8 +7,8 @@
 [tools]
 python = "3.12"
 opentofu = "1.7"
-kubectl = "1.29"
-helm = "3.14"
+kubectl = "1.29.12"
+helm = "3.14.4"
 awscli = "2"
 packer = "1.10"
 crane = "latest"
