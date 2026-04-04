@@ -258,11 +258,15 @@ def validate_patched_hooks(helm_yaml: str) -> list[tuple[str, str]]:
                 "Runner container missing ACTIONS_RUNNER_CONTAINER_HOOKS env var",
             )
         )
-    elif not hooks_env.get("value", "").endswith("/dist/index.js"):
+    elif not (
+        hooks_env.get("value", "").endswith("/dist/index.js")
+        or hooks_env.get("value", "").endswith("/hook-extensions/wrapper.js")
+    ):
         errors.append(
             (
                 "error",
-                f"ACTIONS_RUNNER_CONTAINER_HOOKS should point to patched hooks dist/index.js, "
+                f"ACTIONS_RUNNER_CONTAINER_HOOKS should point to patched hooks "
+                f"dist/index.js or OSDC wrapper hook-extensions/wrapper.js, "
                 f"got: {hooks_env.get('value', '')}",
             )
         )
