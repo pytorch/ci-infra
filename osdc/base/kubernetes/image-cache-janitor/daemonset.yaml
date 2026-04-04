@@ -1,0 +1,159 @@
+# Image cache janitor DaemonSet.
+# Periodically checks container image cache size via crictl and removes
+# unused images (largest first) when the cache exceeds ~500 GiB.
+# Uses nsenter via hostPID to access the host's crictl binary.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: image-cache-janitor
+  namespace: kube-system
+  labels:
+    app: image-cache-janitor
+    app.kubernetes.io/name: image-cache-janitor
+    app.kubernetes.io/component: node-configuration
+spec:
+  selector:
+    matchLabels:
+      app: image-cache-janitor
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "25%"
+
+  template:
+    metadata:
+      labels:
+        app: image-cache-janitor
+
+    spec:
+      hostPID: true
+
+      priorityClassName: system-node-critical
+
+      # Tolerate ALL taints used by Karpenter nodepools
+      tolerations:
+        # Karpenter instance-type taints (used by all nodepools)
+        - key: instance-type
+          operator: Exists
+          effect: NoSchedule
+
+        # BuildKit workload taints (service-specific isolation)
+        - key: workload/buildkit-arm64
+          operator: Exists
+          effect: NoSchedule
+        - key: workload/buildkit-amd64
+          operator: Exists
+          effect: NoSchedule
+
+        # Git cache startup taint
+        - key: git-cache-not-ready
+          operator: Exists
+          effect: NoSchedule
+
+        # GPU taints
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+        # CPU architecture taints
+        - key: cpu-type
+          operator: Exists
+          effect: NoSchedule
+
+        # Karpenter default taints
+        - key: karpenter.sh/unschedulable
+          operator: Exists
+          effect: NoSchedule
+
+        # System taints
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/memory-pressure
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/pid-pressure
+          operator: Exists
+          effect: NoSchedule
+
+        - key: node.kubernetes.io/unschedulable
+          operator: Exists
+          effect: NoSchedule
+
+      # Run on Karpenter-managed runner nodes and buildkit nodes
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - github-runner
+                      - buildkit
+
+      serviceAccountName: image-cache-janitor
+
+      containers:
+        - name: janitor
+          image: public.ecr.aws/docker/library/python:3.12-alpine
+          command: ["python3", "/scripts/janitor.py"]
+
+          ports:
+            - name: metrics
+              containerPort: 9103
+              protocol: TCP
+
+          env:
+            - name: IMAGE_CACHE_LIMIT_GI
+              value: "500"
+            - name: IMAGE_CACHE_TARGET_GI
+              value: "400"
+            - name: CHECK_INTERVAL_SECONDS
+              value: "300"
+
+          securityContext:
+            privileged: true
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: image-cache-janitor-script
+            defaultMode: 0755
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: image-cache-janitor
+  namespace: kube-system
+  labels:
+    app: image-cache-janitor

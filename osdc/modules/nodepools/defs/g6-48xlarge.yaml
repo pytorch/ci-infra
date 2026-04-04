@@ -1,10 +1,10 @@
 # Karpenter NodePool definition: g6.48xlarge
 # Consolidated pool for GPU G6 workloads
-# Node disk: 100Gi OS only — NVMe instance storage handles container data
+# Node disk: 100Gi OS + 500Gi images = 600Gi — NVMe instance storage handles container data
 nodepool:
   name: g6-48xlarge
   instance_type: g6.48xlarge
   arch: amd64
-  node_disk_size: 100
+  node_disk_size: 600
   gpu: true
   has_nvme: true

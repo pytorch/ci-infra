@@ -1,10 +1,10 @@
 # Karpenter NodePool definition: g6.8xlarge
 # Single L4 GPU node — smallest 1-GPU node that fits 16c/64Gi runners + overhead
-# Node disk: 100Gi OS only — NVMe instance storage handles container data
+# Node disk: 100Gi OS + 500Gi images = 600Gi — NVMe instance storage handles container data
 nodepool:
   name: g6-8xlarge
   instance_type: g6.8xlarge
   arch: amd64
-  node_disk_size: 100
+  node_disk_size: 600
   gpu: true
   has_nvme: true
