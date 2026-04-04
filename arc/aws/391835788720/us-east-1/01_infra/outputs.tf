@@ -34,3 +34,13 @@ output "vpc_id" {
   description = "The ID of the cluster vpc"
   value       = module.arc_runners_vpc.vpc_id
 }
+
+output "gharts_rds_host" {
+  description = "RDS hostname for the gharts PostgreSQL instance"
+  value       = aws_db_instance.gharts.address
+}
+
+output "gharts_irsa_role_arn" {
+  description = "IAM role ARN for the gharts service account (IRSA)"
+  value       = aws_iam_role.gharts.arn
+}
