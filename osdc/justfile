@@ -83,7 +83,7 @@ kubeconfig cluster:
 # BOOTSTRAP
 # ============================================================================
 
-# Bootstrap S3 state bucket + DynamoDB lock table for a cluster
+# Bootstrap remote state storage for a cluster (S3/GCS, auto-detected)
 bootstrap cluster:
     @OSDC_ROOT="{{ROOT}}" OSDC_UPSTREAM="{{UPSTREAM}}" CLUSTERS_YAML="{{CLUSTERS_YAML}}" {{SCRIPTS}}/bootstrap-state.sh {{cluster}}
 
