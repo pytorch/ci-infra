@@ -1,0 +1,8 @@
+# GKE overlay: shared base + GKE-specific resources.
+# Consumer adds GKE-specific resources (StorageClass, etc.) via patches or
+# by overriding this overlay in their own modules/ directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base

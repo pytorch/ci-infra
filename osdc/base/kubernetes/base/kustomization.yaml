@@ -1,0 +1,10 @@
+# Base Kubernetes resources shared across ALL providers (EKS, GKE, etc.).
+# Provider-specific resources go in overlays/<provider>/.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - harbor-namespace.yaml
+  - nvidia-device-plugin.yaml
+  - registry-mirror-config.yaml
+  - git-cache/

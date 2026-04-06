@@ -1,16 +1,12 @@
 # Base Kubernetes resources applied to EVERY cluster.
-# These are cluster-agnostic and required regardless of which modules are enabled.
+# Shared (provider-agnostic) resources live in base/.
+# Provider-specific resources live in overlays/<provider>/.
 #
-# Module-specific resources belong in osdc/<module>/kubernetes/ instead.
+# This top-level kustomization points to the EKS overlay for backward
+# compatibility — deploy-base's `kubectl apply -k base/kubernetes/` works
+# unchanged. Future providers (GKE, AKS) use their own overlay directly.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - storageclass-gp3.yaml
-  - node-performance-tuning.yaml
-  - nvidia-device-plugin.yaml
-  - harbor-namespace.yaml
-  - git-cache/
-  - registry-mirror-config.yaml
-  # NOTE: Namespaces for modules (arc-runners, arc-systems, buildkit, etc.)
-  # are created by the module's own kubernetes/ directory, not here.
+  - overlays/eks
