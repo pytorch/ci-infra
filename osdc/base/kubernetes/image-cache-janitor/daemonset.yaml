@@ -1,7 +1,8 @@
 # Image cache janitor DaemonSet.
 # Periodically checks container image cache size via crictl and removes
 # unused images (largest first) when the cache exceeds ~500 GiB.
-# Uses nsenter via hostPID to access the host's crictl binary.
+# crictl is bundled in the container image and talks to containerd via
+# a mounted CRI socket.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -111,7 +112,7 @@ spec:
 
       containers:
         - name: janitor
-          image: public.ecr.aws/docker/library/python:3.12-alpine
+          image: IMAGE_CACHE_JANITOR_IMAGE_PLACEHOLDER
           command: ["python3", "/scripts/janitor.py"]
 
           ports:
@@ -126,6 +127,8 @@ spec:
               value: "400"
             - name: CHECK_INTERVAL_SECONDS
               value: "300"
+            - name: CONTAINER_RUNTIME_ENDPOINT
+              value: "unix:///run/containerd/containerd.sock"
 
           securityContext:
             privileged: true
@@ -142,12 +145,18 @@ spec:
             - name: scripts
               mountPath: /scripts
               readOnly: true
+            - name: containerd-sock
+              mountPath: /run/containerd/containerd.sock
 
       volumes:
         - name: scripts
           configMap:
             name: image-cache-janitor-script
             defaultMode: 0755
+        - name: containerd-sock
+          hostPath:
+            path: /run/containerd/containerd.sock
+            type: Socket
 
 ---
 apiVersion: v1

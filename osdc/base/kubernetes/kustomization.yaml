@@ -12,6 +12,6 @@ resources:
   - harbor-namespace.yaml
   - git-cache/
   - registry-mirror-config.yaml
-  - image-cache-janitor/
+  # image-cache-janitor is deployed via its own deploy.sh (builds custom image)
   # NOTE: Namespaces for modules (arc-runners, arc-systems, buildkit, etc.)
   # are created by the module's own kubernetes/ directory, not here.

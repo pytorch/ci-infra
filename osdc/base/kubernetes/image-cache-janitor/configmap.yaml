@@ -20,7 +20,8 @@ data:
     (which operate on total disk usage and would misfire on pod ephemeral
     storage spikes).
 
-    Host access: uses nsenter via hostPID to reach the host's crictl binary.
+    Host access: crictl is bundled in the container image and talks to the
+    node's containerd via a mounted CRI socket.
     Safety: crictl rmi refuses to remove images that are in use by running
     containers, so eviction is always safe.
     """
@@ -53,9 +54,6 @@ data:
     GI = 1024 ** 3
     IMAGE_CACHE_LIMIT_BYTES = IMAGE_CACHE_LIMIT_GI * GI
     IMAGE_CACHE_TARGET_BYTES = IMAGE_CACHE_TARGET_GI * GI
-
-    # nsenter path — access host binaries via hostPID
-    NSENTER = "/proc/1/root/usr/bin/nsenter"
 
 
     # ---------------------------------------------------------------------------
@@ -220,11 +218,13 @@ data:
     # ---------------------------------------------------------------------------
 
     def run_crictl(*args: str) -> str:
-        """Run a crictl command on the host via nsenter.
+        """Run a crictl command against the node's containerd CRI socket.
 
+        crictl is bundled in the container image; CONTAINER_RUNTIME_ENDPOINT
+        env var tells it which socket to use.
         Returns stdout as a string. Raises CalledProcessError on failure.
         """
-        cmd = [NSENTER, "-t", "1", "-m", "-u", "-i", "-n", "--", "crictl"] + list(args)
+        cmd = ["crictl"] + list(args)
         log.info("$ %s", " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)
         return result.stdout
@@ -314,8 +314,8 @@ data:
             version_output = run_crictl("version")
             log.info("crictl version: %s", version_output.strip().split("\n")[0])
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-            log.error("Cannot access crictl via nsenter: %s", exc)
-            log.error("Ensure hostPID is enabled and the container is privileged")
+            log.error("Cannot access crictl: %s", exc)
+            log.error("Ensure containerd socket is mounted and CONTAINER_RUNTIME_ENDPOINT is set")
             sys.exit(1)
 
         # Start metrics server
