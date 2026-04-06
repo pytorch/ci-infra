@@ -61,7 +61,7 @@ def make_configmap(
 def make_helm_values(
     include_init_container: bool = True,
     include_hooks_env: bool = True,
-    hooks_path: str = "/opt/runner-hooks/dist/index.js",
+    hooks_path: str = "/home/runner/hook-extensions/wrapper.js",
 ) -> str:
     """Build Helm values YAML with runner template spec."""
     lines = [
@@ -112,7 +112,7 @@ def make_full_runner_yaml(
     gpu: str | None = None,
     include_init_container: bool = True,
     include_hooks_env: bool = True,
-    hooks_path: str = "/opt/runner-hooks/dist/index.js",
+    hooks_path: str = "/home/runner/hook-extensions/wrapper.js",
 ) -> str:
     """Build a complete two-document runner YAML (Helm values + ConfigMap)."""
     cm = make_configmap(
@@ -440,7 +440,19 @@ class TestValidatePatchedHooks:
         issues = validate_patched_hooks(helm)
         assert len(issues) == 1
         assert issues[0][0] == "error"
-        assert "dist/index.js" in issues[0][1]
+        assert "dist/index.js" in issues[0][1] or "wrapper.js" in issues[0][1]
+
+    def test_wrapper_path_accepted(self):
+        """OSDC wrapper.js path is a valid hooks target."""
+        helm = make_helm_values(hooks_path="/home/runner/hook-extensions/wrapper.js")
+        issues = validate_patched_hooks(helm)
+        assert issues == []
+
+    def test_direct_hooks_path_still_accepted(self):
+        """Backward compat: direct dist/index.js path remains valid."""
+        helm = make_helm_values(hooks_path="/opt/runner-hooks/dist/index.js")
+        issues = validate_patched_hooks(helm)
+        assert issues == []
 
     def test_both_missing(self):
         helm = make_helm_values(include_init_container=False, include_hooks_env=False)

@@ -145,10 +145,11 @@ template:
           # Point to hook template for job pod customization
           - name: ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE
             value: /home/runner/hook-extensions/job-pod.yaml
-          # Use patched hooks from DaemonSet instead of baked-in ones
+          # Use OSDC wrapper that validates env vars and surfaces errors
+          # clearly, then delegates to patched hooks from DaemonSet.
           # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.4
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
-            value: /opt/runner-hooks/dist/index.js
+            value: /home/runner/hook-extensions/wrapper.js
           # Allow more time for workflow pods to come online during demand surges.
           # Default is 600s (10 min), which is exceeded when node provisioning +
           # git-cache sync takes longer than expected under concurrent load.
@@ -209,6 +210,9 @@ template:
           items:
             - key: job-pod.yaml
               path: job-pod.yaml
+            - key: wrapper.js
+              path: wrapper.js
+          defaultMode: 0755
 ---
 # ConfigMap: Job Pod Hook Template for {{RUNNER_NAME}}
 # Defines resource requests for workflow job containers in Kubernetes mode
@@ -316,3 +320,156 @@ data:
           hostPath:
             path: /mnt/git-cache
             type: DirectoryOrCreate
+  wrapper.js: |
+    #!/usr/bin/env node
+    'use strict';
+    //
+    // OSDC Hook Wrapper — Enhanced error surfacing for runner-container-hooks
+    //
+    // Intercepts run_script_step and run_container_step to:
+    //   1. Validate environment variables for known bad patterns (API errors,
+    //      rate limit responses, HTML error pages) before script execution
+    //   2. Surface actual exit codes with clear "script error, not infra" messages
+    //
+    // All other commands (prepare_job, cleanup_job) pass through unchanged.
+    // Fail-open: if this wrapper crashes, it exits with a warning — never blocks jobs.
+    //
+    const { spawn } = require('child_process');
+    const REAL_HOOKS = '/opt/runner-hooks/dist/index.js';
+
+    // GitHub context vars that legitimately contain JSON — skip validation
+    const SKIP_VARS = new Set([
+      'GITHUB_EVENT', 'GITHUB_CONTEXT', 'GITHUB_EVENT_PATH',
+      'RUNNER_CONTEXT', 'STEPS_CONTEXT', 'NEEDS_CONTEXT',
+      'INPUTS_CONTEXT', 'MATRIX_CONTEXT', 'STRATEGY_CONTEXT',
+      'ENV_CONTEXT', 'VARS_CONTEXT', 'JOB_CONTEXT',
+    ]);
+
+    // Bad patterns indicating corrupted/error content in env vars.
+    // Order matters: specific patterns before generic documentation_url catch-all.
+    const BAD_PATTERNS = [
+      { re: /"message"\s*:\s*"API rate limit exceeded/, label: 'GitHub API rate limit error' },
+      { re: /"message"\s*:\s*"Bad credentials"/, label: 'GitHub auth error' },
+      { re: /"message"\s*:\s*"Not Found"/, label: 'GitHub 404 error' },
+      { re: /"documentation_url"\s*:\s*"https:\/\/docs\.github\.com/, label: 'GitHub API error response' },
+      { re: /<!DOCTYPE\s+html>/i, label: 'HTML error page' },
+      { re: /<html[\s>]/i, label: 'HTML content' },
+    ];
+
+    const MIN_LENGTH = 30;
+
+    function validateEnvVars(envVars) {
+      const problems = [];
+      if (!envVars || typeof envVars !== 'object') return problems;
+      for (const [name, value] of Object.entries(envVars)) {
+        if (SKIP_VARS.has(name)) continue;
+        if (typeof value !== 'string' || value.length < MIN_LENGTH) continue;
+        for (const { re, label } of BAD_PATTERNS) {
+          if (re.test(value)) {
+            problems.push({ name, label, snippet: value.slice(0, 200) });
+            break;
+          }
+        }
+      }
+      return problems;
+    }
+
+    function emit(level, msg) {
+      process.stdout.write('::' + level + '::' + msg.replace(/\n/g, '%0A') + '\n');
+    }
+
+    // Track child process for signal forwarding during pod eviction/cancellation
+    let activeChild = null;
+
+    function forwardSignal(signal) {
+      if (activeChild) {
+        activeChild.kill(signal);
+      }
+    }
+    process.on('SIGTERM', () => forwardSignal('SIGTERM'));
+    process.on('SIGINT', () => forwardSignal('SIGINT'));
+
+    function spawnReal(stdinData) {
+      return new Promise((resolve) => {
+        const child = spawn(process.execPath, [REAL_HOOKS], {
+          stdio: ['pipe', 'inherit', 'inherit'],
+        });
+        activeChild = child;
+        child.stdin.write(stdinData);
+        child.stdin.end();
+        child.on('close', (code) => {
+          activeChild = null;
+          resolve(code !== null ? code : 1);
+        });
+        child.on('error', (err) => {
+          activeChild = null;
+          emit('warning', '[OSDC] Hook spawn error: ' + err.message);
+          resolve(1);
+        });
+      });
+    }
+
+    async function readStdin() {
+      let data = '';
+      for await (const chunk of process.stdin) data += chunk;
+      return data;
+    }
+
+    async function main(stdinData) {
+      let input;
+      try {
+        input = JSON.parse(stdinData);
+      } catch (_) {
+        return await spawnReal(stdinData);
+      }
+
+      const cmd = input.command;
+      if (cmd !== 'run_script_step' && cmd !== 'run_container_step') {
+        return await spawnReal(stdinData);
+      }
+
+      // Feature 2: Validate environment variables
+      const envVars = input.args && input.args.environmentVariables;
+      const problems = validateEnvVars(envVars);
+      if (problems.length > 0) {
+        const details = problems
+          .map((p) => '  ' + p.name + ': ' + p.label + '%0A    Content: ' + p.snippet + '...')
+          .join('%0A');
+        emit('error',
+          '[OSDC] Corrupted environment variables detected — this is an upstream ' +
+          'workflow issue, not an infrastructure problem.%0A%0A' +
+          'The following variables contain error responses instead of expected values:%0A' +
+          details + '%0A%0A' +
+          'This typically happens when a GitHub API call fails (e.g., rate limiting) ' +
+          'and the error response is captured into a variable without validation. ' +
+          'The upstream workflow needs to add error checking (set -o pipefail, ' +
+          'validate API responses before using them).'
+        );
+        return 1;
+      }
+
+      // Feature 1: Enhanced exit code surfacing
+      const code = await spawnReal(stdinData);
+      if (code !== 0) {
+        emit('error',
+          '[OSDC] Step script exited with code ' + code + '. ' +
+          'This is a script/workflow error, not an infrastructure issue. ' +
+          'Check the step logs above for the actual failure.'
+        );
+      }
+      return code;
+    }
+
+    // Fail-open: read stdin once, run main, fall back on crash
+    readStdin().then(async (stdinData) => {
+      try {
+        process.exit(await main(stdinData));
+      } catch (err) {
+        emit('warning', '[OSDC] Wrapper error (fail-open): ' + err.message);
+        try {
+          process.exit(await spawnReal(stdinData));
+        } catch (_) {
+          process.exit(1);
+        }
+      }
+    });
