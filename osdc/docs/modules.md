@@ -102,7 +102,7 @@ OSDC_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CFG="$OSDC_ROOT/scripts/cluster-config.py"
 BUCKET=$(python3 "$CFG" "$CLUSTER" state_bucket)
 
-cd "$OSDC_ROOT/modules/eks/terraform"
+cd "$OSDC_ROOT/modules/eks/infra"
 tofu init -reconfigure \
     -backend-config="bucket=${BUCKET}" \
     -backend-config="key=${CLUSTER}/base/terraform.tfstate" \

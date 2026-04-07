@@ -156,7 +156,7 @@ s3://ciforge-tfstate-<cluster-id>/<cluster-id>/<module>/terraform.tfstate
 
 To inspect state:
 ```bash
-cd modules/eks/terraform
+cd modules/eks/infra
 tofu init -reconfigure \
     -backend-config="bucket=ciforge-tfstate-arc-staging" \
     -backend-config="key=arc-staging/base/terraform.tfstate" \
