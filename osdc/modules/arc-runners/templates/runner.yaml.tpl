@@ -286,13 +286,15 @@ data:
             - name: PIP_TRUSTED_HOST
               value: "pypi-cache-cpu.pypi-cache.svc.cluster.local"
             - name: PIP_EXTRA_INDEX_URL
-              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+              value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/ https://pypi.org/simple/"
             - name: UV_DEFAULT_INDEX
               value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
             - name: UV_INSECURE_HOST
               value: "pypi-cache-cpu.pypi-cache.svc.cluster.local:8080"
             - name: UV_INDEX
               value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
+            - name: UV_EXTRA_INDEX_URL
+              value: "https://pypi.org/simple/"
             - name: UV_INDEX_STRATEGY
               value: "unsafe-best-match"
             - name: PYPI_CACHE_SIMPLE_URL
