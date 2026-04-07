@@ -22,6 +22,7 @@ from generate_manifests import (
     generate_ec2nodeclass,
     generate_nodepool,
     generate_nodepools,
+    generate_pdbs,
     generate_pvc,
     generate_services,
     generate_storageclass,
@@ -288,9 +289,9 @@ class TestLoadConfig:
         assert config["instance_type"] == "r5d.12xlarge"
         assert config["internal_port"] == 8081
         assert config["server_port"] == 8080
-        assert config["workers"] == 4
+        assert config["workers"] == 24
         assert config["nginx_image"] == "docker.io/nginxinc/nginx-unprivileged:1.27-alpine"
-        assert config["nginx"]["cpu"] == 8
+        assert config["nginx"]["cpu"] == 4
         assert config["nginx"]["memory_gi"] == 64
         assert config["nginx"]["cache_size"] == "30Gi"
         assert config["server"]["cpu"] == "500m"
@@ -477,13 +478,13 @@ class TestGenerateDeployments:
 
     # --- pypiserver command/args ---
 
-    def test_command_contains_backend_simple_dir(self):
+    def test_command_contains_backend_cached_dir(self):
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             args = doc["spec"]["template"]["spec"]["containers"][1]["args"][0]
-            assert "--backend simple-dir" in args
+            assert "--backend cached-dir" in args
 
     def test_command_contains_server_gunicorn(self):
         config = _default_config()
@@ -538,7 +539,7 @@ class TestGenerateDeployments:
             pypiserver = doc["spec"]["template"]["spec"]["containers"][1]
             env_vars = {e["name"]: e.get("value") for e in pypiserver["env"]}
             assert "GUNICORN_CMD_ARGS" in env_vars
-            assert "--workers 4" in env_vars["GUNICORN_CMD_ARGS"]
+            assert "--workers 24" in env_vars["GUNICORN_CMD_ARGS"]
             assert "--timeout 300" in env_vars["GUNICORN_CMD_ARGS"]
 
     def test_workers_override(self):
@@ -568,22 +569,26 @@ class TestGenerateDeployments:
     # --- Probes (on nginx container, containers[0]) ---
 
     def test_nginx_readiness_probe(self):
-        """nginx container has readiness probe on /health (end-to-end through pypiserver)."""
+        """nginx container has readiness probe on /nginx-health (nginx-local, no backend dependency)."""
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
-            assert nginx["readinessProbe"]["httpGet"]["path"] == "/health"
+            assert nginx["readinessProbe"]["httpGet"]["path"] == "/nginx-health"
+            assert nginx["readinessProbe"]["timeoutSeconds"] == 3
+            assert nginx["readinessProbe"]["failureThreshold"] == 5
 
     def test_nginx_liveness_probe(self):
-        """nginx container has liveness probe on /health."""
+        """nginx container has liveness probe on /health with explicit timeout."""
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
             assert nginx["livenessProbe"]["httpGet"]["path"] == "/health"
+            assert nginx["livenessProbe"]["timeoutSeconds"] == 10
+            assert nginx["livenessProbe"]["failureThreshold"] == 5
 
     def test_pypiserver_no_probes(self):
         """pypiserver container has NO probes (nginx handles health checking)."""
@@ -629,9 +634,9 @@ class TestGenerateDeployments:
         for doc in docs:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
             resources = nginx["resources"]
-            assert resources["requests"]["cpu"] == 8
+            assert resources["requests"]["cpu"] == 4
             assert resources["requests"]["memory"] == "64Gi"
-            assert resources["limits"]["cpu"] == 8
+            assert resources["limits"]["cpu"] == 4
             assert resources["limits"]["memory"] == "64Gi"
 
     def test_resource_limits_shared_nodes_pypiserver(self):
@@ -704,23 +709,23 @@ class TestGenerateDeployments:
             containers = doc["spec"]["template"]["spec"]["containers"]
             nginx_res = containers[0]["resources"]
             server_res = containers[1]["resources"]
-            # nginx: 8 vCPU, 64 GiB + pypiserver: 6 vCPU, 41 GiB = 14 vCPU, 105 GiB
+            # nginx: 4 vCPU, 64 GiB + pypiserver: 10 vCPU, 41 GiB = 14 vCPU, 105 GiB
             total_cpu = nginx_res["requests"]["cpu"] + server_res["requests"]["cpu"]
             assert total_cpu == 14
 
     def test_dedicated_computed_resources_nginx(self):
-        """With r5d.12xlarge, nginx gets fixed 8 vCPU / 64 GiB."""
+        """With r5d.12xlarge, nginx gets fixed 4 vCPU / 64 GiB."""
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             nginx = doc["spec"]["template"]["spec"]["containers"][0]
             resources = nginx["resources"]
-            assert resources["requests"]["cpu"] == 8
+            assert resources["requests"]["cpu"] == 4
             assert resources["requests"]["memory"] == "64Gi"
 
     def test_dedicated_computed_resources_pypiserver(self):
-        """With r5d.12xlarge, pypiserver gets remainder: 6 vCPU / 41 GiB."""
+        """With r5d.12xlarge, pypiserver gets remainder: 10 vCPU / 41 GiB."""
         config = _default_config()
         config["cuda_versions"] = ["12.1", "12.4"]
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
@@ -728,7 +733,7 @@ class TestGenerateDeployments:
         for doc in docs:
             pypiserver = doc["spec"]["template"]["spec"]["containers"][1]
             resources = pypiserver["resources"]
-            assert resources["requests"]["cpu"] == 6
+            assert resources["requests"]["cpu"] == 10
             assert resources["requests"]["memory"] == "41Gi"
 
     def test_dedicated_nginx_exceeds_pod_total_cpu_exits(self):
@@ -936,6 +941,70 @@ class TestGenerateServices:
         docs = self._parse_docs(result)
         for doc in docs:
             assert doc["spec"]["ports"][0]["port"] == 8080
+
+
+# ============================================================================
+# generate_pdbs
+# ============================================================================
+
+
+class TestGeneratePdbs:
+    def _parse_docs(self, yaml_str: str) -> list[dict]:
+        return list(yaml.safe_load_all(yaml_str))
+
+    def test_correct_number_of_documents(self):
+        config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
+        result = generate_pdbs(config, TEMPLATE_DIR / "pdb.yaml.tpl")
+        docs = self._parse_docs(result)
+        assert len(docs) == 3
+
+    def test_all_valid_yaml(self):
+        config = _default_config()
+        result = generate_pdbs(config, TEMPLATE_DIR / "pdb.yaml.tpl")
+        docs = self._parse_docs(result)
+        for doc in docs:
+            assert doc["kind"] == "PodDisruptionBudget"
+            assert doc["apiVersion"] == "policy/v1"
+
+    def test_pdb_names_match_slugs(self):
+        config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
+        result = generate_pdbs(config, TEMPLATE_DIR / "pdb.yaml.tpl")
+        docs = self._parse_docs(result)
+        expected_names = ["pypi-cache-cpu", "pypi-cache-cu121", "pypi-cache-cu124"]
+        actual_names = [doc["metadata"]["name"] for doc in docs]
+        assert actual_names == expected_names
+
+    def test_min_available_one(self):
+        config = _default_config()
+        result = generate_pdbs(config, TEMPLATE_DIR / "pdb.yaml.tpl")
+        docs = self._parse_docs(result)
+        for doc in docs:
+            assert doc["spec"]["minAvailable"] == 1
+
+    def test_selector_matches_deployment_labels(self):
+        config = _default_config()
+        config["cuda_versions"] = ["12.1", "12.4"]
+        result = generate_pdbs(config, TEMPLATE_DIR / "pdb.yaml.tpl")
+        docs = self._parse_docs(result)
+        expected_slugs = ["cpu", "cu121", "cu124"]
+        for doc, slug in zip(docs, expected_slugs, strict=True):
+            assert doc["spec"]["selector"]["matchLabels"]["app"] == "pypi-cache"
+            assert doc["spec"]["selector"]["matchLabels"]["cuda-version"] == slug
+
+    def test_no_remaining_placeholders(self):
+        config = _default_config()
+        result = generate_pdbs(config, TEMPLATE_DIR / "pdb.yaml.tpl")
+        assert not re.search(r"__[A-Z_]+__", result)
+
+    def test_namespace_substituted(self):
+        config = _default_config()
+        config["namespace"] = "custom-ns"
+        result = generate_pdbs(config, TEMPLATE_DIR / "pdb.yaml.tpl")
+        docs = self._parse_docs(result)
+        for doc in docs:
+            assert doc["metadata"]["namespace"] == "custom-ns"
 
 
 # ============================================================================
@@ -1310,6 +1379,7 @@ class TestMain:
         assert (output_dir / "pvc.yaml").exists()
         assert (output_dir / "deployments.yaml").exists()
         assert (output_dir / "services.yaml").exists()
+        assert (output_dir / "pdbs.yaml").exists()
 
     def test_full_generation_creates_output_dir(self, tmp_path: Path):
         """Output directory is created if it doesn't exist."""

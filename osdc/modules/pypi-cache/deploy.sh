@@ -142,6 +142,9 @@ fi
 echo "[pypi-cache] Applying Services..."
 kubectl_apply_if_changed -f "$GENERATED_DIR/services.yaml"
 
+echo "[pypi-cache] Applying PodDisruptionBudgets..."
+kubectl_apply_if_changed -f "$GENERATED_DIR/pdbs.yaml"
+
 echo "[pypi-cache] Applying Deployments..."
 kubectl_apply_if_changed -f "$GENERATED_DIR/deployments.yaml"
 
