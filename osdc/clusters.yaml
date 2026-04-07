@@ -76,6 +76,7 @@ defaults:
     grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
   alloy_chart_version: "1.6.2"
   pypi_cache:
+    instance_type: r5d.12xlarge
     cuda_versions:
       - "12.6.3"
       - "12.8.1"
