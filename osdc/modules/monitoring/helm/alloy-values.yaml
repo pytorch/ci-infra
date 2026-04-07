@@ -60,6 +60,13 @@ alloy:
         }
 
         // --- keep restarts_total and cadvisor memory only for control-plane namespaces ---
+        // These metrics generate one series per container, so storing them cluster-wide
+        // (especially with high runner pod churn) is too expensive. We only need them for
+        // control-plane namespaces where we actually alert (e.g. ControlPlaneCrashLoop).
+        //
+        // Two-step replace+drop pattern (RE2 has no lookahead):
+        //   1. Tag matching metrics in control-plane namespaces with __keep_cp__="true"
+        //   2. Drop any matching metric that was NOT tagged (i.e. __keep_cp__ is empty)
         rule {
           action        = "replace"
           source_labels = ["__name__", "namespace"]
