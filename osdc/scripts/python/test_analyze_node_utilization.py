@@ -537,9 +537,13 @@ class TestMain:
         output = capsys.readouterr().out
         assert "z99.fake" in output
 
-    def test_all_good_message(self, capsys):
+    @patch("analyze_node_utilization.load_runner_defs")
+    def test_all_good_message(self, mock_load, capsys):
         """When all runners have good utilization, prints all-good message (line 607)."""
-        # Use a very low threshold so everything passes
+        # Use controlled runner defs that pack well on their instance type
+        mock_load.return_value = [
+            {"name": "r1", "instance_type": "c7a.xlarge", "vcpu": 2, "memory_mi": 4096, "gpu": 0},
+        ]
         result = main(["--threshold", "1"])
         assert result == 0
         output = capsys.readouterr().out

@@ -11,13 +11,14 @@ checks:
     - "no-read-only-root-fs"
     # Base infra doesn't always use liveness probes (Harbor, git-cache, etc.)
     - "no-liveness-probe"
-    # Infrastructure DaemonSets (node tuning, registry config, git cache, NVIDIA plugin,
-    # DCGM exporter) and controllers (node-compactor, HAProxy) run as root
+    # Infrastructure DaemonSets (node tuning, registry config, git cache, image-cache-janitor,
+    # NVIDIA plugin, DCGM exporter) and controllers (node-compactor, HAProxy) run as root
     - "run-as-non-root"
-    # Node-tuning and registry-config DaemonSets are privileged to modify host settings
+    # Node-tuning, registry-config, and image-cache-janitor DaemonSets are privileged
     - "privileged-container"
     - "privilege-escalation-container"
-    # Node-tuning needs hostIPC/hostNetwork/hostPID; registry-config needs hostNetwork/hostPID
+    # Node-tuning needs hostIPC/hostNetwork/hostPID; registry-config needs hostNetwork/hostPID;
+    # image-cache-janitor needs hostPID
     - "host-ipc"
     - "host-network"
     - "host-pid"

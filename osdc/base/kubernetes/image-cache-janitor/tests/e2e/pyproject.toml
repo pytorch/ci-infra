@@ -1,0 +1,6 @@
+[project]
+name = "image-cache-janitor-e2e"
+version = "0.1.0"
+description = "End-to-end tests for the image-cache-janitor DaemonSet"
+requires-python = ">=3.12"
+dependencies = ["lightkube==0.15.5", "pytest>=8.0"]

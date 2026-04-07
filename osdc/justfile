@@ -290,6 +290,10 @@ deploy-base cluster:
     {{UPSTREAM}}/base/node-compactor/deploy.sh "$CLUSTER"
 
     echo ""
+    echo "━━━ BASE: Deploy Image Cache Janitor ━━━"
+    {{UPSTREAM}}/base/kubernetes/image-cache-janitor/deploy.sh "$CLUSTER"
+
+    echo ""
     echo "Base deployment complete."
 
 # Deploy a single module to a cluster
@@ -872,6 +876,22 @@ test-compactor cluster:
     echo ""; \
     if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi; \
     echo "Compactor e2e tests completed in ${elapsed}"; \
+    exit $rc
+
+# Run image-cache-janitor e2e tests against a live cluster
+test-janitor cluster:
+    @just kubeconfig {{cluster}}
+    @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    export OSDC_ROOT="{{ROOT}}"; \
+    export OSDC_UPSTREAM="{{UPSTREAM}}"; \
+    SECONDS=0; \
+    cd {{UPSTREAM}}/base/kubernetes/image-cache-janitor/tests/e2e && \
+    uv run pytest test_e2e.py -v --tb=long \
+        --cluster-id="{{cluster}}" \
+        && rc=0 || rc=$?; \
+    echo ""; \
+    if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi; \
+    echo "Janitor e2e tests completed in ${elapsed}"; \
     exit $rc
 
 # Run smoke tests against a deployed cluster
