@@ -24,6 +24,15 @@ STATE_REGION="us-west-2"
 
 bootstrap_cluster() {
   local cluster_id="$1"
+  local cloud
+  cloud=$(uv run "$CONFIG_PY" "$cluster_id" cloud aws)
+
+  # Non-AWS providers have their own bootstrap script
+  if [[ "$cloud" != "aws" ]]; then
+    "$SCRIPT_DIR/bootstrap-state-${cloud}.sh" "$cluster_id"
+    return
+  fi
+
   local bucket
   bucket=$(uv run "$CONFIG_PY" "$cluster_id" state_bucket)
 

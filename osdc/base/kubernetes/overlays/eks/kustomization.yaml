@@ -1,0 +1,8 @@
+# EKS overlay: shared base + EKS-specific resources.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - storageclass-gp3.yaml
+  - node-performance-tuning.yaml
