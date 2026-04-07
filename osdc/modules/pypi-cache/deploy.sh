@@ -9,7 +9,7 @@ set -euo pipefail
 #   1. pypi-cache namespace + ServiceAccount (kustomize)
 #   2. EFS-backed StorageClass + PVC
 #   3. ConfigMaps (scripts + config)
-#   4. Karpenter NodePools (if instance_type configured)
+#   4. Karpenter NodePools (dedicated nodes, r5d.12xlarge by default)
 #   5. Per-CUDA-slug Deployments + Services
 #
 # Architecture: Deployment + EFS (shared filesystem), one Deployment per CUDA
@@ -30,7 +30,7 @@ CLUSTERS_YAML="${CLUSTERS_YAML:-$UPSTREAM_ROOT/clusters.yaml}"
 
 # --- Read pypi_cache config ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" pypi_cache.namespace pypi-cache)
-INSTANCE_TYPE=$(uv run "$CFG" "$CLUSTER" pypi_cache.instance_type "")
+INSTANCE_TYPE=$(uv run "$CFG" "$CLUSTER" pypi_cache.instance_type "r5d.12xlarge")
 TARGET_PYTHON=$(uv run "$CFG" "$CLUSTER" pypi_cache.python_versions "3.10,3.11,3.12" | tr -d "[]' ")
 TARGET_ARCH=$(uv run "$CFG" "$CLUSTER" pypi_cache.target_architectures "x86_64,aarch64" | tr -d "[]' ")
 TARGET_MANYLINUX=$(uv run "$CFG" "$CLUSTER" pypi_cache.target_manylinux "2_28")
@@ -141,6 +141,9 @@ fi
 
 echo "[pypi-cache] Applying Services..."
 kubectl_apply_if_changed -f "$GENERATED_DIR/services.yaml"
+
+echo "[pypi-cache] Applying PodDisruptionBudgets..."
+kubectl_apply_if_changed -f "$GENERATED_DIR/pdbs.yaml"
 
 echo "[pypi-cache] Applying Deployments..."
 kubectl_apply_if_changed -f "$GENERATED_DIR/deployments.yaml"

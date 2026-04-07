@@ -1,10 +1,10 @@
 # Karpenter NodePool definition: m8g.48xlarge
 # Balanced pool for ARM64 runners with ~4 GiB/core ratio
 # AWS Graviton4
-# Node disk: worst case 25x 256Gi pods + 100Gi OS = 6500Gi
+# Node disk: worst case 25x 256Gi pods + 100Gi OS + 500Gi images = 7000Gi
 nodepool:
   name: m8g-48xlarge
   instance_type: m8g.48xlarge
   arch: arm64
-  node_disk_size: 6500
+  node_disk_size: 7000
   gpu: false

@@ -88,10 +88,12 @@ __INIT_NVME_BLOCK__
 
           readinessProbe:
             httpGet:
-              path: /health
+              path: /nginx-health
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
 
           livenessProbe:
             httpGet:
@@ -99,6 +101,8 @@ __INIT_NVME_BLOCK__
               port: http
             initialDelaySeconds: 10
             periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
 
           volumeMounts:
             - name: nginx-config
@@ -124,7 +128,7 @@ __INIT_NVME_BLOCK__
             - >-
               pypi-server run
               -p __INTERNAL_PORT__
-              --backend simple-dir
+              --backend cached-dir
               --server gunicorn
               --disable-fallback
               --health-endpoint /health

@@ -60,7 +60,8 @@ KSV-0009
 
 # hostPID: node-performance-tuning needs host PID namespace to inspect and tune
 # kernel thread affinity. registry-mirror-config needs it to signal containerd
-# after config changes (nsenter + systemctl).
+# after config changes (nsenter + systemctl). image-cache-janitor uses hostPID
+# for nsenter-based debugging access.
 KSV-0010
 
 # readOnlyRootFilesystem=false: Multiple infrastructure containers legitimately
@@ -72,6 +73,7 @@ KSV-0010
 #   - DCGM exporter: writes profiling data
 #   - registry-mirror-config: generates containerd mirror config files
 #   - node-performance-tuning: writes tuning scripts and state
+#   - image-cache-janitor: writes temporary state during crictl operations
 KSV-0014
 
 # privileged=true: Required by containers that modify host state:
@@ -79,6 +81,8 @@ KSV-0014
 #   - node-performance-tuning: modifies kernel params, IRQ affinity, hugepages
 #   - registry-mirror-config: writes to host /etc/containerd/ and restarts
 #     containerd via nsenter
+#   - image-cache-janitor: needs privileged to access the containerd CRI
+#     socket for image cache management
 KSV-0017
 
 # =============================================================================
@@ -111,6 +115,18 @@ KSV-0109
 # to access host devices, modify kernel parameters, manage container storage,
 # or bind to privileged ports. Non-root would break their functionality.
 KSV-0118
+
+# =============================================================================
+# Dockerfile — intentional root containers
+# =============================================================================
+
+# image-cache-janitor Dockerfile runs as root: The container requires
+# privileged access to the containerd CRI socket for image cache management.
+DS-0002
+
+# =============================================================================
+# Kubernetes — hostPath volumes
+# =============================================================================
 
 # hostPath volumes (/, /sys): node-performance-tuning DaemonSet mounts the
 # host root filesystem and /sys to tune kernel parameters (sysctl, NUMA policy,
