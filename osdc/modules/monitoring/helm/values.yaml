@@ -107,10 +107,10 @@ kube-state-metrics:
         #   daemonset: health status (desired/ready/available/unavailable)
         #   deployment: replica status + conditions + desired count
         #   namespace/node/statefulset/pv/hpa/job: all metrics (low cardinality)
-        #   pod: info (node mapping), error indicators, status reasons
+        #   pod: info (node mapping), error indicators, restart count, status reasons
         - action: keep
           sourceLabels: [__name__]
-          regex: "kube_daemonset_status_(desired_number_scheduled|number_ready|number_available|number_unavailable)|kube_deployment_status_(replicas_ready|replicas_available|replicas_unavailable|condition)|kube_deployment_spec_replicas|kube_(namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.*|kube_pod_info|kube_pod_container_status_last_terminated_reason|kube_pod_container_status_last_terminated_exitcode|kube_pod_status_reason"
+          regex: "kube_daemonset_status_(desired_number_scheduled|number_ready|number_available|number_unavailable)|kube_deployment_status_(replicas_ready|replicas_available|replicas_unavailable|condition)|kube_deployment_spec_replicas|kube_(namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.*|kube_pod_info|kube_pod_container_status_last_terminated_reason|kube_pod_container_status_last_terminated_exitcode|kube_pod_container_status_restarts_total|kube_pod_status_reason"
         # Drop low-value node metrics
         - action: drop
           sourceLabels: [__name__]

@@ -59,6 +59,20 @@ alloy:
           regex         = "kube_.*_created|kube_.*_metadata_resource_version|kube_secret_.*|kube_configmap_.*|kube_endpoint_.*|kube_lease_.*"
         }
 
+        // --- keep restarts_total and cadvisor memory only for control-plane namespaces ---
+        rule {
+          action        = "replace"
+          source_labels = ["__name__", "namespace"]
+          regex         = "(kube_pod_container_status_restarts_total|container_memory_working_set_bytes|container_memory_rss);(arc-systems|karpenter|harbor-system|monitoring|logging|buildkit)"
+          target_label  = "__keep_cp__"
+          replacement   = "true"
+        }
+        rule {
+          action        = "drop"
+          source_labels = ["__name__", "__keep_cp__"]
+          regex         = "(kube_pod_container_status_restarts_total|container_memory_working_set_bytes|container_memory_rss);"
+        }
+
         // --- drop misc high-cardinality metrics ---
         rule {
           action        = "drop"
