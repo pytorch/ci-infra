@@ -18,6 +18,7 @@ Outputs:
   pvc.yaml            — Shared PersistentVolumeClaim
   deployments.yaml    — Multi-doc YAML (one Deployment per CUDA slug)
   services.yaml       — Multi-doc YAML (one Service per CUDA slug)
+  pdbs.yaml           — Multi-doc YAML (one PodDisruptionBudget per CUDA slug)
   nodepools.yaml      — Karpenter NodePool + EC2NodeClass (when instance_type set)
 """
 
@@ -52,15 +53,15 @@ DEFAULTS = {
     "nginx_image": "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
     "storage_request": "1Ti",
     "replicas": 2,
-    "workers": 4,
+    "workers": 24,
     "instance_type": "r5d.12xlarge",
     "nginx": {
-        "cpu": 8,
+        "cpu": 4,
         # njs index merging (merge_indexes.js) holds full subrequest response
         # bodies in memory.  subrequest_output_buffer_size is 100m per
         # subrequest; each /simple/ request issues 2 subrequests (~200 MB).
-        # With worker_processes=auto (8 on an 8-CPU allocation), worst-case
-        # concurrent buffer usage alone is ~1.6 GB.  64 GiB leaves ample
+        # With worker_processes=auto (4 on a 4-CPU allocation), worst-case
+        # concurrent buffer usage alone is ~800 MB.  64 GiB leaves ample
         # headroom for proxy buffers, njs VM, nginx proxy cache metadata,
         # and base nginx overhead under sustained concurrent load.
         "memory_gi": 64,
@@ -410,6 +411,21 @@ def generate_services(config: dict, template_path: Path) -> str:
     return "\n---\n".join(docs)
 
 
+def generate_pdbs(config: dict, template_path: Path) -> str:
+    """Generate PodDisruptionBudget manifests for all CUDA slugs.
+
+    Returns a multi-document YAML string with --- separators.
+    """
+    slugs = get_slugs(config)
+    docs = []
+    for slug in slugs:
+        content = template_path.read_text()
+        content = content.replace("__NAMESPACE__", config["namespace"])
+        content = content.replace("__CUDA_SLUG__", slug)
+        docs.append(content)
+    return "\n---\n".join(docs)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate pypi-cache Kubernetes manifests")
     parser.add_argument("--cluster", required=True, help="Cluster ID from clusters.yaml")
@@ -492,6 +508,11 @@ def main():
     svc_path = output_dir / "services.yaml"
     svc_path.write_text(generate_services(config, template_dir / "service.yaml.tpl"))
     print(svc_path)
+
+    # PodDisruptionBudgets
+    pdb_path = output_dir / "pdbs.yaml"
+    pdb_path.write_text(generate_pdbs(config, template_dir / "pdb.yaml.tpl"))
+    print(pdb_path)
 
     # NodePools (only when instance_type is configured)
     if instance_type:
