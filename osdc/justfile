@@ -104,15 +104,12 @@ deploy cluster:
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
-    REGION=$(uv run {{CFG}} "$CLUSTER" region)
-    PROVIDER=$(uv run {{CFG}} "$CLUSTER" provider 2>/dev/null || echo "eks")
     SECONDS=0
 
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "FULL DEPLOYMENT: $CLUSTER ($CNAME)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo "Provider: $PROVIDER"
     echo "Modules:"
     uv run {{CFG}} "$CLUSTER" modules | sed 's/^/  - /'
     echo ""
@@ -123,26 +120,9 @@ deploy cluster:
         echo "Cancelled (OSDC_CONFIRM=no)."
         exit 1
     else
-        read -p "Deploy $CLUSTER with provider $PROVIDER? [y/N] " -n 1 -r
+        read -p "Continue? [y/N] " -n 1 -r
         echo
         [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
-    fi
-
-    # Deploy provider base module (eks or gke)
-    # Provider modules handle their own terraform, kubeconfig, harbor, etc.
-    if [[ -d "{{ROOT}}/modules/$PROVIDER" ]]; then
-        PROVIDER_DIR="{{ROOT}}/modules/$PROVIDER"
-    elif [[ -d "{{UPSTREAM}}/modules/$PROVIDER" ]]; then
-        PROVIDER_DIR="{{UPSTREAM}}/modules/$PROVIDER"
-    else
-        echo "Error: provider module '$PROVIDER' not found."
-        exit 1
-    fi
-    if [[ -x "$PROVIDER_DIR/deploy.sh" ]]; then
-        "$PROVIDER_DIR/deploy.sh" "$CLUSTER" "$CNAME" "$REGION"
-    else
-        echo "Error: $PROVIDER_DIR/deploy.sh not found or not executable."
-        exit 1
     fi
 
     for module in $(uv run {{CFG}} "$CLUSTER" modules); do
@@ -225,8 +205,8 @@ deploy-module cluster module:
     REGION=$(uv run {{CFG}} "$CLUSTER" region)
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
 
-    # Ensure kubectl is configured for the target cluster
-    just kubeconfig "$CLUSTER"
+    # Ensure kubectl is configured (soft-fail: eks module sets this up after terraform)
+    just kubeconfig "$CLUSTER" 2>/dev/null || true
 
     echo ""
     echo "━━━ MODULE: $MODULE ━━━"
@@ -429,7 +409,7 @@ untaint-nodes cluster:
     fi
 
 # ============================================================================
-# Deploy Harbor standalone (for manual re-deploy without full provider deploy)
+# Deploy Harbor standalone (LEGACY — prefer: just deploy-module <cluster> harbor)
 _deploy-harbor cluster:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -551,7 +531,7 @@ _deploy-harbor cluster:
         if helm_upgrade_by_input_hash harbor harbor-system \
             --create-namespace \
             --history-max 3 \
-            -f {{UPSTREAM}}/modules/eks/helm/harbor/values.yaml \
+            -f {{UPSTREAM}}/modules/harbor/helm/values.yaml \
             --set core.image.repository="${ECR_HARBOR}/harbor-core" \
             --set jobservice.image.repository="${ECR_HARBOR}/harbor-jobservice" \
             --set portal.image.repository="${ECR_HARBOR}/harbor-portal" \
@@ -782,7 +762,7 @@ test-compactor cluster:
     export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
     SECONDS=0; \
-    cd {{UPSTREAM}}/modules/eks/node-compactor/tests/e2e && \
+    cd {{UPSTREAM}}/modules/node-compactor/tests/e2e && \
     uv run pytest test_e2e.py -v --tb=long \
         --cluster-id="{{cluster}}" \
         && rc=0 || rc=$?; \
@@ -815,27 +795,22 @@ smoke cluster:
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     just kubeconfig "$CLUSTER"
 
-    # Discover smoke tests for the provider module (eks/gke)
-    PROVIDER=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" provider 2>/dev/null || echo "eks")
+    # Discover smoke tests for each enabled module
     SMOKE_DIRS=""
-    if [[ -d "${ROOT}/modules/${PROVIDER}" ]]; then
-        PROVIDER_DIR="${ROOT}/modules/${PROVIDER}"
-    else
-        PROVIDER_DIR="${UPSTREAM}/modules/${PROVIDER}"
-    fi
-    while IFS= read -r d; do
-        SMOKE_DIRS="${SMOKE_DIRS:+$SMOKE_DIRS }$d"
-    done < <(find "${PROVIDER_DIR}" -path '*/tests/smoke' -type d 2>/dev/null | sort)
-
-    # Add smoke tests for each enabled module
     MODULES=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" modules)
     for mod in $MODULES; do
         # Check consumer modules first (ROOT), then upstream
-        if [[ -d "${ROOT}/modules/${mod}/tests/smoke" ]]; then
-            SMOKE_DIRS="$SMOKE_DIRS ${ROOT}/modules/${mod}/tests/smoke"
-        elif [[ -d "${UPSTREAM}/modules/${mod}/tests/smoke" ]]; then
-            SMOKE_DIRS="$SMOKE_DIRS ${UPSTREAM}/modules/${mod}/tests/smoke"
+        # Use find to pick up nested tests/smoke dirs (e.g. modules/eks/tests/smoke)
+        if [[ -d "${ROOT}/modules/${mod}" ]]; then
+            MOD_DIR="${ROOT}/modules/${mod}"
+        elif [[ -d "${UPSTREAM}/modules/${mod}" ]]; then
+            MOD_DIR="${UPSTREAM}/modules/${mod}"
+        else
+            continue
         fi
+        while IFS= read -r d; do
+            SMOKE_DIRS="${SMOKE_DIRS:+$SMOKE_DIRS }$d"
+        done < <(find "${MOD_DIR}" -path '*/tests/smoke' -type d 2>/dev/null | sort)
     done
 
     echo "Running smoke tests for cluster: $CLUSTER"

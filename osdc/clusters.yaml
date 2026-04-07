@@ -4,24 +4,21 @@
 # The justfile reads this (via scripts/cluster-config.py) to drive deployments.
 #
 # Deploy flow per cluster:
-#   1. provider  — deploy modules/<provider>/deploy.sh (e.g. eks or gke)
-#                  handles terraform, kubeconfig, base k8s, harbor, etc.
-#   2. modules   — each module deployed in listed order
+#   for module in modules:
+#     just deploy-module <cluster> <module>
+#
+# The first module is typically the cloud provider (eks/gke) which creates
+# the cluster, sets up kubeconfig, and mirrors bootstrap images. All
+# subsequent modules are deployed in listed order.
 #
 # Module deploy contract:
 #   Each module may have:
 #     terraform/  — independent tofu root (applied separately, gets cluster outputs as -var)
 #     kubernetes/ — manifests applied via kubectl/kustomize
 #     helm/       — values files for external OCI charts
-#     scripts/    — deploy helpers
-#
-# The provider module (eks/gke) includes: infrastructure, Harbor,
-# base k8s resources, git-cache, node-compactor, NVIDIA device plugin.
+#     deploy.sh   — custom deploy logic (receives cluster-id, cluster-name, region)
 
 defaults:
-  # --- Provider (eks or gke) — deployed first, before modules ---
-  provider: eks
-
   # --- Terraform / base infra ---
   base_node_count: 5
   base_node_instance_type: m7i.4xlarge
@@ -145,6 +142,14 @@ clusters:
     pypi_cache:
       replicas: 1
     modules:
+      - eks
+      - storageclass-eks
+      - nvidia-device-plugin
+      - node-performance-tuning
+      - registry-mirror
+      - harbor
+      - git-cache
+      - node-compactor
       - karpenter
       - arc
       - nodepools
@@ -178,6 +183,14 @@ clusters:
     pypi_cache:
       replicas: 2
     modules:
+      - eks
+      - storageclass-eks
+      - nvidia-device-plugin
+      - node-performance-tuning
+      - registry-mirror
+      - harbor
+      - git-cache
+      - node-compactor
       - karpenter
       - arc
       - nodepools

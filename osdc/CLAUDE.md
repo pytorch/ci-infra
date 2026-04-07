@@ -4,7 +4,7 @@ project-doc: enabled
 
 ## What This Is
 
-Modular Kubernetes infrastructure platform. Each cluster has a `provider` module (e.g. `eks` or `gke`) that deploys base infrastructure (VPC, cluster, Harbor, git cache, GPU plugins), and optional `modules/` layer services on top (ARC, runners, BuildKit, future projects). One codebase drives multiple clusters across regions via `clusters.yaml`.
+Modular Kubernetes infrastructure platform. Each cluster is defined by an ordered list of modules in `clusters.yaml`. The first module is typically the cloud provider (`eks` or `gke`) which creates the cluster infrastructure. All subsequent modules (harbor, git-cache, karpenter, ARC, runners, BuildKit, etc.) are deployed in order via `just deploy-module`. One codebase drives multiple clusters across regions.
 
 Working directory: `osdc/`. Run all commands from here.
 
@@ -66,7 +66,7 @@ Reference documentation in `docs/`:
 
 | Doc | What it covers |
 |-----|---------------|
-| `docs/architecture.md` | Platform design — provider module + modules separation, cluster lifecycle |
+| `docs/architecture.md` | Platform design — module-based architecture, cluster lifecycle |
 | `docs/modules.md` | Module contract — what a module is, directory structure, required files |
 | `docs/observability.md` | Three-Alloy observability architecture — monitoring + logging pipelines to Grafana Cloud |
 | `docs/observability-estimates.md` | Per-unit cost estimates for metrics cardinality and log volume (Grafana Cloud billing) |

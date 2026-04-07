@@ -2,16 +2,15 @@
 set -euo pipefail
 #
 # Git cache central deploy script.
-# Called from modules/eks/deploy.sh (provider module).
-#
-# Args: $1=cluster-id
+# Called by: just deploy-module
+# Args: $1=cluster-id  $2=cluster-name  $3=region
 #
 # Generates StatefulSet and PDB from .tpl templates using cluster config,
 # then applies them alongside static kustomize resources.
 
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
+OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # shellcheck source=/dev/null
 source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
 # shellcheck source=/dev/null

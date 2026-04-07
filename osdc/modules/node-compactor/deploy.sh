@@ -2,16 +2,15 @@
 set -euo pipefail
 #
 # Deploy the Node Compactor controller.
-# Called from modules/eks/deploy.sh (provider module).
-#
-# Args: $1=cluster-id
+# Called by: just deploy-module
+# Args: $1=cluster-id  $2=cluster-name  $3=region
 #
 # Builds the container image, pushes it to Harbor, and applies the
 # kustomized manifests with config values substituted into the deployment.
 
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 # shellcheck source=/dev/null

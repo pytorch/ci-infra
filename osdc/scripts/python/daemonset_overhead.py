@@ -30,7 +30,7 @@ class DaemonSetOverhead:
     cpu_millicores: int
     memory_mib: int
     gpu_only: bool
-    source: str  # e.g. "modules/eks/kubernetes/nvidia-device-plugin.yaml" or "constant:helm"
+    source: str  # e.g. "modules/nvidia-device-plugin/kubernetes/nvidia-device-plugin.yaml" or "constant:helm"
 
 
 # ---------------------------------------------------------------------------
