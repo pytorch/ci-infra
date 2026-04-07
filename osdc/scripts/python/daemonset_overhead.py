@@ -1,6 +1,6 @@
 """Discover DaemonSet resource overhead from project Kubernetes manifests.
 
-Scans base/kubernetes/ and modules/*/kubernetes/ for DaemonSet documents,
+Scans modules/*/kubernetes/ for DaemonSet documents,
 parses their resource requests, and detects GPU-only targeting.  Supplements
 with constants for Helm-deployed and EKS-managed DaemonSets that don't live
 in raw YAML manifests.
@@ -30,7 +30,7 @@ class DaemonSetOverhead:
     cpu_millicores: int
     memory_mib: int
     gpu_only: bool
-    source: str  # e.g. "base/kubernetes/nvidia-device-plugin.yaml" or "constant:helm"
+    source: str  # e.g. "modules/eks/kubernetes/nvidia-device-plugin.yaml" or "constant:helm"
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +194,6 @@ def discover_daemonsets(
         Deduplicated list of DaemonSetOverhead, consumer overriding upstream by name.
     """
     search_dirs = [
-        upstream_dir / "base" / "kubernetes",
         upstream_dir / "modules",
     ]
 

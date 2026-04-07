@@ -354,7 +354,7 @@ resource "aws_launch_template" "base" {
     cluster_endpoint      = aws_eks_cluster.this.endpoint
     cluster_ca_data       = aws_eks_cluster.this.certificate_authority[0].data
     service_cidr          = aws_eks_cluster.this.kubernetes_network_config[0].service_ipv4_cidr
-    post_bootstrap_script = file("${path.root}/../../../base/scripts/bootstrap/eks-base-bootstrap.sh")
+    post_bootstrap_script = file("${path.root}/../scripts/bootstrap/eks-base-bootstrap.sh")
   }))
 
   block_device_mappings {

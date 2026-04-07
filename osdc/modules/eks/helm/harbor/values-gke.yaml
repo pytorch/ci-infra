@@ -1,0 +1,108 @@
+# Harbor Pull-Through Cache - GKE Values
+# Layered on top of the base values.yaml via:
+#   helm install harbor ... -f values-gke.yaml
+
+# ============================================================================
+# YAML Anchors for shared configuration
+# ============================================================================
+x-base-affinity: &base-affinity
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: role
+              operator: In
+              values:
+                - base-infrastructure
+
+# ============================================================================
+# Expose configuration (NodePort for containerd access)
+# ============================================================================
+expose:
+  type: nodePort
+  nodePort:
+    ports:
+      http:
+        port: 80
+        nodePort: 30002
+  tls:
+    enabled: false
+
+externalURL: http://localhost:30002
+
+# ============================================================================
+# Persistence (GCS for registry, PD for database/redis)
+# ============================================================================
+persistence:
+  enabled: true
+  imageChartStorage:
+    type: gcs
+    gcs:
+      # bucket is overridden per environment via --set
+      bucket: ""
+  persistentVolumeClaim:
+    database:
+      storageClass: gp3
+      size: 10Gi
+    redis:
+      storageClass: gp3
+      size: 5Gi
+
+# ============================================================================
+# Component configuration
+# ============================================================================
+trivy:
+  enabled: false
+
+cache:
+  enabled: true
+  expireHours: 24
+
+# ============================================================================
+# Component affinity (run on base infrastructure nodes)
+# GKE system nodes don't use CriticalAddonsOnly taint, so no tolerations needed.
+# ============================================================================
+core:
+  affinity: *base-affinity
+
+registry:
+  affinity: *base-affinity
+
+jobservice:
+  affinity: *base-affinity
+
+portal:
+  affinity: *base-affinity
+
+nginx:
+  replicas: 3
+  resources:
+    requests:
+      cpu: "500m"
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  affinity: *base-affinity
+
+database:
+  internal:
+    resources:
+      requests:
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    affinity: *base-affinity
+
+redis:
+  internal:
+    affinity: *base-affinity
+
+exporter:
+  affinity: *base-affinity
+
+metrics:
+  enabled: true

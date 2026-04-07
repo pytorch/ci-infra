@@ -2,7 +2,7 @@
 set -euo pipefail
 #
 # Deploy the Node Compactor controller.
-# Called from the justfile's deploy-base recipe.
+# Called from modules/eks/deploy.sh (provider module).
 #
 # Args: $1=cluster-id
 #
@@ -11,14 +11,14 @@ set -euo pipefail
 
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+UPSTREAM_ROOT="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 
 CLUSTER_CONFIG="$UPSTREAM_ROOT/scripts/cluster-config.py"
-COMPACTOR_DIR="$UPSTREAM_ROOT/base/node-compactor"
+COMPACTOR_DIR="$SCRIPT_DIR"
 
 # --- Cleanup trap ---
 PF_PID=""

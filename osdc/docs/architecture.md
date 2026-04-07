@@ -75,11 +75,13 @@ Adding a cluster = adding an entry. Adding a module to a cluster = appending to 
 ```
 just deploy <cluster-id>
 │
-├── deploy-base
+├── provider module (modules/<provider>/deploy.sh)
 │   ├── tofu apply (modules/eks/terraform/)  ← VPC, EKS, Harbor S3
+│   ├── kubeconfig
 │   ├── mirror-images                       ← Harbor images to ECR
-│   ├── kubectl apply -k base/kubernetes/   ← StorageClass, NVIDIA, git-cache, etc.
-│   ├── deploy-harbor                       ← Helm install Harbor (pull-through cache)
+│   ├── kubectl apply -k kubernetes/        ← StorageClass, NVIDIA, etc.
+│   ├── deploy git-cache                    ← central + DaemonSet
+│   ├── deploy harbor                       ← Helm install (pull-through cache)
 │   └── deploy node-compactor               ← if enabled in clusters.yaml
 │
 └── deploy-module (for each module in order)
@@ -92,7 +94,7 @@ just deploy <cluster-id>
 
 ```
 S3 bucket: ciforge-tfstate-<cluster-id>
-├── <cluster-id>/base/terraform.tfstate          ← base infra
+├── <cluster-id>/base/terraform.tfstate          ← provider (eks) infra
 ├── <cluster-id>/arc/terraform.tfstate            ← arc module (if it has tf)
 ├── <cluster-id>/nodepools/terraform.tfstate       ← nodepools module (if it has tf)
 ├── <cluster-id>/arc-runners/terraform.tfstate    ← arc-runners module (if it has tf)

@@ -2,7 +2,7 @@
 set -euo pipefail
 #
 # Git cache central deploy script.
-# Called from the justfile's deploy-base recipe.
+# Called from modules/eks/deploy.sh (provider module).
 #
 # Args: $1=cluster-id
 #
@@ -11,7 +11,7 @@ set -euo pipefail
 
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+OSDC_UPSTREAM="${OSDC_UPSTREAM:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
 # shellcheck source=/dev/null
 source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
 # shellcheck source=/dev/null

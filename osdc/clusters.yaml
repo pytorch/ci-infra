@@ -4,9 +4,9 @@
 # The justfile reads this (via scripts/cluster-config.py) to drive deployments.
 #
 # Deploy flow per cluster:
-#   1. base     — tofu apply (VPC, EKS, Harbor S3/IAM)
-#                 mirror bootstrap images, deploy Harbor, base k8s resources
-#   2. modules  — each module deployed in listed order
+#   1. provider  — deploy modules/<provider>/deploy.sh (e.g. eks or gke)
+#                  handles terraform, kubeconfig, base k8s, harbor, etc.
+#   2. modules   — each module deployed in listed order
 #
 # Module deploy contract:
 #   Each module may have:
@@ -15,11 +15,13 @@
 #     helm/       — values files for external OCI charts
 #     scripts/    — deploy helpers
 #
-# The base always includes: VPC, EKS, Harbor,
-# base k8s resources, git-cache DaemonSet, NVIDIA device plugin, docker images.
-# Harbor is NOT optional — every cluster gets a pull-through cache.
+# The provider module (eks/gke) includes: infrastructure, Harbor,
+# base k8s resources, git-cache, node-compactor, NVIDIA device plugin.
 
 defaults:
+  # --- Provider (eks or gke) — deployed first, before modules ---
+  provider: eks
+
   # --- Terraform / base infra ---
   base_node_count: 5
   base_node_instance_type: m7i.4xlarge

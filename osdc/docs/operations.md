@@ -137,7 +137,7 @@ Two modules need definitions: `nodepools` (compute) and `arc-runners` (ARC scale
 
 The git cache uses a two-tier architecture: a central Deployment clones repos from GitHub and serves them via rsync, while a DaemonSet on each node syncs locally.
 
-1. Edit the `REPOS` list in the `central.py` script inside `base/kubernetes/git-cache/central-configmap.yaml`
+1. Edit the `REPOS` list in the `central.py` script inside `modules/eks/kubernetes/git-cache/central-configmap.yaml`
 2. Redeploy:
    ```bash
    just deploy-base arc-staging

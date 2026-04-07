@@ -40,7 +40,7 @@ Every Karpenter NodePool applies this startup taint via the `startupTaints` fiel
 
 **Defined in**: `modules/nodepools/scripts/python/generate_nodepools.py` (hardcoded in the template for every generated NodePool)
 
-**Removed by**: `git-cache-warmer` DaemonSet (`base/kubernetes/git-cache/`)
+**Removed by**: `git-cache-warmer` DaemonSet (`modules/eks/kubernetes/git-cache/`)
 
 **Flow**:
 1. DaemonSet pod starts on the new node (tolerates the taint)
@@ -51,7 +51,7 @@ Every Karpenter NodePool applies this startup taint via the `startupTaints` fiel
 
 **If sync fails**: Retries with exponential backoff (30s, 60s, 120s... capped at 300s). The node stays tainted indefinitely until a successful sync. Runner pods will not schedule.
 
-**RBAC**: The `git-cache-warmer` ServiceAccount has `get` + `patch` on `nodes` (`base/kubernetes/git-cache/rbac.yaml`).
+**RBAC**: The `git-cache-warmer` ServiceAccount has `get` + `patch` on `nodes` (`modules/eks/kubernetes/git-cache/rbac.yaml`).
 
 ### Gate 2: Patched Hooks (Init Container Poll)
 
@@ -75,7 +75,7 @@ Runner pods include an init container that polls for a file on the host filesyst
 
 ## Node-Compactor Interaction
 
-The node-compactor (`base/node-compactor/`) can taint nodes with `node-compactor.osdc.io/consolidating=true:NoSchedule` when they are underutilized. Neither runner nor workflow pods tolerate this taint, so a compactor-tainted node is effectively dead for new scheduling.
+The node-compactor (`modules/eks/node-compactor/`) can taint nodes with `node-compactor.osdc.io/consolidating=true:NoSchedule` when they are underutilized. Neither runner nor workflow pods tolerate this taint, so a compactor-tainted node is effectively dead for new scheduling.
 
 **Protection for fresh nodes**: The compactor has a `min_node_age` grace period (default: 900 seconds / 15 minutes, configured via `node_compactor.min_node_age_seconds` in `clusters.yaml`). Nodes younger than this threshold are:
 1. Skipped entirely during compaction evaluation
@@ -93,13 +93,13 @@ These DaemonSets also run on new nodes but do not block runner scheduling:
 
 ### NVIDIA Device Plugin (GPU nodes only)
 
-**File**: `base/kubernetes/nvidia-device-plugin.yaml`
+**File**: `modules/eks/kubernetes/nvidia-device-plugin.yaml`
 
 Exposes `nvidia.com/gpu` resources to the Kubernetes scheduler. Without this DaemonSet, GPU workloads cannot request GPU resources and will not schedule. Runs only on nodes with label `nvidia.com/gpu: "true"`. Tolerates `git-cache-not-ready` so it starts during the warm-up period.
 
 ### Registry Mirror Config
 
-**File**: `base/kubernetes/registry-mirror-config.yaml`
+**File**: `modules/eks/kubernetes/registry-mirror-config.yaml`
 
 Configures containerd's `certs.d/` on every node to route image pulls through Harbor's proxy cache at `localhost:30002`. Covers six registries: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io. Uses a marker file for idempotency. If Harbor is unavailable, containerd falls through to upstream registries automatically.
 
@@ -107,7 +107,7 @@ Runs on ALL nodes (no nodeSelector, tolerates everything).
 
 ### Node Performance Tuning
 
-**File**: `base/kubernetes/node-performance-tuning.yaml`
+**File**: `modules/eks/kubernetes/node-performance-tuning.yaml`
 
 Runs a privileged init container (`tune-node`) that configures:
 - CPU governor set to `performance`
@@ -168,11 +168,11 @@ This ensures DaemonSet pods schedule on nodes immediately at provisioning time, 
 | File | Role |
 |------|------|
 | `modules/nodepools/scripts/python/generate_nodepools.py` | Defines `git-cache-not-ready` startup taint for all NodePools |
-| `base/kubernetes/git-cache/daemonset.yaml` | Git-cache-warmer DaemonSet spec |
-| `base/kubernetes/git-cache/daemonset-configmap.yaml` | `daemonset.py` — sync logic, taint removal, metrics |
-| `base/kubernetes/git-cache/rbac.yaml` | RBAC for taint removal (get + patch nodes) |
+| `modules/eks/kubernetes/git-cache/daemonset.yaml` | Git-cache-warmer DaemonSet spec |
+| `modules/eks/kubernetes/git-cache/daemonset-configmap.yaml` | `daemonset.py` — sync logic, taint removal, metrics |
+| `modules/eks/kubernetes/git-cache/rbac.yaml` | RBAC for taint removal (get + patch nodes) |
 | `modules/arc-runners/kubernetes/hooks-warmer.yaml` | Hooks-warmer DaemonSet (downloads patched hooks) |
 | `modules/arc-runners/templates/runner.yaml.tpl` | Runner pod template with `wait-for-hooks` init container |
-| `base/kubernetes/registry-mirror-config.yaml` | Containerd registry mirror DaemonSet |
-| `base/kubernetes/node-performance-tuning.yaml` | CPU/GPU tuning DaemonSet |
+| `modules/eks/kubernetes/registry-mirror-config.yaml` | Containerd registry mirror DaemonSet |
+| `modules/eks/kubernetes/node-performance-tuning.yaml` | CPU/GPU tuning DaemonSet |
 | `modules/arc-runners/scripts/python/validate_runner_qos.py` | Deploy-time validation (checks hooks init container exists) |

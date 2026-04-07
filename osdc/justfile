@@ -14,11 +14,10 @@
 #
 # Usage:
 #   just list                          # show clusters and their modules
-#   just deploy arc-staging            # full deploy (base + all modules)
-#   just deploy-base arc-staging       # base infra only
+#   just deploy arc-staging            # full deploy (provider + all modules)
 #   just deploy-module arc-staging arc # single module
-#   just test                            # run all tests
-#   just lint                            # lint all code
+#   just test                          # run all tests
+#   just lint                          # lint all code
 
 set dotenv-load := true
 set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
@@ -95,7 +94,7 @@ bootstrap-all:
 # DEPLOY
 # ============================================================================
 
-# Full deploy: base infra + all modules in order
+# Full deploy: provider module + all modules in order
 deploy cluster:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -105,12 +104,15 @@ deploy cluster:
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    PROVIDER=$(uv run {{CFG}} "$CLUSTER" provider 2>/dev/null || echo "eks")
     SECONDS=0
 
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "FULL DEPLOYMENT: $CLUSTER ($CNAME)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
+    echo "Provider: $PROVIDER"
     echo "Modules:"
     uv run {{CFG}} "$CLUSTER" modules | sed 's/^/  - /'
     echo ""
@@ -121,12 +123,27 @@ deploy cluster:
         echo "Cancelled (OSDC_CONFIRM=no)."
         exit 1
     else
-        read -p "Continue? [y/N] " -n 1 -r
+        read -p "Deploy $CLUSTER with provider $PROVIDER? [y/N] " -n 1 -r
         echo
         [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
     fi
 
-    just deploy-base "$CLUSTER"
+    # Deploy provider base module (eks or gke)
+    # Provider modules handle their own terraform, kubeconfig, harbor, etc.
+    if [[ -d "{{ROOT}}/modules/$PROVIDER" ]]; then
+        PROVIDER_DIR="{{ROOT}}/modules/$PROVIDER"
+    elif [[ -d "{{UPSTREAM}}/modules/$PROVIDER" ]]; then
+        PROVIDER_DIR="{{UPSTREAM}}/modules/$PROVIDER"
+    else
+        echo "Error: provider module '$PROVIDER' not found."
+        exit 1
+    fi
+    if [[ -x "$PROVIDER_DIR/deploy.sh" ]]; then
+        "$PROVIDER_DIR/deploy.sh" "$CLUSTER" "$CNAME" "$REGION"
+    else
+        echo "Error: $PROVIDER_DIR/deploy.sh not found or not executable."
+        exit 1
+    fi
 
     for module in $(uv run {{CFG}} "$CLUSTER" modules); do
         just deploy-module "$CLUSTER" "$module"
@@ -194,103 +211,6 @@ deploy cluster:
         fi
     fi
 
-# Deploy base infrastructure (tofu + harbor + base k8s)
-deploy-base cluster:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{UPSTREAM}}/scripts/mise-activate.sh"
-    export OSDC_ROOT="{{ROOT}}"
-    export OSDC_UPSTREAM="{{UPSTREAM}}"
-    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
-    CLUSTER="{{cluster}}"
-    REGION=$(uv run {{CFG}} "$CLUSTER" region)
-    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
-    BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
-    TFVARS=$(uv run {{CFG}} "$CLUSTER" tfvars)
-    STATE_REGION="us-west-2"  # state buckets always in us-west-2
-
-    # Preflight: check state bucket exists
-    if ! aws s3api head-bucket --bucket "${BUCKET}" --region "${STATE_REGION}" 2>/dev/null; then
-        echo ""
-        echo "ERROR: State bucket '${BUCKET}' does not exist."
-        echo ""
-        echo "Run bootstrap first:"
-        echo "  just bootstrap ${CLUSTER}"
-        echo ""
-        exit 1
-    fi
-
-    echo ""
-    echo "━━━ BASE: Terraform ━━━"
-    cd {{UPSTREAM}}/modules/eks/terraform
-    tofu init -reconfigure \
-        -backend-config="bucket=${BUCKET}" \
-        -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
-        -backend-config="region=${STATE_REGION}" \
-        -backend-config="dynamodb_table=ciforge-terraform-locks"
-
-    set +e
-    eval tofu plan $TFVARS -out=tfplan -detailed-exitcode
-    PLAN_EXIT=$?
-    set -e
-
-    if [[ $PLAN_EXIT -eq 0 ]]; then
-        echo "No changes. Skipping apply."
-        rm -f tfplan
-    elif [[ $PLAN_EXIT -eq 2 ]]; then
-        echo ""
-        CONFIRM="${OSDC_CONFIRM:-ask}"
-        if [[ "$CONFIRM" == "yes" ]]; then
-            echo "Auto-confirmed (OSDC_CONFIRM=yes)"
-        elif [[ "$CONFIRM" == "no" ]]; then
-            rm -f tfplan
-            echo "Cancelled (OSDC_CONFIRM=no)."
-            exit 1
-        else
-            read -p "Apply this plan? [y/N] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                rm -f tfplan
-                echo "Cancelled."
-                exit 1
-            fi
-        fi
-        tofu apply tfplan
-        rm -f tfplan
-    else
-        rm -f tfplan
-        echo "Tofu plan failed."
-        exit 1
-    fi
-
-    echo ""
-    echo "Updating kubeconfig for $CNAME ($REGION)..."
-    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
-      "{{UPSTREAM}}/scripts/kubeconfig-lock.sh" --name "$CNAME" --region "$REGION" --alias "$CNAME"
-
-    echo ""
-    echo "━━━ BASE: Mirror bootstrap images ━━━"
-    {{UPSTREAM}}/modules/eks/scripts/mirror-images.sh "$CLUSTER"
-
-    echo ""
-    echo "━━━ BASE: Kubernetes resources ━━━"
-    kubectl apply -k {{UPSTREAM}}/base/kubernetes/
-
-    echo ""
-    echo "━━━ BASE: Deploy Git Cache Central ━━━"
-    {{UPSTREAM}}/base/kubernetes/git-cache/deploy.sh "$CLUSTER"
-
-    echo ""
-    echo "━━━ BASE: Deploy Harbor ━━━"
-    cd "{{ROOT}}"
-    just _deploy-harbor "$CLUSTER"
-
-    echo ""
-    echo "━━━ BASE: Deploy Node Compactor ━━━"
-    {{UPSTREAM}}/base/node-compactor/deploy.sh "$CLUSTER"
-
-    echo ""
-    echo "Base deployment complete."
 
 # Deploy a single module to a cluster
 deploy-module cluster module:
@@ -509,10 +429,7 @@ untaint-nodes cluster:
     fi
 
 # ============================================================================
-# INTERNAL: Base sub-deploys
-# ============================================================================
-
-# Deploy Harbor (called from deploy-base)
+# Deploy Harbor standalone (for manual re-deploy without full provider deploy)
 _deploy-harbor cluster:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -634,7 +551,7 @@ _deploy-harbor cluster:
         if helm_upgrade_by_input_hash harbor harbor-system \
             --create-namespace \
             --history-max 3 \
-            -f {{UPSTREAM}}/base/helm/harbor/values.yaml \
+            -f {{UPSTREAM}}/modules/eks/helm/harbor/values.yaml \
             --set core.image.repository="${ECR_HARBOR}/harbor-core" \
             --set jobservice.image.repository="${ECR_HARBOR}/harbor-jobservice" \
             --set portal.image.repository="${ECR_HARBOR}/harbor-portal" \
@@ -865,7 +782,7 @@ test-compactor cluster:
     export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
     SECONDS=0; \
-    cd {{UPSTREAM}}/base/node-compactor/tests/e2e && \
+    cd {{UPSTREAM}}/modules/eks/node-compactor/tests/e2e && \
     uv run pytest test_e2e.py -v --tb=long \
         --cluster-id="{{cluster}}" \
         && rc=0 || rc=$?; \
@@ -898,12 +815,17 @@ smoke cluster:
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     just kubeconfig "$CLUSTER"
 
-    # Discover base smoke tests (co-located with each base component)
-    # Also includes modules/eks/ which is always deployed as part of base
+    # Discover smoke tests for the provider module (eks/gke)
+    PROVIDER=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" provider 2>/dev/null || echo "eks")
     SMOKE_DIRS=""
+    if [[ -d "${ROOT}/modules/${PROVIDER}" ]]; then
+        PROVIDER_DIR="${ROOT}/modules/${PROVIDER}"
+    else
+        PROVIDER_DIR="${UPSTREAM}/modules/${PROVIDER}"
+    fi
     while IFS= read -r d; do
         SMOKE_DIRS="${SMOKE_DIRS:+$SMOKE_DIRS }$d"
-    done < <(find "${UPSTREAM}/base" "${UPSTREAM}/modules/eks" -path '*/tests/smoke' -type d 2>/dev/null | sort)
+    done < <(find "${PROVIDER_DIR}" -path '*/tests/smoke' -type d 2>/dev/null | sort)
 
     # Add smoke tests for each enabled module
     MODULES=$(uv run "${UPSTREAM}/scripts/cluster-config.py" "$CLUSTER" modules)
@@ -1128,9 +1050,6 @@ lint:
 
     lint_yamllint() {
         local dirs=()
-        for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes) $(_src_dirs base/helm); do
-            dirs+=("$dir")
-        done
         for parent in $(_src_dirs modules); do
             for sub in "$parent"/*/kubernetes/ "$parent"/*/helm/; do
                 [[ -d "$sub" ]] && dirs+=("$sub")
@@ -1169,9 +1088,6 @@ lint:
 
     lint_kubeconform() {
         local dirs=()
-        for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes); do
-            [[ -f "$dir/kustomization.yaml" ]] && dirs+=("$dir")
-        done
         for parent in $(_src_dirs modules); do
             while IFS= read -r -d '' f; do
                 dirs+=("$(dirname "$f")")
@@ -1197,9 +1113,6 @@ lint:
 
     lint_kube_linter() {
         local dirs=()
-        for dir in $(_src_dirs base/kubernetes) $(_src_dirs base/node-compactor/kubernetes); do
-            [[ -f "$dir/kustomization.yaml" ]] && dirs+=("$dir")
-        done
         for parent in $(_src_dirs modules); do
             while IFS= read -r -d '' f; do
                 dirs+=("$(dirname "$f")")
