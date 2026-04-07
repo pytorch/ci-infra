@@ -148,7 +148,7 @@ clusters:
       - nvidia-device-plugin
       - node-performance-tuning
       - registry-mirror
-      - harbor
+
       - git-cache
       - node-compactor
       - karpenter
@@ -189,7 +189,7 @@ clusters:
       - nvidia-device-plugin
       - node-performance-tuning
       - registry-mirror
-      - harbor
+
       - git-cache
       - node-compactor
       - karpenter

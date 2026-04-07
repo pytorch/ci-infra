@@ -437,7 +437,7 @@ _deploy-harbor cluster:
     echo ""
 
     # Get Terraform outputs (init with cluster-specific backend)
-    cd {{UPSTREAM}}/modules/eks/terraform
+    cd {{UPSTREAM}}/modules/eks/infra
     tofu init -reconfigure \
         -backend-config="bucket=${BUCKET}" \
         -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
@@ -531,7 +531,7 @@ _deploy-harbor cluster:
         if helm_upgrade_by_input_hash harbor harbor-system \
             --create-namespace \
             --history-max 3 \
-            -f {{UPSTREAM}}/modules/harbor/helm/values.yaml \
+            -f {{UPSTREAM}}/modules/eks/helm/harbor/values.yaml \
             --set core.image.repository="${ECR_HARBOR}/harbor-core" \
             --set jobservice.image.repository="${ECR_HARBOR}/harbor-jobservice" \
             --set portal.image.repository="${ECR_HARBOR}/harbor-portal" \
