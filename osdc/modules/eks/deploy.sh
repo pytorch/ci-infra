@@ -223,6 +223,11 @@ for attempt in $(seq 1 "$HELM_MAX_RETRIES"); do
 done
 echo ""
 
+# Cleanup port-forward processes on exit
+PW_PF_PID=""
+PF_PID=""
+trap 'kill "$PW_PF_PID" "$PF_PID" 2>/dev/null || true' EXIT
+
 # Ensure admin password matches K8s secret
 echo "Ensuring Harbor admin password is up to date..."
 kubectl port-forward -n harbor-system svc/harbor 8090:80 &
@@ -262,7 +267,6 @@ HARBOR_ADMIN_PW_CURRENT=$(kubectl get secret harbor-admin-password -n harbor-sys
 
 kubectl port-forward -n harbor-system svc/harbor 8080:80 &
 PF_PID=$!
-trap 'kill '"$PF_PID"' 2>/dev/null || true' EXIT
 
 for hp_attempt in $(seq 1 12); do
   if curl -sf -o /dev/null http://localhost:8080/api/v2.0/health 2>/dev/null; then

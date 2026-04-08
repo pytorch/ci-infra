@@ -30,8 +30,9 @@ Idempotent — safe to run multiple times.
 # Full deploy (base + all modules)
 just deploy arc-staging
 
-# Or step by step
-just deploy-base arc-staging
+# Or deploy individual modules
+just deploy-module arc-staging eks
+just deploy-module arc-staging harbor
 just deploy-module arc-staging arc
 just deploy-module arc-staging nodepools
 just deploy-module arc-staging arc-runners
@@ -140,7 +141,7 @@ The git cache uses a two-tier architecture: a central Deployment clones repos fr
 1. Edit the `REPOS` list in the `central.py` script inside `modules/git-cache/central-configmap.yaml`
 2. Redeploy:
    ```bash
-   just deploy-base arc-staging
+   just deploy-module arc-staging git-cache
    ```
 
 Note: Runner pods use `CHECKOUT_GIT_CACHE_DIR` (not `GIT_ALTERNATE_OBJECT_DIRECTORIES`) to find the cache. The `actions/checkout` action uses `reference-repository` to leverage the cache. No runner template changes are needed when adding a new repository.

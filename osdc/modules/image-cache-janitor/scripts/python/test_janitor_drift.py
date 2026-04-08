@@ -11,8 +11,8 @@ from pathlib import Path
 
 import yaml
 
-# Path from test file to ConfigMap YAML (scripts/python/ -> ../../)
-_CONFIGMAP_PATH = Path(__file__).resolve().parent.parent.parent / "configmap.yaml"
+# Path from test file to ConfigMap YAML (scripts/python/ -> ../../kubernetes/)
+_CONFIGMAP_PATH = Path(__file__).resolve().parent.parent.parent / "kubernetes" / "configmap.yaml"
 _LIB_PATH = Path(__file__).resolve().parent / "janitor_lib.py"
 
 

@@ -129,9 +129,9 @@ fi
 
 ### eks
 
-Base AWS infrastructure. Always deployed as part of `deploy-base`, not as an optional module.
+Base AWS infrastructure. Always the first module in the deploy order — creates the EKS cluster.
 
-- **terraform/**: VPC (public/private subnets, NAT gateways), EKS cluster (OIDC, addons), Harbor S3 bucket + IAM
+- **infra/**: VPC (public/private subnets, NAT gateways), EKS cluster (OIDC, addons), Harbor S3 bucket + IAM
 - **images.yaml**: Bootstrap images mirrored to ECR (Harbor components that can't cache themselves)
 - **deploy.sh**: Image mirroring via `crane`
 
