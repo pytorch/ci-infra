@@ -24,6 +24,7 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
     githubConfigUrl: "{{GITHUB_CONFIG_URL}}"
     githubConfigSecret: "{{GITHUB_SECRET_NAME}}"
     runnerScaleSetName: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
+    runnerGroup: "{{RUNNER_GROUP}}"
     template:
       spec:
         containers:
@@ -31,6 +32,7 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
             image: {{RUNNER_IMAGE}}
         nodeSelector:
           instance-type: "{{INSTANCE_TYPE}}"
+    {{RUNNER_CLASS_NODE_SELECTOR}}{{RUNNER_CLASS_AFFINITY}}
         tolerations:
           - key: instance-type
             operator: Equal
@@ -49,6 +51,7 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
         spec:
           affinity:
             nodeAffinity:
+    {{RUNNER_CLASS_JOB_AFFINITY}}
               preferredDuringSchedulingIgnoredDuringExecution:
                 - weight: 50
                   preference:
@@ -127,18 +130,23 @@ FAKE_CLUSTERS_YAML = {
 }
 
 
-def make_def_file(tmp_path, name, instance_type, vcpu, memory, gpu=0, disk_size=100):
+def make_def_file(
+    tmp_path, name, instance_type, vcpu, memory, gpu=0, disk_size=100, runner_group=None, runner_class=None
+):
     """Write a runner def YAML and return the path."""
-    content = {
-        "runner": {
-            "name": name,
-            "instance_type": instance_type,
-            "vcpu": vcpu,
-            "memory": f"{memory}Gi",
-            "gpu": gpu,
-            "disk_size": disk_size,
-        }
+    runner = {
+        "name": name,
+        "instance_type": instance_type,
+        "vcpu": vcpu,
+        "memory": f"{memory}Gi",
+        "gpu": gpu,
+        "disk_size": disk_size,
     }
+    if runner_group is not None:
+        runner["runner_group"] = runner_group
+    if runner_class is not None:
+        runner["runner_class"] = runner_class
+    content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
     return p
@@ -483,6 +491,102 @@ class TestGenerateRunner:
         assert env_vars["UV_INSECURE_HOST"] == f"{host}:8080"
         assert env_vars["UV_INDEX"] == f"{base}/simple/"
         assert env_vars["UV_INDEX_STRATEGY"] == "unsafe-best-match"
+
+    def test_runner_group_default(self, tmp_path):
+        """Runner group defaults to 'default' when not specified."""
+        def_file = make_def_file(tmp_path, "grp-test", "m5.xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "grp-test.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "default"
+
+    def test_runner_group_custom(self, tmp_path):
+        """Runner group can be overridden in the def."""
+        def_file = make_def_file(tmp_path, "rel-grp", "m5.xlarge", 4, 16, runner_group="release-runners")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "rel-grp.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "release-runners"
+
+    def test_runner_class_release(self, tmp_path):
+        """Release runners get nodeSelector and required job affinity."""
+        def_file = make_def_file(
+            tmp_path, "rel-runner", "r7a.48xlarge", 8, 64, runner_group="release-runners", runner_class="release"
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "rel-runner.yaml").read_text()))
+        helm = docs[0]
+
+        # Runner pod should have runner-class nodeSelector
+        assert helm["template"]["spec"]["nodeSelector"]["osdc.io/runner-class"] == "release"
+
+        # Runner pod should NOT have affinity (release runners skip anti-affinity)
+        assert "affinity" not in helm["template"]["spec"]
+
+        # Job pod should have required affinity for runner-class=release
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        required = cm_data["spec"]["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+        match_exprs = required["nodeSelectorTerms"][0]["matchExpressions"]
+        keys = {e["key"]: e for e in match_exprs}
+        assert "osdc.io/runner-class" in keys
+        assert keys["osdc.io/runner-class"]["operator"] == "In"
+        assert keys["osdc.io/runner-class"]["values"] == ["release"]
+
+    def test_regular_runner_anti_affinity(self, tmp_path):
+        """Regular runners get anti-affinity to avoid release nodes."""
+        def_file = make_def_file(tmp_path, "reg-runner", "m5.xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "reg-runner.yaml").read_text()))
+        helm = docs[0]
+
+        # No runner-class in nodeSelector
+        assert "osdc.io/runner-class" not in helm["template"]["spec"]["nodeSelector"]
+
+        # Runner pod SHOULD have anti-affinity (DoesNotExist)
+        affinity = helm["template"]["spec"]["affinity"]
+        required = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+        match_exprs = required["nodeSelectorTerms"][0]["matchExpressions"]
+        keys = {e["key"]: e for e in match_exprs}
+        assert "osdc.io/runner-class" in keys
+        assert keys["osdc.io/runner-class"]["operator"] == "DoesNotExist"
+
+        # Job pod should also have DoesNotExist required affinity
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        job_required = cm_data["spec"]["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+        job_exprs = job_required["nodeSelectorTerms"][0]["matchExpressions"]
+        job_keys = {e["key"]: e for e in job_exprs}
+        assert "osdc.io/runner-class" in job_keys
+        assert job_keys["osdc.io/runner-class"]["operator"] == "DoesNotExist"
 
     def test_default_disk_size(self, tmp_path):
         """When disk_size is omitted from def, default 100 is used."""

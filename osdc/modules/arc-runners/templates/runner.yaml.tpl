@@ -4,7 +4,7 @@ runnerScaleSetName: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
 
 minRunners: 0
 
-runnerGroup: "default"
+runnerGroup: "{{RUNNER_GROUP}}"
 
 # Listener metrics cardinality control
 # Exclude high-cardinality labels (job_name, event_name, job_workflow_ref,
@@ -96,7 +96,8 @@ template:
     nodeSelector:
       workload-type: github-runner
       instance-type: "{{INSTANCE_TYPE}}"
-
+{{RUNNER_CLASS_NODE_SELECTOR}}
+{{RUNNER_CLASS_AFFINITY}}
     # Tolerate instance-type taint + git-cache startup taint
     tolerations:
       - key: instance-type
@@ -242,7 +243,7 @@ data:
       # this weight-50 preference is the fallback for same-instance-type nodes.
       affinity:
         nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
+{{RUNNER_CLASS_JOB_AFFINITY}}          preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 50
               preference:
                 matchExpressions:

@@ -122,6 +122,8 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     memory = runner.get("memory")
     gpu = runner.get("gpu", 0)
     disk_size = runner.get("disk_size", 100)
+    runner_group = runner.get("runner_group", "default")
+    runner_class = runner.get("runner_class", "")
 
     if not runner_name or not instance_type:
         log_error(f"Invalid definition file: {def_file}")
@@ -170,6 +172,40 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         gpu_request = ""
         gpu_limit = ""
 
+    # Runner class isolation snippets
+    # Release runners: use nodeSelector to target release nodes
+    # Regular runners: use anti-affinity to avoid release nodes
+    if runner_class:
+        runner_class_node_selector = f"      osdc.io/runner-class: {runner_class}\n"
+        runner_class_affinity = ""
+        runner_class_job_affinity = (
+            "          requiredDuringSchedulingIgnoredDuringExecution:\n"
+            "            nodeSelectorTerms:\n"
+            "              - matchExpressions:\n"
+            "                  - key: osdc.io/runner-class\n"
+            "                    operator: In\n"
+            "                    values:\n"
+            f'                      - "{runner_class}"\n'
+        )
+    else:
+        runner_class_node_selector = ""
+        runner_class_affinity = (
+            "    affinity:\n"
+            "      nodeAffinity:\n"
+            "        requiredDuringSchedulingIgnoredDuringExecution:\n"
+            "          nodeSelectorTerms:\n"
+            "            - matchExpressions:\n"
+            "                - key: osdc.io/runner-class\n"
+            "                  operator: DoesNotExist\n"
+        )
+        runner_class_job_affinity = (
+            "          requiredDuringSchedulingIgnoredDuringExecution:\n"
+            "            nodeSelectorTerms:\n"
+            "              - matchExpressions:\n"
+            "                  - key: osdc.io/runner-class\n"
+            "                    operator: DoesNotExist\n"
+        )
+
     # Replace all template placeholders
     output_content = template_content
     replacements = {
@@ -190,6 +226,10 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{GPU_LIMIT}}": gpu_limit,
         "{{MODULE_NAME}}": module_name,
         "{{RUNNER_IMAGE}}": runner_image,
+        "{{RUNNER_GROUP}}": runner_group,
+        "{{RUNNER_CLASS_NODE_SELECTOR}}": runner_class_node_selector,
+        "{{RUNNER_CLASS_AFFINITY}}": runner_class_affinity,
+        "{{RUNNER_CLASS_JOB_AFFINITY}}": runner_class_job_affinity,
     }
 
     for placeholder, value in replacements.items():
