@@ -508,12 +508,12 @@ class TestGenerateRunner:
         assert docs[0]["runnerGroup"] == "default"
 
     def test_runner_group_custom(self, tmp_path):
-        """Runner group can be overridden in the def."""
+        """Runner group can be overridden in the def (org-scoped URL)."""
         def_file = make_def_file(tmp_path, "rel-grp", "m5.xlarge", 4, 16, runner_group="release-runners")
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
-            "github_config_url": "url",
+            "github_config_url": "https://github.com/pytorch",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
         }
@@ -521,6 +521,21 @@ class TestGenerateRunner:
         generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
         docs = list(yaml.safe_load_all((output_dir / "rel-grp.yaml").read_text()))
         assert docs[0]["runnerGroup"] == "release-runners"
+
+    def test_runner_group_repo_scoped_override(self, tmp_path):
+        """Runner group forced to 'default' when githubConfigUrl is repo-scoped."""
+        def_file = make_def_file(tmp_path, "rel-repo", "m5.xlarge", 4, 16, runner_group="release-runners")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch/pytorch-canary",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "rel-repo.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "default"
 
     def test_runner_class_release(self, tmp_path):
         """Release runners get nodeSelector and required job affinity."""

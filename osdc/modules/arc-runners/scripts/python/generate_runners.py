@@ -131,6 +131,14 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")
+
+    # Runner groups are an org-level GitHub concept. Repo-scoped githubConfigUrl
+    # (e.g. github.com/org/repo) can't resolve runner groups — force "default".
+    if runner_group != "default" and "github.com/" in github_url:
+        url_path = github_url.rstrip("/").split("github.com/", 1)[-1]
+        if "/" in url_path:
+            log_info(f"  Repo-scoped URL — overriding runner_group '{runner_group}' → 'default'")
+            runner_group = "default"
     k8s_secret_ref = cluster_config.get(
         "github_secret_name", ""
     )  # lgtm[py/clear-text-storage-sensitive-data] - K8s Secret resource name, not a credential
