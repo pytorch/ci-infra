@@ -13,7 +13,7 @@ Reference: [actions/actions-runner-controller#2697](https://github.com/actions/a
 
 ## Format
 
-`[c-]{provider}-{os}-[b]{arch}{vendor}{features}-{vcpu}-{memory}[-{gpu_type}[-{gpu_count}]]`
+`[c-]{provider}-[rel-]{os}-[b]{arch}{vendor}{features}-{vcpu}-{memory}[-{gpu_type}[-{gpu_count}]]`
 
 ## Fields
 
@@ -22,6 +22,7 @@ Reference: [actions/actions-runner-controller#2697](https://github.com/actions/a
 | --- | --- | --- | --- |
 | `c` (prefix) | No | Canary runner (staging / testing). Omitted for production runners. | `c` = canary, omitted = production |
 | `provider` | Yes | Organization that operates and funds the runner fleet | `mt` = Meta, `lf` = Linux Foundation, `am` = AMD, `in` = Intel, `nv` = NVIDIA, `ib` = IBM |
+| `rel` (prefix) | No | Release runner — dedicated runner group (`release-runners`) and node isolation (`osdc.io/runner-class: release`). Omitted for CI runners. | `rel` = release, omitted = CI |
 | `os` | Yes | Operating system | `l` = Linux, `w` = Windows, `m` = MacOS  |
 | `b` (prefix) | No | Bare-metal / dedicated instance (gets the full node — no bin-packing) | `b` = bare-metal, omitted = shared (multiple runners per node) |
 | `arch` | Yes | CPU architecture | `x86` = x86_64, `arm64` = AArch64 |
@@ -41,6 +42,8 @@ Reference: [actions/actions-runner-controller#2697](https://github.com/actions/a
 | `mt-l-arm64g3-16-62` | Meta, Linux, ARM64 Graviton 3, 16 vCPU, 62 GiB |
 | `nv-l-x86aavx2-48-192-a10g-4` | NVIDIA, Linux, x86 AMD AVX2, 48 vCPU, 192 GiB, 4x A10G GPUs |
 | `c-mt-l-x86iavx512-8-16` | **Canary**, Meta, Linux, x86 Intel AVX-512, 8 vCPU, 16 GiB |
+| `mt-rel-l-arm64g4-16-62` | Meta, **Release**, Linux, ARM64 Graviton 4, 16 vCPU, 62 GiB |
+| `mt-rel-l-x86iavx512-8-64` | Meta, **Release**, Linux, x86 Intel AVX-512, 8 vCPU, 64 GiB |
 | `l-x86iamx-14-27` | Linux, x86 Intel AMX, 14 vCPU, 27 GiB |
 
 ## Old Label → New Label Mapping
