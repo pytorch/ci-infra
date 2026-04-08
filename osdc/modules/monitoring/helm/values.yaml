@@ -89,10 +89,10 @@ prometheus-node-exporter:
     monitor:
       interval: 60s
       metricRelabelings:
-        # Keep memory, load, and disk IO — drop everything else (including per-core CPU)
+        # Keep memory metrics only — drop everything else (including per-core CPU)
         - action: keep
           sourceLabels: [__name__]
-          regex: "node_memory_MemAvailable_bytes|node_memory_MemTotal_bytes|node_load1|node_disk_io_time_seconds_total"
+          regex: "node_memory_MemAvailable_bytes|node_memory_MemTotal_bytes"
 
 # --- kube-state-metrics ---
 kube-state-metrics:
