@@ -59,6 +59,32 @@ alloy:
           regex         = "kube_.*_created|kube_.*_metadata_resource_version|kube_secret_.*|kube_configmap_.*|kube_endpoint_.*|kube_lease_.*"
         }
 
+        // --- keep restarts_total and cadvisor memory only for control-plane namespaces ---
+        // These metrics generate one series per container, so storing them cluster-wide
+        // (especially with high runner pod churn) is too expensive. We only need them for
+        // control-plane namespaces where we actually alert (e.g. ControlPlaneCrashLoop).
+        //
+        // Two-step replace+drop pattern (RE2 has no lookahead):
+        //   1. Tag matching metrics in control-plane namespaces with __keep_cp__="true"
+        //   2. Drop any matching metric that was NOT tagged (i.e. __keep_cp__ is empty)
+        rule {
+          action        = "replace"
+          source_labels = ["__name__", "namespace"]
+          regex         = "(kube_pod_container_status_restarts_total|container_memory_working_set_bytes|container_memory_rss);(arc-systems|karpenter|harbor-system|monitoring|logging|buildkit)"
+          target_label  = "__keep_cp__"
+          replacement   = "true"
+        }
+        rule {
+          action        = "drop"
+          source_labels = ["__name__", "__keep_cp__"]
+          regex         = "(kube_pod_container_status_restarts_total|container_memory_working_set_bytes|container_memory_rss);"
+        }
+        // Clean up temporary label before remote_write
+        rule {
+          action       = "labeldrop"
+          regex        = "__keep_cp__"
+        }
+
         // --- drop misc high-cardinality metrics ---
         rule {
           action        = "drop"

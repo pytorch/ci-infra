@@ -1,0 +1,13 @@
+# Karpenter NodePool definition: m8g-48xlarge-release
+# Balanced pool for ARM64 release runners with ~4 GiB/core ratio
+# AWS Graviton4
+# Dedicated to release runners (osdc.io/runner-class: release)
+# Node disk: same as m8g-48xlarge (worst case 25x 256Gi pods + 100Gi OS + 500Gi images = 7000Gi)
+nodepool:
+  name: m8g-48xlarge-release
+  instance_type: m8g.48xlarge
+  arch: arm64
+  node_disk_size: 7000
+  gpu: false
+  extra_labels:
+    osdc.io/runner-class: release
