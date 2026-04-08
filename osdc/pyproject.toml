@@ -21,9 +21,9 @@ dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.5"]
 # prefix the filename with the component name (e.g., compactor_models.py).
 testpaths = [
   "scripts/python",
-  "base/node-compactor/scripts/python",
-  "base/kubernetes/git-cache/scripts/python",
-  "base/kubernetes/image-cache-janitor/scripts/python",
+  "modules/node-compactor/scripts/python",
+  "modules/git-cache/scripts/python",
+  "modules/image-cache-janitor/scripts/python",
   "modules/nodepools/scripts/python",
   "modules/arc-runners/scripts/python",
   "modules/buildkit/scripts/python",

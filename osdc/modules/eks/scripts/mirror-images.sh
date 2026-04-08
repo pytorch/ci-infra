@@ -71,7 +71,7 @@ CLUSTER_NAME=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" cluster_name)
 log_info "Cluster: $CLUSTER (name=$CLUSTER_NAME, region=$REGION, bucket=$BUCKET)"
 
 # Initialize tofu with the correct backend for this cluster
-TF_DIR="$SCRIPT_DIR/../terraform"
+TF_DIR="$SCRIPT_DIR/../infra"
 
 log_info "Initializing tofu backend for $CLUSTER..."
 (

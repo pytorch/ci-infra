@@ -149,7 +149,7 @@ Config switch: `COMPACTOR_CAPACITY_RESERVATION_NODES=1`, all anti-flap disabled.
 | `tests/e2e/conftest.py` | **Modify** | Session fixture starts with Group A config (reservation=0). Store per-group configs as constants. |
 | `tests/e2e/helpers.py` | **Modify** | Add: `reconfigure_compactor()`, `get_reserved_nodes()`, `get_do_not_disrupt_nodes()`, `search_compactor_logs()`. |
 
-All paths relative to `base/node-compactor/`.
+All paths relative to `modules/eks/node-compactor/`.
 
 ### Key source files (read-only reference)
 - `scripts/python/compactor.py` — reconcile() flow, log messages at lines 158, 209

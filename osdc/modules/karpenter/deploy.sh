@@ -36,7 +36,7 @@ QUEUE_NAME=$(tofu output -raw queue_name)
 cd - >/dev/null
 
 # Read base terraform outputs (cluster endpoint)
-cd "$UPSTREAM_ROOT/modules/eks/terraform"
+cd "$UPSTREAM_ROOT/modules/eks/infra"
 tofu init -reconfigure \
   -backend-config="bucket=${BUCKET}" \
   -backend-config="key=${CLUSTER}/base/terraform.tfstate" \

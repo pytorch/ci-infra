@@ -4,20 +4,19 @@
 # The justfile reads this (via scripts/cluster-config.py) to drive deployments.
 #
 # Deploy flow per cluster:
-#   1. base     — tofu apply (VPC, EKS, Harbor S3/IAM)
-#                 mirror bootstrap images, deploy Harbor, base k8s resources
-#   2. modules  — each module deployed in listed order
+#   for module in modules:
+#     just deploy-module <cluster> <module>
+#
+# The first module is typically the cloud provider (eks/gke) which creates
+# the cluster, sets up kubeconfig, and mirrors bootstrap images. All
+# subsequent modules are deployed in listed order.
 #
 # Module deploy contract:
 #   Each module may have:
 #     terraform/  — independent tofu root (applied separately, gets cluster outputs as -var)
 #     kubernetes/ — manifests applied via kubectl/kustomize
 #     helm/       — values files for external OCI charts
-#     scripts/    — deploy helpers
-#
-# The base always includes: VPC, EKS, Harbor,
-# base k8s resources, git-cache DaemonSet, NVIDIA device plugin, docker images.
-# Harbor is NOT optional — every cluster gets a pull-through cache.
+#     deploy.sh   — custom deploy logic (receives cluster-id, cluster-name, region)
 
 defaults:
   # --- Terraform / base infra ---
@@ -144,6 +143,14 @@ clusters:
     pypi_cache:
       replicas: 1
     modules:
+      - eks
+      - nvidia-device-plugin
+      - node-performance-tuning
+      - registry-mirror
+      - image-cache-janitor
+
+      - git-cache
+      - node-compactor
       - karpenter
       - arc
       - nodepools
@@ -177,6 +184,14 @@ clusters:
     pypi_cache:
       replicas: 2
     modules:
+      - eks
+      - nvidia-device-plugin
+      - node-performance-tuning
+      - registry-mirror
+      - image-cache-janitor
+
+      - git-cache
+      - node-compactor
       - karpenter
       - arc
       - nodepools

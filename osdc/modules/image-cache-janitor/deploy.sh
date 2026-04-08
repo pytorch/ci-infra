@@ -2,9 +2,8 @@
 set -euo pipefail
 #
 # Deploy the Image Cache Janitor DaemonSet.
-# Called from the justfile's deploy-base recipe.
-#
-# Args: $1=cluster-id
+# Called by: just deploy-module
+# Args: $1=cluster-id  $2=cluster-name  $3=region
 #
 # Builds the container image (python + nsenter), pushes it to Harbor,
 # and applies the kustomized manifests with the image reference substituted.
@@ -111,7 +110,7 @@ echo "Using ${IMAGE}:${TAG}"
 
 # --- Apply Kubernetes manifests with image substitution ---
 echo "Applying image-cache-janitor manifests..."
-kubectl kustomize "$JANITOR_DIR/" \
+kubectl kustomize "$JANITOR_DIR/manifests/" \
   | sed "s|IMAGE_CACHE_JANITOR_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|g" \
   | kubectl_apply_if_changed -f -
 

@@ -75,24 +75,20 @@ Adding a cluster = adding an entry. Adding a module to a cluster = appending to 
 ```
 just deploy <cluster-id>
 │
-├── deploy-base
-│   ├── tofu apply (modules/eks/terraform/)  ← VPC, EKS, Harbor S3
-│   ├── mirror-images                       ← Harbor images to ECR
-│   ├── kubectl apply -k base/kubernetes/   ← StorageClass, NVIDIA, git-cache, etc.
-│   ├── deploy-harbor                       ← Helm install Harbor (pull-through cache)
-│   └── deploy node-compactor               ← if enabled in clusters.yaml
-│
 └── deploy-module (for each module in order)
-    ├── tofu apply (modules/<mod>/terraform/)   ← if exists
-    ├── kubectl apply -k (modules/<mod>/kubernetes/)  ← if exists
-    └── modules/<mod>/deploy.sh                 ← if exists
+    ├── tofu apply (modules/<mod>/terraform/)        ← if exists
+    ├── kubectl apply -k (modules/<mod>/kubernetes/) ← if exists
+    └── modules/<mod>/deploy.sh                      ← if exists
+
+eks module (first in list):
+  deploy.sh → tofu apply (modules/eks/infra/) + kubeconfig + mirror-images + harbor
 ```
 
 ## Terraform State Architecture
 
 ```
 S3 bucket: ciforge-tfstate-<cluster-id>
-├── <cluster-id>/base/terraform.tfstate          ← base infra
+├── <cluster-id>/base/terraform.tfstate          ← provider (eks) infra
 ├── <cluster-id>/arc/terraform.tfstate            ← arc module (if it has tf)
 ├── <cluster-id>/nodepools/terraform.tfstate       ← nodepools module (if it has tf)
 ├── <cluster-id>/arc-runners/terraform.tfstate    ← arc-runners module (if it has tf)
@@ -106,17 +102,13 @@ S3 bucket: ciforge-tfstate-<cluster-id>
 
 ## Why These Design Decisions
 
-### Harbor always-on (not a module)
+### Harbor inside eks module
 
-Every cluster needs a pull-through image cache. Without it, nodes pull directly from Docker Hub / ghcr.io / etc., hitting rate limits and adding latency. Harbor is foundational infrastructure, not optional.
-
-### Git cache + NVIDIA plugin in base
-
-These are universally needed. Any cluster running GPU workloads needs the NVIDIA plugin. Any cluster cloning repos benefits from git cache. Moving them to modules would mean every cluster config has to remember to include them.
+Harbor's terraform (OIDC, S3, IAM) is tightly coupled to EKS infrastructure, so it lives inside `modules/eks/infra/` and is deployed by `modules/eks/deploy.sh`. Every EKS cluster gets Harbor automatically.
 
 ### Single terraform root, parameterized
 
-The old approach had `terraform/environments/staging/main.tf` and `terraform/environments/production/main.tf` — same code, different values. This is copy-paste maintenance burden. The new approach has one `modules/eks/terraform/main.tf` with variables. Cluster-specific values come from `clusters.yaml` as `-var` flags. Adding a cluster means adding a YAML entry, not duplicating terraform files.
+The old approach had `terraform/environments/staging/main.tf` and `terraform/environments/production/main.tf` — same code, different values. This is copy-paste maintenance burden. The new approach has one `modules/eks/infra/main.tf` with variables. Cluster-specific values come from `clusters.yaml` as `-var` flags. Adding a cluster means adding a YAML entry, not duplicating terraform files.
 
 ### Compute split: nodepools + arc-runners
 

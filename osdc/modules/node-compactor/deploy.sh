@@ -2,9 +2,8 @@
 set -euo pipefail
 #
 # Deploy the Node Compactor controller.
-# Called from the justfile's deploy-base recipe.
-#
-# Args: $1=cluster-id
+# Called by: just deploy-module
+# Args: $1=cluster-id  $2=cluster-name  $3=region
 #
 # Builds the container image, pushes it to Harbor, and applies the
 # kustomized manifests with config values substituted into the deployment.
@@ -18,7 +17,7 @@ source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 
 CLUSTER_CONFIG="$UPSTREAM_ROOT/scripts/cluster-config.py"
-COMPACTOR_DIR="$UPSTREAM_ROOT/base/node-compactor"
+COMPACTOR_DIR="$SCRIPT_DIR"
 
 # --- Cleanup trap ---
 PF_PID=""
@@ -129,7 +128,7 @@ echo "Using ${IMAGE}:${TAG}"
 
 # --- Apply Kubernetes manifests with config substitution ---
 echo "Applying node-compactor manifests..."
-kubectl kustomize "$COMPACTOR_DIR/kubernetes/" \
+kubectl kustomize "$COMPACTOR_DIR/manifests/" \
   | sed \
     -e "s|NODE_COMPACTOR_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|g" \
     -e "s|COMPACTOR_INTERVAL_PLACEHOLDER|\"${INTERVAL}\"|g" \

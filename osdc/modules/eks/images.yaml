@@ -6,7 +6,7 @@
 # Once Harbor is running, all other images (ghcr.io, nvcr.io, docker.io,
 # registry.k8s.io, quay.io) are pulled through Harbor's proxy cache.
 # Containerd on every node is configured to route pulls through Harbor
-# (see base/scripts/bootstrap/eks-base-bootstrap.sh and modules/nodepools/).
+# (see modules/eks/scripts/bootstrap/eks-base-bootstrap.sh and modules/nodepools/).
 #
 # Images from public.ecr.aws are NOT listed (already on AWS, no rate limits).
 #

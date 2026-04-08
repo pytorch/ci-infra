@@ -4,7 +4,7 @@ project-doc: enabled
 
 ## What This Is
 
-Modular Kubernetes infrastructure platform on AWS EKS. A shared `base/` provides the cluster (VPC, EKS, Harbor, git cache, GPU plugins), and optional `modules/` layer services on top (ARC, runners, BuildKit, future projects). One codebase drives multiple clusters across regions via `clusters.yaml`.
+Modular Kubernetes infrastructure platform. Each cluster is defined by an ordered list of modules in `clusters.yaml`. The first module is typically the cloud provider (`eks` or `gke`) which creates the cluster infrastructure. All subsequent modules (harbor, git-cache, karpenter, ARC, runners, BuildKit, etc.) are deployed in order via `just deploy-module`. One codebase drives multiple clusters across regions.
 
 Working directory: `osdc/`. Run all commands from here.
 
@@ -51,7 +51,7 @@ Detailed instructions are broken into on-demand skills. Load the relevant skill 
 | Skill | What it covers | When to load |
 |-------|---------------|--------------|
 | `osdc-project-structure` | Architecture, directory tree, submodule pattern, design decisions, git cache, knowledge base, key files, docs index | Always load when working on OSDC |
-| `osdc-deployment` | Deploy workflow, just recipes, base/module deploy order, clusters.yaml, Terraform architecture, smoke tests | Deploying, adding modules, modifying deploy scripts |
+| `osdc-deployment` | Deploy workflow, just recipes, provider/module deploy order, clusters.yaml, Terraform architecture, smoke tests | Deploying, adding modules, modifying deploy scripts |
 | `osdc-tooling-and-quality` | Tools (tofu/just/mise/uv), automation hierarchy, unit tests, code style, 13 linters, indentation rules, full Don't Do list | Writing code, running linters, adding scripts/tests |
 | `osdc-runners-nodepools` | Runners, NodePools, BuildKit, GitHub Actions constraints, node taints, image mirroring, change checklist | Modifying runners, nodepools, BuildKit, node configs |
 | `osdc-observability` | Monitoring + logging pipelines, three-Alloy architecture, Loki log queries, label strategy, module pipelines, credentials | Working on monitoring, logging, Alloy, querying logs |
@@ -66,7 +66,7 @@ Reference documentation in `docs/`:
 
 | Doc | What it covers |
 |-----|---------------|
-| `docs/architecture.md` | Platform design — base vs modules separation, cluster lifecycle on AWS EKS |
+| `docs/architecture.md` | Platform design — module-based architecture, cluster lifecycle |
 | `docs/modules.md` | Module contract — what a module is, directory structure, required files |
 | `docs/observability.md` | Three-Alloy observability architecture — monitoring + logging pipelines to Grafana Cloud |
 | `docs/observability-estimates.md` | Per-unit cost estimates for metrics cardinality and log volume (Grafana Cloud billing) |
