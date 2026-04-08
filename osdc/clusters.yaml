@@ -148,7 +148,6 @@ clusters:
       - nvidia-device-plugin
       - node-performance-tuning
       - registry-mirror
-      - harbor
       - image-cache-janitor
 
       - git-cache
@@ -191,7 +190,6 @@ clusters:
       - nvidia-device-plugin
       - node-performance-tuning
       - registry-mirror
-      - harbor
       - image-cache-janitor
 
       - git-cache
