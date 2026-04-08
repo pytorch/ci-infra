@@ -110,7 +110,7 @@ echo "Using ${IMAGE}:${TAG}"
 
 # --- Apply Kubernetes manifests with image substitution ---
 echo "Applying image-cache-janitor manifests..."
-cat "$JANITOR_DIR/kubernetes/configmap.yaml" "$JANITOR_DIR/kubernetes/daemonset.yaml" \
+kubectl kustomize "$JANITOR_DIR/manifests/" \
   | sed "s|IMAGE_CACHE_JANITOR_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|g" \
   | kubectl_apply_if_changed -f -
 
