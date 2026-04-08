@@ -23,7 +23,7 @@ testpaths = [
   "scripts/python",
   "modules/node-compactor/scripts/python",
   "modules/git-cache/scripts/python",
-  "base/kubernetes/image-cache-janitor/scripts/python",
+  "modules/image-cache-janitor/scripts/python",
   "modules/nodepools/scripts/python",
   "modules/arc-runners/scripts/python",
   "modules/buildkit/scripts/python",
