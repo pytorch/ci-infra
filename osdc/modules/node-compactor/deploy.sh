@@ -128,7 +128,10 @@ echo "Using ${IMAGE}:${TAG}"
 
 # --- Apply Kubernetes manifests with config substitution ---
 echo "Applying node-compactor manifests..."
-kubectl kustomize "$COMPACTOR_DIR/kubernetes/" \
+cat "$COMPACTOR_DIR/kubernetes/serviceaccount.yaml" \
+  "$COMPACTOR_DIR/kubernetes/rbac.yaml" \
+  "$COMPACTOR_DIR/kubernetes/deployment.yaml" \
+  "$COMPACTOR_DIR/kubernetes/service.yaml" \
   | sed \
     -e "s|NODE_COMPACTOR_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|g" \
     -e "s|COMPACTOR_INTERVAL_PLACEHOLDER|\"${INTERVAL}\"|g" \
