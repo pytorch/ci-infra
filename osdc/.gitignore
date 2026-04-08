@@ -11,7 +11,7 @@ tfplan
 .venv/
 __pycache__/
 *.pyc
-.coverage
+.coverage*
 coverage.json
 
 # Generated module outputs

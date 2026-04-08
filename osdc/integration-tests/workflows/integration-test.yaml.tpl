@@ -1623,3 +1623,40 @@ jobs:
           echo "PASS: Non-blocked domains are accessible"
   # END_CACHE_ENFORCER
 
+  # BEGIN_RELEASE
+  # ── Release Runner Tests ───────────────────────────────────────────────
+  test-release-arm64:
+    runs-on: {{PREFIX}}rel-l-arm64g4-16-62
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    steps:
+      - name: Verify CPU count
+        run: |
+          EXPECTED=16
+          ACTUAL=$(nproc)
+          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
+          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
+            exit 1
+          fi
+          echo "PASS: CPU count matches"
+      - name: Verify ghcr.io access
+        run: |
+          echo "=== Release Runner: ghcr.io Access ==="
+          HTTP_CODE=$(curl --connect-timeout 5 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://ghcr.io/v2/" 2>/dev/null || echo "000")
+          if [ "$HTTP_CODE" = "000" ]; then
+            echo "FAIL: ghcr.io is unreachable"
+            exit 1
+          fi
+          echo "PASS: ghcr.io is reachable (HTTP $HTTP_CODE)"
+      - name: Verify pypi.org access
+        run: |
+          echo "=== Release Runner: pypi.org Access ==="
+          HTTP_CODE=$(curl --connect-timeout 5 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://pypi.org/simple/" 2>/dev/null || echo "000")
+          if [ "$HTTP_CODE" = "000" ]; then
+            echo "FAIL: pypi.org is unreachable"
+            exit 1
+          fi
+          echo "PASS: pypi.org is reachable (HTTP $HTTP_CODE)"
+  # END_RELEASE
+
