@@ -79,6 +79,11 @@ alloy:
           source_labels = ["__name__", "__keep_cp__"]
           regex         = "(kube_pod_container_status_restarts_total|container_memory_working_set_bytes|container_memory_rss);"
         }
+        // Clean up temporary label before remote_write
+        rule {
+          action       = "labeldrop"
+          regex        = "__keep_cp__"
+        }
 
         // --- drop misc high-cardinality metrics ---
         rule {
