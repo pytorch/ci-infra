@@ -144,7 +144,6 @@ clusters:
       replicas: 1
     modules:
       - eks
-      - storageclass-eks
       - nvidia-device-plugin
       - node-performance-tuning
       - registry-mirror
@@ -186,7 +185,6 @@ clusters:
       replicas: 2
     modules:
       - eks
-      - storageclass-eks
       - nvidia-device-plugin
       - node-performance-tuning
       - registry-mirror
