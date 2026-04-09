@@ -47,9 +47,11 @@ def mock_env(tmp_path):
             exit 0
         fi
 
-        # For "apply" calls, optionally capture the input
+        # For "apply" calls, capture stdin for label verification
         if [[ "$1" == "apply" && "$2" == "-f" && "$3" == "-" ]]; then
-            cat > /dev/null  # consume stdin
+            APPLY_LOG="{apply_log}"
+            cat >> "$APPLY_LOG"
+            echo "---" >> "$APPLY_LOG"
             exit 0
         fi
 
@@ -63,7 +65,11 @@ def mock_env(tmp_path):
             exit 0
         fi
         exit 0
-        """).format(log=kubectl_log, store=tmp_path / "cm_store")
+        """).format(
+            log=kubectl_log,
+            store=tmp_path / "cm_store",
+            apply_log=tmp_path / "apply_input.log",
+        )
     )
     mock_kubectl.chmod(mock_kubectl.stat().st_mode | stat.S_IEXEC)
 
@@ -96,6 +102,7 @@ def mock_env(tmp_path):
     return {
         "tmp_path": tmp_path,
         "kubectl_log": kubectl_log,
+        "apply_log": tmp_path / "apply_input.log",
         "git_dir": git_dir,
         "bin_dir": tmp_path / "bin",
         "cm_store": tmp_path / "cm_store",
@@ -204,10 +211,13 @@ class TestDeployLogStart:
             mock_env,
             f'source "{DEPLOY_LOG_SH}"\ndeploy_log_start module "test-cluster" "arc"',
         )
-        calls = get_kubectl_calls(mock_env)
-        create_calls = [c for c in calls if "create configmap" in c]
-        assert all("app.kubernetes.io/managed-by=osdc-deploy-log" in c for c in create_calls), (
-            f"Expected deploy-log label, got: {create_calls}"
+        # Labels are injected into YAML via _deploy_log_inject_labels (awk),
+        # not as kubectl CLI args. Check the YAML piped to kubectl apply.
+        apply_log = mock_env["apply_log"]
+        assert apply_log.exists(), "No YAML was piped to kubectl apply"
+        yaml_content = apply_log.read_text()
+        assert "app.kubernetes.io/managed-by: osdc-deploy-log" in yaml_content, (
+            f"Expected managed-by label in applied YAML, got:\n{yaml_content}"
         )
 
     def test_configmap_data_fields(self, mock_env):

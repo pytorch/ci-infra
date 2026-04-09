@@ -107,6 +107,13 @@ _deploy_log_scope_key() {
   if [[ "$1" == "module" ]]; then echo "module"; else echo "command"; fi
 }
 
+# Inject the managed-by label into ConfigMap YAML on stdin.
+# kubectl create configmap does not support -l, so we inject labels
+# into the dry-run YAML before piping to kubectl apply.
+_deploy_log_inject_labels() {
+  awk '/^metadata:/{print; print "  labels:"; print "    app.kubernetes.io/managed-by: osdc-deploy-log"; next}1'
+}
+
 # Gather git and user metadata into _DL_* variables.
 _deploy_log_gather_metadata() {
   _DL_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -129,9 +136,9 @@ _deploy_log_write_configmap() {
 
   if ! kubectl create configmap "$cm_name" \
     -n "$_DEPLOY_LOG_NAMESPACE" \
-    -l "$_DEPLOY_LOG_LABEL" \
     "${from_literal_args[@]}" \
     --dry-run=client -o yaml \
+    | _deploy_log_inject_labels \
     | kubectl apply -f - >/dev/null 2>&1; then
     echo "  Warning: deploy-log failed to write ConfigMap '$cm_name'" >&2
   fi
@@ -195,9 +202,9 @@ _deploy_log_append_history() {
   # Write back
   if ! kubectl create configmap "$cm_name" \
     -n "$_DEPLOY_LOG_NAMESPACE" \
-    -l "$_DEPLOY_LOG_LABEL" \
     --from-literal="entries=${updated}" \
     --dry-run=client -o yaml \
+    | _deploy_log_inject_labels \
     | kubectl apply -f - >/dev/null 2>&1; then
     echo "  Warning: deploy-log failed to update history '$cm_name'" >&2
   fi
