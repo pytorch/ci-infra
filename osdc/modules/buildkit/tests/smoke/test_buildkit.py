@@ -95,18 +95,17 @@ class TestBuildKitConfig:
 # ============================================================================
 
 
-class TestBuildKitNodePools:
-    """Verify Karpenter NodePools for BuildKit exist."""
+EXPECTED_NODEPOOLS = {"buildkit-arm64", "buildkit-amd64"}
 
-    def test_nodepools_exist(self, all_nodepools: dict) -> None:
-        """At least one NodePool related to BuildKit exists."""
-        buildkit_pools = [
-            np
-            for np in all_nodepools.get("items", [])
-            if "buildkit" in np.get("metadata", {}).get("name", "")
-            or np.get("metadata", {}).get("labels", {}).get("osdc.io/module") == "buildkit"
-        ]
-        assert len(buildkit_pools) >= 1, "Expected at least 1 Karpenter NodePool for BuildKit"
+
+class TestBuildKitNodePools:
+    """Verify Karpenter NodePools for each BuildKit architecture exist."""
+
+    @pytest.mark.parametrize("name", sorted(EXPECTED_NODEPOOLS))
+    def test_nodepool_exists(self, all_nodepools: dict, name: str) -> None:
+        """Each expected BuildKit NodePool exists in the cluster."""
+        existing = {np["metadata"]["name"] for np in all_nodepools.get("items", [])}
+        assert name in existing, f"NodePool '{name}' not found. Existing: {sorted(existing)}"
 
 
 # ============================================================================
