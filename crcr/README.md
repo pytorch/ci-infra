@@ -54,7 +54,7 @@ crcr/
 
 ### 1. Create S3 Bucket & DynamoDB Table
 
-Terraform remote state requires an S3 bucket and a DynamoDB table for state locking. These must be created **once** before the first `terraform init`.
+Terraform remote state requires an S3 bucket and a DynamoDB table for state locking. These must be created **once** before the first terraform init.
 
 ```bash
 # Replace <region> with the target region, e.g. us-east-1
