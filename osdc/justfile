@@ -124,11 +124,6 @@ deploy cluster:
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
     SECONDS=0
 
-    # Deploy audit logging
-    source "{{UPSTREAM}}/scripts/deploy-log.sh"
-    DEPLOY_LOG_START=$(deploy_log_start cmd "$CLUSTER" "deploy")
-    trap 'deploy_log_finish cmd "$CLUSTER" "deploy" "$DEPLOY_LOG_START" failed' ERR
-
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "FULL DEPLOYMENT: $CLUSTER ($CNAME)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -147,6 +142,11 @@ deploy cluster:
         echo
         [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
     fi
+
+    # Deploy audit logging (after confirmation to avoid orphaned "started" entries)
+    source "{{UPSTREAM}}/scripts/deploy-log.sh"
+    DEPLOY_LOG_START=$(deploy_log_start cmd "$CLUSTER" "deploy")
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy" "$DEPLOY_LOG_START" failed' ERR
 
     just deploy-base "$CLUSTER"
 
@@ -235,11 +235,6 @@ deploy-base cluster:
     TFVARS=$(uv run {{CFG}} "$CLUSTER" tfvars)
     STATE_REGION="us-west-2"  # state buckets always in us-west-2
 
-    # Deploy audit logging
-    source "{{UPSTREAM}}/scripts/deploy-log.sh"
-    DEPLOY_LOG_START=$(deploy_log_start cmd "$CLUSTER" "deploy-base")
-    trap 'deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed' ERR
-
     # Preflight: check state bucket exists
     if ! aws s3api head-bucket --bucket "${BUCKET}" --region "${STATE_REGION}" 2>/dev/null; then
         echo ""
@@ -251,6 +246,11 @@ deploy-base cluster:
         exit 1
     fi
 
+    # Deploy audit logging (after preflight to avoid orphaned "started" entries)
+    source "{{UPSTREAM}}/scripts/deploy-log.sh"
+    DEPLOY_LOG_START=$(deploy_log_start cmd "$CLUSTER" "deploy-base")
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed' ERR
+
     echo ""
     echo "━━━ BASE: Terraform ━━━"
     cd {{UPSTREAM}}/modules/eks/terraform
@@ -260,10 +260,13 @@ deploy-base cluster:
         -backend-config="region=${STATE_REGION}" \
         -backend-config="dynamodb_table=ciforge-terraform-locks"
 
+    # Suspend ERR trap — tofu plan returns exit code 2 for "changes detected"
+    trap - ERR
     set +e
     eval tofu plan $TFVARS -out=tfplan -detailed-exitcode
     PLAN_EXIT=$?
     set -e
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed' ERR
 
     if [[ $PLAN_EXIT -eq 0 ]]; then
         echo "No changes. Skipping apply."
@@ -291,6 +294,7 @@ deploy-base cluster:
     else
         rm -f tfplan
         echo "Tofu plan failed."
+        deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed
         exit 1
     fi
 
@@ -384,6 +388,8 @@ deploy-module cluster module:
             -backend-config="dynamodb_table=ciforge-terraform-locks"
 
         # Modules get cluster_name and aws_region as minimum vars
+        # Suspend ERR trap — tofu plan returns exit code 2 for "changes detected"
+        trap - ERR
         set +e
         tofu plan \
             -var="cluster_name=${CNAME}" \
@@ -393,6 +399,7 @@ deploy-module cluster module:
             -out=tfplan -detailed-exitcode
         PLAN_EXIT=$?
         set -e
+        trap 'deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START" failed; deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START" failed' ERR
 
         if [[ $PLAN_EXIT -eq 0 ]]; then
             echo "  No changes. Skipping apply."
@@ -403,6 +410,8 @@ deploy-module cluster module:
         else
             rm -f tfplan
             echo "  Tofu plan failed."
+            deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START" failed
+            deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START" failed
             exit 1
         fi
         cd -
