@@ -1,0 +1,8 @@
+# osdc-system namespace — platform-level operational metadata.
+# Deploy audit logs (ConfigMaps) are stored here by scripts/deploy-log.sh.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: osdc-system
+  labels:
+    app.kubernetes.io/managed-by: osdc
