@@ -70,6 +70,23 @@ show cluster:
     echo "  Tofu vars:"; \
     uv run {{CFG}} {{cluster}} tfvars | tr ' ' '\n' | sed 's/^/    /'
 
+# Show deploy audit log ConfigMaps for a cluster
+deploy-history cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+
+    just kubeconfig "$CLUSTER"
+
+    echo "Deploy history for cluster: $CLUSTER"
+    echo ""
+    kubectl get configmaps -n osdc-system \
+        -l app.kubernetes.io/managed-by=osdc-deploy-log \
+        --sort-by=.metadata.creationTimestamp \
+        -o custom-columns='NAME:.metadata.name,AGE:.metadata.creationTimestamp'
+
 # Update kubeconfig for a cluster (aws eks update-kubeconfig)
 kubeconfig cluster:
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
@@ -106,6 +123,11 @@ deploy cluster:
     CLUSTER="{{cluster}}"
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
     SECONDS=0
+
+    # Deploy audit logging
+    source "{{UPSTREAM}}/scripts/deploy-log.sh"
+    DEPLOY_LOG_START=$(deploy_log_start cmd "$CLUSTER" "deploy")
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy" "$DEPLOY_LOG_START" failed' ERR
 
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "FULL DEPLOYMENT: $CLUSTER ($CNAME)"
@@ -145,6 +167,10 @@ deploy cluster:
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "DEPLOYMENT COMPLETE: $CLUSTER ($elapsed)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # Deploy audit logging — record successful completion
+    trap - ERR
+    deploy_log_finish cmd "$CLUSTER" "deploy" "$DEPLOY_LOG_START"
 
     # Taint ARC runner nodes for graceful refresh (production only)
     # When nodes are recycled (staging), tainting is pointless — they're already being destroyed.
@@ -208,6 +234,11 @@ deploy-base cluster:
     BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
     TFVARS=$(uv run {{CFG}} "$CLUSTER" tfvars)
     STATE_REGION="us-west-2"  # state buckets always in us-west-2
+
+    # Deploy audit logging
+    source "{{UPSTREAM}}/scripts/deploy-log.sh"
+    DEPLOY_LOG_START=$(deploy_log_start cmd "$CLUSTER" "deploy-base")
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed' ERR
 
     # Preflight: check state bucket exists
     if ! aws s3api head-bucket --bucket "${BUCKET}" --region "${STATE_REGION}" 2>/dev/null; then
@@ -296,6 +327,10 @@ deploy-base cluster:
     echo ""
     echo "Base deployment complete."
 
+    # Deploy audit logging — record successful completion
+    trap - ERR
+    deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START"
+
 # Deploy a single module to a cluster
 deploy-module cluster module:
     #!/usr/bin/env bash
@@ -330,6 +365,12 @@ deploy-module cluster module:
         echo "Error: module '$MODULE' not found in modules/ or upstream."
         exit 1
     fi
+
+    # Deploy audit logging — record start (command-level + module-level)
+    source "{{UPSTREAM}}/scripts/deploy-log.sh"
+    DEPLOY_LOG_CMD_START=$(deploy_log_start cmd "$CLUSTER" "deploy-module-$MODULE")
+    DEPLOY_LOG_MOD_START=$(deploy_log_start module "$CLUSTER" "$MODULE")
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START" failed; deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START" failed' ERR
 
     # Phase 1: Terraform (if module has its own)
     if [[ -f "$MODULE_DIR/terraform/main.tf" ]]; then
@@ -380,6 +421,11 @@ deploy-module cluster module:
     fi
 
     echo "  Module $MODULE deployed."
+
+    # Deploy audit logging — record successful completion
+    trap - ERR
+    deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START"
+    deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START"
 
 # Terminate all Karpenter-managed nodes (they will be reprovisioned on demand)
 recycle-nodes cluster:
