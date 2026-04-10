@@ -70,6 +70,23 @@ show cluster:
     echo "  Tofu vars:"; \
     uv run {{CFG}} {{cluster}} tfvars | tr ' ' '\n' | sed 's/^/    /'
 
+# Show deploy audit log ConfigMaps for a cluster
+deploy-history cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+
+    just kubeconfig "$CLUSTER"
+
+    echo "Deploy history for cluster: $CLUSTER"
+    echo ""
+    kubectl get configmaps -n osdc-system \
+        -l app.kubernetes.io/managed-by=osdc-deploy-log \
+        --sort-by=.metadata.creationTimestamp \
+        -o custom-columns='NAME:.metadata.name,AGE:.metadata.creationTimestamp'
+
 # Update kubeconfig for a cluster (aws eks update-kubeconfig)
 kubeconfig cluster:
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
@@ -126,6 +143,11 @@ deploy cluster:
         [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
     fi
 
+    # Deploy audit logging (after confirmation to avoid orphaned "started" entries)
+    source "{{UPSTREAM}}/scripts/deploy-log.sh"
+    DEPLOY_LOG_START=$(deploy_log_start cmd "$CLUSTER" "deploy")
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy" "$DEPLOY_LOG_START" failed' ERR
+
     just deploy-base "$CLUSTER"
 
     for module in $(uv run {{CFG}} "$CLUSTER" modules); do
@@ -145,6 +167,10 @@ deploy cluster:
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "DEPLOYMENT COMPLETE: $CLUSTER ($elapsed)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # Deploy audit logging — record successful completion
+    trap - ERR
+    deploy_log_finish cmd "$CLUSTER" "deploy" "$DEPLOY_LOG_START"
 
     # Taint ARC runner nodes for graceful refresh (production only)
     # When nodes are recycled (staging), tainting is pointless — they're already being destroyed.
@@ -220,6 +246,11 @@ deploy-base cluster:
         exit 1
     fi
 
+    # Deploy audit logging (after preflight to avoid orphaned "started" entries)
+    source "{{UPSTREAM}}/scripts/deploy-log.sh"
+    DEPLOY_LOG_START=$(deploy_log_start cmd "$CLUSTER" "deploy-base")
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed' ERR
+
     echo ""
     echo "━━━ BASE: Terraform ━━━"
     cd {{UPSTREAM}}/modules/eks/terraform
@@ -229,10 +260,13 @@ deploy-base cluster:
         -backend-config="region=${STATE_REGION}" \
         -backend-config="dynamodb_table=ciforge-terraform-locks"
 
+    # Suspend ERR trap — tofu plan returns exit code 2 for "changes detected"
+    trap - ERR
     set +e
     eval tofu plan $TFVARS -out=tfplan -detailed-exitcode
     PLAN_EXIT=$?
     set -e
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed' ERR
 
     if [[ $PLAN_EXIT -eq 0 ]]; then
         echo "No changes. Skipping apply."
@@ -260,6 +294,7 @@ deploy-base cluster:
     else
         rm -f tfplan
         echo "Tofu plan failed."
+        deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed
         exit 1
     fi
 
@@ -296,6 +331,10 @@ deploy-base cluster:
     echo ""
     echo "Base deployment complete."
 
+    # Deploy audit logging — record successful completion
+    trap - ERR
+    deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START"
+
 # Deploy a single module to a cluster
 deploy-module cluster module:
     #!/usr/bin/env bash
@@ -331,6 +370,12 @@ deploy-module cluster module:
         exit 1
     fi
 
+    # Deploy audit logging — record start (command-level + module-level)
+    source "{{UPSTREAM}}/scripts/deploy-log.sh"
+    DEPLOY_LOG_CMD_START=$(deploy_log_start cmd "$CLUSTER" "deploy-module-$MODULE")
+    DEPLOY_LOG_MOD_START=$(deploy_log_start module "$CLUSTER" "$MODULE")
+    trap 'deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START" failed; deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START" failed' ERR
+
     # Phase 1: Terraform (if module has its own)
     if [[ -f "$MODULE_DIR/terraform/main.tf" ]]; then
         echo "  Applying terraform for $MODULE..."
@@ -343,6 +388,8 @@ deploy-module cluster module:
             -backend-config="dynamodb_table=ciforge-terraform-locks"
 
         # Modules get cluster_name and aws_region as minimum vars
+        # Suspend ERR trap — tofu plan returns exit code 2 for "changes detected"
+        trap - ERR
         set +e
         tofu plan \
             -var="cluster_name=${CNAME}" \
@@ -352,6 +399,7 @@ deploy-module cluster module:
             -out=tfplan -detailed-exitcode
         PLAN_EXIT=$?
         set -e
+        trap 'deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START" failed; deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START" failed' ERR
 
         if [[ $PLAN_EXIT -eq 0 ]]; then
             echo "  No changes. Skipping apply."
@@ -362,6 +410,8 @@ deploy-module cluster module:
         else
             rm -f tfplan
             echo "  Tofu plan failed."
+            deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START" failed
+            deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START" failed
             exit 1
         fi
         cd -
@@ -380,6 +430,11 @@ deploy-module cluster module:
     fi
 
     echo "  Module $MODULE deployed."
+
+    # Deploy audit logging — record successful completion
+    trap - ERR
+    deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START"
+    deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START"
 
 # Terminate all Karpenter-managed nodes (they will be reprovisioned on demand)
 recycle-nodes cluster:
