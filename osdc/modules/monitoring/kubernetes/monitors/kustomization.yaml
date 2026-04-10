@@ -14,6 +14,7 @@ resources:
   - servicemonitors/harbor.yaml
   - servicemonitors/karpenter.yaml
   - servicemonitors/node-compactor.yaml
+  - servicemonitors/pypi-cache.yaml
   # PodMonitors
   - podmonitors/arc-listeners.yaml
   - podmonitors/coredns.yaml
