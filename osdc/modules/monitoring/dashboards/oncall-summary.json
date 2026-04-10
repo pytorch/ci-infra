@@ -372,7 +372,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "min(up{cluster=\"$cluster\", job=~\".*buildkit-haproxy.*\"})",
+          "expr": "min(up{cluster=\"$cluster\", job=\"buildkitd-lb-metrics\"})",
           "legendFormat": "",
           "refId": "A"
         }
@@ -704,7 +704,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "min(up{cluster=\"$cluster\", job=~\".*apiserver.*\"})",
+          "expr": "min(up{cluster=\"$cluster\", job=\"kubernetes\"})",
           "legendFormat": "",
           "refId": "A"
         }
