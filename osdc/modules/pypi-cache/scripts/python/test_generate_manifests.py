@@ -411,18 +411,19 @@ class TestGenerateDeployments:
         for doc in docs:
             assert doc["spec"]["replicas"] == 5
 
-    # --- Two-container pod structure ---
+    # --- Three-container pod structure ---
 
-    def test_two_containers(self):
-        """Pod has exactly two containers: nginx and pypiserver."""
+    def test_three_containers(self):
+        """Pod has exactly three containers: nginx, pypiserver, nginx-exporter."""
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             containers = doc["spec"]["template"]["spec"]["containers"]
-            assert len(containers) == 2
+            assert len(containers) == 3
             assert containers[0]["name"] == "nginx"
             assert containers[1]["name"] == "pypiserver"
+            assert containers[2]["name"] == "nginx-exporter"
 
     def test_nginx_container_image(self):
         """nginx container uses the configured nginx_image."""

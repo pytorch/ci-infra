@@ -172,6 +172,27 @@ __INIT_NVME_BLOCK__
             - name: pypiserver-tmp
               mountPath: /tmp
 
+        - name: nginx-exporter
+          image: docker.io/nginx/nginx-prometheus-exporter:1.4.1
+          args:
+            - "--nginx.scrape-uri=http://127.0.0.1:8080/stub_status"
+          ports:
+            - name: metrics
+              containerPort: 9113
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+
       volumes:
         - name: data
           persistentVolumeClaim:

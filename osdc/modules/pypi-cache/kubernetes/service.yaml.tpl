@@ -22,3 +22,7 @@ spec:
       port: __SERVER_PORT__
       targetPort: http
       protocol: TCP
+    - name: metrics
+      port: 9113
+      targetPort: metrics
+      protocol: TCP

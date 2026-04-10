@@ -1,22 +1,22 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: harbor
+  name: pypi-cache
   namespace: monitoring
   labels:
     app.kubernetes.io/part-of: osdc-monitoring
 spec:
   namespaceSelector:
     matchNames:
-      - harbor-system
+      - pypi-cache
   selector:
     matchLabels:
-      app: harbor
+      app.kubernetes.io/name: pypi-cache
   endpoints:
-    - port: http-metrics
+    - port: metrics
       interval: 60s
       metricRelabelings:
-        # Drop Go runtime and process metrics — no operational value
-        - action: drop
+        # Keep only critical nginx metrics — drop go_*, process_*, promhttp_*
+        - action: keep
           sourceLabels: [__name__]
-          regex: "go_.*|process_.*|promhttp_.*"
+          regex: "nginx_up|nginx_http_requests_total|nginx_connections_active"
