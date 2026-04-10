@@ -1,0 +1,12 @@
+# ARC runner definition: rel-l-arm64g4-16-62
+# Release runner — dedicated runner group and node isolation
+# Instance type: m8g.48xlarge (pool: m8g-48xlarge-release)
+runner:
+  name: rel-l-arm64g4-16-62
+  instance_type: m8g.48xlarge
+  disk_size: 256
+  vcpu: 16
+  memory: 62Gi
+  gpu: 0
+  runner_group: release-runners
+  runner_class: release

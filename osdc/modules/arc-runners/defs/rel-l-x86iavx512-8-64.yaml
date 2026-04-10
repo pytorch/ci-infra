@@ -1,0 +1,12 @@
+# ARC runner definition: rel-l-x86iavx512-8-64
+# Release runner — dedicated runner group and node isolation
+# Instance type: r7a.48xlarge (pool: r7a-48xlarge-release)
+runner:
+  name: rel-l-x86iavx512-8-64
+  instance_type: r7a.48xlarge
+  disk_size: 200
+  vcpu: 8
+  memory: 64Gi
+  gpu: 0
+  runner_group: release-runners
+  runner_class: release

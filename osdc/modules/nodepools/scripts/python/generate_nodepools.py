@@ -197,6 +197,12 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     else:
         capacity_reservation_block = "\n"
 
+    # ----- Extra labels (e.g. runner-class for release runners) -----
+    extra_labels = nodepool_def.get("extra_labels", {})
+    extra_labels_yaml = ""
+    for label_key, label_value in extra_labels.items():
+        extra_labels_yaml += f'        {label_key}: "{label_value}"\n'
+
     # ----- Build YAML -----
     yaml_content = f"""# Karpenter NodePool + EC2NodeClass: {instance_type}
 # Auto-generated from defs/{name}.yaml — do not edit by hand.
@@ -221,6 +227,7 @@ spec:
         workload-type: github-runner
         instance-type: "{instance_type}"
 {gpu_labels}\
+{extra_labels_yaml}\
     spec:
       requirements:
         - key: kubernetes.io/arch

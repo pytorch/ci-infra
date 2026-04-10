@@ -86,6 +86,8 @@ spec:
                     operator: In
                     values:
                       - github-runner
+                  - key: osdc.io/runner-class
+                    operator: DoesNotExist
 
       serviceAccountName: cache-enforcer
 

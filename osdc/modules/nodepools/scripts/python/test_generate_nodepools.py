@@ -505,6 +505,23 @@ class TestGenerateNodepoolYaml:
         ec2 = docs[1]
         assert "GPU" not in ec2["spec"]["tags"]
 
+    def test_extra_labels(self):
+        nodepool_def = _make_nodepool_def(extra_labels={"osdc.io/runner-class": "release", "custom-label": "value"})
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        labels = np["spec"]["template"]["metadata"]["labels"]
+        assert labels.get("osdc.io/runner-class") == "release"
+        assert labels.get("custom-label") == "value"
+
+    def test_no_extra_labels(self):
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        labels = np["spec"]["template"]["metadata"]["labels"]
+        assert "osdc.io/runner-class" not in labels
+
 
 # ============================================================================
 # Real def files — round-trip validation
