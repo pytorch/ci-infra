@@ -3,6 +3,7 @@
 # Path configurations
 skip-path:
   - arc
+  - crcr
   - osdc
   - '.github/workflows/arc*'
 
