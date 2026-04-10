@@ -14,7 +14,7 @@ spec:
       app: harbor
       component: exporter
   endpoints:
-    - port: metrics
+    - port: http-metrics
       interval: 60s
       metricRelabelings:
         # Drop Go runtime and process metrics — no operational value

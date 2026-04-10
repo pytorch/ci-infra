@@ -1627,7 +1627,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "git_cache_central_clone_duration_seconds{cluster=\"$cluster\", repo=~\"$repo\"}",
+          "expr": "git_cache_central_clone_duration_seconds_sum{cluster=\"$cluster\", repo=~\"$repo\"} / git_cache_central_clone_duration_seconds_count{cluster=\"$cluster\", repo=~\"$repo\"}",
           "legendFormat": "{{repo}}",
           "refId": "A"
         }
@@ -2297,13 +2297,13 @@
   "templating": {
     "list": [
       {
-        "current": {},
+        "current": {"selected": true, "text": "grafanacloud-pytorchci-prom", "value": "grafanacloud-pytorchci-prom"},
         "hide": 0,
         "includeAll": false,
         "label": "Data Source",
         "multi": false,
         "name": "datasource",
-        "options": [],
+        "options": [{"selected": true, "text": "grafanacloud-pytorchci-prom", "value": "grafanacloud-pytorchci-prom"}],
         "query": "prometheus",
         "queryValue": "",
         "refresh": 1,
@@ -2312,7 +2312,7 @@
         "type": "datasource"
       },
       {
-        "current": {},
+        "current": {"selected": true, "text": "pytorch-arc-cbr-production", "value": "pytorch-arc-cbr-production"},
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
         "definition": "label_values(up, cluster)",
         "hide": 0,

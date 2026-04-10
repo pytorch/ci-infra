@@ -1575,7 +1575,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "node_compactor_config{cluster=\"$cluster\"}",
+          "expr": "node_compactor_config_info{cluster=\"$cluster\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -1602,120 +1602,6 @@
       "title": "Node Resource Utilization",
       "type": "row",
       "panels": []
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 80 }
-            ]
-          },
-          "min": 0,
-          "max": 1,
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 77 },
-      "id": 34,
-      "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "1 - avg by (instance) (rate(node_cpu_seconds_total{cluster=\"$cluster\", mode=\"idle\"}[5m]))",
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        }
-      ],
-      "title": "CPU Utilization per Node",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 80 }
-            ]
-          },
-          "min": 0,
-          "max": 1,
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 77 },
-      "id": 35,
-      "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "avg by (instance) (rate(node_cpu_seconds_total{cluster=\"$cluster\", mode=\"iowait\"}[5m]))",
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        }
-      ],
-      "title": "IO Wait per Node",
-      "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
@@ -1946,13 +1832,13 @@
   "templating": {
     "list": [
       {
-        "current": {},
+        "current": {"selected": true, "text": "grafanacloud-pytorchci-prom", "value": "grafanacloud-pytorchci-prom"},
         "hide": 0,
         "includeAll": false,
         "label": "Data Source",
         "multi": false,
         "name": "datasource",
-        "options": [],
+        "options": [{"selected": true, "text": "grafanacloud-pytorchci-prom", "value": "grafanacloud-pytorchci-prom"}],
         "query": "prometheus",
         "queryValue": "",
         "refresh": 1,
@@ -1961,7 +1847,7 @@
         "type": "datasource"
       },
       {
-        "current": {},
+        "current": {"selected": true, "text": "pytorch-arc-cbr-production", "value": "pytorch-arc-cbr-production"},
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
         "definition": "label_values(up, cluster)",
         "hide": 0,

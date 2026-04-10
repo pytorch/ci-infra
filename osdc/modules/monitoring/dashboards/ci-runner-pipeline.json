@@ -1220,13 +1220,23 @@
   "templating": {
     "list": [
       {
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "grafanacloud-pytorchci-prom",
+          "value": "grafanacloud-pytorchci-prom"
+        },
         "hide": 0,
         "includeAll": false,
         "label": "Data Source",
         "multi": false,
         "name": "datasource",
-        "options": [],
+        "options": [
+          {
+            "selected": true,
+            "text": "grafanacloud-pytorchci-prom",
+            "value": "grafanacloud-pytorchci-prom"
+          }
+        ],
         "query": "prometheus",
         "queryValue": "",
         "refresh": 1,
@@ -1235,7 +1245,11 @@
         "type": "datasource"
       },
       {
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "pytorch-arc-cbr-production",
+          "value": "pytorch-arc-cbr-production"
+        },
         "datasource": {
           "type": "prometheus",
           "uid": "${datasource}"

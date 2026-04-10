@@ -1055,6 +1055,78 @@ simulate-cluster *args:
         {{args}}
 
 # ============================================================================
+# DASHBOARDS
+# ============================================================================
+
+# Publish Grafana dashboards to Grafana Cloud
+# Requires GRAFANA_API_TOKEN env var (service account token with dashboard write permission)
+publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0aqt8u800e":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+
+    if [[ -z "${GRAFANA_API_TOKEN:-}" ]]; then
+      echo "ERROR: GRAFANA_API_TOKEN env var is required."
+      echo "Create a service account token at {{grafana_url}}/org/serviceaccounts"
+      exit 1
+    fi
+
+    GRAFANA_URL="{{grafana_url}}"
+    FOLDER_UID="{{folder_uid}}"
+    API="${GRAFANA_URL}/api/dashboards/db"
+
+    # Collect dashboard JSON files from upstream and consumer modules
+    DASHBOARD_DIRS=()
+    [[ -d "{{UPSTREAM}}/modules/monitoring/dashboards" ]] && DASHBOARD_DIRS+=("{{UPSTREAM}}/modules/monitoring/dashboards")
+    if [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && [[ -d "{{ROOT}}/modules/monitoring/dashboards" ]]; then
+      DASHBOARD_DIRS+=("{{ROOT}}/modules/monitoring/dashboards")
+    fi
+
+    if [[ ${#DASHBOARD_DIRS[@]} -eq 0 ]]; then
+      echo "No dashboard directories found."
+      exit 1
+    fi
+
+    TOTAL=0
+    OK=0
+    FAIL=0
+
+    for dir in "${DASHBOARD_DIRS[@]}"; do
+      for file in "$dir"/*.json; do
+        [[ -f "$file" ]] || continue
+        TOTAL=$((TOTAL + 1))
+        name=$(basename "$file" .json)
+
+        # Wrap dashboard model in the Grafana API payload:
+        # - set id to null (Grafana assigns it)
+        # - preserve uid for idempotent upserts
+        payload=$(jq '{dashboard: (. | .id = null), folderUid: "'"$FOLDER_UID"'", overwrite: true}' "$file")
+
+        echo -n "Publishing ${name}... "
+        HTTP_CODE=$(curl -s -o /tmp/grafana-publish-response.json -w '%{http_code}' \
+          -X POST "${API}" \
+          -H "Authorization: Bearer ${GRAFANA_API_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "$payload")
+
+        if [[ "$HTTP_CODE" == "200" ]]; then
+          url=$(jq -r '.url // empty' /tmp/grafana-publish-response.json)
+          echo "OK -> ${GRAFANA_URL}${url}"
+          OK=$((OK + 1))
+        else
+          msg=$(jq -r '.message // "unknown error"' /tmp/grafana-publish-response.json 2>/dev/null || echo "HTTP ${HTTP_CODE}")
+          echo "FAILED (${HTTP_CODE}: ${msg})"
+          FAIL=$((FAIL + 1))
+        fi
+      done
+    done
+
+    rm -f /tmp/grafana-publish-response.json
+    echo ""
+    echo "Published ${OK}/${TOTAL} dashboards.$([ $FAIL -gt 0 ] && echo " ${FAIL} failed.")"
+    [[ $FAIL -gt 0 ]] && exit 1 || exit 0
+
+# ============================================================================
 # LINTING
 # ============================================================================
 
