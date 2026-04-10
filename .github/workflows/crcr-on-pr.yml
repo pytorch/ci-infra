@@ -46,6 +46,10 @@ jobs:
       shell: bash
       working-directory: crcr
       run: make tflint
+      env:
+        TF_VAR_github_app_id: ${{ secrets.CRCR_GITHUB_APP_ID }}
+        TF_VAR_github_app_secret: ${{ secrets.CRCR_GITHUB_APP_SECRET }}
+        TF_VAR_github_app_privatekey: ${{ secrets.CRCR_GITHUB_APP_PRIVATEKEY }}
 
     - name: Make plan
       shell: bash
