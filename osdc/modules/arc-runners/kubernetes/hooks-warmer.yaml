@@ -91,7 +91,7 @@ spec:
             - -c
             - |
               set -eu
-              HOOKS_VERSION="0.8.5"
+              HOOKS_VERSION="0.8.7"
               HOOKS_URL="https://github.com/jeanschmidt/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
               DEST="/mnt/runner-container-hooks"
               MARKER="$DEST/.version"
