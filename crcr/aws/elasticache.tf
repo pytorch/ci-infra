@@ -1,5 +1,5 @@
 resource "aws_security_group" "redis" {
-  name        = "${var.environment}-crcr-redis-sg"
+  name        = "crcr-redis-sg-${var.environment}"
   description = "Allow connection on port 6379 (redis)"
   vpc_id      = module.crcr_vpc.vpc_id
   tags        = local.tags
@@ -21,7 +21,7 @@ resource "random_password" "redis_password" {
 }
 
 resource "aws_elasticache_subnet_group" "redis" {
-  name       = "${var.environment}-crcr-redis-subnet"
+  name       = "crcr-redis-subnet-${var.environment}"
   subnet_ids = module.crcr_vpc.private_subnets
   tags       = local.tags
 }
@@ -34,7 +34,7 @@ resource "aws_elasticache_replication_group" "redis" {
   num_node_groups            = 1
   port                       = 6379
   replicas_per_node_group    = 1
-  replication_group_id       = "${var.environment}-crcr-redis-rep-group"
+  replication_group_id       = "crcr-redis-rep-group-${var.environment}"
   security_group_ids         = [aws_security_group.redis.id]
   subnet_group_name          = aws_elasticache_subnet_group.redis.name
   transit_encryption_enabled = true

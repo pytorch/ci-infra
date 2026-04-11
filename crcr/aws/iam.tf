@@ -1,5 +1,5 @@
 resource "aws_iam_role" "lambda" {
-  name = "${var.environment}-crcr-lambda-role"
+  name = "crcr-lambda-role-${var.environment}"
   tags = local.tags
 
   assume_role_policy = jsonencode({
@@ -23,7 +23,7 @@ resource "aws_iam_role_policy_attachment" "lambda_vpc_exec" {
 }
 
 resource "aws_iam_role_policy" "lambda_secrets" {
-  name = "${var.environment}-crcr-secrets-access"
+  name = "crcr-secrets-access-${var.environment}"
   role = aws_iam_role.lambda.id
 
   policy = jsonencode({

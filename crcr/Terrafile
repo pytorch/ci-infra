@@ -1,6 +1,6 @@
 terraform-aws-vpc:
-  source: "jeanschmidt/terraform-aws-vpc"
-  rev: "8fdd56aa6467a28471f696e5fb0c4174de2c1367"
+  source: "terraform-aws-modules/terraform-aws-vpc"
+  rev: "3ffbd46fb1c7733e1b34d8666893280454e27436"
 crcr:
   source: "pytorch/test-infra"
   tag: "v20260408-150242"

@@ -24,7 +24,6 @@ For more details, see the RFC: https://github.com/pytorch/rfcs/pull/90
 
 ```text
 crcr/
-├── Makefile                        # Root build orchestration (terrafile, plan, apply, clean)
 ├── Terrafile                       # Module & asset dependency specification (YAML)
 ├── requirements.txt                # Python dependencies (PyYAML)
 ├── scripts/
@@ -34,20 +33,18 @@ crcr/
 │   │   ├── backend-state.tf
 │   │   └── backend.tf
 │   └── backend-state/              # Symlink to ../../modules/backend-state
-└── aws/
-    └── 391835788720/               # AWS Account ID
-        └── us-east-1/              # AWS Region
-            ├── Makefile            # Region-level init/plan/apply/destroy
-            ├── main.tf             # Terraform & provider version constraints
-            ├── provider.tf         # AWS provider configuration
-            ├── variables.tf        # Input variables
-            ├── locals.tf           # Computed values (secret ARN, AZs, tags)
-            ├── outputs.tf          # Outputs (webhook URL, Redis endpoint)
-            ├── vpc.tf              # VPC and subnets
-            ├── iam.tf              # Lambda execution role and policies
-            ├── secretmanager.tf    # Secrets Manager secret and version
-            ├── elasticache.tf      # Redis replication group
-            └── webhook.tf          # Lambda function and public function URL
+└── aws/                            # Terraform deployment root
+    ├── Makefile                    # Build orchestration (terrafile, init, plan, apply, clean)
+    ├── main.tf                     # Terraform & provider version constraints
+    ├── provider.tf                 # AWS provider configuration
+    ├── variables.tf                # Input variables
+    ├── locals.tf                   # Computed values (secret ARN, AZs, tags)
+    ├── outputs.tf                  # Outputs (webhook URL, Redis endpoint)
+    ├── vpc.tf                      # VPC and subnets
+    ├── iam.tf                      # Lambda execution role and policies
+    ├── secrets.tf                  # Secrets Manager secret and version
+    ├── elasticache.tf              # Redis replication group
+    └── webhook.tf                  # Lambda function and public function URL
 ```
 
 ## Prerequisites
@@ -56,18 +53,20 @@ crcr/
 
 Terraform remote state requires an S3 bucket and a DynamoDB table for state locking. These must be created **once** before the first terraform init.
 
+**Note:**
+Replace `<env>` with the target value (e.g. `prod`, `canary`) and `<region>` with the target region (e.g. `us-east-1`):
+
 ```bash
-# Replace <region> with the target region, e.g. us-east-1
 aws s3api create-bucket \
-  --bucket tfstate-pyt-crcr-prod \
+  --bucket tfstate-pyt-crcr-<env> \
   --region <region>
 
 aws s3api put-bucket-versioning \
-  --bucket tfstate-pyt-crcr-prod \
+  --bucket tfstate-pyt-crcr-<env> \
   --versioning-configuration Status=Enabled
 
 aws dynamodb create-table \
-  --table-name tfstate-lock-pyt-crcr-prod \
+  --table-name tfstate-lock-pyt-crcr-<env> \
   --attribute-definitions AttributeName=LockID,AttributeType=S \
   --key-schema AttributeName=LockID,KeyType=HASH \
   --billing-mode PAY_PER_REQUEST \
@@ -81,28 +80,50 @@ aws dynamodb create-table \
 | `github_app_id` | N/A | GitHub App ID for the CRCR relay |
 | `github_app_secret` | N/A | GitHub App webhook secret for HMAC signature verification (sensitive) |
 | `github_app_privatekey` | N/A | PEM-encoded GitHub App private key (sensitive) |
+| `environment` | N/A | Environment name for resource tagging and naming (e.g. `prod`, `canary`) |
 | `upstream_repo` | `pytorch/pytorch` | GitHub upstream repository in `owner/repo` format |
 | `allowlist_url` | `https://github.com/pytorch/pytorch/blob/main/.github/allowlist.yml` | GitHub URL to the relay allowlist YAML |
 | `allowlist_ttl` | `1200` | Allowlist cache TTL in Redis (seconds) |
-| `environment` | `crcr-prod` | Environment name for resource tagging and naming |
 | `vpc_cidr_block` | `10.0.0.0/16` | CIDR block for the VPC |
 | `availability_zone_suffixes` | `["a", "b"]` | Availability zone letter suffixes |
+
+**Note:**
+
+All Terraform variables are set via `TF_VAR_<name>` environment variables.
 
 ## Deployment
 
 ### Local Deployment
 
+Set required variables first.
+
 ```bash
-pushd ci-infra/crcr
+cd ci-infra/crcr/aws
 
-# Preview changes
-make plan TERRAFORM_EXTRAS="-var github_app_id=123456 -var github_app_secret=<webhook_secret> -var github_app_privatekey=<pem_key>"
-
-# Apply with required variables
-make apply TERRAFORM_EXTRAS="-auto-approve -lock-timeout=15m -var github_app_id=123456 -var github_app_secret=<webhook_secret> -var github_app_privatekey=<pem_key>"
+export TF_VAR_github_app_id=123456
+export TF_VAR_github_app_secret=<webhook_secret>
+export TF_VAR_github_app_privatekey="$(cat path/to/key.pem)"
 ```
 
-> **Note**: When running locally, the regional Makefile uses `AWS_PROFILE` for authentication (skipped in GitHub Actions where IAM role assumption is used instead).
+#### Deploy prod
+
+```bash
+export TF_VAR_environment=prod
+make plan
+make apply TERRAFORM_EXTRAS="-auto-approve -lock-timeout=15m"
+```
+
+#### Deploy canary with a personal AWS account
+
+```bash
+export REGION=us-east-1
+export ACCOUNT=391835788720
+export TF_VAR_environment=canary
+make plan
+make apply TERRAFORM_EXTRAS="-auto-approve -lock-timeout=15m"
+```
+
+> **Note**: When running locally, `AWS_PROFILE` is set to `ACCOUNT` for authentication (skipped in GitHub Actions where IAM role assumption is used instead).
 
 ### GitHub Actions Deployment
 

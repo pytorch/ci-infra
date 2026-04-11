@@ -1,5 +1,5 @@
 resource "aws_secretsmanager_secret" "main" {
-  name = "${var.environment}-crcr-secret"
+  name = "crcr-secret-${var.environment}"
   tags = local.tags
 }
 

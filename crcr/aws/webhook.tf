@@ -1,9 +1,9 @@
 locals {
-  webhook_zip = abspath("../../../assets/lambdas-download/cross-repo-ci-webhook.zip")
+  webhook_zip = abspath("../assets/lambdas-download/cross-repo-ci-webhook.zip")
 }
 
 resource "aws_security_group" "lambda" {
-  name        = "${var.environment}-crcr-lambda-sg"
+  name        = "crcr-lambda-sg-${var.environment}"
   description = "Security group for Lambda function"
   vpc_id      = module.crcr_vpc.vpc_id
   tags        = local.tags
@@ -30,7 +30,7 @@ resource "aws_security_group_rule" "lambda_to_https" {
 }
 
 resource "aws_lambda_function" "webhook" {
-  function_name = "${var.environment}-crcr-webhook"
+  function_name = "crcr-webhook-${var.environment}"
   role          = aws_iam_role.lambda.arn
 
   runtime          = "python3.13"
@@ -72,36 +72,18 @@ resource "aws_lambda_function_url" "webhook" {
 }
 
 # Starting Oct 2025, Lambda function URLs require both lambda:InvokeFunctionUrl
-# and lambda:InvokeFunction permissions. The invoked_via_function_url flag ensures
-# lambda:InvokeFunction is scoped to function URL invocations only.
-# Using CloudFormation because aws provider <6.28 lacks invoked_via_function_url support.
+# and lambda:InvokeFunction permissions.
 # See: https://docs.aws.amazon.com/lambda/latest/dg/urls-auth.html
-# See: https://github.com/hashicorp/terraform-provider-aws/issues/44829
-resource "aws_cloudformation_stack" "webhook_permissions" {
-  name = "${var.environment}-crcr-webhook-permissions"
-  tags = local.tags
+resource "aws_lambda_permission" "webhook_function_url_invoke" {
+  function_name          = aws_lambda_function.webhook.function_name
+  action                 = "lambda:InvokeFunctionUrl"
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
 
-  template_body = jsonencode({
-    AWSTemplateFormatVersion = "2010-09-09"
-    Resources = {
-      FunctionUrlInvoke = {
-        Type = "AWS::Lambda::Permission"
-        Properties = {
-          FunctionName       = aws_lambda_function.webhook.function_name
-          Action             = "lambda:InvokeFunctionUrl"
-          Principal          = "*"
-          FunctionUrlAuthType = "NONE"
-        }
-      }
-      FunctionInvoke = {
-        Type = "AWS::Lambda::Permission"
-        Properties = {
-          FunctionName           = aws_lambda_function.webhook.function_name
-          Action                 = "lambda:InvokeFunction"
-          Principal              = "*"
-          InvokedViaFunctionUrl  = true
-        }
-      }
-    }
-  })
+resource "aws_lambda_permission" "webhook_function_invoke" {
+  function_name             = aws_lambda_function.webhook.function_name
+  action                    = "lambda:InvokeFunction"
+  principal                 = "*"
+  invoked_via_function_url  = true
 }
