@@ -9,6 +9,7 @@ __pycache__/
 **/venv/
 tf-modules/
 assets/*/*.zip
-aws/*/*/backend.tf
-aws/*/*/dyn_locals.tf
+aws/backend.tf
+aws/backend-state.tf
+aws/dyn_locals.tf
 crash.log

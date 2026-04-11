@@ -15,6 +15,11 @@ variable "github_app_privatekey" {
   sensitive   = true
 }
 
+variable "environment" {
+  description = "Environment name for resource tagging and naming (e.g. prod, canary)."
+  type        = string
+}
+
 variable "upstream_repo" {
   description = "GitHub upstream repository in owner/repo format"
   type        = string
@@ -31,12 +36,6 @@ variable "allowlist_ttl" {
   description = "Whitelist cache TTL in Redis (seconds)"
   type        = number
   default     = 1200
-}
-
-variable "environment" {
-  description = "Environment name for resource tagging and naming"
-  type        = string
-  default     = "crcr-prod"
 }
 
 variable "vpc_cidr_block" {

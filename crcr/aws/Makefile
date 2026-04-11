@@ -1,27 +1,33 @@
 SHELL=/bin/bash -o pipefail
-PROHOME := $(realpath ../../..)
+PROHOME := $(realpath ..)
 
-REGION := $(notdir $(CURDIR))
-ACCOUNT := $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
+REGION ?= us-east-1
+ACCOUNT ?= 391835788720
+
+# TF_VAR_environment drives both Terraform variable and backend naming.
+ifndef TF_VAR_environment
+$(error TF_VAR_environment is not set. Export it before running make, e.g.: export TF_VAR_environment=prod)
+endif
+export TF_VAR_environment
 
 ifneq ($(GITHUB_ACTIONS),true)
 export AWS_PROFILE := $(ACCOUNT)
 endif
 
-$(PROHOME)/venv/bin/pip:
-	cd $(PROHOME)/ && make venv/bin/pip
+$(PROHOME)/venv/bin/pip: $(PROHOME)/requirements.txt
+	cd $(PROHOME)/ && virtualenv venv && venv/bin/pip install -r requirements.txt
 
 $(PROHOME)/tf-modules/VERSIONS: $(PROHOME)/venv/bin/pip $(PROHOME)/Terrafile
-	cd $(PROHOME)/ && make tf-modules/VERSIONS
+	cd $(PROHOME)/ && venv/bin/python scripts/terrafile_lambdas.py -t Terrafile -m tf-modules
 
 dyn_locals.tf:
 	echo -e "locals {\n  # tflint-ignore: terraform_unused_declarations\n  aws_region = \"$(REGION)\"\n  # tflint-ignore: terraform_unused_declarations\n  aws_account_id = \"$(ACCOUNT)\"\n}\n" >dyn_locals.tf
 
 backend-state.tf: dyn_locals.tf
-	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
+	sed -e "s/#AWS_REGION/$(REGION)/g" -e "s/#ENVIRONMENT/$(TF_VAR_environment)/g" <$(PROHOME)/modules/backend-file/backend-state.tf >backend-state.tf
 	tofu get -update
 	tofu init -backend=false
-	tofu plan ${TERRAFORM_EXTRAS} -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state -lock-timeout=15m ; \
+	tofu plan -input=false -out=backend.plan -detailed-exitcode -target=module.backend-state -lock-timeout=15m ; \
 		ext_code=$$? ; \
 		if [ $$ext_code -eq 2 ] ; then \
 			if [ "$$GITHUB_ACTIONS" != "true" ] ; then \
@@ -39,7 +45,7 @@ backend-state.tf: dyn_locals.tf
 		fi
 
 backend.tf: backend-state.tf
-	sed "s/#AWS_REGION/$(REGION)/g" <$(PROHOME)/modules/backend-file/backend.tf >backend.tf
+	sed -e "s/#AWS_REGION/$(REGION)/g" -e "s/#ENVIRONMENT/$(TF_VAR_environment)/g" <$(PROHOME)/modules/backend-file/backend.tf >backend.tf
 	$(RM) terraform.tfstate
 
 .terraform/modules/modules.json: $(PROHOME)/tf-modules/VERSIONS backend.tf
@@ -73,7 +79,7 @@ plan: .terraform/modules/modules.json
 
 .PHONY: apply
 apply: .terraform/modules/modules.json
-	tofu apply ${TERRAFORM_EXTRAS}
+	tofu apply $(TERRAFORM_EXTRAS)
 
 .PHONY: destroy
 destroy: .terraform/modules/modules.json
@@ -88,3 +94,5 @@ clean:
 	$(RM) dyn_locals.tf
 	$(RM) backend.plan
 	$(RM) terraform.tfstate
+	$(RM) -rf $(PROHOME)/tf-modules
+	$(RM) -rf $(PROHOME)/venv
