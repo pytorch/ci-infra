@@ -880,7 +880,7 @@ class TestReconcile:
         mock_apply,
         mock_remove,
     ):
-        mock_discover.return_value = {}
+        mock_discover.return_value = ({}, [])
         client = MagicMock()
         cfg = make_config()
 
@@ -906,7 +906,7 @@ class TestReconcile:
         mock_apply,
         mock_remove,
     ):
-        mock_discover.return_value = {"node-1": "pool"}
+        mock_discover.return_value = ({"node-1": "pool"}, [])
         mock_build.return_value = ({}, [])
         client = MagicMock()
         cfg = make_config()
@@ -942,7 +942,7 @@ class TestReconcile:
         n2 = make_node("n2", is_tainted=False)
         node_states = {"n1": n1, "n2": n2}
 
-        mock_discover.return_value = {"n1": "default", "n2": "default"}
+        mock_discover.return_value = ({"n1": "default", "n2": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n2"}, {"n1"}, set(), set())
@@ -979,7 +979,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         # burst_untaint includes n1 -- should bypass cooldown
         mock_check.return_value = {"n1"}
@@ -1015,7 +1015,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()  # no burst untaint
         mock_compute.return_value = (set(), {"n1"}, set(), set())  # compute says untaint n1
@@ -1051,7 +1051,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()  # no burst untaint
         # compute says untaint n1, and it's mandatory (min_nodes)
@@ -1087,7 +1087,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1"}, set(), set())
@@ -1120,7 +1120,7 @@ class TestReconcile:
         n2 = make_node("n2", is_tainted=True)
         node_states = {"n1": n1, "n2": n2}
 
-        mock_discover.return_value = {"n1": "default", "n2": "default"}
+        mock_discover.return_value = ({"n1": "default", "n2": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1", "n2"}, set(), set())
@@ -1157,7 +1157,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set(), set())
@@ -1195,7 +1195,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set(), set())
@@ -1231,7 +1231,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1"}, set(), set())
@@ -1266,7 +1266,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set(), set())
@@ -1304,7 +1304,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set(), set())
@@ -1340,7 +1340,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1"}, set(), set())
@@ -1373,7 +1373,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set(), set())
@@ -1405,7 +1405,7 @@ class TestReconcile:
         n1 = make_node("n1")
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), set(), set(), set())
@@ -1439,7 +1439,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = {"n1"}  # burst wants untaint
         mock_compute.return_value = ({"n1"}, set(), set(), set())  # compute wants taint
@@ -1473,7 +1473,7 @@ class TestReconcile:
         n1 = make_node("n1", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = (set(), {"n1"}, set(), set())
@@ -1514,7 +1514,7 @@ class TestReconcile:
         n2 = make_node("n2", nodepool="pool-a")
         node_states = {"n1": n1, "n2": n2}
 
-        mock_discover.return_value = {"n1": "pool-a", "n2": "pool-a"}
+        mock_discover.return_value = ({"n1": "pool-a", "n2": "pool-a"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_select_reserved.return_value = {"pool-a": {"n1"}}
@@ -1564,7 +1564,7 @@ class TestReconcile:
         n3 = make_node("n3", nodepool="pool-b")
         node_states = {"n1": n1, "n2": n2, "n3": n3}
 
-        mock_discover.return_value = {"n1": "pool-a", "n2": "pool-a", "n3": "pool-b"}
+        mock_discover.return_value = ({"n1": "pool-a", "n2": "pool-a", "n3": "pool-b"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         # Return n2, n3 as rate-limited
@@ -1614,7 +1614,7 @@ class TestFleetCooldown:
         n2 = make_node("n2", nodepool="default", is_tainted=False)
         node_states = {"n1": n1, "n2": n2}
 
-        mock_discover.return_value = {"n1": "default", "n2": "default"}
+        mock_discover.return_value = ({"n1": "default", "n2": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = {"n1"}  # burst untaint for n1
         mock_compute.return_value = (set(), set(), set(), set())
@@ -1636,7 +1636,7 @@ class TestFleetCooldown:
         n2_iter2 = make_node("n2", nodepool="default", is_tainted=False)
         node_states_2 = {"n1": n1_iter2, "n2": n2_iter2}
 
-        mock_discover.return_value = {"n1": "default", "n2": "default"}
+        mock_discover.return_value = ({"n1": "default", "n2": "default"}, [])
         mock_build.return_value = (node_states_2, [])
         mock_check.return_value = set()  # no burst this time
         mock_compute.return_value = ({"n2"}, set(), set(), set())  # wants to taint n2
@@ -1673,7 +1673,7 @@ class TestFleetCooldown:
         n1 = make_node("n1", nodepool="default", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set(), set())
@@ -1714,12 +1714,15 @@ class TestFleetCooldown:
         n4 = make_node("n4", nodepool="default", is_tainted=False)
         node_states = {"n1": n1, "n2": n2, "n3": n3, "n4": n4}
 
-        mock_discover.return_value = {
-            "n1": "default",
-            "n2": "default",
-            "n3": "default",
-            "n4": "default",
-        }
+        mock_discover.return_value = (
+            {
+                "n1": "default",
+                "n2": "default",
+                "n3": "default",
+                "n4": "default",
+            },
+            [],
+        )
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n4"}, set(), set(), set())  # wants to taint n4
@@ -1758,7 +1761,7 @@ class TestFleetCooldown:
         n2 = make_node("n2", nodepool="pool-b", is_tainted=False)
         node_states = {"n1": n1, "n2": n2}
 
-        mock_discover.return_value = {"n1": "pool-a", "n2": "pool-b"}
+        mock_discover.return_value = ({"n1": "pool-a", "n2": "pool-b"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1", "n2"}, set(), set(), set())
@@ -1796,7 +1799,7 @@ class TestFleetCooldown:
         n1 = make_node("n1", nodepool="default", is_tainted=True)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         # mandatory untaint for n1
@@ -1834,7 +1837,7 @@ class TestFleetCooldown:
         n1 = make_node("n1", nodepool="default", is_tainted=False)
         node_states = {"n1": n1}
 
-        mock_discover.return_value = {"n1": "default"}
+        mock_discover.return_value = ({"n1": "default"}, [])
         mock_build.return_value = (node_states, [])
         mock_check.return_value = set()
         mock_compute.return_value = ({"n1"}, set(), set(), set())

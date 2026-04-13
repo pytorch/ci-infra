@@ -9,6 +9,7 @@ from models import (
     ANNOTATION_CAPACITY_RESERVED,
     Config,
     NodeState,
+    PendingPodInfo,
     PodInfo,
     is_daemonset_pod,
     parse_cpu,
@@ -24,15 +25,16 @@ PENDING_POD_MIN_AGE_SECONDS = 30
 log = logging.getLogger("compactor")
 
 
-def discover_managed_nodes(client: Client, cfg: Config) -> dict[str, str]:
+def discover_managed_nodes(client: Client, cfg: Config) -> tuple[dict[str, str], list]:
     """Find nodes belonging to NodePools labeled for compaction.
 
     Karpenter labels nodes with karpenter.sh/nodepool=<name>. We list
     NodePools with our label, then find nodes belonging to those pools.
 
     Returns:
-        dict mapping node_name -> pool_name. Empty dict if Karpenter
-        CRDs are not installed or no managed pools exist.
+        (managed_nodes, all_nodes) where managed_nodes maps
+        node_name -> pool_name. The full node list is returned so
+        callers can reuse it without a redundant API call.
     """
     from lightkube.generic_resource import create_global_resource
 
@@ -51,33 +53,39 @@ def discover_managed_nodes(client: Client, cfg: Config) -> dict[str, str]:
                 "Karpenter CRDs not found (NodePool resource not registered). "
                 "Ensure Karpenter is installed. No nodes will be managed."
             )
-            return {}
+            return {}, []
         raise
 
     if not managed_pools:
-        return {}
+        return {}, []
 
+    all_nodes = list(client.list(Node, chunk_size=500))
     managed_nodes: dict[str, str] = {}
-    for node in client.list(Node):
+    for node in all_nodes:
         labels = (node.metadata and node.metadata.labels) or {}
         pool = labels.get("karpenter.sh/nodepool", "")
         if pool in managed_pools:
             managed_nodes[node.metadata.name] = pool
 
-    return managed_nodes
+    return managed_nodes, all_nodes
 
 
 def build_node_states(
-    client: Client, cfg: Config, managed_node_names: dict[str, str]
-) -> tuple[dict[str, NodeState], list]:
+    client: Client,
+    cfg: Config,
+    managed_node_names: dict[str, str],
+    all_nodes: list,
+) -> tuple[dict[str, NodeState], list[PendingPodInfo]]:
     """Build NodeState for each managed node with its pods.
 
     Args:
         managed_node_names: dict mapping node_name -> pool_name from
             discover_managed_nodes().
+        all_nodes: Pre-fetched node list from discover_managed_nodes()
+            to avoid a redundant API call.
 
-    Also returns raw pending pod objects (unschedulable) for burst
-    absorption checks, avoiding a redundant API call.
+    Also returns lightweight PendingPodInfo objects (unschedulable) for
+    burst absorption checks.
     """
     if not managed_node_names:
         return {}, []
@@ -85,7 +93,7 @@ def build_node_states(
     managed_set = set(managed_node_names)
     node_states: dict[str, NodeState] = {}
 
-    for node in client.list(Node):
+    for node in all_nodes:
         name = node.metadata.name
         if name not in managed_set:
             continue
@@ -126,7 +134,7 @@ def build_node_states(
     unschedulable_count = 0
     other_pending_count = 0
 
-    for pod in client.list(Pod, namespace="*"):
+    for pod in client.list(Pod, namespace="*", chunk_size=500):
         phase = pod.status.phase if pod.status else None
 
         # Collect pending pods without a nodeName for burst absorption.
@@ -183,7 +191,7 @@ def build_node_states(
             else:
                 other_pending_count += 1
 
-            pending_pods.append(pod)
+            pending_pods.append(PendingPodInfo.from_pod(pod))
             continue
 
         if not pod.spec or not pod.spec.nodeName:

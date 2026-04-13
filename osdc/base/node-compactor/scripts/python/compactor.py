@@ -24,6 +24,7 @@ import signal
 import sys
 import time
 
+import httpx
 import metrics as m
 from discovery import build_node_states, discover_managed_nodes
 from lightkube import ApiError, Client
@@ -67,7 +68,7 @@ def reconcile(
     # Touch healthcheck file so liveness probe passes even with no managed nodes.
     pathlib.Path("/tmp/healthy").touch()
 
-    managed_names = discover_managed_nodes(client, cfg)
+    managed_names, all_nodes = discover_managed_nodes(client, cfg)
     if not managed_names:
         log.debug("No managed nodes found (no NodePools with label %s)", cfg.nodepool_label)
         m.refresh_gauge(m.managed_nodes, {})
@@ -82,7 +83,8 @@ def reconcile(
         pool_node_counts[pool_name] = pool_node_counts.get(pool_name, 0) + 1
     m.refresh_gauge(m.managed_nodes, {(pool_name,): count for pool_name, count in pool_node_counts.items()})
 
-    node_states, pending_pods = build_node_states(client, cfg, managed_names)
+    node_states, pending_pods = build_node_states(client, cfg, managed_names, all_nodes)
+    del all_nodes  # free raw node objects now that NodeStates are built
     if not node_states:
         log.debug("No node states built")
         m.refresh_gauge(m.node_utilization_ratio, {})
@@ -94,6 +96,12 @@ def reconcile(
     # This makes the compactor "see" pods that are about to land, preventing
     # premature tainting of nodes that will soon be needed.
     apply_pending_phantom_load(node_states, pending_pods, cfg)
+
+    # Freeze NodeState aggregate caches now that all pods (including phantoms)
+    # are finalized.  This eliminates O(pods) iteration on every property
+    # access during compute_taints / check_pending_pods / spare capacity.
+    for ns in node_states.values():
+        ns.freeze()
 
     total_pods = sum(ns.workload_pod_count for ns in node_states.values())
     total_nodes = len(node_states)
@@ -312,6 +320,19 @@ def reconcile(
             cfg.dry_run,
         )
 
+    # Prune taint_times: remove entries for nodes that no longer exist.
+    # Without this, the dict grows unboundedly as nodes churn.
+    stale = set(taint_times) - set(node_states)
+    for node_name in stale:
+        del taint_times[node_name]
+
+    # Prune fleet_cooldown_times: remove entries for pools no longer managed.
+    if fleet_cooldown_times is not None:
+        active_pools = set(pool_groups)
+        stale_pools = set(fleet_cooldown_times) - active_pools
+        for pool_name in stale_pools:
+            del fleet_cooldown_times[pool_name]
+
 
 def main() -> int:
     logging.basicConfig(
@@ -361,7 +382,7 @@ def main() -> int:
         }
     )
 
-    client = Client()
+    client = Client(timeout=httpx.Timeout(connect=10, read=120, write=10, pool=30))
     shutdown = False
     taint_times: dict[str, float] = {}
     fleet_cooldown_times: dict[str, float] = {}
@@ -379,25 +400,39 @@ def main() -> int:
     # untainted. This avoids the scheduling window that a blind
     # cleanup_stale_taints() would create.
 
+    consecutive_failures = 0
+
     while not shutdown:
         try:
             with m.reconcile_duration_seconds.time():
                 reconcile(client, cfg, taint_times, fleet_cooldown_times)
             m.reconcile_cycles_total.labels(status="success").inc()
+            consecutive_failures = 0
+            sleep_seconds = cfg.interval
         except ApiError as e:
             m.reconcile_cycles_total.labels(status="error").inc()
+            consecutive_failures += 1
             if e.status.code == 401:
                 log.warning("Got 401 Unauthorized — recreating client (SA token likely rotated by kubelet)")
-                client = Client()
+                client = Client(timeout=httpx.Timeout(connect=10, read=120, write=10, pool=30))
             else:
                 log.exception("Reconciliation failed (will retry next cycle)")
+            sleep_seconds = min(cfg.interval * 2 ** min(consecutive_failures, 5), 300)
+            log.info("Backing off: next retry in %ds (consecutive failures: %d)", sleep_seconds, consecutive_failures)
         except Exception:
             m.reconcile_cycles_total.labels(status="error").inc()
+            consecutive_failures += 1
             log.exception("Reconciliation failed (will retry next cycle)")
+            sleep_seconds = min(cfg.interval * 2 ** min(consecutive_failures, 5), 300)
+            log.info("Backing off: next retry in %ds (consecutive failures: %d)", sleep_seconds, consecutive_failures)
 
-        for _ in range(cfg.interval * 10):
+        for tick in range(sleep_seconds * 10):
             if shutdown:
                 break
+            # Touch healthcheck every ~30s during backoff so the liveness
+            # probe doesn't kill us during long sleeps (probe threshold is 120s).
+            if tick % 300 == 0:
+                pathlib.Path("/tmp/healthy").touch()
             time.sleep(0.1)
 
     # Clean up all compactor taints and reservations on graceful shutdown

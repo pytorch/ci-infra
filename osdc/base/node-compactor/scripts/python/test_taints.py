@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from lightkube import ApiError
 from lightkube.resources.core_v1 import Node
 from lightkube.types import PatchType
-from models import Config, NodeState, PodInfo
+from models import Config, NodeState, PendingPodInfo, PodInfo, parse_cpu, parse_memory
 from taints import (
     _pod_matches_node,
     apply_taint,
@@ -73,17 +73,28 @@ def make_node_selector_term(match_expressions):
 
 
 def make_pod(tolerations=None, cpu="1", memory="1Gi", has_spec=True, node_selector=None, affinity=None):
-    pod = MagicMock()
     if not has_spec:
-        pod.spec = None
-        return pod
-    pod.spec.tolerations = tolerations
-    pod.spec.nodeSelector = node_selector
-    pod.spec.affinity = affinity
-    container = MagicMock()
-    container.resources.requests = {"cpu": cpu, "memory": memory}
-    pod.spec.containers = [container]
-    return pod
+        # Return a PendingPodInfo with no tolerations (simulates no-spec pod)
+        return PendingPodInfo(
+            name="pod-no-spec",
+            namespace="default",
+            cpu_request=0.0,
+            memory_request=0,
+            creation_time=NOW,
+            tolerations=[],
+            node_selector=None,
+            affinity=None,
+        )
+    return PendingPodInfo(
+        name="test-pod",
+        namespace="default",
+        cpu_request=parse_cpu(cpu),
+        memory_request=parse_memory(memory),
+        creation_time=NOW,
+        tolerations=tolerations or [],
+        node_selector=node_selector,
+        affinity=affinity,
+    )
 
 
 def make_node_affinity_required(terms):

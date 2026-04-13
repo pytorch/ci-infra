@@ -4,7 +4,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
-from models import Config, NodeState, PodInfo
+from models import Config, NodeState, PendingPodInfo, PodInfo, parse_cpu, parse_memory
 from phantom import (
     PHANTOM_MAX_PENDING_SECONDS,
     PHANTOM_MIN_PENDING_SECONDS,
@@ -58,20 +58,27 @@ def make_node_state(
     )
 
 
-def make_pending_pod(name="pending-1", namespace="default", cpu="1", memory="1Gi", age_seconds=60):
-    """Create a mock pending pod (raw API object, not PodInfo)."""
-    pod = MagicMock()
-    pod.metadata.name = name
-    pod.metadata.namespace = namespace
-    pod.metadata.creationTimestamp = datetime.now(UTC) - timedelta(seconds=age_seconds)
-    pod.spec.tolerations = []
-    pod.spec.nodeSelector = None
-    pod.spec.affinity = None
-
-    container = MagicMock()
-    container.resources.requests = {"cpu": cpu, "memory": memory}
-    pod.spec.containers = [container]
-    return pod
+def make_pending_pod(
+    name="pending-1",
+    namespace="default",
+    cpu="1",
+    memory="1Gi",
+    age_seconds=60,
+    tolerations=None,
+    node_selector=None,
+    affinity=None,
+):
+    """Create a PendingPodInfo for phantom load tests."""
+    return PendingPodInfo(
+        name=name,
+        namespace=namespace,
+        cpu_request=parse_cpu(cpu),
+        memory_request=parse_memory(memory),
+        creation_time=datetime.now(UTC) - timedelta(seconds=age_seconds),
+        tolerations=tolerations if tolerations is not None else [],
+        node_selector=node_selector,
+        affinity=affinity,
+    )
 
 
 # ============================================================================
@@ -325,8 +332,7 @@ class TestPhantomIncompatiblePods(unittest.TestCase):
         states = {"node-1": node}
 
         # Pod has no tolerations
-        pod = make_pending_pod(cpu="1", memory="1Gi", age_seconds=60)
-        pod.spec.tolerations = []
+        pod = make_pending_pod(cpu="1", memory="1Gi", age_seconds=60, tolerations=[])
 
         apply_pending_phantom_load(states, [pod], self.cfg)
 
@@ -337,8 +343,7 @@ class TestPhantomIncompatiblePods(unittest.TestCase):
         node = make_node_state(labels={"tier": "cpu"})
         states = {"node-1": node}
 
-        pod = make_pending_pod(cpu="1", memory="1Gi", age_seconds=60)
-        pod.spec.nodeSelector = {"tier": "gpu"}
+        pod = make_pending_pod(cpu="1", memory="1Gi", age_seconds=60, node_selector={"tier": "gpu"})
 
         apply_pending_phantom_load(states, [pod], self.cfg)
 

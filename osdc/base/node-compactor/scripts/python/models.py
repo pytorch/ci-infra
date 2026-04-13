@@ -99,6 +99,41 @@ class PodInfo:
 
 
 @dataclass
+class PendingPodInfo:
+    """Lightweight pending pod for burst/phantom checks.
+
+    Extracts only the fields needed from a raw K8s Pod object so the
+    full Pod (5-30 KB in Python) can be garbage-collected during large
+    list iterations.
+    """
+
+    name: str
+    namespace: str
+    cpu_request: float  # in cores
+    memory_request: int  # in bytes
+    creation_time: datetime | None
+    tolerations: list  # raw Toleration objects from pod.spec
+    node_selector: dict | None  # pod.spec.nodeSelector
+    affinity: object | None  # pod.spec.affinity (lightweight nested object)
+
+    @classmethod
+    def from_pod(cls, pod: Pod) -> "PendingPodInfo":
+        spec = pod.spec
+        meta = pod.metadata
+        ns = getattr(spec, "nodeSelector", None) if spec else None
+        return cls(
+            name=meta.name if meta else "",
+            namespace=meta.namespace if meta else "",
+            cpu_request=pod_cpu_request(pod),
+            memory_request=pod_memory_request(pod),
+            creation_time=meta.creationTimestamp if meta else None,
+            tolerations=list(spec.tolerations or []) if spec else [],
+            node_selector=dict(ns) if ns else None,
+            affinity=getattr(spec, "affinity", None) if spec else None,
+        )
+
+
+@dataclass
 class NodeState:
     """Computed state of a managed node."""
 
@@ -113,53 +148,97 @@ class NodeState:
     node_taints: list = field(default_factory=list)  # raw taint objects from API
     labels: dict = field(default_factory=dict)  # node metadata labels
     annotations: dict = field(default_factory=dict)  # node metadata annotations
+    _frozen: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def freeze(self) -> None:
+        """Pre-compute frequently-accessed aggregate values.
+
+        Call once after all pods (including phantoms) are finalized.
+        Eliminates O(pods) iteration on every property access — critical
+        when utilization is queried hundreds of times per reconcile cycle.
+        """
+        wl = [p for p in self.pods if not p.is_daemonset]
+        self._f_wl_pods = wl
+        self._f_wl_count = len(wl)
+        self._f_ds_cpu = sum(p.cpu_request for p in self.pods if p.is_daemonset)
+        self._f_ds_mem = sum(p.memory_request for p in self.pods if p.is_daemonset)
+        self._f_total_cpu = sum(p.cpu_request for p in self.pods)
+        self._f_total_mem = sum(p.memory_request for p in self.pods)
+        self._f_wl_cpu = sum(p.cpu_request for p in wl)
+        self._f_wl_mem = sum(p.memory_request for p in wl)
+        cpu_u = self._f_wl_cpu / self.allocatable_cpu if self.allocatable_cpu > 0 else 0.0
+        mem_u = self._f_wl_mem / self.allocatable_memory if self.allocatable_memory > 0 else 0.0
+        self._f_cpu_util = cpu_u
+        self._f_mem_util = mem_u
+        self._f_util = max(cpu_u, mem_u)
+        self._frozen = True
 
     @property
     def workload_pods(self) -> list[PodInfo]:
+        if self._frozen:
+            return self._f_wl_pods
         return [p for p in self.pods if not p.is_daemonset]
 
     @property
     def workload_pod_count(self) -> int:
+        if self._frozen:
+            return self._f_wl_count
         return len(self.workload_pods)
 
     @property
     def daemonset_cpu(self) -> float:
         """Total CPU requests from DaemonSet pods."""
+        if self._frozen:
+            return self._f_ds_cpu
         return sum(p.cpu_request for p in self.pods if p.is_daemonset)
 
     @property
     def daemonset_memory(self) -> int:
         """Total memory requests from DaemonSet pods."""
+        if self._frozen:
+            return self._f_ds_mem
         return sum(p.memory_request for p in self.pods if p.is_daemonset)
 
     @property
     def cpu_used(self) -> float:
         """CPU used by workload (non-DaemonSet) pods."""
+        if self._frozen:
+            return self._f_wl_cpu
         return sum(p.cpu_request for p in self.workload_pods)
 
     @property
     def memory_used(self) -> int:
         """Memory used by workload (non-DaemonSet) pods."""
+        if self._frozen:
+            return self._f_wl_mem
         return sum(p.memory_request for p in self.workload_pods)
 
     @property
     def total_cpu_used(self) -> float:
         """Total CPU used by ALL pods (workload + DaemonSet)."""
+        if self._frozen:
+            return self._f_total_cpu
         return sum(p.cpu_request for p in self.pods)
 
     @property
     def total_memory_used(self) -> int:
         """Total memory used by ALL pods (workload + DaemonSet)."""
+        if self._frozen:
+            return self._f_total_mem
         return sum(p.memory_request for p in self.pods)
 
     @property
     def cpu_utilization(self) -> float:
+        if self._frozen:
+            return self._f_cpu_util
         if self.allocatable_cpu <= 0:
             return 0.0
         return self.cpu_used / self.allocatable_cpu
 
     @property
     def memory_utilization(self) -> float:
+        if self._frozen:
+            return self._f_mem_util
         if self.allocatable_memory <= 0:
             return 0.0
         return self.memory_used / self.allocatable_memory
@@ -167,6 +246,8 @@ class NodeState:
     @property
     def utilization(self) -> float:
         """Max of CPU and memory utilization (conservative estimate)."""
+        if self._frozen:
+            return self._f_util
         return max(self.cpu_utilization, self.memory_utilization)
 
     @property

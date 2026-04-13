@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime
 
 import metrics as m
-from models import Config, NodeState, PodInfo, pod_cpu_request, pod_memory_request
+from models import Config, NodeState, PendingPodInfo, PodInfo
 from taints import _pod_matches_node
 
 log = logging.getLogger("compactor")
@@ -29,7 +29,7 @@ PHANTOM_LOAD_CAP = 0.3
 
 def apply_pending_phantom_load(
     node_states: dict[str, NodeState],
-    pending_pods: list,
+    pending_pods: list[PendingPodInfo],
     cfg: Config,
 ) -> None:
     """Simulate pending pod placement as phantom load on nodes.
@@ -60,16 +60,15 @@ def apply_pending_phantom_load(
 
     for pod in pending_pods:
         # --- Age filter ---
-        creation_ts = pod.metadata.creationTimestamp if pod.metadata else None
-        if creation_ts:
-            age = (now - creation_ts).total_seconds()
+        if pod.creation_time:
+            age = (now - pod.creation_time).total_seconds()
             if age < PHANTOM_MIN_PENDING_SECONDS:
                 continue
             if age > PHANTOM_MAX_PENDING_SECONDS:
                 continue
 
-        cpu_req = pod_cpu_request(pod)
-        mem_req = pod_memory_request(pod)
+        cpu_req = pod.cpu_request
+        mem_req = pod.memory_request
 
         # Find all compatible untainted nodes
         compatible = [ns for ns in untainted_nodes if _pod_matches_node(pod, ns)]
@@ -97,8 +96,8 @@ def apply_pending_phantom_load(
                     continue
 
             # Place the phantom pod
-            pod_name = f"phantom-{pod.metadata.name}" if pod.metadata else f"phantom-{placed_count}"
-            pod_ns = pod.metadata.namespace if pod.metadata else "unknown"
+            pod_name = f"phantom-{pod.name}" if pod.name else f"phantom-{placed_count}"
+            pod_ns = pod.namespace or "unknown"
 
             phantom_pod = PodInfo(
                 name=pod_name,

@@ -56,6 +56,7 @@ def make_mock_node(
     node.metadata.name = name
     node.metadata.labels = labels or {}
     node.metadata.creationTimestamp = creation_timestamp or NOW - timedelta(hours=1)
+    node.metadata.annotations = {}
     node.status.allocatable = {"cpu": cpu, "memory": memory}
     node.spec.taints = taints or []
     return node
@@ -95,6 +96,8 @@ def make_mock_pod(
         pod.metadata.ownerReferences = [ref]
     pod.spec.nodeName = node_name
     pod.spec.schedulingGates = scheduling_gates
+    pod.spec.nodeSelector = None
+    pod.spec.affinity = None
     container = MagicMock()
     container.resources.requests = {"cpu": cpu_request, "memory": memory_request}
     pod.spec.containers = [container]
@@ -152,9 +155,10 @@ class TestDiscoverManagedNodes:
         mock_create_resource.return_value = mock_nodepool_cls
         client.list.return_value = [np1, np2]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {}
+        assert managed == {}
+        assert all_nodes == []
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_nodepools_with_label_returns_matching_nodes(self, mock_create_resource):
@@ -175,9 +179,9 @@ class TestDiscoverManagedNodes:
         # First call lists NodePools, second call lists Nodes
         client.list.side_effect = [[np1, np2], [node1, node2, node3]]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, _all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {"node-1": "managed-pool", "node-3": "managed-pool"}
+        assert managed == {"node-1": "managed-pool", "node-3": "managed-pool"}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_nodes_not_in_managed_pools_excluded(self, mock_create_resource):
@@ -194,9 +198,9 @@ class TestDiscoverManagedNodes:
 
         client.list.side_effect = [[np1], [node1, node2]]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, _all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {}
+        assert managed == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_karpenter_crd_404_returns_empty(self, mock_create_resource):
@@ -208,9 +212,10 @@ class TestDiscoverManagedNodes:
         mock_create_resource.return_value = mock_nodepool_cls
         client.list.side_effect = make_api_error(404)
 
-        result = discover_managed_nodes(client, cfg)
+        managed, all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {}
+        assert managed == {}
+        assert all_nodes == []
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_non_404_api_error_re_raises(self, mock_create_resource):
@@ -236,9 +241,10 @@ class TestDiscoverManagedNodes:
         mock_create_resource.return_value = mock_nodepool_cls
         client.list.return_value = [np1]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {}
+        assert managed == {}
+        assert all_nodes == []
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_multiple_managed_pools(self, mock_create_resource):
@@ -257,9 +263,9 @@ class TestDiscoverManagedNodes:
 
         client.list.side_effect = [[np1, np2], [node1, node2]]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, _all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {"n1": "pool-a", "n2": "pool-b"}
+        assert managed == {"n1": "pool-a", "n2": "pool-b"}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_nodepool_metadata_none(self, mock_create_resource):
@@ -274,9 +280,10 @@ class TestDiscoverManagedNodes:
         mock_create_resource.return_value = mock_nodepool_cls
         client.list.return_value = [np_none]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {}
+        assert managed == {}
+        assert all_nodes == []
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_nodepool_metadata_labels_none(self, mock_create_resource):
@@ -292,9 +299,10 @@ class TestDiscoverManagedNodes:
         mock_create_resource.return_value = mock_nodepool_cls
         client.list.return_value = [np]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {}
+        assert managed == {}
+        assert all_nodes == []
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_node_without_nodepool_label(self, mock_create_resource):
@@ -310,9 +318,9 @@ class TestDiscoverManagedNodes:
 
         client.list.side_effect = [[np1], [node]]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, _all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {}
+        assert managed == {}
 
     @patch("lightkube.generic_resource.create_global_resource")
     def test_node_metadata_labels_none_in_discover(self, mock_create_resource):
@@ -329,9 +337,9 @@ class TestDiscoverManagedNodes:
 
         client.list.side_effect = [[np1], [node]]
 
-        result = discover_managed_nodes(client, cfg)
+        managed, _all_nodes = discover_managed_nodes(client, cfg)
 
-        assert result == {}
+        assert managed == {}
 
 
 # ============================================================================
@@ -347,7 +355,7 @@ class TestBuildNodeStates:
         cfg = make_config()
         client = MagicMock()
 
-        node_states, pending = build_node_states(client, cfg, {})
+        node_states, pending = build_node_states(client, cfg, {}, [])
 
         assert node_states == {}
         assert pending == []
@@ -368,9 +376,9 @@ class TestBuildNodeStates:
             creation_timestamp=creation,
         )
 
-        client.list.side_effect = [[node], [], []]  # Nodes, Namespaces, Pods
+        client.list.side_effect = [[], []]  # Namespaces, Pods
 
-        states, pending = build_node_states(client, cfg, {"node-1": "pool"})
+        states, pending = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert "node-1" in states
         ns = states["node-1"]
@@ -393,9 +401,9 @@ class TestBuildNodeStates:
         pod1 = make_mock_pod("pod-a", node_name="node-1", cpu_request="2")
         pod2 = make_mock_pod("pod-b", node_name="node-2", cpu_request="4")
 
-        client.list.side_effect = [[node1, node2], [], [pod1, pod2]]
+        client.list.side_effect = [[], [pod1, pod2]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool", "node-2": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool", "node-2": "pool"}, [node1, node2])
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "pod-a"
@@ -412,9 +420,9 @@ class TestBuildNodeStates:
         pod_managed = make_mock_pod("pod-m", node_name="node-1")
         pod_other = make_mock_pod("pod-other", node_name="node-unmanaged")
 
-        client.list.side_effect = [[node1], [], [pod_managed, pod_other]]
+        client.list.side_effect = [[], [pod_managed, pod_other]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node1])
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "pod-m"
@@ -430,9 +438,9 @@ class TestBuildNodeStates:
         pod_done = make_mock_pod("pod-done", node_name="node-1", phase="Succeeded")
         pod_fail = make_mock_pod("pod-fail", node_name="node-1", phase="Failed")
 
-        client.list.side_effect = [[node], [], [pod_ok, pod_done, pod_fail]]
+        client.list.side_effect = [[], [pod_ok, pod_done, pod_fail]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "pod-running"
@@ -449,9 +457,9 @@ class TestBuildNodeStates:
             taints=[taint],
         )
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].is_tainted is True
 
@@ -467,9 +475,9 @@ class TestBuildNodeStates:
             taints=[taint],
         )
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].is_tainted is False
 
@@ -488,12 +496,12 @@ class TestBuildNodeStates:
 
         pending_pod = make_mock_pod("pending-pod", node_name=None, phase="Pending", conditions=[condition])
 
-        client.list.side_effect = [[node], [], [pending_pod]]
+        client.list.side_effect = [[], [pending_pod]]
 
-        states, pending = build_node_states(client, cfg, {"node-1": "pool"})
+        states, pending = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(pending) == 1
-        assert pending[0].metadata.name == "pending-pod"
+        assert pending[0].name == "pending-pod"
         assert len(states["node-1"].pods) == 0
 
     def test_pending_pod_without_unschedulable_still_collected(self):
@@ -505,12 +513,12 @@ class TestBuildNodeStates:
 
         pending_pod = make_mock_pod("pending-ok", node_name=None, phase="Pending", conditions=[])
 
-        client.list.side_effect = [[node], [], [pending_pod]]
+        client.list.side_effect = [[], [pending_pod]]
 
-        _states, pending = build_node_states(client, cfg, {"node-1": "pool"})
+        _states, pending = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(pending) == 1
-        assert pending[0].metadata.name == "pending-ok"
+        assert pending[0].name == "pending-ok"
 
     def test_daemonset_pod_identified(self):
         """DaemonSet pods are marked is_daemonset=True."""
@@ -522,9 +530,9 @@ class TestBuildNodeStates:
         ds_pod = make_mock_pod("ds-pod", node_name="node-1", owner_kind="DaemonSet")
         regular_pod = make_mock_pod("regular-pod", node_name="node-1", owner_kind="ReplicaSet")
 
-        client.list.side_effect = [[node], [], [ds_pod, regular_pod]]
+        client.list.side_effect = [[], [ds_pod, regular_pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         pods = states["node-1"].pods
         assert len(pods) == 2
@@ -544,9 +552,9 @@ class TestBuildNodeStates:
         pod.status.phase = "Running"
         pod.spec = None
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].pods) == 0
 
@@ -561,9 +569,9 @@ class TestBuildNodeStates:
         # Override: spec exists but nodeName is None
         pod.spec.nodeName = None
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].pods) == 0
 
@@ -580,10 +588,10 @@ class TestBuildNodeStates:
         # Override: metadata.creationTimestamp is None
         node.metadata.creationTimestamp = None
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
         before = datetime.now(UTC)
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
         after = datetime.now(UTC)
 
         ct = states["node-1"].creation_time
@@ -597,9 +605,9 @@ class TestBuildNodeStates:
         node1 = make_mock_node("node-managed", labels={"karpenter.sh/nodepool": "pool"})
         node2 = make_mock_node("node-other", labels={"karpenter.sh/nodepool": "pool"})
 
-        client.list.side_effect = [[node1, node2], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-managed": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-managed": "pool"}, [node1, node2])
 
         assert "node-managed" in states
         assert "node-other" not in states
@@ -611,9 +619,9 @@ class TestBuildNodeStates:
 
         node = make_mock_node("node-1", labels={})
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].nodepool == "unknown"
 
@@ -626,9 +634,9 @@ class TestBuildNodeStates:
         st = NOW - timedelta(minutes=30)
         pod = make_mock_pod("pod-1", node_name="node-1", start_time=st)
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].pods[0].start_time == st
 
@@ -645,9 +653,9 @@ class TestBuildNodeStates:
             taints=[t1, t2],
         )
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].node_taints) == 2
 
@@ -659,9 +667,9 @@ class TestBuildNodeStates:
         node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.status = None
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].allocatable_cpu == 0.0
         assert states["node-1"].allocatable_memory == 0
@@ -674,9 +682,9 @@ class TestBuildNodeStates:
         node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.spec = None
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].is_tainted is False
         assert states["node-1"].node_taints == []
@@ -689,9 +697,9 @@ class TestBuildNodeStates:
         node = make_mock_node("node-1")
         node.metadata.labels = None
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].nodepool == "unknown"
 
@@ -703,9 +711,9 @@ class TestBuildNodeStates:
         node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         node.status.allocatable = None
 
-        client.list.side_effect = [[node], [], []]
+        client.list.side_effect = [[], []]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].allocatable_cpu == 0.0
         assert states["node-1"].allocatable_memory == 0
@@ -720,9 +728,9 @@ class TestBuildNodeStates:
         pod = make_mock_pod("pod-nostatus", node_name="node-1")
         pod.status = None
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].start_time is None
@@ -736,9 +744,9 @@ class TestBuildNodeStates:
         pod = make_mock_pod("pod-nostart", node_name="node-1", start_time=None)
         pod.status.startTime = None
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert states["node-1"].pods[0].start_time is None
 
@@ -752,9 +760,9 @@ class TestBuildNodeStates:
         pod = make_mock_pod("pending-nocond", node_name=None, phase="Pending")
         pod.status.conditions = None
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(pending) == 1
 
@@ -773,9 +781,9 @@ class TestBuildNodeStates:
 
         pod = make_mock_pod("pending-ready", node_name=None, phase="Pending", conditions=[cond])
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(pending) == 1
 
@@ -794,9 +802,9 @@ class TestBuildNodeStates:
 
         pod = make_mock_pod("pending-other", node_name=None, phase="Pending", conditions=[cond])
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(pending) == 1
 
@@ -815,9 +823,9 @@ class TestBuildNodeStates:
 
         pod = make_mock_pod("pending-true", node_name=None, phase="Pending", conditions=[cond])
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(pending) == 1
 
@@ -836,8 +844,8 @@ class TestPendingPodExclusionFilters:
         client = MagicMock()
         node = make_mock_node("node-1", labels={"karpenter.sh/nodepool": "pool"})
         ns_list = namespaces or []
-        client.list.side_effect = [[node], ns_list, [pod]]
-        return build_node_states(client, cfg, {"node-1": "pool"})
+        client.list.side_effect = [ns_list, [pod]]
+        return build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
     def test_scheduling_gates_excluded(self):
         """Pod with scheduling gates is excluded from pending list."""
@@ -1003,7 +1011,7 @@ class TestPendingPodExclusionFilters:
         )
         _, pending = self._run_with_pending_pod(pod)
         assert len(pending) == 1
-        assert pending[0].metadata.name == "normal-pending"
+        assert pending[0].name == "normal-pending"
 
     def test_pending_pod_with_node_name_not_collected(self):
         """A pending pod that already has a nodeName is not collected."""
@@ -1031,7 +1039,7 @@ class TestPendingPodExclusionFilters:
         )
         _, pending = self._run_with_pending_pod(pod)
         assert len(pending) == 1
-        assert pending[0].metadata.name == "unschedulable-pod"
+        assert pending[0].name == "unschedulable-pod"
 
 
 # ============================================================================
@@ -1057,9 +1065,9 @@ class TestTerminatingPodFiltering:
             deletion_timestamp=NOW,
         )
 
-        client.list.side_effect = [[node], [], [running_pod, terminating_pod]]
+        client.list.side_effect = [[], [running_pod, terminating_pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "running-pod"
@@ -1079,9 +1087,9 @@ class TestTerminatingPodFiltering:
             deletion_timestamp=NOW,
         )
 
-        client.list.side_effect = [[node], [], [ds_pod]]
+        client.list.side_effect = [[], [ds_pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].pods) == 0
 
@@ -1094,9 +1102,9 @@ class TestTerminatingPodFiltering:
 
         pod = make_mock_pod("normal-pod", node_name="node-1", phase="Running")
 
-        client.list.side_effect = [[node], [], [pod]]
+        client.list.side_effect = [[], [pod]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "normal-pod"
@@ -1115,9 +1123,9 @@ class TestTerminatingPodFiltering:
             deletion_timestamp=NOW,
         )
 
-        client.list.side_effect = [[node], [], [pending_pod]]
+        client.list.side_effect = [[], [pending_pod]]
 
-        _, pending = build_node_states(client, cfg, {"node-1": "pool"})
+        _, pending = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(pending) == 0
 
@@ -1134,9 +1142,9 @@ class TestTerminatingPodFiltering:
             "term-2", node_name="node-1", phase="Running", deletion_timestamp=NOW - timedelta(seconds=30)
         )
 
-        client.list.side_effect = [[node], [], [active_pod, term_pod1, term_pod2]]
+        client.list.side_effect = [[], [active_pod, term_pod1, term_pod2]]
 
-        states, _ = build_node_states(client, cfg, {"node-1": "pool"})
+        states, _ = build_node_states(client, cfg, {"node-1": "pool"}, [node])
 
         assert len(states["node-1"].pods) == 1
         assert states["node-1"].pods[0].name == "active"

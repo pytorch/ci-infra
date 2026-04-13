@@ -9,8 +9,7 @@ from lightkube.types import PatchType
 from models import (
     Config,
     NodeState,
-    pod_cpu_request,
-    pod_memory_request,
+    PendingPodInfo,
 )
 
 log = logging.getLogger("compactor")
@@ -22,7 +21,7 @@ log = logging.getLogger("compactor")
 INSTANCE_TYPE_TAINT_KEY = "instance-type"
 
 
-def _pod_matches_node(pod, node_state: NodeState) -> bool:
+def _pod_matches_node(pod: PendingPodInfo, node_state: NodeState) -> bool:
     """Check if a pending pod could run on a given node.
 
     Checks scheduling constraints:
@@ -31,14 +30,10 @@ def _pod_matches_node(pod, node_state: NodeState) -> bool:
     3. Node affinity (requiredDuringSchedulingIgnoredDuringExecution)
     4. Resource fit — pod requests must fit in remaining node capacity
     """
-    if not pod.spec:
-        return not bool(node_state.node_taints)
-
     # --- 1. Taint tolerations ---
-    tolerations = pod.spec.tolerations or []
     for taint in node_state.node_taints:
         tolerated = False
-        for tol in tolerations:
+        for tol in pod.tolerations:
             # A toleration matches if the key matches (or key is empty with Exists operator)
             if tol.operator == "Exists" and not tol.key:
                 tolerated = True
@@ -56,16 +51,14 @@ def _pod_matches_node(pod, node_state: NodeState) -> bool:
             return False
 
     # --- 2. nodeSelector ---
-    node_selector = getattr(pod.spec, "nodeSelector", None)
-    if node_selector:
-        for key, value in node_selector.items():
+    if pod.node_selector:
+        for key, value in pod.node_selector.items():
             if node_state.labels.get(key) != value:
                 return False
 
     # --- 3. Node affinity (required only) ---
-    affinity = getattr(pod.spec, "affinity", None)
-    if affinity:
-        node_affinity = getattr(affinity, "nodeAffinity", None)
+    if pod.affinity:
+        node_affinity = getattr(pod.affinity, "nodeAffinity", None)
         if node_affinity:
             required = getattr(node_affinity, "requiredDuringSchedulingIgnoredDuringExecution", None)
             if required:
@@ -76,9 +69,9 @@ def _pod_matches_node(pod, node_state: NodeState) -> bool:
     # --- 4. Resource fit ---
     remaining_cpu = node_state.allocatable_cpu - node_state.total_cpu_used
     remaining_memory = node_state.allocatable_memory - node_state.total_memory_used
-    if pod_cpu_request(pod) > remaining_cpu:
+    if pod.cpu_request > remaining_cpu:
         return False
-    return not pod_memory_request(pod) > remaining_memory
+    return not pod.memory_request > remaining_memory
 
 
 def _any_term_matches(terms: list, node_labels: dict) -> bool:
@@ -160,6 +153,7 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
             is_tainted=tnode.is_tainted,
             node_taints=remaining_taints,
             labels=tnode.labels,
+            annotations=tnode.annotations,
         )
 
     # Only count demand from pods that actually match compatible tainted nodes
@@ -184,8 +178,8 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
         return set()
 
     # Calculate total resource demand of compatible pending pods only
-    total_cpu_demand = sum(pod_cpu_request(pod) for pod in compatible_pending)
-    total_mem_demand = sum(pod_memory_request(pod) for pod in compatible_pending)
+    total_cpu_demand = sum(pod.cpu_request for pod in compatible_pending)
+    total_mem_demand = sum(pod.memory_request for pod in compatible_pending)
 
     # Sort by highest utilization first (least wasteful to untaint)
     compatible_tainted.sort(key=lambda n: n.utilization, reverse=True)
