@@ -40,7 +40,6 @@ resource "aws_lambda_function" "webhook" {
 
   timeout                        = 60
   memory_size                    = 512
-  reserved_concurrent_executions = 50
   tags                           = local.tags
 
   environment {
