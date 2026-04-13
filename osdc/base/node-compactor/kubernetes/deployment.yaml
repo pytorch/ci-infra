@@ -57,11 +57,11 @@ spec:
               value: "COMPACTOR_CAPACITY_RESERVATION_NODES_PLACEHOLDER"
           resources:
             requests:
-              cpu: "50m"
-              memory: "2Gi"
+              cpu: "3"
+              memory: "3Gi"
             limits:
-              cpu: "200m"
-              memory: "4Gi"
+              cpu: "3"
+              memory: "6Gi"
           livenessProbe:
             exec:
               command:
