@@ -5,3 +5,4 @@ resources:
   - arc-alerts.yaml
   - infrastructure-alerts.yaml
   - gpu-alerts.yaml
+  - node-compactor-alerts.yaml

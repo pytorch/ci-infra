@@ -2037,6 +2037,50 @@ class TestMain:
         assert result == 0
         mock_cleanup_reservations.assert_called_once()
 
+    @patch("compactor.cleanup_stale_taints")
+    @patch("compactor.reconcile")
+    @patch("compactor.Client")
+    @patch("compactor.Config.from_env")
+    @patch("compactor.signal.signal")
+    @patch("compactor.time.sleep")
+    def test_main_recreates_client_on_401(
+        self,
+        mock_sleep,
+        mock_signal_fn,
+        mock_from_env,
+        mock_client_cls,
+        mock_reconcile,
+        mock_cleanup,
+        _mock_http_server,
+    ):
+        """401 Unauthorized triggers client recreation (SA token rotation)."""
+        mock_from_env.return_value = make_config()
+        original_client = MagicMock(name="original_client")
+        refreshed_client = MagicMock(name="refreshed_client")
+        mock_client_cls.side_effect = [original_client, refreshed_client]
+
+        call_count = 0
+
+        def reconcile_side_effect(client, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: raise 401 to trigger client recreation
+                raise _make_api_error(401)
+            # Second call: verify new client is used, then shutdown
+            assert client is refreshed_client
+            for c in mock_signal_fn.call_args_list:
+                if c[0][0] == signal.SIGTERM:
+                    c[0][1](signal.SIGTERM, None)
+
+        mock_reconcile.side_effect = reconcile_side_effect
+
+        result = main()
+
+        assert result == 0
+        assert mock_client_cls.call_count == 2
+        assert mock_reconcile.call_count == 2
+
 
 # ============================================================================
 # compute_taints -- rate limiting tests

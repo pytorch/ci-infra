@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: node-compactor-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  groups:
+    - name: node-compactor
+      rules:
+        - alert: NodeCompactorReconcileErrors
+          expr: rate(node_compactor_reconcile_cycles_total{status="error"}[5m]) > 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node compactor reconciliation is failing persistently"
+            description: "The node-compactor in namespace {{ $labels.namespace }} has had continuous reconciliation errors for 15 minutes. Burst-absorption (untainting nodes under scheduling pressure) is offline. Check for expired SA tokens (401) or RBAC issues."

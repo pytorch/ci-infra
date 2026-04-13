@@ -67,6 +67,8 @@ defaults:
     gpu_consolidate_after: "20m"
     cpu_consolidate_after: "20m"
     baremetal_consolidate_after: "1h"
+    gpu_disruption_budget: "20%"
+    cpu_disruption_budget: "20%"
   buildkit:
     replicas_per_arch: 4
   monitoring:

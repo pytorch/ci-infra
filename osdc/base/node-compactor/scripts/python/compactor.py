@@ -384,6 +384,13 @@ def main() -> int:
             with m.reconcile_duration_seconds.time():
                 reconcile(client, cfg, taint_times, fleet_cooldown_times)
             m.reconcile_cycles_total.labels(status="success").inc()
+        except ApiError as e:
+            m.reconcile_cycles_total.labels(status="error").inc()
+            if e.status.code == 401:
+                log.warning("Got 401 Unauthorized — recreating client (SA token likely rotated by kubelet)")
+                client = Client()
+            else:
+                log.exception("Reconciliation failed (will retry next cycle)")
         except Exception:
             m.reconcile_cycles_total.labels(status="error").inc()
             log.exception("Reconciliation failed (will retry next cycle)")
