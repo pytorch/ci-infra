@@ -148,7 +148,7 @@ template:
             value: /home/runner/hook-extensions/job-pod.yaml
           # Use OSDC wrapper that validates env vars and surfaces errors
           # clearly, then delegates to patched hooks from DaemonSet.
-          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.4
+          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.8
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /home/runner/hook-extensions/wrapper.js
           # Allow more time for workflow pods to come online during demand surges.
