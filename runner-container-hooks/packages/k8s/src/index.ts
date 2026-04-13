@@ -10,7 +10,8 @@ import {
   cleanupJob,
   prepareJob,
   runContainerStep,
-  runScriptStep
+  runScriptStep,
+  RunScriptStepState
 } from './hooks'
 import { isAuthPermissionsOK, namespace, requiredPermissions } from './k8s'
 
@@ -39,7 +40,10 @@ async function run(): Promise<void> {
         await cleanupJob()
         return process.exit(0)
       case Command.RunScriptStep:
-        exitCode = await runScriptStep(args as RunScriptStepArgs, state)
+        exitCode = await runScriptStep(
+          args as RunScriptStepArgs,
+          state as RunScriptStepState
+        )
         return process.exit(exitCode)
       case Command.RunContainerStep:
         exitCode = await runContainerStep(args as RunContainerStepArgs)

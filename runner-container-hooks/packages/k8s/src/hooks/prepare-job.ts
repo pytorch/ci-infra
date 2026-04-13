@@ -15,7 +15,7 @@ import {
   waitForPodPhases,
   getPrepareJobTimeoutSeconds,
   execCpToPod,
-  execPodStep,
+  execPodStepWithRetry,
   waitForNodeTaintsRemoval
 } from '../k8s'
 import {
@@ -34,11 +34,13 @@ import {
   getJobPodName,
   JOB_CONTAINER_NAME
 } from './constants'
+import * as crypto from 'crypto'
 import { dirname } from 'path'
+import { deployRpcServer } from '../k8s/rpc'
 
 export async function prepareJob(
   args: PrepareJobArgs,
-  responseFile
+  responseFile: string
 ): Promise<void> {
   if (!args.container) {
     throw new Error('Job Container is required.')
@@ -121,15 +123,14 @@ export async function prepareJob(
   await execCpToPod(createdPod.metadata.name, runnerWorkspace, '/__w')
 
   if (prepareScript) {
-    const prepareRc = await execPodStep(
+    const prepareRc = await execPodStepWithRetry(
       ['sh', '-e', prepareScript.containerPath],
       createdPod.metadata.name,
-      JOB_CONTAINER_NAME
+      JOB_CONTAINER_NAME,
+      'prepare-job script'
     )
     if (prepareRc !== 0) {
-      throw new Error(
-        `prepare-job script failed with exit code ${prepareRc}`
-      )
+      throw new Error(`prepare-job script failed with exit code ${prepareRc}`)
     }
 
     const promises: Promise<void>[] = []
@@ -161,21 +162,36 @@ export async function prepareJob(
     throw new Error(`failed to determine if the pod is alpine: ${message}`)
   }
   core.debug(`Setting isAlpine to ${isAlpine}`)
-  generateResponseFile(responseFile, args, createdPod, isAlpine)
+
+  const rpcToken = crypto.randomUUID()
+  const { podIp: rpcPodIp, port: rpcPort } = await deployRpcServer(
+    createdPod.metadata.name,
+    JOB_CONTAINER_NAME,
+    rpcToken
+  )
+  core.debug(`RPC server deployed at ${rpcPodIp}:${rpcPort}`)
+
+  generateResponseFile(responseFile, args, createdPod, isAlpine, {
+    rpcPodIp,
+    rpcPort,
+    rpcToken
+  })
 }
 
 function generateResponseFile(
   responseFile: string,
   args: PrepareJobArgs,
   appPod: k8s.V1Pod,
-  isAlpine: boolean
+  isAlpine: boolean,
+  rpcState: { rpcPodIp: string; rpcPort: number; rpcToken: string }
 ): void {
   if (!appPod.metadata?.name) {
     throw new Error('app pod must have metadata.name specified')
   }
   const response = {
     state: {
-      jobPod: appPod.metadata.name
+      jobPod: appPod.metadata.name,
+      ...rpcState
     },
     context: {},
     isAlpine

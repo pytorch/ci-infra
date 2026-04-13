@@ -117,6 +117,7 @@ exec ${environmentPrefix} ${entryPoint} ${
   const filename = `${uuidv4()}.sh`
   const entryPointPath = `${dst}/${filename}`
   core.debug(`Writing container step script to ${entryPointPath}`)
+  fs.mkdirSync(dst, { recursive: true })
   fs.writeFileSync(entryPointPath, content)
   return {
     containerPath: `/__w/_temp/${filename}`,

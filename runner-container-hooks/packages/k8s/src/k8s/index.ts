@@ -52,9 +52,8 @@ const DEFAULT_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS = 300
 // is >= 256 MB, otherwise the `find` output accumulation will crash V8 with a
 // FATAL ERROR for large workspaces (e.g. pytorch/pytorch).
 const COPY_VERIFY_ENABLED =
-  (
-    process.env.ACTIONS_RUNNER_COPY_VERIFY_ENABLED || 'false'
-  ).toLowerCase() === 'true'
+  (process.env.ACTIONS_RUNNER_COPY_VERIFY_ENABLED || 'false').toLowerCase() ===
+  'true'
 const COPY_VERIFY_RETRIES = parseInt(
   process.env.ACTIONS_RUNNER_COPY_VERIFY_RETRIES || '3',
   10
@@ -406,6 +405,34 @@ export function extractExitCode(resp: k8s.V1Status): number | null {
   return Number.isNaN(code) ? null : code
 }
 
+export async function execPodStepWithRetry(
+  command: string[],
+  podName: string,
+  containerName: string,
+  description: string,
+  maxAttempts = 6,
+  initialDelayMs = 1000
+): Promise<number> {
+  let lastError: Error | undefined
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await execPodStep(command, podName, containerName)
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      if (attempt < maxAttempts) {
+        const delay = initialDelayMs * Math.pow(3, attempt - 1)
+        core.debug(
+          `execPodStepWithRetry(${description}): attempt ${attempt}/${maxAttempts} failed (${lastError.message}), retrying in ${delay}ms`
+        )
+        await sleep(delay)
+      }
+    }
+  }
+  throw new Error(
+    `execPodStepWithRetry(${description}) failed after ${maxAttempts} attempts: ${lastError?.message}`
+  )
+}
+
 export async function execPodStep(
   command: string[],
   podName: string,
@@ -473,6 +500,74 @@ export async function execPodStep(
                 `execPodStep: WebSocket error without status response: ${err.message}`
               )
               resolve(1)
+            }
+          })
+        }
+      })
+      .catch(e => {
+        if (!settled) {
+          settled = true
+          reject(e)
+        }
+      })
+  })
+}
+
+export async function execPodStepOutput(
+  command: string[],
+  podName: string,
+  containerName: string
+): Promise<{ exitCode: number; stdout: string }> {
+  const exec = new k8s.Exec(kc)
+  const stdoutBuffer = new WritableStreamBuffer()
+
+  command = fixArgs(command)
+  return new Promise(function (resolve, reject) {
+    let settled = false
+    exec
+      .exec(
+        namespace(),
+        podName,
+        containerName,
+        command,
+        stdoutBuffer,
+        process.stderr,
+        null,
+        false /* tty */,
+        resp => {
+          settled = true
+          const stdout = (stdoutBuffer.getContentsAsString('utf8') || '').trim()
+          if (resp.status === 'Success') {
+            resolve({ exitCode: 0, stdout })
+          } else {
+            const exitCode = extractExitCode(resp)
+            if (exitCode !== null) {
+              resolve({ exitCode, stdout })
+            } else {
+              reject(new Error(resp?.message || 'execPodStepOutput failed'))
+            }
+          }
+        }
+      )
+      .then(ws => {
+        if (ws) {
+          ws.on('close', () => {
+            if (!settled) {
+              settled = true
+              const stdout = (
+                stdoutBuffer.getContentsAsString('utf8') || ''
+              ).trim()
+              resolve({ exitCode: 1, stdout })
+            }
+          })
+          ws.on('error', (err: Error) => {
+            if (!settled) {
+              settled = true
+              core.warning(`execPodStepOutput: WebSocket error: ${err.message}`)
+              const stdout = (
+                stdoutBuffer.getContentsAsString('utf8') || ''
+              ).trim()
+              resolve({ exitCode: 1, stdout })
             }
           })
         }
@@ -733,6 +828,36 @@ export async function execCpFromPod(
           )
           .catch(e => reject(e))
       })
+
+      // Wait for the tar extraction stream to finish writing all data
+      // to disk. The K8s exec status callback fires when the remote
+      // command exits, but stdout data may still be in transit through
+      // the WebSocket pipeline. Without this, callers that immediately
+      // access the extracted files can hit ENOENT race conditions.
+      if (!writerStream.writableFinished) {
+        await new Promise<void>((resolve, reject) => {
+          let settled = false
+          const done = (err?: Error | null): void => {
+            if (settled) return
+            settled = true
+            cleanupFn()
+            clearTimeout(timer)
+            if (err) {
+              reject(err)
+            } else {
+              resolve()
+            }
+          }
+          const cleanupFn = stream.finished(writerStream, err => {
+            done(err)
+          })
+          const timer = setTimeout(() => {
+            writerStream.destroy()
+            done(new Error('tar extract stream drain timed out after 90s'))
+          }, 90000)
+        })
+      }
+
       break
     } catch (error) {
       core.debug(`Attempt ${attempt + 1} failed: ${error}`)
@@ -1042,14 +1167,15 @@ export async function isPodContainerAlpine(
   containerName: string
 ): Promise<boolean> {
   try {
-    const exitCode = await execPodStep(
+    const exitCode = await execPodStepWithRetry(
       [
         'sh',
         '-c',
         `[ $(cat /etc/*release* | grep -i -e "^ID=*alpine*" -c) != 0 ] || exit 1`
       ],
       podName,
-      containerName
+      containerName,
+      'detect alpine'
     )
     return exitCode === 0
   } catch {
@@ -1140,7 +1266,7 @@ export function containerPorts(
   return ports
 }
 
-export async function getPodByName(name): Promise<k8s.V1Pod> {
+export async function getPodByName(name: string): Promise<k8s.V1Pod> {
   return await k8sApi.readNamespacedPod({
     name,
     namespace: namespace()

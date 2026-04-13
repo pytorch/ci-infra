@@ -310,7 +310,7 @@ export async function registryLogin(registry?: Registry): Promise<string> {
   try {
     await dockerLogin(configLocation, registry.serverUrl, credentials)
   } catch (error) {
-    fs.rmdirSync(configLocation, { recursive: true })
+    fs.rmSync(configLocation, { recursive: true, force: true })
     throw error
   }
   return configLocation
@@ -319,7 +319,7 @@ export async function registryLogin(registry?: Registry): Promise<string> {
 export async function registryLogout(configLocation: string): Promise<void> {
   if (configLocation) {
     await dockerLogout(configLocation)
-    fs.rmdirSync(configLocation, { recursive: true })
+    fs.rmSync(configLocation, { recursive: true, force: true })
   }
 }
 

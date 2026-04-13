@@ -1,5 +1,5 @@
 import * as fs from 'fs'
-import { prepareJob } from '../src/hooks'
+import { cleanupJob, prepareJob } from '../src/hooks'
 import TestSetup from './test-setup'
 
 jest.useRealTimers()
@@ -15,7 +15,8 @@ describe('prepare job', () => {
     prepareJobDefinition = testSetup.getPrepareJobDefinition()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await cleanupJob()
     testSetup.teardown()
   })
 

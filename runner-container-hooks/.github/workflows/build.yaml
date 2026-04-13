@@ -64,6 +64,19 @@ jobs:
       - uses: helm/kind-action@v1.12.0
         with:
           config: packages/k8s/tests/test-kind.yaml
+      - name: Route pod IPs to Kind node
+        run: |
+          NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+          NODE_IP=$(docker container inspect "${NODE_NAME}" \
+            --format '{{ .NetworkSettings.Networks.kind.IPAddress }}')
+          POD_CIDR=$(kubectl get node "${NODE_NAME}" -o jsonpath='{.spec.podCIDR}')
+          if [ -z "${POD_CIDR}" ] || [ -z "${NODE_IP}" ]; then
+            echo "ERROR: Could not determine POD_CIDR (${POD_CIDR}) or NODE_IP (${NODE_IP})"
+            exit 1
+          fi
+          echo "Adding route: ${POD_CIDR} via ${NODE_IP}"
+          sudo ip route replace "${POD_CIDR}" via "${NODE_IP}"
+          ip route | grep "${POD_CIDR}"
       - run: npm install
         name: Install dependencies
       - run: npm run bootstrap

@@ -2,15 +2,22 @@
 import * as fs from 'fs'
 import * as core from '@actions/core'
 import { RunScriptStepArgs } from 'hooklib'
-import { execCpFromPod, execCpToPod, execPodStep } from '../k8s'
-import { writeRunScript, sleep, listDirAllCommand } from '../k8s/utils'
+import { execCpFromPod, execCpToPod, execPodStepWithRetry } from '../k8s'
+import { rpcPodStep } from '../k8s/rpc'
+import { writeRunScript } from '../k8s/utils'
 import { JOB_CONTAINER_NAME } from './constants'
 import { dirname } from 'path'
-import * as shlex from 'shlex'
+
+export interface RunScriptStepState {
+  jobPod: string
+  rpcPodIp: string
+  rpcPort: number
+  rpcToken: string
+}
 
 export async function runScriptStep(
   args: RunScriptStepArgs,
-  state
+  state: RunScriptStepState
 ): Promise<number> {
   // Write the entrypoint first. This will be later coppied to the workflow pod
   const { entryPoint, entryPointArgs, environmentVariables } = args
@@ -27,14 +34,15 @@ export async function runScriptStep(
   const containerTemp = '/__w/_temp'
   const containerTempSrc = '/__w/_temp_pre'
   // Ensure base and staging dirs exist before copying
-  const mkdirRc = await execPodStep(
+  const mkdirRc = await execPodStepWithRetry(
     [
       'sh',
       '-c',
       'mkdir -p /__w && mkdir -p /__w/_temp && mkdir -p /__w/_temp_pre'
     ],
     state.jobPod,
-    JOB_CONTAINER_NAME
+    JOB_CONTAINER_NAME,
+    'mkdir temp dirs'
   )
   if (mkdirRc !== 0) {
     throw new Error(
@@ -65,10 +73,11 @@ export async function runScriptStep(
   ]
 
   try {
-    const mergeRc = await execPodStep(
+    const mergeRc = await execPodStepWithRetry(
       ['sh', '-c', mergeCommands.join(' && ')],
       state.jobPod,
-      JOB_CONTAINER_NAME
+      JOB_CONTAINER_NAME,
+      'merge temp dirs'
     )
     if (mergeRc !== 0) {
       throw new Error(
@@ -84,11 +93,12 @@ export async function runScriptStep(
   // Execute the entrypoint script — propagate exit code to the caller
   // so the runner can mark the step as failed when the user's script fails.
   let exitCode: number
-  args.entryPoint = 'sh'
-  args.entryPointArgs = ['-e', containerPath]
   try {
-    exitCode = await execPodStep(
-      [args.entryPoint, ...args.entryPointArgs],
+    exitCode = await rpcPodStep(
+      state.rpcPodIp,
+      state.rpcPort,
+      containerPath,
+      state.rpcToken,
       state.jobPod,
       JOB_CONTAINER_NAME
     )

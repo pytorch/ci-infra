@@ -59,7 +59,7 @@ export default class TestSetup {
   }
 
   teardown(): void {
-    fs.rmdirSync(this.testdir, { recursive: true })
+    fs.rmSync(this.testdir, { recursive: true, force: true })
   }
 
   private get systemMountVolumes(): Mount[] {

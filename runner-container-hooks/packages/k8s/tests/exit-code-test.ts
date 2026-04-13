@@ -5,7 +5,8 @@ describe('extractExitCode', () => {
   it('should return exit code from well-formed V1Status with ExitCode cause', () => {
     const resp: k8s.V1Status = {
       status: 'Failure',
-      message: 'command terminated with non-zero exit code: error executing in Docker Container: 137',
+      message:
+        'command terminated with non-zero exit code: error executing in Docker Container: 137',
       details: {
         causes: [
           {

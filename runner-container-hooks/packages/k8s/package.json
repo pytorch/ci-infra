@@ -5,7 +5,7 @@
   "main": "lib/index.js",
   "scripts": {
     "test": "jest --runInBand",
-    "build": "tsc && npx ncc build",
+    "build": "node scripts/embed-rpc-server.js && tsc && npx ncc build",
     "format": "prettier --write '**/*.ts'",
     "format-check": "prettier --check '**/*.ts'",
     "lint": "eslint src/**/*.ts"
