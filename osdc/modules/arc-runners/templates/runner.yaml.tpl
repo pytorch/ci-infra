@@ -155,7 +155,7 @@ template:
           # Default is 600s (10 min), which is exceeded when node provisioning +
           # git-cache sync takes longer than expected under concurrent load.
           - name: ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS
-            value: "900"
+            value: "1500"
           # Wait for startup taints to clear before creating workflow pods.
           # Prevents Karpenter-scheduler deadlock on fresh nodes where the
           # runner tolerates the taint but the workflow pod does not.
