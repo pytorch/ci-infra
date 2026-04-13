@@ -30,7 +30,7 @@ Reference: [actions/actions-runner-controller#2697](https://github.com/actions/a
 | `features` | Yes (x86 only) | CPU instruction set extensions — tells the workflow what SIMD/AI instructions are available | `avx2` = AVX2, `avx512` = AVX-512, `amx` = Intel AMX (Advanced Matrix Extensions) |
 | `vcpu` | Yes | Number of vCPUs allocated to the runner | Integer (e.g. `2`, `8`, `16`, `48`, `94`) |
 | `memory` | Yes | Memory in GiB allocated to the runner | Integer (e.g. `4`, `16`, `64`, `192`, `768`) |
-| `gpu_type` | No | GPU model (omitted for CPU-only runners) | `t4` = NVIDIA T4, `a10g` = NVIDIA A10G, `l4` = NVIDIA L4 |
+| `gpu_type` | No | GPU model (omitted for CPU-only runners) | `t4` = NVIDIA T4, `a10g` = NVIDIA A10G, `l4` = NVIDIA L4, `b200` = NVIDIA B200 |
 | `gpu_count` | No | Number of GPUs (omitted when count is 1) | Integer (e.g. `4`, `8`) |
 
 ## Examples
@@ -145,6 +145,16 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | --- | --- | --- |
 | linux.g6.4xlarge.experimental.nvidia.gpu | g6.4xlarge | mt-l-x86aavx2-29-113-l4 |
 | linux.g6.12xlarge.nvidia.gpu | g6.12xlarge | mt-l-x86aavx2-45-172-l4-4 |
+
+### x86 GPU — B200 (p6-b200 family)
+
+
+| **Old Label** | **Instance** | **New Label** |
+| --- | --- | --- |
+| a.linux.b200 | p6-b200.48xlarge | mt-l-x86iamx-22-225-b200 |
+| a.linux.b200.2 | p6-b200.48xlarge | mt-l-x86iamx-44-450-b200-2 |
+| a.linux.b200.4 | p6-b200.48xlarge | mt-l-x86iamx-88-900-b200-4 |
+| a.linux.b200.8 | p6-b200.48xlarge | mt-l-bx86iamx-176-1800-b200-8 |
 
 ### x86 GPU — V100 (p3 family)
 

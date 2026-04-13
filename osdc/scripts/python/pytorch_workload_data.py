@@ -53,6 +53,11 @@ OLD_TO_NEW_LABEL: dict[str, str] = {
     # x86 GPU — L4 (g6)
     "linux.g6.4xlarge.experimental.nvidia.gpu": "l-x86aavx2-29-113-l4",
     "linux.g6.12xlarge.nvidia.gpu": "l-x86aavx2-45-172-l4-4",
+    # x86 GPU — B200 (p6-b200)
+    "a.linux.b200": "l-x86iamx-22-225-b200",
+    "a.linux.b200.2": "l-x86iamx-44-450-b200-2",
+    "a.linux.b200.4": "l-x86iamx-88-900-b200-4",
+    "a.linux.b200.8": "l-bx86iamx-176-1800-b200-8",
     # ARM64
     "linux.arm64.2xlarge": "l-arm64g2-6-32",
     "linux.arm64.2xlarge.ephemeral": "l-arm64g2-6-32",

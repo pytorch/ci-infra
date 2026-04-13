@@ -1469,7 +1469,7 @@ jobs:
 
   # BEGIN_B200
   test-gpu-b200-2:
-    runs-on: {{PREFIX}}a.linux.b200.2
+    runs-on: {{PREFIX}}l-x86iamx-44-450-b200-2
     container:
       image: nvidia/cuda:12.6.3-base-ubuntu22.04
     steps:
