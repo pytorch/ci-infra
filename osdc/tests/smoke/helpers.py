@@ -191,11 +191,9 @@ def _parse_k8s_timestamp(ts: str) -> float:
 
 
 def _is_node_unstable(node: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> bool:
-    """Check if a single node is unstable (new, NotReady, cordoned, or being deleted)."""
+    """Check if a single node is unstable (new, NotReady, or being deleted)."""
     meta = node.get("metadata", {})
     if meta.get("deletionTimestamp"):
-        return True
-    if node.get("spec", {}).get("unschedulable"):
         return True
     conditions = {c["type"]: c["status"] for c in node.get("status", {}).get("conditions", [])}
     if conditions.get("Ready") != "True":
@@ -209,11 +207,10 @@ def _is_node_unstable(node: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> b
 
 
 def _count_unstable_nodes(all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> int:
-    """Count nodes that are new, NotReady, cordoned, or being deleted.
+    """Count nodes that are new, NotReady, or being deleted.
 
     A node is "unstable" if any of:
     - It has a deletionTimestamp (being deleted)
-    - It is cordoned (spec.unschedulable is true)
     - Its Ready condition is not True
     - It was created less than min_node_age seconds ago
     """
@@ -223,11 +220,6 @@ def _count_unstable_nodes(all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECO
 def get_unstable_node_names(all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> set[str]:
     """Return names of nodes that are new, NotReady, or being deleted."""
     return {node["metadata"]["name"] for node in all_nodes.get("items", []) if _is_node_unstable(node, min_node_age=min_node_age)}
-
-
-def get_all_node_names(all_nodes: dict) -> set[str]:
-    """Return names of all nodes currently known to the API server."""
-    return {node["metadata"]["name"] for node in all_nodes.get("items", [])}
 
 
 def get_recently_stable_node_names(
@@ -286,7 +278,7 @@ def assert_daemonset_healthy(
     """Assert DaemonSet is healthy, tolerating mismatches from node churn.
 
     Passes if desired == ready, OR if the mismatch is fully explained by
-    nodes that are new (< min_node_age seconds), NotReady, cordoned, or being deleted.
+    nodes that are new (< min_node_age seconds), NotReady, or being deleted.
 
     This is resilient to concurrent node churn (compactor e2e, Karpenter
     autoscaling, spot interruptions, node recycling).

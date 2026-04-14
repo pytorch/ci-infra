@@ -8,7 +8,7 @@ from distribution import RunnerAllocation
 
 # Container images
 CPU_CONTAINER = "ghcr.io/actions/actions-runner:latest"
-GPU_CONTAINER = "ghcr.io/actions/actions-runner:latest"
+GPU_CONTAINER = "nvidia/cuda:12.6.3-runtime-ubuntu22.04"
 
 # GitHub Actions matrix max entries
 MAX_MATRIX_SIZE = 256
