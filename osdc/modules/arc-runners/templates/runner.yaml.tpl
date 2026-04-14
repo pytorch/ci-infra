@@ -119,10 +119,11 @@ template:
           - /bin/sh
           - -c
           - |
+            set -e
             TIMEOUT=300
             ELAPSED=0
-            echo "Waiting for patched hooks at /opt/runner-hooks/dist/index.js..."
-            while [ ! -f /opt/runner-hooks/dist/index.js ]; do
+            echo "Waiting for patched hooks at /mnt/host-hooks/dist/index.js..."
+            while [ ! -f /mnt/host-hooks/dist/index.js ]; do
               if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
                 echo "ERROR: Timed out waiting for patched hooks after ${TIMEOUT}s"
                 exit 1
@@ -130,11 +131,28 @@ template:
               sleep 10
               ELAPSED=$((ELAPSED + 10))
             done
-            echo "Patched hooks found."
+
+            # Snapshot: copy hooks from hostPath to emptyDir
+            cp -a /mnt/host-hooks/dist/ /opt/runner-hooks/dist/
+            if [ -f /mnt/host-hooks/.version ]; then
+              cp /mnt/host-hooks/.version /opt/runner-hooks/.version
+            fi
+
+            # Verify the snapshot
+            if [ ! -f /opt/runner-hooks/dist/index.js ]; then
+              echo "ERROR: Snapshot failed — index.js missing after copy"
+              exit 1
+            fi
+
+            VERSION=$(cat /opt/runner-hooks/.version 2>/dev/null || echo "unknown")
+            SIZE=$(wc -c < /opt/runner-hooks/dist/index.js)
+            echo "Hooks v${VERSION} snapshot complete (${SIZE} bytes)."
         volumeMounts:
           - name: patched-hooks
-            mountPath: /opt/runner-hooks
+            mountPath: /mnt/host-hooks
             readOnly: true
+          - name: hooks-snapshot
+            mountPath: /opt/runner-hooks
 
     containers:
       - name: runner
@@ -196,7 +214,7 @@ template:
         volumeMounts:
           - name: hook-extensions
             mountPath: /home/runner/hook-extensions
-          - name: patched-hooks
+          - name: hooks-snapshot
             mountPath: /opt/runner-hooks
             readOnly: true
 
@@ -205,6 +223,9 @@ template:
         hostPath:
           path: /mnt/runner-container-hooks
           type: DirectoryOrCreate
+      - name: hooks-snapshot
+        emptyDir:
+          sizeLimit: 50Mi
       - name: hook-extensions
         configMap:
           name: arc-runner-hook-{{RUNNER_NAME_NORMALIZED}}
