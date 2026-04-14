@@ -59,6 +59,12 @@ variable "authentication_mode" {
   default     = "CONFIG_MAP"
 }
 
+variable "control_plane_scaling_tier" {
+  description = "EKS control plane scaling tier (standard, tier-xl, tier-2xl, tier-4xl, tier-8xl)"
+  type        = string
+  default     = "tier-8xl"
+}
+
 variable "cluster_admin_role_names" {
   description = "Comma-separated IAM role names to grant EKS cluster admin access via access entries"
   type        = string

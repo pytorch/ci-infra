@@ -93,6 +93,15 @@ resource "aws_eks_cluster" "this" {
     }
   }
 
+  # Provisioned control plane: pre-allocate fixed API server capacity for
+  # predictable performance and 99.99% SLA (vs 99.95% on standard).
+  dynamic "control_plane_scaling_config" {
+    for_each = var.control_plane_scaling_tier != "standard" ? [1] : []
+    content {
+      tier = var.control_plane_scaling_tier
+    }
+  }
+
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
   tags = merge(

@@ -45,6 +45,18 @@ class TestEKSCluster:
         oidc_issuer = eks_cluster_info["cluster"].get("identity", {}).get("oidc", {}).get("issuer", "")
         assert oidc_issuer, f"OIDC provider not configured for cluster {cluster_name}"
 
+    def test_control_plane_scaling_tier(self, eks_cluster_info, resolve_config):
+        expected_tier = resolve_config("control_plane_scaling_tier", "tier-8xl")
+        if expected_tier == "standard":
+            pytest.skip("Control plane scaling tier is standard (default), nothing to verify")
+        scaling_config = eks_cluster_info["cluster"].get("controlPlaneScalingConfig", {})
+        actual_tier = scaling_config.get("tier", "standard")
+        # AWS API returns uppercase tier names (e.g. TIER_8XL)
+        expected_normalized = expected_tier.upper().replace("-", "_")
+        assert actual_tier == expected_normalized, (
+            f"Control plane scaling tier is {actual_tier}, expected {expected_normalized}"
+        )
+
 
 # ============================================================================
 # EKS Addons

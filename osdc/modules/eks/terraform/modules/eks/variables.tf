@@ -101,6 +101,17 @@ variable "cluster_admin_role_names" {
   default     = ""
 }
 
+variable "control_plane_scaling_tier" {
+  description = "EKS control plane scaling tier (standard = default auto-scaled, tier-* = provisioned capacity)"
+  type        = string
+  default     = "tier-8xl"
+
+  validation {
+    condition     = contains(["standard", "tier-xl", "tier-2xl", "tier-4xl", "tier-8xl"], var.control_plane_scaling_tier)
+    error_message = "control_plane_scaling_tier must be one of: standard, tier-xl, tier-2xl, tier-4xl, tier-8xl"
+  }
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

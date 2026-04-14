@@ -62,6 +62,10 @@ def tfvars(cluster_id, cluster_cfg, defaults):
         "base_node_max_unavailable_percentage": base.get("base_node_max_unavailable_percentage", 33),
         "base_node_ami_version": base.get("base_node_ami_version", defaults.get("base_node_ami_version", "v*")),
         "eks_version": base.get("eks_version", defaults.get("eks_version", "1.35")),
+        "control_plane_scaling_tier": base.get(
+            "control_plane_scaling_tier",
+            defaults.get("control_plane_scaling_tier", "tier-8xl"),
+        ),
     }
     # Optional fields — only emit if explicitly set
     access_config = cluster_cfg.get("access_config") or base.get("access_config") or {}
