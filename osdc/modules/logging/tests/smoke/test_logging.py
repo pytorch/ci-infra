@@ -20,7 +20,6 @@ from helpers import (
     fetch_grafana_cloud_credentials,
     filter_pods,
     find_helm_release,
-    get_all_node_names,
     get_recently_stable_node_names,
     get_unstable_node_names,
     loki_read_url,
@@ -155,23 +154,15 @@ class TestAlloyLogging:
 
         assert len(pods) > 0, f"No alloy-logging pods found (after {READY_RETRIES} retries)"
 
-        known_node_names = get_all_node_names(nodes)
         unstable_names = get_unstable_node_names(nodes)
         recently_stable_names = get_recently_stable_node_names(nodes)
-        disappeared = 0
         not_running = [
             p["metadata"]["name"]
             for p in pods
             if p["status"].get("phase") != "Running"
-            and p["spec"].get("nodeName") in known_node_names  # skip pods on disappeared nodes
             and p["spec"].get("nodeName") not in unstable_names
             and not (p["status"].get("phase") == "Pending" and p["spec"].get("nodeName") in recently_stable_names)
         ]
-        disappeared = sum(
-            1
-            for p in pods
-            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in known_node_names
-        )
 
         if not not_running:
             return
@@ -182,22 +173,15 @@ class TestAlloyLogging:
             fresh_pods = run_kubectl(["get", "pods", "-A"])
             fresh_nodes = run_kubectl(["get", "nodes"])
             pods = filter_pods(fresh_pods, namespace=logging_ns, labels=alloy_labels)
-            known_node_names = get_all_node_names(fresh_nodes)
             unstable_names = get_unstable_node_names(fresh_nodes)
             recently_stable_names = get_recently_stable_node_names(fresh_nodes)
             not_running = [
                 p["metadata"]["name"]
                 for p in pods
                 if p["status"].get("phase") != "Running"
-                and p["spec"].get("nodeName") in known_node_names
                 and p["spec"].get("nodeName") not in unstable_names
                 and not (p["status"].get("phase") == "Pending" and p["spec"].get("nodeName") in recently_stable_names)
             ]
-            disappeared = sum(
-                1
-                for p in pods
-                if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in known_node_names
-            )
             if not not_running:
                 return
 
@@ -205,7 +189,6 @@ class TestAlloyLogging:
             f"Alloy pods not Running on stable nodes: {not_running} "
             f"({len(unstable_names)} unstable nodes excluded, "
             f"{len(recently_stable_names)} recently-stable nodes with Pending pods tolerated, "
-            f"{disappeared} pods on disappeared nodes excluded, "
             f"after {READY_RETRIES} retries)"
         )
 

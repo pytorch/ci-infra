@@ -22,17 +22,10 @@ jobs:
     # The arch input selects which BuildKit endpoint to connect to.
     runs-on: ${{ inputs.runner_label }}
     container:
-      image: ghcr.io/actions/actions-runner:latest
+      image: moby/buildkit:v0.29.0
+      # Run as root to use buildctl
+      options: --privileged
     steps:
-      - name: Install buildctl
-        run: |
-          BUILDKIT_VERSION="v0.29.0"
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-amd64.tar.gz" \
-            | tar xz --strip-components=1 -C "$HOME/.local/bin" bin/buildctl
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/buildctl" --version
-
       - name: Checkout
         uses: actions/checkout@v4
 
