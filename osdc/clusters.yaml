@@ -166,6 +166,15 @@ clusters:
         - ossci_gha_terraform
     base:
       vpc_cidr: "10.1.0.0/16"
+      # Provisioned control plane XL ($1.75/hr, ~$15K/yr).
+      # Analysis (2026-04-15, 7-day window) showed the standard tier constantly
+      # throttling POST-pods requests (~0.4 req/s of 429s, 0.36% of traffic,
+      # ~34K rejected requests/day).  Cluster peaks at 171 nodes / 4,220 pods
+      # with API rates up to 638 req/s.  XL provides 2,000 API concurrency
+      # seats (10x standard) and 167 pods/s scheduling — ample headroom.
+      # 4XL (8,000 seats, $5.1K/mo) was ruled out as overkill given the
+      # modest concurrency deficit.
+      control_plane_scaling_tier: "tier-xl"
     git_cache:
       central_replicas: 5
       central_cpu_request: "6"

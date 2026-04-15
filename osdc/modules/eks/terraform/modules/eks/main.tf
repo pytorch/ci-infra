@@ -93,6 +93,17 @@ resource "aws_eks_cluster" "this" {
     }
   }
 
+  # Provisioned control plane: pin dedicated API server capacity for predictable
+  # performance under load.  "standard" (the default) uses the shared control
+  # plane; any "tier-*" value opts into a provisioned tier with higher API
+  # concurrency, pod scheduling rate, and a 99.99 % SLA.
+  dynamic "control_plane_scaling_config" {
+    for_each = var.control_plane_scaling_tier != "standard" ? [var.control_plane_scaling_tier] : []
+    content {
+      tier = control_plane_scaling_config.value
+    }
+  }
+
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
   tags = merge(
