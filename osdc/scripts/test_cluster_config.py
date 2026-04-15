@@ -166,6 +166,7 @@ class TestTfvars:
         assert '-var="base_node_max_unavailable_percentage=33"' in out
         assert '-var="base_node_ami_version=v*"' in out
         assert '-var="eks_version=1.35"' in out
+        assert '-var="control_plane_scaling_tier=standard"' in out
 
     def test_cluster_overrides(self, capsys):
         cluster_cfg = {
@@ -179,6 +180,7 @@ class TestTfvars:
                 "base_node_max_unavailable_percentage": 50,
                 "base_node_ami_version": "v20260318",
                 "eks_version": "1.36",
+                "control_plane_scaling_tier": "tier-xl",
             },
         }
         defaults = {
@@ -195,6 +197,18 @@ class TestTfvars:
         assert '-var="base_node_max_unavailable_percentage=50"' in out
         assert '-var="base_node_ami_version=v20260318"' in out
         assert '-var="eks_version=1.36"' in out
+        assert '-var="control_plane_scaling_tier=tier-xl"' in out
+
+    def test_control_plane_scaling_tier_from_defaults(self, capsys):
+        """Tier set in defaults should propagate when cluster has no override."""
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+        }
+        defaults = {"control_plane_scaling_tier": "tier-2xl"}
+        cluster_config.tfvars("c", cluster_cfg, defaults)
+        out = capsys.readouterr().out.strip()
+        assert '-var="control_plane_scaling_tier=tier-2xl"' in out
 
     def test_bool_formatting(self, capsys):
         """single_nat_gateway bool should be lowercased."""
