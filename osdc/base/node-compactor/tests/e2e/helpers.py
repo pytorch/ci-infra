@@ -34,7 +34,7 @@ KARPENTER_NODEPOOL_LABEL = "karpenter.sh/nodepool"
 COMPACTOR_DEPLOYMENT = "node-compactor"
 COMPACTOR_NAMESPACE = "kube-system"
 COMPACTOR_POD_LABEL = "app.kubernetes.io/name=node-compactor"
-TEST_IMAGE = "registry.k8s.io/pause:3.10"
+TEST_IMAGE = "public.ecr.aws/docker/library/alpine:3.21"
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +266,7 @@ def create_test_pod(
                 Container(
                     name="pause",
                     image=TEST_IMAGE,
+                    command=["sleep", "infinity"],
                     resources=ResourceRequirements(
                         requests={"cpu": cpu, "memory": memory},
                     ),
