@@ -45,7 +45,7 @@ variable "argocd_sa_terraform" {
 variable "gharts_chart_version" {
   type        = string
   description = "gharts Helm chart version"
-  default     = "0.0.3"
+  default     = "0.0.4"
 }
 
 variable "gharts_namespace" {
