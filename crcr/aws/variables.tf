@@ -49,3 +49,14 @@ variable "availability_zone_suffixes" {
   type        = list(string)
   default     = ["a", "b"]
 }
+
+variable "hud_api_url" {
+  description = "HUD API endpoint for posting downstream workflow results"
+  type        = string
+}
+
+variable "hud_bot_key" {
+  description = "Authorization key for the HUD API"
+  type        = string
+  sensitive   = true
+}
