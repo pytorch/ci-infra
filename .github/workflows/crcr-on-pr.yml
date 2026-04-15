@@ -51,6 +51,8 @@ jobs:
         TF_VAR_github_app_id: ${{ secrets.CRCR_GITHUB_APP_ID }}
         TF_VAR_github_app_secret: ${{ secrets.CRCR_GITHUB_APP_SECRET }}
         TF_VAR_github_app_privatekey: ${{ secrets.CRCR_GITHUB_APP_PRIVATEKEY }}
+        TF_VAR_hud_api_url: ${{ secrets.CRCR_HUD_API_URL }}
+        TF_VAR_hud_bot_key: ${{ secrets.CRCR_HUD_BOT_KEY }}
 
     - name: Make plan
       shell: bash
@@ -62,3 +64,5 @@ jobs:
         TF_VAR_github_app_id: ${{ secrets.CRCR_GITHUB_APP_ID }}
         TF_VAR_github_app_secret: ${{ secrets.CRCR_GITHUB_APP_SECRET }}
         TF_VAR_github_app_privatekey: ${{ secrets.CRCR_GITHUB_APP_PRIVATEKEY }}
+        TF_VAR_hud_api_url: ${{ secrets.CRCR_HUD_API_URL }}
+        TF_VAR_hud_bot_key: ${{ secrets.CRCR_HUD_BOT_KEY }}
