@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 from generate_nodepools import (
+    _build_fleet_nodepool_def,
     _detect_arch,
     _get_node_disk_size,
     _read_user_data_script,
@@ -29,7 +30,7 @@ def _make_nodepool_def(**overrides) -> dict:
     """Build a minimal nodepool def dict with sensible defaults."""
     base = {
         "name": "test-pool",
-        "instance_type": "m5.4xlarge",
+        "instance_type": "m6i.32xlarge",
         "node_disk_size": 200,
         "gpu": False,
     }
@@ -41,10 +42,52 @@ REAL_DEFS_DIR = Path(__file__).parent.parent.parent / "defs"
 
 
 def _load_real_def(filename: str) -> dict:
-    """Load a real def file from modules/nodepools/defs/."""
+    """Load a real def file from modules/nodepools/defs/.
+
+    For legacy ``nodepool:`` files, returns the nodepool dict directly.
+    For ``fleet:`` or ``fleets:`` files, returns the first expanded nodepool_def.
+    """
     with open(REAL_DEFS_DIR / filename) as f:
         data = yaml.safe_load(f)
-    return data["nodepool"]
+    if "nodepool" in data:
+        return data["nodepool"]
+    if "fleet" in data:
+        fleet = data["fleet"]
+        return _build_fleet_nodepool_def(fleet, fleet["instances"][0])
+    if "fleets" in data:
+        fleet = data["fleets"][0]
+        return _build_fleet_nodepool_def(fleet, fleet["instances"][0])
+    raise ValueError(f"Unknown format in {filename}")
+
+
+def _load_all_real_defs() -> list[dict]:
+    """Load all real def files, expanding fleets into individual nodepool_defs."""
+    result = []
+    for f in sorted(REAL_DEFS_DIR.glob("*.yaml")):
+        with open(f) as fh:
+            data = yaml.safe_load(fh)
+        if not data:
+            continue
+        if "nodepool" in data:
+            result.append(data["nodepool"])
+        elif "fleet" in data:
+            fleet = data["fleet"]
+            for inst in fleet.get("instances", []):
+                result.append(_build_fleet_nodepool_def(fleet, inst))
+            for inst in fleet.get("release", []):
+                result.append(
+                    _build_fleet_nodepool_def(
+                        fleet,
+                        inst,
+                        name_suffix="-release",
+                        extra_labels={"osdc.io/runner-class": "release"},
+                    )
+                )
+        elif "fleets" in data:
+            for fleet in data["fleets"]:
+                for inst in fleet.get("instances", []):
+                    result.append(_build_fleet_nodepool_def(fleet, inst))
+    return result
 
 
 # ============================================================================
@@ -74,7 +117,7 @@ class TestDetectArch:
         assert _detect_arch("m8gd.24xlarge", None) == "arm64"
 
     def test_non_graviton_m5(self):
-        assert _detect_arch("m5.4xlarge", None) == "amd64"
+        assert _detect_arch("m6i.32xlarge", None) == "amd64"
 
     def test_non_graviton_r5(self):
         assert _detect_arch("r5.24xlarge", None) == "amd64"
@@ -524,18 +567,174 @@ class TestGenerateNodepoolYaml:
 
 
 # ============================================================================
+# Fleet-specific tests
+# ============================================================================
+
+
+class TestFleetNodepoolGeneration:
+    """Tests for fleet-format nodepool generation (weight, fleet label, fleet taint)."""
+
+    def _parse(self, text: str) -> list[dict]:
+        return parse_all_yaml(text)
+
+    def test_fleet_weight_in_spec(self):
+        nodepool_def = _make_nodepool_def(fleet_name="r7a", weight=100)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        assert np["spec"]["weight"] == 100
+
+    def test_no_weight_without_fleet(self):
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        assert "weight" not in np["spec"]
+
+    def test_fleet_label_present(self):
+        nodepool_def = _make_nodepool_def(fleet_name="r7a", weight=80)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        labels = np["spec"]["template"]["metadata"]["labels"]
+        assert labels.get("node-fleet") == "r7a"
+
+    def test_no_fleet_label_without_fleet(self):
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        labels = np["spec"]["template"]["metadata"]["labels"]
+        assert "node-fleet" not in labels
+
+    def test_fleet_taint_present(self):
+        nodepool_def = _make_nodepool_def(fleet_name="g5-1gpu", weight=100)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        taints = np["spec"]["template"]["spec"]["taints"]
+        fleet_taints = [t for t in taints if t["key"] == "node-fleet"]
+        assert len(fleet_taints) == 1
+        assert fleet_taints[0]["value"] == "g5-1gpu"
+        assert fleet_taints[0]["effect"] == "NoSchedule"
+
+    def test_fleet_taint_before_instance_taint(self):
+        nodepool_def = _make_nodepool_def(fleet_name="r7a", weight=100)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        taints = np["spec"]["template"]["spec"]["taints"]
+        taint_keys = [t["key"] for t in taints]
+        fleet_idx = taint_keys.index("node-fleet")
+        instance_idx = taint_keys.index("instance-type")
+        assert fleet_idx < instance_idx
+
+    def test_no_fleet_taint_without_fleet(self):
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        taints = np["spec"]["template"]["spec"]["taints"]
+        taint_keys = [t["key"] for t in taints]
+        assert "node-fleet" not in taint_keys
+
+    def test_instance_type_taint_still_present_with_fleet(self):
+        nodepool_def = _make_nodepool_def(fleet_name="r7a", weight=50)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        taints = np["spec"]["template"]["spec"]["taints"]
+        taint_keys = [t["key"] for t in taints]
+        assert "instance-type" in taint_keys
+
+    def test_fleet_gpu_has_all_taints(self):
+        """Fleet GPU nodepool has fleet taint + instance-type taint + GPU taint."""
+        nodepool_def = _make_nodepool_def(
+            fleet_name="g5-1gpu",
+            weight=100,
+            gpu=True,
+            instance_type="g5.8xlarge",
+            arch="amd64",
+        )
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        np = docs[0]
+        taints = np["spec"]["template"]["spec"]["taints"]
+        taint_keys = [t["key"] for t in taints]
+        assert "node-fleet" in taint_keys
+        assert "instance-type" in taint_keys
+        assert "nvidia.com/gpu" in taint_keys
+
+
+class TestBuildFleetNodepoolDef:
+    """Tests for _build_fleet_nodepool_def helper."""
+
+    def test_basic_construction(self):
+        fleet = {"name": "r7a", "arch": "amd64", "gpu": False}
+        inst = {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800}
+        result = _build_fleet_nodepool_def(fleet, inst)
+        assert result["name"] == "r7a-48xlarge"
+        assert result["instance_type"] == "r7a.48xlarge"
+        assert result["arch"] == "amd64"
+        assert result["gpu"] is False
+        assert result["fleet_name"] == "r7a"
+        assert result["weight"] == 100
+        assert result["node_disk_size"] == 4800
+
+    def test_release_suffix(self):
+        fleet = {"name": "r7a", "arch": "amd64", "gpu": False}
+        inst = {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800}
+        result = _build_fleet_nodepool_def(
+            fleet,
+            inst,
+            name_suffix="-release",
+            extra_labels={"osdc.io/runner-class": "release"},
+        )
+        assert result["name"] == "r7a-48xlarge-release"
+        assert result["extra_labels"]["osdc.io/runner-class"] == "release"
+
+    def test_gpu_fleet(self):
+        fleet = {"name": "g5-1gpu", "arch": "amd64", "gpu": True}
+        inst = {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True}
+        result = _build_fleet_nodepool_def(fleet, inst)
+        assert result["gpu"] is True
+        assert result["has_nvme"] is True
+
+    def test_baremetal_flag(self):
+        fleet = {"name": "g4dn-8gpu", "arch": "amd64", "gpu": True}
+        inst = {"type": "g4dn.metal", "weight": 100, "node_disk_size": 600, "baremetal": True}
+        result = _build_fleet_nodepool_def(fleet, inst)
+        assert result["baremetal"] is True
+
+    def test_optional_fields_default_correctly(self):
+        fleet = {"name": "r7a", "arch": "amd64"}
+        inst = {"type": "r7a.8xlarge", "weight": 20, "node_disk_size": 800}
+        result = _build_fleet_nodepool_def(fleet, inst)
+        assert result["capacity_type"] == "on-demand"
+        assert result["capacity_reservation_ids"] == []
+        assert result["extra_labels"] == {}
+        # Optional keys with None defaults are omitted so generate_nodepool_yaml
+        # falls through to its own defaults (e.g. topology_manager_policy="restricted")
+        assert "topology_manager_policy" not in result
+        assert "topology_manager_scope" not in result
+        assert "user_data_script" not in result
+        assert "node_compactor" not in result
+
+
+# ============================================================================
 # Real def files — round-trip validation
 # ============================================================================
 
 
 class TestRealDefFiles:
-    """Round-trip tests using actual def files from modules/nodepools/defs/."""
+    """Round-trip tests using actual def files from modules/nodepools/defs/.
 
-    @pytest.fixture(params=sorted(REAL_DEFS_DIR.glob("*.yaml")), ids=lambda p: p.stem)
+    Supports both legacy ``nodepool:`` files and new ``fleet:``/``fleets:`` files.
+    """
+
+    @pytest.fixture(params=_load_all_real_defs(), ids=lambda d: d["name"])
     def real_def(self, request):
-        with open(request.param) as f:
-            data = yaml.safe_load(f)
-        return data["nodepool"]
+        return request.param
 
     def test_generates_valid_yaml(self, real_def):
         output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR)
@@ -579,7 +778,7 @@ class TestMain:
         defs_dir = self._create_defs(
             tmp_path,
             [
-                _make_nodepool_def(name="pool-a", instance_type="m5.4xlarge"),
+                _make_nodepool_def(name="pool-a", instance_type="m6i.32xlarge"),
                 _make_nodepool_def(name="pool-b", instance_type="r5.24xlarge"),
             ],
         )
@@ -648,11 +847,29 @@ class TestMain:
         # Missing name → invalid, aborts with error return code
         assert result == 1
 
+    def test_legacy_nodepool_unknown_instance_type(self, tmp_path):
+        """Legacy nodepool defs with instance types not in INSTANCE_SPECS fail."""
+        defs_dir = self._create_defs(
+            tmp_path,
+            [_make_nodepool_def(name="unknown-pool", instance_type="z99.xlarge")],
+        )
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 0
+        assert not list(output_dir.glob("*.yaml"))
+
     def test_output_files_are_parseable_yaml(self, tmp_path):
         defs_dir = self._create_defs(
             tmp_path,
             [
-                _make_nodepool_def(name="parseable", instance_type="m5.4xlarge"),
+                _make_nodepool_def(name="parseable", instance_type="m6i.32xlarge"),
             ],
         )
         output_dir = tmp_path / "generated"
@@ -669,3 +886,146 @@ class TestMain:
         assert len(docs) == 2
         assert docs[0]["kind"] == "NodePool"
         assert docs[1]["kind"] == "EC2NodeClass"
+
+    def test_fleet_format_generates_multiple(self, tmp_path):
+        """A fleet file with 3 instances generates 3 output files."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleet": {
+                "name": "r7a",
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [
+                    {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                    {"type": "r7a.24xlarge", "weight": 80, "node_disk_size": 2400},
+                    {"type": "r7a.8xlarge", "weight": 20, "node_disk_size": 800},
+                ],
+            }
+        }
+        (defs_dir / "r7a.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_MODULE_NAME": "test",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["r7a-24xlarge.yaml", "r7a-48xlarge.yaml", "r7a-8xlarge.yaml"]
+
+    def test_fleet_with_release_generates_extra(self, tmp_path):
+        """Fleet with release entries generates both regular and release outputs."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleet": {
+                "name": "r7a",
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [
+                    {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                ],
+                "release": [
+                    {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                ],
+            }
+        }
+        (defs_dir / "r7a.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["r7a-48xlarge-release.yaml", "r7a-48xlarge.yaml"]
+
+        # Verify release has the runner-class label
+        release_content = (output_dir / "r7a-48xlarge-release.yaml").read_text()
+        docs = parse_all_yaml(release_content)
+        labels = docs[0]["spec"]["template"]["metadata"]["labels"]
+        assert labels.get("osdc.io/runner-class") == "release"
+
+    def test_fleets_format_multi_fleet(self, tmp_path):
+        """A fleets file (multi-fleet) generates outputs for all fleets."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleets": [
+                {
+                    "name": "g5-1gpu",
+                    "arch": "amd64",
+                    "gpu": True,
+                    "instances": [
+                        {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
+                    ],
+                },
+                {
+                    "name": "g5-4gpu",
+                    "arch": "amd64",
+                    "gpu": True,
+                    "instances": [
+                        {"type": "g5.12xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
+                    ],
+                },
+            ]
+        }
+        (defs_dir / "g5.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["g5-12xlarge.yaml", "g5-8xlarge.yaml"]
+
+        # Verify fleet names are different
+        g5_8 = parse_all_yaml((output_dir / "g5-8xlarge.yaml").read_text())
+        g5_12 = parse_all_yaml((output_dir / "g5-12xlarge.yaml").read_text())
+        assert g5_8[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "g5-1gpu"
+        assert g5_12[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "g5-4gpu"
+
+    def test_mixed_nodepool_and_fleet(self, tmp_path):
+        """Legacy nodepool and fleet files can coexist in the same defs dir."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "legacy.yaml").write_text(
+            yaml.dump({"nodepool": _make_nodepool_def(name="legacy-pool", instance_type="r7i.48xlarge")})
+        )
+        fleet_data = {
+            "fleet": {
+                "name": "r7a",
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [
+                    {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                ],
+            }
+        }
+        (defs_dir / "r7a.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["legacy-pool.yaml", "r7a-48xlarge.yaml"]

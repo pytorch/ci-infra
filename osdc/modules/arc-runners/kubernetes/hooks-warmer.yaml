@@ -38,6 +38,9 @@ spec:
         - key: instance-type
           operator: Exists
           effect: NoSchedule
+        - key: node-fleet
+          operator: Exists
+          effect: NoSchedule
         - key: git-cache-not-ready
           operator: Exists
           effect: NoSchedule

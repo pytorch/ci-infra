@@ -27,28 +27,67 @@ to obtain precise memory_mi values for new entries.
 # ---------------------------------------------------------------------------
 INSTANCE_SPECS: dict[str, dict] = {
     # x86 CPU — compute-optimized (~2 GiB/core)
-    "c7i.12xlarge": {"vcpu": 48, "memory_gib": 96, "memory_mi": 90931, "gpu": 0, "arch": "amd64"},
-    "c7i.metal-24xl": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
+    # Fleet fallback sizes
+    "c7a.8xlarge": {"vcpu": 32, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "amd64"},
+    "c7a.12xlarge": {"vcpu": 48, "memory_gib": 96, "memory_mi": 90931, "gpu": 0, "arch": "amd64"},
+    "c7a.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "amd64"},
+    "c7a.24xlarge": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
     "c7a.48xlarge": {"vcpu": 192, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    "c7i.8xlarge": {"vcpu": 32, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "amd64"},
+    "c7i.12xlarge": {"vcpu": 48, "memory_gib": 96, "memory_mi": 90931, "gpu": 0, "arch": "amd64"},
+    "c7i.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "amd64"},
+    "c7i.24xlarge": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
+    "c7i.metal-24xl": {"vcpu": 96, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
+    "c7i.48xlarge": {"vcpu": 192, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
     # x86 CPU — balanced (~4 GiB/core)
     "m6i.32xlarge": {"vcpu": 128, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "amd64"},
+    # Fleet fallback sizes
+    "m7i.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "amd64"},
+    "m7i.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "amd64"},
+    "m7i.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
+    "m7i.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
     "m7i.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
     # x86 CPU — memory-optimized (~8 GiB/core)
+    # Fleet fallback sizes
+    "r5.8xlarge": {"vcpu": 32, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
+    "r5.12xlarge": {"vcpu": 48, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    "r5.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "amd64"},
     "r5.24xlarge": {"vcpu": 96, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
-    "r7i.48xlarge": {"vcpu": 192, "memory_gib": 1536, "memory_mi": 1454899, "gpu": 0, "arch": "amd64"},
+    "r7a.8xlarge": {"vcpu": 32, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
+    "r7a.12xlarge": {"vcpu": 48, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "amd64"},
+    "r7a.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "amd64"},
+    "r7a.24xlarge": {"vcpu": 96, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
     "r7a.48xlarge": {"vcpu": 192, "memory_gib": 1536, "memory_mi": 1454899, "gpu": 0, "arch": "amd64"},
+    "r7i.8xlarge": {"vcpu": 32, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "amd64"},
+    "r7i.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "amd64"},
+    "r7i.24xlarge": {"vcpu": 96, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "amd64"},
+    "r7i.48xlarge": {"vcpu": 192, "memory_gib": 1536, "memory_mi": 1454899, "gpu": 0, "arch": "amd64"},
     # ARM64 CPU
+    # Fleet fallback sizes
+    "m8g.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "arm64"},
+    "m8g.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "arm64"},
     "m8g.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
+    "m8g.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 0, "arch": "arm64"},
     "m8g.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 0, "arch": "arm64"},
     "r7g.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "arm64"},
     # GPU instances — 1-GPU
     "g4dn.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
+    # Fleet fallback sizes
+    "g4dn.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
     "g5.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
+    # Fleet fallback sizes
+    "g5.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
     "g6.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
+    # Fleet fallback sizes
+    "g6.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 1, "arch": "amd64"},
     # GPU instances — 4-GPU
     "g4dn.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 4, "arch": "amd64"},
     "g5.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 4, "arch": "amd64"},
+    # Fleet fallback sizes
+    "g5.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 4, "arch": "amd64"},
     "g6.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 4, "arch": "amd64"},
+    # Fleet fallback sizes
+    "g6.24xlarge": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 4, "arch": "amd64"},
     # GPU instances — 8-GPU
     "g4dn.metal": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 8, "arch": "amd64"},
     "g5.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 8, "arch": "amd64"},
@@ -73,25 +112,65 @@ INSTANCE_SPECS: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 ENI_MAX_PODS: dict[str, int] = {
     # Runner node instance types
-    "c7i.12xlarge": 234,
-    "c7i.metal-24xl": 737,
+    # Fleet fallback sizes — c7a
+    "c7a.8xlarge": 234,
+    "c7a.12xlarge": 234,
+    "c7a.16xlarge": 737,
+    "c7a.24xlarge": 737,
     "c7a.48xlarge": 737,
+    # Fleet fallback sizes — c7i
+    "c7i.8xlarge": 234,
+    "c7i.12xlarge": 234,
+    "c7i.16xlarge": 737,
+    "c7i.24xlarge": 737,
+    "c7i.metal-24xl": 737,
+    "c7i.48xlarge": 737,
     "m6i.32xlarge": 737,
+    # Fleet fallback sizes — m7i
+    "m7i.8xlarge": 234,
+    "m7i.12xlarge": 234,
+    "m7i.16xlarge": 737,
+    "m7i.24xlarge": 737,
     "m7i.48xlarge": 737,
+    # Fleet fallback sizes — r5
+    "r5.8xlarge": 234,
+    "r5.12xlarge": 234,
+    "r5.16xlarge": 737,
     "r5.24xlarge": 737,
-    "r7i.48xlarge": 737,
+    # Fleet fallback sizes — r7a
+    "r7a.8xlarge": 234,
+    "r7a.12xlarge": 234,
+    "r7a.16xlarge": 737,
+    "r7a.24xlarge": 737,
     "r7a.48xlarge": 737,
+    # Fleet fallback sizes — r7i
+    "r7i.8xlarge": 234,
+    "r7i.16xlarge": 737,
+    "r7i.24xlarge": 737,
+    "r7i.48xlarge": 737,
+    # Fleet fallback sizes — m8g
+    "m8g.8xlarge": 234,
+    "m8g.12xlarge": 234,
     "m8g.16xlarge": 737,
+    "m8g.24xlarge": 737,
     "m8g.48xlarge": 737,
     "r7g.16xlarge": 737,
     "g4dn.8xlarge": 58,
-    "g5.8xlarge": 234,
-    "g6.8xlarge": 234,
+    # Fleet fallback sizes — g4dn
+    "g4dn.16xlarge": 234,
     "g4dn.12xlarge": 234,
-    "g5.12xlarge": 737,
-    "g6.12xlarge": 234,
     "g4dn.metal": 737,
+    "g5.8xlarge": 234,
+    # Fleet fallback sizes — g5
+    "g5.16xlarge": 234,
+    "g5.12xlarge": 737,
+    "g5.24xlarge": 737,
     "g5.48xlarge": 345,
+    "g6.8xlarge": 234,
+    # Fleet fallback sizes — g6
+    "g6.16xlarge": 234,
+    "g6.12xlarge": 234,
+    "g6.24xlarge": 234,
     "g6.48xlarge": 737,
     "p6-b200.48xlarge": 198,
     # pypi-cache instance types
