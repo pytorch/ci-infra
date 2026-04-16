@@ -11,7 +11,7 @@ systemctl disable nodeadm-run.service || true
 systemctl stop nodeadm-config.service || true
 systemctl stop nodeadm-run.service || true
 
-# Install NVIDIA driver 580.82.07 directly on host for CUDA 13 support
+# Install latest NVIDIA driver on host (595.x branch supports CUDA 13.2)
 # GPU Operator will handle toolkit/device-plugin only
 
 # Configure NVIDIA profiling BEFORE driver installation (driver install auto-loads modules)

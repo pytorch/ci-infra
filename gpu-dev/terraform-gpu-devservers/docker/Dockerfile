@@ -1,6 +1,6 @@
 # Custom PyTorch GPU Development Server Image
-# Based on pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
-FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
+# Based on pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel
+FROM pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel
 
 # Set environment variables for non-interactive installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -41,23 +41,22 @@ RUN apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
 
-# Install CUDA 13.0 alongside existing CUDA 12.9
+# Install CUDA 12.9, 13.0, 13.1, 13.2 alongside base CUDA 12.8
+# Base image already has NVIDIA repo configured, no need for cuda-keyring
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common \
-    && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb \
-    && dpkg -i cuda-keyring_1.0-1_all.deb \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
+        cuda-toolkit-12-9 \
         cuda-toolkit-13-0 \
-    && rm cuda-keyring_1.0-1_all.deb \
+        cuda-toolkit-13-1 \
+        cuda-toolkit-13-2 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Set CUDA paths for both versions - 12.8 as default for PyTorch compatibility
-ENV CUDA_12_PATH=/usr/local/cuda-12.8
-ENV CUDA_13_PATH=/usr/local/cuda-13.0
-ENV PATH=/usr/local/cuda-12.8/bin:/usr/local/cuda-13.0/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
+# CUDA 12.8 is the default (PyTorch compiled against it)
+# All versions available at /usr/local/cuda-{12.8,12.9,13.0,13.1,13.2}/
+# Switch with: export CUDA_HOME=/usr/local/cuda-13.2
+ENV CUDA_HOME=/usr/local/cuda-12.8
+ENV PATH=/usr/local/cuda-12.8/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}
 
 # Install EFA stack (prebuilt libfabric + OpenMPI + aws-ofi-nccl with GPU/RDMA support)
 # Uses AWS EFA installer which bundles tested, compatible versions of all components
@@ -80,10 +79,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Clone and build NCCL tests with MPI support for multi-node benchmarking
+RUN apt-get update && apt-get install -y --no-install-recommends libnccl-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 RUN cd /opt && \
     git clone https://github.com/NVIDIA/nccl-tests.git && \
     cd nccl-tests && \
-    make MPI=1 MPI_HOME=/opt/amazon/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/lib/x86_64-linux-gnu -j$(nproc)
+    make MPI=1 MPI_HOME=/opt/amazon/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr -j$(nproc)
 
 # Set environment variables for EFA and NCCL
 ENV PATH=/opt/amazon/openmpi/bin:/opt/amazon/efa/bin:${PATH}
@@ -101,7 +102,7 @@ ENV NCCL_ASYNC_ERROR_HANDLING=1
 ENV SUPPORTS_EFA=true
 
 # Install Python packages (Jupyter and common ML packages)
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
         jupyterlab \
         ipywidgets \
         matplotlib \

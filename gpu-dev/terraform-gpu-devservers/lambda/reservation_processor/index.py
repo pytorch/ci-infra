@@ -49,7 +49,7 @@ DEFAULT_TIMEOUT_HOURS = int(os.environ["DEFAULT_TIMEOUT_HOURS"])
 QUEUE_URL = os.environ["QUEUE_URL"]
 PRIMARY_AVAILABILITY_ZONE = os.environ["PRIMARY_AVAILABILITY_ZONE"]
 GPU_DEV_CONTAINER_IMAGE = os.environ.get(
-    "GPU_DEV_CONTAINER_IMAGE", "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel")
+    "GPU_DEV_CONTAINER_IMAGE", "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel")
 EFS_SECURITY_GROUP_ID = os.environ.get("EFS_SECURITY_GROUP_ID")
 EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(
     ",") if os.environ.get("EFS_SUBNET_IDS") else []
@@ -4570,7 +4570,7 @@ EOFREADME
 
                         cat > /usr/local/bin/git-clone-cached << 'GITCACHESCRIPT'
 #!/bin/bash
-# Clones from bare .git tarball if available in cache (10x faster than git protocol)
+# Clones repo + submodules from in-cluster cache (much faster than GitHub)
 CACHE_URL="http://git-cache.management.svc.cluster.local:8080"
 GIT="/usr/bin/git"
 GITHUB_URL="${{1}}"
@@ -4582,59 +4582,95 @@ if [ -z "$GITHUB_URL" ]; then
     DEST="${{DEST:-pytorch}}"
 fi
 
+# Handle short names: "pytorch" -> "https://github.com/pytorch/pytorch.git"
+if [[ ! "$GITHUB_URL" =~ ^https?:// ]] && [[ ! "$GITHUB_URL" =~ ^git@ ]]; then
+    GITHUB_URL="https://github.com/pytorch/$GITHUB_URL.git"
+    DEST="${{DEST:-${{1}}}}"
+fi
+
 # Extract org/repo from GitHub URL and create cache tarball name
-# https://github.com/pytorch/pytorch.git -> pytorch_pytorch-git.tar.gz
-# https://github.com/ROCm/aiter.git -> ROCm_aiter-git.tar.gz
 if [[ "$GITHUB_URL" =~ github\.com[/:]([^/]+)/([^/\.]+) ]]; then
     ORG="${{BASH_REMATCH[1]}}"
     REPO="${{BASH_REMATCH[2]}}"
     TARBALL="${{ORG}}_${{REPO}}-git.tar.gz"
 else
-    # Not a GitHub URL, fall back to direct clone
-    exec "$GIT" clone "$GITHUB_URL" "${{DEST:+"$DEST"}}"
+    exec "$GIT" clone --recurse-submodules --jobs 8 "$GITHUB_URL" "${{DEST:+"$DEST"}}"
 fi
 
-# Default destination to repo name if not specified
-if [ -z "$DEST" ]; then
-    DEST="$REPO"
-fi
+if [ -z "$DEST" ]; then DEST="$REPO"; fi
+if [ -d "$DEST" ]; then echo "Error: $DEST already exists"; exit 1; fi
 
-if [ -d "$DEST" ]; then
-    echo "Error: $DEST already exists"
-    exit 1
-fi
-
-# Try to download from cache
-echo "[git-cache] Checking cache for $ORG/$REPO..."
+echo "[git-cache] Cloning $ORG/$REPO..."
 TOTAL_START=$(date +%s)
 
+# --- Main repo ---
 mkdir -p "$DEST/.git"
 START=$(date +%s)
 if curl -sf "$CACHE_URL/$TARBALL" | tar -xz -C "$DEST/.git" --strip-components=1 2>/dev/null; then
     END=$(date +%s)
-    echo "[git-cache] Downloaded .git in $((END - START))s"
+    echo "[git-cache] Main repo .git: $((END - START))s"
 
-    # Configure as non-bare repository and set origin
     cd "$DEST"
     "$GIT" config --file .git/config core.bare false
     "$GIT" config --file .git/config remote.origin.url "$GITHUB_URL"
     "$GIT" config --file .git/config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 
-    echo "[git-cache] Checking out working tree..."
     START=$(date +%s)
     "$GIT" checkout -f HEAD 2>/dev/null
     END=$(date +%s)
-    echo "[git-cache] Checkout took $((END - START))s"
+    echo "[git-cache] Checkout: $((END - START))s"
+
+    # --- Submodules from cache ---
+    if [ -f .gitmodules ]; then
+        echo "[git-cache] Setting up submodules..."
+        SUB_START=$(date +%s)
+
+        "$GIT" submodule init
+        ABS_ROOT="$(pwd)"
+
+        "$GIT" config --file .gitmodules --get-regexp 'submodule\..*\.url' | while read key url; do
+            name=$(echo "$key" | sed 's/^submodule\.//;s/\.url$//')
+            path=$("$GIT" config --file .gitmodules "submodule.$name.path")
+            [ -z "$path" ] && continue
+
+            COMMIT=$("$GIT" ls-tree HEAD "$path" 2>/dev/null | awk '{{print $3}}')
+            [ -z "$COMMIT" ] && continue
+
+            if [[ "$url" =~ github\.com[/:]([^/]+)/([^/.]+) ]]; then
+                SUB_TARBALL="${{BASH_REMATCH[1]}}_${{BASH_REMATCH[2]}}-git.tar.gz"
+                MODULES_DIR="$ABS_ROOT/.git/modules/$name"
+
+                mkdir -p "$MODULES_DIR"
+                if curl -sf "$CACHE_URL/$SUB_TARBALL" | tar -xz -C "$MODULES_DIR" --strip-components=1 2>/dev/null; then
+                    "$GIT" -C "$MODULES_DIR" config core.bare false
+                    "$GIT" -C "$MODULES_DIR" config core.worktree "$ABS_ROOT/$path"
+                    "$GIT" -C "$MODULES_DIR" config remote.origin.url "$url"
+                    "$GIT" -C "$MODULES_DIR" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+                    mkdir -p "$ABS_ROOT/$path"
+                    echo "gitdir: $MODULES_DIR" > "$ABS_ROOT/$path/.git"
+                    "$GIT" -C "$ABS_ROOT/$path" checkout -f "$COMMIT" 2>/dev/null
+                else
+                    rm -rf "$MODULES_DIR"
+                fi
+            fi
+        done
+
+        # Fetch remaining/recursive submodules from GitHub
+        "$GIT" -c protocol.file.allow=always submodule update --init --recursive --jobs 8 2>/dev/null
+
+        SUB_END=$(date +%s)
+        echo "[git-cache] Submodules: $((SUB_END - SUB_START))s"
+    fi
 
     TOTAL_END=$(date +%s)
-    echo "[git-cache] Total: $((TOTAL_END - TOTAL_START))s (from cache)"
+    echo "[git-cache] Total: $((TOTAL_END - TOTAL_START))s"
     exit 0
 fi
 
 # Fallback: clone from GitHub
 echo "[git-cache] Cache miss, cloning from GitHub..."
 rm -rf "$DEST"
-"$GIT" clone "$GITHUB_URL" "${{DEST:+"$DEST"}}"
+"$GIT" clone --recurse-submodules --jobs 8 "$GITHUB_URL" "${{DEST:+"$DEST"}}"
 GITCACHESCRIPT
                         chmod +x /usr/local/bin/git-clone-cached
                         echo "[STARTUP] ✓ git-clone-cached available (opt-in: use 'git-clone-cached pytorch' for cache)"

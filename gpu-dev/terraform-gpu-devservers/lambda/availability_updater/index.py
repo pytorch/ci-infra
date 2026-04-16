@@ -150,7 +150,7 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             else:
                 available_gpus = total_gpus
         else:
-            # GPU nodes - use existing logic
+            # GPU nodes - use K8s schedulable node count for total if available
             total_gpus = running_instances * gpus_per_instance
             logger.info(
                 f"ASG calculation: {running_instances} instances * {gpus_per_instance} GPUs = {total_gpus} total GPUs")
@@ -181,6 +181,7 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                 nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
 
                 single_node_max = 0  # Max available on any single node
+                schedulable_total_gpus = 0  # Total GPUs on schedulable (non-cordoned) nodes
                 for node in nodes.items:
                     if is_node_ready_and_schedulable(node):
                         available_on_node = get_available_gpus_on_node(v1, node)
@@ -192,12 +193,16 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                             except (ValueError, TypeError):
                                 pass
 
+                        schedulable_total_gpus += total_on_node
+
                         # Track max available on any single node
                         single_node_max = max(single_node_max, available_on_node)
 
                         # Count as full node if all GPUs are available
                         if total_on_node > 0 and available_on_node == total_on_node:
                             full_nodes_available += 1
+
+                total_gpus = schedulable_total_gpus
 
                 # Calculate max reservable considering multinode scenarios
                 # Only high-end GPU types support multinode (up to 4 nodes = 32 GPUs)

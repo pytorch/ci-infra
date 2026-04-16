@@ -83,13 +83,11 @@ resource "aws_iam_role_policy" "eks_node_bedrock_policy" {
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ListInferenceProfiles",
+          "bedrock:GetInferenceProfile"
         ]
-        Resource = [
-          "arn:aws:bedrock:*:*:foundation-model/anthropic.claude-*",
-          "arn:aws:bedrock:*:*:inference-profile/us.anthropic.claude-*",
-          "arn:aws:bedrock:*:*:inference-profile/global.anthropic.claude-*"
-        ]
+        Resource = "*"
       },
       {
         Effect = "Allow"

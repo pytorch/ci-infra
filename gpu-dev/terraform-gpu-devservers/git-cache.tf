@@ -228,29 +228,29 @@ NGINXCONF
                   fi
                 done
 
-                # Create bare .git tarball (much faster - no checkout needed!)
-                echo "[CACHE] Creating pytorch .git tarball..."
+                # Create tarballs for main repo + ALL submodules
+                # Naming convention: org_repo-git.tar.gz (matches git-clone-cached client)
+                echo "[CACHE] Creating tarballs..."
                 cd /git-cache
-                rm -f pytorch-git.tar.gz.tmp
 
-                # Just tar up the bare repo (pack files only, no working tree)
-                # Client will do git checkout after download (unavoidable anyway)
-                tar -czf pytorch-git.tar.gz.tmp -C /git-cache pytorch.git
-                mv pytorch-git.tar.gz.tmp pytorch-git.tar.gz
+                # Main pytorch repo — name must match org_repo convention
+                echo "[CACHE]   Creating pytorch_pytorch-git.tar.gz..."
+                rm -f pytorch_pytorch-git.tar.gz.tmp
+                tar -czf pytorch_pytorch-git.tar.gz.tmp -C /git-cache pytorch.git
+                mv pytorch_pytorch-git.tar.gz.tmp pytorch_pytorch-git.tar.gz
+                SIZE=$(du -sh pytorch_pytorch-git.tar.gz | awk '{print $1}')
+                echo "[CACHE]   pytorch_pytorch: $SIZE"
 
-                SIZE=$(du -sh pytorch-git.tar.gz | awk '{print $1}')
-                echo "[CACHE] Bare .git tarball created: $SIZE"
-
-                # Create tarballs for largest submodules (top 10 by size)
-                echo "[CACHE] Creating submodule tarballs..."
-                for repo in $(du -s /git-cache/*.git 2>/dev/null | sort -rn | head -11 | tail -10 | awk '{print $2}'); do
+                # All submodule repos (already named org_repo.git by init container)
+                for repo in /git-cache/*.git; do
                   name=$(basename "$repo")
+                  [ "$name" = "pytorch.git" ] && continue
                   tarball="$${name%.git}-git.tar.gz"
                   echo "[CACHE]   Creating $tarball..."
                   rm -f "$tarball.tmp" 2>/dev/null
                   tar -czf "$tarball.tmp" -C /git-cache "$name" 2>/dev/null && mv "$tarball.tmp" "$tarball" || echo "[CACHE]   WARNING: Failed to create $tarball"
                 done
-                echo "[CACHE] Submodule tarballs created"
+                echo "[CACHE] All tarballs created"
               fi
 
               echo "[CACHE] Refresh complete at $(date). Next in 3600s (1 hour)..."
