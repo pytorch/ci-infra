@@ -13,6 +13,6 @@ spec:
     matchLabels:
       app.kubernetes.io/name: prometheus-pushgateway
   endpoints:
-    - port: metrics
+    - port: http
       interval: 60s
       honorLabels: true
