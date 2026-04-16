@@ -39,3 +39,53 @@ variable "argocd_sa_terraform" {
   description = "Name of the ArgoCD service account for terraform"
   default     = "terraform-sa"
 }
+
+# ─── gharts variables ──────────────────────────────────────────────────────────
+
+variable "gharts_chart_version" {
+  type        = string
+  description = "gharts Helm chart version"
+  default     = "0.0.4"
+}
+
+variable "gharts_namespace" {
+  type        = string
+  description = "Namespace for gharts installation"
+  default     = "gharts"
+}
+
+variable "gharts_ingress_host" {
+  type        = string
+  description = "Public gharts endpoint"
+  default     = "gharts.pytorch.org"
+}
+
+variable "gharts_github_org" {
+  type        = string
+  description = "GitHub organization managed by gharts"
+  default     = "pytorch"
+}
+
+variable "gharts_oidc_issuer" {
+  type        = string
+  description = "OIDC issuer URL"
+  default     = "https://sso.linuxfoundation.org"
+}
+
+variable "gharts_oidc_audience" {
+  type        = string
+  description = "OIDC audience expected in tokens"
+  default     = "gharts"
+}
+
+variable "gharts_oidc_jwks_url" {
+  type        = string
+  description = "JWKS endpoint for OIDC token validation; defaults to <issuer>/.well-known/jwks.json"
+  default     = ""
+}
+
+variable "gharts_oidc_client_id" {
+  type        = string
+  description = "OIDC SPA client ID"
+  default     = "gFWBLBdbhBPCdkLF82qcRWlFUGMI8icP"
+}
