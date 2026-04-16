@@ -154,11 +154,7 @@ def main() -> int:
         config["dry_run"],
     )
 
-    try:
-        client = Client()
-    except Exception:
-        log.exception("Failed to create Kubernetes client")
-        return 1
+    client = Client()
 
     try:
         zombies = find_zombie_pods(client, config)
