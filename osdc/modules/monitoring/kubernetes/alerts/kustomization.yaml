@@ -6,3 +6,4 @@ resources:
   - infrastructure-alerts.yaml
   - gpu-alerts.yaml
   - node-compactor-alerts.yaml
+  - zombie-cleanup-alerts.yaml

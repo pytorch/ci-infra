@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: zombie-cleanup
+  namespace: arc-runners
+  labels:
+    app.kubernetes.io/name: zombie-cleanup
+    app.kubernetes.io/part-of: osdc-zombie-cleanup
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: zombie-cleanup
+            app.kubernetes.io/part-of: osdc-zombie-cleanup
+        spec:
+          serviceAccountName: zombie-cleanup
+          restartPolicy: Never
+          nodeSelector:
+            role: base-infrastructure
+          tolerations:
+            - key: CriticalAddonsOnly
+              operator: Exists
+              effect: NoSchedule
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: zombie-cleanup
+              image: ZOMBIE_CLEANUP_IMAGE_PLACEHOLDER
+              env:
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: TARGET_NAMESPACE
+                  value: "arc-runners"
+                - name: PENDING_MAX_AGE_HOURS
+                  value: "PENDING_MAX_AGE_PLACEHOLDER"
+                - name: RUNNING_MAX_AGE_HOURS
+                  value: "RUNNING_MAX_AGE_PLACEHOLDER"
+                - name: DRY_RUN
+                  value: "DRY_RUN_PLACEHOLDER"
+                - name: PUSHGATEWAY_URL
+                  value: "PUSHGATEWAY_URL_PLACEHOLDER"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
