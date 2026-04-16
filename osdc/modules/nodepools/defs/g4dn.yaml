@@ -1,0 +1,32 @@
+# Karpenter NodePool fleets: g4dn (NVIDIA T4)
+# GPU compute — one fleet per GPU count (1, 4, 8)
+fleets:
+  - name: g4dn-1gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g4dn.8xlarge
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
+      - type: g4dn.16xlarge
+        weight: 50
+        node_disk_size: 600
+        has_nvme: true
+  - name: g4dn-4gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g4dn.12xlarge
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
+  - name: g4dn-8gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g4dn.metal
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
+        baremetal: true

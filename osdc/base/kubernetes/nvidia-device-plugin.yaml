@@ -36,6 +36,10 @@ spec:
         - key: instance-type
           operator: Exists
           effect: NoSchedule
+        # Tolerate node-fleet taints (Karpenter nodepools use this)
+        - key: node-fleet
+          operator: Exists
+          effect: NoSchedule
         # Git cache startup taint (removed by git-cache-warmer after warm-up)
         - key: git-cache-not-ready
           operator: Exists

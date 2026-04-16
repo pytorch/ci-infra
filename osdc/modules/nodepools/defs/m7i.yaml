@@ -1,0 +1,22 @@
+# Karpenter NodePool fleet: m7i
+# Intel Sapphire Rapids — balanced, AMX/AVX-512, ~4 GiB/core ratio
+fleet:
+  name: m7i
+  arch: amd64
+  gpu: false
+  instances:
+    - type: m7i.48xlarge
+      weight: 100
+      node_disk_size: 4800
+    - type: m7i.24xlarge
+      weight: 75
+      node_disk_size: 2400
+    - type: m7i.16xlarge
+      weight: 50
+      node_disk_size: 1600
+    - type: m7i.12xlarge
+      weight: 25
+      node_disk_size: 1200
+    - type: m7i.8xlarge
+      weight: 10
+      node_disk_size: 800

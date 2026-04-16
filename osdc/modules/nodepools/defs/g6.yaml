@@ -1,0 +1,35 @@
+# Karpenter NodePool fleets: g6 (NVIDIA L4)
+# GPU compute — one fleet per GPU count (1, 4, 8)
+fleets:
+  - name: g6-1gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g6.8xlarge
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
+      - type: g6.16xlarge
+        weight: 50
+        node_disk_size: 600
+        has_nvme: true
+  - name: g6-4gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g6.12xlarge
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
+      - type: g6.24xlarge
+        weight: 50
+        node_disk_size: 600
+        has_nvme: true
+  - name: g6-8gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g6.48xlarge
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
