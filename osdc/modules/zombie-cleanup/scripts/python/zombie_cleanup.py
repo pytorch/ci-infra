@@ -130,8 +130,8 @@ def delete_zombies(client: Client, zombies: list[Pod], config: dict) -> tuple[in
             else:
                 log.exception("Failed to delete pod %s (HTTP %s)", name, e.status.code)
                 failed += 1
-        except Exception:
-            log.exception("Failed to delete pod %s", name)
+        except Exception as e:
+            log.exception("Failed to delete pod %s: %s", name, e)
             failed += 1
 
     return deleted, failed
@@ -156,8 +156,8 @@ def main() -> int:
 
     try:
         client = Client()
-    except Exception:
-        log.exception("Failed to create Kubernetes client")
+    except Exception as e:
+        log.exception("Failed to create Kubernetes client: %s", e)
         return 1
 
     try:
@@ -170,8 +170,8 @@ def main() -> int:
         deleted, failed = delete_zombies(client, zombies, config)
         log.info("Cleanup complete: %d deleted, %d failed", deleted, failed)
         return 1 if failed > 0 else 0
-    except Exception:
-        log.exception("Cleanup failed")
+    except Exception as e:
+        log.exception("Cleanup failed: %s", e)
         return 1
 
 
