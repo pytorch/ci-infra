@@ -45,7 +45,7 @@ variable "argocd_sa_terraform" {
 variable "gharts_chart_version" {
   type        = string
   description = "gharts Helm chart version"
-  default     = "0.0.4"
+  default     = "0.0.6"
 }
 
 variable "gharts_namespace" {
@@ -75,7 +75,7 @@ variable "gharts_oidc_issuer" {
 variable "gharts_oidc_audience" {
   type        = string
   description = "OIDC audience expected in tokens"
-  default     = "gharts"
+  default     = "https://gharts.pytorch.org/api"
 }
 
 variable "gharts_oidc_jwks_url" {

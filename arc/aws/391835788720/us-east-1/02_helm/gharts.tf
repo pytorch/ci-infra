@@ -93,5 +93,6 @@ resource "helm_release" "gharts" {
     kubernetes_secret.gharts_github,
     kubernetes_secret.gharts_oidc,
     null_resource.k8s_infra_ready,
+    null_resource.gharts_db_user_setup,
   ]
 }
