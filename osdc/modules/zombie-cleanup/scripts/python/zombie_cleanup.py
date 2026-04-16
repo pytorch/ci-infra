@@ -11,8 +11,10 @@ DaemonSets.
 import logging
 import os
 import sys
+import time
 from datetime import UTC, datetime
 
+import zombie_metrics as m
 from lightkube import Client
 from lightkube.core.exceptions import ApiError
 from lightkube.resources.core_v1 import Pod
@@ -32,6 +34,7 @@ def get_config() -> dict:
         "pending_max_hours": int(os.environ.get("PENDING_MAX_AGE_HOURS", "24")),
         "running_max_hours": int(os.environ.get("RUNNING_MAX_AGE_HOURS", "12")),
         "dry_run": os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes"),
+        "pushgateway_url": os.environ.get("PUSHGATEWAY_URL", ""),
     }
 
 
@@ -70,9 +73,14 @@ def find_zombie_pods(client: Client, config: dict) -> list[Pod]:
     running_max = config["running_max_hours"]
     now = datetime.now(UTC)
     zombies = []
+    total_count = 0
+    managed_count = 0
+    max_age = 0.0
 
     for pod in client.list(Pod, namespace=namespace):
+        total_count += 1
         if is_managed_pod(pod):
+            managed_count += 1
             continue
         if is_terminating(pod):
             continue
@@ -99,6 +107,13 @@ def find_zombie_pods(client: Client, config: dict) -> list[Pod]:
                 threshold,
             )
             zombies.append(pod)
+            if age_hours > max_age:
+                max_age = age_hours
+
+    m.pods_total.set(total_count)
+    m.pods_managed_skipped.set(managed_count)
+    m.zombies_found.set(len(zombies))
+    m.oldest_zombie_age_hours.set(max_age)
 
     return zombies
 
@@ -155,19 +170,53 @@ def main() -> int:
     )
 
     client = Client()
+    start_time = time.monotonic()
 
     try:
         zombies = find_zombie_pods(client, config)
         if not zombies:
             log.info("No zombie pods found")
+            m.pods_deleted.set(0)
+            m.pods_failed.set(0)
+            m.pods_skipped.set(0)
+            m.duration_seconds.set(time.monotonic() - start_time)
+            m.runs_total.labels(status="success").inc()
+            if config["pushgateway_url"]:
+                m.push_metrics(config["pushgateway_url"])
             return 0
 
-        log.info("Found %d zombie pod(s)", len(zombies))
+        total_pods_count = int(m.registry.get_sample_value("zombie_cleanup_pods_total") or 0)
+        cleanup_cap = max(int(total_pods_count * 0.1), 10)
+        skipped_count = max(len(zombies) - cleanup_cap, 0)
+        if skipped_count > 0:
+            log.warning(
+                "Cleanup cap reached: %d zombies found, cleaning %d, deferring %d",
+                len(zombies),
+                cleanup_cap,
+                skipped_count,
+            )
+            zombies = zombies[:cleanup_cap]
+
+        log.info("Found %d zombie pod(s) to clean", len(zombies))
         deleted, failed = delete_zombies(client, zombies, config)
-        log.info("Cleanup complete: %d deleted, %d failed", deleted, failed)
+        log.info("Cleanup complete: %d deleted, %d failed, %d deferred", deleted, failed, skipped_count)
+        m.pods_deleted.set(deleted)
+        m.pods_failed.set(failed)
+        m.pods_skipped.set(skipped_count)
+        m.duration_seconds.set(time.monotonic() - start_time)
+        m.runs_total.labels(status="success" if failed == 0 else "failure").inc()
+        if config["pushgateway_url"]:
+            m.push_metrics(config["pushgateway_url"])
         return 1 if failed > 0 else 0
     except Exception as e:
         log.exception("Cleanup failed: %s", e)
+        m.pods_deleted.set(0)
+        m.pods_failed.set(0)
+        m.pods_skipped.set(0)
+        m.duration_seconds.set(time.monotonic() - start_time)
+        m.runs_total.labels(status="failure").inc()
+        if config["pushgateway_url"]:
+            m.push_metrics(config["pushgateway_url"])
         return 1
 
 

@@ -47,6 +47,7 @@ fi
 PENDING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pending_max_age_hours "24")
 RUNNING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.running_max_age_hours "12")
 DRY_RUN=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.dry_run "false")
+PUSHGATEWAY_URL=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pushgateway_url "http://prometheus-pushgateway.monitoring:9091")
 
 # --- Compute content-based image tag ---
 TAG=$(find "$MODULE_DIR/docker" "$MODULE_DIR/scripts/python" \
@@ -138,6 +139,7 @@ sed \
   -e "s|PENDING_MAX_AGE_PLACEHOLDER|${PENDING_MAX_AGE}|" \
   -e "s|RUNNING_MAX_AGE_PLACEHOLDER|${RUNNING_MAX_AGE}|" \
   -e "s|DRY_RUN_PLACEHOLDER|${DRY_RUN}|" \
+  -e "s|PUSHGATEWAY_URL_PLACEHOLDER|${PUSHGATEWAY_URL}|" \
   "$MODULE_DIR/kubernetes/cronjob.yaml" | kubectl_apply_if_changed -f -
 
 echo "  zombie-cleanup deployed."

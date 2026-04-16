@@ -49,6 +49,8 @@ spec:
                   value: "RUNNING_MAX_AGE_PLACEHOLDER"
                 - name: DRY_RUN
                   value: "DRY_RUN_PLACEHOLDER"
+                - name: PUSHGATEWAY_URL
+                  value: "PUSHGATEWAY_URL_PLACEHOLDER"
               resources:
                 requests:
                   cpu: 50m

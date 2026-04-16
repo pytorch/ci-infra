@@ -52,6 +52,27 @@ helm_upgrade_if_changed kube-prometheus-stack "$NAMESPACE" \
 
 echo "kube-prometheus-stack installed (CRDs + exporters)."
 
+# --- Install Prometheus Pushgateway ---
+echo "Installing Prometheus Pushgateway..."
+helm_upgrade_if_changed prometheus-pushgateway "$NAMESPACE" \
+  --history-max 3 \
+  --set nodeSelector.role=base-infrastructure \
+  --set "tolerations[0].key=CriticalAddonsOnly" \
+  --set "tolerations[0].operator=Exists" \
+  --set "tolerations[0].effect=NoSchedule" \
+  --set resources.requests.cpu=50m \
+  --set resources.requests.memory=64Mi \
+  --set resources.limits.cpu=100m \
+  --set resources.limits.memory=128Mi \
+  --set persistentVolume.enabled=false \
+  --set containerSecurityContext.readOnlyRootFilesystem=true \
+  --set containerSecurityContext.allowPrivilegeEscalation=false \
+  --timeout 2m \
+  --wait \
+  prometheus-community/prometheus-pushgateway \
+  --version 3.6.0
+echo "Prometheus Pushgateway installed."
+
 # --- Apply ServiceMonitors, PodMonitors, and DCGM ServiceMonitor ---
 # Applied AFTER kube-prometheus-stack because it provides the
 # monitoring.coreos.com CRDs (ServiceMonitor, PodMonitor).

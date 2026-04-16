@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: zombie-cleanup-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  groups:
+    - name: zombie-cleanup
+      rules:
+        - alert: ZombieCleanupCapReached
+          expr: zombie_cleanup_pods_skipped > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Zombie cleanup cap reached — zombies deferred"
+            description: >-
+              The zombie cleanup job found more zombie pods than the per-round
+              cap allows. {{ $value }} zombie pod(s) were skipped and will be
+              retried in the next run. This may signal a systemic scheduling
+              or execution problem.

@@ -2,4 +2,4 @@
 name = "zombie-cleanup"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["lightkube==0.15.5"]
+dependencies = ["lightkube==0.15.5", "prometheus_client>=0.21.0"]
