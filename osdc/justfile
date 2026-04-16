@@ -39,6 +39,68 @@ setup:
     @cd {{UPSTREAM}} && uv sync
     @echo "Setup complete."
 
+# Remove all caches, generated files, and initialization artifacts
+clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Cleaning caches and initialization artifacts..."
+    echo ""
+
+    REMOVED=0
+
+    _rm() {
+        for target in "$@"; do
+            [[ -e "$target" ]] || continue
+            echo "  rm -rf $target"
+            rm -rf "$target"
+            REMOVED=$((REMOVED + 1))
+        done
+    }
+
+    ROOTS=("{{ROOT}}")
+    [[ "{{ROOT}}" != "{{UPSTREAM}}" ]] && ROOTS+=("{{UPSTREAM}}")
+
+    for root in "${ROOTS[@]}"; do
+        echo "── ${root} ──"
+
+        # Tofu init caches
+        while IFS= read -r -d '' d; do _rm "$d"; done \
+            < <(find "$root" -path '*/.scratch' -prune -o -path '*/.venv' -prune -o \
+                -type d -name '.terraform' -print0 2>/dev/null)
+
+        # Tofu lock files and plan files
+        while IFS= read -r -d '' f; do _rm "$f"; done \
+            < <(find "$root" -path '*/.scratch' -prune -o -path '*/.venv' -prune -o \
+                \( -name '.terraform.lock.hcl' -o -name 'tfplan' -o -name '*.tfplan' \) -type f -print0 2>/dev/null)
+
+        # Python bytecode and tool caches
+        while IFS= read -r -d '' d; do _rm "$d"; done \
+            < <(find "$root" -path '*/.scratch' -prune -o -path '*/.venv' -prune -o \
+                -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.ruff_cache' \) -print0 2>/dev/null)
+
+        # Coverage artifacts
+        _rm "$root/.coverage" "$root/coverage.json"
+
+        # Generated module outputs
+        if [[ -d "$root/modules" ]]; then
+            while IFS= read -r -d '' d; do _rm "$d"; done \
+                < <(find "$root/modules" -type d -name 'generated' -print0 2>/dev/null)
+        fi
+
+        # Python virtual environment
+        _rm "$root/.venv"
+
+        # Integration test scratch
+        _rm "$root/.scratch"
+    done
+
+    echo ""
+    if [[ $REMOVED -eq 0 ]]; then
+        echo "Nothing to clean."
+    else
+        echo "Removed $REMOVED item(s). Run 'just setup' to re-initialize."
+    fi
+
 # ============================================================================
 # INFO
 # ============================================================================
