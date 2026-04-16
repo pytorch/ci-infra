@@ -202,8 +202,9 @@ class TestDeriveFleetName:
     def test_derive_fleet_name_metal(self):
         assert derive_fleet_name("c7i.metal-24xl") == "c7i"
 
-    def test_derive_fleet_name_unknown_gpu_fallback(self):
-        assert derive_fleet_name("z99.xlarge", gpu_count=4) == "z99-4gpu"
+    def test_derive_fleet_name_unknown_raises(self):
+        with pytest.raises(ValueError, match="not found in INSTANCE_SPECS"):
+            derive_fleet_name("z99.xlarge")
 
 
 # ============================================================================
@@ -324,7 +325,7 @@ class TestResolveValue:
 
 class TestGenerateRunner:
     def test_non_gpu_runner(self, tmp_path):
-        def_file = make_def_file(tmp_path, "cpu-runner", "m5.xlarge", 4, 16)
+        def_file = make_def_file(tmp_path, "cpu-runner", "m6i.32xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -347,7 +348,7 @@ class TestGenerateRunner:
         assert helm["githubConfigUrl"] == "https://github.com/test-org"
         assert helm["githubConfigSecret"] == "gh-secret"
         assert helm["runnerScaleSetName"] == "staging-cpu-runner"
-        assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "m5"
+        assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "m6i"
 
         # ConfigMap doc
         cm = docs[1]
@@ -408,7 +409,7 @@ class TestGenerateRunner:
         assert "nvidia.com/gpu" in keys
 
     def test_no_placeholders_remaining(self, tmp_path):
-        def_file = make_def_file(tmp_path, "test-runner", "c5.xlarge", 2, 4)
+        def_file = make_def_file(tmp_path, "test-runner", "c7i.24xlarge", 2, 4)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -423,7 +424,7 @@ class TestGenerateRunner:
         assert "}}" not in content
 
     def test_normalized_name_in_output(self, tmp_path):
-        def_file = make_def_file(tmp_path, "runner.with_dots", "m5.xlarge", 4, 16)
+        def_file = make_def_file(tmp_path, "runner.with_dots", "m6i.32xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -440,7 +441,7 @@ class TestGenerateRunner:
 
     def test_invalid_def_no_name(self, tmp_path):
         p = tmp_path / "bad.yaml"
-        p.write_text(yaml.dump({"runner": {"instance_type": "m5.xlarge"}}, default_flow_style=False))
+        p.write_text(yaml.dump({"runner": {"instance_type": "m6i.32xlarge"}}, default_flow_style=False))
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
@@ -457,7 +458,7 @@ class TestGenerateRunner:
         assert result is False
 
     def test_resource_values_match_def(self, tmp_path):
-        def_file = make_def_file(tmp_path, "res-test", "c6i.12xlarge", 48, 96, disk_size=200)
+        def_file = make_def_file(tmp_path, "res-test", "c7i.24xlarge", 48, 96, disk_size=200)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -477,7 +478,7 @@ class TestGenerateRunner:
 
     def test_memory_bytes_env_var(self, tmp_path):
         """TORCH_CI_MAX_MEMORY env var contains memory in bytes."""
-        def_file = make_def_file(tmp_path, "mem-test", "c6i.12xlarge", 48, 96, disk_size=200)
+        def_file = make_def_file(tmp_path, "mem-test", "c7i.24xlarge", 48, 96, disk_size=200)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -497,7 +498,7 @@ class TestGenerateRunner:
 
     def test_pypi_cache_env_vars(self, tmp_path):
         """All pypi-cache env vars are present with correct CPU defaults."""
-        def_file = make_def_file(tmp_path, "cache-test", "m5.xlarge", 4, 16)
+        def_file = make_def_file(tmp_path, "cache-test", "m6i.32xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -526,7 +527,7 @@ class TestGenerateRunner:
 
     def test_runner_group_default(self, tmp_path):
         """Runner group defaults to 'default' when not specified."""
-        def_file = make_def_file(tmp_path, "grp-test", "m5.xlarge", 4, 16)
+        def_file = make_def_file(tmp_path, "grp-test", "m6i.32xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -541,7 +542,7 @@ class TestGenerateRunner:
 
     def test_runner_group_custom(self, tmp_path):
         """Runner group can be overridden in the def (org-scoped URL)."""
-        def_file = make_def_file(tmp_path, "rel-grp", "m5.xlarge", 4, 16, runner_group="release-runners")
+        def_file = make_def_file(tmp_path, "rel-grp", "m6i.32xlarge", 4, 16, runner_group="release-runners")
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -556,7 +557,7 @@ class TestGenerateRunner:
 
     def test_runner_group_repo_scoped_override(self, tmp_path):
         """Runner group forced to 'default' when githubConfigUrl is repo-scoped."""
-        def_file = make_def_file(tmp_path, "rel-repo", "m5.xlarge", 4, 16, runner_group="release-runners")
+        def_file = make_def_file(tmp_path, "rel-repo", "m6i.32xlarge", 4, 16, runner_group="release-runners")
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -603,7 +604,7 @@ class TestGenerateRunner:
 
     def test_regular_runner_anti_affinity(self, tmp_path):
         """Regular runners get anti-affinity to avoid release nodes."""
-        def_file = make_def_file(tmp_path, "reg-runner", "m5.xlarge", 4, 16)
+        def_file = make_def_file(tmp_path, "reg-runner", "m6i.32xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         cluster_config = {
@@ -643,7 +644,7 @@ class TestGenerateRunner:
                 {
                     "runner": {
                         "name": "nodisk",
-                        "instance_type": "m5.xlarge",
+                        "instance_type": "m6i.32xlarge",
                         "vcpu": 2,
                         "memory": "4Gi",
                     }
@@ -707,7 +708,7 @@ class TestMain:
 
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
-        make_def_file(defs_dir, "runner1", "m5.xlarge", 2, 4)
+        make_def_file(defs_dir, "runner1", "m6i.32xlarge", 2, 4)
 
         monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
         monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
@@ -725,8 +726,8 @@ class TestMain:
 
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
-        make_def_file(defs_dir, "runner-a", "m5.xlarge", 2, 4)
-        make_def_file(defs_dir, "runner-b", "g4dn.xlarge", 4, 16, gpu=1)
+        make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
+        make_def_file(defs_dir, "runner-b", "g4dn.8xlarge", 4, 16, gpu=1)
 
         output_dir = tmp_path / "out"
 
@@ -752,7 +753,7 @@ class TestMain:
 
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
-        make_def_file(defs_dir, "runner-a", "m5.xlarge", 2, 4)
+        make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
 
         output_dir = tmp_path / "out"
         output_dir.mkdir()

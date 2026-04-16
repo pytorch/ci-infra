@@ -376,9 +376,14 @@ def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name)
     )
 
     # Auto-derive fleet name for legacy defs so nodes get the node-fleet label/taint
+    if instance_type not in INSTANCE_SPECS:
+        log_error(
+            f"Instance type '{instance_type}' not found in INSTANCE_SPECS. "
+            f"Add it to scripts/python/instance_specs.py before using it."
+        )
+        return 0
     family = instance_type.split(".")[0]
-    specs = INSTANCE_SPECS.get(instance_type, {})
-    node_gpus = specs.get("gpu", 0)
+    node_gpus = INSTANCE_SPECS[instance_type].get("gpu", 0)
     nodepool_def["fleet_name"] = f"{family}-{node_gpus}gpu" if node_gpus else family
 
     content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)

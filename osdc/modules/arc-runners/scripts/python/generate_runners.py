@@ -51,16 +51,20 @@ def normalize_name(name):
     return name.replace(".", "-").replace("_", "-")
 
 
-def derive_fleet_name(instance_type, gpu_count=0):
+def derive_fleet_name(instance_type):
     """Derive the node-fleet name from an instance type.
 
     Uses the instance's actual GPU count from INSTANCE_SPECS rather than the
     runner's requested GPU count, since multiple runners with different GPU
     requests may share the same multi-GPU instance (e.g. B200).
     """
+    if instance_type not in INSTANCE_SPECS:
+        raise ValueError(
+            f"Instance type '{instance_type}' not found in INSTANCE_SPECS. "
+            f"Add it to scripts/python/instance_specs.py before using it."
+        )
     family = instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
-    specs = INSTANCE_SPECS.get(instance_type, {})
-    node_gpus = specs.get("gpu", gpu_count)
+    node_gpus = INSTANCE_SPECS[instance_type].get("gpu", 0)
     if node_gpus:
         return f"{family}-{node_gpus}gpu"
     return family
@@ -153,7 +157,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         log_error(f"Invalid definition file: {def_file}")
         return False
 
-    node_fleet = derive_fleet_name(instance_type, gpu)
+    node_fleet = derive_fleet_name(instance_type)
 
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")

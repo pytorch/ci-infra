@@ -30,7 +30,7 @@ def _make_nodepool_def(**overrides) -> dict:
     """Build a minimal nodepool def dict with sensible defaults."""
     base = {
         "name": "test-pool",
-        "instance_type": "m5.4xlarge",
+        "instance_type": "m6i.32xlarge",
         "node_disk_size": 200,
         "gpu": False,
     }
@@ -117,7 +117,7 @@ class TestDetectArch:
         assert _detect_arch("m8gd.24xlarge", None) == "arm64"
 
     def test_non_graviton_m5(self):
-        assert _detect_arch("m5.4xlarge", None) == "amd64"
+        assert _detect_arch("m6i.32xlarge", None) == "amd64"
 
     def test_non_graviton_r5(self):
         assert _detect_arch("r5.24xlarge", None) == "amd64"
@@ -778,7 +778,7 @@ class TestMain:
         defs_dir = self._create_defs(
             tmp_path,
             [
-                _make_nodepool_def(name="pool-a", instance_type="m5.4xlarge"),
+                _make_nodepool_def(name="pool-a", instance_type="m6i.32xlarge"),
                 _make_nodepool_def(name="pool-b", instance_type="r5.24xlarge"),
             ],
         )
@@ -847,11 +847,29 @@ class TestMain:
         # Missing name → invalid, aborts with error return code
         assert result == 1
 
+    def test_legacy_nodepool_unknown_instance_type(self, tmp_path):
+        """Legacy nodepool defs with instance types not in INSTANCE_SPECS fail."""
+        defs_dir = self._create_defs(
+            tmp_path,
+            [_make_nodepool_def(name="unknown-pool", instance_type="z99.xlarge")],
+        )
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 0
+        assert not list(output_dir.glob("*.yaml"))
+
     def test_output_files_are_parseable_yaml(self, tmp_path):
         defs_dir = self._create_defs(
             tmp_path,
             [
-                _make_nodepool_def(name="parseable", instance_type="m5.4xlarge"),
+                _make_nodepool_def(name="parseable", instance_type="m6i.32xlarge"),
             ],
         )
         output_dir = tmp_path / "generated"
@@ -986,7 +1004,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         (defs_dir / "legacy.yaml").write_text(
-            yaml.dump({"nodepool": _make_nodepool_def(name="legacy-pool", instance_type="m5.4xlarge")})
+            yaml.dump({"nodepool": _make_nodepool_def(name="legacy-pool", instance_type="r7i.48xlarge")})
         )
         fleet_data = {
             "fleet": {
