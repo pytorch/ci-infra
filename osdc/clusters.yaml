@@ -77,6 +77,11 @@ defaults:
   logging:
     grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
   alloy_chart_version: "1.6.2"
+  zombie_cleanup:
+    enabled: true
+    pending_max_age_hours: 24
+    running_max_age_hours: 12
+    dry_run: false
   pypi_cache:
     instance_type: r5d.12xlarge
     cuda_versions:
@@ -153,6 +158,7 @@ clusters:
       - buildkit
       - pypi-cache
       - cache-enforcer
+      - zombie-cleanup
       - monitoring
       - logging
 
@@ -186,5 +192,6 @@ clusters:
       - buildkit
       - pypi-cache
       - cache-enforcer
+      - zombie-cleanup
       - monitoring
       - logging
