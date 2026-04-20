@@ -1,0 +1,35 @@
+# Karpenter NodePool fleets: g5 (NVIDIA A10G)
+# GPU compute — one fleet per GPU count (1, 4, 8)
+fleets:
+  - name: g5-1gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g5.8xlarge
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
+      - type: g5.16xlarge
+        weight: 50
+        node_disk_size: 600
+        has_nvme: true
+  - name: g5-4gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g5.12xlarge
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
+      - type: g5.24xlarge
+        weight: 50
+        node_disk_size: 600
+        has_nvme: true
+  - name: g5-8gpu
+    arch: amd64
+    gpu: true
+    instances:
+      - type: g5.48xlarge
+        weight: 100
+        node_disk_size: 600
+        has_nvme: true
