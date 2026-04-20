@@ -79,7 +79,7 @@ locals {
         "cpu-arm" = {
           instance_type       = "c7g.4xlarge"
           instance_types      = null
-          instance_count      = 3
+          instance_count      = 1
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
@@ -88,7 +88,7 @@ locals {
         "cpu-x86" = {
           instance_type       = "c7i.4xlarge"
           instance_types      = null
-          instance_count      = 3
+          instance_count      = 1
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
@@ -97,7 +97,7 @@ locals {
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 2 # 2 instances in primary AZ
+          instance_count      = 1
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
@@ -106,7 +106,7 @@ locals {
         "t4-az2" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 2 # 2 instances in secondary AZ
+          instance_count      = 0 # Disabled - use primary AZ only for testing
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
@@ -115,7 +115,7 @@ locals {
         "h100" = {
           instance_type       = "p5.48xlarge"
           instance_types      = null
-          instance_count      = 2 # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 0 # Disabled - only use via CR when needed
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -124,7 +124,7 @@ locals {
         "t4-small" = {
           instance_type       = "g4dn.2xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0 # Disabled
           gpus_per_instance   = 1
           use_placement_group = false
           architecture        = "x86_64"
@@ -183,7 +183,7 @@ locals {
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 5 # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 2
           gpus_per_instance   = 4
           use_placement_group = true
           architecture        = "x86_64"
@@ -192,7 +192,7 @@ locals {
         "l4" = {
           instance_type       = "g6.12xlarge"
           instance_types      = null
-          instance_count      = 5 # Fallback default (not used when capacity_reservations defined)
+          instance_count      = 2
           gpus_per_instance   = 4 # 4x L4 GPUs
           use_placement_group = false
           architecture        = "x86_64"
@@ -201,7 +201,7 @@ locals {
         "a10g" = {
           instance_type       = "g5.12xlarge"
           instance_types      = null
-          instance_count      = 2
+          instance_count      = 1
           gpus_per_instance   = 4 # 4x A10G GPUs
           use_placement_group = false
           architecture        = "x86_64"
@@ -210,7 +210,7 @@ locals {
         "cpu-arm" = {
           instance_type       = "c7g.8xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 10
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
@@ -219,7 +219,7 @@ locals {
         "cpu-x86" = {
           instance_type       = "c7i.8xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 10
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"

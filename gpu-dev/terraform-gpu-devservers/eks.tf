@@ -85,7 +85,9 @@ resource "aws_iam_role_policy" "eks_node_bedrock_policy" {
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
           "bedrock:ListInferenceProfiles",
-          "bedrock:GetInferenceProfile"
+          "bedrock:GetInferenceProfile",
+          "bedrock:ListFoundationModels",
+          "bedrock-mantle:*"
         ]
         Resource = "*"
       },
