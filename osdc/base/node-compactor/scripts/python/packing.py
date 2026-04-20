@@ -3,6 +3,7 @@
 import logging
 import math
 from collections import defaultdict
+from collections.abc import Callable
 
 from models import Config, NodeState, PodInfo
 
@@ -89,18 +90,27 @@ def _pods_fit_on_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> bool:
     return True
 
 
-def select_reserved_nodes(pool_nodes: dict[str, list[NodeState]], cfg: Config) -> dict[str, set[str]]:
+def select_reserved_nodes(group_nodes: dict[str, list[NodeState]], cfg: Config) -> dict[str, set[str]]:
     """Select nodes per pool for capacity reservation (do-not-disrupt).
 
     Only young nodes (< max_uptime_hours) are eligible. Selection priority:
     lowest utilization first (ready-to-use capacity), then oldest
     youngest-pod age (closer to draining), then newest node as tiebreaker.
 
+    Accepts any grouping (e.g. fleet-grouped data) but internally
+    re-groups by NodePool, since reservations are per-NodePool.
+
     Returns {pool_name: {node_names}} with up to
     cfg.capacity_reservation_nodes per pool.
     """
     if cfg.capacity_reservation_nodes <= 0:
         return {}
+
+    # Reservations are per-NodePool — re-group internally regardless of caller grouping
+    pool_nodes: dict[str, list[NodeState]] = defaultdict(list)
+    for nodes in group_nodes.values():
+        for ns in nodes:
+            pool_nodes[ns.nodepool].append(ns)
 
     result: dict[str, set[str]] = {}
     for pool_name, nodes in pool_nodes.items():
@@ -126,7 +136,10 @@ def select_reserved_nodes(pool_nodes: dict[str, list[NodeState]], cfg: Config) -
 
 
 def compute_taints(
-    node_states: dict[str, NodeState], cfg: Config, reserved_nodes: set[str] | None = None
+    node_states: dict[str, NodeState],
+    cfg: Config,
+    reserved_nodes: set[str] | None = None,
+    group_key: Callable[[NodeState], str] | None = None,
 ) -> tuple[set[str], set[str], set[str], set[str]]:
     """Decide which nodes to taint and which to untaint.
 
@@ -142,9 +155,11 @@ def compute_taints(
     if not node_states:
         return set(), set(), set(), set()
 
-    pools: dict[str, list[NodeState]] = defaultdict(list)
+    key_fn = group_key or (lambda ns: ns.nodepool)
+
+    groups: dict[str, list[NodeState]] = defaultdict(list)
     for ns in node_states.values():
-        pools[ns.nodepool].append(ns)
+        groups[key_fn(ns)].append(ns)
 
     to_taint: set[str] = set()
     to_untaint: set[str] = set()
@@ -153,31 +168,31 @@ def compute_taints(
 
     reserved = reserved_nodes or set()
 
-    for _pool_name, pool_nodes in pools.items():
+    for _group_name, group_nodes in groups.items():
         all_workload_pods = []
-        for node in pool_nodes:
+        for node in group_nodes:
             all_workload_pods.extend(p for p in node.workload_pods if not p.is_phantom)
 
-        min_needed = bin_pack_min_nodes(all_workload_pods, pool_nodes)
+        min_needed = bin_pack_min_nodes(all_workload_pods, group_nodes)
         min_needed = max(min_needed, cfg.min_nodes)
 
-        surplus = len(pool_nodes) - min_needed
+        surplus = len(group_nodes) - min_needed
         if surplus <= 0:
             # All nodes are needed — untaint any that are tainted.
             # This is a min_nodes enforcement: mandatory.
-            for node in pool_nodes:
+            for node in group_nodes:
                 if node.is_tainted:
                     to_untaint.add(node.name)
                     mandatory_untaint.add(node.name)
             continue
 
-        # Compute required spare capacity for this pool.
+        # Compute required spare capacity for this group.
         # spare_capacity_nodes is a floor, spare_capacity_ratio scales with
-        # pool size. The effective requirement is the max of both.
+        # group size. The effective requirement is the max of both.
         # Setting both to 0 disables the feature.
         required_spare = max(
             cfg.spare_capacity_nodes,
-            math.ceil(len(pool_nodes) * cfg.spare_capacity_ratio),
+            math.ceil(len(group_nodes) * cfg.spare_capacity_ratio),
         )
 
         # Exclude young nodes and reserved nodes from taint candidates.
@@ -185,7 +200,7 @@ def compute_taints(
         # provisioning and the compactor's reconcile cycle). Reserved nodes
         # are protected from disruption to maintain ready-to-use capacity.
         eligible = []
-        for node in pool_nodes:
+        for node in group_nodes:
             if node.name in reserved:
                 log.debug("Skipping %s: capacity-reserved", node.name)
                 if node.is_tainted:
@@ -207,6 +222,7 @@ def compute_taints(
             is_old = 1 if node.uptime_hours > cfg.max_uptime_hours else 0
             return (
                 -is_old,
+                node.allocatable_cpu,
                 node.utilization,
                 -node.youngest_pod_age_seconds,
             )
@@ -270,7 +286,7 @@ def compute_taints(
             # with utilization at or below the threshold.
             if required_spare > 0:
                 spare_after = _count_spare_nodes(
-                    pool_nodes,
+                    group_nodes,
                     node.name,
                     to_taint,
                     cfg.spare_capacity_threshold,
@@ -293,10 +309,10 @@ def compute_taints(
                 new_taint_count += 1
 
         # Spare capacity recovery: untaint low-utilization tainted nodes
-        # if the pool doesn't meet the spare capacity requirement.
+        # if the group doesn't meet the spare capacity requirement.
         if required_spare > 0:
             current_spare = _count_spare_nodes(
-                pool_nodes,
+                group_nodes,
                 None,
                 to_taint,
                 cfg.spare_capacity_threshold,
@@ -308,7 +324,7 @@ def compute_taints(
                 tainted_low = sorted(
                     (
                         n
-                        for n in pool_nodes
+                        for n in group_nodes
                         if n.is_tainted and n.name not in to_untaint and n.utilization <= cfg.spare_capacity_threshold
                     ),
                     key=lambda n: n.utilization,

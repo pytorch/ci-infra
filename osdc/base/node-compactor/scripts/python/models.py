@@ -16,6 +16,7 @@ log = logging.getLogger("compactor")
 
 ANNOTATION_CAPACITY_RESERVED = "node-compactor.osdc.io/capacity-reserved"
 ANNOTATION_DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
+LABEL_NODE_FLEET = "node-fleet"
 
 # ============================================================================
 # Configuration

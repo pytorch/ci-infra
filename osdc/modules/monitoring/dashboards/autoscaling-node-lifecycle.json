@@ -709,12 +709,12 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "node_compactor_managed_nodes{cluster=\"$cluster\", nodepool=~\"$nodepool\"}",
-          "legendFormat": "{{nodepool}}",
+          "expr": "node_compactor_managed_nodes{cluster=\"$cluster\", fleet=~\"$fleet\"}",
+          "legendFormat": "{{fleet}}",
           "refId": "A"
         }
       ],
-      "title": "Managed Nodes by NodePool",
+      "title": "Managed Nodes by Fleet",
       "type": "timeseries"
     },
     {
@@ -764,14 +764,14 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "node_compactor_tainted_nodes{cluster=\"$cluster\", nodepool=~\"$nodepool\"}",
-          "legendFormat": "tainted — {{nodepool}}",
+          "expr": "node_compactor_tainted_nodes{cluster=\"$cluster\", fleet=~\"$fleet\"}",
+          "legendFormat": "tainted — {{fleet}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "node_compactor_managed_nodes{cluster=\"$cluster\", nodepool=~\"$nodepool\"}",
-          "legendFormat": "managed — {{nodepool}}",
+          "expr": "node_compactor_managed_nodes{cluster=\"$cluster\", fleet=~\"$fleet\"}",
+          "legendFormat": "managed — {{fleet}}",
           "refId": "B"
         }
       ],
@@ -825,8 +825,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "compactor_spare_capacity_nodes{cluster=\"$cluster\", nodepool=~\"$nodepool\"}",
-          "legendFormat": "{{nodepool}}",
+          "expr": "compactor_spare_capacity_nodes{cluster=\"$cluster\", fleet=~\"$fleet\"}",
+          "legendFormat": "{{fleet}}",
           "refId": "A"
         }
       ],
@@ -880,8 +880,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "compactor_spare_capacity_required{cluster=\"$cluster\", nodepool=~\"$nodepool\"}",
-          "legendFormat": "{{nodepool}}",
+          "expr": "compactor_spare_capacity_required{cluster=\"$cluster\", fleet=~\"$fleet\"}",
+          "legendFormat": "{{fleet}}",
           "refId": "A"
         }
       ],
@@ -935,8 +935,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "node_compactor_pending_pods_compatible{cluster=\"$cluster\", nodepool=~\"$nodepool\"}",
-          "legendFormat": "{{nodepool}}",
+          "expr": "node_compactor_pending_pods_compatible{cluster=\"$cluster\"}",
+          "legendFormat": "pending",
           "refId": "A"
         }
       ],
@@ -990,8 +990,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "node_compactor_workload_pods{cluster=\"$cluster\", nodepool=~\"$nodepool\"}",
-          "legendFormat": "{{nodepool}}",
+          "expr": "node_compactor_workload_pods{cluster=\"$cluster\", fleet=~\"$fleet\"}",
+          "legendFormat": "{{fleet}}",
           "refId": "A"
         }
       ],
@@ -1328,8 +1328,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (nodepool) (rate(compactor_fleet_cooldown_blocks_total{cluster=\"$cluster\", nodepool=~\"$nodepool\"}[5m]))",
-          "legendFormat": "{{nodepool}}",
+          "expr": "sum by (fleet) (rate(compactor_fleet_cooldown_blocks_total{cluster=\"$cluster\", fleet=~\"$fleet\"}[5m]))",
+          "legendFormat": "{{fleet}}",
           "refId": "A"
         }
       ],
@@ -1383,8 +1383,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "compactor_fleet_cooldown_remaining_seconds{cluster=\"$cluster\", nodepool=~\"$nodepool\"}",
-          "legendFormat": "{{nodepool}}",
+          "expr": "compactor_fleet_cooldown_remaining_seconds{cluster=\"$cluster\", fleet=~\"$fleet\"}",
+          "legendFormat": "{{fleet}}",
           "refId": "A"
         }
       ],
@@ -1874,6 +1874,24 @@
         "name": "nodepool",
         "options": [],
         "query": { "qryType": 1, "query": "label_values(karpenter_nodepools_usage{cluster=\"$cluster\"}, nodepool)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(node_compactor_managed_nodes{cluster=\"$cluster\"}, fleet)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Fleet",
+        "multi": true,
+        "name": "fleet",
+        "options": [],
+        "query": { "qryType": 1, "query": "label_values(node_compactor_managed_nodes{cluster=\"$cluster\"}, fleet)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
