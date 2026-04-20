@@ -95,14 +95,17 @@ template:
     # Schedule runner pods on compute nodes
     nodeSelector:
       workload-type: github-runner
-      instance-type: "{{INSTANCE_TYPE}}"
+      node-fleet: "{{NODE_FLEET}}"
 {{RUNNER_CLASS_NODE_SELECTOR}}
 {{RUNNER_CLASS_AFFINITY}}
-    # Tolerate instance-type taint + git-cache startup taint
+    # Tolerate node-fleet + instance-type taints and git-cache startup taint
     tolerations:
-      - key: instance-type
+      - key: node-fleet
         operator: Equal
-        value: "{{INSTANCE_TYPE}}"
+        value: "{{NODE_FLEET}}"
+        effect: NoSchedule
+      - key: instance-type
+        operator: Exists
         effect: NoSchedule
       - key: git-cache-not-ready
         operator: Equal
@@ -257,31 +260,34 @@ data:
       serviceAccountName: arc-workflow
       automountServiceAccountToken: false
 
-      # Prefer scheduling job pods on same instance type as runner.
-      # Tolerations enforce instance-type constraints (every NodePool taints
-      # with instance-type=<type>:NoSchedule), so nodeSelector is not needed.
+      # Prefer scheduling job pods on same node fleet as runner.
+      # Tolerations enforce node-fleet constraints (every NodePool taints
+      # with node-fleet=<fleet>:NoSchedule), so nodeSelector is not needed.
       # The hooks inject a weight-100 same-node preference at runtime;
-      # this weight-50 preference is the fallback for same-instance-type nodes.
+      # this weight-50 preference is the fallback for same-fleet nodes.
       affinity:
         nodeAffinity:
 {{RUNNER_CLASS_JOB_AFFINITY}}          preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 50
               preference:
                 matchExpressions:
-                  - key: instance-type
+                  - key: node-fleet
                     operator: In
                     values:
-                      - "{{INSTANCE_TYPE}}"
+                      - "{{NODE_FLEET}}"
                   - key: workload-type
                     operator: In
                     values:
                       - github-runner{{GPU_NODE_SELECTOR_AFFINITY}}
 
-      # Tolerate instance-type taint
+      # Tolerate node-fleet + instance-type taints
       tolerations:
-        - key: instance-type
+        - key: node-fleet
           operator: Equal
-          value: "{{INSTANCE_TYPE}}"
+          value: "{{NODE_FLEET}}"
+          effect: NoSchedule
+        - key: instance-type
+          operator: Exists
           effect: NoSchedule{{GPU_JOB_TOLERATIONS}}
 
       containers:
