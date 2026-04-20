@@ -31,14 +31,51 @@ def _get_defs_dir(upstream_dir: Path) -> Path:
 
 
 def _load_all_defs(upstream_dir: Path) -> list[dict]:
-    """Load all nodepool definition YAML files and return the nodepool dicts."""
+    """Load all nodepool definition YAML files and return the nodepool dicts.
+
+    Supports three formats: ``nodepool:`` (legacy), ``fleet:`` (single fleet),
+    and ``fleets:`` (multi-fleet per file, e.g. GPU families).
+    """
     defs_dir = _get_defs_dir(upstream_dir)
     defs = []
     for f in sorted(defs_dir.glob("*.yaml")):
         data = yaml.safe_load(f.read_text())
-        if data and "nodepool" in data:
+        if not data:
+            continue
+        if "nodepool" in data:
             defs.append(data["nodepool"])
+        elif "fleet" in data:
+            defs.extend(_expand_fleet(data["fleet"]))
+        elif "fleets" in data:
+            for fleet_data in data["fleets"]:
+                defs.extend(_expand_fleet(fleet_data))
     return defs
+
+
+def _expand_fleet(fleet_data: dict) -> list[dict]:
+    """Expand a fleet definition into individual nodepool-like dicts for validation."""
+    result = []
+    for inst in fleet_data.get("instances", []):
+        result.append(
+            {
+                "name": inst["type"].replace(".", "-"),
+                "instance_type": inst["type"],
+                "arch": fleet_data["arch"],
+                "gpu": fleet_data.get("gpu", False),
+                "node_disk_size": inst["node_disk_size"],
+            }
+        )
+    for inst in fleet_data.get("release", []):
+        result.append(
+            {
+                "name": f"{inst['type'].replace('.', '-')}-release",
+                "instance_type": inst["type"],
+                "arch": fleet_data["arch"],
+                "gpu": fleet_data.get("gpu", False),
+                "node_disk_size": inst["node_disk_size"],
+            }
+        )
+    return result
 
 
 # ============================================================================
