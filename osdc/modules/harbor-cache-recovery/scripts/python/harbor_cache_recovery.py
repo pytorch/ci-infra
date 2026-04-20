@@ -35,6 +35,7 @@ CACHE_CORRUPTION_INDICATORS = (
     "failed size validation",
     "failed precondition",
     "unexpected content digest",
+    "failed to copy",
 )
 
 DEFAULT_MIN_POD_AGE_SECONDS = 120

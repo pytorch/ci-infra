@@ -506,4 +506,4 @@ class TestConstants:
         assert set(REGISTRY_TO_PROJECT.keys()) == expected
 
     def test_corruption_indicators_non_empty(self):
-        assert len(CACHE_CORRUPTION_INDICATORS) >= 3
+        assert len(CACHE_CORRUPTION_INDICATORS) >= 4
