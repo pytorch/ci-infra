@@ -30,19 +30,19 @@ def refresh_gauge(gauge: Gauge, current: dict[tuple[str, ...], float]) -> None:
 managed_nodes = Gauge(
     "node_compactor_managed_nodes",
     "Total nodes under compactor management",
-    ["nodepool"],
+    ["fleet"],
 )
 
 tainted_nodes = Gauge(
     "node_compactor_tainted_nodes",
     "Currently tainted nodes (NoSchedule)",
-    ["nodepool"],
+    ["fleet"],
 )
 
 workload_pods = Gauge(
     "node_compactor_workload_pods",
     "Workload pods on managed nodes",
-    ["nodepool"],
+    ["fleet"],
 )
 
 pending_pods_compatible = Gauge(
@@ -59,13 +59,13 @@ node_utilization_ratio = Gauge(
 spare_capacity_gauge = Gauge(
     "compactor_spare_capacity_nodes",
     "Number of spare capacity nodes (low utilization, untainted)",
-    ["nodepool"],
+    ["fleet"],
 )
 
 spare_capacity_required = Gauge(
     "compactor_spare_capacity_required",
     "Required spare capacity nodes",
-    ["nodepool"],
+    ["fleet"],
 )
 
 reserved_nodes = Gauge(
@@ -96,7 +96,7 @@ cooldown_blocks_total = Counter(
 fleet_cooldown_blocks = Counter(
     "compactor_fleet_cooldown_blocks_total",
     "Taint operations blocked by fleet cooldown",
-    ["nodepool"],
+    ["fleet"],
 )
 
 rate_limit_blocks = Counter(
@@ -114,7 +114,7 @@ phantom_load_pods = Gauge(
 fleet_cooldown_remaining = Gauge(
     "compactor_fleet_cooldown_remaining_seconds",
     "Seconds remaining in fleet cooldown",
-    ["nodepool"],
+    ["fleet"],
 )
 
 # --- Histogram ---
