@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 from generate_runners import (
+    derive_fleet_name,
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
@@ -31,12 +32,15 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
           - name: runner
             image: {{RUNNER_IMAGE}}
         nodeSelector:
-          instance-type: "{{INSTANCE_TYPE}}"
+          node-fleet: "{{NODE_FLEET}}"
     {{RUNNER_CLASS_NODE_SELECTOR}}{{RUNNER_CLASS_AFFINITY}}
         tolerations:
-          - key: instance-type
+          - key: node-fleet
             operator: Equal
-            value: "{{INSTANCE_TYPE}}"
+            value: "{{NODE_FLEET}}"
+            effect: NoSchedule
+          - key: instance-type
+            operator: Exists
             effect: NoSchedule{{GPU_TOLERATIONS}}
     ---
     apiVersion: v1
@@ -56,18 +60,21 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                 - weight: 50
                   preference:
                     matchExpressions:
-                      - key: instance-type
+                      - key: node-fleet
                         operator: In
                         values:
-                          - "{{INSTANCE_TYPE}}"
+                          - "{{NODE_FLEET}}"
                       - key: workload-type
                         operator: In
                         values:
                           - github-runner{{GPU_NODE_SELECTOR_AFFINITY}}
           tolerations:
-            - key: instance-type
+            - key: node-fleet
               operator: Equal
-              value: "{{INSTANCE_TYPE}}"
+              value: "{{NODE_FLEET}}"
+              effect: NoSchedule
+            - key: instance-type
+              operator: Exists
               effect: NoSchedule{{GPU_JOB_TOLERATIONS}}
           containers:
             - name: "$job"
@@ -172,6 +179,31 @@ class TestNormalizeName:
 
     def test_empty_string(self):
         assert normalize_name("") == ""
+
+
+# ============================================================================
+# derive_fleet_name
+# ============================================================================
+
+
+class TestDeriveFleetName:
+    def test_derive_fleet_name_cpu(self):
+        assert derive_fleet_name("r7a.48xlarge") == "r7a"
+
+    def test_derive_fleet_name_gpu(self):
+        assert derive_fleet_name("g5.8xlarge") == "g5-1gpu"
+
+    def test_derive_fleet_name_gpu_multi(self):
+        assert derive_fleet_name("g5.48xlarge") == "g5-8gpu"
+
+    def test_derive_fleet_name_b200(self):
+        assert derive_fleet_name("p6-b200.48xlarge") == "p6-b200-8gpu"
+
+    def test_derive_fleet_name_metal(self):
+        assert derive_fleet_name("c7i.metal-24xl") == "c7i"
+
+    def test_derive_fleet_name_unknown_gpu_fallback(self):
+        assert derive_fleet_name("z99.xlarge", gpu_count=4) == "z99-4gpu"
 
 
 # ============================================================================
@@ -315,7 +347,7 @@ class TestGenerateRunner:
         assert helm["githubConfigUrl"] == "https://github.com/test-org"
         assert helm["githubConfigSecret"] == "gh-secret"
         assert helm["runnerScaleSetName"] == "staging-cpu-runner"
-        assert helm["template"]["spec"]["nodeSelector"]["instance-type"] == "m5.xlarge"
+        assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "m5"
 
         # ConfigMap doc
         cm = docs[1]
@@ -331,7 +363,7 @@ class TestGenerateRunner:
         assert prefs[0]["weight"] == 50
         match_exprs = prefs[0]["preference"]["matchExpressions"]
         keys = [e["key"] for e in match_exprs]
-        assert "instance-type" in keys
+        assert "node-fleet" in keys
         assert "workload-type" in keys
         assert "nvidia.com/gpu" not in keys  # CPU runner has no GPU affinity
 
@@ -371,7 +403,7 @@ class TestGenerateRunner:
         assert len(prefs) == 1
         match_exprs = prefs[0]["preference"]["matchExpressions"]
         keys = [e["key"] for e in match_exprs]
-        assert "instance-type" in keys
+        assert "node-fleet" in keys
         assert "workload-type" in keys
         assert "nvidia.com/gpu" in keys
 

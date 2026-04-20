@@ -1,0 +1,19 @@
+# Karpenter NodePool fleet: r5
+# Intel Cascade Lake — memory-optimized, ~8 GiB/core ratio
+fleet:
+  name: r5
+  arch: amd64
+  gpu: false
+  instances:
+    - type: r5.24xlarge
+      weight: 100
+      node_disk_size: 800
+    - type: r5.16xlarge
+      weight: 75
+      node_disk_size: 600
+    - type: r5.12xlarge
+      weight: 50
+      node_disk_size: 500
+    - type: r5.8xlarge
+      weight: 25
+      node_disk_size: 400

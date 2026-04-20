@@ -11,6 +11,11 @@ Writes: modules/nodepools/generated/*.yaml (one per definition)
 Each generated file contains a Karpenter NodePool + EC2NodeClass pair.
 CLUSTER_NAME_PLACEHOLDER is used everywhere a cluster name would go —
 deploy.sh does sed replacement at apply time with the actual cluster name.
+
+Supports three definition formats:
+  - ``nodepool:``  — Legacy single-instance format (one NodePool per file)
+  - ``fleet:``     — Fleet format (multiple instances share a fleet name)
+  - ``fleets:``    — Multi-fleet format (GPU families with several fleets per file)
 """
 
 import os
@@ -19,6 +24,15 @@ import sys
 from pathlib import Path
 
 import yaml
+
+# instance_specs lives in scripts/python/ at the repo root.  Add it to
+# sys.path so the import works both when run directly (deploy.sh) and
+# when run via pytest (pyproject.toml testpaths also adds it).
+_scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
+if _scripts_python not in sys.path:
+    sys.path.insert(0, _scripts_python)
+
+from instance_specs import INSTANCE_SPECS  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -106,6 +120,10 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     is_gpu = nodepool_def.get("gpu", False)
     has_nvme = nodepool_def.get("has_nvme", False)
     user_data_script_path = nodepool_def.get("user_data_script")
+
+    # Fleet-specific fields (only present for fleet-format defs)
+    fleet_name = nodepool_def.get("fleet_name")
+    weight = nodepool_def.get("weight")
 
     # Per-def kubelet topology overrides (e.g. B200 needs single-numa-node/pod)
     topology_policy = nodepool_def.get("topology_manager_policy", "restricted")
@@ -203,6 +221,15 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     for label_key, label_value in extra_labels.items():
         extra_labels_yaml += f'        {label_key}: "{label_value}"\n'
 
+    # ----- Fleet-specific YAML blocks -----
+    weight_block = f"  weight: {weight}\n" if weight is not None else ""
+    fleet_label = f'        node-fleet: "{fleet_name}"\n' if fleet_name else ""
+    fleet_taint = (
+        (f'        - key: node-fleet\n          value: "{fleet_name}"\n          effect: NoSchedule\n')
+        if fleet_name
+        else ""
+    )
+
     # ----- Build YAML -----
     yaml_content = f"""# Karpenter NodePool + EC2NodeClass: {instance_type}
 # Auto-generated from defs/{name}.yaml — do not edit by hand.
@@ -215,6 +242,7 @@ metadata:
     osdc.io/module: {module_name}
 {compactor_label}\
 spec:
+{weight_block}\
   disruption:
     consolidationPolicy: {consolidation_policy}
     consolidateAfter: {consolidation_after}
@@ -226,6 +254,7 @@ spec:
       labels:
         workload-type: github-runner
         instance-type: "{instance_type}"
+{fleet_label}\
 {gpu_labels}\
 {extra_labels_yaml}\
     spec:
@@ -250,6 +279,7 @@ spec:
         name: {name}
 
       taints:
+{fleet_taint}\
         - key: instance-type
           value: "{instance_type}"
           effect: NoSchedule
@@ -329,6 +359,106 @@ spec:
     return yaml_content
 
 
+def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name):
+    """Process a legacy ``nodepool:`` definition. Returns count of generated files."""
+    name = nodepool_def.get("name")
+    instance_type = nodepool_def.get("instance_type")
+
+    if not name or not instance_type:
+        raise ValueError(f"Invalid {def_file.name}: missing 'name' or 'instance_type'")
+
+    is_gpu = nodepool_def.get("gpu", False)
+    has_nvme = nodepool_def.get("has_nvme", False)
+    node_disk = _get_node_disk_size(nodepool_def)
+    log_info(
+        f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, "
+        f"{nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi{', NVMe' if has_nvme else ''})"
+    )
+
+    # Auto-derive fleet name for legacy defs so nodes get the node-fleet label/taint
+    family = instance_type.split(".")[0]
+    specs = INSTANCE_SPECS.get(instance_type, {})
+    node_gpus = specs.get("gpu", 0)
+    nodepool_def["fleet_name"] = f"{family}-{node_gpus}gpu" if node_gpus else family
+
+    content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
+    out_path = output_dir / f"{name}.yaml"
+    out_path.write_text(content)
+    return 1
+
+
+def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=None):
+    """Build a nodepool_def dict from a fleet instance entry."""
+    instance_type = inst["type"]
+    name = instance_type.replace(".", "-")
+    if name_suffix:
+        name = f"{name}{name_suffix}"
+
+    nodepool_def = {
+        "name": name,
+        "instance_type": instance_type,
+        "arch": fleet_data["arch"],
+        "gpu": fleet_data.get("gpu", False),
+        "has_nvme": inst.get("has_nvme", False),
+        "node_disk_size": inst["node_disk_size"],
+        "baremetal": inst.get("baremetal", False),
+        # Fleet-specific fields
+        "fleet_name": fleet_data["name"],
+        "weight": inst["weight"],
+        # Per-instance overrides
+        "extra_labels": inst.get("extra_labels", {}),
+        "capacity_type": inst.get("capacity_type", "on-demand"),
+        "capacity_reservation_ids": inst.get("capacity_reservation_ids", []),
+    }
+
+    # Only set optional keys when explicitly provided — leaving them absent
+    # lets generate_nodepool_yaml() fall through to its own defaults.
+    for key in ("node_compactor", "topology_manager_policy", "topology_manager_scope", "user_data_script"):
+        val = inst.get(key)
+        if val is not None:
+            nodepool_def[key] = val
+
+    if extra_labels:
+        merged = dict(nodepool_def["extra_labels"])
+        merged.update(extra_labels)
+        nodepool_def["extra_labels"] = merged
+
+    return nodepool_def
+
+
+def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name):
+    """Process a ``fleet:`` definition. Returns count of generated files."""
+    fleet_name = fleet_data["name"]
+    instances = fleet_data.get("instances", [])
+    release_instances = fleet_data.get("release", [])
+
+    log_info(f"  Fleet '{fleet_name}': {len(instances)} instance(s)")
+
+    generated = 0
+    for inst in instances:
+        nodepool_def = _build_fleet_nodepool_def(fleet_data, inst)
+        content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
+        out_path = output_dir / f"{nodepool_def['name']}.yaml"
+        out_path.write_text(content)
+        generated += 1
+
+    if release_instances:
+        log_info(f"  Fleet '{fleet_name}': {len(release_instances)} release instance(s)")
+        for inst in release_instances:
+            nodepool_def = _build_fleet_nodepool_def(
+                fleet_data,
+                inst,
+                name_suffix="-release",
+                extra_labels={"osdc.io/runner-class": "release"},
+            )
+            content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
+            out_path = output_dir / f"{nodepool_def['name']}.yaml"
+            out_path.write_text(content)
+            generated += 1
+
+    return generated
+
+
 def main():
     script_dir = Path(__file__).parent
     module_dir = script_dir.parent.parent
@@ -357,31 +487,23 @@ def main():
             with open(def_file) as f:
                 data = yaml.safe_load(f)
 
-            if not data or "nodepool" not in data:
-                log_error(f"Invalid {def_file.name}: missing 'nodepool' key")
+            if not data:
+                log_error(f"Invalid {def_file.name}: empty file")
                 skipped.append(def_file.name)
                 continue
 
-            nodepool_def = data["nodepool"]
-            name = nodepool_def.get("name")
-            instance_type = nodepool_def.get("instance_type")
-
-            if not name or not instance_type:
-                log_error(f"Invalid {def_file.name}: missing 'name' or 'instance_type'")
+            # Determine format: fleet, fleets, or legacy nodepool
+            if "fleet" in data:
+                generated += _process_fleet(data["fleet"], def_file, defs_dir, output_dir, module_name)
+            elif "fleets" in data:
+                for fleet_data in data["fleets"]:
+                    generated += _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name)
+            elif "nodepool" in data:
+                generated += _process_nodepool(data["nodepool"], def_file, defs_dir, output_dir, module_name)
+            else:
+                log_error(f"Invalid {def_file.name}: missing 'nodepool', 'fleet', or 'fleets' key")
                 skipped.append(def_file.name)
                 continue
-
-            is_gpu = nodepool_def.get("gpu", False)
-            has_nvme = nodepool_def.get("has_nvme", False)
-            node_disk = _get_node_disk_size(nodepool_def)
-            log_info(
-                f"  {def_file.name}: {instance_type} ({'GPU' if is_gpu else 'CPU'}, {nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi{', NVMe' if has_nvme else ''})"
-            )
-
-            content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
-            out_path = output_dir / f"{name}.yaml"
-            out_path.write_text(content)
-            generated += 1
 
         except Exception as e:
             log_error(f"Failed to process {def_file.name}: {e}")
