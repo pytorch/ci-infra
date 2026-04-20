@@ -862,8 +862,7 @@ class TestMain:
         with patch.dict(os.environ, env, clear=False):
             result = main()
 
-        assert result == 0
-        assert not list(output_dir.glob("*.yaml"))
+        assert result == 1
 
     def test_output_files_are_parseable_yaml(self, tmp_path):
         defs_dir = self._create_defs(
@@ -1029,3 +1028,101 @@ class TestMain:
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
         assert generated == ["legacy-pool.yaml", "r7a-48xlarge.yaml"]
+
+    def test_fleet_missing_name_key(self, tmp_path):
+        """Fleet missing required 'name' key fails with descriptive error."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleet": {
+                "arch": "amd64",
+                "instances": [
+                    {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                ],
+            }
+        }
+        (defs_dir / "bad.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 1
+
+    def test_fleet_missing_arch_key(self, tmp_path):
+        """Fleet missing required 'arch' key fails with descriptive error."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleet": {
+                "name": "r7a",
+                "instances": [
+                    {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                ],
+            }
+        }
+        (defs_dir / "bad.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 1
+
+    def test_fleet_instance_missing_weight(self, tmp_path):
+        """Fleet instance missing required 'weight' key fails."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleet": {
+                "name": "r7a",
+                "arch": "amd64",
+                "instances": [
+                    {"type": "r7a.48xlarge", "node_disk_size": 4800},
+                ],
+            }
+        }
+        (defs_dir / "bad.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 1
+
+    def test_fleet_unknown_instance_type(self, tmp_path):
+        """Fleet with instance type not in INSTANCE_SPECS fails."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleet": {
+                "name": "z99",
+                "arch": "amd64",
+                "instances": [
+                    {"type": "z99.xlarge", "weight": 100, "node_disk_size": 800},
+                ],
+            }
+        }
+        (defs_dir / "bad.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 1
