@@ -39,6 +39,11 @@ spec:
           operator: Exists
           effect: NoSchedule
 
+        # Karpenter node-fleet taints (used by all nodepools)
+        - key: node-fleet
+          operator: Exists
+          effect: NoSchedule
+
         # BuildKit workload taints (service-specific isolation)
         - key: workload/buildkit-arm64
           operator: Exists
