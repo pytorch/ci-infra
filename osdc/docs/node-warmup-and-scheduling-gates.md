@@ -123,6 +123,7 @@ Runs on nodes with `workload-type` in `[github-runner, buildkit]`.
 |-----------|------|--------|-------|------------|
 | `git-cache-not-ready=true` | Startup taint | `NoSchedule` | All Karpenter NodePools | git-cache-warmer DaemonSet |
 | `instance-type={type}` | Permanent | `NoSchedule` | ARC runner NodePools | Never (scheduling constraint) |
+| `node-fleet={fleet}` | Permanent | `NoSchedule` | ARC runner NodePools | Never (fleet-based scheduling) |
 | `workload/buildkit-{arch}=true` | Permanent | `NoSchedule` | BuildKit NodePools | Never (scheduling constraint) |
 | `nvidia.com/gpu=true` | Permanent | `NoSchedule` | GPU NodePools only | Never (scheduling constraint) |
 | `node-compactor.osdc.io/consolidating=true` | Runtime (dynamic) | `NoSchedule` | Applied by node-compactor | node-compactor controller (protected by `min_node_age`: 900s) |
@@ -130,11 +131,14 @@ Runs on nodes with `workload-type` in `[github-runner, buildkit]`.
 
 ## Toleration Pattern
 
-All DaemonSets targeting runner and buildkit nodes use a consistent toleration set covering both `instance-type` (runner NodePools) and `workload/buildkit-*` (BuildKit NodePools) taints:
+All DaemonSets targeting runner and buildkit nodes use a consistent toleration set covering `instance-type`, `node-fleet` (runner NodePools) and `workload/buildkit-*` (BuildKit NodePools) taints:
 
 ```yaml
 tolerations:
   - key: instance-type
+    operator: Exists
+    effect: NoSchedule
+  - key: node-fleet
     operator: Exists
     effect: NoSchedule
   - key: workload/buildkit-arm64
