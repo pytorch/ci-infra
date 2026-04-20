@@ -9,6 +9,7 @@ from harbor_cache_recovery import (
     CACHE_CORRUPTION_INDICATORS,
     REGISTRY_TO_PROJECT,
     _extract_waiting_failures,
+    _NoCookieJar,
     create_harbor_session,
     fetch_csrf_token,
     find_pull_failures,
@@ -262,6 +263,18 @@ class TestFindPullFailures:
 # ============================================================================
 
 
+class TestNoCookieJar:
+    def test_set_cookie_is_noop(self):
+        jar = _NoCookieJar()
+        jar.set_cookie(MagicMock())
+        assert len(jar) == 0
+
+    def test_extract_cookies_is_noop(self):
+        jar = _NoCookieJar()
+        jar.extract_cookies(MagicMock(), MagicMock())
+        assert len(jar) == 0
+
+
 class TestCreateHarborSession:
     def test_sets_auth(self):
         session = create_harbor_session("http://harbor:80", "secret")
@@ -270,6 +283,10 @@ class TestCreateHarborSession:
     def test_sets_headers(self):
         session = create_harbor_session("http://harbor:80", "secret")
         assert session.headers["Content-Type"] == "application/json"
+
+    def test_uses_no_cookie_jar(self):
+        session = create_harbor_session("http://harbor:80", "secret")
+        assert isinstance(session.cookies, _NoCookieJar)
 
 
 class TestFetchCsrfToken:
@@ -290,15 +307,6 @@ class TestFetchCsrfToken:
         session.get.return_value = resp
         fetch_csrf_token(session, "http://harbor:80")
         assert "X-Harbor-CSRF-Token" not in session.headers
-
-    def test_clears_session_cookies(self):
-        session = MagicMock()
-        session.headers = {}
-        resp = MagicMock()
-        resp.headers = {}
-        session.get.return_value = resp
-        fetch_csrf_token(session, "http://harbor:80")
-        session.cookies.clear.assert_called_once()
 
 
 class TestPurgeCachedRepo:

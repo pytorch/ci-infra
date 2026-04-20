@@ -148,8 +148,25 @@ def find_pull_failures(client: Client, min_pod_age_seconds: int) -> list[dict]:
     return failures
 
 
+class _NoCookieJar(requests.cookies.RequestsCookieJar):
+    """Cookie jar that refuses to store cookies.
+
+    Harbor sets a ``sid`` session cookie on every response. If the session
+    stores it, subsequent mutation requests carry the cookie, which makes
+    Harbor enforce CSRF — even though we authenticate with Basic Auth.
+    Disabling cookie storage at the jar level avoids this globally.
+    """
+
+    def set_cookie(self, *_args, **_kwargs):
+        return
+
+    def extract_cookies(self, *_args, **_kwargs):
+        return
+
+
 def create_harbor_session(harbor_url: str, admin_password: str) -> requests.Session:
     session = requests.Session()
+    session.cookies = _NoCookieJar()
     session.auth = ("admin", admin_password)
     session.headers.update({"Content-Type": "application/json", "Accept": "application/json"})
     retry = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
@@ -165,9 +182,6 @@ def fetch_csrf_token(session: requests.Session, harbor_url: str) -> None:
     csrf_token = resp.headers.get("X-Harbor-CSRF-Token")
     if csrf_token:
         session.headers["X-Harbor-CSRF-Token"] = csrf_token
-    # Harbor sets a sid cookie that triggers CSRF enforcement on subsequent
-    # mutation requests. Clear all cookies so DELETE uses Basic Auth only.
-    session.cookies.clear()
 
 
 def purge_cached_repo(session: requests.Session, harbor_url: str, project: str, repo_path: str) -> bool:
