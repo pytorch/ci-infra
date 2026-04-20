@@ -187,3 +187,12 @@ Dual-architecture container build service with HAProxy load balancing.
 - **scripts/python/generate_buildkit.py**: Generates Deployments + NodePools from instance type specs and `clusters.yaml` config
 - **scripts/node-setup.sh**: NVMe RAID0, registry mirrors, CPU tuning for build nodes
 - **deploy.sh**: Generates manifests, applies k8s resources, deploys Karpenter NodePools, waits for rollout
+
+### harbor-cache-recovery
+
+Automated recovery from Harbor proxy cache corruption (stale manifests, size mismatches). CronJob scans all pods for ImagePullBackOff errors with cache corruption indicators and purges the corrupted repository from Harbor so the next pull re-fetches from upstream. Never deletes pods.
+
+- **scripts/python/harbor_cache_recovery.py**: Core logic — scan pods, parse image references, map to Harbor proxy cache projects, purge via Harbor API
+- **docker/**: Container image (Python 3.12 alpine, lightkube + requests)
+- **kubernetes/**: RBAC (ClusterRole for pod list) and CronJob with config placeholders
+- **deploy.sh**: Content-addressed image build, push to Harbor via port-forward, manifest apply with config substitution

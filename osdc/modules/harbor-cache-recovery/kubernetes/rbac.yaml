@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: harbor-cache-recovery
+  namespace: harbor-system
+  labels:
+    app.kubernetes.io/name: harbor-cache-recovery
+    app.kubernetes.io/part-of: osdc-harbor-cache-recovery
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: harbor-cache-recovery
+  labels:
+    app.kubernetes.io/name: harbor-cache-recovery
+    app.kubernetes.io/part-of: osdc-harbor-cache-recovery
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: harbor-cache-recovery
+  labels:
+    app.kubernetes.io/name: harbor-cache-recovery
+    app.kubernetes.io/part-of: osdc-harbor-cache-recovery
+subjects:
+  - kind: ServiceAccount
+    name: harbor-cache-recovery
+    namespace: harbor-system
+roleRef:
+  kind: ClusterRole
+  name: harbor-cache-recovery
+  apiGroup: rbac.authorization.k8s.io
