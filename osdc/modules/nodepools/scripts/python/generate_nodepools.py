@@ -426,8 +426,26 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
     return nodepool_def
 
 
+def _validate_fleet(fleet_data, def_file):
+    """Validate fleet data structure has all required keys."""
+    for key in ("name", "arch"):
+        if key not in fleet_data:
+            raise ValueError(f"Fleet in {def_file.name}: missing required key '{key}'")
+
+    fleet_name = fleet_data["name"]
+    for section in ("instances", "release"):
+        for i, inst in enumerate(fleet_data.get(section, [])):
+            for key in ("type", "weight", "node_disk_size"):
+                if key not in inst:
+                    raise ValueError(
+                        f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: missing required key '{key}'"
+                    )
+
+
 def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name):
     """Process a ``fleet:`` definition. Returns count of generated files."""
+    _validate_fleet(fleet_data, def_file)
+
     fleet_name = fleet_data["name"]
     instances = fleet_data.get("instances", [])
     release_instances = fleet_data.get("release", [])
