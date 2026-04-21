@@ -113,7 +113,7 @@ clusters:
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
       cluster_admin_role_names:
-        - ossci_gha_terraform
+        - osdc_gha_staging
     base:
       base_node_count: 2
       base_node_instance_type: m5.4xlarge
