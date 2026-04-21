@@ -32,11 +32,12 @@ from helpers import (
     delete_all_pods,
     delete_pods,
     get_do_not_disrupt_nodes,
+    get_fleet_nodes,
+    get_fleet_tainted_nodes,
     get_pods_by_node,
     get_pool_nodes,
     get_reserved_nodes,
-    get_tainted_nodes,
-    partition_pool_nodes,
+    partition_fleet_nodes,
     reconfigure_compactor,
     scale_compactor_deployment,
     search_compactor_logs,
@@ -170,19 +171,21 @@ class _CompactorE2EBase:
         target_nodepool_name: str,
         instance_type: str,
         compactor_logs: CompactorLogCollector,
+        target_fleet_pools: list[str],
     ) -> None:
         self.client = client
         self.ns = test_namespace
         self.pool = target_nodepool_name
         self.itype = instance_type
         self.logs = compactor_logs
+        self.fleet_pools = target_fleet_pools
 
     def _taint_diagnostics(self) -> str:
-        """Dump current pool state for timeout diagnostics."""
-        nodes, tainted, untainted = partition_pool_nodes(self.client, self.pool)
+        """Dump current fleet state for timeout diagnostics."""
+        nodes, tainted, untainted = partition_fleet_nodes(self.client, self.fleet_pools)
         pods_by_node = get_pods_by_node(self.client, self.ns)
         lines = [
-            f"Pool {self.pool}: {len(nodes)} nodes, {len(tainted)} tainted, {len(untainted)} untainted",
+            f"Fleet {self.fleet_pools}: {len(nodes)} nodes, {len(tainted)} tainted, {len(untainted)} untainted",
             f"Tainted: {tainted}",
             f"Untainted: {untainted}",
             f"Pods by node: {pods_by_node}",
@@ -224,14 +227,14 @@ class TestGroupA_Bare(_CompactorE2EBase):
         wait_for_stable(
             "compactor taint state after scale-up",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
             ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
         )
 
-        nodes, tainted, untainted = partition_pool_nodes(self.client, self.pool)
+        nodes, tainted, untainted = partition_fleet_nodes(self.client, self.fleet_pools)
         log.info("A1 result: %d nodes, %d tainted, %d untainted", len(nodes), len(tainted), len(untainted))
         assert len(nodes) >= 3, f"Expected >= 3 nodes, got {len(nodes)}"
         assert len(untainted) >= 1, f"Expected >= 1 untainted (min_nodes), got {len(untainted)}"
@@ -244,7 +247,7 @@ class TestGroupA_Bare(_CompactorE2EBase):
     # A2
     def test_empty_nodes_get_tainted(self) -> None:
         """Remove pods from all-but-one node -> drained nodes get tainted."""
-        initial_tainted = set(get_tainted_nodes(self.client, self.pool))
+        initial_tainted = set(get_fleet_tainted_nodes(self.client, self.fleet_pools))
         log.info("A2: Initially tainted nodes: %s", initial_tainted)
 
         pods_by_node = get_pods_by_node(self.client, self.ns)
@@ -265,7 +268,7 @@ class TestGroupA_Bare(_CompactorE2EBase):
         wait_for(
             f"drained nodes {drained_set} tainted or deleted",
             lambda: all(
-                n in set(get_tainted_nodes(self.client, self.pool))
+                n in set(get_fleet_tainted_nodes(self.client, self.fleet_pools))
                 or n not in {nd.metadata.name for nd in get_pool_nodes(self.client, self.pool)}
                 for n in drained_set
             ),
@@ -273,7 +276,7 @@ class TestGroupA_Bare(_CompactorE2EBase):
             on_timeout=self._taint_diagnostics,
         )
 
-        nodes, tainted, untainted = partition_pool_nodes(self.client, self.pool)
+        nodes, tainted, untainted = partition_fleet_nodes(self.client, self.fleet_pools)
         log.info("A2 result: %d nodes, %d tainted, %d untainted", len(nodes), len(tainted), len(untainted))
         surviving_drained = drained_set & {n.metadata.name for n in nodes}
         assert surviving_drained.issubset(set(tainted)), (
@@ -289,12 +292,12 @@ class TestGroupA_Bare(_CompactorE2EBase):
         """After consolidateAfter, empty tainted nodes are removed."""
         wait_for(
             "all tainted nodes deleted",
-            lambda: len(get_tainted_nodes(self.client, self.pool)) == 0,
+            lambda: len(get_fleet_tainted_nodes(self.client, self.fleet_pools)) == 0,
             timeout_s=KARPENTER_DELETE_TIMEOUT,
             poll_s=5,
         )
 
-        nodes, tainted, _untainted = partition_pool_nodes(self.client, self.pool)
+        nodes, tainted, _untainted = partition_fleet_nodes(self.client, self.fleet_pools)
         log.info("A3 result: %d nodes remain, %d tainted", len(nodes), len(tainted))
         assert len(nodes) >= 1, f"Expected >= 1 surviving node, got {len(nodes)}"
         assert len(tainted) == 0, f"Expected 0 tainted, got {len(tainted)}: {tainted}"
@@ -307,8 +310,8 @@ class TestGroupA_Bare(_CompactorE2EBase):
         wait_for_stable(
             "compactor taint state before burst drain",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
             ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
@@ -332,7 +335,7 @@ class TestGroupA_Bare(_CompactorE2EBase):
 
         wait_for(
             f"{n_drained} nodes tainted",
-            lambda: len(get_tainted_nodes(self.client, self.pool)) >= n_drained,
+            lambda: len(get_fleet_tainted_nodes(self.client, self.fleet_pools)) >= n_drained,
             timeout_s=TAINT_TIMEOUT,
             on_timeout=self._taint_diagnostics,
         )
@@ -365,8 +368,8 @@ class TestGroupA_Bare(_CompactorE2EBase):
         wait_for_stable(
             "compactor taint state after pod deletion",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
             ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
@@ -375,7 +378,7 @@ class TestGroupA_Bare(_CompactorE2EBase):
         # Poll for min_nodes enforcement — the compactor may need an extra
         # cycle to stabilize after Karpenter scales down empty tainted nodes.
         def _check_min_nodes() -> bool:
-            ns, _t, ut = partition_pool_nodes(self.client, self.pool)
+            ns, _t, ut = partition_fleet_nodes(self.client, self.fleet_pools)
             return len(ns) == 0 or len(ut) >= 1
 
         wait_for(
@@ -385,7 +388,7 @@ class TestGroupA_Bare(_CompactorE2EBase):
             poll_s=5,
         )
 
-        nodes, _tainted, untainted = partition_pool_nodes(self.client, self.pool)
+        nodes, _tainted, untainted = partition_fleet_nodes(self.client, self.fleet_pools)
         if len(nodes) == 0:
             pytest.skip("Pool has 0 nodes (Karpenter scaled down)")
 
@@ -398,7 +401,7 @@ class TestGroupA_Bare(_CompactorE2EBase):
     # A6
     def test_sigterm_removes_taints(self) -> None:
         """Scale compactor to 0 -> SIGTERM cleanup -> verify taints removed."""
-        nodes, tainted, _untainted = partition_pool_nodes(self.client, self.pool)
+        nodes, tainted, _untainted = partition_fleet_nodes(self.client, self.fleet_pools)
         if len(nodes) == 0:
             pytest.skip("Pool has 0 nodes; cannot verify taint cleanup")
 
@@ -407,14 +410,14 @@ class TestGroupA_Bare(_CompactorE2EBase):
             try:
                 wait_for(
                     "at least 1 tainted node for cleanup test",
-                    lambda: len(get_tainted_nodes(self.client, self.pool)) > 0,
+                    lambda: len(get_fleet_tainted_nodes(self.client, self.fleet_pools)) > 0,
                     timeout_s=TAINT_TIMEOUT,
                     poll_s=5,
                 )
             except TimeoutError:
                 pytest.skip("No tainted nodes available to verify cleanup")
 
-        nodes_before, tainted_before, _ = partition_pool_nodes(self.client, self.pool)
+        nodes_before, tainted_before, _ = partition_fleet_nodes(self.client, self.fleet_pools)
         node_names_before = {n.metadata.name for n in nodes_before}
         log.info("A6: %d nodes, %d tainted before shutdown", len(nodes_before), len(tainted_before))
 
@@ -423,12 +426,12 @@ class TestGroupA_Bare(_CompactorE2EBase):
         try:
             wait_for(
                 "all compactor taints cleared after graceful shutdown",
-                lambda: len(get_tainted_nodes(self.client, self.pool)) == 0,
+                lambda: len(get_fleet_tainted_nodes(self.client, self.fleet_pools)) == 0,
                 timeout_s=TAINT_TIMEOUT,
                 poll_s=5,
             )
 
-            nodes_after, tainted_after, _untainted_after = partition_pool_nodes(self.client, self.pool)
+            nodes_after, tainted_after, _untainted_after = partition_fleet_nodes(self.client, self.fleet_pools)
             surviving_tainted = node_names_before & set(tainted_before)
             surviving_nodes = {n.metadata.name for n in nodes_after}
             cleaned = surviving_tainted & surviving_nodes
@@ -485,15 +488,15 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
         wait_for_stable(
             "drained nodes remain untainted (min_node_age protection)",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
             ),
             stable_s=COMPACTOR_CYCLE * 3,
             timeout_s=TAINT_TIMEOUT,
         )
 
         # Assert: drained nodes that still exist are NOT tainted
-        nodes, tainted, _untainted = partition_pool_nodes(self.client, self.pool)
+        nodes, tainted, _untainted = partition_fleet_nodes(self.client, self.fleet_pools)
         surviving_drained = drained_set & {n.metadata.name for n in nodes}
         newly_tainted = surviving_drained & set(tainted)
         assert len(newly_tainted) == 0, f"Expected 0 drained nodes tainted with min_node_age=3600, got {newly_tainted}"
@@ -505,7 +508,7 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
         wait_for(
             f"drained nodes {surviving_drained} tainted or deleted (min_node_age=0)",
             lambda: all(
-                n in set(get_tainted_nodes(self.client, self.pool))
+                n in set(get_fleet_tainted_nodes(self.client, self.fleet_pools))
                 or n not in {nd.metadata.name for nd in get_pool_nodes(self.client, self.pool)}
                 for n in surviving_drained
             ),
@@ -540,8 +543,8 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
         wait_for_stable(
             "compactor stabilized before rate limit test",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
             ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
@@ -560,8 +563,8 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
         wait_for_stable(
             "all surplus nodes tainted (rate-limited across cycles)",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
             ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
@@ -616,7 +619,7 @@ class TestGroupB_AntiFlap(_CompactorE2EBase):
         wait_for(
             f"drained nodes {drained_set} tainted or deleted after fleet cooldown",
             lambda: all(
-                n in set(get_tainted_nodes(self.client, self.pool))
+                n in set(get_fleet_tainted_nodes(self.client, self.fleet_pools))
                 or n not in {nd.metadata.name for nd in get_pool_nodes(self.client, self.pool)}
                 for n in drained_set
             ),
@@ -658,8 +661,8 @@ class TestGroupC_Reservation(_CompactorE2EBase):
         wait_for_stable(
             "compactor stabilized with reservation config",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
                 sorted(get_reserved_nodes(self.client, self.pool)),
             ),
             stable_s=STABLE_WINDOW,
@@ -698,8 +701,8 @@ class TestGroupC_Reservation(_CompactorE2EBase):
         wait_for_stable(
             "compactor taint state after drain with reservation",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
                 sorted(get_reserved_nodes(self.client, self.pool)),
             ),
             stable_s=STABLE_WINDOW,
@@ -708,7 +711,7 @@ class TestGroupC_Reservation(_CompactorE2EBase):
 
         # Assert: reserved node is NOT tainted
         reserved = get_reserved_nodes(self.client, self.pool)
-        tainted = set(get_tainted_nodes(self.client, self.pool))
+        tainted = set(get_fleet_tainted_nodes(self.client, self.fleet_pools))
         assert len(reserved) >= 1, "Expected at least 1 reserved node after drain"
         assert not reserved.intersection(tainted), (
             f"Reserved nodes {reserved} should NOT be tainted, but found in tainted set {tainted}"
@@ -723,15 +726,15 @@ class TestGroupC_Reservation(_CompactorE2EBase):
         wait_for_stable(
             "compactor taint state after pod deletion with reservation",
             lambda: (
-                sorted(get_tainted_nodes(self.client, self.pool)),
-                len(get_pool_nodes(self.client, self.pool)),
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
                 sorted(get_reserved_nodes(self.client, self.pool)),
             ),
             stable_s=STABLE_WINDOW,
             timeout_s=TAINT_TIMEOUT,
         )
 
-        nodes, _tainted, untainted = partition_pool_nodes(self.client, self.pool)
+        nodes, _tainted, untainted = partition_fleet_nodes(self.client, self.fleet_pools)
         if len(nodes) == 0:
             pytest.skip("Pool has 0 nodes (Karpenter scaled down)")
 
@@ -782,10 +785,10 @@ class TestGroupC_Reservation(_CompactorE2EBase):
             # Verify taints removed
             wait_for(
                 "all compactor taints cleared after shutdown",
-                lambda: len(get_tainted_nodes(self.client, self.pool)) == 0,
+                lambda: len(get_fleet_tainted_nodes(self.client, self.fleet_pools)) == 0,
                 timeout_s=TAINT_TIMEOUT,
                 poll_s=5,
-                on_timeout=lambda: f"Remaining tainted: {get_tainted_nodes(self.client, self.pool)}",
+                on_timeout=lambda: f"Remaining tainted: {get_fleet_tainted_nodes(self.client, self.fleet_pools)}",
             )
 
             # Verify reservation annotations removed — cleanup runs sequentially

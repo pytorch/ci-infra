@@ -31,6 +31,7 @@ COMPACTOR_TAINT_KEY = "node-compactor.osdc.io/consolidating"
 INSTANCE_TYPE_TAINT_KEY = "instance-type"
 COMPACTOR_NODEPOOL_LABEL = "osdc.io/node-compactor"
 KARPENTER_NODEPOOL_LABEL = "karpenter.sh/nodepool"
+LABEL_NODE_FLEET = "node-fleet"
 COMPACTOR_DEPLOYMENT = "node-compactor"
 COMPACTOR_NAMESPACE = "kube-system"
 COMPACTOR_POD_LABEL = "app.kubernetes.io/name=node-compactor"
@@ -184,6 +185,42 @@ def partition_pool_nodes(
     return nodes, tainted, untainted
 
 
+def get_fleet_nodes(client: Client, pool_names: list[str]) -> list[Node]:
+    """Return all Ready nodes belonging to any pool in *pool_names*."""
+    nodes = []
+    for pool in pool_names:
+        nodes.extend(get_pool_nodes(client, pool))
+    return nodes
+
+
+def get_fleet_tainted_nodes(client: Client, pool_names: list[str], taint_key: str = COMPACTOR_TAINT_KEY) -> list[str]:
+    """Return tainted node names across all pools in *pool_names*."""
+    result = []
+    for pool in pool_names:
+        result.extend(get_tainted_nodes(client, pool, taint_key))
+    return result
+
+
+def partition_fleet_nodes(
+    client: Client, pool_names: list[str], taint_key: str = COMPACTOR_TAINT_KEY
+) -> tuple[list[Node], list[str], list[str]]:
+    """Single-snapshot partition of fleet nodes into tainted/untainted.
+
+    Lists all nodes once and filters by pool membership to avoid
+    TOCTOU races between per-pool API calls.
+    """
+    pool_set = set(pool_names)
+    nodes = []
+    for node in client.list(Node):
+        if node.metadata and not node.metadata.deletionTimestamp:
+            labels = (node.metadata and node.metadata.labels) or {}
+            if labels.get(KARPENTER_NODEPOOL_LABEL) in pool_set:
+                nodes.append(node)
+    tainted = [node.metadata.name for node in nodes if node.metadata and _node_has_taint(node, taint_key)]
+    untainted = [node.metadata.name for node in nodes if node.metadata and not _node_has_taint(node, taint_key)]
+    return nodes, tainted, untainted
+
+
 def assert_instance_type_taints_preserved(client: Client, nodepool_name: str) -> None:
     """Verify every node with an instance-type label still has its instance-type taint.
 
@@ -250,6 +287,11 @@ def create_test_pod(
             terminationGracePeriodSeconds=0,
             nodeSelector={KARPENTER_NODEPOOL_LABEL: nodepool},
             tolerations=[
+                Toleration(
+                    key="node-fleet",
+                    operator="Exists",
+                    effect="NoSchedule",
+                ),
                 Toleration(
                     key="instance-type",
                     operator="Equal",
