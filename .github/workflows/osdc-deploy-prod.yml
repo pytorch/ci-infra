@@ -7,11 +7,6 @@ name: "OSDC: Deploy production"
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Git ref (sha/branch/tag) to deploy"
-        required: false
-        type: string
-        default: main
       run_smoke:
         description: "Run smoke tests after deploy"
         required: false
@@ -38,6 +33,5 @@ jobs:
       cluster: arc-production
       role_to_assume: arn:aws:iam::308535385114:role/osdc_gha_prod
       environment: osdc-production
-      ref: ${{ inputs.ref }}
       run_smoke: ${{ inputs.run_smoke }}
       taint_nodes: ${{ inputs.taint_nodes }}
