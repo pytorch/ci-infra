@@ -7,9 +7,9 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-from compactor import main, reconcile
+from compactor import _fleet_group_key, main, reconcile
 from lightkube import ApiError
-from models import Config, NodeState, PodInfo, parse_cpu, parse_memory
+from models import LABEL_NODE_FLEET, Config, NodeState, PodInfo, parse_cpu, parse_memory
 from packing import _pods_fit_on_nodes, bin_pack_min_nodes, compute_taints
 
 # ============================================================================
@@ -615,6 +615,434 @@ class TestComputeTaints:
         to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg)
         # All 3 eligible, min_nodes=1 -> surplus=2
         assert len(to_taint) == 2
+
+
+# ============================================================================
+# Fleet-aware helpers
+# ============================================================================
+
+
+def make_fleet_node(name, nodepool, fleet, cpu=16.0, mem=64 * GiB, is_tainted=False, creation_time=None):
+    """Create a NodeState with a node-fleet label for fleet-aware tests."""
+    node = make_node(name, nodepool=nodepool, cpu=cpu, mem=mem, is_tainted=is_tainted, creation_time=creation_time)
+    node.labels[LABEL_NODE_FLEET] = fleet
+    return node
+
+
+# ============================================================================
+# Fleet capacity tests (compute_taints with group_key)
+# ============================================================================
+
+
+class TestFleetCapacity:
+    """Tests for fleet-aware grouping via the group_key parameter."""
+
+    def test_fleet_groups_multiple_nodepools(self):
+        """Nodes in different NodePools but same fleet are grouped together.
+
+        Fleet "m8g" has a 16-CPU node (m8g-8xlarge) and a 192-CPU node
+        (m8g-48xlarge). One pod needs 10 CPU. Fleet needs 1 node -> surplus=1.
+        The 16-CPU node should be tainted (smaller, less capacity).
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        n_small = make_fleet_node("n-small", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        n_big = make_fleet_node("n-big", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0)
+        n_big.pods = [make_pod("p1", cpu=10.0, node_name="n-big")]
+
+        nodes = {"n-small": n_small, "n-big": n_big}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        assert "n-small" in to_taint, "Smaller node in fleet should be tainted"
+        assert "n-big" not in to_taint, "Larger node with workload should not be tainted"
+
+    def test_fleet_surplus_across_pools(self):
+        """3 nodes in 3 different NodePools, all fleet 'r7a'. Pods fit on 1 node.
+
+        Surplus=2, so 2 nodes should be tainted.
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        n1 = make_fleet_node("n1", nodepool="r7a-4xlarge", fleet="r7a", cpu=192.0)
+        n2 = make_fleet_node("n2", nodepool="r7a-8xlarge", fleet="r7a", cpu=192.0)
+        n3 = make_fleet_node("n3", nodepool="r7a-16xlarge", fleet="r7a", cpu=192.0)
+        n1.pods = [make_pod("p1", cpu=100.0, node_name="n1")]
+
+        nodes = {"n1": n1, "n2": n2, "n3": n3}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        assert len(to_taint) == 2, "Surplus is 2, so 2 nodes should be tainted"
+
+    def test_non_fleet_nodes_grouped_by_nodepool(self):
+        """Nodes without 'node-fleet' label fall back to nodepool grouping.
+
+        Two nodepools, 2 nodes each, no fleet labels. Each pool independent.
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        n1 = make_node("n1", nodepool="pool-a", cpu=16.0)
+        n2 = make_node("n2", nodepool="pool-a", cpu=16.0)
+        n3 = make_node("n3", nodepool="pool-b", cpu=16.0)
+        n4 = make_node("n4", nodepool="pool-b", cpu=16.0)
+        nodes = {"n1": n1, "n2": n2, "n3": n3, "n4": n4}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        # No fleet label -> group_key returns nodepool -> same behavior as before.
+        pool_a_tainted = to_taint & {"n1", "n2"}
+        pool_b_tainted = to_taint & {"n3", "n4"}
+        assert len(pool_a_tainted) == 1
+        assert len(pool_b_tainted) == 1
+
+    def test_mixed_fleet_and_non_fleet(self):
+        """Fleet nodes and non-fleet nodes are grouped independently.
+
+        Fleet "m8g" has 2 nodes, nodepool "standalone" has 2 nodes (no fleet).
+        Each group processes independently.
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        f1 = make_fleet_node("f1", nodepool="m8g-8xl", fleet="m8g", cpu=16.0)
+        f2 = make_fleet_node("f2", nodepool="m8g-48xl", fleet="m8g", cpu=192.0)
+        s1 = make_node("s1", nodepool="standalone", cpu=16.0)
+        s2 = make_node("s2", nodepool="standalone", cpu=16.0)
+
+        nodes = {"f1": f1, "f2": f2, "s1": s1, "s2": s2}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        # Fleet "m8g": 2 nodes, no pods, surplus=1 -> 1 tainted
+        fleet_tainted = to_taint & {"f1", "f2"}
+        assert len(fleet_tainted) == 1
+
+        # Nodepool "standalone": 2 nodes, no pods, surplus=1 -> 1 tainted
+        standalone_tainted = to_taint & {"s1", "s2"}
+        assert len(standalone_tainted) == 1
+
+    def test_fleet_bin_packing_heterogeneous_sizes(self):
+        """Fleet with 16-CPU and 192-CPU nodes. Pods need 180 CPU total.
+
+        bin_pack_min_nodes should correctly account for heterogeneous capacity.
+        180 CPU does not fit on the 16-CPU node alone, so the 192-CPU node
+        is needed. With 2 nodes and min_needed=1, surplus=1.
+        The 16-CPU node should be tainted (smaller capacity).
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        n_small = make_fleet_node("n-small", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        n_big = make_fleet_node("n-big", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0)
+        # Place pods totalling 180 CPU on the big node
+        n_big.pods = [make_pod(f"p{i}", cpu=20.0, node_name="n-big") for i in range(9)]
+
+        nodes = {"n-small": n_small, "n-big": n_big}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        # bin_pack: 9 pods * 20 CPU = 180 total. n_big has 192 CPU, n_small has 16.
+        # FFD: biggest bin first (192), all 9 pods fit on n_big. min_needed=1.
+        # surplus=1. n_small tainted.
+        assert "n-small" in to_taint
+        assert "n-big" not in to_taint
+
+    def test_fleet_safety_check_cross_pool(self):
+        """Pods on a 16-CPU node that fit on a 192-CPU node in the same fleet.
+
+        Safety check should consider remaining capacity across different
+        NodePools within the same fleet.
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        n_small = make_fleet_node("n-small", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        n_small.pods = [make_pod("p-small", cpu=10.0, node_name="n-small")]
+        n_big = make_fleet_node("n-big", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0)
+        n_big.pods = [make_pod("p-big", cpu=50.0, node_name="n-big")]
+
+        nodes = {"n-small": n_small, "n-big": n_big}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        # bin_pack: 2 pods (10+50=60 CPU). n_big has 192 CPU -> fits on 1 node.
+        # surplus=1. n_small is the candidate (lower CPU, lower util).
+        # Safety: n_small's pod (10 CPU) can fit on n_big (192-50=142 free).
+        # Taint allowed.
+        assert "n-small" in to_taint
+        assert "n-big" not in to_taint
+
+    def test_group_key_none_uses_nodepool(self):
+        """Calling compute_taints with group_key=None groups by nodepool (backward compat).
+
+        Two NodePools, each with 2 nodes. Without fleet grouping, each pool
+        is independent.
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        n1 = make_node("n1", nodepool="pool-a", cpu=16.0)
+        n2 = make_node("n2", nodepool="pool-a", cpu=16.0)
+        n3 = make_node("n3", nodepool="pool-b", cpu=16.0)
+        n4 = make_node("n4", nodepool="pool-b", cpu=16.0)
+        nodes = {"n1": n1, "n2": n2, "n3": n3, "n4": n4}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=None)
+
+        pool_a_tainted = to_taint & {"n1", "n2"}
+        pool_b_tainted = to_taint & {"n3", "n4"}
+        assert len(pool_a_tainted) == 1
+        assert len(pool_b_tainted) == 1
+
+
+# ============================================================================
+# Taint priority tests (allocatable_cpu in sort key)
+# ============================================================================
+
+
+class TestTaintPriority:
+    """Tests for the updated taint priority that includes allocatable_cpu."""
+
+    def test_taint_priority_smallest_first(self):
+        """Fleet with 16-CPU and 192-CPU nodes, both idle.
+
+        Smallest allocatable_cpu should be tainted first since it has less
+        capacity to offer.
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        n_small = make_fleet_node("n-small", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        n_big = make_fleet_node("n-big", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0)
+
+        nodes = {"n-small": n_small, "n-big": n_big}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        # Both idle, surplus=1. n_small has lower allocatable_cpu -> tainted first.
+        assert "n-small" in to_taint
+        assert "n-big" not in to_taint
+
+    def test_taint_priority_old_still_wins(self):
+        """Large old node vs small young node. Old node tainted first.
+
+        The -is_old component has the highest priority in the sort key.
+        """
+        cfg = make_config(
+            min_nodes=1,
+            max_uptime_hours=24,
+            spare_capacity_nodes=0,
+            spare_capacity_ratio=0.0,
+        )
+        n_big_old = make_fleet_node(
+            "n-big-old",
+            nodepool="m8g-48xlarge",
+            fleet="m8g",
+            cpu=192.0,
+            creation_time=NOW - timedelta(hours=50),
+        )
+        n_small_young = make_fleet_node(
+            "n-small-young",
+            nodepool="m8g-8xlarge",
+            fleet="m8g",
+            cpu=16.0,
+            creation_time=NOW - timedelta(hours=2),
+        )
+
+        nodes = {"n-big-old": n_big_old, "n-small-young": n_small_young}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        # Old node (>24h) has is_old=1 -> -is_old=-1 -> sorts first.
+        # Despite having more CPU, old wins the priority.
+        assert "n-big-old" in to_taint
+        assert "n-small-young" not in to_taint
+
+    def test_taint_priority_same_cpu_falls_through_to_utilization(self):
+        """Two nodes with same allocatable_cpu. Lower utilization tainted first.
+
+        When is_old and allocatable_cpu are equal, utilization determines order.
+        """
+        cfg = make_config(min_nodes=1, spare_capacity_nodes=0, spare_capacity_ratio=0.0)
+        n_low_util = make_fleet_node("n-low-util", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        n_low_util.pods = [make_pod("p1", cpu=2.0, node_name="n-low-util")]
+
+        n_high_util = make_fleet_node("n-high-util", nodepool="m8g-8xlarge-v2", fleet="m8g", cpu=16.0)
+        n_high_util.pods = [make_pod("p2", cpu=12.0, node_name="n-high-util")]
+
+        n_keep = make_fleet_node("n-keep", nodepool="m8g-8xlarge-v3", fleet="m8g", cpu=16.0)
+        n_keep.pods = [make_pod("p3", cpu=14.0, node_name="n-keep")]
+
+        nodes = {"n-low-util": n_low_util, "n-high-util": n_high_util, "n-keep": n_keep}
+
+        to_taint, _to_untaint, _mandatory, _rate_limited = compute_taints(nodes, cfg, group_key=_fleet_group_key)
+
+        # 3 nodes. bin_pack: 3 pods (2+12+14=28 CPU). 16 per node -> need 2.
+        # surplus=1. Same CPU -> lower utilization tainted first.
+        assert "n-low-util" in to_taint
+        assert len(to_taint) == 1
+
+
+# ============================================================================
+# Fleet cooldown tests (cross-NodePool)
+# ============================================================================
+
+
+class TestFleetCooldownCrossPool:
+    """Tests for fleet cooldown spanning multiple NodePools."""
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_fleet_cooldown_spans_nodepools(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """Burst untaint on NodePool m8g-48xlarge should block taint on a node
+        in NodePool m8g-8xlarge when both are in the same fleet 'm8g'.
+
+        The fleet cooldown key is the fleet name (or nodepool if no fleet),
+        so all NodePools sharing a fleet share the cooldown.
+        """
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=900)
+        taint_times: dict[str, float] = {}
+        fleet_cooldown_times: dict[str, float] = {}
+
+        # Iteration 1: burst untaint on n-big (nodepool m8g-48xlarge)
+        n_big = make_fleet_node("n-big", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0, is_tainted=True)
+        n_small = make_fleet_node("n-small", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        node_states = {"n-big": n_big, "n-small": n_small}
+
+        mock_discover.return_value = {"n-big": "m8g-48xlarge", "n-small": "m8g-8xlarge"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = {"n-big"}  # burst untaint for n-big
+        mock_compute.return_value = (set(), set(), set(), set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # Fleet cooldown should be recorded for the fleet "m8g"
+        assert "m8g" in fleet_cooldown_times
+
+        # Iteration 2: compactor wants to taint n-small (different NodePool,
+        # same fleet). Fleet cooldown is keyed on fleet (not nodepool),
+        # so this should be blocked. Both NodePools share the fleet "m8g",
+        # fleet-aware cooldown lands.
+        mock_discover.reset_mock()
+        mock_build.reset_mock()
+        mock_check.reset_mock()
+        mock_compute.reset_mock()
+        mock_apply.reset_mock()
+        mock_remove.reset_mock()
+
+        n_big_2 = make_fleet_node("n-big", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0)
+        n_small_2 = make_fleet_node("n-small", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        node_states_2 = {"n-big": n_big_2, "n-small": n_small_2}
+
+        mock_discover.return_value = {"n-big": "m8g-48xlarge", "n-small": "m8g-8xlarge"}
+        mock_build.return_value = (node_states_2, [])
+        mock_check.return_value = set()
+        mock_compute.return_value = ({"n-small"}, set(), set(), set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # n-small should NOT be tainted because the fleet's cooldown is active
+        # (burst happened on sibling NodePool m8g-48xlarge)
+        apply_calls = [c[0][1] for c in mock_apply.call_args_list]
+        assert "n-small" not in apply_calls
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_fleet_cooldown_does_not_span_fleets(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """Burst on fleet 'm8g' should NOT block fleet 'r7a'.
+
+        Fleet cooldown is per-fleet, so different fleets are independent.
+        """
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=900)
+        taint_times: dict[str, float] = {}
+        # Only fleet "m8g" has active cooldown
+        fleet_cooldown_times: dict[str, float] = {"m8g": time.time()}
+
+        n_m8g = make_fleet_node("n-m8g", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0)
+        n_r7a = make_fleet_node("n-r7a", nodepool="r7a-4xlarge", fleet="r7a", cpu=192.0)
+        node_states = {"n-m8g": n_m8g, "n-r7a": n_r7a}
+
+        mock_discover.return_value = {"n-m8g": "m8g-48xlarge", "n-r7a": "r7a-4xlarge"}
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        mock_compute.return_value = ({"n-m8g", "n-r7a"}, set(), set(), set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # n-r7a (fleet "r7a") should be tainted -- no cooldown for that fleet
+        apply_calls = [c[0][1] for c in mock_apply.call_args_list]
+        assert "n-r7a" in apply_calls
+        # n-m8g should be blocked by its fleet's cooldown
+        assert "n-m8g" not in apply_calls
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.remove_taint")
+    @patch("compactor.apply_taint")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_fleet_cooldown_surplus_uses_full_fleet(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_apply,
+        mock_remove,
+        mock_touch,
+    ):
+        """Surplus override counts all fleet nodes, not just one NodePool.
+
+        4 nodes across 2 NodePools in fleet "m8g". 3 tainted + 1 to-taint = 4/4.
+        >50% surplus -> cooldown halved (450s). With 500s elapsed, taint proceeds.
+        """
+        client = MagicMock()
+        cfg = make_config(fleet_cooldown=900)
+        taint_times: dict[str, float] = {}
+        # Fleet cooldown was 500 seconds ago: past half (450s) but within full (900s)
+        fleet_cooldown_times: dict[str, float] = {"m8g": time.time() - 500}
+
+        # 4 nodes across 2 NodePools, all fleet "m8g"
+        n1 = make_fleet_node("n1", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0, is_tainted=True)
+        n2 = make_fleet_node("n2", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0, is_tainted=True)
+        n3 = make_fleet_node("n3", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0, is_tainted=True)
+        n4 = make_fleet_node("n4", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0, is_tainted=False)
+        node_states = {"n1": n1, "n2": n2, "n3": n3, "n4": n4}
+
+        mock_discover.return_value = {
+            "n1": "m8g-48xlarge",
+            "n2": "m8g-48xlarge",
+            "n3": "m8g-8xlarge",
+            "n4": "m8g-8xlarge",
+        }
+        mock_build.return_value = (node_states, [])
+        mock_check.return_value = set()
+        mock_compute.return_value = ({"n4"}, set(), set(), set())
+
+        reconcile(client, cfg, taint_times, fleet_cooldown_times)
+
+        # With >50% surplus across the full fleet, effective cooldown = 450s.
+        # 500s elapsed > 450s -> taint should proceed.
+        mock_apply.assert_called_once_with(client, "n4", cfg.taint_key, cfg.dry_run)
 
 
 # ============================================================================

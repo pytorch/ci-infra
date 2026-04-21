@@ -1,0 +1,10 @@
+# Karpenter NodePool fleet: r7g
+# AWS Graviton3 — memory-optimized, ARM64, ~8 GiB/core ratio
+fleet:
+  name: r7g
+  arch: arm64
+  gpu: false
+  instances:
+    - type: r7g.16xlarge
+      weight: 100
+      node_disk_size: 1200

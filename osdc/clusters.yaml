@@ -159,6 +159,7 @@ clusters:
       - pypi-cache
       - cache-enforcer
       - zombie-cleanup
+      - harbor-cache-recovery
       - monitoring
       - logging
 
@@ -193,5 +194,6 @@ clusters:
       - pypi-cache
       - cache-enforcer
       - zombie-cleanup
+      - harbor-cache-recovery
       - monitoring
       - logging
