@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: true
+      skip_lint_test:
+        description: "Skip `just lint` and `just test` pre-flight checks (firefighting only)"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: osdc-deploy-arc-cbr-production
@@ -28,6 +33,7 @@ jobs:
       cluster: arc-cbr-production
       environment: osdc-production
       taint_nodes: ${{ inputs.taint_nodes }}
+      skip_lint_test: ${{ inputs.skip_lint_test }}
       # Integration tests target pytorch-canary via CANARY_GITHUB_TOKEN —
       # they don't belong in a prod deploy. Always skip.
       run_integration: false
