@@ -1,0 +1,42 @@
+name: "OSDC: Deploy production"
+
+# Manual rollout for arc-cbr-production. Protected by the `osdc-production` GitHub
+# environment (configure required reviewers in repo Settings → Environments) —
+# the prod IAM role additionally trusts only tokens with
+# `environment:osdc-production` in the sub claim, so IAM enforces the gate too.
+on:
+  workflow_dispatch:
+    inputs:
+      taint_nodes:
+        description: "Taint ARC runner nodes before deploy (graceful refresh)"
+        required: false
+        type: boolean
+        default: true
+      skip_lint_test:
+        description: "Skip `just lint` and `just test` pre-flight checks (firefighting only)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: osdc-deploy-arc-cbr-production
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: arc-cbr-production
+      environment: osdc-production
+      taint_nodes: ${{ inputs.taint_nodes }}
+      skip_lint_test: ${{ inputs.skip_lint_test }}
+      # Integration tests target pytorch-canary via CANARY_GITHUB_TOKEN —
+      # they don't belong in a prod deploy. Always skip.
+      run_integration: false
+    secrets:
+      META_AWS_ACC_ID: ${{ secrets.META_AWS_ACC_ID }}
+      META_AWS_DEPLOY_ROLE: ${{ secrets.META_AWS_DEPLOY_PROD_ROLE }}

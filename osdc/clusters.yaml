@@ -169,7 +169,7 @@ clusters:
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
       cluster_admin_role_names:
-        - ossci_gha_terraform
+        - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
     git_cache:
