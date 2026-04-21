@@ -53,6 +53,12 @@ variable "eks_version" {
   default     = "1.35"
 }
 
+variable "control_plane_scaling_tier" {
+  description = "EKS provisioned control plane scaling tier"
+  type        = string
+  default     = "standard"
+}
+
 variable "authentication_mode" {
   description = "EKS cluster authentication mode (API, API_AND_CONFIG_MAP, or CONFIG_MAP)"
   type        = string

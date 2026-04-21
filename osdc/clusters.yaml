@@ -172,6 +172,7 @@ clusters:
         - ossci_gha_terraform
     base:
       vpc_cidr: "10.1.0.0/16"
+      control_plane_scaling_tier: "tier-4xl"
     git_cache:
       central_replicas: 5
       central_cpu_request: "6"
