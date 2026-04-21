@@ -44,8 +44,8 @@ def clusters_yaml(tmp_path):
                 "harbor": {"core_replicas": 1},
                 "monitoring": {"grafana_cloud_url": "https://staging.example.com"},
             },
-            "arc-production": {
-                "cluster_name": "pytorch-arc-production",
+            "arc-cbr-production": {
+                "cluster_name": "pytorch-arc-cbr-production",
                 "aws_region": "us-east-2",
                 "modules": [
                     "eks",
@@ -74,8 +74,8 @@ def cfg_staging(clusters_yaml):
 
 @pytest.fixture
 def cfg_production(clusters_yaml):
-    """Return loaded config for arc-production."""
-    return load_cluster_config(clusters_yaml, "arc-production")
+    """Return loaded config for arc-cbr-production."""
+    return load_cluster_config(clusters_yaml, "arc-cbr-production")
 
 
 @pytest.fixture
@@ -184,13 +184,13 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-production",
-            "pytorch-arc-production",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
             b200_enabled=True,
         )
         assert "name: cbr integration test" in result
-        assert "runs-on: pytorch-arc-production" in result
-        assert "echo arc-production" in result
+        assert "runs-on: pytorch-arc-cbr-production" in result
+        assert "echo arc-cbr-production" in result
 
     def test_b200_removed_when_disabled(self, workflow_template):
         result = generate_workflow(
@@ -210,8 +210,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-production",
-            "pytorch-arc-production",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
             b200_enabled=True,
         )
         assert "b200-job:" in result
@@ -805,7 +805,7 @@ class TestClearStagingPools:
     @patch("phases.run_cmd")
     def test_skips_non_staging(self, mock_run):
         """Should return immediately for non-staging clusters."""
-        clear_staging_pools("arc-production")
+        clear_staging_pools("arc-cbr-production")
         mock_run.assert_not_called()
 
     @patch("phases.run_cmd")
