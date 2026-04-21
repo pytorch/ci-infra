@@ -1,17 +1,12 @@
 name: "OSDC: Deploy production"
 
-# Manual rollout for arc-production. Protected by the `osdc-production` GitHub
+# Manual rollout for arc-cbr-production. Protected by the `osdc-production` GitHub
 # environment (configure required reviewers in repo Settings → Environments) —
-# the `osdc_gha_prod` IAM role additionally trusts only tokens with
+# the prod IAM role additionally trusts only tokens with
 # `environment:osdc-production` in the sub claim, so IAM enforces the gate too.
 on:
   workflow_dispatch:
     inputs:
-      run_smoke:
-        description: "Run smoke tests after deploy"
-        required: false
-        type: boolean
-        default: true
       taint_nodes:
         description: "Taint ARC runner nodes before deploy (graceful refresh)"
         required: false
@@ -19,7 +14,7 @@ on:
         default: true
 
 concurrency:
-  group: osdc-deploy-arc-production
+  group: osdc-deploy-arc-cbr-production
   cancel-in-progress: false
 
 permissions:
@@ -30,8 +25,12 @@ jobs:
   deploy:
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
-      cluster: arc-production
-      role_to_assume: arn:aws:iam::308535385114:role/osdc_gha_prod
+      cluster: arc-cbr-production
       environment: osdc-production
-      run_smoke: ${{ inputs.run_smoke }}
       taint_nodes: ${{ inputs.taint_nodes }}
+      # Integration tests target pytorch-canary via CANARY_GITHUB_TOKEN —
+      # they don't belong in a prod deploy. Always skip.
+      run_integration: false
+    secrets:
+      META_AWS_ACC_ID: ${{ secrets.META_AWS_ACC_ID }}
+      META_AWS_DEPLOY_ROLE: ${{ secrets.META_AWS_DEPLOY_PROD_ROLE }}
