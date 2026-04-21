@@ -47,35 +47,19 @@ jobs:
   deploy:
     needs: changes
     if: needs.changes.outputs.osdc == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install just
-        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-
-      - name: Install mise
-        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
-        with:
-          install: true
-          working_directory: osdc
-
-      - name: Install Python dependencies
-        run: uv sync
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
-          role-duration-seconds: 7200
-
-      - name: Deploy to staging
-        run: just deploy "$CLUSTER"
-        env:
-          OSDC_SMOKE: "no"
-          OSDC_CONFIRM: "yes"
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: arc-staging
+      role_to_assume: arn:aws:iam::308535385114:role/osdc_gha_staging
+      # Environment gate: osdc_gha_staging trusts only tokens with
+      # environment:osdc-staging in the sub, which blocks fork PRs.
+      environment: osdc-staging
+      # Smoke/compactor/integration run as separate jobs below, so skip the
+      # in-deploy smoke step to avoid duplicating work.
+      run_smoke: false
+      # arc-staging has recycle_karpenter_nodes=true, which makes the taint
+      # block a no-op — pass false to be explicit.
+      taint_nodes: false
 
   # ------------------------------------------------------------------
   # Phase 2: Validate (parallel)
@@ -83,6 +67,7 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     needs: deploy
+    environment: osdc-staging
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -102,8 +87,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
+          role-to-assume: arn:aws:iam::308535385114:role/osdc_gha_staging
+          aws-region: us-west-2
           role-duration-seconds: 7200
 
       - name: Run smoke tests
@@ -112,6 +97,7 @@ jobs:
   compactor:
     runs-on: ubuntu-latest
     needs: deploy
+    environment: osdc-staging
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -131,8 +117,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
+          role-to-assume: arn:aws:iam::308535385114:role/osdc_gha_staging
+          aws-region: us-west-2
           role-duration-seconds: 7200
 
       - name: Run compactor e2e tests
@@ -141,6 +127,7 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     needs: deploy
+    environment: osdc-staging
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -165,8 +152,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
+          role-to-assume: arn:aws:iam::308535385114:role/osdc_gha_staging
+          aws-region: us-west-2
           role-duration-seconds: 7200
 
       - name: Run integration tests
