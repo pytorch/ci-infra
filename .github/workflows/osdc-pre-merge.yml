@@ -32,6 +32,7 @@ jobs:
           filters: |
             osdc:
               - 'osdc/**'
+              - '.github/workflows/osdc-deploy-prod.yml'
               - '.github/workflows/osdc-pre-merge.yml'
               - '.github/workflows/_osdc-deploy.yml'
 
