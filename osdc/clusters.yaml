@@ -162,33 +162,41 @@ clusters:
       - monitoring
       - logging
 
-  arc-production:
-    cluster_name: pytorch-arc-production
-    region: us-west-2
-    state_bucket: ciforge-tfstate-arc-production
+  arc-cbr-production:
+    cluster_name: pytorch-arc-cbr-production
+    region: us-east-2
+    state_bucket: ciforge-tfstate-arc-cbr-prod
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
       cluster_admin_role_names:
         - ossci_gha_terraform
     base:
-      vpc_cidr: "10.1.0.0/16"
+      vpc_cidr: "10.4.0.0/16"
     git_cache:
       central_replicas: 5
       central_cpu_request: "6"
       central_cpu_limit: "15"
       central_memory_request: "8Gi"
       central_memory_limit: "32Gi"
+    node_compactor:
+      min_node_age_seconds: 900
+    buildkit:
+      arm64_instance_type: c7gd.16xlarge
+      amd64_instance_type: m6id.24xlarge
+      pods_per_node: 2
     arc-runners:
       github_config_url: "https://github.com/pytorch"
-      github_secret_name: pytorch-arc-production
-      runner_name_prefix: ""
+      github_secret_name: pytorch-arc-cbr-production
+      runner_name_prefix: "mt-"
     pypi_cache:
       replicas: 2
     modules:
       - karpenter
       - arc
       - nodepools
+      - nodepools-b200
       - arc-runners
+      - arc-runners-b200
       - buildkit
       - pypi-cache
       - cache-enforcer
