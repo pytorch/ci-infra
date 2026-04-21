@@ -498,6 +498,61 @@ deploy-module cluster module:
     deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START"
     deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START"
 
+# Run `tofu plan` for base + every terraform-backed module of a cluster.
+# Read-only: no apply, no k8s/helm side effects. Safe to run from CI on PRs.
+plan cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
+    TFVARS=$(uv run {{CFG}} "$CLUSTER" tfvars)
+    STATE_REGION="us-west-2"
+
+    if ! aws s3api head-bucket --bucket "${BUCKET}" --region "${STATE_REGION}" 2>/dev/null; then
+        echo "ERROR: State bucket '${BUCKET}' does not exist. Run: just bootstrap ${CLUSTER}"
+        exit 1
+    fi
+
+    echo "━━━ PLAN: Base (${CLUSTER}) ━━━"
+    cd {{UPSTREAM}}/modules/eks/terraform
+    tofu init -reconfigure -input=false -no-color \
+        -backend-config="bucket=${BUCKET}" \
+        -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
+        -backend-config="region=${STATE_REGION}" \
+        -backend-config="dynamodb_table=ciforge-terraform-locks" >/dev/null
+    eval tofu plan -input=false -no-color $TFVARS
+
+    for MODULE in $(uv run {{CFG}} "$CLUSTER" modules); do
+        if [[ -d "{{ROOT}}/modules/$MODULE" ]]; then
+            MODULE_DIR="{{ROOT}}/modules/$MODULE"
+        elif [[ -d "{{UPSTREAM}}/modules/$MODULE" ]]; then
+            MODULE_DIR="{{UPSTREAM}}/modules/$MODULE"
+        else
+            continue
+        fi
+        [[ -f "$MODULE_DIR/terraform/main.tf" ]] || continue
+
+        echo ""
+        echo "━━━ PLAN: Module $MODULE (${CLUSTER}) ━━━"
+        cd "$MODULE_DIR/terraform"
+        tofu init -reconfigure -input=false -no-color \
+            -backend-config="bucket=${BUCKET}" \
+            -backend-config="key=${CLUSTER}/${MODULE}/terraform.tfstate" \
+            -backend-config="region=${STATE_REGION}" \
+            -backend-config="dynamodb_table=ciforge-terraform-locks" >/dev/null
+        tofu plan -input=false -no-color \
+            -var="cluster_name=${CNAME}" \
+            -var="aws_region=${REGION}" \
+            -var="state_bucket=${BUCKET}" \
+            -var="cluster_id=${CLUSTER}"
+    done
+
 # Terminate all Karpenter-managed nodes (they will be reprovisioned on demand)
 recycle-nodes cluster:
     #!/usr/bin/env bash
