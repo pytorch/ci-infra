@@ -1,0 +1,9 @@
+# ARC runner definition: l-x86iamx-44-450-b200-2 (2x NVIDIA B200)
+# Scheduled on NodePool: p6-b200-48xlarge (from nodepools-b200 module)
+runner:
+  name: l-x86iamx-44-450-b200-2
+  instance_type: p6-b200.48xlarge
+  disk_size: 200
+  vcpu: 44
+  memory: 450Gi
+  gpu: 2

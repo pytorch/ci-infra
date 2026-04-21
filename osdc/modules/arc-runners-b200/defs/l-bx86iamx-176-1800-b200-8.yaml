@@ -1,0 +1,9 @@
+# ARC runner definition: l-bx86iamx-176-1800-b200-8 (8x NVIDIA B200, full node)
+# Scheduled on NodePool: p6-b200-48xlarge (from nodepools-b200 module)
+runner:
+  name: l-bx86iamx-176-1800-b200-8
+  instance_type: p6-b200.48xlarge
+  disk_size: 200
+  vcpu: 176
+  memory: 1800Gi
+  gpu: 8

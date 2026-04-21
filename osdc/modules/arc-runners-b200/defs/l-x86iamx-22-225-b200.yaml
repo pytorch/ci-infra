@@ -1,0 +1,10 @@
+# ARC runner definition: l-x86iamx-22-225-b200 (1x NVIDIA B200)
+# Scheduled on NodePool: p6-b200-48xlarge (from nodepools-b200 module)
+# Resource math: 176 usable vCPU / 8 GPUs = 22 vCPU/GPU, 1800 GiB / 8 = 225 GiB/GPU
+runner:
+  name: l-x86iamx-22-225-b200
+  instance_type: p6-b200.48xlarge
+  disk_size: 200
+  vcpu: 22
+  memory: 225Gi
+  gpu: 1
