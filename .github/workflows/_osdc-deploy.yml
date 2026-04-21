@@ -1,0 +1,199 @@
+name: "~ OSDC: Deploy (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      cluster:
+        description: "Cluster id from clusters.yaml (e.g. arc-staging, arc-cbr-production)"
+        required: true
+        type: string
+      environment:
+        description: "GitHub environment for deployment gating (empty = no gate)"
+        required: false
+        type: string
+        default: ""
+      taint_nodes:
+        description: "Taint ARC runner nodes with NoSchedule before deploy for graceful refresh"
+        required: false
+        type: boolean
+        default: true
+      run_integration:
+        description: "Run integration tests after deploy (requires CANARY_GITHUB_TOKEN)"
+        required: false
+        type: boolean
+        default: true
+      skip_lint_test:
+        description: "Skip `just lint` and `just test` pre-flight checks (firefighting only)"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      META_AWS_ACC_ID:
+        required: true
+      META_AWS_DEPLOY_ROLE:
+        description: "Role name in the Meta account to assume (caller picks staging vs prod)"
+        required: true
+      CANARY_GITHUB_TOKEN:
+        description: "GitHub token for integration tests (required if run_integration=true)"
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.cluster }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Lint
+        if: ${{ !inputs.skip_lint_test }}
+        run: just lint
+
+      - name: Test
+        if: ${{ !inputs.skip_lint_test }}
+        run: just test
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+          role-duration-seconds: 7200
+
+      - name: Deploy ${{ inputs.cluster }}
+        run: just deploy "${{ inputs.cluster }}"
+        env:
+          OSDC_CONFIRM: "yes"
+          # smoke runs as a dedicated job below, skip the in-deploy step
+          OSDC_SMOKE: "no"
+          OSDC_TAINT_NODES: ${{ inputs.taint_nodes && 'yes' || 'no' }}
+
+  smoke:
+    name: Smoke tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+          role-duration-seconds: 7200
+
+      - name: Run smoke tests
+        run: just smoke "${{ inputs.cluster }}"
+
+  compactor:
+    name: Compactor e2e tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+          role-duration-seconds: 7200
+
+      - name: Run compactor e2e tests
+        run: just test-compactor "${{ inputs.cluster }}"
+
+  integration:
+    name: Integration tests
+    needs: deploy
+    if: ${{ inputs.run_integration }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Verify gh CLI
+        run: gh --version
+        env:
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+          role-duration-seconds: 7200
+
+      - name: Run integration tests
+        run: just integration-test "${{ inputs.cluster }}" --skip-drain --skip-smoke --skip-compactor
+        env:
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
