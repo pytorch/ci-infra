@@ -16,11 +16,6 @@ on:
         required: false
         type: string
         default: ""
-      ref:
-        description: "Git ref to check out (empty = caller's ref)"
-        required: false
-        type: string
-        default: ""
       run_smoke:
         description: "Run smoke tests as part of `just deploy`"
         required: false
@@ -47,8 +42,6 @@ jobs:
         working-directory: osdc
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ inputs.ref }}
 
       - name: Install just
         uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
@@ -66,7 +59,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ inputs.role_to_assume }}
-          aws-region: us-west-2
+          aws-region: us-west-1
           role-duration-seconds: 7200
 
       - name: Deploy ${{ inputs.cluster }}
