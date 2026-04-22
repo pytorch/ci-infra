@@ -252,9 +252,9 @@ curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
 
 ## Source
 
-Upstream references:
-- `upstream/osdc/CLAUDE.md` — general architecture
-- `upstream/osdc/modules/monitoring/CLAUDE.md` — monitoring module docs, credential setup
+References:
+- `CLAUDE.md` — general architecture
+- `modules/monitoring/CLAUDE.md` — monitoring module docs, credential setup
 - `clusters.yaml` — Mimir read/write URLs
 - `upstream/osdc/modules/monitoring/helm/alloy-values.yaml` — Alloy remote_write config
 
