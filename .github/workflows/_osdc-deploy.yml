@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: true
+      run_smoke:
+        description: "Run smoke tests after deploy"
+        required: false
+        type: boolean
+        default: true
       run_integration:
         description: "Run integration tests after deploy (requires CANARY_GITHUB_TOKEN)"
         required: false
@@ -96,6 +101,7 @@ jobs:
   smoke:
     name: Smoke tests
     needs: deploy
+    if: ${{ inputs.run_smoke }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: 30
