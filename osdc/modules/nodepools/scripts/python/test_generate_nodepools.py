@@ -608,14 +608,14 @@ class TestFleetNodepoolGeneration:
         assert "node-fleet" not in labels
 
     def test_fleet_taint_present(self):
-        nodepool_def = _make_nodepool_def(fleet_name="g5-1gpu", weight=100)
+        nodepool_def = _make_nodepool_def(fleet_name="g5", weight=100)
         output = generate_nodepool_yaml(nodepool_def, "nodepools")
         docs = self._parse(output)
         np = docs[0]
         taints = np["spec"]["template"]["spec"]["taints"]
         fleet_taints = [t for t in taints if t["key"] == "node-fleet"]
         assert len(fleet_taints) == 1
-        assert fleet_taints[0]["value"] == "g5-1gpu"
+        assert fleet_taints[0]["value"] == "g5"
         assert fleet_taints[0]["effect"] == "NoSchedule"
 
     def test_fleet_taint_before_instance_taint(self):
@@ -650,7 +650,7 @@ class TestFleetNodepoolGeneration:
     def test_fleet_gpu_has_all_taints(self):
         """Fleet GPU nodepool has fleet taint + instance-type taint + GPU taint."""
         nodepool_def = _make_nodepool_def(
-            fleet_name="g5-1gpu",
+            fleet_name="g5",
             weight=100,
             gpu=True,
             instance_type="g5.8xlarge",
@@ -694,14 +694,14 @@ class TestBuildFleetNodepoolDef:
         assert result["extra_labels"]["osdc.io/runner-class"] == "release"
 
     def test_gpu_fleet(self):
-        fleet = {"name": "g5-1gpu", "arch": "amd64", "gpu": True}
+        fleet = {"name": "g5", "arch": "amd64", "gpu": True}
         inst = {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True}
         result = _build_fleet_nodepool_def(fleet, inst)
         assert result["gpu"] is True
         assert result["has_nvme"] is True
 
     def test_baremetal_flag(self):
-        fleet = {"name": "g4dn-8gpu", "arch": "amd64", "gpu": True}
+        fleet = {"name": "g4dn", "arch": "amd64", "gpu": True}
         inst = {"type": "g4dn.metal", "weight": 100, "node_disk_size": 600, "baremetal": True}
         result = _build_fleet_nodepool_def(fleet, inst)
         assert result["baremetal"] is True
@@ -944,7 +944,7 @@ class TestMain:
         fleet_data = {
             "fleets": [
                 {
-                    "name": "g5-1gpu",
+                    "name": "fleet-alpha",
                     "arch": "amd64",
                     "gpu": True,
                     "instances": [
@@ -952,7 +952,7 @@ class TestMain:
                     ],
                 },
                 {
-                    "name": "g5-4gpu",
+                    "name": "fleet-beta",
                     "arch": "amd64",
                     "gpu": True,
                     "instances": [
@@ -978,8 +978,8 @@ class TestMain:
         # Verify fleet names are different
         g5_8 = parse_all_yaml((output_dir / "g5-8xlarge.yaml").read_text())
         g5_12 = parse_all_yaml((output_dir / "g5-12xlarge.yaml").read_text())
-        assert g5_8[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "g5-1gpu"
-        assert g5_12[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "g5-4gpu"
+        assert g5_8[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "fleet-alpha"
+        assert g5_12[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "fleet-beta"
 
     def test_mixed_nodepool_and_fleet(self, tmp_path):
         """Legacy nodepool and fleet files can coexist in the same defs dir."""
