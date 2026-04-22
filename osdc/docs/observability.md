@@ -195,12 +195,9 @@ Each module can contribute log parsing rules by placing a `logging/pipeline.allo
 During deploy, `assemble_config.py`:
 
 1. Reads `clusters.yaml` to get the cluster's enabled modules
-2. For each module, checks `$OSDC_ROOT/modules/<name>/logging/pipeline.alloy` (consumer override first)
-3. Falls back to `$OSDC_UPSTREAM/modules/<name>/logging/pipeline.alloy`
-4. Inserts all discovered blocks at the `// MODULE_PIPELINES` marker in `base.alloy`
-5. Outputs the assembled config as a ConfigMap YAML (`alloy-logging-config`)
-
-**Consumer opt-out**: an empty (whitespace-only) `pipeline.alloy` in the consumer's modules directory suppresses the upstream pipeline for that module entirely. The upstream file is NOT checked as fallback. This lets consumers disable a module's log parsing without deleting the upstream file.
+2. For each module, checks `modules/<name>/logging/pipeline.alloy`
+3. Inserts all discovered blocks at the `// MODULE_PIPELINES` marker in `base.alloy`
+4. Outputs the assembled config as a ConfigMap YAML (`alloy-logging-config`)
 
 **Example module pipeline** (`modules/karpenter/logging/pipeline.alloy`):
 
