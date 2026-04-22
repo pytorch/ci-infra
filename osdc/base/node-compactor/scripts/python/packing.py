@@ -22,7 +22,7 @@ def bin_pack_min_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> int:
     if not pods or not nodes:
         return 0
 
-    sorted_pods = sorted(pods, key=lambda p: p.cpu_request, reverse=True)
+    sorted_pods = sorted(pods, key=lambda p: (p.gpu_request, p.cpu_request), reverse=True)
 
     bins: list[dict] = []
     for node in sorted(nodes, key=lambda n: n.allocatable_cpu, reverse=True):
@@ -30,6 +30,7 @@ def bin_pack_min_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> int:
             {
                 "cpu_remaining": node.allocatable_cpu - node.daemonset_cpu,
                 "mem_remaining": node.allocatable_memory - node.daemonset_memory,
+                "gpu_remaining": node.allocatable_gpu - node.daemonset_gpu,
             }
         )
 
@@ -37,9 +38,14 @@ def bin_pack_min_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> int:
     for pod in sorted_pods:
         placed = False
         for b in bins[:nodes_used]:
-            if b["cpu_remaining"] >= pod.cpu_request and b["mem_remaining"] >= pod.memory_request:
+            if (
+                b["cpu_remaining"] >= pod.cpu_request
+                and b["mem_remaining"] >= pod.memory_request
+                and (pod.gpu_request == 0 or b["gpu_remaining"] >= pod.gpu_request)
+            ):
                 b["cpu_remaining"] -= pod.cpu_request
                 b["mem_remaining"] -= pod.memory_request
+                b["gpu_remaining"] -= pod.gpu_request
                 placed = True
                 break
         if not placed:
@@ -47,6 +53,7 @@ def bin_pack_min_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> int:
                 b = bins[nodes_used]
                 b["cpu_remaining"] -= pod.cpu_request
                 b["mem_remaining"] -= pod.memory_request
+                b["gpu_remaining"] -= pod.gpu_request
                 nodes_used += 1
             else:
                 return len(bins)
@@ -73,16 +80,22 @@ def _pods_fit_on_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> bool:
             {
                 "cpu_remaining": node.allocatable_cpu - node.total_cpu_used,
                 "mem_remaining": node.allocatable_memory - node.total_memory_used,
+                "gpu_remaining": node.allocatable_gpu - node.total_gpu_used,
             }
         )
 
-    sorted_pods = sorted(pods, key=lambda p: p.cpu_request, reverse=True)
+    sorted_pods = sorted(pods, key=lambda p: (p.gpu_request, p.cpu_request), reverse=True)
     for pod in sorted_pods:
         placed = False
         for b in bins:
-            if b["cpu_remaining"] >= pod.cpu_request and b["mem_remaining"] >= pod.memory_request:
+            if (
+                b["cpu_remaining"] >= pod.cpu_request
+                and b["mem_remaining"] >= pod.memory_request
+                and (pod.gpu_request == 0 or b["gpu_remaining"] >= pod.gpu_request)
+            ):
                 b["cpu_remaining"] -= pod.cpu_request
                 b["mem_remaining"] -= pod.memory_request
+                b["gpu_remaining"] -= pod.gpu_request
                 placed = True
                 break
         if not placed:
@@ -116,6 +129,12 @@ def select_reserved_nodes(group_nodes: dict[str, list[NodeState]], cfg: Config) 
     for pool_name, nodes in pool_nodes.items():
         young = [n for n in nodes if n.uptime_hours < cfg.max_uptime_hours]
         if not young:
+            log.info(
+                "Reservation: pool %s has %d node(s) but none younger than %dh",
+                pool_name,
+                len(nodes),
+                cfg.max_uptime_hours,
+            )
             continue
 
         # Sort: lowest utilization, then oldest youngest-pod (closer to
@@ -131,6 +150,13 @@ def select_reserved_nodes(group_nodes: dict[str, list[NodeState]], cfg: Config) 
         selected = {n.name for n in young[: cfg.capacity_reservation_nodes]}
         if selected:
             result[pool_name] = selected
+            log.info(
+                "Reservation: pool %s — selected %s (from %d eligible, %d total)",
+                pool_name,
+                sorted(selected),
+                len(young),
+                len(nodes),
+            )
 
     return result
 
@@ -223,6 +249,7 @@ def compute_taints(
             return (
                 -is_old,
                 node.allocatable_cpu,
+                node.allocatable_gpu,
                 node.utilization,
                 -node.youngest_pod_age_seconds,
             )
