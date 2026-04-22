@@ -1387,7 +1387,7 @@ jobs:
   test-gpu-t4:
     runs-on: {{PREFIX}}l-x86iavx512-29-115-t4
     container:
-      image: nvidia/cuda:12.6.3-base-ubuntu22.04
+      image: ghcr.io/actions/actions-runner:latest
     steps:
       - name: Verify GPU
         run: |
@@ -1434,7 +1434,7 @@ jobs:
   test-gpu-t4-multi:
     runs-on: {{PREFIX}}l-x86iavx512-45-172-t4-4
     container:
-      image: nvidia/cuda:12.6.3-base-ubuntu22.04
+      image: ghcr.io/actions/actions-runner:latest
     steps:
       - name: Verify multi-GPU
         run: |
@@ -1471,7 +1471,7 @@ jobs:
   test-gpu-b200-2:
     runs-on: {{PREFIX}}l-x86iamx-44-450-b200-2
     container:
-      image: nvidia/cuda:12.6.3-base-ubuntu22.04
+      image: ghcr.io/actions/actions-runner:latest
     steps:
       - name: Verify B200 multi-GPU
         run: |
