@@ -39,6 +39,7 @@ Current modules:
 | `buildkit` | Container build service — dual-arch BuildKit Deployments with HAProxy LB on dedicated nodes |
 | `logging` | Log collection pipeline — Grafana Alloy DaemonSet (pod logs + journal) + Events Deployment → Grafana Cloud Loki |
 | `monitoring` | Metrics pipeline — kube-prometheus-stack CRDs/exporters + Grafana Alloy → Grafana Cloud Mimir |
+| `harbor-cache-recovery` | CronJob that detects ImagePullBackOff from Harbor proxy cache corruption and purges stale cache entries |
 
 Future modules (developed by other teams):
 
