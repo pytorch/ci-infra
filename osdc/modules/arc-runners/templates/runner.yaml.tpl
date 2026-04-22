@@ -337,13 +337,21 @@ data:
             - name: git-cache
               mountPath: /opt/git-cache
               readOnly: true
-{{GPU_DSHM_MOUNT}}
+            # K8s default /dev/shm is 64Mi (container runtime tmpfs). NCCL
+            # blows past that on multi-GPU workloads; PyTorch docker-based CI
+            # also runs with --shm-size=1g-2g, so match that ceiling for all
+            # workflow pods.
+            - name: dshm
+              mountPath: /dev/shm
       volumes:
         - name: git-cache
           hostPath:
             path: /mnt/git-cache
             type: DirectoryOrCreate
-{{GPU_DSHM_VOLUME}}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
   wrapper.js: |
     #!/usr/bin/env node
     'use strict';

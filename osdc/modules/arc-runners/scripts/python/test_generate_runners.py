@@ -101,13 +101,17 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                 - name: git-cache
                   mountPath: /opt/git-cache
                   readOnly: true
-    {{GPU_DSHM_MOUNT}}
+                - name: dshm
+                  mountPath: /dev/shm
           volumes:
             - name: git-cache
               hostPath:
                 path: /mnt/git-cache
                 type: DirectoryOrCreate
-    {{GPU_DSHM_VOLUME}}
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 2Gi
 """)
 
 FAKE_CLUSTERS_YAML = {
@@ -392,7 +396,7 @@ class TestGenerateRunner:
         volumes = {v["name"]: v for v in cm_data["spec"].get("volumes", [])}
         assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "2Gi"}
 
-    def test_non_gpu_runner_has_no_dshm_mount(self, tmp_path):
+    def test_cpu_runner_has_dshm_mount(self, tmp_path):
         def_file = make_def_file(tmp_path, "cpu-runner", "c5.xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -403,10 +407,13 @@ class TestGenerateRunner:
         }
 
         generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
-        content = (output_dir / "cpu-runner.yaml").read_text()
-        # dshm is GPU-only — NCCL drives the need; CPU runners can keep the k8s default
-        assert "dshm" not in content
-        assert "/dev/shm" not in content
+        docs = list(yaml.safe_load_all((output_dir / "cpu-runner.yaml").read_text()))
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        container = cm_data["spec"]["containers"][0]
+        mounts = {m["name"]: m for m in container.get("volumeMounts", [])}
+        assert mounts["dshm"]["mountPath"] == "/dev/shm"
+        volumes = {v["name"]: v for v in cm_data["spec"].get("volumes", [])}
+        assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "2Gi"}
 
     def test_no_placeholders_remaining(self, tmp_path):
         def_file = make_def_file(tmp_path, "test-runner", "c5.xlarge", 2, 4)
