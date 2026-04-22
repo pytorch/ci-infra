@@ -149,6 +149,25 @@ deploy-history cluster:
         --sort-by=.metadata.creationTimestamp \
         -o custom-columns='NAME:.metadata.name,AGE:.metadata.creationTimestamp'
 
+# Human-readable deploy status: current versions and recent history
+deploy-status cluster name='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    NAME="{{name}}"
+
+    just kubeconfig "$CLUSTER"
+
+    ARGS=("$CLUSTER")
+    [[ -n "$NAME" ]] && ARGS+=("$NAME")
+
+    kubectl get configmaps -n osdc-system \
+        -l app.kubernetes.io/managed-by=osdc-deploy-log \
+        -o json \
+    | python3 "{{SCRIPTS}}/deploy-status.py" "${ARGS[@]}"
+
 # Update kubeconfig for a cluster (aws eks update-kubeconfig)
 kubeconfig cluster:
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
