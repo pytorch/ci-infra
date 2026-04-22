@@ -42,6 +42,16 @@ def normalize_name(name):
     return name.replace(".", "-").replace("_", "-")
 
 
+def derive_fleet_name(instance_type):
+    """Derive the node-fleet name from an instance type.
+
+    Returns the instance family (everything before the dot).  GPU scheduling
+    is handled by nvidia.com/gpu resource requests, not fleet-level isolation,
+    so GPU and CPU instances use the same derivation: family name only.
+    """
+    return instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
+
+
 # Kubernetes resource quantity suffixes → multiplier (bytes)
 _K8S_MEMORY_SUFFIXES = {
     "Ki": 1024,
@@ -128,6 +138,8 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     if not runner_name or not instance_type:
         log_error(f"Invalid definition file: {def_file}")
         return False
+
+    node_fleet = derive_fleet_name(instance_type)
 
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")
@@ -223,6 +235,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{RUNNER_NAME}}": runner_name,
         "{{RUNNER_NAME_NORMALIZED}}": normalized_name,
         "{{INSTANCE_TYPE}}": instance_type,
+        "{{NODE_FLEET}}": node_fleet,
         "{{VCPU}}": str(vcpu),
         "{{MEMORY}}": str(memory),
         "{{MEMORY_BYTES}}": str(parse_memory_bytes(memory)),
