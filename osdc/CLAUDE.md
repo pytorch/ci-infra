@@ -44,6 +44,10 @@ If either fails, fix the issues before finishing. Do not defer lint or test fail
 - Don't experiment with the cluster — read-only investigation is fine, but don't change anything
 - Don't update ANY versions (tools, deps, images) without explicit approval
 
+## GPU Fleet Unification & NUMA Topology
+
+GPU families (g5, g6, g4dn) use unified single-fleet definitions (all GPU counts in one fleet). GPU allocation is handled by `nvidia.com/gpu` resource requests, not fleet-level isolation. All Karpenter nodes use `topologyManagerPolicy: restricted` — mixed GPU packing on multi-GPU nodes can cause NUMA fragmentation and TopologyAffinityError livelocks. Monitor for this; switch to `best-effort` policy if observed. See `actions-knowledge-base/docs/osdc/numa-topology-gpu-fleet-unification.md` for details.
+
 ## Skills Reference
 
 Detailed instructions are broken into on-demand skills. Load the relevant skill when working on a specific topic:

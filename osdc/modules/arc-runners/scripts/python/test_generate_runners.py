@@ -191,19 +191,19 @@ class TestDeriveFleetName:
         assert derive_fleet_name("r7a.48xlarge") == "r7a"
 
     def test_derive_fleet_name_gpu(self):
-        assert derive_fleet_name("g5.8xlarge") == "g5-1gpu"
+        assert derive_fleet_name("g5.8xlarge") == "g5"
 
     def test_derive_fleet_name_gpu_multi(self):
-        assert derive_fleet_name("g5.48xlarge") == "g5-8gpu"
+        assert derive_fleet_name("g5.48xlarge") == "g5"
 
     def test_derive_fleet_name_b200(self):
-        assert derive_fleet_name("p6-b200.48xlarge") == "p6-b200-8gpu"
+        assert derive_fleet_name("p6-b200.48xlarge") == "p6-b200"
 
     def test_derive_fleet_name_metal(self):
         assert derive_fleet_name("c7i.metal-24xl") == "c7i"
 
-    def test_derive_fleet_name_unknown_gpu_fallback(self):
-        assert derive_fleet_name("z99.xlarge", gpu_count=4) == "z99-4gpu"
+    def test_derive_fleet_name_unknown(self):
+        assert derive_fleet_name("z99.xlarge") == "z99"
 
 
 # ============================================================================

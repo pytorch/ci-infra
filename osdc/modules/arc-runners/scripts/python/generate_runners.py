@@ -23,15 +23,6 @@ from pathlib import Path
 
 import yaml
 
-# instance_specs lives in scripts/python/ at the repo root.  Add it to
-# sys.path so the import works both when run directly (deploy.sh) and
-# when run via pytest (pyproject.toml testpaths also adds it).
-_scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
-if _scripts_python not in sys.path:
-    sys.path.insert(0, _scripts_python)
-
-from instance_specs import INSTANCE_SPECS  # noqa: E402
-
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
@@ -51,19 +42,14 @@ def normalize_name(name):
     return name.replace(".", "-").replace("_", "-")
 
 
-def derive_fleet_name(instance_type, gpu_count=0):
+def derive_fleet_name(instance_type):
     """Derive the node-fleet name from an instance type.
 
-    Uses the instance's actual GPU count from INSTANCE_SPECS rather than the
-    runner's requested GPU count, since multiple runners with different GPU
-    requests may share the same multi-GPU instance (e.g. B200).
+    Returns the instance family (everything before the dot).  GPU scheduling
+    is handled by nvidia.com/gpu resource requests, not fleet-level isolation,
+    so GPU and CPU instances use the same derivation: family name only.
     """
-    family = instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
-    specs = INSTANCE_SPECS.get(instance_type, {})
-    node_gpus = specs.get("gpu", gpu_count)
-    if node_gpus:
-        return f"{family}-{node_gpus}gpu"
-    return family
+    return instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
 
 
 # Kubernetes resource quantity suffixes → multiplier (bytes)
@@ -153,7 +139,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         log_error(f"Invalid definition file: {def_file}")
         return False
 
-    node_fleet = derive_fleet_name(instance_type, gpu)
+    node_fleet = derive_fleet_name(instance_type)
 
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")
