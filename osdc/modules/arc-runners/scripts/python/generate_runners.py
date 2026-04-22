@@ -30,8 +30,6 @@ _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
-from instance_specs import INSTANCE_SPECS  # noqa: E402
-
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
@@ -54,20 +52,11 @@ def normalize_name(name):
 def derive_fleet_name(instance_type):
     """Derive the node-fleet name from an instance type.
 
-    Uses the instance's actual GPU count from INSTANCE_SPECS rather than the
-    runner's requested GPU count, since multiple runners with different GPU
-    requests may share the same multi-GPU instance (e.g. B200).
+    Returns the instance family (everything before the dot).  GPU scheduling
+    is handled by nvidia.com/gpu resource requests, not fleet-level isolation,
+    so GPU and CPU instances use the same derivation: family name only.
     """
-    if instance_type not in INSTANCE_SPECS:
-        raise ValueError(
-            f"Instance type '{instance_type}' not found in INSTANCE_SPECS. "
-            f"Add it to scripts/python/instance_specs.py before using it."
-        )
-    family = instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
-    node_gpus = INSTANCE_SPECS[instance_type].get("gpu", 0)
-    if node_gpus:
-        return f"{family}-{node_gpus}gpu"
-    return family
+    return instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
 
 
 # Kubernetes resource quantity suffixes → multiplier (bytes)
