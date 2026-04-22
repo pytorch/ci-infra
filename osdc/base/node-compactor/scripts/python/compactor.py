@@ -118,6 +118,8 @@ def reconcile(
             utilization[(node_name, pool, "cpu")] = ns.total_cpu_used / ns.allocatable_cpu
         if ns.allocatable_memory > 0:
             utilization[(node_name, pool, "memory")] = ns.total_memory_used / ns.allocatable_memory
+        if ns.allocatable_gpu > 0:
+            utilization[(node_name, pool, "gpu")] = ns.total_gpu_used / ns.allocatable_gpu
     m.refresh_gauge(m.node_utilization_ratio, utilization)
     m.refresh_gauge(m.workload_pods, {(fk,): count for fk, count in fleet_pod_counts.items()})
 

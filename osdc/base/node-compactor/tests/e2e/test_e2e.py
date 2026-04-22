@@ -58,6 +58,7 @@ POD_MEMORY = "120Gi"
 # Timeouts
 PROVISION_TIMEOUT = 600  # 10 min for Karpenter to provision nodes
 TAINT_TIMEOUT = 90  # 90s for compactor to taint (interval=5s)
+RESERVATION_TIMEOUT = 180  # 3 min — multi-pool fleets need extra cycles for Karpenter churn
 KARPENTER_DELETE_TIMEOUT = 360  # 6 min for WhenEmpty + consolidateAfter
 BURST_TIMEOUT = 180  # 3 min for burst absorption
 COMPACTOR_CYCLE = 5  # seconds (matches COMPACTOR_INTERVAL override)
@@ -666,8 +667,21 @@ class TestGroupC_Reservation(_CompactorE2EBase):
                 sorted(get_reserved_nodes(self.client, self.pool)),
             ),
             stable_s=STABLE_WINDOW,
-            timeout_s=TAINT_TIMEOUT,
+            timeout_s=RESERVATION_TIMEOUT,
         )
+
+        def _reservation_diagnostics() -> str:
+            lines = [f"Target pool: {self.pool}"]
+            lines.append(f"Fleet pools: {self.fleet_pools}")
+            for pool in self.fleet_pools:
+                pool_nodes = get_pool_nodes(self.client, pool)
+                reserved = get_reserved_nodes(self.client, pool)
+                tainted = get_fleet_tainted_nodes(self.client, [pool])
+                names = [n.metadata.name for n in pool_nodes if n.metadata]
+                lines.append(
+                    f"  {pool}: {len(pool_nodes)} node(s) {names}, reserved={reserved}, tainted={sorted(tainted)}"
+                )
+            return "\n".join(lines)
 
         # Assert: exactly 1 reserved node with both annotations.
         # The compactor may need an extra cycle after taint state stabilizes
@@ -675,8 +689,9 @@ class TestGroupC_Reservation(_CompactorE2EBase):
         wait_for(
             "at least 1 reserved node",
             lambda: len(get_reserved_nodes(self.client, self.pool)) >= 1,
-            timeout_s=TAINT_TIMEOUT,
+            timeout_s=RESERVATION_TIMEOUT,
             poll_s=5,
+            on_timeout=_reservation_diagnostics,
         )
         reserved = get_reserved_nodes(self.client, self.pool)
         do_not_disrupt = get_do_not_disrupt_nodes(self.client, self.pool)
@@ -706,7 +721,7 @@ class TestGroupC_Reservation(_CompactorE2EBase):
                 sorted(get_reserved_nodes(self.client, self.pool)),
             ),
             stable_s=STABLE_WINDOW,
-            timeout_s=TAINT_TIMEOUT,
+            timeout_s=RESERVATION_TIMEOUT,
         )
 
         # Assert: reserved node is NOT tainted
@@ -731,7 +746,7 @@ class TestGroupC_Reservation(_CompactorE2EBase):
                 sorted(get_reserved_nodes(self.client, self.pool)),
             ),
             stable_s=STABLE_WINDOW,
-            timeout_s=TAINT_TIMEOUT,
+            timeout_s=RESERVATION_TIMEOUT,
         )
 
         nodes, _tainted, untainted = partition_fleet_nodes(self.client, self.fleet_pools)
@@ -751,7 +766,7 @@ class TestGroupC_Reservation(_CompactorE2EBase):
         wait_for(
             "reserved nodes are untainted",
             lambda: _reserved_subset_of_untainted(self.client, self.pool),
-            timeout_s=TAINT_TIMEOUT,
+            timeout_s=RESERVATION_TIMEOUT,
             poll_s=5,
         )
 
@@ -766,7 +781,7 @@ class TestGroupC_Reservation(_CompactorE2EBase):
                 wait_for(
                     "at least 1 reserved node",
                     lambda: len(get_reserved_nodes(self.client, self.pool)) > 0,
-                    timeout_s=TAINT_TIMEOUT,
+                    timeout_s=RESERVATION_TIMEOUT,
                     poll_s=5,
                 )
                 reserved_before = get_reserved_nodes(self.client, self.pool)

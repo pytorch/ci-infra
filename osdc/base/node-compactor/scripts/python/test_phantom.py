@@ -126,14 +126,14 @@ class TestPhantomLeastUtilized(unittest.TestCase):
             name="node-a",
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("w1", "ns", 4.0, 1 * GiB, "node-a", False, datetime.now(UTC))],
+            pods=[PodInfo("w1", "ns", 4.0, 1 * GiB, "node-a", False, start_time=datetime.now(UTC))],
         )
         # node-b: 12.5% utilized (1/8 CPU)
         node_b = make_node_state(
             name="node-b",
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("w2", "ns", 1.0, 1 * GiB, "node-b", False, datetime.now(UTC))],
+            pods=[PodInfo("w2", "ns", 1.0, 1 * GiB, "node-b", False, start_time=datetime.now(UTC))],
         )
         states = {"node-a": node_a, "node-b": node_b}
         pod = make_pending_pod(cpu="1", memory="1Gi", age_seconds=60)
@@ -287,7 +287,7 @@ class TestPhantomLoadCap(unittest.TestCase):
             name="node-1",
             allocatable_cpu=10.0,
             allocatable_memory=100 * GiB,
-            pods=[PodInfo("real-1", "ns", 5.0, 1 * GiB, "node-1", False, datetime.now(UTC))],
+            pods=[PodInfo("real-1", "ns", 5.0, 1 * GiB, "node-1", False, start_time=datetime.now(UTC))],
         )
         states = {"node-1": node}
 
