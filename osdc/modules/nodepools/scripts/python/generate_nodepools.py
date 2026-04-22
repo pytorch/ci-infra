@@ -375,15 +375,15 @@ def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name)
         f"{nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi{', NVMe' if has_nvme else ''})"
     )
 
-    # Auto-derive fleet name for legacy defs so nodes get the node-fleet label/taint
     if instance_type not in INSTANCE_SPECS:
         raise ValueError(
-            f"Instance type '{instance_type}' not found in INSTANCE_SPECS. "
-            f"Add it to scripts/python/instance_specs.py before using it."
+            f"Instance type '{instance_type}' in {def_file.name} "
+            f"not found in INSTANCE_SPECS. "
+            f"Add it to scripts/python/instance_specs.py first."
         )
-    family = instance_type.split(".")[0]
-    node_gpus = INSTANCE_SPECS[instance_type].get("gpu", 0)
-    nodepool_def["fleet_name"] = f"{family}-{node_gpus}gpu" if node_gpus else family
+
+    # Auto-derive fleet name for legacy defs so nodes get the node-fleet label/taint
+    nodepool_def["fleet_name"] = instance_type.split(".")[0]
 
     content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
     out_path = output_dir / f"{name}.yaml"
