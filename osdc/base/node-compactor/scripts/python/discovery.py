@@ -14,6 +14,7 @@ from models import (
     parse_cpu,
     parse_memory,
     pod_cpu_request,
+    pod_gpu_request,
     pod_memory_request,
 )
 
@@ -106,6 +107,7 @@ def build_node_states(
             nodepool=labels.get("karpenter.sh/nodepool", "unknown"),
             allocatable_cpu=parse_cpu(alloc.get("cpu", "0")),
             allocatable_memory=parse_memory(alloc.get("memory", "0")),
+            allocatable_gpu=int(alloc.get("nvidia.com/gpu", 0)),
             creation_time=creation,
             is_tainted=is_tainted,
             is_reserved=is_reserved,
@@ -207,6 +209,7 @@ def build_node_states(
                 namespace=pod.metadata.namespace,
                 cpu_request=pod_cpu_request(pod),
                 memory_request=pod_memory_request(pod),
+                gpu_request=pod_gpu_request(pod),
                 node_name=node_name,
                 is_daemonset=is_daemonset_pod(pod),
                 start_time=start_time,
