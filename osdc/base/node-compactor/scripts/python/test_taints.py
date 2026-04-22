@@ -442,7 +442,7 @@ class TestPodMatchesNodeResources(unittest.TestCase):
         node = make_node_state(
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("p1", "ns", 2.0, 4 * GiB, "node-1", False, NOW)],
+            pods=[PodInfo("p1", "ns", 2.0, 4 * GiB, "node-1", False, start_time=NOW)],
         )
         pod = make_pod(cpu="4", memory="16Gi")
         self.assertTrue(_pod_matches_node(pod, node))
@@ -452,7 +452,7 @@ class TestPodMatchesNodeResources(unittest.TestCase):
         node = make_node_state(
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("p1", "ns", 7.0, 1 * GiB, "node-1", False, NOW)],
+            pods=[PodInfo("p1", "ns", 7.0, 1 * GiB, "node-1", False, start_time=NOW)],
         )
         pod = make_pod(cpu="2", memory="1Gi")
         self.assertFalse(_pod_matches_node(pod, node))
@@ -462,7 +462,7 @@ class TestPodMatchesNodeResources(unittest.TestCase):
         node = make_node_state(
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("p1", "ns", 1.0, 30 * GiB, "node-1", False, NOW)],
+            pods=[PodInfo("p1", "ns", 1.0, 30 * GiB, "node-1", False, start_time=NOW)],
         )
         pod = make_pod(cpu="1", memory="4Gi")
         self.assertFalse(_pod_matches_node(pod, node))
@@ -472,7 +472,7 @@ class TestPodMatchesNodeResources(unittest.TestCase):
         node = make_node_state(
             allocatable_cpu=4.0,
             allocatable_memory=8 * GiB,
-            pods=[PodInfo("ds", "ns", 3.0, 6 * GiB, "node-1", True, NOW)],
+            pods=[PodInfo("ds", "ns", 3.0, 6 * GiB, "node-1", True, start_time=NOW)],
         )
         pod = make_pod(cpu="2", memory="1Gi")
         self.assertFalse(_pod_matches_node(pod, node))
@@ -601,7 +601,7 @@ class TestCheckPendingPods(unittest.TestCase):
             allocatable_cpu=4.0,
             allocatable_memory=8 * GiB,
             pods=[
-                PodInfo("p", "ns", 2.0, 4 * GiB, "node-a", False, NOW),
+                PodInfo("p", "ns", 2.0, 4 * GiB, "node-a", False, start_time=NOW),
             ],
         )
         # Node B: 2 CPU free, 4 GiB free
@@ -612,7 +612,7 @@ class TestCheckPendingPods(unittest.TestCase):
             allocatable_cpu=4.0,
             allocatable_memory=8 * GiB,
             pods=[
-                PodInfo("p2", "ns", 2.0, 4 * GiB, "node-b", False, NOW),
+                PodInfo("p2", "ns", 2.0, 4 * GiB, "node-b", False, start_time=NOW),
             ],
         )
         # Total demand: 3 CPU, 6 GiB -- needs both nodes
@@ -633,7 +633,7 @@ class TestCheckPendingPods(unittest.TestCase):
             node_taints=[compactor_taint],
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("p1", "ns", 2.0, 1 * GiB, "node-a", False, NOW)],
+            pods=[PodInfo("p1", "ns", 2.0, 1 * GiB, "node-a", False, start_time=NOW)],
         )
         # Node B: high utilization (75% CPU used)
         ns_b = make_node_state(
@@ -642,7 +642,7 @@ class TestCheckPendingPods(unittest.TestCase):
             node_taints=[compactor_taint],
             allocatable_cpu=8.0,
             allocatable_memory=32 * GiB,
-            pods=[PodInfo("p2", "ns", 6.0, 1 * GiB, "node-b", False, NOW)],
+            pods=[PodInfo("p2", "ns", 6.0, 1 * GiB, "node-b", False, start_time=NOW)],
         )
         # Small demand: 1 CPU -- only need 1 node
         pod = make_pod(cpu="1", memory="1Gi")
