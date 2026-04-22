@@ -39,12 +39,13 @@ from helpers import (
     COMPACTOR_DEPLOYMENT,
     COMPACTOR_NAMESPACE,
     COMPACTOR_NODEPOOL_LABEL,
+    LABEL_NODE_FLEET,
     cleanup_stale_cluster_state,
     delete_all_pods,
     delete_pool_nodes,
     drain_pool_workloads,
     get_compactor_pod_names,
-    get_pool_nodes,
+    get_fleet_nodes,
     patch_compactor_env,
     restart_compactor_pod,
     restore_compactor_env,
@@ -289,6 +290,39 @@ def instance_type(target_nodepool: tuple[str, str]) -> str:
 
 
 @pytest.fixture(scope="session")
+def target_fleet_pools(client: Client, target_nodepool_name: str) -> list[str]:
+    """All managed NodePool names sharing the same node-fleet as the target.
+
+    The compactor groups nodes by fleet (node-fleet label), so e2e tests
+    must clean and monitor ALL pools in the target's fleet to avoid
+    interference from nodes in sibling pools.
+    """
+    fleet_by_pool: dict[str, str] = {}
+    for np in client.list(NodePool):
+        labels = np.get("metadata", {}).get("labels", {}) or {}
+        if labels.get(COMPACTOR_NODEPOOL_LABEL) != "true":
+            continue
+        name = np["metadata"]["name"]
+        template_labels = np.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {}) or {}
+        fleet = template_labels.get(LABEL_NODE_FLEET, "")
+        fleet_by_pool[name] = fleet
+
+    target_fleet = fleet_by_pool.get(target_nodepool_name, "")
+    if not target_fleet:
+        return [target_nodepool_name]
+
+    fleet_pools = [name for name, fleet in fleet_by_pool.items() if fleet == target_fleet]
+    log.info(
+        "Target fleet %r: %d pools %s (target pool: %s)",
+        target_fleet,
+        len(fleet_pools),
+        fleet_pools,
+        target_nodepool_name,
+    )
+    return fleet_pools
+
+
+@pytest.fixture(scope="session")
 def test_namespace(client: Client) -> str:
     """Create the test namespace and clean up after."""
     ns = Namespace(metadata=ObjectMeta(name=TEST_NAMESPACE))
@@ -320,6 +354,7 @@ def compactor_logs() -> CompactorLogCollector:
 def compactor_setup(
     client: Client,
     target_nodepool_name: str,
+    target_fleet_pools: list[str],
     test_namespace: str,
     compactor_logs: CompactorLogCollector,
 ) -> None:
@@ -334,10 +369,12 @@ def compactor_setup(
         log.info("Compactor scaled to 0 (stale from crashed run) — restoring to 1")
         scale_compactor_deployment(client, 1)
 
-    # Clean stale taints and reservation annotations from pool nodes
-    # left behind by a crashed previous run.
-    log.info("Cleaning stale cluster state from pool %s...", target_nodepool_name)
-    cleanup_stale_cluster_state(client, target_nodepool_name)
+    # Clean stale taints and reservation annotations from ALL fleet pools
+    # (not just the target) — the compactor groups by fleet, so leftover
+    # nodes in sibling pools pollute fleet-level taint decisions.
+    log.info("Cleaning stale cluster state from fleet pools %s...", target_fleet_pools)
+    for pool in target_fleet_pools:
+        cleanup_stale_cluster_state(client, pool)
 
     # Override env vars for fast iteration
     test_overrides = GROUP_A_CONFIG
@@ -382,23 +419,25 @@ def compactor_setup(
     log.info("Starting compactor log capture...")
     compactor_logs.start()
 
-    # Best-effort: drain existing workload pods from target pool
-    log.info("Draining existing workloads from pool %s...", target_nodepool_name)
-    drain_pool_workloads(client, target_nodepool_name, TEST_NAMESPACE)
+    # Best-effort: drain existing workload pods from ALL fleet pools
+    log.info("Draining existing workloads from fleet pools %s...", target_fleet_pools)
+    for pool in target_fleet_pools:
+        drain_pool_workloads(client, pool, TEST_NAMESPACE)
 
-    # Forcefully delete stale nodes so tests start with a clean pool.
-    # Karpenter will re-provision fresh nodes when test pods are created.
-    pool_nodes = get_pool_nodes(client, target_nodepool_name)
-    if pool_nodes:
-        log.info("Deleting %d stale pool nodes...", len(pool_nodes))
-        delete_pool_nodes(client, target_nodepool_name)
+    # Forcefully delete stale nodes from ALL fleet pools so tests start
+    # with a clean fleet. Karpenter re-provisions when test pods arrive.
+    fleet_nodes = get_fleet_nodes(client, target_fleet_pools)
+    if fleet_nodes:
+        log.info("Deleting %d stale fleet nodes across %s...", len(fleet_nodes), target_fleet_pools)
+        for pool in target_fleet_pools:
+            delete_pool_nodes(client, pool)
         wait_for(
-            "pool nodes to be deleted",
-            lambda: len(get_pool_nodes(client, target_nodepool_name)) == 0,
+            "fleet nodes to be deleted",
+            lambda: len(get_fleet_nodes(client, target_fleet_pools)) == 0,
             timeout_s=300,
             poll_s=10,
         )
-        log.info("Pool is empty — ready for tests.")
+        log.info("Fleet is empty — ready for tests.")
 
     # ----- Cleanup on exit (always) -----
 

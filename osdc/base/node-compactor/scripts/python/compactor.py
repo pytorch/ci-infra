@@ -27,7 +27,7 @@ import time
 import metrics as m
 from discovery import build_node_states, discover_managed_nodes
 from lightkube import ApiError, Client
-from models import Config
+from models import LABEL_NODE_FLEET, Config, NodeState
 from packing import _count_spare_nodes, compute_taints, select_reserved_nodes
 from phantom import apply_pending_phantom_load
 from prometheus_client import start_http_server
@@ -40,6 +40,11 @@ from taints import (
 )
 
 log = logging.getLogger("compactor")
+
+
+def _fleet_group_key(ns: NodeState) -> str:
+    """Group nodes by fleet (node-fleet label), falling back to nodepool."""
+    return ns.labels.get(LABEL_NODE_FLEET) or ns.nodepool
 
 
 # ============================================================================
@@ -76,11 +81,8 @@ def reconcile(
         m.refresh_gauge(m.tainted_nodes, {})
         return
 
-    # Instrumentation point 1: managed nodes per nodepool
-    pool_node_counts: dict[str, int] = {}
-    for _node_name, pool_name in managed_names.items():
-        pool_node_counts[pool_name] = pool_node_counts.get(pool_name, 0) + 1
-    m.refresh_gauge(m.managed_nodes, {(pool_name,): count for pool_name, count in pool_node_counts.items()})
+    # Instrumentation point 1: managed nodes per fleet
+    # (deferred until fleet_groups is built, after node_states)
 
     node_states, pending_pods = build_node_states(client, cfg, managed_names)
     if not node_states:
@@ -105,35 +107,44 @@ def reconcile(
         total_pods,
     )
 
-    # Instrumentation point 2: workload pods and utilization per nodepool/node
-    pool_pod_counts: dict[str, int] = {}
+    # Instrumentation point 2: workload pods per fleet, utilization per node
+    fleet_pod_counts: dict[str, int] = {}
     utilization: dict[tuple[str, ...], float] = {}
     for node_name, ns in node_states.items():
         pool = managed_names.get(node_name, "unknown")
-        pool_pod_counts[pool] = pool_pod_counts.get(pool, 0) + ns.workload_pod_count
+        fk = _fleet_group_key(ns)
+        fleet_pod_counts[fk] = fleet_pod_counts.get(fk, 0) + ns.workload_pod_count
         if ns.allocatable_cpu > 0:
             utilization[(node_name, pool, "cpu")] = ns.total_cpu_used / ns.allocatable_cpu
         if ns.allocatable_memory > 0:
             utilization[(node_name, pool, "memory")] = ns.total_memory_used / ns.allocatable_memory
+        if ns.allocatable_gpu > 0:
+            utilization[(node_name, pool, "gpu")] = ns.total_gpu_used / ns.allocatable_gpu
     m.refresh_gauge(m.node_utilization_ratio, utilization)
-    m.refresh_gauge(m.workload_pods, {(pool_name,): count for pool_name, count in pool_pod_counts.items()})
+    m.refresh_gauge(m.workload_pods, {(fk,): count for fk, count in fleet_pod_counts.items()})
 
     # Instrumentation point 3: pending pods
     burst_untaint = check_pending_pods(cfg, node_states, pending_pods)
     m.pending_pods_compatible.set(len(pending_pods))
 
-    # Record fleet cooldown for pools that had burst untaints
+    # Record fleet cooldown for fleets that had burst untaints
     if fleet_cooldown_times is not None:
         for node_name in burst_untaint:
             ns = node_states.get(node_name)
             if ns:
-                fleet_cooldown_times[ns.nodepool] = time.time()
+                fleet_cooldown_times[_fleet_group_key(ns)] = time.time()
 
-    # Build pool_groups once — used by reservations, spare capacity, fleet cooldown.
+    # Build fleet_groups (for fleet-level metrics/decisions) and pool_groups
+    # (for per-nodepool metrics like reservations).
+    fleet_groups: dict[str, list] = {}
     pool_groups: dict[str, list] = {}
-    for node_name, ns in node_states.items():
-        pool = managed_names.get(node_name, "unknown")
-        pool_groups.setdefault(pool, []).append(ns)
+    for _node_name, ns in node_states.items():
+        fleet_key = _fleet_group_key(ns)
+        fleet_groups.setdefault(fleet_key, []).append(ns)
+        pool_groups.setdefault(ns.nodepool, []).append(ns)
+
+    # Instrumentation point 1: managed nodes per fleet (deferred from above)
+    m.refresh_gauge(m.managed_nodes, {(fk,): float(len(nodes)) for fk, nodes in fleet_groups.items()})
 
     # Capacity reservation: protect nodes from Karpenter deletion (before compute_taints).
     all_reserved: set[str] = set()
@@ -150,7 +161,7 @@ def reconcile(
     m.refresh_gauge(m.reserved_nodes, reserved_counts)
 
     desired_taint, desired_untaint, mandatory_untaint, rate_limited = compute_taints(
-        node_states, cfg, reserved_nodes=all_reserved
+        node_states, cfg, reserved_nodes=all_reserved, group_key=_fleet_group_key
     )
 
     # Log and emit metrics for rate-limited nodes
@@ -165,17 +176,17 @@ def reconcile(
         for pool, count in pool_rate_limited.items():
             m.rate_limit_blocks.labels(nodepool=pool).inc(count)
 
-    # Instrumentation: spare capacity per pool
+    # Instrumentation: spare capacity per fleet
     spare_actual: dict[tuple[str, ...], float] = {}
     spare_req: dict[tuple[str, ...], float] = {}
-    for pool, nodes_in_pool in pool_groups.items():
+    for fleet_key, nodes_in_fleet in fleet_groups.items():
         required = max(
             cfg.spare_capacity_nodes,
-            math.ceil(len(nodes_in_pool) * cfg.spare_capacity_ratio),
+            math.ceil(len(nodes_in_fleet) * cfg.spare_capacity_ratio),
         )
-        spare_req[(pool,)] = float(required)
-        spare_actual[(pool,)] = float(
-            _count_spare_nodes(nodes_in_pool, None, desired_taint, cfg.spare_capacity_threshold)
+        spare_req[(fleet_key,)] = float(required)
+        spare_actual[(fleet_key,)] = float(
+            _count_spare_nodes(nodes_in_fleet, None, desired_taint, cfg.spare_capacity_threshold)
         )
     m.refresh_gauge(m.spare_capacity_gauge, spare_actual)
     m.refresh_gauge(m.spare_capacity_required, spare_req)
@@ -184,21 +195,21 @@ def reconcile(
     desired_untaint |= burst_untaint
     desired_taint -= burst_untaint
 
-    # Fleet cooldown: block new taints in pools that recently had a burst untaint.
+    # Fleet cooldown: block new taints in fleets that recently had a burst untaint.
     now_fleet = time.time()
     fleet_blocked: set[str] = set()
     if fleet_cooldown_times is not None and cfg.fleet_cooldown > 0:
         for node_name in list(desired_taint):
             ns = node_states.get(node_name)
-            if ns and ns.nodepool in fleet_cooldown_times:
-                pool_nodes = [n for n in node_states.values() if n.nodepool == ns.nodepool]
-                surplus_count = sum(1 for n in pool_nodes if n.name in desired_taint or n.is_tainted)
-                # Override: halve cooldown if >50% of pool is surplus
+            if ns and _fleet_group_key(ns) in fleet_cooldown_times:
+                fleet_nodes = [n for n in node_states.values() if _fleet_group_key(n) == _fleet_group_key(ns)]
+                surplus_count = sum(1 for n in fleet_nodes if n.name in desired_taint or n.is_tainted)
+                # Override: halve cooldown if >50% of fleet is surplus
                 effective_cooldown = cfg.fleet_cooldown
-                if surplus_count > len(pool_nodes) * 0.5:
+                if surplus_count > len(fleet_nodes) * 0.5:
                     effective_cooldown = cfg.fleet_cooldown // 2
 
-                elapsed = now_fleet - fleet_cooldown_times[ns.nodepool]
+                elapsed = now_fleet - fleet_cooldown_times[_fleet_group_key(ns)]
                 if elapsed < effective_cooldown:
                     desired_taint.discard(node_name)
                     fleet_blocked.add(node_name)
@@ -210,30 +221,31 @@ def reconcile(
                 len(fleet_blocked),
                 ", ".join(sorted(fleet_blocked)),
             )
-            # Count blocks per pool
-            pool_block_counts: dict[str, int] = {}
+            # Count blocks per fleet
+            fleet_block_counts: dict[str, int] = {}
             for node_name in fleet_blocked:
                 ns = node_states.get(node_name)
                 if ns:
-                    pool_block_counts[ns.nodepool] = pool_block_counts.get(ns.nodepool, 0) + 1
-            for pool, count in pool_block_counts.items():
-                m.fleet_cooldown_blocks.labels(nodepool=pool).inc(count)
+                    fk = _fleet_group_key(ns)
+                    fleet_block_counts[fk] = fleet_block_counts.get(fk, 0) + 1
+            for fleet_key, count in fleet_block_counts.items():
+                m.fleet_cooldown_blocks.labels(fleet=fleet_key).inc(count)
 
-        # Emit fleet_cooldown_remaining gauge per pool
+        # Emit fleet_cooldown_remaining gauge per fleet
         cooldown_remaining: dict[tuple[str, ...], float] = {}
-        for pool, last_burst_time in fleet_cooldown_times.items():
+        for fleet_key, last_burst_time in fleet_cooldown_times.items():
             remaining = max(0.0, cfg.fleet_cooldown - (now_fleet - last_burst_time))
-            cooldown_remaining[(pool,)] = remaining
+            cooldown_remaining[(fleet_key,)] = remaining
         m.refresh_gauge(m.fleet_cooldown_remaining, cooldown_remaining)
 
-    # Instrumentation point 4: tainted nodes per nodepool (after compute)
-    pool_taint_counts: dict[str, int] = {}
+    # Instrumentation point 4: tainted nodes per fleet (after compute)
+    fleet_taint_counts: dict[str, int] = {}
     for node_name, ns in node_states.items():
-        pool = managed_names.get(node_name, "unknown")
         will_be_tainted = (ns.is_tainted or node_name in desired_taint) and node_name not in desired_untaint
         if will_be_tainted:
-            pool_taint_counts[pool] = pool_taint_counts.get(pool, 0) + 1
-    m.refresh_gauge(m.tainted_nodes, {(pool_name,): count for pool_name, count in pool_taint_counts.items()})
+            fk = _fleet_group_key(ns)
+            fleet_taint_counts[fk] = fleet_taint_counts.get(fk, 0) + 1
+    m.refresh_gauge(m.tainted_nodes, {(fk,): count for fk, count in fleet_taint_counts.items()})
 
     # Apply cooldown: skip untaint for recently tainted nodes.
     # Exempt: burst untaint (urgent) and mandatory untaint (min_nodes safety).

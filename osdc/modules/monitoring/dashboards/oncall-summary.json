@@ -1856,8 +1856,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (nodepool) (node_compactor_managed_nodes{cluster=\"$cluster\"})",
-          "legendFormat": "{{nodepool}} managed",
+          "expr": "sum by (fleet) (node_compactor_managed_nodes{cluster=\"$cluster\"})",
+          "legendFormat": "{{fleet}} managed",
           "refId": "A"
         },
         {
@@ -1865,8 +1865,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (nodepool) (node_compactor_tainted_nodes{cluster=\"$cluster\"})",
-          "legendFormat": "{{nodepool}} tainted",
+          "expr": "sum by (fleet) (node_compactor_tainted_nodes{cluster=\"$cluster\"})",
+          "legendFormat": "{{fleet}} tainted",
           "refId": "B"
         }
       ]
