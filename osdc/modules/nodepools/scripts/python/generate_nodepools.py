@@ -375,6 +375,13 @@ def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name)
         f"{nodepool_def.get('arch', 'amd64')}, node_disk={node_disk}Gi{', NVMe' if has_nvme else ''})"
     )
 
+    if instance_type not in INSTANCE_SPECS:
+        raise ValueError(
+            f"Instance type '{instance_type}' in {def_file.name} "
+            f"not found in INSTANCE_SPECS. "
+            f"Add it to scripts/python/instance_specs.py first."
+        )
+
     # Auto-derive fleet name for legacy defs so nodes get the node-fleet label/taint
     nodepool_def["fleet_name"] = instance_type.split(".")[0]
 
@@ -424,7 +431,7 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
 
 
 def _validate_fleet(fleet_data, def_file):
-    """Validate fleet data structure has all required keys."""
+    """Validate fleet data structure and instance types against INSTANCE_SPECS."""
     for key in ("name", "arch"):
         if key not in fleet_data:
             raise ValueError(f"Fleet in {def_file.name}: missing required key '{key}'")
@@ -437,6 +444,12 @@ def _validate_fleet(fleet_data, def_file):
                     raise ValueError(
                         f"Fleet '{fleet_name}' in {def_file.name}, {section}[{i}]: missing required key '{key}'"
                     )
+            if inst["type"] not in INSTANCE_SPECS:
+                raise ValueError(
+                    f"Fleet '{fleet_name}' in {def_file.name}: instance type '{inst['type']}' "
+                    f"not found in INSTANCE_SPECS. "
+                    f"Add it to scripts/python/instance_specs.py before using it."
+                )
 
 
 def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name):

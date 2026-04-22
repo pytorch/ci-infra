@@ -23,6 +23,13 @@ from pathlib import Path
 
 import yaml
 
+# instance_specs lives in scripts/python/ at the repo root.  Add it to
+# sys.path so the import works both when run directly (deploy.sh) and
+# when run via pytest (pyproject.toml testpaths also adds it).
+_scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
+if _scripts_python not in sys.path:
+    sys.path.insert(0, _scripts_python)
+
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
