@@ -376,10 +376,7 @@ def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name)
     )
 
     # Auto-derive fleet name for legacy defs so nodes get the node-fleet label/taint
-    family = instance_type.split(".")[0]
-    specs = INSTANCE_SPECS.get(instance_type, {})
-    node_gpus = specs.get("gpu", 0)
-    nodepool_def["fleet_name"] = f"{family}-{node_gpus}gpu" if node_gpus else family
+    nodepool_def["fleet_name"] = instance_type.split(".")[0]
 
     content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
     out_path = output_dir / f"{name}.yaml"
