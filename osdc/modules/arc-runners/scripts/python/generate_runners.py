@@ -173,12 +173,21 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
                       - "true\""""
         gpu_request = f'\n              nvidia.com/gpu: "{gpu}"'
         gpu_limit = f'\n              nvidia.com/gpu: "{gpu}"'
+        # K8s pods default /dev/shm to 64Mi (container runtime tmpfs), which
+        # NCCL blows past on the first intra-node SHM segment allocation and
+        # fails with "No space left on device (28)" for any multi-GPU workload.
+        gpu_dshm_mount = "            - name: dshm\n              mountPath: /dev/shm"
+        gpu_dshm_volume = (
+            "        - name: dshm\n          emptyDir:\n            medium: Memory\n            sizeLimit: 2Gi"
+        )
     else:
         gpu_tolerations = ""
         gpu_job_tolerations = ""
         gpu_node_selector_affinity = ""
         gpu_request = ""
         gpu_limit = ""
+        gpu_dshm_mount = ""
+        gpu_dshm_volume = ""
 
     # Runner class isolation snippets
     # Release runners: use nodeSelector to target release nodes
@@ -232,6 +241,8 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{GPU_NODE_SELECTOR_AFFINITY}}": gpu_node_selector_affinity,
         "{{GPU_REQUEST}}": gpu_request,
         "{{GPU_LIMIT}}": gpu_limit,
+        "{{GPU_DSHM_MOUNT}}": gpu_dshm_mount,
+        "{{GPU_DSHM_VOLUME}}": gpu_dshm_volume,
         "{{MODULE_NAME}}": module_name,
         "{{RUNNER_IMAGE}}": runner_image,
         "{{RUNNER_GROUP}}": runner_group,

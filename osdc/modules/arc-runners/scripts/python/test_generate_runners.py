@@ -97,6 +97,17 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                   cpu: "{{VCPU}}"
                   memory: "{{MEMORY}}"
                   ephemeral-storage: "{{DISK_SIZE}}"{{GPU_LIMIT}}
+              volumeMounts:
+                - name: git-cache
+                  mountPath: /opt/git-cache
+                  readOnly: true
+    {{GPU_DSHM_MOUNT}}
+          volumes:
+            - name: git-cache
+              hostPath:
+                path: /mnt/git-cache
+                type: DirectoryOrCreate
+    {{GPU_DSHM_VOLUME}}
 """)
 
 FAKE_CLUSTERS_YAML = {
@@ -374,6 +385,28 @@ class TestGenerateRunner:
         assert "instance-type" in keys
         assert "workload-type" in keys
         assert "nvidia.com/gpu" in keys
+
+        # /dev/shm tmpfs mount — 64Mi k8s default is too small for NCCL
+        mounts = {m["name"]: m for m in container.get("volumeMounts", [])}
+        assert mounts["dshm"]["mountPath"] == "/dev/shm"
+        volumes = {v["name"]: v for v in cm_data["spec"].get("volumes", [])}
+        assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "2Gi"}
+
+    def test_non_gpu_runner_has_no_dshm_mount(self, tmp_path):
+        def_file = make_def_file(tmp_path, "cpu-runner", "c5.xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        content = (output_dir / "cpu-runner.yaml").read_text()
+        # dshm is GPU-only — NCCL drives the need; CPU runners can keep the k8s default
+        assert "dshm" not in content
+        assert "/dev/shm" not in content
 
     def test_no_placeholders_remaining(self, tmp_path):
         def_file = make_def_file(tmp_path, "test-runner", "c5.xlarge", 2, 4)

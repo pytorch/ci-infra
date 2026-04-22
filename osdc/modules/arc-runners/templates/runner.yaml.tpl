@@ -337,11 +337,13 @@ data:
             - name: git-cache
               mountPath: /opt/git-cache
               readOnly: true
+{{GPU_DSHM_MOUNT}}
       volumes:
         - name: git-cache
           hostPath:
             path: /mnt/git-cache
             type: DirectoryOrCreate
+{{GPU_DSHM_VOLUME}}
   wrapper.js: |
     #!/usr/bin/env node
     'use strict';
