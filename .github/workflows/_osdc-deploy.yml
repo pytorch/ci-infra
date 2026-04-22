@@ -22,6 +22,11 @@ on:
         required: false
         type: boolean
         default: true
+      run_compactor:
+        description: "Run compactor e2e tests after deploy"
+        required: false
+        type: boolean
+        default: true
       skip_lint_test:
         description: "Skip `just lint` and `just test` pre-flight checks (firefighting only)"
         required: false
@@ -125,6 +130,7 @@ jobs:
   compactor:
     name: Compactor e2e tests
     needs: deploy
+    if: ${{ inputs.run_compactor }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: 30
