@@ -16,6 +16,7 @@ log = logging.getLogger("compactor")
 
 ANNOTATION_CAPACITY_RESERVED = "node-compactor.osdc.io/capacity-reserved"
 ANNOTATION_DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
+LABEL_NODE_FLEET = "node-fleet"
 
 # ============================================================================
 # Configuration
@@ -95,6 +96,7 @@ class PodInfo:
     node_name: str
     is_daemonset: bool
     start_time: datetime | None = None
+    gpu_request: int = 0
     is_phantom: bool = False
 
 
@@ -107,6 +109,7 @@ class NodeState:
     allocatable_cpu: float  # cores
     allocatable_memory: int  # bytes
     creation_time: datetime
+    allocatable_gpu: int = 0
     pods: list[PodInfo] = field(default_factory=list)
     is_tainted: bool = False
     is_reserved: bool = False  # has capacity-reservation annotation
@@ -133,6 +136,11 @@ class NodeState:
         return sum(p.memory_request for p in self.pods if p.is_daemonset)
 
     @property
+    def daemonset_gpu(self) -> int:
+        """Total GPU requests from DaemonSet pods."""
+        return sum(p.gpu_request for p in self.pods if p.is_daemonset)
+
+    @property
     def cpu_used(self) -> float:
         """CPU used by workload (non-DaemonSet) pods."""
         return sum(p.cpu_request for p in self.workload_pods)
@@ -153,6 +161,16 @@ class NodeState:
         return sum(p.memory_request for p in self.pods)
 
     @property
+    def gpu_used(self) -> int:
+        """GPU used by workload (non-DaemonSet) pods."""
+        return sum(p.gpu_request for p in self.workload_pods)
+
+    @property
+    def total_gpu_used(self) -> int:
+        """Total GPU used by ALL pods (workload + DaemonSet)."""
+        return sum(p.gpu_request for p in self.pods)
+
+    @property
     def cpu_utilization(self) -> float:
         if self.allocatable_cpu <= 0:
             return 0.0
@@ -165,9 +183,18 @@ class NodeState:
         return self.memory_used / self.allocatable_memory
 
     @property
+    def gpu_utilization(self) -> float:
+        if self.allocatable_gpu <= 0:
+            return 0.0
+        return self.gpu_used / self.allocatable_gpu
+
+    @property
     def utilization(self) -> float:
-        """Max of CPU and memory utilization (conservative estimate)."""
-        return max(self.cpu_utilization, self.memory_utilization)
+        """Max of CPU, memory, and GPU utilization (conservative estimate)."""
+        values = [self.cpu_utilization, self.memory_utilization]
+        if self.allocatable_gpu > 0:
+            values.append(self.gpu_utilization)
+        return max(values)
 
     @property
     def uptime_seconds(self) -> float:
@@ -260,4 +287,14 @@ def pod_memory_request(pod: Pod) -> int:
         for c in pod.spec.containers:
             if c.resources and c.resources.requests and "memory" in c.resources.requests:
                 total += parse_memory(c.resources.requests["memory"])
+    return total
+
+
+def pod_gpu_request(pod: Pod) -> int:
+    """Sum nvidia.com/gpu requests across all containers in a pod."""
+    total = 0
+    if pod.spec and pod.spec.containers:
+        for c in pod.spec.containers:
+            if c.resources and c.resources.requests and "nvidia.com/gpu" in c.resources.requests:
+                total += int(c.resources.requests["nvidia.com/gpu"])
     return total

@@ -10,6 +10,7 @@ from models import (
     Config,
     NodeState,
     pod_cpu_request,
+    pod_gpu_request,
     pod_memory_request,
 )
 
@@ -78,7 +79,16 @@ def _pod_matches_node(pod, node_state: NodeState) -> bool:
     remaining_memory = node_state.allocatable_memory - node_state.total_memory_used
     if pod_cpu_request(pod) > remaining_cpu:
         return False
-    return not pod_memory_request(pod) > remaining_memory
+    if pod_memory_request(pod) > remaining_memory:
+        return False
+    gpu_req = pod_gpu_request(pod)
+    if gpu_req > 0:
+        if node_state.allocatable_gpu == 0:
+            return False
+        remaining_gpu = node_state.allocatable_gpu - node_state.total_gpu_used
+        if gpu_req > remaining_gpu:
+            return False
+    return True
 
 
 def _any_term_matches(terms: list, node_labels: dict) -> bool:
@@ -155,6 +165,7 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
             nodepool=tnode.nodepool,
             allocatable_cpu=tnode.allocatable_cpu,
             allocatable_memory=tnode.allocatable_memory,
+            allocatable_gpu=tnode.allocatable_gpu,
             creation_time=tnode.creation_time,
             pods=tnode.pods,
             is_tainted=tnode.is_tainted,
@@ -186,6 +197,7 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
     # Calculate total resource demand of compatible pending pods only
     total_cpu_demand = sum(pod_cpu_request(pod) for pod in compatible_pending)
     total_mem_demand = sum(pod_memory_request(pod) for pod in compatible_pending)
+    total_gpu_demand = sum(pod_gpu_request(pod) for pod in compatible_pending)
 
     # Sort by highest utilization first (least wasteful to untaint)
     compatible_tainted.sort(key=lambda n: n.utilization, reverse=True)
@@ -194,21 +206,27 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
     nodes_to_untaint: set[str] = set()
     cumulative_cpu = 0.0
     cumulative_mem = 0
+    cumulative_gpu = 0
 
     for tnode in compatible_tainted:
         nodes_to_untaint.add(tnode.name)
         # Available capacity = allocatable minus currently used
         cumulative_cpu += tnode.allocatable_cpu - tnode.total_cpu_used
         cumulative_mem += tnode.allocatable_memory - tnode.total_memory_used
+        cumulative_gpu += tnode.allocatable_gpu - tnode.total_gpu_used
 
-        if cumulative_cpu >= total_cpu_demand and cumulative_mem >= total_mem_demand:
+        cpu_met = cumulative_cpu >= total_cpu_demand
+        mem_met = cumulative_mem >= total_mem_demand
+        gpu_met = total_gpu_demand == 0 or cumulative_gpu >= total_gpu_demand
+        if cpu_met and mem_met and gpu_met:
             break
 
     log.info(
-        "Found %d compatible pending pod(s) (%.1f CPU, %d MiB), untainting %d node(s) to absorb: %s",
+        "Found %d compatible pending pod(s) (%.1f CPU, %d MiB, %d GPU), untainting %d node(s) to absorb: %s",
         len(compatible_pending),
         total_cpu_demand,
         total_mem_demand // (1024 * 1024),
+        total_gpu_demand,
         len(nodes_to_untaint),
         ", ".join(sorted(nodes_to_untaint)),
     )

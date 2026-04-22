@@ -8,16 +8,9 @@ Modular Kubernetes infrastructure platform on AWS EKS. A shared `base/` provides
 
 Working directory: `osdc/`. Run all commands from here.
 
-## Clusters Configuration (IMPORTANT)
+## Clusters Configuration
 
-**All paths below are relative to this CLAUDE.md file.**
-
-Two `clusters.yaml` files exist — always check both when investigating module deployment:
-
-- **`./clusters.yaml`** — upstream cluster definitions (the platform's own clusters)
-- **`../../clusters.yaml`** — consumer repo cluster definitions (consumer-specific clusters)
-
-Modules may be deployed in upstream clusters but not consumer clusters, or vice versa. Never conclude a module is "not deployed" without checking both files.
+All clusters are defined in `./clusters.yaml`. This is the single source of truth for cluster definitions, module deployment, and per-cluster configuration.
 
 ## NEVER USE TERRAFORM — USE TOFU ONLY
 
@@ -43,6 +36,10 @@ If either fails, fix the issues before finishing. Do not defer lint or test fail
 - Don't run state-changing CLI commands directly (apply, delete, install, destroy) — use `just` recipes
 - Don't experiment with the cluster — read-only investigation is fine, but don't change anything
 - Don't update ANY versions (tools, deps, images) without explicit approval
+
+## GPU Fleet Unification & NUMA Topology
+
+GPU families (g5, g6, g4dn) use unified single-fleet definitions (all GPU counts in one fleet). GPU allocation is handled by `nvidia.com/gpu` resource requests, not fleet-level isolation. All Karpenter nodes use `topologyManagerPolicy: restricted` — mixed GPU packing on multi-GPU nodes can cause NUMA fragmentation and TopologyAffinityError livelocks. Monitor for this; switch to `best-effort` policy if observed. See `actions-knowledge-base/docs/osdc/numa-topology-gpu-fleet-unification.md` for details.
 
 ## Skills Reference
 

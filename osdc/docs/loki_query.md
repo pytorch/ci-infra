@@ -177,4 +177,4 @@ To include timestamps:
 
 ## Source
 
-Upstream reference: `upstream/osdc/CLAUDE.md`, section "Querying Logs in Grafana Cloud Loki". Verified via live queries against `pytorch-arc-cbr-production` on 2026-03-20.
+Reference: `CLAUDE.md`, section "Querying Logs in Grafana Cloud Loki". Verified via live queries against `pytorch-arc-cbr-production` on 2026-03-20.

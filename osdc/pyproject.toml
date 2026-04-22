@@ -28,6 +28,7 @@ testpaths = [
   "modules/arc-runners/scripts/python",
   "modules/buildkit/scripts/python",
   "modules/zombie-cleanup/scripts/python",
+  "modules/harbor-cache-recovery/scripts/python",
   "integration-tests/scripts/python",
   "integration-tests/load-test/scripts/python",
   "integration-tests/workload-test/scripts/python",

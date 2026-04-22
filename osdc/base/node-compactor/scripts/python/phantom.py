@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime
 
 import metrics as m
-from models import Config, NodeState, PodInfo, pod_cpu_request, pod_memory_request
+from models import Config, NodeState, PodInfo, pod_cpu_request, pod_gpu_request, pod_memory_request
 from taints import _pod_matches_node
 
 log = logging.getLogger("compactor")
@@ -51,9 +51,10 @@ def apply_pending_phantom_load(
     if not untainted_nodes:
         return
 
-    # Track phantom CPU/memory per node to enforce the cap
+    # Track phantom CPU/memory/GPU per node to enforce the cap
     phantom_cpu: dict[str, float] = {}
     phantom_memory: dict[str, int] = {}
+    phantom_gpu: dict[str, int] = {}
 
     placed_count = 0
     target_nodes: set[str] = set()
@@ -70,6 +71,7 @@ def apply_pending_phantom_load(
 
         cpu_req = pod_cpu_request(pod)
         mem_req = pod_memory_request(pod)
+        gpu_req = pod_gpu_request(pod)
 
         # Find all compatible untainted nodes
         compatible = [ns for ns in untainted_nodes if _pod_matches_node(pod, ns)]
@@ -85,6 +87,7 @@ def apply_pending_phantom_load(
             # Check phantom load cap: only phantom pods count toward the 30% cap
             current_phantom_cpu = phantom_cpu.get(node_name, 0.0)
             current_phantom_mem = phantom_memory.get(node_name, 0)
+            current_phantom_gpu = phantom_gpu.get(node_name, 0)
 
             if candidate.allocatable_cpu > 0:
                 phantom_cpu_ratio = (current_phantom_cpu + cpu_req) / candidate.allocatable_cpu
@@ -96,6 +99,11 @@ def apply_pending_phantom_load(
                 if phantom_mem_ratio > PHANTOM_LOAD_CAP:
                     continue
 
+            if candidate.allocatable_gpu > 0:
+                phantom_gpu_ratio = (current_phantom_gpu + gpu_req) / candidate.allocatable_gpu
+                if phantom_gpu_ratio > PHANTOM_LOAD_CAP:
+                    continue
+
             # Place the phantom pod
             pod_name = f"phantom-{pod.metadata.name}" if pod.metadata else f"phantom-{placed_count}"
             pod_ns = pod.metadata.namespace if pod.metadata else "unknown"
@@ -105,6 +113,7 @@ def apply_pending_phantom_load(
                 namespace=pod_ns,
                 cpu_request=cpu_req,
                 memory_request=mem_req,
+                gpu_request=gpu_req,
                 node_name=node_name,
                 is_daemonset=False,
                 is_phantom=True,
@@ -113,15 +122,17 @@ def apply_pending_phantom_load(
 
             phantom_cpu[node_name] = current_phantom_cpu + cpu_req
             phantom_memory[node_name] = current_phantom_mem + mem_req
+            phantom_gpu[node_name] = current_phantom_gpu + gpu_req
 
             placed_count += 1
             target_nodes.add(node_name)
             log.debug(
-                "Phantom placement: %s -> %s (cpu=%.2f, mem=%d MiB)",
+                "Phantom placement: %s -> %s (cpu=%.2f, mem=%d MiB, gpu=%d)",
                 pod_name,
                 node_name,
                 cpu_req,
                 mem_req // (1024 * 1024),
+                gpu_req,
             )
             break
 

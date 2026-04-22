@@ -12,6 +12,7 @@ from lightkube import ApiError
 from models import (
     ANNOTATION_CAPACITY_RESERVED,
     ANNOTATION_DO_NOT_DISRUPT,
+    LABEL_NODE_FLEET,
     Config,
     NodeState,
     PodInfo,
@@ -138,8 +139,8 @@ class TestSelectReservedNodes:
     def test_selects_young_nodes_only(self):
         """Old nodes (>= max_uptime_hours) are excluded."""
         cfg = make_config(capacity_reservation_nodes=2, max_uptime_hours=48)
-        young = make_node("young", creation_time=NOW - timedelta(hours=1))
-        old = make_node("old", creation_time=NOW - timedelta(hours=49))
+        young = make_node("young", nodepool="pool", creation_time=NOW - timedelta(hours=1))
+        old = make_node("old", nodepool="pool", creation_time=NOW - timedelta(hours=49))
         pool_nodes = {"pool": [young, old]}
 
         result = select_reserved_nodes(pool_nodes, cfg)
@@ -158,8 +159,8 @@ class TestSelectReservedNodes:
     def test_sort_lowest_utilization_first(self):
         """Nodes with lowest utilization are selected first."""
         cfg = make_config(capacity_reservation_nodes=1)
-        low = make_node("low")
-        high = make_node("high")
+        low = make_node("low", nodepool="pool")
+        high = make_node("high", nodepool="pool")
         _add_workload(high, cpu=12.0, mem=48 * GiB)
         pool_nodes = {"pool": [high, low]}
 
@@ -169,7 +170,7 @@ class TestSelectReservedNodes:
     def test_count_limited(self):
         """Only selects up to capacity_reservation_nodes per pool."""
         cfg = make_config(capacity_reservation_nodes=2)
-        nodes = [make_node(f"n-{i}") for i in range(5)]
+        nodes = [make_node(f"n-{i}", nodepool="pool") for i in range(5)]
         pool_nodes = {"pool": nodes}
 
         result = select_reserved_nodes(pool_nodes, cfg)
@@ -193,8 +194,8 @@ class TestSelectReservedNodes:
         """When utilization and pod age are equal, the node with highest
         uptime is selected first (sort key uses -uptime_seconds)."""
         cfg = make_config(capacity_reservation_nodes=1)
-        older = make_node("older", creation_time=NOW - timedelta(hours=10))
-        newer = make_node("newer", creation_time=NOW - timedelta(hours=1))
+        older = make_node("older", nodepool="pool", creation_time=NOW - timedelta(hours=10))
+        newer = make_node("newer", nodepool="pool", creation_time=NOW - timedelta(hours=1))
         pool_nodes = {"pool": [older, newer]}
 
         result = select_reserved_nodes(pool_nodes, cfg)
@@ -573,6 +574,69 @@ class TestComputeTaintsWithReservation:
         to_taint, _untaint, _mandatory, _rate = compute_taints(nodes, cfg, reserved_nodes=reserved)
 
         assert len(to_taint) == 0
+
+
+# ============================================================================
+# Reservation re-grouping with fleet grouping
+# ============================================================================
+
+
+def make_fleet_node(
+    name,
+    nodepool,
+    fleet,
+    cpu=16.0,
+    mem=64 * GiB,
+    is_tainted=False,
+    is_reserved=False,
+    creation_time=None,
+):
+    """Create a NodeState with a node-fleet label for fleet-aware tests."""
+    node = make_node(
+        name,
+        nodepool=nodepool,
+        cpu=cpu,
+        mem=mem,
+        is_tainted=is_tainted,
+        is_reserved=is_reserved,
+        creation_time=creation_time,
+    )
+    node.labels[LABEL_NODE_FLEET] = fleet
+    return node
+
+
+class TestReservedNodesWithFleetGrouping:
+    """Tests that reservations remain per-NodePool even when compute_taints
+    uses fleet-level grouping."""
+
+    def test_reserved_nodes_grouped_by_nodepool_despite_fleet_grouping(self):
+        """select_reserved_nodes groups by NodePool, not by fleet.
+
+        Even when compute_taints uses fleet grouping via group_key,
+        capacity reservations are matched per-NodePool because
+        select_reserved_nodes takes pool_nodes keyed by NodePool name.
+        """
+        cfg = make_config(capacity_reservation_nodes=1, max_uptime_hours=48)
+
+        # Two NodePools in the same fleet "m8g"
+        n1 = make_fleet_node("n1", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        n2 = make_fleet_node("n2", nodepool="m8g-8xlarge", fleet="m8g", cpu=16.0)
+        n3 = make_fleet_node("n3", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0)
+        n4 = make_fleet_node("n4", nodepool="m8g-48xlarge", fleet="m8g", cpu=192.0)
+
+        # Build pool_nodes by NodePool (how the compactor builds it)
+        pool_nodes = {
+            "m8g-8xlarge": [n1, n2],
+            "m8g-48xlarge": [n3, n4],
+        }
+
+        result = select_reserved_nodes(pool_nodes, cfg)
+
+        # Each NodePool gets independent reservation selection
+        assert "m8g-8xlarge" in result
+        assert "m8g-48xlarge" in result
+        assert len(result["m8g-8xlarge"]) == 1
+        assert len(result["m8g-48xlarge"]) == 1
 
 
 if __name__ == "__main__":

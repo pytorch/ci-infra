@@ -8,7 +8,7 @@ OSDC uses Kubernetes Guaranteed QoS pods (requests == limits) for all runner wor
 
 **Original state** (before Phase 2): 36 of 39 runner types had homogeneous utilization below 90%. Several had worst-case utilization under 20%. After Phase 2 (ratio-matched nodepools), x86 CPU worst-case improved from 12.6% to ~74% and ARM64 from 37.9% to 75.3%.
 
-> **Note**: This analysis covers both upstream runners (35 in `modules/arc-runners/defs/`) and consumer B200 runners (4 in the consumer repo's `modules/arc-runners-b200/defs/`). B200 nodepool and runner defs are not in the upstream repo.
+> **Note**: This analysis covers all runners including B200 runners in `modules/arc-runners-b200/defs/`.
 
 ## How Packing Works
 
