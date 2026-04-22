@@ -1,0 +1,10 @@
+# Karpenter NodePool fleet: m6i
+# Intel Ice Lake — balanced, AVX-512, ~4 GiB/core ratio
+fleet:
+  name: m6i
+  arch: amd64
+  gpu: false
+  instances:
+    - type: m6i.32xlarge
+      weight: 100
+      node_disk_size: 800
