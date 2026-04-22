@@ -34,9 +34,9 @@ jobs:
       environment: osdc-production
       taint_nodes: ${{ inputs.taint_nodes }}
       skip_lint_test: ${{ inputs.skip_lint_test }}
-      # Integration tests target pytorch-canary via CANARY_GITHUB_TOKEN —
-      # they don't belong in a prod deploy. Always skip.
-      run_integration: false
+      run_smoke: false
+      run_compactor: false
     secrets:
       META_AWS_ACC_ID: ${{ secrets.META_AWS_ACC_ID }}
       META_AWS_DEPLOY_ROLE: ${{ secrets.META_AWS_DEPLOY_PROD_ROLE }}
+      CANARY_GITHUB_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
