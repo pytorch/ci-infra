@@ -15,6 +15,7 @@ jobs:
   release:
     name: Terraform Apply
     runs-on: ubuntu-latest
+    environment: crcr-prod
 
     steps:
     - name: Checkout branch
