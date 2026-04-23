@@ -17,6 +17,7 @@ jobs:
   tflint-plan:
     name: CRCR tflint + terraform plan
     runs-on: ubuntu-latest
+    environment: crcr-prod
 
     steps:
     - name: Checkout branch
