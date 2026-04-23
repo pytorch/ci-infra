@@ -7,3 +7,5 @@ runner:
   vcpu: 176
   memory: 1800Gi
   gpu: 8
+  # Fixed-capacity cap: 1 reserved 8-GPU node / 8 GPUs per runner = 1 concurrent runner.
+  max_runners: 1
