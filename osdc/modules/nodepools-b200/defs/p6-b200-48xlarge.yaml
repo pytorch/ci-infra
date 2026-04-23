@@ -14,6 +14,5 @@ nodepool:
   capacity_type: reserved
   capacity_reservation_ids:
     - cr-0c366fb8339a10f69
-    - cr-08e7fee0b8dc3de5e
   baremetal: true
   user_data_script: scripts/b200-node-setup.sh
