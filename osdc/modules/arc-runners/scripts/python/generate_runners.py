@@ -243,7 +243,10 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     # maxRunners line is emitted only when the runner def opts in. Leaving it out
     # keeps elastic, Karpenter-managed pools unbounded (the current default).
-    max_runners_line = f"\nmaxRunners: {max_runners}" if max_runners is not None else ""
+    # The placeholder occupies its own line in the template, so substituting an
+    # empty string collapses that line to a blank separator between minRunners
+    # and runnerGroup (matches the style before this field existed).
+    max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
     # Replace all template placeholders
     output_content = template_content
