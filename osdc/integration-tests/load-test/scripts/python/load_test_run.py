@@ -20,7 +20,12 @@ _INTEG_SCRIPTS = Path(__file__).resolve().parent.parent.parent.parent / "scripts
 if str(_INTEG_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_INTEG_SCRIPTS))
 
-from distribution import compute_distribution, get_available_runners
+from distribution import (
+    RunnerAllocation,
+    classify_runner,
+    compute_distribution,
+    get_available_runners,
+)
 from load_test_monitor import print_load_test_report, wait_for_load_test
 from phases import cleanup_stale_prs, ensure_canary_repo
 from run import (
@@ -35,6 +40,7 @@ from workflow_generator import generate_workflow
 log = logging.getLogger("osdc-load-test")
 
 DEFAULT_TOTAL_JOBS = 400
+DEFAULT_SINGLE_LABEL_JOBS = 50
 LOAD_TEST_PR_TITLE_PREFIX = "[NO REVIEW][NO MERGE] ARC load test"
 
 
@@ -69,10 +75,16 @@ def parse_args() -> argparse.Namespace:
         help="OSDC root directory (consumer or upstream)",
     )
     parser.add_argument(
+        "--single-label",
+        type=str,
+        default=None,
+        help="Run all jobs on a single runner label (e.g., l-x86iavx512-8-16)",
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
-        default=DEFAULT_TOTAL_JOBS,
-        help=f"Total number of jobs to distribute (default: {DEFAULT_TOTAL_JOBS})",
+        default=None,
+        help=f"Total number of jobs (default: {DEFAULT_TOTAL_JOBS}, or {DEFAULT_SINGLE_LABEL_JOBS} with --single-label)",
     )
     parser.add_argument(
         "--dry-run",
@@ -92,6 +104,8 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
 
+    if args.jobs is None:
+        args.jobs = DEFAULT_SINGLE_LABEL_JOBS if args.single_label else DEFAULT_TOTAL_JOBS
     if args.jobs <= 0:
         parser.error("--jobs must be a positive integer")
     if args.timeout <= 0:
@@ -137,6 +151,8 @@ def main() -> None:
 
     log.info("Load test for cluster: %s (%s)", args.cluster_id, cluster_name)
     log.info("  Runner prefix: '%s'", prefix)
+    if args.single_label:
+        log.info("  Single label mode: %s", args.single_label)
     log.info("  Target jobs: %d", args.jobs)
 
     # Phase 1: Compute distribution
@@ -146,10 +162,31 @@ def main() -> None:
     )
     log.info("  Available runner types: %d", len(available))
 
-    allocations = compute_distribution(args.jobs, available)
-    if not allocations:
-        log.error("No runner types available. Cannot run load test.")
-        sys.exit(1)
+    if args.single_label:
+        if args.single_label not in available:
+            log.error(
+                "Runner label '%s' not found. Available labels:\n  %s",
+                args.single_label,
+                "\n  ".join(sorted(available)),
+            )
+            sys.exit(1)
+        is_gpu, is_arm64, gpu_count = classify_runner(args.single_label)
+        allocations = [
+            RunnerAllocation(
+                osdc_label=args.single_label,
+                job_count=args.jobs,
+                source_job_count=0,
+                proportion=1.0,
+                is_gpu=is_gpu,
+                is_arm64=is_arm64,
+                gpu_count=gpu_count,
+            ),
+        ]
+    else:
+        allocations = compute_distribution(args.jobs, available)
+        if not allocations:
+            log.error("No runner types available. Cannot run load test.")
+            sys.exit(1)
 
     _print_distribution(allocations, args.cluster_id)
 
