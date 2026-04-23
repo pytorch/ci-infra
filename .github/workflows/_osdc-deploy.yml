@@ -36,12 +36,12 @@ on:
         description: "Run image-cache-janitor e2e tests after deploy"
         required: false
         type: boolean
-        default: false
+        default: true
       run_load_test:
         description: "Run load tests after deploy (requires CANARY_GITHUB_TOKEN)"
         required: false
         type: boolean
-        default: false
+        default: true
       skip_lint_test:
         description: "Skip `just lint` and `just test` pre-flight checks (firefighting only)"
         required: false
@@ -143,6 +143,85 @@ jobs:
       - name: Run smoke tests
         run: just smoke "${{ inputs.cluster }}"
 
+  integration:
+    name: Integration tests
+    needs: deploy
+    if: ${{ inputs.run_integration }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Verify gh CLI
+        run: gh --version
+        env:
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+          role-duration-seconds: 7200
+
+      - name: Run integration tests
+        run: just integration-test "${{ inputs.cluster }}" --skip-drain --skip-smoke --skip-compactor
+        env:
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
+
+  load-test:
+    name: Load tests
+    needs: [smoke, integration]
+    if: ${{ !cancelled() && !failure() && inputs.run_load_test }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-1
+          role-duration-seconds: 7200
+
+      - name: Run load tests
+        run: just load-test "${{ inputs.cluster }}"
+        env:
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
+
   compactor:
     name: Compactor e2e tests
     needs: load-test
@@ -212,82 +291,3 @@ jobs:
 
       - name: Run janitor e2e tests
         run: just test-janitor "${{ inputs.cluster }}"
-
-  load-test:
-    name: Load tests
-    needs: [smoke, integration]
-    if: ${{ !cancelled() && !failure() && inputs.run_load_test }}
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: osdc
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install just
-        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-
-      - name: Install mise
-        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
-        with:
-          install: true
-          working_directory: osdc
-
-      - name: Install Python dependencies
-        run: uv sync
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
-          role-duration-seconds: 7200
-
-      - name: Run load tests
-        run: just load-test "${{ inputs.cluster }}"
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
-
-  integration:
-    name: Integration tests
-    needs: deploy
-    if: ${{ inputs.run_integration }}
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: osdc
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install just
-        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-
-      - name: Install mise
-        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
-        with:
-          install: true
-          working_directory: osdc
-
-      - name: Install Python dependencies
-        run: uv sync
-
-      - name: Verify gh CLI
-        run: gh --version
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
-          role-duration-seconds: 7200
-
-      - name: Run integration tests
-        run: just integration-test "${{ inputs.cluster }}" --skip-drain --skip-smoke --skip-compactor
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
