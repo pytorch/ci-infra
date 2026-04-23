@@ -2,8 +2,8 @@ githubConfigUrl: "{{GITHUB_CONFIG_URL}}"
 githubConfigSecret: "{{GITHUB_SECRET_NAME}}"
 runnerScaleSetName: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
 
-minRunners: 0{{MAX_RUNNERS}}
-
+minRunners: 0
+{{MAX_RUNNERS}}
 runnerGroup: "{{RUNNER_GROUP}}"
 
 # Listener metrics cardinality control
