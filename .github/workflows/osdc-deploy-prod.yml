@@ -11,7 +11,7 @@ on:
         description: "Taint ARC runner nodes before deploy (graceful refresh)"
         required: false
         type: boolean
-        default: true
+        default: false
       skip_lint_test:
         description: "Skip `just lint` and `just test` pre-flight checks (firefighting only)"
         required: false
@@ -34,8 +34,10 @@ jobs:
       environment: osdc-production
       taint_nodes: ${{ inputs.taint_nodes }}
       skip_lint_test: ${{ inputs.skip_lint_test }}
-      run_smoke: false
+      run_smoke: true
       run_compactor: false
+      run_janitor: false
+      run_load_test: false
     secrets:
       META_AWS_ACC_ID: ${{ secrets.META_AWS_ACC_ID }}
       META_AWS_DEPLOY_ROLE: ${{ secrets.META_AWS_DEPLOY_PROD_ROLE }}
