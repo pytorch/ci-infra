@@ -1224,6 +1224,18 @@ workload-test cluster *args:
             --upstream-dir "${UPSTREAM}" \
             {{args}}
 
+# Set or query the maxRunners capacity ConfigMap for a runner scale set
+capacity cluster *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+
+    NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com" no_proxy="${no_proxy:-},.eks.amazonaws.com" \
+        uv run "{{SCRIPTS}}/python/capacity_setter.py" \
+            --cluster-id "{{cluster}}" \
+            --clusters-yaml "{{CLUSTERS_YAML}}" \
+            {{args}}
+
 # ============================================================================
 # ANALYSIS
 # ============================================================================

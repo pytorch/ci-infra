@@ -601,6 +601,67 @@ class TestMain:
     @patch("load_test_run.ensure_canary_repo")
     @patch("load_test_run.cleanup_stale_prs")
     @patch("load_test_run.generate_workflow")
+    @patch("load_test_run.classify_runner", return_value=(False, False, 0))
+    @patch("load_test_run.get_available_runners")
+    @patch("load_test_run.load_cluster_config")
+    def test_single_label_valid(
+        self,
+        mock_load_cfg,
+        mock_get_runners,
+        mock_classify,
+        mock_gen_wf,
+        mock_cleanup,
+        mock_ensure,
+        mock_prepare_pr,
+        mock_wait,
+        mock_report,
+        mock_run_cmd,
+    ):
+        mock_load_cfg.return_value = {
+            "cluster": {"cluster_name": "t", "arc-runners": {"runner_name_prefix": "mt-"}},
+            "defaults": {},
+        }
+        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_gen_wf.return_value = "wf"
+        mock_ensure.return_value = Path("/tmp/canary")
+        mock_prepare_pr.return_value = 42
+        mock_wait.return_value = LoadTestResults(5, 5, False, 60.0, [], [1])
+        mock_report.return_value = True
+
+        argv = self._base_argv(jobs=5) + ["--single-label", "l-x86iavx512-8-16"]
+        with patch("sys.argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 0
+
+        mock_classify.assert_called_once_with("l-x86iavx512-8-16")
+
+    @patch("load_test_run.get_available_runners")
+    @patch("load_test_run.load_cluster_config")
+    def test_single_label_not_found_exits_1(
+        self,
+        mock_load_cfg,
+        mock_get_runners,
+    ):
+        mock_load_cfg.return_value = {
+            "cluster": {"cluster_name": "t", "arc-runners": {"runner_name_prefix": "mt-"}},
+            "defaults": {},
+        }
+        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+
+        argv = self._base_argv(jobs=5) + ["--single-label", "nonexistent-runner"]
+        with patch("sys.argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 1
+
+    @patch("load_test_run.run_cmd")
+    @patch("load_test_run.print_load_test_report")
+    @patch("load_test_run.wait_for_load_test")
+    @patch("load_test_run._prepare_load_test_pr")
+    @patch("load_test_run.ensure_canary_repo")
+    @patch("load_test_run.cleanup_stale_prs")
+    @patch("load_test_run.generate_workflow")
     @patch("load_test_run.compute_distribution")
     @patch("load_test_run.get_available_runners")
     @patch("load_test_run.load_cluster_config")

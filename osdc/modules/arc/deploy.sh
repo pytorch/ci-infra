@@ -40,8 +40,9 @@ helm_upgrade_if_changed arc arc-systems \
   --set resources.limits.cpu="${ARC_CPU_LIM}" \
   --set resources.requests.memory="${ARC_MEM_REQ}" \
   --set resources.limits.memory="${ARC_MEM_LIM}" \
-  oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
-  --version "${ARC_CHART_VERSION}" \
+  --set image.repository="localhost:30002/osdc/gha-runner-scale-set-controller" \
+  --set image.tag="proactive-capacity" \
+  /Users/jschmidt/meta/actions-runner-controller/charts/gha-runner-scale-set-controller \
   --timeout 10m \
   --wait
 

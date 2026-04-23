@@ -77,6 +77,9 @@ listenerTemplate:
         effect: NoSchedule
     containers:
       - name: listener
+        env:
+          - name: DYNAMIC_CAPACITY_CONFIGMAP
+            value: "capacity-config-"
         resources:
           limits:
             cpu: "200m"
