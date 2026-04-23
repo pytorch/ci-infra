@@ -104,6 +104,21 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                   cpu: "{{VCPU}}"
                   memory: "{{MEMORY}}"
                   ephemeral-storage: "{{DISK_SIZE}}"{{GPU_LIMIT}}
+              volumeMounts:
+                - name: git-cache
+                  mountPath: /opt/git-cache
+                  readOnly: true
+                - name: dshm
+                  mountPath: /dev/shm
+          volumes:
+            - name: git-cache
+              hostPath:
+                path: /mnt/git-cache
+                type: DirectoryOrCreate
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 2Gi
 """)
 
 FAKE_CLUSTERS_YAML = {
@@ -406,6 +421,31 @@ class TestGenerateRunner:
         assert "node-fleet" in keys
         assert "workload-type" in keys
         assert "nvidia.com/gpu" in keys
+
+        # /dev/shm tmpfs mount — 64Mi k8s default is too small for NCCL
+        mounts = {m["name"]: m for m in container.get("volumeMounts", [])}
+        assert mounts["dshm"]["mountPath"] == "/dev/shm"
+        volumes = {v["name"]: v for v in cm_data["spec"].get("volumes", [])}
+        assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "2Gi"}
+
+    def test_cpu_runner_has_dshm_mount(self, tmp_path):
+        def_file = make_def_file(tmp_path, "cpu-runner", "c5.xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "cpu-runner.yaml").read_text()))
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        container = cm_data["spec"]["containers"][0]
+        mounts = {m["name"]: m for m in container.get("volumeMounts", [])}
+        assert mounts["dshm"]["mountPath"] == "/dev/shm"
+        volumes = {v["name"]: v for v in cm_data["spec"].get("volumes", [])}
+        assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "2Gi"}
 
     def test_no_placeholders_remaining(self, tmp_path):
         def_file = make_def_file(tmp_path, "test-runner", "c7i.24xlarge", 2, 4)

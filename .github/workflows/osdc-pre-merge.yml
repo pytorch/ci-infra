@@ -50,6 +50,6 @@ jobs:
       # Environment gate: the staging role trusts only tokens with
       # environment:osdc-staging in the sub, which blocks fork PRs.
       environment: osdc-staging
-      # arc-staging has recycle_karpenter_nodes=true, which makes the taint
-      # block a no-op — pass false to be explicit.
-      taint_nodes: false
+      taint_nodes: true
+      run_janitor: true
+      run_load_test: true
