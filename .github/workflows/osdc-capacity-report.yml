@@ -1,0 +1,130 @@
+name: "OSDC: Capacity report"
+
+on:
+  pull_request:
+    paths:
+      - "osdc/modules/arc-runners/defs/**"
+      - "osdc/modules/nodepools/defs/**"
+      - "osdc/scripts/python/instance_specs.py"
+      - "osdc/scripts/python/pytorch_workload_data.py"
+      - "osdc/scripts/python/analyze_node_utilization.py"
+      - "osdc/scripts/python/simulate_cluster.py"
+      - "osdc/scripts/python/simulate_cluster_cli.py"
+      - "osdc/scripts/python/daemonset_overhead.py"
+      - "osdc/base/kubernetes/**/kind-DaemonSet*.yaml"
+      - "osdc/modules/**/kind-DaemonSet*.yaml"
+      - ".github/workflows/osdc-capacity-report.yml"
+
+concurrency:
+  group: osdc-capacity-report-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+defaults:
+  run:
+    working-directory: osdc
+
+jobs:
+  report:
+    name: Capacity report
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Run simulate-cluster
+        id: simulate
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          just simulate-cluster 2>&1 | tee simulate.txt
+
+      - name: Run analyze-utilization
+        id: utilization
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          just analyze-utilization 2>&1 | tee utilization.txt
+
+      - name: Post report to PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SIM_OUTCOME: ${{ steps.simulate.outcome }}
+          UTIL_OUTCOME: ${{ steps.utilization.outcome }}
+          MARKER: "<!-- osdc-capacity-report -->"
+        run: |
+          set -euo pipefail
+
+          truncate_file() {
+              local file="$1" max=60000
+              if [ "$(wc -c < "$file")" -gt "$max" ]; then
+                  head -c "$max" "$file" > "${file}.tmp"
+                  printf '\n... (truncated — see workflow logs for full output)\n' >> "${file}.tmp"
+                  mv "${file}.tmp" "$file"
+              fi
+          }
+          truncate_file simulate.txt
+          truncate_file utilization.txt
+
+          if [ "$SIM_OUTCOME" = "success" ]; then SIM_STATUS="✅"; else SIM_STATUS="❌"; fi
+          if [ "$UTIL_OUTCOME" = "success" ]; then UTIL_STATUS="✅"; else UTIL_STATUS="❌"; fi
+
+          {
+              echo "$MARKER"
+              echo "### Capacity report"
+              echo ""
+              echo "commit \`${GITHUB_SHA::8}\` · [run log](${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
+              echo ""
+              echo "<details><summary>${SIM_STATUS} simulate-cluster</summary>"
+              echo ""
+              echo '```'
+              cat simulate.txt
+              echo '```'
+              echo ""
+              echo '</details>'
+              echo ""
+              echo "<details><summary>${UTIL_STATUS} analyze-utilization</summary>"
+              echo ""
+              echo '```'
+              cat utilization.txt
+              echo '```'
+              echo ""
+              echo '</details>'
+          } > body.md
+
+          EXISTING=$(gh api "/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" | head -n1)
+          BODY_JSON=$(jq -Rs '{body: .}' body.md)
+          if [ -n "$EXISTING" ]; then
+              echo "Updating existing comment $EXISTING"
+              echo "$BODY_JSON" | gh api --method PATCH --input - \
+                  "/repos/${REPO}/issues/comments/${EXISTING}" >/dev/null
+          else
+              echo "Creating new comment"
+              echo "$BODY_JSON" | gh api --method POST --input - \
+                  "/repos/${REPO}/issues/${PR_NUMBER}/comments" >/dev/null
+          fi
+
+      - name: Fail the job if either command failed
+        if: steps.simulate.outcome != 'success' || steps.utilization.outcome != 'success'
+        run: |
+          echo "One or both capacity report commands failed — see the PR comment for details."
+          exit 1
