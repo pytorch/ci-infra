@@ -81,7 +81,7 @@ kubectl apply -f "$MODULE_DIR/kubernetes/priority-classes.yaml"
 kubectl apply -f "$MODULE_DIR/kubernetes/capacity-monitor-rbac.yaml"
 
 # Read per-installation ARC config (with defaults)
-ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.0)
+ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.1)
 ARC_REPLICAS=$(uv run "$CFG" "$CLUSTER" arc.replica_count 2)
 ARC_LOG_LEVEL=$(uv run "$CFG" "$CLUSTER" arc.log_level info)
 ARC_CPU_REQ=$(uv run "$CFG" "$CLUSTER" arc.controller_cpu_request 1)
@@ -102,9 +102,11 @@ helm_upgrade_if_changed arc arc-systems \
   --set resources.limits.memory="${ARC_MEM_LIM}" \
   --set image.repository="localhost:30002/osdc/gha-runner-scale-set-controller" \
   --set image.tag="proactive-capacity" \
-  oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller \
-  --version "${ARC_CHART_VERSION}" \
+  /Users/jschmidt/meta/actions-runner-controller/charts/gha-runner-scale-set-controller \
   --timeout 10m \
   --wait
+# TODO: restore before committing:
+#  oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller \
+#  --version "${ARC_CHART_VERSION}" \
 
 echo "ARC controller installed."

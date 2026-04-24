@@ -30,7 +30,7 @@ source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # Chart version — MUST match the controller (arc module). Read from clusters.yaml.
-ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.0)
+ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.1)
 
 # Allow consumers to override defs, output, template, and module name
 DEFS_DIR="${ARC_RUNNERS_DEFS_DIR:-$MODULE_DIR/defs}"

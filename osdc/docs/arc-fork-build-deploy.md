@@ -22,6 +22,25 @@ Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workf
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
 
+## Using the Local Chart (dev workflow)
+
+For local development, you can skip publishing the chart to GHCR and point `deploy.sh` directly at the local chart path:
+
+In `modules/arc/deploy.sh`, replace the OCI chart reference:
+
+```bash
+# Replace this:
+  oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller \
+  --version "${ARC_CHART_VERSION}" \
+
+# With the local path (no --version needed):
+  /Users/jschmidt/meta/actions-runner-controller/charts/gha-runner-scale-set-controller \
+```
+
+Keep the original lines commented out with a `TODO: restore before committing` so they aren't accidentally merged.
+
+This skips the chart publish step entirely — Helm reads the chart directly from disk. You still need to build and push the controller image to Harbor (see below).
+
 ## Building the Forked Image
 
 The `Dockerfile` builds all binaries (manager, ghalistener, webhook server, metrics server, sleep) from Go source into a distroless image.
