@@ -38,3 +38,7 @@ jobs:
       run_compactor: false
       run_janitor: false
       run_load_test: false
+    # secrets: inherit is required for the reusable workflow to pick up
+    # osdc-production environment secrets (META_AWS_ACC_ID, META_AWS_DEPLOY_ROLE,
+    # CANARY_GITHUB_TOKEN). Without it, secrets.* resolves to empty strings.
+    secrets: inherit
