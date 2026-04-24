@@ -87,13 +87,13 @@ listenerTemplate:
             memory: "128Mi"
         env:
           - name: CAPACITY_AWARE_ENABLED
-            value: "false"
+            value: "true"
           - name: CAPACITY_AWARE_PROACTIVE_CAPACITY
             value: "{{PROACTIVE_CAPACITY}}"
           - name: CAPACITY_AWARE_RECALCULATE_INTERVAL
             value: "30s"
           - name: CAPACITY_AWARE_PLACEHOLDER_TIMEOUT
-            value: "5m"
+            value: "20m"
           - name: CAPACITY_AWARE_WORKFLOW_CPU
             value: "{{VCPU}}"
           - name: CAPACITY_AWARE_WORKFLOW_MEMORY
@@ -102,6 +102,7 @@ listenerTemplate:
             value: "{{GPU_COUNT}}"
           - name: CAPACITY_AWARE_WORKFLOW_DISK
             value: "{{DISK_SIZE}}"
+          # Must match the runner container resources below (requests/limits)
           - name: CAPACITY_AWARE_RUNNER_CPU
             value: "750m"
           - name: CAPACITY_AWARE_RUNNER_MEMORY
@@ -239,7 +240,8 @@ template:
             value: "3"
         resources:
           # Runner pod needs enough CPU for the k8s-novolume hook's
-          # workspace tar copy/extract and permission fixups
+          # workspace tar copy/extract and permission fixups.
+          # Must match CAPACITY_AWARE_RUNNER_CPU/MEMORY on the listener.
           limits:
             cpu: "750m"
             memory: "512Mi"

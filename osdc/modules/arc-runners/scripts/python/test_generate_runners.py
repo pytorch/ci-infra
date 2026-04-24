@@ -28,6 +28,13 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
     minRunners: 0
     {{MAX_RUNNERS_LINE}}
     runnerGroup: "{{RUNNER_GROUP}}"
+    listenerTemplate:
+      spec:
+        containers:
+          - name: listener
+            env:
+              - name: CAPACITY_AWARE_PROACTIVE_CAPACITY
+                value: "{{PROACTIVE_CAPACITY}}"
     template:
       spec:
         containers:
@@ -165,6 +172,7 @@ def make_def_file(
     runner_group=None,
     runner_class=None,
     max_runners=None,
+    proactive_capacity=None,
 ):
     """Write a runner def YAML and return the path."""
     runner = {
@@ -181,6 +189,8 @@ def make_def_file(
         runner["runner_class"] = runner_class
     if max_runners is not None:
         runner["max_runners"] = max_runners
+    if proactive_capacity is not None:
+        runner["proactive_capacity"] = proactive_capacity
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -559,6 +569,88 @@ class TestGenerateRunner:
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
 
+    def test_proactive_capacity_default_zero(self, tmp_path):
+        """proactive_capacity defaults to 0 when not in the runner def."""
+        def_file = make_def_file(tmp_path, "cap-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "cap-runner.yaml").read_text()))
+        listener_env = {
+            e["name"]: e["value"]
+            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
+        }
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_proactive_capacity_nonzero(self, tmp_path):
+        """proactive_capacity: 30 renders as "30" in the listener env."""
+        def_file = make_def_file(tmp_path, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
+        listener_env = {
+            e["name"]: e["value"]
+            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
+        }
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
+
+    def test_proactive_capacity_forced_zero(self, tmp_path):
+        """force_proactive_capacity_zero overrides any def value to 0."""
+        def_file = make_def_file(tmp_path, "forced-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "force_proactive_capacity_zero": True,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "forced-runner.yaml").read_text()))
+        listener_env = {
+            e["name"]: e["value"]
+            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
+        }
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_proactive_capacity_not_forced_when_false(self, tmp_path):
+        """force_proactive_capacity_zero=False preserves the def value."""
+        def_file = make_def_file(tmp_path, "kept-runner", "c7i.24xlarge", 4, 16, proactive_capacity=10)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "force_proactive_capacity_zero": False,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "kept-runner.yaml").read_text()))
+        listener_env = {
+            e["name"]: e["value"]
+            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
+        }
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "10"
+
     def test_resource_values_match_def(self, tmp_path):
         def_file = make_def_file(tmp_path, "res-test", "c7i.24xlarge", 48, 96, disk_size=200)
         output_dir = tmp_path / "out"
@@ -897,6 +989,84 @@ class TestMain:
 
         with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
             assert main() == 1
+
+    def test_staging_forces_proactive_capacity_zero(self, tmp_path, monkeypatch):
+        """main() sets force_proactive_capacity_zero for staging clusters."""
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(FAKE_CLUSTERS_YAML, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
+            assert main() == 0
+
+        docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
+        listener_env = {
+            e["name"]: e["value"]
+            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
+        }
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_production_preserves_proactive_capacity(self, tmp_path, monkeypatch):
+        """main() does NOT force proactive_capacity to zero for production clusters."""
+        prod_config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/prod-org",
+                    "github_secret_name": "prod-secret",
+                    "runner_name_prefix": "prod-",
+                },
+            },
+            "clusters": {
+                "arc-prod": {
+                    "cluster_name": "production",
+                    "region": "us-east-1",
+                    "modules": ["arc-runners"],
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/prod-org",
+                        "github_secret_name": "prod-secret",
+                        "runner_name_prefix": "prod-",
+                    },
+                },
+            },
+        }
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(prod_config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "arc-prod"]):
+            assert main() == 0
+
+        docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
+        listener_env = {
+            e["name"]: e["value"]
+            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
+        }
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
 
     def test_missing_template_exits_1(self, tmp_path, monkeypatch):
         p = tmp_path / "clusters.yaml"
