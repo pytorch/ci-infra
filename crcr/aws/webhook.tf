@@ -34,7 +34,7 @@ resource "aws_lambda_function" "webhook" {
   role          = aws_iam_role.lambda.arn
 
   runtime          = "python3.13"
-  handler          = "lambda_function.lambda_handler"
+  handler          = "webhook.lambda_function.lambda_handler"
   filename         = local.webhook_zip
   source_code_hash = filebase64sha256(local.webhook_zip)
 
