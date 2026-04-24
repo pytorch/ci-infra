@@ -10,3 +10,4 @@ runner:
   gpu: 0
   runner_group: release-runners
   runner_class: release
+  proactive_capacity: 30

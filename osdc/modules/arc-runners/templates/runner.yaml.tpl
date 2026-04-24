@@ -3,6 +3,7 @@ githubConfigSecret: "{{GITHUB_SECRET_NAME}}"
 runnerScaleSetName: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
 
 minRunners: 0
+{{MAX_RUNNERS_LINE}}
 
 runnerGroup: "{{RUNNER_GROUP}}"
 
@@ -77,9 +78,6 @@ listenerTemplate:
         effect: NoSchedule
     containers:
       - name: listener
-        env:
-          - name: DYNAMIC_CAPACITY_CONFIGMAP
-            value: "capacity-config-"
         resources:
           limits:
             cpu: "200m"
@@ -87,6 +85,37 @@ listenerTemplate:
           requests:
             cpu: "100m"
             memory: "128Mi"
+        env:
+          - name: CAPACITY_AWARE_ENABLED
+            value: "false"
+          - name: CAPACITY_AWARE_PROACTIVE_CAPACITY
+            value: "{{PROACTIVE_CAPACITY}}"
+          - name: CAPACITY_AWARE_RECALCULATE_INTERVAL
+            value: "30s"
+          - name: CAPACITY_AWARE_PLACEHOLDER_TIMEOUT
+            value: "5m"
+          - name: CAPACITY_AWARE_WORKFLOW_CPU
+            value: "{{VCPU}}"
+          - name: CAPACITY_AWARE_WORKFLOW_MEMORY
+            value: "{{MEMORY}}"
+          - name: CAPACITY_AWARE_WORKFLOW_GPU
+            value: "{{GPU_COUNT}}"
+          - name: CAPACITY_AWARE_WORKFLOW_DISK
+            value: "{{DISK_SIZE}}"
+          - name: CAPACITY_AWARE_RUNNER_CPU
+            value: "750m"
+          - name: CAPACITY_AWARE_RUNNER_MEMORY
+            value: "512Mi"
+          - name: CAPACITY_AWARE_NODE_FLEET
+            value: "{{NODE_FLEET}}"
+          - name: CAPACITY_AWARE_RUNNER_CLASS
+            value: "{{RUNNER_CLASS}}"
+          - name: CAPACITY_AWARE_HUD_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: pytorch-hud-token
+                key: token
+                optional: true
 
 template:
   metadata:

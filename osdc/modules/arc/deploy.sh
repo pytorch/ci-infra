@@ -20,6 +20,66 @@ source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
+# --- Cleanup trap ---
+PF_PID=""
+NETRC_FILE=""
+cleanup() {
+  [[ -n "$PF_PID" ]] && kill "$PF_PID" 2>/dev/null || true
+  [[ -n "$NETRC_FILE" ]] && rm -f "$NETRC_FILE" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# --- Ensure Harbor project "osdc" exists ---
+HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \
+  -o jsonpath='{.data.password}' | base64 -d)
+
+NETRC_FILE=$(mktemp)
+chmod 600 "$NETRC_FILE"
+cat >"$NETRC_FILE" <<EOF
+machine localhost
+login admin
+password ${HARBOR_ADMIN_PW}
+EOF
+
+kubectl port-forward -n harbor-system svc/harbor 8081:80 &
+PF_PID=$!
+
+# Wait for port-forward to be ready
+for i in $(seq 1 30); do
+  if curl -s -o /dev/null -w "" "http://localhost:8081/api/v2.0/health" 2>/dev/null; then
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "ERROR: Harbor port-forward not ready after 30s"
+    exit 1
+  fi
+  sleep 1
+done
+
+# Create Harbor project "osdc" if it doesn't exist (409 = already exists)
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X POST "http://localhost:8081/api/v2.0/projects" \
+  --netrc-file "$NETRC_FILE" \
+  -H "Content-Type: application/json" \
+  -d '{"project_name":"osdc","public":true}')
+if [[ "$HTTP_CODE" == "201" ]]; then
+  echo "  Created Harbor project 'osdc'"
+elif [[ "$HTTP_CODE" == "409" ]]; then
+  echo "  Harbor project 'osdc' already exists"
+else
+  echo "  Warning: Harbor project creation returned HTTP $HTTP_CODE"
+fi
+
+# Kill port-forward now that project creation is done
+kill "$PF_PID" 2>/dev/null || true
+PF_PID=""
+
+# Apply PriorityClasses for proactive capacity (idempotent)
+kubectl apply -f "$MODULE_DIR/kubernetes/priority-classes.yaml"
+
+# Apply RBAC for capacity monitor (idempotent)
+kubectl apply -f "$MODULE_DIR/kubernetes/capacity-monitor-rbac.yaml"
+
 # Read per-installation ARC config (with defaults)
 ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.0)
 ARC_REPLICAS=$(uv run "$CFG" "$CLUSTER" arc.replica_count 2)
@@ -42,7 +102,8 @@ helm_upgrade_if_changed arc arc-systems \
   --set resources.limits.memory="${ARC_MEM_LIM}" \
   --set image.repository="localhost:30002/osdc/gha-runner-scale-set-controller" \
   --set image.tag="proactive-capacity" \
-  /Users/jschmidt/meta/actions-runner-controller/charts/gha-runner-scale-set-controller \
+  oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller \
+  --version "${ARC_CHART_VERSION}" \
   --timeout 10m \
   --wait
 

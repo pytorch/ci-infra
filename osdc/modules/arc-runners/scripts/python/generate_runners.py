@@ -141,6 +141,10 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     disk_size = runner.get("disk_size", 100)
     runner_group = runner.get("runner_group", "default")
     runner_class = runner.get("runner_class", "")
+    max_runners = runner.get("max_runners")
+    proactive_capacity = runner.get("proactive_capacity", 0)
+    if cluster_config.get("force_proactive_capacity_zero"):
+        proactive_capacity = 0
 
     if not runner_name or not instance_type:
         log_error(f"Invalid definition file: {def_file}")
@@ -233,6 +237,9 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
             "                    operator: DoesNotExist\n"
         )
 
+    # Optional maxRunners line — only emitted when max_runners is set in the def
+    max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
+
     # Replace all template placeholders
     output_content = template_content
     replacements = {
@@ -258,10 +265,18 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{RUNNER_CLASS_NODE_SELECTOR}}": runner_class_node_selector,
         "{{RUNNER_CLASS_AFFINITY}}": runner_class_affinity,
         "{{RUNNER_CLASS_JOB_AFFINITY}}": runner_class_job_affinity,
+        "{{MAX_RUNNERS_LINE}}": max_runners_line,
+        "{{GPU_COUNT}}": str(gpu),
+        "{{RUNNER_CLASS}}": runner_class,
+        "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
     }
 
     for placeholder, value in replacements.items():
         output_content = output_content.replace(placeholder, value)
+
+    # Collapse runs of 3+ newlines (from empty placeholder lines) into a single blank line
+    while "\n\n\n" in output_content:
+        output_content = output_content.replace("\n\n\n", "\n\n")
 
     output_file = output_dir / f"{runner_name}.yaml"
     output_file.write_text(output_content)  # lgtm[py/clear-text-storage-sensitive-data]
@@ -315,6 +330,9 @@ def main():
     # Resolve runner image tag from arc.runner_image_tag (shared with arc module)
     runner_image_tag = resolve_value(cluster_cfg, defaults, "arc.runner_image_tag") or "2.333.1"
     cluster_config["runner_image"] = f"ghcr.io/actions/actions-runner:{runner_image_tag}"
+
+    # Staging clusters: force proactive_capacity to 0 regardless of runner def value
+    cluster_config["force_proactive_capacity_zero"] = "staging" in cluster_id
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():
