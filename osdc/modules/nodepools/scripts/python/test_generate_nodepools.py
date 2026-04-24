@@ -464,7 +464,7 @@ class TestGenerateNodepoolYaml:
         docs = self._parse(output)
         ec2 = docs[1]
         userdata = ec2["spec"]["userData"]
-        assert "topologyManagerPolicy: restricted" in userdata
+        assert "topologyManagerPolicy: best-effort" in userdata
         assert "topologyManagerScope: container" in userdata
 
     def test_topology_manager_custom(self):
