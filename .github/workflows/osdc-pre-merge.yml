@@ -53,7 +53,7 @@ jobs:
       taint_nodes: true
       run_janitor: true
       run_load_test: true
-    secrets:
-      META_AWS_ACC_ID: ${{ secrets.META_AWS_ACC_ID }}
-      META_AWS_DEPLOY_ROLE: ${{ secrets.META_AWS_DEPLOY_STAGING_ROLE }}
-      CANARY_GITHUB_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
+    # secrets: inherit is required for the reusable workflow to pick up
+    # osdc-staging environment secrets (META_AWS_ACC_ID, META_AWS_DEPLOY_ROLE,
+    # CANARY_GITHUB_TOKEN). Without it, secrets.* resolves to empty strings.
+    secrets: inherit

@@ -47,15 +47,6 @@ on:
         required: false
         type: boolean
         default: false
-    secrets:
-      META_AWS_ACC_ID:
-        required: true
-      META_AWS_DEPLOY_ROLE:
-        description: "Role name in the Meta account to assume (caller picks staging vs prod)"
-        required: true
-      CANARY_GITHUB_TOKEN:
-        description: "GitHub token for integration tests (required if run_integration=true)"
-        required: false
 
 permissions:
   id-token: write
