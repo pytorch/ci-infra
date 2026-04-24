@@ -25,6 +25,8 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
     githubConfigUrl: "{{GITHUB_CONFIG_URL}}"
     githubConfigSecret: "{{GITHUB_SECRET_NAME}}"
     runnerScaleSetName: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
+    minRunners: 0
+    {{MAX_RUNNERS_LINE}}
     runnerGroup: "{{RUNNER_GROUP}}"
     template:
       spec:
@@ -153,7 +155,16 @@ FAKE_CLUSTERS_YAML = {
 
 
 def make_def_file(
-    tmp_path, name, instance_type, vcpu, memory, gpu=0, disk_size=100, runner_group=None, runner_class=None
+    tmp_path,
+    name,
+    instance_type,
+    vcpu,
+    memory,
+    gpu=0,
+    disk_size=100,
+    runner_group=None,
+    runner_class=None,
+    max_runners=None,
 ):
     """Write a runner def YAML and return the path."""
     runner = {
@@ -168,6 +179,8 @@ def make_def_file(
         runner["runner_group"] = runner_group
     if runner_class is not None:
         runner["runner_class"] = runner_class
+    if max_runners is not None:
+        runner["max_runners"] = max_runners
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -495,6 +508,56 @@ class TestGenerateRunner:
 
         result = generate_runner(p, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners")
         assert result is False
+
+    def test_max_runners_omitted_by_default(self, tmp_path):
+        """Without max_runners in the def, the RSS stays unbounded (no maxRunners key)."""
+        def_file = make_def_file(tmp_path, "elastic-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "elastic-runner.yaml").read_text()))
+        assert docs[0]["minRunners"] == 0
+        assert "maxRunners" not in docs[0]
+
+    def test_max_runners_applied_when_set(self, tmp_path):
+        """max_runners: N in the def emits maxRunners: N in the helm values."""
+        def_file = make_def_file(tmp_path, "fixed-runner", "p6-b200.48xlarge", 22, 225, gpu=1, max_runners=8)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "fixed-runner.yaml").read_text()))
+        assert docs[0]["minRunners"] == 0
+        assert docs[0]["maxRunners"] == 8
+
+    def test_invalid_max_runners_zero(self, tmp_path):
+        """max_runners must be a positive integer; 0 is rejected."""
+        def_file = make_def_file(tmp_path, "bad-cap", "c7i.24xlarge", 4, 16, max_runners=0)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+
+    def test_invalid_max_runners_non_int(self, tmp_path):
+        """max_runners must be an int, not a string."""
+        def_file = make_def_file(tmp_path, "bad-cap2", "c7i.24xlarge", 4, 16, max_runners="8")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
 
     def test_resource_values_match_def(self, tmp_path):
         def_file = make_def_file(tmp_path, "res-test", "c7i.24xlarge", 48, 96, disk_size=200)

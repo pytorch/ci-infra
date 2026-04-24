@@ -141,6 +141,9 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     disk_size = runner.get("disk_size", 100)
     runner_group = runner.get("runner_group", "default")
     runner_class = runner.get("runner_class", "")
+    # Optional concurrency cap for fixed-capacity pools (e.g. B200 Capacity Blocks).
+    # Omit to leave the RSS unbounded, which is correct for Karpenter-managed pools
+    # that can scale out on demand.
     max_runners = runner.get("max_runners")
     proactive_capacity = runner.get("proactive_capacity", 0)
     if cluster_config.get("force_proactive_capacity_zero"):
@@ -148,6 +151,10 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     if not runner_name or not instance_type:
         log_error(f"Invalid definition file: {def_file}")
+        return False
+
+    if max_runners is not None and (not isinstance(max_runners, int) or max_runners < 1):
+        log_error(f"Invalid definition file {def_file}: max_runners must be a positive integer, got {max_runners!r}")
         return False
 
     node_fleet = derive_fleet_name(instance_type)
