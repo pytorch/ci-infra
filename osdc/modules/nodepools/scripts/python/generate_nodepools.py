@@ -126,7 +126,7 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     weight = nodepool_def.get("weight")
 
     # Per-def kubelet topology overrides (e.g. B200 needs single-numa-node/pod)
-    topology_policy = nodepool_def.get("topology_manager_policy", "restricted")
+    topology_policy = nodepool_def.get("topology_manager_policy", "best-effort")
     topology_scope = nodepool_def.get("topology_manager_scope", "container")
 
     # Read optional user data script for embedding as a MIME part
