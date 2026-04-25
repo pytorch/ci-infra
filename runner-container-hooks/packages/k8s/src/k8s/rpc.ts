@@ -4,7 +4,7 @@ import { sleep } from './utils'
 import {
   execPodStep,
   execPodStepOutput,
-  execPodStepWithRetry,
+  execPodStepOutputWithRetry,
   getPodByName
 } from './index'
 import { RPC_SERVER_SCRIPT } from './rpc-server-script'
@@ -92,27 +92,39 @@ export async function deployRpcServer(
   }
 
   try {
-    await execPodStepWithRetry(
+    await execPodStepOutputWithRetry(
       ['python3', '--version'],
       podName,
       containerName,
-      'check python3'
+      'check python3',
+      { retryOnNonZeroExit: true }
     )
-  } catch {
-    throw new Error('image not compatible: python3 is a required dependency')
+  } catch (err) {
+    throw new Error(
+      `image not compatible: python3 is a required dependency (${err instanceof Error ? err.message : err})`
+    )
   }
 
   const encoded = Buffer.from(RPC_SERVER_SCRIPT).toString('base64')
-  await execPodStepWithRetry(
-    [
-      'sh',
-      '-c',
-      `echo '${encoded}' | base64 -d > /tmp/rpc-server.py && chmod +x /tmp/rpc-server.py`
-    ],
-    podName,
-    containerName,
-    'write rpc server'
-  )
+  try {
+    await execPodStepOutputWithRetry(
+      [
+        'sh',
+        '-c',
+        `echo '${encoded}' | base64 -d > /tmp/rpc-server.py && chmod +x /tmp/rpc-server.py`
+      ],
+      podName,
+      containerName,
+      'write rpc server',
+      { retryOnNonZeroExit: true }
+    )
+  } catch (err) {
+    throw new Error(
+      `RPC server script write failed (${err instanceof Error ? err.message : err})`
+    )
+  }
+
+  const attemptErrors: string[] = []
 
   for (let attempt = 1; attempt <= MAX_DEPLOY_ATTEMPTS; attempt++) {
     core.debug(
@@ -120,34 +132,48 @@ export async function deployRpcServer(
     )
 
     // Kill any server from a previous failed attempt and clean up port file
-    await execPodStep(
-      [
-        'sh',
-        '-c',
-        `pkill -f 'python3 /tmp/rpc-server.py' 2>/dev/null; rm -f ${PORT_FILE}`
-      ],
-      podName,
-      containerName
-    )
+    try {
+      await execPodStep(
+        [
+          'sh',
+          '-c',
+          `pkill -f 'python3 /tmp/rpc-server.py' 2>/dev/null; rm -f ${PORT_FILE}`
+        ],
+        podName,
+        containerName
+      )
+    } catch (err) {
+      core.info(
+        `RPC cleanup failed (attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}): ${err instanceof Error ? err.message : err}`
+      )
+    }
 
     // Start server with port 0 — OS assigns a free port
-    await execPodStepWithRetry(
-      [
-        'sh',
-        '-c',
-        `nohup python3 /tmp/rpc-server.py --port 0 --token ${token} > /tmp/rpc-server.log 2>&1 & echo $!`
-      ],
-      podName,
-      containerName,
-      'start rpc server'
-    )
+    try {
+      await execPodStepOutputWithRetry(
+        [
+          'sh',
+          '-c',
+          `nohup python3 /tmp/rpc-server.py --port 0 --token ${token} > /tmp/rpc-server.log 2>&1 & echo $!`
+        ],
+        podName,
+        containerName,
+        'start rpc server',
+        { retryOnNonZeroExit: true }
+      )
+    } catch (err) {
+      const msg = `attempt ${attempt}: server start failed: ${err instanceof Error ? err.message : err}`
+      core.warning(msg)
+      attemptErrors.push(msg)
+      continue
+    }
 
     // Discover the actual port assigned by the OS
     const port = await discoverPort(podName, containerName)
     if (port === null) {
-      core.debug(
-        `Failed to discover RPC server port, attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}`
-      )
+      const msg = `attempt ${attempt}: port discovery timed out (${PORT_DISCOVER_TIMEOUT_MS}ms)`
+      core.warning(msg)
+      attemptErrors.push(msg)
       continue
     }
 
@@ -166,13 +192,28 @@ export async function deployRpcServer(
       return { podIp, port }
     }
 
-    core.debug(
-      `RPC server failed health check on port ${port}, attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}`
-    )
+    let serverLog = ''
+    try {
+      const logResult = await execPodStepOutput(
+        [
+          'sh',
+          '-c',
+          'tail -20 /tmp/rpc-server.log 2>/dev/null || echo "(no log)"'
+        ],
+        podName,
+        containerName
+      )
+      serverLog = logResult.stdout
+    } catch {
+      // best effort
+    }
+    const msg = `attempt ${attempt}: health check timed out on port ${port}${serverLog ? `. Server log:\n${serverLog}` : ''}`
+    core.warning(msg)
+    attemptErrors.push(msg)
   }
 
   throw new Error(
-    `RPC server failed to become healthy after ${MAX_DEPLOY_ATTEMPTS} attempts`
+    `RPC server failed after ${MAX_DEPLOY_ATTEMPTS} attempts:\n${attemptErrors.join('\n')}`
   )
 }
 

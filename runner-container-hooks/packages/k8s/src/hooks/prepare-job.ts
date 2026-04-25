@@ -11,6 +11,7 @@ import {
   containerPorts,
   createJobPod,
   isPodContainerAlpine,
+  getPodByName,
   prunePods,
   waitForPodPhases,
   getPrepareJobTimeoutSeconds,
@@ -37,6 +38,7 @@ import {
 import * as crypto from 'crypto'
 import { dirname } from 'path'
 import { deployRpcServer } from '../k8s/rpc'
+import { sleep } from '../k8s/utils'
 
 export async function prepareJob(
   args: PrepareJobArgs,
@@ -76,7 +78,11 @@ export async function prepareJob(
     throw new Error('No containers exist, skipping hook invocation')
   }
 
+  const t0 = Date.now()
+  const elapsed = (): string => `${((Date.now() - t0) / 1000).toFixed(1)}s`
+
   await waitForNodeTaintsRemoval()
+  core.info(`[prepare_job] taint wait complete (${elapsed()})`)
 
   let createdPod: k8s.V1Pod | undefined = undefined
   try {
@@ -97,6 +103,7 @@ export async function prepareJob(
   if (!createdPod?.metadata?.name) {
     throw new Error('created pod should have metadata.name')
   }
+  core.info(`[prepare_job] pod created (${elapsed()})`)
   core.debug(
     `Job pod created, waiting for it to come online ${createdPod?.metadata?.name}`
   )
@@ -118,6 +125,30 @@ export async function prepareJob(
   } catch (err) {
     await prunePods()
     throw new Error(`pod failed to come online with error: ${err}`)
+  }
+  core.info(`[prepare_job] pod running (${elapsed()})`)
+
+  try {
+    const runningPod = await getPodByName(createdPod.metadata.name)
+    const workflowNode = runningPod.spec?.nodeName || 'unknown'
+    const runnerPodName = process.env.ACTIONS_RUNNER_POD_NAME
+    if (runnerPodName) {
+      const runnerPod = await getPodByName(runnerPodName)
+      const runnerNode = runnerPod.spec?.nodeName || 'unknown'
+      if (workflowNode !== runnerNode) {
+        core.warning(
+          `Cross-node scheduling: workflow pod on ${workflowNode}, runner on ${runnerNode}`
+        )
+      } else {
+        core.info(`Workflow pod on same node as runner: ${workflowNode}`)
+      }
+    } else {
+      core.info(`Workflow pod scheduled to node: ${workflowNode}`)
+    }
+  } catch (err) {
+    core.debug(
+      `Could not determine node placement: ${err instanceof Error ? err.message : err}`
+    )
   }
 
   await execCpToPod(createdPod.metadata.name, runnerWorkspace, '/__w')
@@ -146,6 +177,7 @@ export async function prepareJob(
     await Promise.all(promises)
   }
 
+  core.info(`[prepare_job] workspace copied (${elapsed()})`)
   core.debug('Job pod is ready for traffic')
 
   let isAlpine = false
@@ -155,25 +187,48 @@ export async function prepareJob(
       JOB_CONTAINER_NAME
     )
   } catch (err) {
-    core.debug(
-      `Failed to determine if the pod is alpine: ${JSON.stringify(err)}`
+    core.warning(
+      `Alpine detection failed, defaulting to non-Alpine: ${err instanceof Error ? err.message : err}`
     )
-    const message = (err as any)?.response?.body?.message || err
-    throw new Error(`failed to determine if the pod is alpine: ${message}`)
   }
   core.debug(`Setting isAlpine to ${isAlpine}`)
 
   const rpcToken = crypto.randomUUID()
-  const { podIp: rpcPodIp, port: rpcPort } = await deployRpcServer(
-    createdPod.metadata.name,
-    JOB_CONTAINER_NAME,
-    rpcToken
+  const maxRpcAttempts = 3
+  const rpcRetryDelayMs = 3000
+  let rpcPodIp: string | undefined
+  let rpcPort: number | undefined
+  for (let attempt = 1; attempt <= maxRpcAttempts; attempt++) {
+    try {
+      const result = await deployRpcServer(
+        createdPod.metadata.name,
+        JOB_CONTAINER_NAME,
+        rpcToken
+      )
+      rpcPodIp = result.podIp
+      rpcPort = result.port
+      break
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (attempt < maxRpcAttempts) {
+        core.warning(
+          `deployRpcServer failed (attempt ${attempt}/${maxRpcAttempts}): ${msg}, retrying in ${rpcRetryDelayMs}ms`
+        )
+        await sleep(rpcRetryDelayMs)
+      } else {
+        throw new Error(
+          `deployRpcServer failed after ${maxRpcAttempts} attempts: ${msg}`
+        )
+      }
+    }
+  }
+  core.info(
+    `[prepare_job] RPC server ready at ${rpcPodIp}:${rpcPort} (${elapsed()})`
   )
-  core.debug(`RPC server deployed at ${rpcPodIp}:${rpcPort}`)
 
   generateResponseFile(responseFile, args, createdPod, isAlpine, {
-    rpcPodIp,
-    rpcPort,
+    rpcPodIp: rpcPodIp!,
+    rpcPort: rpcPort!,
     rpcToken
   })
 }

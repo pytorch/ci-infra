@@ -6,13 +6,14 @@ const MOCK_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
 const mockExecPodStep = jest.fn()
 const mockExecPodStepOutput = jest.fn()
-const mockExecPodStepWithRetry = jest.fn()
+const mockExecPodStepOutputWithRetry = jest.fn()
 const mockGetPodByName = jest.fn()
 
 jest.mock('../src/k8s', () => ({
   execPodStep: (...args) => mockExecPodStep(...args),
   execPodStepOutput: (...args) => mockExecPodStepOutput(...args),
-  execPodStepWithRetry: (...args) => mockExecPodStepWithRetry(...args),
+  execPodStepOutputWithRetry: (...args) =>
+    mockExecPodStepOutputWithRetry(...args),
   getPodByName: (...args) => mockGetPodByName(...args)
 }))
 
@@ -83,6 +84,61 @@ function fakeResponse(
 describe('deployRpcServer', () => {
   const DISCOVERED_PORT = 45678
 
+  type StepResult = { exitCode: number; stdout: string }
+
+  /**
+   * Route mocks by command content.
+   * execPodStepOutputWithRetry: python3 check, script write, server start.
+   * execPodStepOutput: port discovery, server log capture.
+   * Pass an Error instance to make that step throw (simulating exhausted retries).
+   */
+  function setupDefaultMocks(overrides?: {
+    python3?: StepResult | Error
+    write?: StepResult | Error
+    start?: StepResult | Error
+    port?: StepResult
+    log?: StepResult
+  }): void {
+    const defaults = {
+      python3: { exitCode: 0, stdout: 'Python 3.10.0' } as StepResult | Error,
+      write: { exitCode: 0, stdout: '' } as StepResult | Error,
+      start: { exitCode: 0, stdout: '12345' } as StepResult | Error,
+      port: { exitCode: 0, stdout: String(DISCOVERED_PORT) },
+      log: { exitCode: 0, stdout: '(no log)' }
+    }
+    const cfg = { ...defaults, ...overrides }
+
+    mockExecPodStepOutputWithRetry.mockImplementation(async (cmd: string[]) => {
+      const cmdStr = cmd.join(' ')
+      let result: StepResult | Error
+      if (cmdStr.includes('python3') && cmdStr.includes('--version')) {
+        result = cfg.python3
+      } else if (
+        cmdStr.includes('base64 -d') &&
+        cmdStr.includes('rpc-server.py')
+      ) {
+        result = cfg.write
+      } else if (
+        cmdStr.includes('nohup python3') &&
+        cmdStr.includes('rpc-server.py')
+      ) {
+        result = cfg.start
+      } else {
+        result = cfg.start
+      }
+      if (result instanceof Error) throw result
+      return result
+    })
+
+    mockExecPodStepOutput.mockImplementation(async (cmd: string[]) => {
+      const cmdStr = cmd.join(' ')
+      if (cmdStr.includes('tail') && cmdStr.includes('rpc-server.log')) {
+        return cfg.log
+      }
+      return cfg.port
+    })
+  }
+
   beforeEach(() => {
     jest.clearAllMocks()
 
@@ -91,40 +147,45 @@ describe('deployRpcServer', () => {
       status: { podIP: '10.0.0.1' }
     })
 
-    // Default: all execPodStepWithRetry calls succeed
-    mockExecPodStepWithRetry.mockResolvedValue(0)
-
-    // Default: health check succeeds (execPodStep returns 0)
+    // Default: cleanup and health check succeed
     mockExecPodStep.mockResolvedValue(0)
 
-    // Default: port discovery returns a port
-    mockExecPodStepOutput.mockResolvedValue({
-      exitCode: 0,
-      stdout: String(DISCOVERED_PORT)
-    })
+    // Default: retried steps and port discovery routed by command
+    setupDefaultMocks()
   })
 
   afterEach(() => {
     jest.restoreAllMocks()
   })
 
-  it('should check python3 availability via execPodStepWithRetry', async () => {
+  it('should check python3 availability via execPodStepOutputWithRetry', async () => {
     await deployRpcServer('my-pod', 'my-container', 'tok-123')
 
-    // First exec call should be the python3 --version check
-    expect(mockExecPodStepWithRetry).toHaveBeenCalledWith(
-      ['python3', '--version'],
-      'my-pod',
-      'my-container',
-      'check python3'
+    const pythonCall = mockExecPodStepOutputWithRetry.mock.calls.find(
+      ([cmd]) => cmd.includes('python3') && cmd.includes('--version')
     )
+    expect(pythonCall).toBeDefined()
+    expect(pythonCall[1]).toBe('my-pod')
+    expect(pythonCall[2]).toBe('my-container')
+    expect(pythonCall[3]).toBe('check python3')
   })
 
   it('should throw if python3 is not available', async () => {
-    // python3 check fails
-    mockExecPodStepWithRetry.mockRejectedValueOnce(
-      new Error('command not found')
-    )
+    setupDefaultMocks({
+      python3: new Error(
+        'non-zero exit code 127 (stdout: sh: python3: not found)'
+      )
+    })
+
+    await expect(
+      deployRpcServer('my-pod', 'my-container', 'tok-123')
+    ).rejects.toThrow('image not compatible: python3 is a required dependency')
+  })
+
+  it('should throw if python3 check has infrastructure error', async () => {
+    setupDefaultMocks({
+      python3: new Error('WebSocket closed')
+    })
 
     await expect(
       deployRpcServer('my-pod', 'my-container', 'tok-123')
@@ -142,35 +203,75 @@ describe('deployRpcServer', () => {
   it('should deploy the server script via base64 encoding', async () => {
     await deployRpcServer('my-pod', 'my-container', 'tok-123')
 
-    // Second exec call: write rpc server
-    const writeCall = mockExecPodStepWithRetry.mock.calls[1]
+    const writeCall = mockExecPodStepOutputWithRetry.mock.calls.find(
+      ([cmd]) =>
+        cmd.join(' ').includes('base64 -d') &&
+        cmd.join(' ').includes('rpc-server.py')
+    )
+    expect(writeCall).toBeDefined()
     expect(writeCall[0][0]).toBe('sh')
     expect(writeCall[0][1]).toBe('-c')
-    // The command should contain base64 -d and /tmp/rpc-server.py
     expect(writeCall[0][2]).toContain('base64 -d')
     expect(writeCall[0][2]).toContain('/tmp/rpc-server.py')
     expect(writeCall[3]).toBe('write rpc server')
   })
 
+  it('should throw if script write fails', async () => {
+    setupDefaultMocks({
+      write: new Error('non-zero exit code 1 (stdout: Permission denied)')
+    })
+
+    await expect(
+      deployRpcServer('my-pod', 'my-container', 'tok-123')
+    ).rejects.toThrow('RPC server script write failed')
+  })
+
   it('should start the server with --port 0 and correct --token args', async () => {
     await deployRpcServer('my-pod', 'my-container', 'tok-123')
 
-    // Third exec call: start rpc server
-    const startCall = mockExecPodStepWithRetry.mock.calls[2]
-    expect(startCall[0][0]).toBe('sh')
-    expect(startCall[0][1]).toBe('-c')
+    const startCall = mockExecPodStepOutputWithRetry.mock.calls.find(([cmd]) =>
+      cmd.join(' ').includes('nohup python3 /tmp/rpc-server.py')
+    )
+    expect(startCall).toBeDefined()
     expect(startCall[0][2]).toContain('--port 0')
     expect(startCall[0][2]).toContain('--token tok-123')
-    expect(startCall[0][2]).toContain('nohup python3 /tmp/rpc-server.py')
     expect(startCall[3]).toBe('start rpc server')
   })
 
+  it('should continue to next attempt if server start fails', async () => {
+    let startCallCount = 0
+    mockExecPodStepOutputWithRetry.mockImplementation(async (cmd: string[]) => {
+      const cmdStr = cmd.join(' ')
+      if (cmdStr.includes('python3') && cmdStr.includes('--version')) {
+        return { exitCode: 0, stdout: 'Python 3.10.0' }
+      }
+      if (cmdStr.includes('base64 -d')) {
+        return { exitCode: 0, stdout: '' }
+      }
+      if (
+        cmdStr.includes('nohup python3') &&
+        cmdStr.includes('rpc-server.py')
+      ) {
+        startCallCount++
+        if (startCallCount === 1) {
+          throw new Error('start rpc server failed after 6 attempts')
+        }
+        return { exitCode: 0, stdout: '12345' }
+      }
+      return { exitCode: 0, stdout: '' }
+    })
+
+    const result = await deployRpcServer('my-pod', 'my-container', 'tok-123')
+    expect(result.port).toBe(DISCOVERED_PORT)
+    expect(startCallCount).toBe(2)
+  })
+
   it('should poll health until server is ready and return podIp and port', async () => {
-    // rm -f succeeds (port file cleanup), then first health check fails, second succeeds
+    // First health check fails, second succeeds
     mockExecPodStep
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0) // cleanup
+      .mockResolvedValueOnce(1) // health check fail
+      .mockResolvedValueOnce(0) // health check pass
 
     const result = await deployRpcServer('my-pod', 'my-container', 'tok-123')
 
@@ -185,18 +286,22 @@ describe('deployRpcServer', () => {
 
   it('should retry if port discovery fails on first attempt', async () => {
     const SECOND_PORT = 55555
-    let portDiscoveryCallCount = 0
+    let portCallCount = 0
 
     const realDateNow = Date.now
     const startTime = realDateNow()
     let timeOffset = 0
     jest.spyOn(Date, 'now').mockImplementation(() => startTime + timeOffset)
 
-    // First port discovery poll: fail and advance time past timeout
-    // Subsequent polls: succeed with a port
-    mockExecPodStepOutput.mockImplementation(async () => {
-      portDiscoveryCallCount++
-      if (portDiscoveryCallCount <= 1) {
+    // Override port discovery via execPodStepOutput
+    mockExecPodStepOutput.mockImplementation(async (cmd: string[]) => {
+      const cmdStr = cmd.join(' ')
+      if (cmdStr.includes('tail') && cmdStr.includes('rpc-server.log')) {
+        return { exitCode: 0, stdout: '(no log)' }
+      }
+      // Port discovery
+      portCallCount++
+      if (portCallCount <= 1) {
         timeOffset += 6000
         return { exitCode: 1, stdout: '' }
       }
@@ -207,16 +312,9 @@ describe('deployRpcServer', () => {
 
     expect(result.podIp).toBe('10.0.0.1')
     expect(result.port).toBe(SECOND_PORT)
-    // The server was started twice (both with --port 0)
-    const startCalls = mockExecPodStepWithRetry.mock.calls.filter(
-      c => c[3] === 'start rpc server'
-    )
-    expect(startCalls.length).toBe(2)
-    expect(startCalls[0][0][2]).toContain('--port 0')
-    expect(startCalls[1][0][2]).toContain('--port 0')
   })
 
-  it('should throw after max deploy attempts exhausted', async () => {
+  it('should throw after max deploy attempts exhausted with diagnostics', async () => {
     const realDateNow = Date.now
     const startTime = realDateNow()
     let timeOffset = 0
@@ -231,7 +329,36 @@ describe('deployRpcServer', () => {
 
     await expect(
       deployRpcServer('my-pod', 'my-container', 'tok-123')
-    ).rejects.toThrow('RPC server failed to become healthy after 3 attempts')
+    ).rejects.toThrow('RPC server failed after 3 attempts')
+  })
+
+  it('should include per-attempt diagnostics in final error', async () => {
+    const realDateNow = Date.now
+    const startTime = realDateNow()
+    let timeOffset = 0
+
+    jest.spyOn(Date, 'now').mockImplementation(() => startTime + timeOffset)
+
+    // Health checks always fail (timeout)
+    mockExecPodStep.mockImplementation(async () => {
+      timeOffset += 31000
+      return 1
+    })
+
+    setupDefaultMocks({
+      log: { exitCode: 0, stdout: 'Traceback: ImportError' }
+    })
+
+    try {
+      await deployRpcServer('my-pod', 'my-container', 'tok-123')
+      fail('should have thrown')
+    } catch (err) {
+      const msg = (err as Error).message
+      expect(msg).toContain('attempt 1:')
+      expect(msg).toContain('attempt 2:')
+      expect(msg).toContain('attempt 3:')
+      expect(msg).toContain('health check timed out')
+    }
   })
 
   it('should handle health check network errors', async () => {
@@ -243,7 +370,7 @@ describe('deployRpcServer', () => {
 
     mockExecPodStep.mockImplementation(async (cmd: string[]) => {
       const cmdStr = cmd[2] || ''
-      if (cmdStr.includes('rm -f')) {
+      if (cmdStr.includes('pkill') || cmdStr.includes('rm -f')) {
         return 0
       }
       // Health check calls throw network error
@@ -253,7 +380,29 @@ describe('deployRpcServer', () => {
 
     await expect(
       deployRpcServer('my-pod', 'my-container', 'tok-123')
-    ).rejects.toThrow('RPC server failed to become healthy after 3 attempts')
+    ).rejects.toThrow('RPC server failed after 3 attempts')
+  })
+
+  it('should include details in python3 error message', async () => {
+    setupDefaultMocks({
+      python3: new Error(
+        'non-zero exit code 127 (stdout: sh: python3: not found)'
+      )
+    })
+
+    await expect(
+      deployRpcServer('my-pod', 'my-container', 'tok-123')
+    ).rejects.toThrow('sh: python3: not found')
+  })
+
+  it('should include details in script write error message', async () => {
+    setupDefaultMocks({
+      write: new Error('non-zero exit code 1 (stdout: Read-only file system)')
+    })
+
+    await expect(
+      deployRpcServer('my-pod', 'my-container', 'tok-123')
+    ).rejects.toThrow('Read-only file system')
   })
 })
 

@@ -163,16 +163,27 @@ export async function waitForNodeTaintsRemoval(): Promise<void> {
 async function applySameNodePreference(spec: k8s.V1PodSpec): Promise<void> {
   try {
     const runnerPodName = process.env.ACTIONS_RUNNER_POD_NAME
-    if (runnerPodName) {
-      const runnerPod = await k8sApi.readNamespacedPod({
-        name: runnerPodName,
-        namespace: namespace()
-      })
-      const runnerNodeName = runnerPod.spec?.nodeName
-      if (runnerNodeName) {
-        injectSameNodePreference(spec, runnerNodeName)
-      }
+    if (!runnerPodName) {
+      core.warning(
+        'ACTIONS_RUNNER_POD_NAME not set — same-node scheduling preference skipped'
+      )
+      return
     }
+    const runnerPod = await k8sApi.readNamespacedPod({
+      name: runnerPodName,
+      namespace: namespace()
+    })
+    const runnerNodeName = runnerPod.spec?.nodeName
+    if (!runnerNodeName) {
+      core.warning(
+        `Runner pod ${runnerPodName} has no nodeName — same-node scheduling preference skipped`
+      )
+      return
+    }
+    injectSameNodePreference(spec, runnerNodeName)
+    core.info(
+      `Injected same-node scheduling preference for node ${runnerNodeName}`
+    )
   } catch (err) {
     core.warning(
       `Could not look up runner pod node for same-node scheduling: ${err}`
@@ -433,6 +444,48 @@ export async function execPodStepWithRetry(
   )
 }
 
+export async function execPodStepOutputWithRetry(
+  command: string[],
+  podName: string,
+  containerName: string,
+  description: string,
+  options: {
+    retryOnNonZeroExit?: boolean
+    maxAttempts?: number
+    initialDelayMs?: number
+  } = {}
+): Promise<{ exitCode: number; stdout: string }> {
+  const {
+    retryOnNonZeroExit = false,
+    maxAttempts = 6,
+    initialDelayMs = 1000
+  } = options
+  let lastError: Error | undefined
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await execPodStepOutput(command, podName, containerName)
+      if (!retryOnNonZeroExit || result.exitCode === 0) {
+        return result
+      }
+      lastError = new Error(
+        `non-zero exit code ${result.exitCode} (stdout: ${result.stdout || 'none'})`
+      )
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+    }
+    if (attempt < maxAttempts) {
+      const delay = initialDelayMs * Math.pow(3, attempt - 1)
+      core.debug(
+        `execPodStepOutputWithRetry(${description}): attempt ${attempt}/${maxAttempts} failed (${lastError?.message}), retrying in ${delay}ms`
+      )
+      await sleep(delay)
+    }
+  }
+  throw new Error(
+    `execPodStepOutputWithRetry(${description}) failed after ${maxAttempts} attempts: ${lastError?.message}`
+  )
+}
+
 export async function execPodStep(
   command: string[],
   podName: string,
@@ -487,19 +540,21 @@ export async function execPodStep(
           ws.on('close', () => {
             if (!settled) {
               settled = true
-              core.warning(
-                'execPodStep: WebSocket closed without status response — container may have been killed'
+              reject(
+                new Error(
+                  'execPodStep: WebSocket closed without status response — container may have been killed'
+                )
               )
-              resolve(1)
             }
           })
           ws.on('error', (err: Error) => {
             if (!settled) {
               settled = true
-              core.warning(
-                `execPodStep: WebSocket error without status response: ${err.message}`
+              reject(
+                new Error(
+                  `execPodStep: WebSocket error without status response: ${err.message}`
+                )
               )
-              resolve(1)
             }
           })
         }
@@ -554,20 +609,21 @@ export async function execPodStepOutput(
           ws.on('close', () => {
             if (!settled) {
               settled = true
-              const stdout = (
-                stdoutBuffer.getContentsAsString('utf8') || ''
-              ).trim()
-              resolve({ exitCode: 1, stdout })
+              reject(
+                new Error(
+                  'execPodStepOutput: WebSocket closed without status response — container may have been killed'
+                )
+              )
             }
           })
           ws.on('error', (err: Error) => {
             if (!settled) {
               settled = true
-              core.warning(`execPodStepOutput: WebSocket error: ${err.message}`)
-              const stdout = (
-                stdoutBuffer.getContentsAsString('utf8') || ''
-              ).trim()
-              resolve({ exitCode: 1, stdout })
+              reject(
+                new Error(
+                  `execPodStepOutput: WebSocket error without status response: ${err.message}`
+                )
+              )
             }
           })
         }
@@ -697,36 +753,96 @@ export async function execCpToPod(
           `find ${shlex.quote(containerPath)} -type f -exec chmod u+rw {} \\; 2>/dev/null; ` +
           `find ${shlex.quote(containerPath)} -type d -exec chmod u+rwx {} \\; 2>/dev/null`
       ]
+      const EXEC_TIMEOUT_MS = 120_000
       const readStream = tar.pack(runnerPath)
       const errStream = new WritableStreamBuffer()
-      await new Promise((resolve, reject) => {
-        exec
-          .exec(
-            namespace(),
-            podName,
-            JOB_CONTAINER_NAME,
-            command,
-            null,
-            errStream,
-            readStream,
-            false,
-            async status => {
-              if (errStream.size()) {
-                reject(
-                  new Error(
-                    `Error from execCpToPod - status: ${status.status}, details: \n ${errStream.getContentsAsString()}`
-                  )
-                )
-              }
-              resolve(status)
-            }
-          )
-          .catch(e => reject(e))
-      })
+      let wsRef: WebSocket | null = null
+      let execTimer: ReturnType<typeof setTimeout>
+      try {
+        await Promise.race([
+          new Promise((resolve, reject) => {
+            let settled = false
+            exec
+              .exec(
+                namespace(),
+                podName,
+                JOB_CONTAINER_NAME,
+                command,
+                null,
+                errStream,
+                readStream,
+                false,
+                async status => {
+                  if (settled) return
+                  settled = true
+                  if (errStream.size()) {
+                    reject(
+                      new Error(
+                        `Error from execCpToPod - status: ${status.status}, details: \n ${errStream.getContentsAsString()}`
+                      )
+                    )
+                  }
+                  resolve(status)
+                }
+              )
+              .then(ws => {
+                wsRef = ws
+                if (ws) {
+                  ws.on('close', () => {
+                    if (!settled) {
+                      settled = true
+                      reject(
+                        new Error(
+                          'execCpToPod: WebSocket closed without status response'
+                        )
+                      )
+                    }
+                  })
+                  ws.on('error', (err: Error) => {
+                    if (!settled) {
+                      settled = true
+                      reject(
+                        new Error(
+                          `execCpToPod: WebSocket error: ${err.message}`
+                        )
+                      )
+                    }
+                  })
+                }
+              })
+              .catch(e => {
+                if (!settled) {
+                  settled = true
+                  reject(e)
+                }
+              })
+          }),
+          new Promise((_, reject) => {
+            execTimer = setTimeout(() => {
+              reject(new Error('execCpToPod: exec timed out after 120s'))
+            }, EXEC_TIMEOUT_MS)
+          })
+        ])
+      } finally {
+        clearTimeout(execTimer!)
+        if (wsRef) {
+          try {
+            ;(wsRef as WebSocket).close()
+          } catch {
+            // already closed
+          }
+        }
+        readStream.destroy()
+      }
       break
     } catch (error) {
-      core.debug(`cpToPod: Attempt ${attempt + 1} failed: ${error}`)
       attempt++
+      const msg = `cpToPod: Attempt ${attempt}/30 failed: ${error instanceof Error ? error.message : String(error)}`
+      if (attempt >= 3) {
+        core.warning(msg)
+      } else {
+        core.debug(msg)
+      }
       if (attempt >= 30) {
         throw new Error(
           `cpToPod failed after ${attempt} attempts: ${error instanceof Error ? error.message : String(error)}`
@@ -801,33 +917,91 @@ export async function execCpFromPod(
         containerPaths.join('/') || '/',
         dirname
       ]
+      const EXEC_TIMEOUT_MS = 120_000
       const writerStream = tar.extract(parentRunnerPath)
       const errStream = new WritableStreamBuffer()
-
-      await new Promise((resolve, reject) => {
-        exec
-          .exec(
-            namespace(),
-            podName,
-            JOB_CONTAINER_NAME,
-            command,
-            writerStream,
-            errStream,
-            null,
-            false,
-            async status => {
-              if (errStream.size()) {
-                reject(
-                  new Error(
-                    `Error from cpFromPod - details: \n ${errStream.getContentsAsString()}`
-                  )
-                )
-              }
-              resolve(status)
+      let wsRef: WebSocket | null = null
+      let execTimer: ReturnType<typeof setTimeout>
+      let execSucceeded = false
+      try {
+        await Promise.race([
+          new Promise((resolve, reject) => {
+            let settled = false
+            exec
+              .exec(
+                namespace(),
+                podName,
+                JOB_CONTAINER_NAME,
+                command,
+                writerStream,
+                errStream,
+                null,
+                false,
+                async status => {
+                  if (settled) return
+                  settled = true
+                  if (errStream.size()) {
+                    reject(
+                      new Error(
+                        `Error from cpFromPod - details: \n ${errStream.getContentsAsString()}`
+                      )
+                    )
+                  }
+                  resolve(status)
+                }
+              )
+              .then(ws => {
+                wsRef = ws
+                if (ws) {
+                  ws.on('close', () => {
+                    if (!settled) {
+                      settled = true
+                      reject(
+                        new Error(
+                          'execCpFromPod: WebSocket closed without status response'
+                        )
+                      )
+                    }
+                  })
+                  ws.on('error', (err: Error) => {
+                    if (!settled) {
+                      settled = true
+                      reject(
+                        new Error(
+                          `execCpFromPod: WebSocket error: ${err.message}`
+                        )
+                      )
+                    }
+                  })
+                }
+              })
+              .catch(e => {
+                if (!settled) {
+                  settled = true
+                  reject(e)
+                }
+              })
+          }),
+          new Promise((_, reject) => {
+            execTimer = setTimeout(() => {
+              reject(new Error('execCpFromPod: exec timed out after 120s'))
+            }, EXEC_TIMEOUT_MS)
+          })
+        ])
+        execSucceeded = true
+      } finally {
+        clearTimeout(execTimer!)
+        if (!execSucceeded) {
+          if (wsRef) {
+            try {
+              ;(wsRef as WebSocket).close()
+            } catch {
+              // already closed
             }
-          )
-          .catch(e => reject(e))
-      })
+          }
+          writerStream.destroy()
+        }
+      }
 
       // Wait for the tar extraction stream to finish writing all data
       // to disk. The K8s exec status callback fires when the remote
@@ -858,10 +1032,23 @@ export async function execCpFromPod(
         })
       }
 
+      if (wsRef) {
+        try {
+          ;(wsRef as WebSocket).close()
+        } catch {
+          // already closed
+        }
+      }
+
       break
     } catch (error) {
-      core.debug(`Attempt ${attempt + 1} failed: ${error}`)
       attempt++
+      const msg = `cpFromPod: Attempt ${attempt}/30 failed: ${error instanceof Error ? error.message : String(error)}`
+      if (attempt >= 3) {
+        core.warning(msg)
+      } else {
+        core.debug(msg)
+      }
       if (attempt >= 30) {
         throw new Error(
           `execCpFromPod failed after ${attempt} attempts: ${error instanceof Error ? error.message : String(error)}`
@@ -1021,7 +1208,9 @@ export async function waitForPodPhases(
   maxTimeSeconds = DEFAULT_WAIT_FOR_POD_TIME_SECONDS
 ): Promise<void> {
   const backOffManager = new BackOffManager(maxTimeSeconds)
+  const startTime = Date.now()
   let phase: PodPhase = PodPhase.UNKNOWN
+  let lastLogTime = 0
   try {
     while (true) {
       phase = await getPodPhase(podName)
@@ -1034,6 +1223,29 @@ export async function waitForPodPhases(
           `Pod ${podName} is unhealthy with phase status ${phase}`
         )
       }
+
+      const elapsed = Math.round((Date.now() - startTime) / 1000)
+      if (Date.now() - lastLogTime >= 10_000) {
+        lastLogTime = Date.now()
+        try {
+          const pod = await getPodByName(podName)
+          const conditions = pod.status?.conditions
+            ?.map(c => `${c.type}=${c.status}`)
+            .join(', ')
+          const containerWaiting = pod.status?.containerStatuses
+            ?.filter(cs => cs.state?.waiting)
+            ?.map(cs => `${cs.name}: ${cs.state!.waiting!.reason}`)
+            ?.join('; ')
+          core.info(
+            `Pod ${podName}: phase=${phase}, conditions=[${conditions || 'none'}], waiting=[${containerWaiting || 'none'}] (${elapsed}s/${maxTimeSeconds}s)`
+          )
+        } catch {
+          core.info(
+            `Pod ${podName}: phase=${phase} (${elapsed}s/${maxTimeSeconds}s)`
+          )
+        }
+      }
+
       await backOffManager.backOff()
     }
   } catch (error) {
@@ -1166,22 +1378,17 @@ export async function isPodContainerAlpine(
   podName: string,
   containerName: string
 ): Promise<boolean> {
-  try {
-    const exitCode = await execPodStepWithRetry(
-      [
-        'sh',
-        '-c',
-        `[ $(cat /etc/*release* | grep -i -e "^ID=*alpine*" -c) != 0 ] || exit 1`
-      ],
-      podName,
-      containerName,
-      'detect alpine'
-    )
-    return exitCode === 0
-  } catch {
-    // Infrastructure error (e.g. pod not found) — default to non-Alpine
-    return false
-  }
+  const exitCode = await execPodStepWithRetry(
+    [
+      'sh',
+      '-c',
+      `[ $(cat /etc/*release* | grep -i -e "^ID=*alpine*" -c) != 0 ] || exit 1`
+    ],
+    podName,
+    containerName,
+    'detect alpine'
+  )
+  return exitCode === 0
 }
 
 export function namespace(): string {

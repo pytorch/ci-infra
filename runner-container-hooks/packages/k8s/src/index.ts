@@ -52,7 +52,10 @@ async function run(): Promise<void> {
         throw new Error(`Command not recognized: ${command}`)
     }
   } catch (error) {
-    core.error(error as Error)
+    const msg =
+      error instanceof Error ? error.stack || error.message : String(error)
+    core.error(msg)
+    process.stderr.write(`\n[runner-container-hooks] FATAL: ${msg}\n`)
     process.exit(1)
   }
 }
