@@ -12,6 +12,7 @@ helm = "3.14"
 awscli = "2"
 packer = "1.10"
 crane = "latest"
+yq = "latest"
 
 # Linting tools
 shellcheck = "latest"
