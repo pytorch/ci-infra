@@ -55,14 +55,13 @@ KARPENTER_PDB_MIN=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_min_available 1)
 KARPENTER_VERSION="1.12.0"
 
 # Helm does not update CRDs on `helm upgrade` — only on initial install.
-# Extract and apply ONLY CRD resources from the target chart version.
+# CRDs are in a separate chart (karpenter-crd), not the main karpenter chart.
 echo "Updating Karpenter CRDs to v${KARPENTER_VERSION}..."
-helm template karpenter "oci://public.ecr.aws/karpenter/karpenter" \
-  --version "${KARPENTER_VERSION}" --include-crds --no-hooks 2>/dev/null \
-  | yq 'select(.kind == "CustomResourceDefinition")' \
-  | kubectl apply --server-side -f - --force-conflicts 2>&1 \
-  | grep -c "configured\|created" \
-  | xargs -I{} echo "  {} CRD resources applied"
+helm upgrade --install karpenter-crd \
+  "oci://public.ecr.aws/karpenter/karpenter-crd" \
+  --version "${KARPENTER_VERSION}" \
+  --namespace karpenter --create-namespace \
+  --timeout 5m --wait
 
 echo "Installing Karpenter..."
 helm_upgrade_if_changed karpenter karpenter \
