@@ -333,7 +333,7 @@ deploy-base cluster:
     trap 'deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed' ERR
 
     echo ""
-    echo "━━━ BASE: Terraform ━━━"
+    echo "━━━ modules/eks/terraform ━━━"
     cd {{UPSTREAM}}/modules/eks/terraform
     tofu init -reconfigure \
         -backend-config="bucket=${BUCKET}" \

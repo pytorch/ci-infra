@@ -5,7 +5,7 @@ output "s3_bucket_name" {
 
 output "s3_bucket_region" {
   description = "Region of the S3 bucket for Harbor registry storage"
-  value       = aws_s3_bucket.harbor_registry.region
+  value       = aws_s3_bucket.harbor_registry.bucket_region
 }
 
 output "role_arn" {

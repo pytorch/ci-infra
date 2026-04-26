@@ -56,6 +56,19 @@ KARPENTER_VERSION="1.12.0"
 
 # Helm does not update CRDs on `helm upgrade` — only on initial install.
 # CRDs are in a separate chart (karpenter-crd), not the main karpenter chart.
+# On first migration, existing CRDs owned by the `karpenter` release must be
+# relabeled so `karpenter-crd` can adopt them.
+KARPENTER_CRDS=$(kubectl get crds -o name 2>/dev/null \
+  | grep -E "karpenter\.(sh|k8s\.aws)" || true)
+if [ -n "$KARPENTER_CRDS" ]; then
+  for crd in $KARPENTER_CRDS; do
+    kubectl label "$crd" app.kubernetes.io/managed-by=Helm --overwrite
+    kubectl annotate "$crd" \
+      meta.helm.sh/release-name=karpenter-crd \
+      meta.helm.sh/release-namespace=karpenter --overwrite
+  done
+fi
+
 echo "Updating Karpenter CRDs to v${KARPENTER_VERSION}..."
 helm upgrade --install karpenter-crd \
   "oci://public.ecr.aws/karpenter/karpenter-crd" \
