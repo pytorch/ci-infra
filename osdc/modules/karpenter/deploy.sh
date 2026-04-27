@@ -52,6 +52,30 @@ KARPENTER_LOG_LEVEL=$(uv run "$CFG" "$CLUSTER" karpenter.log_level info)
 KARPENTER_PDB_ENABLED=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_enabled true)
 KARPENTER_PDB_MIN=$(uv run "$CFG" "$CLUSTER" karpenter.pdb_min_available 1)
 
+KARPENTER_VERSION="1.12.0"
+
+# Helm does not update CRDs on `helm upgrade` — only on initial install.
+# CRDs are in a separate chart (karpenter-crd), not the main karpenter chart.
+# On first migration, existing CRDs owned by the `karpenter` release must be
+# relabeled so `karpenter-crd` can adopt them.
+KARPENTER_CRDS=$(kubectl get crds -o name 2>/dev/null \
+  | grep -E "karpenter\.(sh|k8s\.aws)" || true)
+if [ -n "$KARPENTER_CRDS" ]; then
+  for crd in $KARPENTER_CRDS; do
+    kubectl label "$crd" app.kubernetes.io/managed-by=Helm --overwrite
+    kubectl annotate "$crd" \
+      meta.helm.sh/release-name=karpenter-crd \
+      meta.helm.sh/release-namespace=karpenter --overwrite
+  done
+fi
+
+echo "Updating Karpenter CRDs to v${KARPENTER_VERSION}..."
+helm upgrade --install karpenter-crd \
+  "oci://public.ecr.aws/karpenter/karpenter-crd" \
+  --version "${KARPENTER_VERSION}" \
+  --namespace karpenter --create-namespace \
+  --timeout 5m --wait
+
 echo "Installing Karpenter..."
 helm_upgrade_if_changed karpenter karpenter \
   --create-namespace \
@@ -68,5 +92,5 @@ helm_upgrade_if_changed karpenter karpenter \
   --timeout 10m \
   --wait \
   oci://public.ecr.aws/karpenter/karpenter \
-  --version 1.10.0
+  --version "${KARPENTER_VERSION}"
 echo "Karpenter installed."
