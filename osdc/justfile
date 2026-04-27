@@ -417,13 +417,16 @@ deploy-base cluster:
     deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START"
 
 # Deploy a single module to a cluster
-deploy-module cluster module:
+deploy-module cluster module force="":
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
     export OSDC_ROOT="{{ROOT}}"
     export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    if [[ -n "{{force}}" ]]; then
+        export HELM_FORCE_UPGRADE=1
+    fi
     CLUSTER="{{cluster}}"
     MODULE="{{module}}"
     REGION=$(uv run {{CFG}} "$CLUSTER" region)

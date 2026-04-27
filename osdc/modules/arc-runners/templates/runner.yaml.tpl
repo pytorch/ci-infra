@@ -111,6 +111,8 @@ listenerTemplate:
             value: "{{NODE_FLEET}}"
           - name: CAPACITY_AWARE_RUNNER_CLASS
             value: "{{RUNNER_CLASS}}"
+          - name: CAPACITY_AWARE_HUD_API_URL
+            value: "https://hud.pytorch.org/api/clickhouse/queued_jobs_aggregate?parameters=%7B%22queuedThresholdMinutes%22%3A0%2C%22maxAgeDays%22%3A3%2C%22orgs%22%3A%5B%22pytorch%22%5D%2C%22repo%22%3A%22%22%7D"
           - name: CAPACITY_AWARE_HUD_API_TOKEN
             valueFrom:
               secretKeyRef:
