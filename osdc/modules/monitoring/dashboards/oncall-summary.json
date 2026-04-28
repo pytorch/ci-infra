@@ -3524,16 +3524,30 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Unhealthy",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Healthy",
+                  "index": 1
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "red",
+                "color": "green",
                 "value": 1
               }
             ]
@@ -3543,8 +3557,8 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 3,
-        "w": 4,
+        "h": 4,
+        "w": 8,
         "x": 0,
         "y": 72
       },
@@ -3563,7 +3577,7 @@
         },
         "textMode": "auto"
       },
-      "title": "Last Run Status",
+      "title": "Recovery Healthy?",
       "type": "stat",
       "targets": [
         {
@@ -3571,144 +3585,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max(kube_job_status_failed{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"})",
+          "expr": "((time() - max(kube_job_status_completion_time{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"})) < bool 600) or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
       ],
-      "description": "Failed harbor-cache-recovery Jobs currently retained by Kubernetes. Non-zero = recovery is broken; corrupted Harbor cache entries will not be auto-purged."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 2
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 4,
-        "x": 4,
-        "y": 72
-      },
-      "id": 49,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "title": "Failed Runs (retained)",
-      "type": "stat",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "count(max by (job_name)(kube_job_status_failed{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"}) > 0) or vector(0)",
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "description": "Number of failed Job objects retained (CronJob failedJobsHistoryLimit=3). Repeated failures means the recovery is unable to run successfully."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 4,
-        "x": 8,
-        "y": 72
-      },
-      "id": 50,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "title": "OOMKilled Pods",
-      "type": "stat",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "count(max by (pod)(kube_pod_container_status_terminated_reason{namespace=\"harbor-system\", pod=~\"harbor-cache-recovery-.*\", reason=\"OOMKilled\", cluster=\"$cluster\"})) or vector(0)",
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "description": "Pods last terminated by OOMKill. The script lists every pod cluster-wide; bump memory limits in modules/harbor-cache-recovery/kubernetes/cronjob.yaml."
+      "description": "1 if a successful run completed within the last 10 minutes (2 schedule periods + buffer), 0 otherwise. Driven by the same signal as 'Time Since Last Success' \u2014 a single source of truth."
     },
     {
       "datasource": {
@@ -3743,9 +3625,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 3,
-        "w": 4,
-        "x": 12,
+        "h": 4,
+        "w": 8,
+        "x": 8,
         "y": 72
       },
       "id": 51,
@@ -3777,163 +3659,6 @@
         }
       ],
       "description": "Seconds since the most recent successful run. Should stay under 5 minutes (the schedule). >30m indicates the CronJob is stalled or all recent runs failed."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Failed"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Succeeded"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "OOMKilled"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "orange",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 75
-      },
-      "id": 52,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "title": "Recovery Run Trend",
-      "type": "timeseries",
-      "description": "harbor-cache-recovery run outcomes and OOM signature over time.",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max by (job_name)(kube_job_status_failed{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"}))",
-          "legendFormat": "Failed",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max by (job_name)(kube_job_status_succeeded{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"}))",
-          "legendFormat": "Succeeded",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max by (pod)(kube_pod_container_status_terminated_reason{namespace=\"harbor-system\", pod=~\"harbor-cache-recovery-.*\", reason=\"OOMKilled\", cluster=\"$cluster\"}))",
-          "legendFormat": "OOMKilled",
-          "refId": "C"
-        }
-      ]
     }
   ],
   "refresh": "30s",
