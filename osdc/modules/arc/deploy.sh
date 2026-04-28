@@ -88,8 +88,12 @@ ARC_CPU_REQ=$(uv run "$CFG" "$CLUSTER" arc.controller_cpu_request 1)
 ARC_CPU_LIM=$(uv run "$CFG" "$CLUSTER" arc.controller_cpu_limit 4)
 ARC_MEM_REQ=$(uv run "$CFG" "$CLUSTER" arc.controller_memory_request 2Gi)
 ARC_MEM_LIM=$(uv run "$CFG" "$CLUSTER" arc.controller_memory_limit 4Gi)
-ARC_IMAGE_REPO="localhost:30002/osdc/gha-runner-scale-set-controller"
-ARC_IMAGE_TAG="0.14.1-capacity.3"
+# Image repo/tag default to the fork's published image (set in the chart's
+# values.yaml at ghcr.io/jeanschmidt/gha-runner-scale-set-controller, tag =
+# chart appVersion). Override only for local dev builds pushed to Harbor; see
+# docs/arc-fork-build-deploy.md.
+ARC_IMAGE_REPO=$(uv run "$CFG" "$CLUSTER" arc.image_repository "ghcr.io/jeanschmidt/gha-runner-scale-set-controller")
+ARC_IMAGE_TAG=$(uv run "$CFG" "$CLUSTER" arc.image_tag "${ARC_CHART_VERSION}")
 
 echo "Installing ARC controller v${ARC_CHART_VERSION} (replicas=${ARC_REPLICAS}, logLevel=${ARC_LOG_LEVEL}, cpu=${ARC_CPU_REQ}/${ARC_CPU_LIM}, mem=${ARC_MEM_REQ}/${ARC_MEM_LIM})..."
 helm_upgrade_if_changed arc arc-systems \
@@ -104,12 +108,10 @@ helm_upgrade_if_changed arc arc-systems \
   --set resources.limits.memory="${ARC_MEM_LIM}" \
   --set image.repository="${ARC_IMAGE_REPO}" \
   --set image.tag="${ARC_IMAGE_TAG}" \
-  /Users/jschmidt/meta/actions-runner-controller/charts/gha-runner-scale-set-controller \
+  oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller \
+  --version "${ARC_CHART_VERSION}" \
   --timeout 10m \
   --wait
-# TODO: restore before committing:
-#  oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller \
-#  --version "${ARC_CHART_VERSION}" \
 
 echo "ARC controller installed."
 

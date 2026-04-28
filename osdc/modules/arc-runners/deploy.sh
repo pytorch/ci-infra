@@ -100,7 +100,7 @@ deploy_one_runner() {
       --set template.spec.securityContext.runAsUser=1000 \
       --set template.spec.securityContext.runAsGroup=1000 \
       --set template.spec.securityContext.fsGroup=1000 \
-      oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+      oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set \
       --version "${ARC_CHART_VERSION}" \
       --wait
 

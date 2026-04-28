@@ -17,8 +17,8 @@
 Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image and publishes the chart to GHCR.
 
 - **OCI registry**: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.0`)
-- **Image tags**: `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (set during workflow dispatch)
+- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.1`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
+- **Image tags**: `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (set during workflow dispatch — pass `release_tag_name=0.14.1-jeanschmidt.1` to match the chart)
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
 
@@ -127,17 +127,18 @@ This runs `modules/arc/deploy.sh`, which:
 1. **Ensures Harbor project** `osdc` exists (port-forwards to Harbor, creates via API, 409 = already exists)
 2. **Applies PriorityClasses** from `modules/arc/kubernetes/priority-classes.yaml` (placeholder-runner, arc-runner, placeholder-workflow, arc-workflow)
 3. **Applies RBAC** from `modules/arc/kubernetes/capacity-monitor-rbac.yaml`
-4. **Helm upgrade** with image override:
-   - `--set image.repository=localhost:30002/osdc/gha-runner-scale-set-controller`
-   - `--set image.tag=proactive-capacity`
+4. **Helm upgrade** of the fork chart:
    - Chart: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.0`)
+   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.1`)
+   - Image: defaults to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<chart_version>`. Override with `arc.image_repository` / `arc.image_tag` in `clusters.yaml` for local Harbor builds.
 
 Other deploy.sh config knobs (all from `clusters.yaml`):
 
 | Key | Default | What |
 |-----|---------|------|
-| `arc.chart_version` | `0.14.0` | Helm chart version |
+| `arc.chart_version` | `0.14.1-jeanschmidt.1` | Helm chart version (fork) |
+| `arc.image_repository` | `ghcr.io/jeanschmidt/gha-runner-scale-set-controller` | Controller image repo (override for local Harbor builds) |
+| `arc.image_tag` | _(chart_version)_ | Controller image tag (override for local Harbor builds) |
 | `arc.replica_count` | `2` | Controller replicas |
 | `arc.log_level` | `info` | Log level |
 | `arc.controller_cpu_request` | `1` | CPU request |
