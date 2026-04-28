@@ -110,15 +110,19 @@ kube-state-metrics:
         #   pod: info (node mapping), error indicators, restart count, status reasons
         - action: keep
           sourceLabels: [__name__]
-          regex: "kube_daemonset_status_(desired_number_scheduled|number_ready|number_available|number_unavailable)|kube_deployment_status_(replicas_ready|replicas_available|replicas_unavailable|condition)|kube_deployment_spec_replicas|kube_(namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.*|kube_pod_info|kube_pod_container_status_last_terminated_reason|kube_pod_container_status_last_terminated_exitcode|kube_pod_container_status_restarts_total|kube_pod_status_reason"
+          regex: "kube_daemonset_status_(desired_number_scheduled|number_ready|number_available|number_unavailable)|kube_deployment_status_(replicas_ready|replicas_available|replicas_unavailable|condition)|kube_deployment_spec_replicas|kube_(namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.*|kube_pod_info|kube_pod_container_status_last_terminated_reason|kube_pod_container_status_terminated_reason|kube_pod_container_status_last_terminated_exitcode|kube_pod_container_status_restarts_total|kube_pod_status_reason"
         # Drop low-value node metrics
         - action: drop
           sourceLabels: [__name__]
           regex: "kube_node_status_addresses"
-        # Drop successful terminations (only keep actual errors)
+        # Drop successful terminations (only keep actual errors).
+        # Both `_last_terminated_reason` (after restart) and `_terminated_reason`
+        # (current state) are emitted by KSM — `last_` only fires for restarting
+        # containers, so non-restarting pods (e.g. Job/CronJob with restartPolicy=Never)
+        # need the non-`last` variant. Drop benign Completed reasons from both.
         - action: drop
           sourceLabels: [__name__, reason]
-          regex: "kube_pod_container_status_last_terminated_reason;Completed"
+          regex: "kube_pod_container_status_(last_)?terminated_reason;Completed"
         - action: drop
           sourceLabels: [__name__, container_exit_code]
           regex: "kube_pod_container_status_last_terminated_exitcode;0"
