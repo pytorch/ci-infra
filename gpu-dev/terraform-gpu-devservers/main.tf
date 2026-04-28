@@ -207,7 +207,7 @@ locals {
           architecture        = "x86_64"
           efa_network_cards   = 1
         }
-        "g7e" = {
+        "rtxpro6000" = {
           instance_type       = "g7e.24xlarge"
           instance_types      = null
           instance_count      = 2
@@ -302,8 +302,8 @@ locals {
       a100      = "primary"
       t4        = "primary"
       l4        = "secondary"
-      a10g      = "secondary"
-      g7e       = "secondary"
+      a10g       = "secondary"
+      rtxpro6000 = "secondary"
       "cpu-arm" = "primary"
       "cpu-x86" = "primary"
     }

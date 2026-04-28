@@ -498,9 +498,9 @@ def main(ctx: click.Context) -> None:
     "--gpu-type",
     "-t",
     type=click.Choice(
-        ["b200", "h200", "h100", "a100", "g7e", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
+        ["b200", "h200", "h100", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
     ),
-    help="GPU type to reserve (b200/h200/h100/a100/g7e/a10g/t4/l4/t4-small/cpu-arm/cpu-x86)",
+    help="GPU type to reserve (b200/h200/h100/a100/rtxpro6000/a10g/t4/l4/t4-small/cpu-arm/cpu-x86)",
 )
 @click.option(
     "--hours",
@@ -652,7 +652,7 @@ def reserve(
             "t4": {"max_gpus": 4, "instance_type": "g4dn.12xlarge"},
             "l4": {"max_gpus": 4, "instance_type": "g6.12xlarge"},
             "a10g": {"max_gpus": 4, "instance_type": "g5.12xlarge"},
-            "g7e": {"max_gpus": 4, "instance_type": "g7e.24xlarge"},
+            "rtxpro6000": {"max_gpus": 4, "instance_type": "g7e.24xlarge"},
             "t4-small": {"max_gpus": 1, "instance_type": "g4dn.xlarge"},
             "a100": {"max_gpus": 8, "instance_type": "p4d.24xlarge"},
             "h100": {"max_gpus": 8, "instance_type": "p5.48xlarge"},
@@ -2398,7 +2398,7 @@ def _show_availability() -> None:
                 "a100": "Ampere (sm80)",
                 "a10g": "Ampere (sm80)",
                 "l4": "Ada Lovelace (sm89)",
-                "g7e": "Blackwell (sm120)",
+                "rtxpro6000": "Blackwell (sm120)",
                 "t4": "Turing (sm75)",
                 "cpu-x86": "CPU (x86_64)",
                 "cpu-arm": "CPU (arm64)",
@@ -2547,7 +2547,7 @@ def _show_availability_watch(interval: int) -> None:
                             "a100": "Ampere (sm80)",
                             "a10g": "Ampere (sm80)",
                             "l4": "Ada Lovelace (sm89)",
-                            "g7e": "Blackwell (sm120)",
+                            "rtxpro6000": "Blackwell (sm120)",
                             "t4": "Turing (sm75)",
                             "cpu-x86": "CPU (x86_64)",
                             "cpu-arm": "CPU (arm64)",

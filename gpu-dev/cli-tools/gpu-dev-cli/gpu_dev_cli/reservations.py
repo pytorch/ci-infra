@@ -535,7 +535,7 @@ class ReservationManager:
                 "t4": {"max_gpus": 4},
                 "l4": {"max_gpus": 4},
                 "a10g": {"max_gpus": 4},
-                "g7e": {"max_gpus": 4},
+                "rtxpro6000": {"max_gpus": 4},
                 "t4-small": {"max_gpus": 1},
                 "g5g": {"max_gpus": 2},
                 "a100": {"max_gpus": 8},
