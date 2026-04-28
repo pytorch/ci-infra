@@ -66,6 +66,7 @@ GPU_CONFIG = {
     "t4": {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 0},
     "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 1},
     "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 1},
+    "g7e": {"instance_type": "g7e.24xlarge", "max_gpus": 4, "cpus": 96, "memory_gb": 1024, "efa_count": 2},
     "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1, "cpus": 8, "memory_gb": 32, "efa_count": 0},
     "g5g": {"instance_type": "g5g.2xlarge", "max_gpus": 2, "cpus": 8, "memory_gb": 32, "efa_count": 0},
     "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152, "efa_count": 4},
@@ -2150,7 +2151,7 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     gpu_type = request.get("gpu_type", "")
 
     # Validate GPU type
-    valid_gpu_types = ["t4", "l4", "a10g", "t4-small", "a100",
+    valid_gpu_types = ["t4", "l4", "a10g", "g7e", "t4-small", "a100",
                        "h100", "h200", "b200", "cpu-arm", "cpu-x86"]
     if gpu_type not in valid_gpu_types:
         error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
@@ -2381,6 +2382,7 @@ def update_gpu_availability_table(
             "t4": {"gpus_per_instance": 4},
             "l4": {"gpus_per_instance": 4},
             "a10g": {"gpus_per_instance": 4},
+            "g7e": {"gpus_per_instance": 4},
             "a100": {"gpus_per_instance": 8},
             "h100": {"gpus_per_instance": 8},
             "h200": {"gpus_per_instance": 8},

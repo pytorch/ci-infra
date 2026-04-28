@@ -207,6 +207,15 @@ locals {
           architecture        = "x86_64"
           efa_network_cards   = 1
         }
+        "g7e" = {
+          instance_type       = "g7e.24xlarge"
+          instance_types      = null
+          instance_count      = 2
+          gpus_per_instance   = 4 # 4x RTX PRO 6000 Blackwell GPUs
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 2
+        }
         "cpu-arm" = {
           instance_type       = "c7g.8xlarge"
           instance_types      = null
@@ -294,6 +303,7 @@ locals {
       t4        = "primary"
       l4        = "secondary"
       a10g      = "secondary"
+      g7e       = "secondary"
       "cpu-arm" = "primary"
       "cpu-x86" = "primary"
     }
