@@ -583,10 +583,7 @@ class TestGenerateRunner:
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
 
         docs = list(yaml.safe_load_all((output_dir / "cap-runner.yaml").read_text()))
-        listener_env = {
-            e["name"]: e["value"]
-            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
-        }
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
 
     def test_proactive_capacity_nonzero(self, tmp_path):
@@ -603,10 +600,7 @@ class TestGenerateRunner:
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
 
         docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
-        listener_env = {
-            e["name"]: e["value"]
-            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
-        }
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
 
     def test_proactive_capacity_forced_zero(self, tmp_path):
@@ -624,10 +618,7 @@ class TestGenerateRunner:
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
 
         docs = list(yaml.safe_load_all((output_dir / "forced-runner.yaml").read_text()))
-        listener_env = {
-            e["name"]: e["value"]
-            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
-        }
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
 
     def test_proactive_capacity_not_forced_when_false(self, tmp_path):
@@ -645,10 +636,7 @@ class TestGenerateRunner:
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
 
         docs = list(yaml.safe_load_all((output_dir / "kept-runner.yaml").read_text()))
-        listener_env = {
-            e["name"]: e["value"]
-            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
-        }
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "10"
 
     def test_resource_values_match_def(self, tmp_path):
@@ -1012,10 +1000,7 @@ class TestMain:
             assert main() == 0
 
         docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
-        listener_env = {
-            e["name"]: e["value"]
-            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
-        }
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
 
     def test_production_preserves_proactive_capacity(self, tmp_path, monkeypatch):
@@ -1062,10 +1047,7 @@ class TestMain:
             assert main() == 0
 
         docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
-        listener_env = {
-            e["name"]: e["value"]
-            for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]
-        }
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
 
     def test_missing_template_exits_1(self, tmp_path, monkeypatch):

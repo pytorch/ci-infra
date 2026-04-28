@@ -1,5 +1,6 @@
 """Unit tests for load_test_run.py — load test orchestrator CLI."""
 
+import signal
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from load_test_run import (
     LOAD_TEST_PR_TITLE_PREFIX,
     _prepare_load_test_pr,
     _print_distribution,
+    _sigterm_handler,
     branch_name,
     main,
     parse_args,
@@ -401,10 +403,14 @@ class TestMain:
         mock_run_cmd,
     ):
         mock_load_cfg.return_value = {
-            "cluster": {"cluster_name": "test", "arc-runners": {"runner_name_prefix": "mt-"}},
+            "cluster": {
+                "cluster_name": "test",
+                "region": "us-east-2",
+                "arc-runners": {"runner_name_prefix": "mt-"},
+            },
             "defaults": {},
         }
-        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
         mock_compute.return_value = [self._alloc()]
         mock_gen_wf.return_value = "workflow: yaml"
         mock_ensure.return_value = Path("/tmp/canary")
@@ -440,7 +446,7 @@ class TestMain:
             "cluster": {"cluster_name": "t"},
             "defaults": {},
         }
-        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
         mock_compute.return_value = [self._alloc()]
         mock_gen_wf.return_value = "workflow: yaml"
 
@@ -465,7 +471,7 @@ class TestMain:
             "cluster": {"cluster_name": "t"},
             "defaults": {},
         }
-        mock_get_runners.return_value = set()
+        mock_get_runners.return_value = (set(), 0)
         mock_compute.return_value = []
 
         with patch("sys.argv", self._base_argv(jobs=5)):
@@ -500,7 +506,7 @@ class TestMain:
             "cluster": {"cluster_name": "t"},
             "defaults": {},
         }
-        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
         mock_compute.return_value = [self._alloc()]
         mock_gen_wf.return_value = "wf"
         mock_ensure.return_value = Path("/tmp/canary")
@@ -535,10 +541,10 @@ class TestMain:
         mock_run_cmd,
     ):
         mock_load_cfg.return_value = {
-            "cluster": {"cluster_name": "t"},
+            "cluster": {"cluster_name": "t", "arc-runners": {"runner_name_prefix": "mt-"}},
             "defaults": {},
         }
-        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
         mock_compute.return_value = [self._alloc()]
         mock_gen_wf.return_value = "wf"
         mock_ensure.return_value = Path("/tmp/canary")
@@ -581,7 +587,7 @@ class TestMain:
             "cluster": {"cluster_name": "t"},
             "defaults": {},
         }
-        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
         mock_compute.return_value = [self._alloc()]
         mock_gen_wf.return_value = "wf"
         mock_ensure.return_value = Path("/tmp/canary")
@@ -618,10 +624,14 @@ class TestMain:
         mock_run_cmd,
     ):
         mock_load_cfg.return_value = {
-            "cluster": {"cluster_name": "t", "arc-runners": {"runner_name_prefix": "mt-"}},
+            "cluster": {
+                "cluster_name": "t",
+                "region": "us-east-2",
+                "arc-runners": {"runner_name_prefix": "mt-"},
+            },
             "defaults": {},
         }
-        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
         mock_gen_wf.return_value = "wf"
         mock_ensure.return_value = Path("/tmp/canary")
         mock_prepare_pr.return_value = 42
@@ -647,7 +657,7 @@ class TestMain:
             "cluster": {"cluster_name": "t", "arc-runners": {"runner_name_prefix": "mt-"}},
             "defaults": {},
         }
-        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
 
         argv = self._base_argv(jobs=5) + ["--single-label", "nonexistent-runner"]
         with patch("sys.argv", argv):
@@ -683,7 +693,7 @@ class TestMain:
             "cluster": {"cluster_name": "t"},
             "defaults": {},
         }
-        mock_get_runners.return_value = {"l-x86iavx512-8-16"}
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
         mock_compute.return_value = [self._alloc()]
         mock_gen_wf.return_value = "wf"
         mock_ensure.return_value = Path("/tmp/canary")
@@ -699,3 +709,55 @@ class TestMain:
         close_call = mock_run_cmd.call_args
         assert "close" in close_call[0][0]
         assert "55" in close_call[0][0]
+
+    def test_sigterm_handler(self):
+        """SIGTERM raises SystemExit to trigger finally blocks."""
+        with pytest.raises(SystemExit) as exc:
+            _sigterm_handler(signal.SIGTERM, None)
+        assert exc.value.code == 128 + signal.SIGTERM
+
+    @patch("load_test_run.run_cmd")
+    @patch("load_test_run.print_load_test_report")
+    @patch("load_test_run.wait_for_load_test")
+    @patch("load_test_run._prepare_load_test_pr")
+    @patch("load_test_run.ensure_canary_repo")
+    @patch("load_test_run.cleanup_stale_prs")
+    @patch("load_test_run.generate_workflow")
+    @patch("load_test_run.compute_distribution")
+    @patch("load_test_run.get_available_runners")
+    @patch("load_test_run.load_cluster_config")
+    def test_keyboard_interrupt_closes_pr(
+        self,
+        mock_load_cfg,
+        mock_get_runners,
+        mock_compute,
+        mock_gen_wf,
+        mock_cleanup,
+        mock_ensure,
+        mock_prepare_pr,
+        mock_wait,
+        mock_report,
+        mock_run_cmd,
+    ):
+        mock_load_cfg.return_value = {
+            "cluster": {"cluster_name": "t"},
+            "defaults": {},
+        }
+        mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
+        mock_compute.return_value = [self._alloc()]
+        mock_gen_wf.return_value = "wf"
+        mock_ensure.return_value = Path("/tmp/canary")
+        mock_prepare_pr.return_value = 77
+        # First call raises KeyboardInterrupt, second call (partial collection) also raises
+        mock_wait.side_effect = KeyboardInterrupt
+
+        with patch("sys.argv", self._base_argv(jobs=5)):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 1
+
+        # PR should still be closed via finally block
+        mock_run_cmd.assert_called_once()
+        close_call = mock_run_cmd.call_args
+        assert "close" in close_call[0][0]
+        assert "77" in close_call[0][0]

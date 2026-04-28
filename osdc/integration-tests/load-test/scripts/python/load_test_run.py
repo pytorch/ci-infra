@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,6 +136,11 @@ def _print_distribution(allocations: list, cluster_id: str) -> None:
     print()
 
 
+def _sigterm_handler(signum, frame):
+    """Convert SIGTERM to SystemExit so finally blocks execute."""
+    raise SystemExit(128 + signum)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -144,9 +150,12 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     cfg = load_cluster_config(args.clusters_yaml, args.cluster_id)
     cluster_name = resolve(cfg, "cluster_name")
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
+    region = resolve(cfg, "region", "")
     branch = branch_name(args.cluster_id)
 
     log.info("Load test for cluster: %s (%s)", args.cluster_id, cluster_name)
@@ -156,11 +165,12 @@ def main() -> None:
     log.info("  Target jobs: %d", args.jobs)
 
     # Phase 1: Compute distribution
-    available = get_available_runners(
+    available, excluded_count = get_available_runners(
         args.upstream_dir,
         args.root_dir,
+        region=region,
     )
-    log.info("  Available runner types: %d", len(available))
+    log.info("  Available runner types: %d (excluded %d for region %s)", len(available), excluded_count, region)
 
     if args.single_label:
         if args.single_label not in available:
@@ -231,6 +241,22 @@ def main() -> None:
             cluster_name,
             results,
         )
+    except KeyboardInterrupt:
+        log.warning("Interrupted! Collecting partial results...")
+        try:
+            results = wait_for_load_test(
+                branch,
+                pr_created_at,
+                allocations,
+                timeout_minutes=1,  # short timeout for partial collection
+            )
+            overall_pass = print_load_test_report(
+                args.cluster_id,
+                cluster_name,
+                results,
+            )
+        except KeyboardInterrupt:
+            log.warning("Double interrupt — skipping result collection.")
     finally:
         if not args.keep_pr:
             log.info("Closing PR #%d...", pr_number)

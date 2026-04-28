@@ -88,6 +88,8 @@ ARC_CPU_REQ=$(uv run "$CFG" "$CLUSTER" arc.controller_cpu_request 1)
 ARC_CPU_LIM=$(uv run "$CFG" "$CLUSTER" arc.controller_cpu_limit 4)
 ARC_MEM_REQ=$(uv run "$CFG" "$CLUSTER" arc.controller_memory_request 2Gi)
 ARC_MEM_LIM=$(uv run "$CFG" "$CLUSTER" arc.controller_memory_limit 4Gi)
+ARC_IMAGE_REPO="localhost:30002/osdc/gha-runner-scale-set-controller"
+ARC_IMAGE_TAG="0.14.1-capacity.3"
 
 echo "Installing ARC controller v${ARC_CHART_VERSION} (replicas=${ARC_REPLICAS}, logLevel=${ARC_LOG_LEVEL}, cpu=${ARC_CPU_REQ}/${ARC_CPU_LIM}, mem=${ARC_MEM_REQ}/${ARC_MEM_LIM})..."
 helm_upgrade_if_changed arc arc-systems \
@@ -100,8 +102,8 @@ helm_upgrade_if_changed arc arc-systems \
   --set resources.limits.cpu="${ARC_CPU_LIM}" \
   --set resources.requests.memory="${ARC_MEM_REQ}" \
   --set resources.limits.memory="${ARC_MEM_LIM}" \
-  --set image.repository="localhost:30002/osdc/gha-runner-scale-set-controller" \
-  --set image.tag="0.14.1-capacity.1" \
+  --set image.repository="${ARC_IMAGE_REPO}" \
+  --set image.tag="${ARC_IMAGE_TAG}" \
   /Users/jschmidt/meta/actions-runner-controller/charts/gha-runner-scale-set-controller \
   --timeout 10m \
   --wait
@@ -110,3 +112,69 @@ helm_upgrade_if_changed arc arc-systems \
 #  --version "${ARC_CHART_VERSION}" \
 
 echo "ARC controller installed."
+
+# --- Check for stale AutoscalingListener images ---
+DEPLOYED_IMAGE="${ARC_IMAGE_REPO}:${ARC_IMAGE_TAG}"
+LISTENER_IMAGES=$(kubectl get autoscalinglisteners -n arc-systems \
+  -o jsonpath='{range .items[*]}{.spec.image}{"\n"}{end}' 2>/dev/null || true)
+
+STALE_COUNT=0
+STALE_IMAGE=""
+while IFS= read -r img; do
+  if [[ -n "$img" && "$img" != "$DEPLOYED_IMAGE" ]]; then
+    STALE_COUNT=$((STALE_COUNT + 1))
+    STALE_IMAGE="$img"
+  fi
+done <<<"$LISTENER_IMAGES"
+
+if [[ "$STALE_COUNT" -gt 0 ]]; then
+  RESTART="${ARC_RESTART_LISTENERS:-ask}"
+
+  case "$RESTART" in
+    yes | YES | true | TRUE)
+      echo "  Deleting $STALE_COUNT stale listener(s) (image: $STALE_IMAGE)..."
+      kubectl delete autoscalinglisteners -n arc-systems --all
+      echo "  Listeners deleted — controller will recreate with $DEPLOYED_IMAGE"
+      ;;
+    no | NO | false | FALSE)
+      echo ""
+      echo "###################################################################"
+      echo "#"
+      echo "#  WARNING: STALE LISTENER IMAGE DETECTED"
+      echo "#"
+      echo "#  ${STALE_COUNT} listener(s) are still running a different image"
+      echo "#  than the controller that was just deployed."
+      echo "#"
+      echo "#  Controller image:  $DEPLOYED_IMAGE"
+      echo "#  Listener image:    $STALE_IMAGE"
+      echo "#"
+      echo "#  The ARC controller does not automatically propagate image"
+      echo "#  changes to existing AutoscalingListener CRs. Listeners will"
+      echo "#  continue running the old binary until manually restarted."
+      echo "#"
+      echo "#  To restart listeners with the new image, run:"
+      echo "#"
+      echo "#    kubectl delete autoscalinglisteners -n arc-systems --all"
+      echo "#"
+      echo "#  The controller will immediately recreate them with the"
+      echo "#  correct image."
+      echo "#"
+      echo "###################################################################"
+      echo ""
+      ;;
+    *)
+      echo ""
+      echo "  Controller image changed: $DEPLOYED_IMAGE"
+      echo "  ${STALE_COUNT} listener(s) still running: $STALE_IMAGE"
+      echo ""
+      read -r -p "  Delete stale listeners so controller recreates them? [y/N] " REPLY
+      if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+        kubectl delete autoscalinglisteners -n arc-systems --all
+        echo "  Listeners deleted — controller will recreate with $DEPLOYED_IMAGE"
+      else
+        echo "  Skipped. To restart manually:"
+        echo "    kubectl delete autoscalinglisteners -n arc-systems --all"
+      fi
+      ;;
+  esac
+fi
