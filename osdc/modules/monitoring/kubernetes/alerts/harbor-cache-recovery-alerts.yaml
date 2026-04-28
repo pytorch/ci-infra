@@ -40,9 +40,14 @@ spec:
           # Faster-firing companion alert — surfaces the most common root cause
           # (script OOMKilled while listing pods cluster-wide) directly, so the
           # responder doesn't have to dig through pod descriptions.
+          #
+          # We use `kube_pod_container_status_terminated_reason` (no `_last_`)
+          # because the recovery pods have restartPolicy=Never. KSM only emits
+          # `_last_terminated_reason` after a container restart; non-restarting
+          # pods only populate the current `_terminated_reason` series.
           expr: |
             max(
-              kube_pod_container_status_last_terminated_reason{
+              kube_pod_container_status_terminated_reason{
                 namespace="harbor-system",
                 pod=~"harbor-cache-recovery-.*",
                 reason="OOMKilled"

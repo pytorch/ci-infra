@@ -3639,7 +3639,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "count(kube_job_status_failed{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"} > 0)",
+          "expr": "count(max by (job_name)(kube_job_status_failed{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"}) > 0) or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -3703,7 +3703,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "count(kube_pod_container_status_last_terminated_reason{namespace=\"harbor-system\", pod=~\"harbor-cache-recovery-.*\", reason=\"OOMKilled\", cluster=\"$cluster\"})",
+          "expr": "count(max by (pod)(kube_pod_container_status_terminated_reason{namespace=\"harbor-system\", pod=~\"harbor-cache-recovery-.*\", reason=\"OOMKilled\", cluster=\"$cluster\"})) or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -3911,7 +3911,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(kube_job_status_failed{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"})",
+          "expr": "sum(max by (job_name)(kube_job_status_failed{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"}))",
           "legendFormat": "Failed",
           "refId": "A"
         },
@@ -3920,7 +3920,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(kube_job_status_succeeded{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"})",
+          "expr": "sum(max by (job_name)(kube_job_status_succeeded{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"}))",
           "legendFormat": "Succeeded",
           "refId": "B"
         },
@@ -3929,7 +3929,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(kube_pod_container_status_last_terminated_reason{namespace=\"harbor-system\", pod=~\"harbor-cache-recovery-.*\", reason=\"OOMKilled\", cluster=\"$cluster\"})",
+          "expr": "sum(max by (pod)(kube_pod_container_status_terminated_reason{namespace=\"harbor-system\", pod=~\"harbor-cache-recovery-.*\", reason=\"OOMKilled\", cluster=\"$cluster\"}))",
           "legendFormat": "OOMKilled",
           "refId": "C"
         }
