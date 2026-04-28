@@ -3659,6 +3659,92 @@
         }
       ],
       "description": "Seconds since the most recent successful run. Should stay under 5 minutes (the schedule). >30m indicates the CronJob is stalled or all recent runs failed."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Historical view of the same binary 'is recovery healthy?' signal as the stat above. Green segments = a successful run completed within the previous 10 min. Red segments = no recent success (recovery is broken or the CronJob is not firing).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Unhealthy",
+                  "index": 0,
+                  "color": "red"
+                },
+                "1": {
+                  "text": "Healthy",
+                  "index": 1,
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 76
+      },
+      "id": 49,
+      "options": {
+        "alignValue": "center",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "title": "Recovery Healthy? (history)",
+      "type": "state-timeline",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "((time() - max(kube_job_status_completion_time{namespace=\"harbor-system\", job_name=~\"harbor-cache-recovery-.*\", cluster=\"$cluster\"})) < bool 600) or vector(0)",
+          "legendFormat": "Recovery",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
