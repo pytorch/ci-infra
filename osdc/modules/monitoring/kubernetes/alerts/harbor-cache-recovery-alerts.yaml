@@ -1,0 +1,82 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: harbor-cache-recovery-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  groups:
+    - name: harbor-cache-recovery
+      rules:
+        # The recovery CronJob runs every 5 minutes and purges corrupted entries
+        # from Harbor's pull-through proxy caches. When it stops working, poisoned
+        # cache entries persist and cause fleet-wide ImagePullBackOff failures
+        # (see osdc/modules/harbor-cache-recovery for context).
+        #
+        # Each scheduled run produces a fresh Job object — we cannot watch a
+        # long-lived pod, so all alerts target the Job objects (kept by KSM via
+        # the kube_job_.* allowlist in monitoring/helm/values.yaml).
+        - alert: HarborCacheRecoveryFailing
+          expr: |
+            max(
+              kube_job_status_failed{namespace="harbor-system", job_name=~"harbor-cache-recovery-.*"}
+            ) > 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "harbor-cache-recovery cronjob is failing"
+            description: >-
+              The harbor-cache-recovery CronJob has had failing runs for at least
+              15 minutes (≥3 consecutive runs at the */5 schedule). Poisoned
+              Harbor proxy-cache entries will not be auto-purged, which surfaces
+              as fleet-wide ImagePullBackOff against ghcr.io / docker.io / etc.
+              Inspect with:
+              kubectl -n harbor-system get jobs.batch,pods -l app.kubernetes.io/name=harbor-cache-recovery;
+              kubectl -n harbor-system describe pod <last failed pod>.
+
+        - alert: HarborCacheRecoveryOOM
+          # Faster-firing companion alert — surfaces the most common root cause
+          # (script OOMKilled while listing pods cluster-wide) directly, so the
+          # responder doesn't have to dig through pod descriptions.
+          expr: |
+            max(
+              kube_pod_container_status_last_terminated_reason{
+                namespace="harbor-system",
+                pod=~"harbor-cache-recovery-.*",
+                reason="OOMKilled"
+              }
+            ) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "harbor-cache-recovery pod was OOMKilled"
+            description: >-
+              The harbor-cache-recovery pod hit its memory limit. Bump the limits
+              in osdc/modules/harbor-cache-recovery/kubernetes/cronjob.yaml. Until
+              that ships, manually purge corrupted Harbor entries via the API
+              (see harbor_cache_recovery.py:purge_cached_repo).
+
+        - alert: HarborCacheRecoveryStale
+          # Catches the case where the CronJob isn't running at all — suspended,
+          # controller stuck, no successful Job objects produced. 1800s = 30 min,
+          # i.e. 6× the */5 schedule, so this fires only after sustained absence.
+          expr: |
+            (time()
+              - max(kube_job_status_completion_time{
+                  namespace="harbor-system",
+                  job_name=~"harbor-cache-recovery-.*"
+                })
+            ) > 1800
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "harbor-cache-recovery has not completed successfully in >30m"
+            description: >-
+              No successful run of harbor-cache-recovery has been observed in
+              the last 30 minutes. Auto-purge of corrupted Harbor cache entries
+              is silently disabled. Check the CronJob status and recent Job
+              objects in the harbor-system namespace.
