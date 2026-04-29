@@ -831,10 +831,12 @@ class TestCleanupOldLogs:
 
     def test_old_files_deleted(self, tmp_path):
         """Files older than max_age_days are deleted."""
-        today = datetime.date.today()
+        # Use a date 10 days ago so the test is stable regardless of when
+        # it runs — a hardcoded date becomes stale once today drifts past
+        # max_age_days from it.
+        recent_date = datetime.date.today() - datetime.timedelta(days=10)
         old = tmp_path / "fallback.2020-01-01.log"
         old.write_text("old data")
-        recent_date = today - datetime.timedelta(days=5)
         recent = tmp_path / f"fallback.{recent_date.isoformat()}.log"
         recent.write_text("recent data")
 

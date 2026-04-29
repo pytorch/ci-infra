@@ -32,6 +32,12 @@ jobs:
           filters: |
             osdc:
               - 'osdc/**'
+              # Skip staging deploy when the only osdc/ changes are tests.
+              # Unit tests already run on the PR via osdc-test.yml; spinning
+              # up arc-staging adds nothing for a test-only fix.
+              - '!osdc/**/test_*.py'
+              - '!osdc/**/*_test.py'
+              - '!osdc/**/tests/**'
               - '.github/workflows/osdc-deploy-prod.yml'
               - '.github/workflows/osdc-pre-merge.yml'
               - '.github/workflows/_osdc-deploy.yml'
