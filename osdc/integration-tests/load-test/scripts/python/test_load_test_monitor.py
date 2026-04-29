@@ -31,7 +31,7 @@ class TestParseRunnerType:
         assert parse_runner_type("load-l-x86iavx512-8-16") == "l-x86iavx512-8-16"
 
     def test_gpu_label(self):
-        assert parse_runner_type("load-l-x86iavx512-29-115-t4 (1)") == "l-x86iavx512-29-115-t4"
+        assert parse_runner_type("load-l-x86iavx512-29-114-t4 (1)") == "l-x86iavx512-29-114-t4"
 
     def test_gpu_multi(self):
         assert parse_runner_type("load-l-x86iavx512-45-172-t4-4 (3)") == "l-x86iavx512-45-172-t4-4"
