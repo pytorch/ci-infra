@@ -131,8 +131,8 @@ class TestPerRunnerTotal:
         cpu, mem, gpu = per_runner_total(runner)
         # 8*1000 + 750 (sidecar) + 320 (hooks) = 9070
         assert cpu == 9070
-        # 16384 + 512 (sidecar) + 522 (hooks) = 17418
-        assert mem == 17418
+        # 16384 + 1024 (sidecar) + 522 (hooks) = 17930
+        assert mem == 17930
         assert gpu == 0
 
     def test_with_gpu(self):
