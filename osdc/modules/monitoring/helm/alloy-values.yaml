@@ -21,6 +21,8 @@ controller:
       effect: NoSchedule
 
 alloy:
+  clustering:
+    enabled: true
   resources:
     requests:
       cpu: 250m
