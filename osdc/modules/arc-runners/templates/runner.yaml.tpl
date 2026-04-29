@@ -184,10 +184,13 @@ template:
             value: "git-cache-not-ready"
           - name: ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS
             value: "720"
-          # Memory management: the runner pod shares 512Mi between the .NET
+          # Memory management: the runner pod has 768Mi shared between the .NET
           # runner agent and Node.js container hooks. Without explicit caps,
-          # .NET claims 75% (384Mi) and Node.js claims 50% (256Mi) of the
-          # cgroup — combined 640Mi > 512Mi, guaranteed OOM.
+          # .NET claims 75% (576Mi) and Node.js claims 50% (384Mi) of the
+          # cgroup — combined 960Mi > 768Mi, still guaranteed OOM.
+          # Bumped from 512Mi to give native Node.js stdio buffers (held open
+          # by slow CRI exec during pod-density bursts) headroom; observed
+          # OOMs trace back to native buffers, not V8 heap or .NET managed heap.
           # GCHeapHardLimit is hex: 0xC800000 = 200 MiB managed heap
           - name: DOTNET_GCHeapHardLimit
             value: "C800000"
@@ -210,10 +213,10 @@ template:
           # workspace tar copy/extract and permission fixups
           limits:
             cpu: "750m"
-            memory: "512Mi"
+            memory: "768Mi"
           requests:
             cpu: "750m"
-            memory: "512Mi"
+            memory: "768Mi"
         volumeMounts:
           - name: hook-extensions
             mountPath: /home/runner/hook-extensions
