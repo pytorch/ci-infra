@@ -16,22 +16,6 @@ resource "aws_s3_bucket" "harbor_registry" {
   tags = var.tags
 }
 
-# Lifecycle rule: expire cached layers after 30 days
-resource "aws_s3_bucket_lifecycle_configuration" "harbor_registry" {
-  bucket = aws_s3_bucket.harbor_registry.id
-
-  rule {
-    id     = "expire-cached-layers"
-    status = "Enabled"
-
-    filter {}
-
-    expiration {
-      days = 30
-    }
-  }
-}
-
 # Block public access
 resource "aws_s3_bucket_public_access_block" "harbor_registry" {
   bucket = aws_s3_bucket.harbor_registry.id
