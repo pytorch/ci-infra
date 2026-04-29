@@ -1,6 +1,6 @@
 # GitHub ARC Controller - Base Values (New v0.8.0+ API)
 # These values are shared across all environments
-# Install with: helm install arc oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
+# Install with: helm install arc oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller
 
 # Controller settings
 replicaCount: 2

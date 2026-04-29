@@ -7,6 +7,7 @@ from distribution import (
     PRODUCTION_JOB_COUNTS,
     RunnerAllocation,
     _aggregate_production_counts,
+    _load_fleet_exclusions,
     classify_runner,
     compute_distribution,
     get_available_runners,
@@ -123,20 +124,18 @@ class TestAggregateProductionCounts:
 
 
 class TestGetAvailableRunners:
-    def _make_def(self, defs_dir, name, vcpu=4, memory="8Gi", gpu=0):
+    def _make_def(self, defs_dir, name, vcpu=4, memory="8Gi", gpu=0, instance_type="test.xlarge"):
         defs_dir.mkdir(parents=True, exist_ok=True)
-        (defs_dir / f"{name}.yaml").write_text(
-            yaml.dump(
-                {"runner": {"name": name, "instance_type": "test", "vcpu": vcpu, "memory": memory, "gpu": gpu}},
-            ),
-        )
+        runner = {"name": name, "instance_type": instance_type, "vcpu": vcpu, "memory": memory, "gpu": gpu}
+        (defs_dir / f"{name}.yaml").write_text(yaml.dump({"runner": runner}))
 
     def test_scans_upstream(self, tmp_path):
         upstream = tmp_path / "upstream"
         self._make_def(upstream / "modules" / "arc-runners" / "defs", "l-x86iavx512-8-16")
 
-        result = get_available_runners(upstream, tmp_path / "root")
-        assert "l-x86iavx512-8-16" in result
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        assert "l-x86iavx512-8-16" in labels
+        assert excluded == 0
 
     def test_scans_consumer(self, tmp_path):
         upstream = tmp_path / "upstream"
@@ -144,9 +143,136 @@ class TestGetAvailableRunners:
         self._make_def(upstream / "modules" / "arc-runners" / "defs", "l-x86iavx512-8-16")
         self._make_def(root / "modules" / "arc-runners" / "defs", "l-custom-runner")
 
-        result = get_available_runners(upstream, root)
-        assert "l-x86iavx512-8-16" in result
-        assert "l-custom-runner" in result
+        labels, excluded = get_available_runners(upstream, root)
+        assert "l-x86iavx512-8-16" in labels
+        assert "l-custom-runner" in labels
+        assert excluded == 0
+
+    def _make_fleet_def(self, defs_dir, name, exclude_regions=None):
+        defs_dir.mkdir(parents=True, exist_ok=True)
+        fleet = {
+            "fleet": {
+                "name": name,
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [{"type": f"{name}.48xlarge", "weight": 100, "node_disk_size": 3750}],
+            },
+        }
+        if exclude_regions:
+            fleet["fleet"]["exclude_regions"] = exclude_regions
+        (defs_dir / f"{name}.yaml").write_text(yaml.dump(fleet))
+
+    def test_excludes_runners_by_region(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "c7a", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-c7a-runner", instance_type="c7a.48xlarge")
+        self._make_def(runner_defs, "l-m7i-runner", instance_type="m7i.48xlarge")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root", region="us-west-1")
+        assert "l-c7a-runner" not in labels
+        assert "l-m7i-runner" in labels
+        assert excluded == 1
+
+    def test_no_exclusion_without_region(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "c7a", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-c7a-runner", instance_type="c7a.48xlarge")
+        self._make_def(runner_defs, "l-m7i-runner", instance_type="m7i.48xlarge")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        assert "l-c7a-runner" in labels
+        assert "l-m7i-runner" in labels
+        assert excluded == 0
+
+    def test_region_not_in_exclusion_list(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "c7a", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-c7a-runner", instance_type="c7a.48xlarge")
+        self._make_def(runner_defs, "l-m7i-runner", instance_type="m7i.48xlarge")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root", region="us-east-2")
+        assert "l-c7a-runner" in labels
+        assert "l-m7i-runner" in labels
+        assert excluded == 0
+
+    def test_multiple_fleets_excluded(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "c7a", exclude_regions=["us-west-1"])
+        self._make_fleet_def(fleet_defs, "g5", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-c7a-runner", instance_type="c7a.48xlarge")
+        self._make_def(runner_defs, "l-g5-runner", instance_type="g5.8xlarge")
+        self._make_def(runner_defs, "l-m7i-runner", instance_type="m7i.48xlarge")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root", region="us-west-1")
+        assert "l-c7a-runner" not in labels
+        assert "l-g5-runner" not in labels
+        assert "l-m7i-runner" in labels
+        assert excluded == 2
+
+    def test_runner_without_instance_type_not_excluded(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "c7a", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        runner_defs.mkdir(parents=True, exist_ok=True)
+        (runner_defs / "l-no-instance.yaml").write_text(
+            yaml.dump({"runner": {"name": "l-no-instance", "vcpu": 4, "memory": "8Gi"}}),
+        )
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root", region="us-west-1")
+        assert "l-no-instance" in labels
+
+
+# ── _load_fleet_exclusions ──────────────────────────────────────────────
+
+
+class TestLoadFleetExclusions:
+    def test_loads_exclusions(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        defs_dir = upstream / "modules" / "nodepools" / "defs"
+        defs_dir.mkdir(parents=True, exist_ok=True)
+
+        (defs_dir / "c7a.yaml").write_text(
+            yaml.dump({
+                "fleet": {
+                    "name": "c7a",
+                    "arch": "amd64",
+                    "gpu": False,
+                    "exclude_regions": ["us-west-1", "eu-west-1"],
+                    "instances": [{"type": "c7a.48xlarge", "weight": 100, "node_disk_size": 3750}],
+                },
+            }),
+        )
+        (defs_dir / "m7i.yaml").write_text(
+            yaml.dump({
+                "fleet": {
+                    "name": "m7i",
+                    "arch": "amd64",
+                    "gpu": False,
+                    "instances": [{"type": "m7i.48xlarge", "weight": 100, "node_disk_size": 3750}],
+                },
+            }),
+        )
+
+        result = _load_fleet_exclusions(upstream, tmp_path / "root")
+        assert result == {"c7a": ["us-west-1", "eu-west-1"]}
+
+    def test_empty_dir(self, tmp_path):
+        result = _load_fleet_exclusions(tmp_path / "nonexistent", tmp_path / "also-nonexistent")
+        assert result == {}
 
 
 # ── compute_distribution ─────────────────────────────────────────────────

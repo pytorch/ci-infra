@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      restart_listeners:
+        description: "Delete and recreate ARC listeners (required when controller image changes)"
+        required: false
+        type: boolean
+        default: false
       skip_lint_test:
         description: "Skip `just lint` and `just test` pre-flight checks (firefighting only)"
         required: false
@@ -33,6 +38,7 @@ jobs:
       cluster: arc-cbr-production
       environment: osdc-production
       taint_nodes: ${{ inputs.taint_nodes }}
+      restart_listeners: ${{ inputs.restart_listeners }}
       skip_lint_test: ${{ inputs.skip_lint_test }}
       run_smoke: true
       run_compactor: false

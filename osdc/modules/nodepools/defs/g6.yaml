@@ -5,6 +5,8 @@ fleet:
   name: g6
   arch: amd64
   gpu: true
+  exclude_regions:
+    - us-west-1
   instances:
     - type: g6.48xlarge
       weight: 100

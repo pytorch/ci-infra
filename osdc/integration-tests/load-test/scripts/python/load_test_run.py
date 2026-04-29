@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,10 +18,15 @@ from pathlib import Path
 # Add the shared integration test module directory to sys.path so we can
 # import run.py and phases.py with bare imports (same pattern pytest uses).
 _INTEG_SCRIPTS = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "python"
-if str(_INTEG_SCRIPTS) not in sys.path:
+if str(_INTEG_SCRIPTS) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_INTEG_SCRIPTS))
 
-from distribution import compute_distribution, get_available_runners
+from distribution import (
+    RunnerAllocation,
+    classify_runner,
+    compute_distribution,
+    get_available_runners,
+)
 from load_test_monitor import print_load_test_report, wait_for_load_test
 from phases import cleanup_stale_prs, ensure_canary_repo
 from run import (
@@ -36,6 +42,26 @@ log = logging.getLogger("osdc-load-test")
 
 DEFAULT_TOTAL_JOBS = 400
 LOAD_TEST_PR_TITLE_PREFIX = "[NO REVIEW][NO MERGE] ARC load test"
+
+
+def _parse_label_spec(spec: str) -> tuple[str, int]:
+    """Parse a '--label LABEL:COUNT' spec into (label, count)."""
+    label, sep, count_str = spec.rpartition(":")
+    if not sep or not label:
+        raise argparse.ArgumentTypeError(
+            f"invalid --label '{spec}': expected format 'LABEL:COUNT'",
+        )
+    try:
+        count = int(count_str)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid --label '{spec}': count must be an integer",
+        ) from None
+    if count <= 0:
+        raise argparse.ArgumentTypeError(
+            f"invalid --label '{spec}': count must be positive",
+        )
+    return (label, count)
 
 
 def branch_name(cluster_id: str) -> str:
@@ -69,10 +95,25 @@ def parse_args() -> argparse.Namespace:
         help="OSDC root directory (consumer or upstream)",
     )
     parser.add_argument(
+        "--label",
+        type=_parse_label_spec,
+        action="append",
+        default=[],
+        metavar="LABEL:COUNT",
+        help=(
+            "Run COUNT jobs on the specified runner label. Repeat for multiple labels "
+            "(e.g., --label l-x86iamx-8-16:400 --label l-x86aavx2-29-113-a10g:200). "
+            "Mutually exclusive with --jobs."
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
-        default=DEFAULT_TOTAL_JOBS,
-        help=f"Total number of jobs to distribute (default: {DEFAULT_TOTAL_JOBS})",
+        default=None,
+        help=(
+            f"Total number of jobs for proportional distribution across all runner types "
+            f"(default: {DEFAULT_TOTAL_JOBS}). Ignored when --label is used."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -92,6 +133,18 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
 
+    if args.label and args.jobs is not None:
+        parser.error("--label and --jobs are mutually exclusive")
+
+    if args.label:
+        seen: set[str] = set()
+        for label, _ in args.label:
+            if label in seen:
+                parser.error(f"--label '{label}' specified more than once")
+            seen.add(label)
+
+    if args.jobs is None:
+        args.jobs = DEFAULT_TOTAL_JOBS
     if args.jobs <= 0:
         parser.error("--jobs must be a positive integer")
     if args.timeout <= 0:
@@ -121,6 +174,11 @@ def _print_distribution(allocations: list, cluster_id: str) -> None:
     print()
 
 
+def _sigterm_handler(signum, frame):
+    """Convert SIGTERM to SystemExit so finally blocks execute."""
+    raise SystemExit(128 + signum)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -130,26 +188,59 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     cfg = load_cluster_config(args.clusters_yaml, args.cluster_id)
     cluster_name = resolve(cfg, "cluster_name")
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
+    region = resolve(cfg, "region", "")
     branch = branch_name(args.cluster_id)
 
     log.info("Load test for cluster: %s (%s)", args.cluster_id, cluster_name)
     log.info("  Runner prefix: '%s'", prefix)
-    log.info("  Target jobs: %d", args.jobs)
+    if args.label:
+        total_label_jobs = sum(c for _, c in args.label)
+        log.info("  Label mode: %d label(s), %d total jobs", len(args.label), total_label_jobs)
+    else:
+        log.info("  Target jobs: %d", args.jobs)
 
     # Phase 1: Compute distribution
-    available = get_available_runners(
+    available, excluded_count = get_available_runners(
         args.upstream_dir,
         args.root_dir,
+        region=region,
     )
-    log.info("  Available runner types: %d", len(available))
+    log.info("  Available runner types: %d (excluded %d for region %s)", len(available), excluded_count, region)
 
-    allocations = compute_distribution(args.jobs, available)
-    if not allocations:
-        log.error("No runner types available. Cannot run load test.")
-        sys.exit(1)
+    if args.label:
+        missing = [lbl for lbl, _ in args.label if lbl not in available]
+        if missing:
+            log.error(
+                "Runner label(s) not found: %s. Available labels:\n  %s",
+                ", ".join(missing),
+                "\n  ".join(sorted(available)),
+            )
+            sys.exit(1)
+        total = sum(c for _, c in args.label)
+        allocations = []
+        for label, count in args.label:
+            is_gpu, is_arm64, gpu_count = classify_runner(label)
+            allocations.append(
+                RunnerAllocation(
+                    osdc_label=label,
+                    job_count=count,
+                    source_job_count=0,
+                    proportion=count / total,
+                    is_gpu=is_gpu,
+                    is_arm64=is_arm64,
+                    gpu_count=gpu_count,
+                ),
+            )
+    else:
+        allocations = compute_distribution(args.jobs, available)
+        if not allocations:
+            log.error("No runner types available. Cannot run load test.")
+            sys.exit(1)
 
     _print_distribution(allocations, args.cluster_id)
 
@@ -194,6 +285,22 @@ def main() -> None:
             cluster_name,
             results,
         )
+    except KeyboardInterrupt:
+        log.warning("Interrupted! Collecting partial results...")
+        try:
+            results = wait_for_load_test(
+                branch,
+                pr_created_at,
+                allocations,
+                timeout_minutes=1,  # short timeout for partial collection
+            )
+            overall_pass = print_load_test_report(
+                args.cluster_id,
+                cluster_name,
+                results,
+            )
+        except KeyboardInterrupt:
+            log.warning("Double interrupt — skipping result collection.")
     finally:
         if not args.keep_pr:
             log.info("Closing PR #%d...", pr_number)

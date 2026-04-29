@@ -1,0 +1,45 @@
+# PriorityClasses for proactive capacity.
+#
+# Two pairs: runner-level and workflow-level.
+# Each pair has a placeholder (low priority, non-preempting) and an actual
+# workload class (higher priority, preempts its corresponding placeholder).
+#
+# Priority ordering (low → high):
+#   -10  placeholder-runner    — reserves runner resources, preempted by runner pods
+#     0  arc-runner            — runner pods preempt runner placeholders
+#    10  placeholder-workflow  — reserves workflow resources, survives runner creation
+#    20  arc-workflow          — workflow pods preempt workflow placeholders
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: placeholder-runner
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: "Runner placeholder — reserves runner resources, preempted by runner pods"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: arc-runner
+value: 0
+globalDefault: false
+description: "Runner pods — preempt runner placeholders, NOT workflow placeholders"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: placeholder-workflow
+value: 10
+preemptionPolicy: Never
+globalDefault: false
+description: "Workflow placeholder — reserves workflow resources, survives runner creation, preempted by workflow pods"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: arc-workflow
+value: 20
+globalDefault: false
+description: "Workflow pods — preempt workflow placeholders"

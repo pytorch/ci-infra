@@ -1,0 +1,42 @@
+# RBAC for the capacity monitor running in listener pods.
+# Grants pod management permissions in the arc-runners namespace to listener
+# service accounts (in arc-systems) so they can create/delete placeholder pods.
+#
+# Scope: namespaced (arc-runners) rather than cluster-wide. Listener SAs live
+# in arc-systems but the placeholder pods they manage are created in arc-runners,
+# so a Role in arc-runners with a RoleBinding to the arc-systems SA group is the
+# correct cross-namespace pattern.
+#
+# We bind to the system:serviceaccounts:arc-systems group rather than a specific
+# SA because there are multiple listener SAs (one per scale set), dynamically
+# created by the ARC controller.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: arc-capacity-monitor
+  namespace: arc-runners
+  labels:
+    app.kubernetes.io/part-of: actions-runner-controller
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: arc-capacity-monitor
+  namespace: arc-runners
+  labels:
+    app.kubernetes.io/part-of: actions-runner-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: arc-capacity-monitor
+subjects:
+  - kind: Group
+    name: system:serviceaccounts:arc-systems
+    apiGroup: rbac.authorization.k8s.io
