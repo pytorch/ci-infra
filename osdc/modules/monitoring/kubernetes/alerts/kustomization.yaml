@@ -7,3 +7,4 @@ resources:
   - gpu-alerts.yaml
   - node-compactor-alerts.yaml
   - zombie-cleanup-alerts.yaml
+  - harbor-cache-recovery-alerts.yaml
