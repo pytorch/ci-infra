@@ -2,6 +2,7 @@
 
 import sys
 import textwrap
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -21,29 +22,45 @@ from generate_runners import (
 # Fixtures
 # ============================================================================
 
+# MINIMAL_TEMPLATE mirrors the real runner.yaml.tpl's structural shape: the
+# runner pod is pinned to the dedicated c7i-runner pool (literal, not templated)
+# and carries no GPU/runner-class wiring; all GPU and runner-class substitutions
+# land on the workflow pod (ConfigMap) only. Tests below verify the substitution
+# mechanism (placeholders -> values) on the workflow side. Structural invariants
+# of the real template are covered separately by TestRealTemplate.
 MINIMAL_TEMPLATE = textwrap.dedent("""\
     githubConfigUrl: "{{GITHUB_CONFIG_URL}}"
     githubConfigSecret: "{{GITHUB_SECRET_NAME}}"
     runnerScaleSetName: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
     minRunners: 0
-    {{MAX_RUNNERS}}
+    {{MAX_RUNNERS_LINE}}
     runnerGroup: "{{RUNNER_GROUP}}"
+    listenerTemplate:
+      spec:
+        containers:
+          - name: listener
+            env:
+              - name: CAPACITY_AWARE_PROACTIVE_CAPACITY
+                value: "{{PROACTIVE_CAPACITY}}"
     template:
       spec:
         containers:
           - name: runner
             image: {{RUNNER_IMAGE}}
         nodeSelector:
-          node-fleet: "{{NODE_FLEET}}"
-    {{RUNNER_CLASS_NODE_SELECTOR}}{{RUNNER_CLASS_AFFINITY}}
+          workload-type: github-runner
+          node-fleet: "c7i-runner"
         tolerations:
           - key: node-fleet
             operator: Equal
-            value: "{{NODE_FLEET}}"
+            value: "c7i-runner"
             effect: NoSchedule
           - key: instance-type
             operator: Exists
-            effect: NoSchedule{{GPU_TOLERATIONS}}
+            effect: NoSchedule
+          - key: git-cache-not-ready
+            operator: Exists
+            effect: NoSchedule
     ---
     apiVersion: v1
     kind: ConfigMap
@@ -123,6 +140,20 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                 sizeLimit: 2Gi
 """)
 
+# Path to the real runner.yaml.tpl shipped with the module. Tests in
+# TestRealTemplate render against this file (not MINIMAL_TEMPLATE) so they
+# defend invariants that exist only in the real template — runner pod pinned
+# to c7i-runner, priorityClassName values, GPU references confined to the
+# workflow side, etc.
+REAL_TEMPLATE_PATH = Path(__file__).parent.parent.parent / "templates" / "runner.yaml.tpl"
+
+
+@pytest.fixture(scope="module")
+def real_template():
+    """Read the real runner.yaml.tpl shipped with the module."""
+    return REAL_TEMPLATE_PATH.read_text()
+
+
 FAKE_CLUSTERS_YAML = {
     "defaults": {
         "arc": {
@@ -165,6 +196,7 @@ def make_def_file(
     runner_group=None,
     runner_class=None,
     max_runners=None,
+    proactive_capacity=None,
 ):
     """Write a runner def YAML and return the path."""
     runner = {
@@ -181,6 +213,8 @@ def make_def_file(
         runner["runner_class"] = runner_class
     if max_runners is not None:
         runner["max_runners"] = max_runners
+    if proactive_capacity is not None:
+        runner["proactive_capacity"] = proactive_capacity
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -370,12 +404,12 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all(output_file.read_text()))
         assert len(docs) == 2
 
-        # Helm values doc — runner pod still uses hard nodeSelector
+        # Helm values doc — top-level substitutions and the literal c7i-runner pin
         helm = docs[0]
         assert helm["githubConfigUrl"] == "https://github.com/test-org"
         assert helm["githubConfigSecret"] == "gh-secret"
         assert helm["runnerScaleSetName"] == "staging-cpu-runner"
-        assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "m6i"
+        assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "c7i-runner"
 
         # ConfigMap doc
         cm = docs[1]
@@ -383,7 +417,7 @@ class TestGenerateRunner:
         assert cm["metadata"]["name"] == "arc-runner-hook-cpu-runner"
         assert cm["metadata"]["labels"]["osdc.io/module"] == "arc-runners"
 
-        # Job pod uses soft affinity, not nodeSelector
+        # Workflow pod gets the def's fleet (m6i) via {{NODE_FLEET}} substitution.
         cm_data = yaml.safe_load(cm["data"]["job-pod.yaml"])
         assert "nodeSelector" not in cm_data["spec"]
         prefs = cm_data["spec"]["affinity"]["nodeAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"]
@@ -394,8 +428,16 @@ class TestGenerateRunner:
         assert "node-fleet" in keys
         assert "workload-type" in keys
         assert "nvidia.com/gpu" not in keys  # CPU runner has no GPU affinity
+        node_fleet_expr = next(e for e in match_exprs if e["key"] == "node-fleet")
+        assert node_fleet_expr["values"] == ["m6i"]
+        node_fleet_tols = [t for t in cm_data["spec"]["tolerations"] if t.get("key") == "node-fleet"]
+        assert len(node_fleet_tols) == 1
+        assert node_fleet_tols[0]["value"] == "m6i"
 
     def test_gpu_runner(self, tmp_path):
+        """GPU substitutions land on the workflow pod (toleration + resources + affinity);
+        the runner pod stays GPU-free since it's pinned to the c7i-runner pool.
+        """
         def_file = make_def_file(tmp_path, "gpu-runner", "g4dn.12xlarge", 16, 64, gpu=1, disk_size=150)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -410,20 +452,25 @@ class TestGenerateRunner:
 
         content = (output_dir / "gpu-runner.yaml").read_text()
 
-        # GPU tolerations should be present
+        # GPU substitutions should appear somewhere in the rendered output.
         assert "nvidia.com/gpu" in content
 
         docs = list(yaml.safe_load_all(content))
         helm = docs[0]
-        tolerations = helm["template"]["spec"]["tolerations"]
-        taint_keys = [t["key"] for t in tolerations]
-        assert "nvidia.com/gpu" in taint_keys
 
-        # ConfigMap job-pod data should have GPU resources and GPU affinity
+        # Runner pod must NOT carry any GPU toleration — runner pods live on the
+        # dedicated c7i-runner pool, GPU scheduling is workflow-side only.
+        runner_taint_keys = [t["key"] for t in helm["template"]["spec"]["tolerations"]]
+        assert "nvidia.com/gpu" not in runner_taint_keys
+
+        # ConfigMap job-pod data should have GPU toleration, GPU resources, and GPU affinity.
         cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        workflow_taint_keys = [t["key"] for t in cm_data["spec"]["tolerations"]]
+        assert "nvidia.com/gpu" in workflow_taint_keys
+
         container = cm_data["spec"]["containers"][0]
-        assert "nvidia.com/gpu" in container["resources"]["requests"]
-        assert "nvidia.com/gpu" in container["resources"]["limits"]
+        assert container["resources"]["requests"]["nvidia.com/gpu"] == "1"
+        assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
 
         # Job pod affinity should include nvidia.com/gpu matchExpression
         assert "nodeSelector" not in cm_data["spec"]
@@ -460,7 +507,8 @@ class TestGenerateRunner:
         volumes = {v["name"]: v for v in cm_data["spec"].get("volumes", [])}
         assert volumes["dshm"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "2Gi"}
 
-    def test_no_placeholders_remaining(self, tmp_path):
+    def test_no_placeholders_remaining(self, tmp_path, real_template):
+        """Renderer must substitute every placeholder in the real template."""
         def_file = make_def_file(tmp_path, "test-runner", "c7i.24xlarge", 2, 4)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -470,7 +518,7 @@ class TestGenerateRunner:
             "runner_name_prefix": "pre-",
         }
 
-        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners")
         content = (output_dir / "test-runner.yaml").read_text()
         assert "{{" not in content
         assert "}}" not in content
@@ -558,6 +606,76 @@ class TestGenerateRunner:
         output_dir.mkdir()
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+
+    def test_proactive_capacity_default_zero(self, tmp_path):
+        """proactive_capacity defaults to 0 when not in the runner def."""
+        def_file = make_def_file(tmp_path, "cap-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "cap-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_proactive_capacity_nonzero(self, tmp_path):
+        """proactive_capacity: 30 renders as "30" in the listener env."""
+        def_file = make_def_file(tmp_path, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
+
+    def test_proactive_capacity_forced_zero(self, tmp_path):
+        """force_proactive_capacity_zero overrides any def value to 0."""
+        def_file = make_def_file(tmp_path, "forced-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "force_proactive_capacity_zero": True,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "forced-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_proactive_capacity_not_forced_when_false(self, tmp_path):
+        """force_proactive_capacity_zero=False preserves the def value."""
+        def_file = make_def_file(tmp_path, "kept-runner", "c7i.24xlarge", 4, 16, proactive_capacity=10)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "force_proactive_capacity_zero": False,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "kept-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "10"
 
     def test_resource_values_match_def(self, tmp_path):
         def_file = make_def_file(tmp_path, "res-test", "c7i.24xlarge", 48, 96, disk_size=200)
@@ -673,7 +791,10 @@ class TestGenerateRunner:
         assert docs[0]["runnerGroup"] == "default"
 
     def test_runner_class_release(self, tmp_path):
-        """Release runners get nodeSelector and required job affinity."""
+        """Release runners get required runner-class affinity on the workflow pod;
+        runner-class isolation does not apply to the runner pod (it lives on the
+        dedicated c7i-runner pool, which carries no runner-class label).
+        """
         def_file = make_def_file(
             tmp_path, "rel-runner", "r7a.48xlarge", 8, 64, runner_group="release-runners", runner_class="release"
         )
@@ -689,11 +810,8 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all((output_dir / "rel-runner.yaml").read_text()))
         helm = docs[0]
 
-        # Runner pod should have runner-class nodeSelector
-        assert helm["template"]["spec"]["nodeSelector"]["osdc.io/runner-class"] == "release"
-
-        # Runner pod should NOT have affinity (release runners skip anti-affinity)
-        assert "affinity" not in helm["template"]["spec"]
+        # Runner pod stays pinned to c7i-runner — no runner-class wiring.
+        assert "osdc.io/runner-class" not in helm["template"]["spec"]["nodeSelector"]
 
         # Job pod should have required affinity for runner-class=release
         cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
@@ -705,7 +823,10 @@ class TestGenerateRunner:
         assert keys["osdc.io/runner-class"]["values"] == ["release"]
 
     def test_regular_runner_anti_affinity(self, tmp_path):
-        """Regular runners get anti-affinity to avoid release nodes."""
+        """Regular (non-release) runners get DoesNotExist anti-affinity on the
+        workflow pod so workflow scheduling avoids release nodes; the runner pod
+        itself stays GPU/runner-class-free on the c7i-runner pool.
+        """
         def_file = make_def_file(tmp_path, "reg-runner", "m6i.32xlarge", 4, 16)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -719,18 +840,12 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all((output_dir / "reg-runner.yaml").read_text()))
         helm = docs[0]
 
-        # No runner-class in nodeSelector
+        # Runner pod must not gain runner-class wiring (no nodeSelector key, no
+        # affinity block) — the c7i-runner pool is shared across all runners.
         assert "osdc.io/runner-class" not in helm["template"]["spec"]["nodeSelector"]
+        assert "affinity" not in helm["template"]["spec"]
 
-        # Runner pod SHOULD have anti-affinity (DoesNotExist)
-        affinity = helm["template"]["spec"]["affinity"]
-        required = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
-        match_exprs = required["nodeSelectorTerms"][0]["matchExpressions"]
-        keys = {e["key"]: e for e in match_exprs}
-        assert "osdc.io/runner-class" in keys
-        assert keys["osdc.io/runner-class"]["operator"] == "DoesNotExist"
-
-        # Job pod should also have DoesNotExist required affinity
+        # Job pod should have DoesNotExist required affinity to avoid release nodes.
         cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
         job_required = cm_data["spec"]["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
         job_exprs = job_required["nodeSelectorTerms"][0]["matchExpressions"]
@@ -765,6 +880,270 @@ class TestGenerateRunner:
         generate_runner(p, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
         content = (output_dir / "nodisk.yaml").read_text()
         assert "100Gi" in content
+
+
+# ============================================================================
+# Real-template invariants
+#
+# These tests render the actual modules/arc-runners/templates/runner.yaml.tpl
+# against representative runner defs (CPU, GPU, ARM, release) and assert the
+# invariants that recent rounds of changes locked in:
+#   - Runner pod uses priorityClassName: arc-runner and is pinned to the
+#     dedicated c7i-runner pool (literal string, not the templated fleet).
+#   - Runner pod has no GPU/runner-class wiring. Runner pod DOES tolerate
+#     git-cache-not-ready (the c7i-runner pool inherits the startupTaint
+#     and git-cache-warmer doesn't run there to clear it).
+#   - Workflow pod uses priorityClassName: arc-workflow and selects nodes by
+#     the def's node_fleet (g4dn, c7i, m8g, r7a, ...).
+#   - Workflow pod carries GPU tolerations + resources iff the def asks for
+#     GPUs; non-GPU runners must have no nvidia.com/gpu references on the
+#     workflow side.
+# ============================================================================
+
+
+# Representative runner defs used to parameterize TestRealTemplate. The fleet
+# values must match what derive_fleet_name() produces for the given instance
+# type — these are the workflow-side selectors.
+RUNNER_VARIANTS = [
+    pytest.param(
+        {
+            "name": "cpu-runner",
+            "instance_type": "c7i.12xlarge",
+            "vcpu": 8,
+            "memory": 16,
+            "gpu": 0,
+            "disk_size": 150,
+            "expected_workflow_fleet": "c7i",
+        },
+        id="cpu",
+    ),
+    pytest.param(
+        {
+            "name": "gpu-runner",
+            "instance_type": "g4dn.8xlarge",
+            "vcpu": 29,
+            "memory": 115,
+            "gpu": 1,
+            "disk_size": 150,
+            "expected_workflow_fleet": "g4dn",
+        },
+        id="gpu",
+    ),
+    pytest.param(
+        {
+            "name": "arm-runner",
+            "instance_type": "m8g.48xlarge",
+            "vcpu": 16,
+            "memory": 62,
+            "gpu": 0,
+            "disk_size": 256,
+            "expected_workflow_fleet": "m8g",
+        },
+        id="arm",
+    ),
+    pytest.param(
+        {
+            "name": "release-runner",
+            "instance_type": "r7a.48xlarge",
+            "vcpu": 8,
+            "memory": 64,
+            "gpu": 0,
+            "disk_size": 200,
+            "runner_group": "release-runners",
+            "runner_class": "release",
+            "expected_workflow_fleet": "r7a",
+        },
+        id="release",
+    ),
+]
+
+GPU_VARIANT = RUNNER_VARIANTS[1]
+
+
+def _render_real(real_template, tmp_path, variant):
+    """Render the real template for a given variant; return (helm, configmap, workflow_pod)."""
+    def_kwargs = {
+        "tmp_path": tmp_path,
+        "name": variant["name"],
+        "instance_type": variant["instance_type"],
+        "vcpu": variant["vcpu"],
+        "memory": variant["memory"],
+        "gpu": variant["gpu"],
+        "disk_size": variant["disk_size"],
+    }
+    if "runner_group" in variant:
+        def_kwargs["runner_group"] = variant["runner_group"]
+    if "runner_class" in variant:
+        def_kwargs["runner_class"] = variant["runner_class"]
+    def_file = make_def_file(**def_kwargs)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    cluster_config = {
+        "github_config_url": "https://github.com/test-org",
+        "github_secret_name": "gh-secret",
+        "runner_name_prefix": "real-",
+    }
+    assert generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners") is True
+    docs = list(yaml.safe_load_all((output_dir / f"{variant['name']}.yaml").read_text()))
+    assert len(docs) == 2
+    helm, configmap = docs
+    assert configmap["kind"] == "ConfigMap"
+    workflow_pod = yaml.safe_load(configmap["data"]["job-pod.yaml"])
+    return helm, configmap, workflow_pod
+
+
+class TestRealTemplate:
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_runner_pod_uses_arc_runner_priority_class(self, real_template, tmp_path, variant):
+        """Runner pod must declare priorityClassName: arc-runner."""
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        assert helm["template"]["spec"]["priorityClassName"] == "arc-runner"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_runner_pod_pinned_to_c7i_runner_fleet(self, real_template, tmp_path, variant):
+        """Runner pod nodeSelector must use the literal c7i-runner pool, not the def's fleet."""
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "c7i-runner"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_runner_pod_tolerates_c7i_runner_node_fleet(self, real_template, tmp_path, variant):
+        """Runner pod tolerations must include node-fleet=c7i-runner."""
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        tolerations = helm["template"]["spec"]["tolerations"]
+        node_fleet_tols = [t for t in tolerations if t.get("key") == "node-fleet"]
+        assert len(node_fleet_tols) == 1, f"expected exactly one node-fleet toleration, got {node_fleet_tols!r}"
+        assert node_fleet_tols[0]["value"] == "c7i-runner"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_runner_pod_tolerates_git_cache_not_ready_for_c7i_runner_pool_compatibility(
+        self, real_template, tmp_path, variant
+    ):
+        """Runner pod must tolerate git-cache-not-ready: the c7i-runner NodePool inherits the
+        startupTaint from the unconditional generator emission, and git-cache-warmer does not
+        run on this pool — so the taint persists. Tolerating it lets runner pods schedule;
+        the runner pod itself does NOT use the git-cache mount.
+        """
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        tolerations = helm["template"]["spec"]["tolerations"]
+        git_cache_tols = [t for t in tolerations if t.get("key") == "git-cache-not-ready"]
+        assert len(git_cache_tols) == 1, f"expected exactly one git-cache-not-ready toleration, got {git_cache_tols!r}"
+        assert git_cache_tols[0]["operator"] == "Exists"
+        assert "value" not in git_cache_tols[0], f"Exists toleration must omit value, got {git_cache_tols[0]!r}"
+        assert git_cache_tols[0]["effect"] == "NoSchedule"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_runner_pod_has_no_wait_for_node_taints_env(self, real_template, tmp_path, variant):
+        """Runner pod must not set ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS or its _TIMEOUT_SECONDS variant."""
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        runner_container = next(c for c in helm["template"]["spec"]["containers"] if c["name"] == "runner")
+        env_names = [e["name"] for e in runner_container.get("env", [])]
+        forbidden = [n for n in env_names if n.startswith("ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS")]
+        assert forbidden == [], f"runner pod must not carry WAIT_FOR_NODE_TAINTS env vars, got {forbidden!r}"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_runner_pod_has_no_gpu_toleration(self, real_template, tmp_path, variant):
+        """Runner pod must never tolerate nvidia.com/gpu — GPU scheduling is workflow-side only."""
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        toleration_keys = [t.get("key") for t in helm["template"]["spec"]["tolerations"]]
+        assert "nvidia.com/gpu" not in toleration_keys
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_runner_pod_has_no_runner_class_node_selector(self, real_template, tmp_path, variant):
+        """Runner pod must not select on osdc.io/runner-class — that's a workflow-pool concern."""
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        assert "osdc.io/runner-class" not in helm["template"]["spec"]["nodeSelector"]
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_runner_pod_has_no_affinity(self, real_template, tmp_path, variant):
+        """Runner pod must not set affinity — runner-class isolation is workflow-side only."""
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        assert "affinity" not in helm["template"]["spec"]
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_workflow_pod_uses_arc_workflow_priority_class(self, real_template, tmp_path, variant):
+        """Workflow pod must declare priorityClassName: arc-workflow."""
+        _, _, workflow_pod = _render_real(real_template, tmp_path, variant)
+        assert workflow_pod["spec"]["priorityClassName"] == "arc-workflow"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_workflow_pod_node_fleet_matches_def(self, real_template, tmp_path, variant):
+        """Workflow pod's node-fleet wiring (toleration + affinity) must use the def's fleet name."""
+        _, _, workflow_pod = _render_real(real_template, tmp_path, variant)
+        expected_fleet = variant["expected_workflow_fleet"]
+
+        # Toleration side
+        node_fleet_tols = [t for t in workflow_pod["spec"]["tolerations"] if t.get("key") == "node-fleet"]
+        assert len(node_fleet_tols) == 1
+        assert node_fleet_tols[0]["value"] == expected_fleet
+
+        # Affinity side
+        prefs = workflow_pod["spec"]["affinity"]["nodeAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"]
+        match_exprs = prefs[0]["preference"]["matchExpressions"]
+        node_fleet_exprs = [e for e in match_exprs if e["key"] == "node-fleet"]
+        assert len(node_fleet_exprs) == 1
+        assert node_fleet_exprs[0]["values"] == [expected_fleet]
+
+    def test_gpu_workflow_pod_has_gpu_toleration_and_resources(self, real_template, tmp_path):
+        """GPU runner's workflow pod must carry nvidia.com/gpu toleration and matching request/limit."""
+        _, _, workflow_pod = _render_real(real_template, tmp_path, GPU_VARIANT.values[0])
+        gpu_tols = [t for t in workflow_pod["spec"]["tolerations"] if t.get("key") == "nvidia.com/gpu"]
+        assert len(gpu_tols) == 1
+        container = workflow_pod["spec"]["containers"][0]
+        assert container["resources"]["requests"]["nvidia.com/gpu"] == "1"
+        assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_listener_env_has_capacity_aware_runner_node_fleet(self, real_template, tmp_path, variant):
+        """Listener container must declare CAPACITY_AWARE_RUNNER_NODE_FLEET=c7i-runner.
+
+        The fork's capacity monitor uses this to place placeholder-runner pods on the
+        dedicated runner pool (cluster-wide constant, same value for every scale set).
+        Without this env var, the listener fails to start when capacity-aware mode is
+        enabled (Validate() errors out).
+        """
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        listener = next(c for c in helm["listenerTemplate"]["spec"]["containers"] if c["name"] == "listener")
+        listener_env = {e["name"]: e.get("value") for e in listener["env"]}
+        assert listener_env["CAPACITY_AWARE_RUNNER_NODE_FLEET"] == "c7i-runner"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_listener_env_runner_node_fleet_distinct_from_workflow_node_fleet(self, real_template, tmp_path, variant):
+        """CAPACITY_AWARE_RUNNER_NODE_FLEET (runner pool, constant) must be distinct from
+        CAPACITY_AWARE_NODE_FLEET (per-def workflow fleet). Both must be present.
+        """
+        helm, _, _ = _render_real(real_template, tmp_path, variant)
+        listener = next(c for c in helm["listenerTemplate"]["spec"]["containers"] if c["name"] == "listener")
+        listener_env = {e["name"]: e.get("value") for e in listener["env"]}
+        # Workflow fleet derives from the def's instance type
+        assert listener_env["CAPACITY_AWARE_NODE_FLEET"] == variant["expected_workflow_fleet"]
+        # Runner fleet is the cluster-wide constant
+        assert listener_env["CAPACITY_AWARE_RUNNER_NODE_FLEET"] == "c7i-runner"
+        # Sanity: the two env vars must coexist as separate entries
+        assert listener_env["CAPACITY_AWARE_NODE_FLEET"] != listener_env["CAPACITY_AWARE_RUNNER_NODE_FLEET"]
+
+    @pytest.mark.parametrize(
+        "variant", [v for v in RUNNER_VARIANTS if v.values[0]["gpu"] == 0], ids=lambda v: v["name"]
+    )
+    def test_non_gpu_workflow_pod_has_no_nvidia_references(self, real_template, tmp_path, variant):
+        """Non-GPU runner must not have any nvidia.com/gpu references on the workflow side."""
+        _, configmap, workflow_pod = _render_real(real_template, tmp_path, variant)
+
+        # Tolerations
+        toleration_keys = [t.get("key") for t in workflow_pod["spec"]["tolerations"]]
+        assert "nvidia.com/gpu" not in toleration_keys
+
+        # Container resources
+        container = workflow_pod["spec"]["containers"][0]
+        assert "nvidia.com/gpu" not in container["resources"].get("requests", {})
+        assert "nvidia.com/gpu" not in container["resources"].get("limits", {})
+
+        # Affinity matchExpressions
+        prefs = workflow_pod["spec"]["affinity"]["nodeAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"]
+        match_expr_keys = [e["key"] for e in prefs[0]["preference"]["matchExpressions"]]
+        assert "nvidia.com/gpu" not in match_expr_keys
+
+        # Belt-and-braces: the rendered job-pod.yaml block scalar should also be free of GPU mentions
+        assert "nvidia.com/gpu" not in configmap["data"]["job-pod.yaml"]
 
 
 # ============================================================================
@@ -897,6 +1276,78 @@ class TestMain:
 
         with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
             assert main() == 1
+
+    def test_staging_forces_proactive_capacity_zero(self, tmp_path, monkeypatch):
+        """main() sets force_proactive_capacity_zero for staging clusters."""
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(FAKE_CLUSTERS_YAML, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
+            assert main() == 0
+
+        docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_production_preserves_proactive_capacity(self, tmp_path, monkeypatch):
+        """main() does NOT force proactive_capacity to zero for production clusters."""
+        prod_config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/prod-org",
+                    "github_secret_name": "prod-secret",
+                    "runner_name_prefix": "prod-",
+                },
+            },
+            "clusters": {
+                "arc-prod": {
+                    "cluster_name": "production",
+                    "region": "us-east-1",
+                    "modules": ["arc-runners"],
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/prod-org",
+                        "github_secret_name": "prod-secret",
+                        "runner_name_prefix": "prod-",
+                    },
+                },
+            },
+        }
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(prod_config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "arc-prod"]):
+            assert main() == 0
+
+        docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
 
     def test_missing_template_exits_1(self, tmp_path, monkeypatch):
         p = tmp_path / "clusters.yaml"

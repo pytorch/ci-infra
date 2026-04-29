@@ -1,0 +1,26 @@
+# Karpenter NodePool fleet: c7i-runner — dedicated pool for ARC runner pods + their placeholders.
+# Name-only clone of c7i; separation is enforced by the node-fleet=c7i-runner taint.
+fleet:
+  name: c7i-runner
+  arch: amd64
+  gpu: false
+  instances:
+    - type: c7i.48xlarge
+      weight: 100
+      node_disk_size: 3750
+    - type: c7i.24xlarge
+      weight: 85
+      node_disk_size: 1900
+    - type: c7i.metal-24xl
+      weight: 84
+      node_disk_size: 800
+      baremetal: true
+    - type: c7i.16xlarge
+      weight: 60
+      node_disk_size: 1300
+    - type: c7i.12xlarge
+      weight: 40
+      node_disk_size: 1350
+    - type: c7i.8xlarge
+      weight: 20
+      node_disk_size: 650

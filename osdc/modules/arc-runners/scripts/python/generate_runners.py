@@ -145,6 +145,9 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Omit to leave the RSS unbounded, which is correct for Karpenter-managed pools
     # that can scale out on demand.
     max_runners = runner.get("max_runners")
+    proactive_capacity = runner.get("proactive_capacity", 0)
+    if cluster_config.get("force_proactive_capacity_zero"):
+        proactive_capacity = 0
 
     if not runner_name or not instance_type:
         log_error(f"Invalid definition file: {def_file}")
@@ -182,11 +185,6 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     # GPU-specific YAML snippets
     if gpu > 0:
-        gpu_tolerations = """
-      - key: nvidia.com/gpu
-        operator: Equal
-        value: "true"
-        effect: NoSchedule"""
         gpu_job_tolerations = """
         - key: nvidia.com/gpu
           operator: Equal
@@ -201,18 +199,15 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         gpu_request = f'\n              nvidia.com/gpu: "{gpu}"'
         gpu_limit = f'\n              nvidia.com/gpu: "{gpu}"'
     else:
-        gpu_tolerations = ""
         gpu_job_tolerations = ""
         gpu_node_selector_affinity = ""
         gpu_request = ""
         gpu_limit = ""
 
-    # Runner class isolation snippets
-    # Release runners: use nodeSelector to target release nodes
-    # Regular runners: use anti-affinity to avoid release nodes
+    # Runner class isolation snippets (workflow pod only)
+    # Release runners: required affinity to target release nodes
+    # Regular runners: required affinity to avoid release nodes (DoesNotExist)
     if runner_class:
-        runner_class_node_selector = f"      osdc.io/runner-class: {runner_class}\n"
-        runner_class_affinity = ""
         runner_class_job_affinity = (
             "          requiredDuringSchedulingIgnoredDuringExecution:\n"
             "            nodeSelectorTerms:\n"
@@ -223,16 +218,6 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
             f'                      - "{runner_class}"\n'
         )
     else:
-        runner_class_node_selector = ""
-        runner_class_affinity = (
-            "    affinity:\n"
-            "      nodeAffinity:\n"
-            "        requiredDuringSchedulingIgnoredDuringExecution:\n"
-            "          nodeSelectorTerms:\n"
-            "            - matchExpressions:\n"
-            "                - key: osdc.io/runner-class\n"
-            "                  operator: DoesNotExist\n"
-        )
         runner_class_job_affinity = (
             "          requiredDuringSchedulingIgnoredDuringExecution:\n"
             "            nodeSelectorTerms:\n"
@@ -241,11 +226,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
             "                    operator: DoesNotExist\n"
         )
 
-    # maxRunners line is emitted only when the runner def opts in. Leaving it out
-    # keeps elastic, Karpenter-managed pools unbounded (the current default).
-    # The placeholder occupies its own line in the template, so substituting an
-    # empty string collapses that line to a blank separator between minRunners
-    # and runnerGroup (matches the style before this field existed).
+    # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
     # Replace all template placeholders
@@ -262,22 +243,26 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{MEMORY}}": str(memory),
         "{{MEMORY_BYTES}}": str(parse_memory_bytes(memory)),
         "{{DISK_SIZE}}": f"{disk_size}Gi",
-        "{{GPU_TOLERATIONS}}": gpu_tolerations,
         "{{GPU_JOB_TOLERATIONS}}": gpu_job_tolerations,
         "{{GPU_NODE_SELECTOR_AFFINITY}}": gpu_node_selector_affinity,
         "{{GPU_REQUEST}}": gpu_request,
         "{{GPU_LIMIT}}": gpu_limit,
-        "{{MAX_RUNNERS}}": max_runners_line,
         "{{MODULE_NAME}}": module_name,
         "{{RUNNER_IMAGE}}": runner_image,
         "{{RUNNER_GROUP}}": runner_group,
-        "{{RUNNER_CLASS_NODE_SELECTOR}}": runner_class_node_selector,
-        "{{RUNNER_CLASS_AFFINITY}}": runner_class_affinity,
         "{{RUNNER_CLASS_JOB_AFFINITY}}": runner_class_job_affinity,
+        "{{MAX_RUNNERS_LINE}}": max_runners_line,
+        "{{GPU_COUNT}}": str(gpu),
+        "{{RUNNER_CLASS}}": runner_class,
+        "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
     }
 
     for placeholder, value in replacements.items():
         output_content = output_content.replace(placeholder, value)
+
+    # Collapse runs of 3+ newlines (from empty placeholder lines) into a single blank line
+    while "\n\n\n" in output_content:
+        output_content = output_content.replace("\n\n\n", "\n\n")
 
     output_file = output_dir / f"{runner_name}.yaml"
     output_file.write_text(output_content)  # lgtm[py/clear-text-storage-sensitive-data]
@@ -331,6 +316,9 @@ def main():
     # Resolve runner image tag from arc.runner_image_tag (shared with arc module)
     runner_image_tag = resolve_value(cluster_cfg, defaults, "arc.runner_image_tag") or "2.333.1"
     cluster_config["runner_image"] = f"ghcr.io/actions/actions-runner:{runner_image_tag}"
+
+    # Staging clusters: force proactive_capacity to 0 regardless of runner def value
+    cluster_config["force_proactive_capacity_zero"] = "staging" in cluster_id
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():

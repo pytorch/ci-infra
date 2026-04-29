@@ -85,12 +85,23 @@ def wait_for_load_test(
         timeout_minutes,
     )
 
+    runs_logged = False
+
     while time.time() < deadline:
         runs = _get_filtered_runs(branch, pr_created_at)
         if not runs:
             log.info("  No runs found yet, waiting...")
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
+
+        if not runs_logged:
+            for r in runs:
+                log.info(
+                    "  Workflow run: https://github.com/%s/actions/runs/%s",
+                    CANARY_REPO,
+                    r["databaseId"],
+                )
+            runs_logged = True
 
         # Check if all runs are completed
         all_done = all(r.get("status") == "completed" for r in runs)

@@ -146,20 +146,64 @@ def classify_runner(label: str) -> tuple[bool, bool, int]:
     return False, is_arm64, 0
 
 
+def _load_fleet_exclusions(
+    upstream_dir: Path,
+    root_dir: Path,
+) -> dict[str, list[str]]:
+    """Read fleet defs and return {fleet_name: [excluded_regions]} mapping."""
+    exclusions: dict[str, list[str]] = {}
+
+    def _scan_fleets(defs_dir: Path) -> None:
+        if not defs_dir.is_dir():
+            return
+        for f in defs_dir.glob("*.yaml"):
+            data = yaml.safe_load(f.read_text())
+            if data and "fleet" in data:
+                fleet = data["fleet"]
+                regions = fleet.get("exclude_regions", [])
+                if regions:
+                    exclusions[fleet["name"]] = regions
+
+    _scan_fleets(upstream_dir / "modules" / "nodepools" / "defs")
+    _scan_fleets(root_dir / "modules" / "nodepools" / "defs")
+
+    return exclusions
+
+
 def get_available_runners(
     upstream_dir: Path,
     root_dir: Path,
-) -> set[str]:
-    """Scan runner def YAML files and return the set of available runner labels."""
+    region: str | None = None,
+) -> tuple[set[str], int]:
+    """Scan runner def YAML files and return available runner labels.
+
+    Returns (labels, excluded_count).
+    """
     labels: set[str] = set()
+    excluded_count = 0
+
+    fleet_exclusions: dict[str, list[str]] = {}
+    if region:
+        fleet_exclusions = _load_fleet_exclusions(upstream_dir, root_dir)
 
     def _scan_defs(defs_dir: Path) -> None:
+        nonlocal excluded_count
         if not defs_dir.is_dir():
             return
         for f in defs_dir.glob("*.yaml"):
             data = yaml.safe_load(f.read_text())
             if data and "runner" in data:
-                labels.add(data["runner"]["name"])
+                runner = data["runner"]
+                name = runner["name"]
+
+                if region and "instance_type" in runner:
+                    fleet = runner["instance_type"].split(".")[0]
+                    excluded_regions = fleet_exclusions.get(fleet, [])
+                    if region in excluded_regions:
+                        excluded_count += 1
+                        continue
+
+                labels.add(name)
 
     # Upstream arc-runners
     _scan_defs(upstream_dir / "modules" / "arc-runners" / "defs")
@@ -167,7 +211,7 @@ def get_available_runners(
     # Consumer arc-runners (overrides/additions)
     _scan_defs(root_dir / "modules" / "arc-runners" / "defs")
 
-    return labels
+    return labels, excluded_count
 
 
 def _aggregate_production_counts() -> dict[str, int]:

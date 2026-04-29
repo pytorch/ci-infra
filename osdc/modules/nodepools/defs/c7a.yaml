@@ -4,6 +4,8 @@ fleet:
   name: c7a
   arch: amd64
   gpu: false
+  exclude_regions:
+    - us-west-1
   instances:
     - type: c7a.48xlarge
       weight: 100

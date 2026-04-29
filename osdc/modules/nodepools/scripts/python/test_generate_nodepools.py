@@ -9,6 +9,7 @@ import yaml
 from generate_nodepools import (
     _build_fleet_nodepool_def,
     _detect_arch,
+    _fleet_nodepool_name,
     _get_node_disk_size,
     _read_user_data_script,
     _user_data_script_mime_part,
@@ -666,6 +667,29 @@ class TestFleetNodepoolGeneration:
         assert "nvidia.com/gpu" in taint_keys
 
 
+class TestFleetNodepoolName:
+    """Tests for _fleet_nodepool_name — fleet/instance name disambiguation."""
+
+    def test_fleet_name_matches_instance_family(self):
+        """Default case: fleet name == instance family → use instance type as name."""
+        assert _fleet_nodepool_name("c7i", "c7i.48xlarge") == "c7i-48xlarge"
+        assert _fleet_nodepool_name("g5", "g5.8xlarge") == "g5-8xlarge"
+        assert _fleet_nodepool_name("c7i", "c7i.metal-24xl") == "c7i-metal-24xl"
+
+    def test_fleet_name_differs_from_instance_family(self):
+        """Disambiguation case: prepend fleet name to size when families differ."""
+        assert _fleet_nodepool_name("c7i-runner", "c7i.48xlarge") == "c7i-runner-48xlarge"
+        assert _fleet_nodepool_name("c7i-runner", "c7i.metal-24xl") == "c7i-runner-metal-24xl"
+
+    def test_release_suffix_with_matching_family(self):
+        assert _fleet_nodepool_name("r7a", "r7a.48xlarge", name_suffix="-release") == "r7a-48xlarge-release"
+
+    def test_release_suffix_with_differing_family(self):
+        assert (
+            _fleet_nodepool_name("c7i-runner", "c7i.48xlarge", name_suffix="-release") == "c7i-runner-48xlarge-release"
+        )
+
+
 class TestBuildFleetNodepoolDef:
     """Tests for _build_fleet_nodepool_def helper."""
 
@@ -990,11 +1014,13 @@ class TestMain:
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        assert generated == ["g5-12xlarge.yaml", "g5-8xlarge.yaml"]
+        # Fleet names differ from instance family (g5) so output names use the
+        # fleet name as the prefix to keep multiple fleets disambiguated.
+        assert generated == ["fleet-alpha-8xlarge.yaml", "fleet-beta-12xlarge.yaml"]
 
         # Verify fleet names are different
-        g5_8 = parse_all_yaml((output_dir / "g5-8xlarge.yaml").read_text())
-        g5_12 = parse_all_yaml((output_dir / "g5-12xlarge.yaml").read_text())
+        g5_8 = parse_all_yaml((output_dir / "fleet-alpha-8xlarge.yaml").read_text())
+        g5_12 = parse_all_yaml((output_dir / "fleet-beta-12xlarge.yaml").read_text())
         assert g5_8[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "fleet-alpha"
         assert g5_12[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "fleet-beta"
 
@@ -1126,3 +1152,220 @@ class TestMain:
             result = main()
 
         assert result == 1
+
+
+# ============================================================================
+# exclude_regions handling
+# ============================================================================
+
+
+class TestExcludeRegions:
+    """Tests for honoring ``exclude_regions:`` on fleet and legacy nodepool defs."""
+
+    def _write_fleet(self, defs_dir: Path, name: str, fleet: dict) -> None:
+        (defs_dir / f"{name}.yaml").write_text(yaml.dump({"fleet": fleet}))
+
+    def _run_main(self, defs_dir: Path, output_dir: Path, region: str | None = None) -> int:
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_MODULE_NAME": "test",
+        }
+        if region is not None:
+            env["NODEPOOLS_REGION"] = region
+        with patch.dict(os.environ, env, clear=False):
+            return main()
+
+    def test_fleet_excluded_for_matching_region(self, tmp_path):
+        """A fleet with exclude_regions: [us-west-1] is skipped for a us-west-1 cluster."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "g5",
+            {
+                "name": "g5",
+                "arch": "amd64",
+                "gpu": True,
+                "exclude_regions": ["us-west-1"],
+                "instances": [
+                    {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
+                ],
+            },
+        )
+        # Add a non-excluded fleet so main() doesn't bail on "no defs"
+        self._write_fleet(
+            defs_dir,
+            "m6i",
+            {
+                "name": "m6i",
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+
+        result = self._run_main(defs_dir, output_dir, region="us-west-1")
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        # g5 fleet is excluded, m6i is rendered
+        assert "g5-8xlarge.yaml" not in generated
+        assert "m6i-32xlarge.yaml" in generated
+
+    def test_fleet_rendered_for_other_region(self, tmp_path):
+        """A fleet with exclude_regions: [us-west-1] is rendered for a us-east-2 cluster."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "g5",
+            {
+                "name": "g5",
+                "arch": "amd64",
+                "gpu": True,
+                "exclude_regions": ["us-west-1"],
+                "instances": [
+                    {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+
+        result = self._run_main(defs_dir, output_dir, region="us-east-2")
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["g5-8xlarge.yaml"]
+
+    def test_fleet_without_exclude_regions_always_rendered(self, tmp_path):
+        """A fleet with no exclude_regions is rendered for any cluster region."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "m6i",
+            {
+                "name": "m6i",
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+
+        # Same def renders in every region (fresh output dir per iteration)
+        for region in ("us-west-1", "us-east-2", "eu-central-1"):
+            output_dir_r = tmp_path / f"generated-{region}"
+            result = self._run_main(defs_dir, output_dir_r, region=region)
+            assert result == 0
+            generated = sorted(f.name for f in output_dir_r.glob("*.yaml"))
+            assert generated == ["m6i-32xlarge.yaml"], f"fleet missing for region {region}"
+
+    def test_no_region_set_renders_everything(self, tmp_path):
+        """When NODEPOOLS_REGION is unset, exclude_regions is a no-op (back-compat)."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "g5",
+            {
+                "name": "g5",
+                "arch": "amd64",
+                "gpu": True,
+                "exclude_regions": ["us-west-1", "us-east-2"],
+                "instances": [
+                    {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+
+        result = self._run_main(defs_dir, output_dir, region=None)
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["g5-8xlarge.yaml"]
+
+    def test_fleet_release_instances_also_excluded(self, tmp_path):
+        """When a fleet is excluded, its release instances are excluded too."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "r7a",
+            {
+                "name": "r7a",
+                "arch": "amd64",
+                "gpu": False,
+                "exclude_regions": ["us-west-1"],
+                "instances": [
+                    {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                ],
+                "release": [
+                    {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                ],
+            },
+        )
+        # Non-excluded fleet so main() doesn't bail on missing defs
+        self._write_fleet(
+            defs_dir,
+            "m6i",
+            {
+                "name": "m6i",
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+
+        result = self._run_main(defs_dir, output_dir, region="us-west-1")
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert "r7a-48xlarge.yaml" not in generated
+        assert "r7a-48xlarge-release.yaml" not in generated
+
+    def test_legacy_nodepool_excluded_for_matching_region(self, tmp_path):
+        """Legacy ``nodepool:`` defs also honor exclude_regions."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "legacy.yaml").write_text(
+            yaml.dump(
+                {
+                    "nodepool": {
+                        "name": "legacy-pool",
+                        "instance_type": "m6i.32xlarge",
+                        "node_disk_size": 200,
+                        "exclude_regions": ["us-west-1"],
+                    }
+                }
+            )
+        )
+        # Non-excluded fleet so main() doesn't bail on missing defs
+        self._write_fleet(
+            defs_dir,
+            "m6i",
+            {
+                "name": "m6i",
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+
+        result = self._run_main(defs_dir, output_dir, region="us-west-1")
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert "legacy-pool.yaml" not in generated
