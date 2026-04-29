@@ -51,14 +51,14 @@ OLD_TO_OSDC_LABEL: dict[str, str] = {
     # x86 CPU -- AMD
     "linux.24xlarge.amd": "l-x86aavx512-125-463",
     # GPU -- T4 (g4dn)
-    "linux.4xlarge.nvidia.gpu": "l-x86iavx512-29-115-t4",
-    "linux.g4dn.4xlarge.nvidia.gpu": "l-x86iavx512-29-115-t4",
+    "linux.4xlarge.nvidia.gpu": "l-x86iavx512-29-114-t4",
+    "linux.g4dn.4xlarge.nvidia.gpu": "l-x86iavx512-29-114-t4",
     "linux.g4dn.12xlarge.nvidia.gpu": "l-x86iavx512-45-172-t4-4",
     "linux.g4dn.metal.nvidia.gpu": "l-bx86iavx512-94-344-t4-8",
     # GPU -- A10G (g5)
     "linux.g5.4xlarge.nvidia.gpu": "l-x86aavx2-29-113-a10g",
-    "linux.g5.12xlarge.nvidia.gpu": "l-x86aavx2-45-167-a10g-4",
-    "linux.g5.48xlarge.nvidia.gpu": "l-x86aavx2-189-704-a10g-8",
+    "linux.g5.12xlarge.nvidia.gpu": "l-x86aavx2-45-166-a10g-4",
+    "linux.g5.48xlarge.nvidia.gpu": "l-x86aavx2-189-703-a10g-8",
     # GPU -- L4 (g6)
     "linux.g6.4xlarge.experimental.nvidia.gpu": "l-x86aavx2-29-113-l4",
     "linux.g6.12xlarge.nvidia.gpu": "l-x86aavx2-45-172-l4-4",
@@ -137,7 +137,7 @@ def classify_runner(label: str) -> tuple[bool, bool, int]:
     """Classify a runner label. Returns (is_gpu, is_arm64, gpu_count)."""
     is_arm64 = "arm64" in label
 
-    # OSDC GPU labels (e.g., l-x86iavx512-29-115-t4-4)
+    # OSDC GPU labels (e.g., l-x86iavx512-29-114-t4-4)
     m = _OSDC_GPU_PATTERN.search(label)
     if m:
         gpu_count = int(m.group(2)) if m.group(2) else 1
