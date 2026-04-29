@@ -41,8 +41,27 @@ from workflow_generator import generate_workflow
 log = logging.getLogger("osdc-load-test")
 
 DEFAULT_TOTAL_JOBS = 400
-DEFAULT_SINGLE_LABEL_JOBS = 50
 LOAD_TEST_PR_TITLE_PREFIX = "[NO REVIEW][NO MERGE] ARC load test"
+
+
+def _parse_label_spec(spec: str) -> tuple[str, int]:
+    """Parse a '--label LABEL:COUNT' spec into (label, count)."""
+    label, sep, count_str = spec.rpartition(":")
+    if not sep or not label:
+        raise argparse.ArgumentTypeError(
+            f"invalid --label '{spec}': expected format 'LABEL:COUNT'",
+        )
+    try:
+        count = int(count_str)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid --label '{spec}': count must be an integer",
+        ) from None
+    if count <= 0:
+        raise argparse.ArgumentTypeError(
+            f"invalid --label '{spec}': count must be positive",
+        )
+    return (label, count)
 
 
 def branch_name(cluster_id: str) -> str:
@@ -76,16 +95,25 @@ def parse_args() -> argparse.Namespace:
         help="OSDC root directory (consumer or upstream)",
     )
     parser.add_argument(
-        "--single-label",
-        type=str,
-        default=None,
-        help="Run all jobs on a single runner label (e.g., l-x86iavx512-8-16)",
+        "--label",
+        type=_parse_label_spec,
+        action="append",
+        default=[],
+        metavar="LABEL:COUNT",
+        help=(
+            "Run COUNT jobs on the specified runner label. Repeat for multiple labels "
+            "(e.g., --label l-x86iamx-8-16:400 --label l-x86aavx2-29-113-a10g:200). "
+            "Mutually exclusive with --jobs."
+        ),
     )
     parser.add_argument(
         "--jobs",
         type=int,
         default=None,
-        help=f"Total number of jobs (default: {DEFAULT_TOTAL_JOBS}, or {DEFAULT_SINGLE_LABEL_JOBS} with --single-label)",
+        help=(
+            f"Total number of jobs for proportional distribution across all runner types "
+            f"(default: {DEFAULT_TOTAL_JOBS}). Ignored when --label is used."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -105,8 +133,18 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
 
+    if args.label and args.jobs is not None:
+        parser.error("--label and --jobs are mutually exclusive")
+
+    if args.label:
+        seen: set[str] = set()
+        for label, _ in args.label:
+            if label in seen:
+                parser.error(f"--label '{label}' specified more than once")
+            seen.add(label)
+
     if args.jobs is None:
-        args.jobs = DEFAULT_SINGLE_LABEL_JOBS if args.single_label else DEFAULT_TOTAL_JOBS
+        args.jobs = DEFAULT_TOTAL_JOBS
     if args.jobs <= 0:
         parser.error("--jobs must be a positive integer")
     if args.timeout <= 0:
@@ -160,9 +198,11 @@ def main() -> None:
 
     log.info("Load test for cluster: %s (%s)", args.cluster_id, cluster_name)
     log.info("  Runner prefix: '%s'", prefix)
-    if args.single_label:
-        log.info("  Single label mode: %s", args.single_label)
-    log.info("  Target jobs: %d", args.jobs)
+    if args.label:
+        total_label_jobs = sum(c for _, c in args.label)
+        log.info("  Label mode: %d label(s), %d total jobs", len(args.label), total_label_jobs)
+    else:
+        log.info("  Target jobs: %d", args.jobs)
 
     # Phase 1: Compute distribution
     available, excluded_count = get_available_runners(
@@ -172,26 +212,30 @@ def main() -> None:
     )
     log.info("  Available runner types: %d (excluded %d for region %s)", len(available), excluded_count, region)
 
-    if args.single_label:
-        if args.single_label not in available:
+    if args.label:
+        missing = [lbl for lbl, _ in args.label if lbl not in available]
+        if missing:
             log.error(
-                "Runner label '%s' not found. Available labels:\n  %s",
-                args.single_label,
+                "Runner label(s) not found: %s. Available labels:\n  %s",
+                ", ".join(missing),
                 "\n  ".join(sorted(available)),
             )
             sys.exit(1)
-        is_gpu, is_arm64, gpu_count = classify_runner(args.single_label)
-        allocations = [
-            RunnerAllocation(
-                osdc_label=args.single_label,
-                job_count=args.jobs,
-                source_job_count=0,
-                proportion=1.0,
-                is_gpu=is_gpu,
-                is_arm64=is_arm64,
-                gpu_count=gpu_count,
-            ),
-        ]
+        total = sum(c for _, c in args.label)
+        allocations = []
+        for label, count in args.label:
+            is_gpu, is_arm64, gpu_count = classify_runner(label)
+            allocations.append(
+                RunnerAllocation(
+                    osdc_label=label,
+                    job_count=count,
+                    source_job_count=0,
+                    proportion=count / total,
+                    is_gpu=is_gpu,
+                    is_arm64=is_arm64,
+                    gpu_count=gpu_count,
+                ),
+            )
     else:
         allocations = compute_distribution(args.jobs, available)
         if not allocations:

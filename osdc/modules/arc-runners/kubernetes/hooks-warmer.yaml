@@ -4,7 +4,7 @@
 #
 # Fix: find -exec stat {} \; -> find -exec stat {} + (10-100x faster)
 # Fix: exit code propagation — OOM-killed processes now correctly report failure
-# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.9
+# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.10
 # Remove this when upstream merges the fixes into actions/runner-container-hooks
 apiVersion: apps/v1
 kind: DaemonSet
@@ -33,58 +33,27 @@ spec:
     spec:
       priorityClassName: system-node-critical
 
-      # Tolerate ALL taints used by Karpenter nodepools
+      # Pin to the dedicated c7i-runner pool (where runner pods live).
+      # Workflow pool nodes don't run runner pods, so they don't need hooks.
+      nodeSelector:
+        node-fleet: "c7i-runner"
+
+      # Tolerate node-fleet + instance-type taints carried by c7i-runner
+      # nodes. Also tolerate the git-cache-not-ready startupTaint inherited
+      # from the unconditional NodePool generator emission — git-cache-warmer
+      # does not run on this pool, so the taint persists; tolerating it lets
+      # the warmer schedule despite that.
       tolerations:
-        - key: instance-type
-          operator: Exists
-          effect: NoSchedule
         - key: node-fleet
+          operator: Equal
+          value: "c7i-runner"
+          effect: NoSchedule
+        - key: instance-type
           operator: Exists
           effect: NoSchedule
         - key: git-cache-not-ready
           operator: Exists
           effect: NoSchedule
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-        - key: cpu-type
-          operator: Exists
-          effect: NoSchedule
-        - key: karpenter.sh/unschedulable
-          operator: Exists
-          effect: NoSchedule
-        - key: CriticalAddonsOnly
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/not-ready
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/unreachable
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/disk-pressure
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/memory-pressure
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/pid-pressure
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/unschedulable
-          operator: Exists
-          effect: NoSchedule
-
-      # Run on Karpenter-managed runner nodes only
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: workload-type
-                    operator: In
-                    values:
-                      - github-runner
 
       containers:
         - name: hooks-warmer
@@ -94,7 +63,7 @@ spec:
             - -c
             - |
               set -eu
-              HOOKS_VERSION="0.8.9"
+              HOOKS_VERSION="0.8.10"
               HOOKS_URL="https://github.com/jeanschmidt/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
               DEST="/mnt/runner-container-hooks"
               MARKER="$DEST/.version"

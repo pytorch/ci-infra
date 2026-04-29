@@ -359,13 +359,17 @@ spec:
     return yaml_content
 
 
-def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name):
+def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name, region=None):
     """Process a legacy ``nodepool:`` definition. Returns count of generated files."""
     name = nodepool_def.get("name")
     instance_type = nodepool_def.get("instance_type")
 
     if not name or not instance_type:
         raise ValueError(f"Invalid {def_file.name}: missing 'name' or 'instance_type'")
+
+    if _is_excluded_for_region(nodepool_def, region):
+        log_info(f"  {def_file.name}: skipped (excluded in region '{region}')")
+        return 0
 
     is_gpu = nodepool_def.get("gpu", False)
     has_nvme = nodepool_def.get("has_nvme", False)
@@ -391,12 +395,30 @@ def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name)
     return 1
 
 
+def _fleet_nodepool_name(fleet_name, instance_type, name_suffix=""):
+    """Compute the NodePool name for a fleet instance entry.
+
+    Default: ``<instance>-<size>`` (e.g. ``c7i.48xlarge`` → ``c7i-48xlarge``).
+    When the fleet name doesn't match the instance family prefix (e.g. a
+    ``c7i-runner`` fleet built on ``c7i.*`` instances), the fleet name is used
+    in place of the instance family so multiple fleets sharing the same
+    instance types still produce unique NodePool names.
+    """
+    instance_family = instance_type.split(".")[0]
+    if fleet_name == instance_family:
+        name = instance_type.replace(".", "-")
+    else:
+        instance_size = instance_type.split(".", 1)[1].replace(".", "-")
+        name = f"{fleet_name}-{instance_size}"
+    if name_suffix:
+        name = f"{name}{name_suffix}"
+    return name
+
+
 def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=None):
     """Build a nodepool_def dict from a fleet instance entry."""
     instance_type = inst["type"]
-    name = instance_type.replace(".", "-")
-    if name_suffix:
-        name = f"{name}{name_suffix}"
+    name = _fleet_nodepool_name(fleet_data["name"], instance_type, name_suffix)
 
     nodepool_def = {
         "name": name,
@@ -452,11 +474,27 @@ def _validate_fleet(fleet_data, def_file):
                 )
 
 
-def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name):
+def _is_excluded_for_region(fleet_or_pool_def, region):
+    """Return True if the given region appears in the def's ``exclude_regions`` list.
+
+    No-op (returns False) when ``region`` is empty/None or when the def has no
+    ``exclude_regions`` key — keeps the generator backward-compatible for
+    consumers that don't pass NODEPOOLS_REGION.
+    """
+    if not region:
+        return False
+    return region in (fleet_or_pool_def.get("exclude_regions") or [])
+
+
+def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, region=None):
     """Process a ``fleet:`` definition. Returns count of generated files."""
     _validate_fleet(fleet_data, def_file)
 
     fleet_name = fleet_data["name"]
+    if _is_excluded_for_region(fleet_data, region):
+        log_info(f"  Fleet '{fleet_name}': skipped (excluded in region '{region}')")
+        return 0
+
     instances = fleet_data.get("instances", [])
     release_instances = fleet_data.get("release", [])
 
@@ -495,6 +533,9 @@ def main():
         Path(os.environ["NODEPOOLS_OUTPUT_DIR"]) if "NODEPOOLS_OUTPUT_DIR" in os.environ else module_dir / "generated"
     )
     module_name = os.environ.get("NODEPOOLS_MODULE_NAME", "nodepools")
+    # Cluster region — used to honor exclude_regions on fleet/nodepool defs.
+    # When unset, exclude_regions is a no-op (backward-compatible).
+    region = os.environ.get("NODEPOOLS_REGION", "")
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():
@@ -507,6 +548,8 @@ def main():
         return 1
 
     log_info(f"Found {len(def_files)} nodepool definition(s)")
+    if region:
+        log_info(f"Target region: {region} (fleets with matching exclude_regions will be skipped)")
 
     generated = 0
     skipped = []
@@ -522,12 +565,12 @@ def main():
 
             # Determine format: fleet, fleets, or legacy nodepool
             if "fleet" in data:
-                generated += _process_fleet(data["fleet"], def_file, defs_dir, output_dir, module_name)
+                generated += _process_fleet(data["fleet"], def_file, defs_dir, output_dir, module_name, region)
             elif "fleets" in data:
                 for fleet_data in data["fleets"]:
-                    generated += _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name)
+                    generated += _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, region)
             elif "nodepool" in data:
-                generated += _process_nodepool(data["nodepool"], def_file, defs_dir, output_dir, module_name)
+                generated += _process_nodepool(data["nodepool"], def_file, defs_dir, output_dir, module_name, region)
             else:
                 log_error(f"Invalid {def_file.name}: missing 'nodepool', 'fleet', or 'fleets' key")
                 skipped.append(def_file.name)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import signal
@@ -830,9 +831,11 @@ class TestCleanupOldLogs:
 
     def test_old_files_deleted(self, tmp_path):
         """Files older than max_age_days are deleted."""
+        today = datetime.date.today()
         old = tmp_path / "fallback.2020-01-01.log"
         old.write_text("old data")
-        recent = tmp_path / "fallback.2026-03-29.log"
+        recent_date = today - datetime.timedelta(days=5)
+        recent = tmp_path / f"fallback.{recent_date.isoformat()}.log"
         recent.write_text("recent data")
 
         cleanup_old_logs(tmp_path, max_age_days=30)

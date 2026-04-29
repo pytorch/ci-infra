@@ -13,6 +13,7 @@ from load_test_monitor import LoadTestResults
 from load_test_run import (
     DEFAULT_TOTAL_JOBS,
     LOAD_TEST_PR_TITLE_PREFIX,
+    _parse_label_spec,
     _prepare_load_test_pr,
     _print_distribution,
     _sigterm_handler,
@@ -209,6 +210,115 @@ class TestParseArgs:
     def test_missing_required_arg(self):
         with patch("sys.argv", ["load_test_run.py"]), pytest.raises(SystemExit):
             parse_args()
+
+    def _argv_with(self, *extra):
+        return [
+            "load_test_run.py",
+            "--cluster-id",
+            "x",
+            "--clusters-yaml",
+            "/tmp/c.yaml",
+            "--upstream-dir",
+            "/tmp/u",
+            "--root-dir",
+            "/tmp/r",
+            *extra,
+        ]
+
+    def test_label_single(self):
+        with patch("sys.argv", self._argv_with("--label", "l-x86iamx-8-16:400")):
+            args = parse_args()
+            assert args.label == [("l-x86iamx-8-16", 400)]
+
+    def test_label_multiple(self):
+        with patch(
+            "sys.argv",
+            self._argv_with(
+                "--label",
+                "l-x86iamx-8-16:400",
+                "--label",
+                "l-x86aavx2-29-113-a10g:200",
+            ),
+        ):
+            args = parse_args()
+            assert args.label == [
+                ("l-x86iamx-8-16", 400),
+                ("l-x86aavx2-29-113-a10g", 200),
+            ]
+
+    def test_label_with_jobs_rejected(self):
+        with (
+            patch(
+                "sys.argv",
+                self._argv_with("--label", "l-x86iamx-8-16:400", "--jobs", "100"),
+            ),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+    def test_label_duplicate_rejected(self):
+        with (
+            patch(
+                "sys.argv",
+                self._argv_with(
+                    "--label",
+                    "l-x86iamx-8-16:100",
+                    "--label",
+                    "l-x86iamx-8-16:200",
+                ),
+            ),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+    def test_label_invalid_format_rejected(self):
+        with (
+            patch("sys.argv", self._argv_with("--label", "no-colon-here")),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+    def test_label_zero_count_rejected(self):
+        with (
+            patch("sys.argv", self._argv_with("--label", "l-x86iamx-8-16:0")),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+    def test_label_non_integer_count_rejected(self):
+        with (
+            patch("sys.argv", self._argv_with("--label", "l-x86iamx-8-16:abc")),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+
+# ── _parse_label_spec ──────────────────────────────────────────────────
+
+
+class TestParseLabelSpec:
+    def test_valid(self):
+        assert _parse_label_spec("l-x86iamx-8-16:400") == ("l-x86iamx-8-16", 400)
+
+    def test_missing_colon(self):
+        with pytest.raises(Exception, match="expected format"):
+            _parse_label_spec("l-x86iamx-8-16")
+
+    def test_empty_label(self):
+        with pytest.raises(Exception, match="expected format"):
+            _parse_label_spec(":400")
+
+    def test_non_integer_count(self):
+        with pytest.raises(Exception, match="must be an integer"):
+            _parse_label_spec("l-x86iamx-8-16:notanumber")
+
+    def test_zero_count(self):
+        with pytest.raises(Exception, match="must be positive"):
+            _parse_label_spec("l-x86iamx-8-16:0")
+
+    def test_negative_count(self):
+        with pytest.raises(Exception, match="must be positive"):
+            _parse_label_spec("l-x86iamx-8-16:-5")
 
 
 # ── _print_distribution ────────────────────────────────────────────────
@@ -610,7 +720,7 @@ class TestMain:
     @patch("load_test_run.classify_runner", return_value=(False, False, 0))
     @patch("load_test_run.get_available_runners")
     @patch("load_test_run.load_cluster_config")
-    def test_single_label_valid(
+    def test_label_single(
         self,
         mock_load_cfg,
         mock_get_runners,
@@ -638,17 +748,87 @@ class TestMain:
         mock_wait.return_value = LoadTestResults(5, 5, False, 60.0, [], [1])
         mock_report.return_value = True
 
-        argv = self._base_argv(jobs=5) + ["--single-label", "l-x86iavx512-8-16"]
+        argv = self._base_argv() + ["--label", "l-x86iavx512-8-16:5"]
         with patch("sys.argv", argv):
             with pytest.raises(SystemExit) as exc:
                 main()
             assert exc.value.code == 0
 
         mock_classify.assert_called_once_with("l-x86iavx512-8-16")
+        # compute_distribution must NOT be called when --label is used
+        gen_call_allocs = mock_gen_wf.call_args[0][0]
+        assert len(gen_call_allocs) == 1
+        assert gen_call_allocs[0].osdc_label == "l-x86iavx512-8-16"
+        assert gen_call_allocs[0].job_count == 5
+
+    @patch("load_test_run.run_cmd")
+    @patch("load_test_run.print_load_test_report")
+    @patch("load_test_run.wait_for_load_test")
+    @patch("load_test_run._prepare_load_test_pr")
+    @patch("load_test_run.ensure_canary_repo")
+    @patch("load_test_run.cleanup_stale_prs")
+    @patch("load_test_run.generate_workflow")
+    @patch("load_test_run.classify_runner")
+    @patch("load_test_run.get_available_runners")
+    @patch("load_test_run.load_cluster_config")
+    def test_label_multiple_cpu_and_gpu(
+        self,
+        mock_load_cfg,
+        mock_get_runners,
+        mock_classify,
+        mock_gen_wf,
+        mock_cleanup,
+        mock_ensure,
+        mock_prepare_pr,
+        mock_wait,
+        mock_report,
+        mock_run_cmd,
+    ):
+        mock_load_cfg.return_value = {
+            "cluster": {
+                "cluster_name": "t",
+                "region": "us-east-2",
+                "arc-runners": {"runner_name_prefix": "mt-"},
+            },
+            "defaults": {},
+        }
+        mock_get_runners.return_value = (
+            {"l-x86iamx-8-16", "l-x86aavx2-29-113-a10g"},
+            0,
+        )
+        # First call: CPU. Second call: GPU.
+        mock_classify.side_effect = [(False, False, 0), (True, False, 1)]
+        mock_gen_wf.return_value = "wf"
+        mock_ensure.return_value = Path("/tmp/canary")
+        mock_prepare_pr.return_value = 42
+        mock_wait.return_value = LoadTestResults(600, 600, False, 60.0, [], [1])
+        mock_report.return_value = True
+
+        argv = self._base_argv() + [
+            "--label",
+            "l-x86iamx-8-16:400",
+            "--label",
+            "l-x86aavx2-29-113-a10g:200",
+        ]
+        with patch("sys.argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 0
+
+        gen_call_allocs = mock_gen_wf.call_args[0][0]
+        assert len(gen_call_allocs) == 2
+        assert gen_call_allocs[0].osdc_label == "l-x86iamx-8-16"
+        assert gen_call_allocs[0].job_count == 400
+        assert gen_call_allocs[0].is_gpu is False
+        assert gen_call_allocs[1].osdc_label == "l-x86aavx2-29-113-a10g"
+        assert gen_call_allocs[1].job_count == 200
+        assert gen_call_allocs[1].is_gpu is True
+        # Proportions sum to 1.0
+        assert abs(sum(a.proportion for a in gen_call_allocs) - 1.0) < 1e-9
 
     @patch("load_test_run.get_available_runners")
     @patch("load_test_run.load_cluster_config")
-    def test_single_label_not_found_exits_1(
+    def test_label_not_found_exits_1(
         self,
         mock_load_cfg,
         mock_get_runners,
@@ -659,7 +839,7 @@ class TestMain:
         }
         mock_get_runners.return_value = ({"l-x86iavx512-8-16"}, 0)
 
-        argv = self._base_argv(jobs=5) + ["--single-label", "nonexistent-runner"]
+        argv = self._base_argv() + ["--label", "nonexistent-runner:10"]
         with patch("sys.argv", argv):
             with pytest.raises(SystemExit) as exc:
                 main()

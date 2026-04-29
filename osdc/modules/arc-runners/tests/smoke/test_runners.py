@@ -279,48 +279,56 @@ class TestHooksWarmer:
         priority = pod_spec.get("priorityClassName")
         assert priority == "system-node-critical", f"Expected priorityClassName=system-node-critical, got {priority!r}"
 
-    def test_node_affinity_targets_runner_nodes(self, all_daemonsets, enabled_modules) -> None:
-        """DaemonSet must target workload-type=github-runner nodes via In operator."""
+    def test_node_selector_targets_c7i_runner_pool(self, all_daemonsets, enabled_modules) -> None:
+        """DaemonSet must target the dedicated c7i-runner pool via node-fleet selector."""
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
         pod_spec = self._pod_spec(self._get_ds(all_daemonsets))
-        affinity = pod_spec.get("affinity", {})
-        node_affinity = affinity.get("nodeAffinity", {})
-        required = node_affinity.get("requiredDuringSchedulingIgnoredDuringExecution", {})
-        terms = required.get("nodeSelectorTerms", [])
+        node_selector = pod_spec.get("nodeSelector", {})
+        assert node_selector.get("node-fleet") == "c7i-runner", (
+            f"Expected nodeSelector node-fleet=c7i-runner, got {node_selector!r}"
+        )
 
-        found = False
-        for term in terms:
-            for expr in term.get("matchExpressions", []):
-                if (
-                    expr.get("key") == "workload-type"
-                    and expr.get("operator") == "In"
-                    and "github-runner" in expr.get("values", [])
-                ):
-                    found = True
-                    break
-
-        assert found, "DaemonSet missing nodeAffinity for workload-type In [github-runner]"
-
-    def test_tolerates_nodepool_taints(self, all_daemonsets, enabled_modules) -> None:
-        """DaemonSet must tolerate all Karpenter nodepool taints."""
+    def test_tolerates_c7i_runner_pool_taints(self, all_daemonsets, enabled_modules) -> None:
+        """DaemonSet must tolerate the c7i-runner pool's node-fleet + instance-type +
+        git-cache-not-ready taints. The git-cache-not-ready startupTaint is inherited
+        from the unconditional NodePool generator emission and is never cleared on
+        this pool (git-cache-warmer doesn't run here), so the warmer must tolerate it.
+        """
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
         pod_spec = self._pod_spec(self._get_ds(all_daemonsets))
         tolerations = pod_spec.get("tolerations", [])
         tolerated_keys = {t.get("key") for t in tolerations}
 
-        # Critical taint keys that must be tolerated for the DaemonSet to
-        # schedule on all runner/GPU nodes
-        required_taints = {
-            "instance-type",
-            "nvidia.com/gpu",
-            "CriticalAddonsOnly",
-            "cpu-type",
-            "git-cache-not-ready",
-        }
+        # The c7i-runner pool taints + the persistent git-cache-not-ready
+        # startupTaint must all be tolerated. The warmer must NOT be schedulable
+        # on workflow pool nodes (different node-fleet value).
+        required_taints = {"node-fleet", "instance-type", "git-cache-not-ready"}
         missing = required_taints - tolerated_keys
         assert not missing, f"DaemonSet missing tolerations for taints: {missing}"
+
+        # The node-fleet toleration must be value-scoped to c7i-runner so the
+        # warmer cannot land on other pools (e.g. node-fleet=g4dn workflow nodes).
+        node_fleet_tols = [t for t in tolerations if t.get("key") == "node-fleet"]
+        assert any(t.get("operator") == "Equal" and t.get("value") == "c7i-runner" for t in node_fleet_tols), (
+            f"node-fleet toleration must be Equal/c7i-runner, got {node_fleet_tols!r}"
+        )
+
+        # The git-cache-not-ready toleration uses the value-agnostic Exists
+        # operator (matches the convention used by every other DaemonSet that
+        # tolerates this startupTaint). Exists must omit the value field.
+        git_cache_tols = [t for t in tolerations if t.get("key") == "git-cache-not-ready"]
+        assert len(git_cache_tols) == 1, f"expected exactly one git-cache-not-ready toleration, got {git_cache_tols!r}"
+        assert git_cache_tols[0].get("operator") == "Exists", (
+            f"git-cache-not-ready toleration must use operator=Exists, got {git_cache_tols[0]!r}"
+        )
+        assert "value" not in git_cache_tols[0], (
+            f"Exists toleration must omit the value field, got {git_cache_tols[0]!r}"
+        )
+        assert git_cache_tols[0].get("effect") == "NoSchedule", (
+            f"git-cache-not-ready toleration must use effect=NoSchedule, got {git_cache_tols[0]!r}"
+        )
 
     def test_hostpath_volume_narrowed(self, all_daemonsets, enabled_modules) -> None:
         """Volume must mount /mnt/runner-container-hooks (not all of /mnt)."""

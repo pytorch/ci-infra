@@ -185,11 +185,6 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     # GPU-specific YAML snippets
     if gpu > 0:
-        gpu_tolerations = """
-      - key: nvidia.com/gpu
-        operator: Equal
-        value: "true"
-        effect: NoSchedule"""
         gpu_job_tolerations = """
         - key: nvidia.com/gpu
           operator: Equal
@@ -204,18 +199,15 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         gpu_request = f'\n              nvidia.com/gpu: "{gpu}"'
         gpu_limit = f'\n              nvidia.com/gpu: "{gpu}"'
     else:
-        gpu_tolerations = ""
         gpu_job_tolerations = ""
         gpu_node_selector_affinity = ""
         gpu_request = ""
         gpu_limit = ""
 
-    # Runner class isolation snippets
-    # Release runners: use nodeSelector to target release nodes
-    # Regular runners: use anti-affinity to avoid release nodes
+    # Runner class isolation snippets (workflow pod only)
+    # Release runners: required affinity to target release nodes
+    # Regular runners: required affinity to avoid release nodes (DoesNotExist)
     if runner_class:
-        runner_class_node_selector = f"      osdc.io/runner-class: {runner_class}\n"
-        runner_class_affinity = ""
         runner_class_job_affinity = (
             "          requiredDuringSchedulingIgnoredDuringExecution:\n"
             "            nodeSelectorTerms:\n"
@@ -226,16 +218,6 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
             f'                      - "{runner_class}"\n'
         )
     else:
-        runner_class_node_selector = ""
-        runner_class_affinity = (
-            "    affinity:\n"
-            "      nodeAffinity:\n"
-            "        requiredDuringSchedulingIgnoredDuringExecution:\n"
-            "          nodeSelectorTerms:\n"
-            "            - matchExpressions:\n"
-            "                - key: osdc.io/runner-class\n"
-            "                  operator: DoesNotExist\n"
-        )
         runner_class_job_affinity = (
             "          requiredDuringSchedulingIgnoredDuringExecution:\n"
             "            nodeSelectorTerms:\n"
@@ -261,7 +243,6 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{MEMORY}}": str(memory),
         "{{MEMORY_BYTES}}": str(parse_memory_bytes(memory)),
         "{{DISK_SIZE}}": f"{disk_size}Gi",
-        "{{GPU_TOLERATIONS}}": gpu_tolerations,
         "{{GPU_JOB_TOLERATIONS}}": gpu_job_tolerations,
         "{{GPU_NODE_SELECTOR_AFFINITY}}": gpu_node_selector_affinity,
         "{{GPU_REQUEST}}": gpu_request,
@@ -269,8 +250,6 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{MODULE_NAME}}": module_name,
         "{{RUNNER_IMAGE}}": runner_image,
         "{{RUNNER_GROUP}}": runner_group,
-        "{{RUNNER_CLASS_NODE_SELECTOR}}": runner_class_node_selector,
-        "{{RUNNER_CLASS_AFFINITY}}": runner_class_affinity,
         "{{RUNNER_CLASS_JOB_AFFINITY}}": runner_class_job_affinity,
         "{{MAX_RUNNERS_LINE}}": max_runners_line,
         "{{GPU_COUNT}}": str(gpu),

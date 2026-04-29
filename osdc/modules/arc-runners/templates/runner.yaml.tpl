@@ -109,6 +109,8 @@ listenerTemplate:
             value: "512Mi"
           - name: CAPACITY_AWARE_NODE_FLEET
             value: "{{NODE_FLEET}}"
+          - name: CAPACITY_AWARE_RUNNER_NODE_FLEET
+            value: "c7i-runner"
           - name: CAPACITY_AWARE_RUNNER_CLASS
             value: "{{RUNNER_CLASS}}"
           - name: CAPACITY_AWARE_HUD_API_URL
@@ -126,26 +128,39 @@ template:
       karpenter.sh/do-not-disrupt: "true"
   spec:
     serviceAccountName: arc-runner
+    # Priority 0 — preempts placeholder-runner (-10), does NOT preempt
+    # placeholder-workflow (10). Required for the proactive-capacity
+    # preemption ladder to behave deterministically.
+    priorityClassName: arc-runner
 
-    # Schedule runner pods on compute nodes
+    # Pin runner pods to the dedicated c7i-runner pool (separate from the
+    # workflow pool defined by {{NODE_FLEET}} on the ConfigMap below). This
+    # topology split is what makes preemption victim selection deterministic
+    # — see PROACTIVE_CAPACITY.md "Dedicated Runner NodePool".
+    # Runner-class isolation (osdc.io/runner-class) is a workflow-pool
+    # concern only; c7i-runner nodes carry no runner-class label.
     nodeSelector:
       workload-type: github-runner
-      node-fleet: "{{NODE_FLEET}}"
-{{RUNNER_CLASS_NODE_SELECTOR}}
-{{RUNNER_CLASS_AFFINITY}}
-    # Tolerate node-fleet + instance-type taints and git-cache startup taint
+      node-fleet: "c7i-runner"
+
+    # Tolerate node-fleet + instance-type taints. The c7i-runner NodePool
+    # inherits the git-cache-not-ready startupTaint from the unconditional
+    # generator emission; the git-cache-warmer DaemonSet does not run on
+    # this pool, so the taint is never cleared. Tolerating it lets runner
+    # pods schedule despite the persistent taint. The runner pod itself
+    # does NOT use the git-cache mount — only the toleration is required
+    # for scheduling.
     tolerations:
       - key: node-fleet
         operator: Equal
-        value: "{{NODE_FLEET}}"
+        value: "c7i-runner"
         effect: NoSchedule
       - key: instance-type
         operator: Exists
         effect: NoSchedule
       - key: git-cache-not-ready
-        operator: Equal
-        value: "true"
-        effect: NoSchedule{{GPU_TOLERATIONS}}
+        operator: Exists
+        effect: NoSchedule
 
     # Wait for patched hooks to be available on the node (placed by
     # runner-hooks-warmer DaemonSet). Polls every 10s for the index.js.
@@ -204,7 +219,7 @@ template:
             value: /home/runner/hook-extensions/job-pod.yaml
           # Use OSDC wrapper that validates env vars and surfaces errors
           # clearly, then delegates to patched hooks from DaemonSet.
-          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.8
+          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.10
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /home/runner/hook-extensions/wrapper.js
           # Allow more time for workflow pods to come online during demand surges.
@@ -212,13 +227,6 @@ template:
           # git-cache sync takes longer than expected under concurrent load.
           - name: ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS
             value: "1500"
-          # Wait for startup taints to clear before creating workflow pods.
-          # Prevents Karpenter-scheduler deadlock on fresh nodes where the
-          # runner tolerates the taint but the workflow pod does not.
-          - name: ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS
-            value: "git-cache-not-ready"
-          - name: ACTIONS_RUNNER_WAIT_FOR_NODE_TAINTS_TIMEOUT_SECONDS
-            value: "720"
           # Memory management: the runner pod shares 512Mi between the .NET
           # runner agent and Node.js container hooks. Without explicit caps,
           # .NET claims 75% (384Mi) and Node.js claims 50% (256Mi) of the
@@ -295,12 +303,15 @@ data:
       # Job pods run untrusted user code — no Kubernetes API access
       serviceAccountName: arc-workflow
       automountServiceAccountToken: false
+      # Priority 20 — preempts placeholder-workflow (10) so workflow pods
+      # can claim the capacity reserved by the placeholders they replace.
+      priorityClassName: arc-workflow
 
       # Prefer scheduling job pods on same node fleet as runner.
       # Tolerations enforce node-fleet constraints (every NodePool taints
       # with node-fleet=<fleet>:NoSchedule), so nodeSelector is not needed.
-      # The hooks inject a weight-100 same-node preference at runtime;
-      # this weight-50 preference is the fallback for same-fleet nodes.
+      # This weight-50 preference biases the scheduler toward same-fleet
+      # nodes when multiple fleets could host the workflow pod.
       affinity:
         nodeAffinity:
 {{RUNNER_CLASS_JOB_AFFINITY}}          preferredDuringSchedulingIgnoredDuringExecution:
