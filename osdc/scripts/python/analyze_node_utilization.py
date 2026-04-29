@@ -29,8 +29,10 @@ from daemonset_overhead import DaemonSetOverhead, discover_daemonsets
 from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
 
 # Runner pod sidecar (the ARC orchestrator container, not the $job container)
+# Memory bumped 512 -> 768 to give native Node.js stdio buffers headroom under
+# CRI backpressure; see modules/arc-runners/templates/runner.yaml.tpl L187-193.
 RUNNER_SIDECAR_CPU_M = 750
-RUNNER_SIDECAR_MEM_MI = 512
+RUNNER_SIDECAR_MEM_MI = 768
 
 # ARC container-hooks overhead: injected containers added to the workflow
 # (job) pod by runner-container-hooks beyond the def's vcpu/memory.
