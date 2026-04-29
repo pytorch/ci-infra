@@ -190,7 +190,7 @@ clusters:
       github_secret_name: pytorch-arc-cbr-production
       runner_name_prefix: "mt-"
     pypi_cache:
-      replicas: 2
+      replicas: 4
     modules:
       - karpenter
       - arc
