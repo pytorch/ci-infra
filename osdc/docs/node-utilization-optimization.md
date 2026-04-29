@@ -62,7 +62,7 @@ Runners have ISA (instruction set) requirements encoded in their names that cons
 |----------|----------|---------|-----------|---------|
 | g5.48xlarge | 192c/768Gi @ $16.29/hr | 3 (A10G) | **50.3%** | 4-GPU runner uses only half the node |
 | g6.48xlarge | 192c/768Gi @ $13.35/hr | 2 (L4) | **50.3%** | Same — 4-GPU runner on 8-GPU node |
-| g4dn.8xlarge | 32c/128Gi @ $2.18/hr | 1 (T4) | **90.6%** | `l-x86iavx512-29-115-t4` fills the node |
+| g4dn.8xlarge | 32c/128Gi @ $2.18/hr | 1 (T4) | **90.6%** | `l-x86iavx512-29-114-t4` fills the node |
 | g4dn.12xlarge | 48c/192Gi @ $3.91/hr | 1 (T4) | **95.6%** | `l-x86iavx512-45-172-t4-4` fills the node (FIXED) |
 | g4dn.metal | 96c/384Gi @ $7.82/hr | 1 (T4) | 96.0% | Good — `l-bx86iavx512-94-344-t4-8` fills the node |
 | p6-b200.48xlarge | 192c/2048Gi @ $55.47/hr | 4 (B200) | 88.1% | Good — runners scale proportionally to GPU count |
@@ -71,7 +71,7 @@ Runners have ISA (instruction set) requirements encoded in their names that cons
 
 The original 4-GPU T4 runner (`l-x86iavx512-48-192-t4-4`) requested 48 vCPU + 192Gi memory + 4 GPUs. After adding the 750m sidecar (total: 48750m CPU), it exceeded the g4dn.12xlarge allocatable CPU of 47465m and could never schedule.
 
-**Fix applied**: Renamed to `l-x86iavx512-45-172-t4-4` with reduced vCPU (45) and memory (172Gi) to fit within g4dn.12xlarge allocatable resources. The 1-GPU T4 runner (`l-x86iavx512-29-115-t4`) runs on its own g4dn.8xlarge nodepool.
+**Fix applied**: Renamed to `l-x86iavx512-45-172-t4-4` with reduced vCPU (45) and memory (172Gi) to fit within g4dn.12xlarge allocatable resources. The 1-GPU T4 runner (`l-x86iavx512-29-114-t4`) runs on its own g4dn.8xlarge nodepool.
 
 ## Recommendations
 

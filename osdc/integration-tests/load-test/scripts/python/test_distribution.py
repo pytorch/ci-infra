@@ -30,7 +30,7 @@ class TestClassifyRunner:
         assert gpu_count == 0
 
     def test_gpu_t4_single(self):
-        is_gpu, is_arm64, gpu_count = classify_runner("l-x86iavx512-29-115-t4")
+        is_gpu, is_arm64, gpu_count = classify_runner("l-x86iavx512-29-114-t4")
         assert is_gpu is True
         assert is_arm64 is False
         assert gpu_count == 1
@@ -46,7 +46,7 @@ class TestClassifyRunner:
         assert gpu_count == 1
 
     def test_gpu_a10g_multi(self):
-        is_gpu, _, gpu_count = classify_runner("l-x86aavx2-45-167-a10g-4")
+        is_gpu, _, gpu_count = classify_runner("l-x86aavx2-45-166-a10g-4")
         assert is_gpu is True
         assert gpu_count == 4
 
@@ -200,7 +200,7 @@ class TestComputeDistribution:
 
     def test_classification_propagated(self):
         """RunnerAllocation should have correct GPU/ARM classification."""
-        runners = {"l-x86iavx512-8-16", "l-arm64g3-16-62", "l-x86iavx512-29-115-t4"}
+        runners = {"l-x86iavx512-8-16", "l-arm64g3-16-62", "l-x86iavx512-29-114-t4"}
         result = compute_distribution(30, runners)
         by_label = {a.osdc_label: a for a in result}
 
@@ -211,7 +211,7 @@ class TestComputeDistribution:
         arm = by_label["l-arm64g3-16-62"]
         assert arm.is_arm64 is True
 
-        gpu = by_label["l-x86iavx512-29-115-t4"]
+        gpu = by_label["l-x86iavx512-29-114-t4"]
         assert gpu.is_gpu is True
         assert gpu.gpu_count == 1
 

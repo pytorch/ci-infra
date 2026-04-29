@@ -70,7 +70,7 @@ class TestGenerateWorkflow:
         assert "Checkout pytorch" in result
 
     def test_gpu_job(self):
-        allocs = [_make_alloc("l-x86iavx512-29-115-t4", 1, is_gpu=True, gpu_count=1)]
+        allocs = [_make_alloc("l-x86iavx512-29-114-t4", 1, is_gpu=True, gpu_count=1)]
         result = generate_workflow(allocs, "", "test")
 
         assert GPU_CONTAINER in result
@@ -129,7 +129,7 @@ class TestGenerateWorkflow:
         allocs = [
             _make_alloc("l-x86iavx512-8-16", 3),
             _make_alloc("l-arm64g3-16-62", 2, is_arm64=True),
-            _make_alloc("l-x86iavx512-29-115-t4", 1, is_gpu=True, gpu_count=1),
+            _make_alloc("l-x86iavx512-29-114-t4", 1, is_gpu=True, gpu_count=1),
         ]
         result = generate_workflow(allocs, "mt-", "test")
         data = yaml.safe_load(result)

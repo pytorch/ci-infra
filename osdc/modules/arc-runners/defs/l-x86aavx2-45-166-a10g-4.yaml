@@ -1,10 +1,10 @@
-# ARC runner definition: l-x86aavx2-45-167-a10g-4
+# ARC runner definition: l-x86aavx2-45-166-a10g-4
 # Instance type: g5.12xlarge — 4-GPU A10G, 48c/192Gi node
 # Actual K8s capacity ~177.6Gi. Max job memory after all overhead: 166Gi
 # (runner sidecar bumped 512Mi -> 768Mi, reclaimed 1Gi from job memory
 # to keep the pair within node-allocatable).
 runner:
-  name: l-x86aavx2-45-167-a10g-4
+  name: l-x86aavx2-45-166-a10g-4
   instance_type: g5.12xlarge
   disk_size: 150
   vcpu: 45

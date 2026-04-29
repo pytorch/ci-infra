@@ -945,7 +945,7 @@ jobs:
   # pypi-cache service and pytorch wheel index. Runs the full test
   # battery on a GPU runner.
   test-pypi-cache-action-cuda:
-    runs-on: {{PREFIX}}l-x86iavx512-29-115-t4
+    runs-on: {{PREFIX}}l-x86iavx512-29-114-t4
     container:
       image: python:3.12-slim
     steps:
@@ -1385,7 +1385,7 @@ jobs:
 
   # ── GPU Runner Tests ──────────────────────────────────────────────────
   test-gpu-t4:
-    runs-on: {{PREFIX}}l-x86iavx512-29-115-t4
+    runs-on: {{PREFIX}}l-x86iavx512-29-114-t4
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
