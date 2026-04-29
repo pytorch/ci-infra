@@ -8,7 +8,7 @@
 # via a temporary override file.
 
 controller:
-  type: deployment
+  type: statefulset
   replicas: 2
 
   # Run on base infrastructure nodes
@@ -21,6 +21,8 @@ controller:
       effect: NoSchedule
 
 alloy:
+  clustering:
+    enabled: true
   resources:
     requests:
       cpu: 250m
