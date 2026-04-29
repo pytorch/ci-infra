@@ -129,10 +129,12 @@ class TestPerRunnerTotal:
     def test_basic(self):
         runner = {"vcpu": 8, "memory_mi": 16384, "gpu": 0}
         cpu, mem, gpu = per_runner_total(runner)
-        # 8*1000 + 750 (sidecar) + 320 (hooks) = 9070
-        assert cpu == 9070
-        # 16384 + 1024 (sidecar) + 522 (hooks) = 17930
-        assert mem == 17930
+        # 8*1000 + 320 (hooks) = 8320 — runner sidecar lives on c7i-runner
+        # NodePool (ci-infra#500), not on the workflow node, so it is not
+        # included.
+        assert cpu == 8320
+        # 16384 + 522 (hooks) = 16906
+        assert mem == 16906
         assert gpu == 0
 
     def test_with_gpu(self):
