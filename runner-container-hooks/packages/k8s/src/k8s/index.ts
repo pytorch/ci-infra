@@ -16,7 +16,6 @@ import {
   PodPhase,
   mergePodSpecWithOptions,
   mergeObjectMeta,
-  injectSameNodePreference,
   fixArgs,
   listDirAllCommand,
   sleep,
@@ -67,8 +66,8 @@ const COPY_VERIFY_RETRIES = parseInt(
  * Karpenter-scheduler deadlock where workflow pods are created before startup
  * taints (e.g. git-cache-not-ready) have cleared.
  *
- * Non-fatal if runner pod or node lookup fails (same pattern as
- * applySameNodePreference). Returns immediately if the env var is unset.
+ * Non-fatal if runner pod or node lookup fails. Returns immediately if the
+ * env var is unset.
  */
 export async function waitForNodeTaintsRemoval(): Promise<void> {
   const taintKeysRaw = process.env[ENV_WAIT_FOR_NODE_TAINTS]
@@ -153,42 +152,6 @@ export async function waitForNodeTaintsRemoval(): Promise<void> {
   throw new Error(
     `Timed out after ${effectiveTimeout}s waiting for node ${nodeName} taints to clear: [${taintKeys.join(', ')}]`
   )
-}
-
-/**
- * Look up the runner pod's node and inject a weight-100 same-node scheduling
- * preference into the given pod spec. Non-fatal: if the lookup fails, a
- * warning is logged and the pod spec is left unchanged.
- */
-async function applySameNodePreference(spec: k8s.V1PodSpec): Promise<void> {
-  try {
-    const runnerPodName = process.env.ACTIONS_RUNNER_POD_NAME
-    if (!runnerPodName) {
-      core.warning(
-        'ACTIONS_RUNNER_POD_NAME not set — same-node scheduling preference skipped'
-      )
-      return
-    }
-    const runnerPod = await k8sApi.readNamespacedPod({
-      name: runnerPodName,
-      namespace: namespace()
-    })
-    const runnerNodeName = runnerPod.spec?.nodeName
-    if (!runnerNodeName) {
-      core.warning(
-        `Runner pod ${runnerPodName} has no nodeName — same-node scheduling preference skipped`
-      )
-      return
-    }
-    injectSameNodePreference(spec, runnerNodeName)
-    core.info(
-      `Injected same-node scheduling preference for node ${runnerNodeName}`
-    )
-  } catch (err) {
-    core.warning(
-      `Could not look up runner pod node for same-node scheduling: ${err}`
-    )
-  }
 }
 
 export const requiredPermissions = [
@@ -332,8 +295,6 @@ export async function createJobPod(
     mergePodSpecWithOptions(appPod.spec, extension.spec)
   }
 
-  await applySameNodePreference(appPod.spec)
-
   return await k8sApi.createNamespacedPod({
     namespace: namespace(),
     body: appPod
@@ -386,8 +347,6 @@ export async function createContainerStepPod(
   if (extension?.spec) {
     mergePodSpecWithOptions(appPod.spec, extension.spec)
   }
-
-  await applySameNodePreference(appPod.spec)
 
   return await k8sApi.createNamespacedPod({
     namespace: namespace(),

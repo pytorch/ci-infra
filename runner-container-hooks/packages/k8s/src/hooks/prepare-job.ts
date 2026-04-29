@@ -11,7 +11,6 @@ import {
   containerPorts,
   createJobPod,
   isPodContainerAlpine,
-  getPodByName,
   prunePods,
   waitForPodPhases,
   getPrepareJobTimeoutSeconds,
@@ -127,29 +126,6 @@ export async function prepareJob(
     throw new Error(`pod failed to come online with error: ${err}`)
   }
   core.info(`[prepare_job] pod running (${elapsed()})`)
-
-  try {
-    const runningPod = await getPodByName(createdPod.metadata.name)
-    const workflowNode = runningPod.spec?.nodeName || 'unknown'
-    const runnerPodName = process.env.ACTIONS_RUNNER_POD_NAME
-    if (runnerPodName) {
-      const runnerPod = await getPodByName(runnerPodName)
-      const runnerNode = runnerPod.spec?.nodeName || 'unknown'
-      if (workflowNode !== runnerNode) {
-        core.warning(
-          `Cross-node scheduling: workflow pod on ${workflowNode}, runner on ${runnerNode}`
-        )
-      } else {
-        core.info(`Workflow pod on same node as runner: ${workflowNode}`)
-      }
-    } else {
-      core.info(`Workflow pod scheduled to node: ${workflowNode}`)
-    }
-  } catch (err) {
-    core.debug(
-      `Could not determine node placement: ${err instanceof Error ? err.message : err}`
-    )
-  }
 
   await execCpToPod(createdPod.metadata.name, runnerWorkspace, '/__w')
 
