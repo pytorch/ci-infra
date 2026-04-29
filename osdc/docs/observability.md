@@ -85,7 +85,7 @@ The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 | ServiceMonitor | buildkit-haproxy | buildkit | BuildKit HAProxy LB metrics |
 | PodMonitor | coredns | kube-system | CoreDNS request rate, latency, cache hit/miss, errors |
 | PodMonitor | git-cache-daemonset | kube-system | Git cache DaemonSet metrics |
-| PodMonitor | arc-listeners | arc-runners | ARC listener pods metrics |
+| PodMonitor | arc-listeners | arc-systems | ARC listener pods metrics |
 
 Plus kube-prometheus-stack built-in targets:
 - **node-exporter** — DaemonSet on ALL nodes (tolerates all taints), 60s interval

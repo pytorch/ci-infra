@@ -15,7 +15,7 @@ Runner pods are ephemeral — they run a single GitHub Actions job and terminate
 | Source | What's collected | ~Series |
 |--------|-----------------|---------|
 | **cAdvisor** (kubelet) | Container CPU (usage, throttling), memory (usage, working set, cache), filesystem (reads/writes, usage), network I/O (rx/tx bytes/packets) | ~30-50 per pod |
-| **ARC listener** (per scale set, not per pod) | `gha_assigned_jobs`, `gha_job_execution_duration_seconds_{sum,count}`, `gha_job_startup_duration_seconds_{sum,count}` | ~5-10 per scale set |
+| **ARC listener** (per scale set, not per pod) | `gha_assigned_jobs`, `gha_job_execution_duration_seconds_{sum,count}`, `gha_job_startup_duration_seconds_{sum,count}`, plus the 15 `gha_capacity_*` metric families (proactive-capacity monitor) | ~82-87 per scale set |
 
 **What's NOT collected per runner pod**: No application-level metrics from inside the runner. No per-job Prometheus endpoint. Runner pods do not expose a `/metrics` port. All runner-level telemetry is limited to what kubelet/cAdvisor observes externally.
 
@@ -63,12 +63,13 @@ Total series ≈ C_fixed
              + N_cpu_nodes × 715
              + N_gpu_nodes × 715 + 26 × N_total_GPUs
              + N_base_nodes × 1515
-             + N_scale_sets × 8
+             + N_scale_sets × 85
 ```
 
 Where:
 - `C_fixed` = sum of all cluster-wide sources × their replica counts
 - `N_total_GPUs` = total GPUs across all GPU nodes (handles heterogeneous fleets where GPU count varies by instance type)
+- The `N_scale_sets × 85` term reflects the listener's full per-scale-set series count: ~5-10 baseline (`gha_assigned_jobs`, job-duration sum/count) plus ~77 from the 15 `gha_capacity_*` families (the two histograms — `gha_capacity_reconcile_duration_seconds` and `gha_capacity_hud_request_duration_seconds` — contribute ~22 each via 9 buckets + sum + count across two label values; `gha_capacity_placeholder_pods` contributes 10 via the `role`(2)×`phase`(5) cross-product; the remaining gauges/counters add the rest)
 
 ### What's NOT Collected (Metrics)
 
@@ -292,16 +293,16 @@ Total series ≈ C_fixed
              + N_cpu_nodes × 715
              + N_gpu_nodes × 715 + 26 × N_total_GPUs
              + N_base_nodes × 1515
-             + N_scale_sets × 8
+             + N_scale_sets × 85
 
            ≈ 1,062
              + 7,367 × 40               =    294,680
              + 680 × 715                =    486,200
              + 1,433 × 715 + 26 × 2,989 =  1,102,309
              + 5 × 1,515               =      7,575
-             + 40 × 8                   =        320
+             + 40 × 85                  =      3,400
 
-           ≈ 1,892,146
+           ≈ 1,895,226
 ```
 
 ### Summary
@@ -310,13 +311,13 @@ Total series ≈ C_fixed
 |---|---|---|
 | GPU runner nodes (node-exporter + cAdvisor + DCGM) | ~1,102,000 | 58.2% |
 | CPU runner nodes (node-exporter + cAdvisor) | ~486,000 | 25.7% |
-| Runner pods (cAdvisor) | ~295,000 | 15.6% |
+| Runner pods (cAdvisor) | ~295,000 | 15.5% |
 | Base infra nodes | ~7,600 | 0.4% |
+| Scale sets (ARC listener) | ~3,400 | 0.2% |
 | Cluster-wide fixed | ~1,100 | 0.1% |
-| Scale sets (ARC listener) | ~300 | <0.1% |
-| **Total at peak** | **~1,892,000** | |
+| **Total at peak** | **~1,895,000** | |
 
-**~1.9M active series** at simultaneous peak. GPU runner nodes dominate (58%) due to DCGM per-GPU metrics stacking on top of the standard per-node series.
+**~1.9M active series** at simultaneous peak. GPU runner nodes dominate (58%) due to DCGM per-GPU metrics stacking on top of the standard per-node series. The ARC listener line grew from ~300 to ~3,400 series with the proactive-capacity metrics — still <0.2% of total but no longer negligible at the ~40-scale-set count for `arc-cbr-production`.
 
 ### Scaling at sub-peak load
 
