@@ -106,7 +106,7 @@ listenerTemplate:
           - name: CAPACITY_AWARE_RUNNER_CPU
             value: "750m"
           - name: CAPACITY_AWARE_RUNNER_MEMORY
-            value: "512Mi"
+            value: "1Gi"
           - name: CAPACITY_AWARE_NODE_FLEET
             value: "{{NODE_FLEET}}"
           - name: CAPACITY_AWARE_RUNNER_NODE_FLEET
@@ -227,10 +227,13 @@ template:
           # git-cache sync takes longer than expected under concurrent load.
           - name: ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS
             value: "1500"
-          # Memory management: the runner pod shares 512Mi between the .NET
+          # Memory management: the runner pod has 1Gi shared between the .NET
           # runner agent and Node.js container hooks. Without explicit caps,
-          # .NET claims 75% (384Mi) and Node.js claims 50% (256Mi) of the
-          # cgroup — combined 640Mi > 512Mi, guaranteed OOM.
+          # .NET claims 75% (768Mi) and Node.js claims 50% (512Mi) of the
+          # cgroup — combined 1280Mi > 1024Mi, still guaranteed OOM.
+          # Bumped from 512Mi to give native Node.js stdio buffers (held open
+          # by slow CRI exec during pod-density bursts) headroom; observed
+          # OOMs trace back to native buffers, not V8 heap or .NET managed heap.
           # GCHeapHardLimit is hex: 0xC800000 = 200 MiB managed heap
           - name: DOTNET_GCHeapHardLimit
             value: "C800000"
@@ -254,10 +257,10 @@ template:
           # Must match CAPACITY_AWARE_RUNNER_CPU/MEMORY on the listener.
           limits:
             cpu: "750m"
-            memory: "512Mi"
+            memory: "1Gi"
           requests:
             cpu: "750m"
-            memory: "512Mi"
+            memory: "1Gi"
         volumeMounts:
           - name: hook-extensions
             mountPath: /home/runner/hook-extensions
