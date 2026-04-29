@@ -231,7 +231,7 @@ class TestPrintDistribution:
         assert "ARM" in out
 
     def test_gpu_single(self, capsys):
-        allocs = [self._alloc("l-x86iavx512-29-115-t4", 3, is_gpu=True, gpu_count=1)]
+        allocs = [self._alloc("l-x86iavx512-29-114-t4", 3, is_gpu=True, gpu_count=1)]
         _print_distribution(allocs, "test")
         out = capsys.readouterr().out
         assert "GPU" in out

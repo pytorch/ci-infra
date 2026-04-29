@@ -63,7 +63,7 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | linux.4xlarge.for.testing.donotuse | c5.4xlarge | mt-l-x86iavx512-16-32 |
 | linux.c7i.4xlarge | c7i.4xlarge | mt-l-x86iavx512-16-32 |
 | linux.c7i.8xlarge | c7i.8xlarge | *— no equivalent* |
-| linux.9xlarge.ephemeral | c5.9xlarge | mt-l-x86iavx512-37-68 |
+| linux.9xlarge.ephemeral | c5.9xlarge | mt-l-x86iavx512-37-67 |
 | linux.12xlarge | c5.12xlarge | mt-l-x86iavx512-46-85 |
 | linux.12xlarge.ephemeral | c5.12xlarge | mt-l-x86iavx512-46-85 |
 | linux.c7i.12xlarge | c7i.12xlarge | mt-l-x86iavx512-46-85 |
@@ -124,8 +124,8 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
-| linux.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-115-t4 |
-| linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-115-t4 |
+| linux.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-114-t4 |
+| linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge | mt-l-x86iavx512-29-114-t4 |
 | linux.g4dn.12xlarge.nvidia.gpu | g4dn.12xlarge | mt-l-x86iavx512-45-172-t4-4 |
 | linux.g4dn.metal.nvidia.gpu | g4dn.metal | mt-l-bx86iavx512-94-344-t4-8 |
 
@@ -135,8 +135,8 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | **Old Label** | **Instance** | **New Label** |
 | --- | --- | --- |
 | linux.g5.4xlarge.nvidia.gpu | g5.4xlarge | mt-l-x86aavx2-29-113-a10g |
-| linux.g5.12xlarge.nvidia.gpu | g5.12xlarge | mt-l-x86aavx2-45-167-a10g-4 |
-| linux.g5.48xlarge.nvidia.gpu | g5.48xlarge | mt-l-x86aavx2-189-704-a10g-8 |
+| linux.g5.12xlarge.nvidia.gpu | g5.12xlarge | mt-l-x86aavx2-45-166-a10g-4 |
+| linux.g5.48xlarge.nvidia.gpu | g5.48xlarge | mt-l-x86aavx2-189-703-a10g-8 |
 
 ### x86 GPU — L4 (g6 family)
 
@@ -195,7 +195,7 @@ Excluding trivial `.ephemeral` / `.nonephemeral` duplicates, these are the cases
 | mt-l-x86iavx512-16-128 | linux.r7i.4xlarge, linux.4xlarge.memory | r7i.4xlarge, r5.4xlarge |
 | mt-l-x86iavx512-32-256 | linux.r7i.8xlarge, linux.8xlarge.memory | r7i.8xlarge, r5.8xlarge |
 | mt-l-x86iavx512-48-384 | linux.r7i.12xlarge, linux.12xlarge.memory | r7i.12xlarge, r5.12xlarge |
-| mt-l-x86iavx512-29-115-t4 | linux.4xlarge.nvidia.gpu, linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge |
+| mt-l-x86iavx512-29-114-t4 | linux.4xlarge.nvidia.gpu, linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge |
 
 **Note on r7i vs r5:** r7i is Sapphire Rapids (has AMX), while r5 is Cascade Lake (AVX-512 only). Both are mapped to `x86iavx512` in our current defs because the underlying OSDC NodePool runs on r5.24xlarge regardless — the label reflects what is actually delivered, not what the old instance could do.
 
