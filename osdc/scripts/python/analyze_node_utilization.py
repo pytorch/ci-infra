@@ -28,15 +28,14 @@ from cli_colors import BOLD, CYAN, DIM, GREEN, NC, RED, YELLOW
 from daemonset_overhead import DaemonSetOverhead, discover_daemonsets
 from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
 
-# Runner pod sidecar (the ARC orchestrator container, not the $job container)
-# Memory bumped 512 -> 1024 to give native Node.js stdio buffers headroom under
-# CRI backpressure; see modules/arc-runners/templates/runner.yaml.tpl L187-193.
-RUNNER_SIDECAR_CPU_M = 750
-RUNNER_SIDECAR_MEM_MI = 1024
-
 # ARC container-hooks overhead: injected containers added to the workflow
 # (job) pod by runner-container-hooks beyond the def's vcpu/memory.
 # Measured from Karpenter scheduling requests vs def values.
+#
+# Note: the runner-orchestrator (sidecar) pod is no longer accounted for
+# here. Per pytorch/ci-infra#500 it is pinned to the dedicated `c7i-runner`
+# NodePool, so it does not consume resources on the workflow node and must
+# not be added into per-workflow-pod totals on c7i / g5 / g4dn / etc.
 HOOKS_OVERHEAD_CPU_M = 320
 HOOKS_OVERHEAD_MEM_MI = 522
 
@@ -181,9 +180,14 @@ def compute_allocatable(
 
 
 def per_runner_total(runner: dict) -> tuple[int, int, int]:
-    """Total resources per runner pod (job container + sidecar + hooks overhead)."""
-    cpu = runner["vcpu"] * 1000 + RUNNER_SIDECAR_CPU_M + HOOKS_OVERHEAD_CPU_M
-    mem = runner["memory_mi"] + RUNNER_SIDECAR_MEM_MI + HOOKS_OVERHEAD_MEM_MI
+    """Total resources per workflow pod (job container + hooks overhead).
+
+    The runner-orchestrator pod lives on the dedicated `c7i-runner`
+    NodePool (see ci-infra#500) and does not consume resources on the
+    workflow node, so it is not summed in here.
+    """
+    cpu = runner["vcpu"] * 1000 + HOOKS_OVERHEAD_CPU_M
+    mem = runner["memory_mi"] + HOOKS_OVERHEAD_MEM_MI
     gpu = runner["gpu"]
     return cpu, mem, gpu
 
@@ -367,13 +371,12 @@ def print_node_analysis(
     print(f"  {BOLD}Runners targeting this node:{NC}")
     for r in runners:
         c, m, g = per_runner_total(r)
-        sidecar_note = (
+        breakdown = (
             f" (job: {r['vcpu']}c+{format_mem(r['memory_mi'])},"
-            f" sidecar: {RUNNER_SIDECAR_CPU_M}m+{RUNNER_SIDECAR_MEM_MI}Mi,"
             f" hooks: {HOOKS_OVERHEAD_CPU_M}m+{HOOKS_OVERHEAD_MEM_MI}Mi)"
         )
         gpu_note = f", {r['gpu']} GPU" if r["gpu"] > 0 else ""
-        print(f"    - {r['name']}: {c}m CPU, {format_mem(m)} RAM{gpu_note}{sidecar_note}")
+        print(f"    - {r['name']}: {c}m CPU, {format_mem(m)} RAM{gpu_note}{breakdown}")
 
     # Homogeneous packing: how many of each runner type fits alone?
     print(f"\n  {BOLD}Homogeneous packing (single runner type fills the node):{NC}")
