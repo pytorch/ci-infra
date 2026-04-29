@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 from helpers import (
     assert_daemonset_healthy,
-    assert_deployment_ready,
     assert_metric_fresh_in_mimir,
+    assert_statefulset_ready,
     fetch_grafana_cloud_credentials,
     filter_deployments,
     find_helm_release,
@@ -213,8 +213,8 @@ class TestAlloy:
         status = release.get("status", "")
         assert status == "deployed", f"Alloy status is '{status}', expected 'deployed'"
 
-    def test_alloy_deployment_ready(self, all_deployments: dict, mon_ns: str) -> None:
-        assert_deployment_ready(all_deployments, mon_ns, "alloy")
+    def test_alloy_statefulset_ready(self, mon_ns: str) -> None:
+        assert_statefulset_ready(mon_ns, "alloy")
 
 
 # ============================================================================
