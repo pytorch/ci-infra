@@ -30,7 +30,7 @@ source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # Chart version — MUST match the controller (arc module). Read from clusters.yaml.
-ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.0)
+ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.1)
 
 # Allow consumers to override defs, output, template, and module name
 DEFS_DIR="${ARC_RUNNERS_DEFS_DIR:-$MODULE_DIR/defs}"
@@ -100,7 +100,7 @@ deploy_one_runner() {
       --set template.spec.securityContext.runAsUser=1000 \
       --set template.spec.securityContext.runAsGroup=1000 \
       --set template.spec.securityContext.fsGroup=1000 \
-      oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+      oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set \
       --version "${ARC_CHART_VERSION}" \
       --wait
 

@@ -7,3 +7,4 @@ runner:
   vcpu: 32
   memory: 256Gi
   gpu: 0
+  proactive_capacity: 10

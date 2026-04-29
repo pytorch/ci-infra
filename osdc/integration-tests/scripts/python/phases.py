@@ -92,7 +92,7 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
 
     # Find open PRs matching our title pattern
     result = run_cmd(
-        ["gh", "pr", "list", "--repo", CANARY_REPO, "--author", "@me", "--state", "open", "--json", "number,title"],
+        ["gh", "pr", "list", "--repo", CANARY_REPO, "--state", "open", "--json", "number,title"],
         check=False,
     )
     if result.returncode != 0:
