@@ -26,6 +26,39 @@ listenerMetrics:
         - enterprise
         - job_result
         - job_workflow_name
+    gha_capacity_hud_requests_total:
+      labels:
+        - enterprise
+        - organization
+        - repository
+        - name
+        - namespace
+        - result
+    gha_capacity_pair_creates_total:
+      labels:
+        - enterprise
+        - organization
+        - repository
+        - name
+        - namespace
+        - result
+    gha_capacity_pair_deletes_total:
+      labels:
+        - enterprise
+        - organization
+        - repository
+        - name
+        - namespace
+        - reason
+        - result
+    gha_capacity_reconcile_skips_total:
+      labels:
+        - enterprise
+        - organization
+        - repository
+        - name
+        - namespace
+        - reason
   gauges:
     gha_assigned_jobs:
       labels: ["name", "namespace", "repository", "organization", "enterprise"]
@@ -43,6 +76,24 @@ listenerMetrics:
       labels: ["name", "namespace", "repository", "organization", "enterprise"]
     gha_idle_runners:
       labels: ["name", "namespace", "repository", "organization", "enterprise"]
+    gha_capacity_proactive_capacity:
+      labels: ["enterprise", "organization", "repository", "name", "namespace"]
+    gha_capacity_hud_enabled:
+      labels: ["enterprise", "organization", "repository", "name", "namespace"]
+    gha_capacity_queued_jobs:
+      labels: ["enterprise", "organization", "repository", "name", "namespace"]
+    gha_capacity_desired_pairs:
+      labels: ["enterprise", "organization", "repository", "name", "namespace"]
+    gha_capacity_pairs:
+      labels: ["enterprise", "organization", "repository", "name", "namespace"]
+    gha_capacity_running_pairs:
+      labels: ["enterprise", "organization", "repository", "name", "namespace"]
+    gha_capacity_placeholder_pods:
+      labels: ["enterprise", "organization", "repository", "name", "namespace", "role", "phase"]
+    gha_capacity_advertised_max_runners:
+      labels: ["enterprise", "organization", "repository", "name", "namespace"]
+    gha_capacity_reconcile_last_success_timestamp_seconds:
+      labels: ["enterprise", "organization", "repository", "name", "namespace", "phase"]
   histograms:
     gha_job_startup_duration_seconds:
       labels:
@@ -61,6 +112,26 @@ listenerMetrics:
         - job_workflow_name
       buckets:
         [5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
+    gha_capacity_reconcile_duration_seconds:
+      labels:
+        - enterprise
+        - organization
+        - repository
+        - name
+        - namespace
+        - phase
+      buckets:
+        [0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60]
+    gha_capacity_hud_request_duration_seconds:
+      labels:
+        - enterprise
+        - organization
+        - repository
+        - name
+        - namespace
+        - result
+      buckets:
+        [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30]
 
 containerMode:
   type: "kubernetes-novolume"
