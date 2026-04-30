@@ -431,62 +431,6 @@ def assert_deployment_ready(
     assert ready == desired, f"{name}: {ready}/{desired} replicas ready (after {READY_RETRIES} retries)"
 
 
-def assert_statefulset_ready(
-    namespace: str,
-    name: str,
-    *,
-    rollout_timeout: int = 90,
-) -> None:
-    """Assert a StatefulSet has all replicas ready.
-
-    StatefulSets roll out pods one at a time, so if a rollout is in progress
-    (observedGeneration < generation or updateRevision != currentRevision),
-    we wait up to rollout_timeout seconds before failing.
-
-    Args:
-        namespace: Namespace to filter by.
-        name: StatefulSet name.
-        rollout_timeout: Max seconds to wait for a rollout to finish.
-    """
-    sts = run_kubectl(["get", f"statefulset/{name}"], namespace=namespace)
-    desired = sts["spec"].get("replicas", 1)
-    ready = sts.get("status", {}).get("readyReplicas", 0)
-
-    if desired == ready:
-        return
-
-    # Check if a rollout is in progress
-    meta_gen = sts.get("metadata", {}).get("generation", 0)
-    observed_gen = sts.get("status", {}).get("observedGeneration", 0)
-    update_rev = sts.get("status", {}).get("updateRevision", "")
-    current_rev = sts.get("status", {}).get("currentRevision", "")
-    mid_rollout = observed_gen < meta_gen or update_rev != current_rev
-
-    if mid_rollout:
-        deadline = time.time() + rollout_timeout
-        while time.time() < deadline:
-            time.sleep(READY_RETRY_DELAY)
-            sts = run_kubectl(["get", f"statefulset/{name}"], namespace=namespace)
-            desired = sts["spec"].get("replicas", 1)
-            ready = sts.get("status", {}).get("readyReplicas", 0)
-            if desired == ready:
-                return
-        raise AssertionError(
-            f"{name}: rollout still in progress after {rollout_timeout}s "
-            f"({ready}/{desired} replicas ready). Rollout may be stuck."
-        )
-
-    for _attempt in range(READY_RETRIES):
-        time.sleep(READY_RETRY_DELAY)
-        sts = run_kubectl(["get", f"statefulset/{name}"], namespace=namespace)
-        desired = sts["spec"].get("replicas", 1)
-        ready = sts.get("status", {}).get("readyReplicas", 0)
-        if desired == ready:
-            return
-
-    assert ready == desired, f"{name}: {ready}/{desired} replicas ready (after {READY_RETRIES} retries)"
-
-
 # ---------------------------------------------------------------------------
 # Grafana Cloud remote query helpers
 # ---------------------------------------------------------------------------
