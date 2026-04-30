@@ -14,7 +14,9 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 120
+      # Headroom over the script's internal PURGE_BUDGET_SECONDS so it can
+      # exit cleanly (logs final tally) before K8s SIGTERMs the pod.
+      activeDeadlineSeconds: 300
       template:
         metadata:
           labels:
@@ -52,6 +54,8 @@ spec:
                   value: "MIN_POD_AGE_PLACEHOLDER"
                 - name: DRY_RUN
                   value: "DRY_RUN_PLACEHOLDER"
+                - name: PURGE_BUDGET_SECONDS
+                  value: "240"
               resources:
                 requests:
                   cpu: 50m

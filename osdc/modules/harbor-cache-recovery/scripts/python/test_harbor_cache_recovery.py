@@ -354,6 +354,7 @@ class TestGetConfig:
         assert config["harbor_password"] == ""
         assert config["min_pod_age_seconds"] == 120
         assert config["dry_run"] is False
+        assert config["purge_budget_seconds"] == 240
 
     def test_custom_values(self):
         env = {
@@ -361,6 +362,7 @@ class TestGetConfig:
             "HARBOR_ADMIN_PASSWORD": "pw",
             "MIN_POD_AGE_SECONDS": "60",
             "DRY_RUN": "true",
+            "PURGE_BUDGET_SECONDS": "30",
         }
         with patch.dict("os.environ", env, clear=True):
             config = get_config()
@@ -368,6 +370,7 @@ class TestGetConfig:
         assert config["harbor_password"] == "pw"  # noqa: S105
         assert config["min_pod_age_seconds"] == 60
         assert config["dry_run"] is True
+        assert config["purge_budget_seconds"] == 30
 
     @pytest.mark.parametrize("value", ["true", "True", "1", "yes"])
     def test_dry_run_truthy(self, value):
@@ -501,6 +504,30 @@ class TestMain:
         ):
             mock_cls.return_value.list.side_effect = Exception("API error")
             assert main() == 1
+
+    def test_budget_exhausted_skips_remaining(self):
+        # Two distinct corrupted repos. Budget=0 means we never even attempt
+        # the first purge; both are reported as skipped and main() returns 1.
+        images = [
+            ("grafana/alloy:v1.14.0", "failed size validation: 1 != 2"),
+            ("ghcr.io/actions/runner:v3", "failed precondition"),
+        ]
+        pods = []
+        for img, msg in images:
+            cs = _make_container_status(image=img, reason="ImagePullBackOff", message=msg)
+            pods.append(_make_pod(name=f"pod-{img}", container_statuses=[cs]))
+        session = MagicMock()
+        session.get.return_value = MagicMock(headers={})
+        session.headers = {}
+        env = {"HARBOR_ADMIN_PASSWORD": "pw", "PURGE_BUDGET_SECONDS": "0"}
+        with (
+            patch("harbor_cache_recovery.Client") as mock_cls,
+            patch("harbor_cache_recovery.create_harbor_session", return_value=session),
+            patch.dict("os.environ", env, clear=True),
+        ):
+            mock_cls.return_value.list.return_value = pods
+            assert main() == 1
+            session.delete.assert_not_called()
 
 
 # ============================================================================

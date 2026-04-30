@@ -40,6 +40,8 @@ CACHE_CORRUPTION_INDICATORS = (
 
 DEFAULT_MIN_POD_AGE_SECONDS = 120
 DEFAULT_HARBOR_URL = "http://harbor.harbor-system.svc.cluster.local:80"
+DEFAULT_PURGE_BUDGET_SECONDS = 240
+HARBOR_REQUEST_TIMEOUT_SECONDS = 10
 
 
 def get_config() -> dict:
@@ -48,6 +50,7 @@ def get_config() -> dict:
         "harbor_password": os.environ.get("HARBOR_ADMIN_PASSWORD", ""),
         "min_pod_age_seconds": int(os.environ.get("MIN_POD_AGE_SECONDS", str(DEFAULT_MIN_POD_AGE_SECONDS))),
         "dry_run": os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes"),
+        "purge_budget_seconds": int(os.environ.get("PURGE_BUDGET_SECONDS", str(DEFAULT_PURGE_BUDGET_SECONDS))),
     }
 
 
@@ -169,7 +172,10 @@ def create_harbor_session(harbor_url: str, admin_password: str) -> requests.Sess
     session.cookies = _NoCookieJar()
     session.auth = ("admin", admin_password)
     session.headers.update({"Content-Type": "application/json", "Accept": "application/json"})
-    retry = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+    # total=1: a single retry only. Corrupted entries that don't purge this run
+    # get another shot in 5 minutes — better than burning the deadline on one
+    # slow repo and leaving the rest of the queue untouched.
+    retry = Retry(total=1, backoff_factor=1, status_forcelist=[502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
@@ -177,7 +183,7 @@ def create_harbor_session(harbor_url: str, admin_password: str) -> requests.Sess
 
 
 def fetch_csrf_token(session: requests.Session, harbor_url: str) -> None:
-    resp = session.get(f"{harbor_url}/api/v2.0/systeminfo", timeout=10)
+    resp = session.get(f"{harbor_url}/api/v2.0/systeminfo", timeout=HARBOR_REQUEST_TIMEOUT_SECONDS)
     resp.raise_for_status()
     csrf_token = resp.headers.get("X-Harbor-CSRF-Token")
     if csrf_token:
@@ -190,7 +196,7 @@ def purge_cached_repo(session: requests.Session, harbor_url: str, project: str, 
     encoded_path = repo_path.replace("/", "%252F")
     url = f"{harbor_url}/api/v2.0/projects/{project}/repositories/{encoded_path}"
     try:
-        resp = session.delete(url, timeout=30)
+        resp = session.delete(url, timeout=HARBOR_REQUEST_TIMEOUT_SECONDS)
         if resp.status_code == 200:
             log.info("Purged: %s/%s", project, repo_path)
             return True
@@ -217,9 +223,10 @@ def main() -> int:
         return 1
 
     log.info(
-        "Starting: dry_run=%s min_age=%ds",
+        "Starting: dry_run=%s min_age=%ds budget=%ds",
         config["dry_run"],
         config["min_pod_age_seconds"],
+        config["purge_budget_seconds"],
     )
 
     kube = Client()
@@ -258,15 +265,24 @@ def main() -> int:
 
     purged = 0
     failed = 0
+    skipped = 0
+    budget = config["purge_budget_seconds"]
     for info in unique_repos.values():
+        # Bail out before issuing a request that could blow the K8s
+        # activeDeadlineSeconds. Remaining repos will be picked up on the next
+        # */5 cron run.
+        if time.monotonic() - start >= budget:
+            skipped = len(unique_repos) - purged - failed
+            log.warning("Budget %ds exhausted; skipping %d remaining repos", budget, skipped)
+            break
         if purge_cached_repo(session, config["harbor_url"], info["harbor_project"], info["repo_path"]):
             purged += 1
         else:
             failed += 1
 
     elapsed = time.monotonic() - start
-    log.info("Done in %.1fs: %d purged, %d failed", elapsed, purged, failed)
-    return 1 if failed > 0 else 0
+    log.info("Done in %.1fs: %d purged, %d failed, %d skipped", elapsed, purged, failed, skipped)
+    return 1 if failed > 0 or skipped > 0 else 0
 
 
 if __name__ == "__main__":
