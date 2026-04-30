@@ -21,13 +21,15 @@ controller:
       effect: NoSchedule
 
 alloy:
+  clustering:
+    enabled: true
   resources:
     requests:
       cpu: 250m
-      memory: 512Mi
+      memory: 1536Mi
     limits:
       cpu: "2"
-      memory: 1Gi
+      memory: 2560Mi
   configMap:
     content: |-
       // Discover and scrape all ServiceMonitor targets across namespaces.
