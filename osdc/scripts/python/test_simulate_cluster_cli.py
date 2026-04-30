@@ -1,66 +1,131 @@
-"""Tests for simulate_cluster_cli module."""
+"""Tests for simulate_cluster_cli module (split-pool model)."""
 
-from unittest.mock import MagicMock, patch
+from __future__ import annotations
 
+from unittest.mock import patch
+
+from cluster_topology import ClusterTopology, NodePoolEntry, RunnerEntry
 from daemonset_overhead import DaemonSetOverhead
-from simulate_cluster import SimNode, SimResult
+from simulate_cluster import (
+    PoolUtilization,
+    SimNode,
+    SimResult,
+    SimulationUtilization,
+)
 from simulate_cluster_cli import (
+    _format_pool,
     _percentile,
     _print_deployment_accuracy,
-    _print_multi_summary,
-    _print_node_table,
-    _print_utilization,
-    _run_multi,
+    _print_multi,
+    _print_node_breakdown,
+    _print_results,
+    _resolve_roots,
     main,
-    print_results,
+    parse_args,
 )
 
-FAKE_DS = [
-    DaemonSetOverhead("kube-proxy", 50, 80, False, "test"),
-]
+FAKE_DS = [DaemonSetOverhead("kube-proxy", 50, 80, False, "test")]
 
 
-def _make_result():
-    """Create a minimal SimResult for testing output functions."""
-    node = SimNode(
-        "c7a.48xlarge",
-        total_cpu_m=10000,
-        total_mem_mi=20000,
-        total_gpu=0,
-        used_cpu_m=8000,
-        used_mem_mi=15000,
-    )
-    gpu_node = SimNode(
-        "g5.8xlarge",
-        total_cpu_m=10000,
-        total_mem_mi=20000,
-        total_gpu=1,
-        used_cpu_m=5000,
-        used_mem_mi=10000,
-        used_gpu=1,
-    )
-    return SimResult(
-        nodes=[node, gpu_node],
-        deployed={"r1": 5, "r2": 3},
-        targets={"r1": 5, "r2": 4},
-        skipped_labels={"old-label": "no mapping"},
-    )
-
-
-def _make_utilization():
-    return {
-        "cpu_pct": 65.0,
-        "mem_pct": 62.5,
-        "gpu_pct": 100.0,
-        "total_cpu_m": 20000,
-        "used_cpu_m": 13000,
-        "total_mem_mi": 40000,
-        "used_mem_mi": 25000,
-        "total_gpu": 1,
-        "used_gpu": 1,
-        "total_nodes": 2,
-        "gpu_nodes": 1,
+def _runner(name: str = "r1", **overrides) -> RunnerEntry:
+    base = {
+        "name": name,
+        "scale_set_name": f"c-mt-{name}",
+        "instance_type": "c7a.48xlarge",
+        "workflow_fleet": "c7a",
+        "runner_class": None,
+        "runner_pod_cpu_m": 750,
+        "runner_pod_mem_mi": 512,
+        "workflow_pod_cpu_m": 8000,
+        "workflow_pod_mem_mi": 16 * 1024,
+        "workflow_pod_gpu": 0,
+        "schedulable": True,
+        "schedulable_reason": None,
     }
+    base.update(overrides)
+    return RunnerEntry(**base)
+
+
+def _topology(*, runner_pool_fleet: str | None = "c7i-runner") -> ClusterTopology:
+    runners = [_runner("r1")]
+    nodepools = [
+        NodePoolEntry("c7i-runner-48xlarge", "c7i-runner", "c7i.48xlarge", "amd64", False, None),
+        NodePoolEntry("c7a-48xlarge", "c7a", "c7a.48xlarge", "amd64", False, None),
+    ]
+    workflow_fleets = {"c7a"}
+    return ClusterTopology(
+        cluster_id="test",
+        region="us-east-2",
+        modules=["nodepools", "arc-runners"],
+        nodepools=nodepools,
+        runner_pool_fleet=runner_pool_fleet,
+        workflow_pool_fleets=workflow_fleets,
+        runners=runners,
+    )
+
+
+def _make_result() -> SimResult:
+    wf = SimNode("c7a.48xlarge", "c7a", None, cpu_m=10000, mem_mi=20000, gpu=0,
+                 used_cpu_m=8000, used_mem_mi=15000, pod_count=2)  # fmt: skip
+    rn = SimNode("c7i.48xlarge", "c7i-runner", None, cpu_m=10000, mem_mi=20000, gpu=0,
+                 used_cpu_m=2000, used_mem_mi=3000, pod_count=2)  # fmt: skip
+    return SimResult(
+        workflow_nodes=[wf],
+        runner_nodes=[rn],
+        deployed={"r1": 2},
+        targets={"r1": 2},
+        skipped=["legacy-name"],
+    )
+
+
+def _make_util() -> SimulationUtilization:
+    wf = PoolUtilization(nodes=1, used_cpu_m=8000, total_cpu_m=10000,
+                         used_mem_mi=15000, total_mem_mi=20000)  # fmt: skip
+    rn = PoolUtilization(nodes=1, used_cpu_m=2000, total_cpu_m=10000,
+                         used_mem_mi=3000, total_mem_mi=20000)  # fmt: skip
+    return SimulationUtilization(workflow=wf, runner=rn)
+
+
+# ---------------------------------------------------------------------------
+# parse_args / _resolve_roots
+# ---------------------------------------------------------------------------
+
+
+class TestParseArgs:
+    def test_required_cluster(self):
+        args = parse_args(["--cluster", "arc-staging"])
+        assert args.cluster == "arc-staging"
+        assert args.seed == 42
+        assert args.threshold == 0.15
+        assert args.rounds == 1
+
+    def test_overrides(self):
+        args = parse_args(["--cluster", "x", "--seed", "7", "--threshold", "0.05", "--rounds", "5"])
+        assert args.seed == 7
+        assert args.threshold == 0.05
+        assert args.rounds == 5
+
+    def test_missing_cluster_errors(self):
+        import pytest
+
+        with pytest.raises(SystemExit):
+            parse_args([])
+
+
+class TestResolveRoots:
+    def test_env_vars_take_precedence(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OSDC_UPSTREAM", str(tmp_path))
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        upstream, consumer = _resolve_roots()
+        assert upstream == tmp_path.resolve()
+        assert consumer == tmp_path.resolve()
+
+    def test_root_falls_back_to_upstream(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OSDC_UPSTREAM", str(tmp_path))
+        monkeypatch.delenv("OSDC_ROOT", raising=False)
+        upstream, consumer = _resolve_roots()
+        assert upstream == tmp_path.resolve()
+        assert consumer == tmp_path.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -86,364 +151,194 @@ class TestPercentile:
 
 
 # ---------------------------------------------------------------------------
-# Output formatting functions (smoke tests)
+# Output formatters
 # ---------------------------------------------------------------------------
 
 
-class TestPrintResults:
-    def test_prints_without_error(self, capsys):
-        result = _make_result()
-        utilization = _make_utilization()
-        print_results(result, utilization)
-        output = capsys.readouterr().out
-        assert "Simulation Results" in output
-        assert "r1" in output
+class TestFormatPool:
+    def test_renders_pool_with_nodes(self, capsys):
+        util = PoolUtilization(nodes=2, used_cpu_m=8000, total_cpu_m=10000,
+                               used_mem_mi=15000, total_mem_mi=20000,
+                               used_gpu=1, total_gpu=2)  # fmt: skip
+        _format_pool(util, "Workflow Pool")
+        out = capsys.readouterr().out
+        assert "Workflow Pool" in out
+        assert "vCPU" in out
+        assert "Memory" in out
+        assert "GPU" in out
 
-    def test_no_skipped_labels(self, capsys):
-        result = _make_result()
-        result.skipped_labels = {}
-        utilization = _make_utilization()
-        print_results(result, utilization)
-        output = capsys.readouterr().out
-        assert "Skipped labels" not in output
+    def test_no_nodes_renders_placeholder(self, capsys):
+        _format_pool(PoolUtilization(), "Runner Pool")
+        out = capsys.readouterr().out
+        assert "Runner Pool" in out
+        assert "no nodes provisioned" in out
+
+    def test_no_gpu_section_when_total_gpu_zero(self, capsys):
+        util = PoolUtilization(nodes=1, used_cpu_m=5000, total_cpu_m=10000,
+                               used_mem_mi=5000, total_mem_mi=10000)  # fmt: skip
+        _format_pool(util, "Workflow Pool")
+        out = capsys.readouterr().out
+        assert "GPU:" not in out
 
 
-class TestPrintNodeTable:
-    def test_shows_instance_types(self, capsys):
+class TestPrintNodeBreakdown:
+    def test_groups_by_fleet(self, capsys):
         result = _make_result()
-        _print_node_table(result)
-        output = capsys.readouterr().out
-        assert "c7a.48xlarge" in output
-        assert "g5.8xlarge" in output
+        _print_node_breakdown(result)
+        out = capsys.readouterr().out
+        assert "c7a" in out
+        assert "c7i-runner" in out
+
+    def test_empty_result_prints_nothing_extra(self, capsys):
+        empty = SimResult()
+        _print_node_breakdown(empty)
+        out = capsys.readouterr().out
+        # Should produce no output when there are no nodes.
+        assert "Nodes by fleet" not in out
 
 
 class TestPrintDeploymentAccuracy:
     def test_shows_deployed_vs_target(self, capsys):
+        _print_deployment_accuracy(_make_result())
+        out = capsys.readouterr().out
+        assert "Deployment accuracy" in out
+        assert "r1" in out
+
+    def test_zero_targets_skips_breakdown(self, capsys):
+        _print_deployment_accuracy(SimResult())
+        out = capsys.readouterr().out
+        assert "Deployment accuracy" in out
+        # No per-runner table when targets is empty.
+        assert "Runner" not in out.split("Total deployed")[1]
+
+
+class TestPrintResults:
+    def test_renders_complete_summary(self, capsys):
+        _print_results(_make_result(), _make_util())
+        out = capsys.readouterr().out
+        assert "Cluster Simulation Results" in out
+        assert "Workflow Pool" in out
+        assert "Runner Pool" in out
+        assert "Skipped runner targets" in out
+        assert "legacy-name" in out
+
+    def test_no_skipped_section_when_empty(self, capsys):
         result = _make_result()
-        _print_deployment_accuracy(result)
-        output = capsys.readouterr().out
-        assert "Deployment accuracy" in output
-        assert "r1" in output
-        assert "r2" in output
+        result.skipped = []
+        _print_results(result, _make_util())
+        out = capsys.readouterr().out
+        assert "Skipped runner targets" not in out
 
 
-class TestPrintUtilization:
-    def test_shows_cpu_and_mem(self, capsys):
-        utilization = _make_utilization()
-        _print_utilization(utilization)
-        output = capsys.readouterr().out
-        assert "vCPU" in output
-        assert "Memory" in output
-        assert "GPU" in output
+class TestPrintMulti:
+    def test_renders_multi_round_summary(self, capsys):
+        utils = [_make_util(), _make_util()]
+        _print_multi(utils, seed=42, rounds=2)
+        out = capsys.readouterr().out
+        assert "Multi-Round Summary" in out
+        assert "Workflow Pool" in out
+        assert "Runner Pool" in out
 
-    def test_no_gpu(self, capsys):
-        utilization = _make_utilization()
-        utilization["total_gpu"] = 0
-        _print_utilization(utilization)
-        output = capsys.readouterr().out
-        assert "GPU:" not in output
-
-
-class TestPrintMultiSummary:
-    def test_prints_summary(self, capsys):
-        utils = [
-            {
-                "cpu_pct": 80.0,
-                "mem_pct": 75.0,
-                "gpu_pct": 100.0,
-                "total_gpu": 1,
-                "total_nodes": 10,
-            },
-            {
-                "cpu_pct": 85.0,
-                "mem_pct": 78.0,
-                "gpu_pct": 90.0,
-                "total_gpu": 1,
-                "total_nodes": 11,
-            },
-        ]
-        _print_multi_summary(utils)
-        output = capsys.readouterr().out
-        assert "vCPU" in output
-        assert "Nodes" in output
-
-    def test_no_gpu_nodes(self, capsys):
-        utils = [
-            {
-                "cpu_pct": 80.0,
-                "mem_pct": 75.0,
-                "gpu_pct": 0.0,
-                "total_gpu": 0,
-                "total_nodes": 5,
-            },
-        ]
-        _print_multi_summary(utils)
-        output = capsys.readouterr().out
-        assert "GPU" not in output
+    def test_no_nodes_message(self, capsys):
+        empty_pool = PoolUtilization()
+        utils = [SimulationUtilization(workflow=empty_pool, runner=empty_pool)]
+        _print_multi(utils, seed=42, rounds=1)
+        out = capsys.readouterr().out
+        assert "no nodes provisioned across rounds" in out
 
 
 # ---------------------------------------------------------------------------
-# _run_multi
+# main — smoke test with mocked resolve_cluster + discover_daemonsets
 # ---------------------------------------------------------------------------
 
 
-class TestRunMulti:
-    @patch("simulate_cluster_cli.run_simulation")
-    @patch("simulate_cluster_cli.compute_utilization")
-    def test_runs_multiple_rounds(self, mock_util, mock_sim, capsys):
-        mock_sim.return_value = SimResult(
-            nodes=[SimNode("c7a.48xlarge", 10000, 20000, 0, used_cpu_m=8000, used_mem_mi=15000)],
-            deployed={"r1": 5},
-            targets={"r1": 5},
-        )
-        mock_util.return_value = {
-            "cpu_pct": 80.0,
-            "mem_pct": 75.0,
-            "gpu_pct": 0.0,
-            "total_gpu": 0,
-            "total_nodes": 1,
-        }
-        runners = [{"name": "r1", "instance_type": "c7a.48xlarge", "vcpu": 8, "memory_mi": 16384, "gpu": 0}]
-        args = MagicMock(seed=42, rounds=3, threshold=0.15)
-        result = _run_multi(runners, {"r1": 5}, FAKE_DS, {}, args)
-        assert result == 0
-        assert mock_sim.call_count == 3
-
-    @patch("simulate_cluster_cli.run_simulation")
-    @patch("simulate_cluster_cli.compute_utilization")
-    def test_run_multi_with_skipped_mapping(self, mock_util, mock_sim, capsys):
-        """_run_multi prints skipped mapping when non-empty (line 133)."""
-        mock_sim.return_value = SimResult(
-            nodes=[SimNode("c7a.48xlarge", 10000, 20000, 0, used_cpu_m=8000, used_mem_mi=15000)],
-            deployed={"r1": 5},
-            targets={"r1": 5},
-        )
-        mock_util.return_value = {
-            "cpu_pct": 80.0,
-            "mem_pct": 75.0,
-            "gpu_pct": 0.0,
-            "total_gpu": 0,
-            "total_nodes": 1,
-        }
-        runners = [{"name": "r1", "instance_type": "c7a.48xlarge", "vcpu": 8, "memory_mi": 16384, "gpu": 0}]
-        args = MagicMock(seed=42, rounds=2, threshold=0.15)
-        skipped = {"old-label": "no mapping found"}
-        result = _run_multi(runners, {"r1": 5}, FAKE_DS, skipped, args)
-        assert result == 0
-        output = capsys.readouterr().out
-        assert "Unmapped old labels" in output
-
-
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
-
-
-class TestMain:
-    @patch("simulate_cluster_cli.run_simulation")
-    @patch("simulate_cluster_cli.compute_utilization")
-    @patch("simulate_cluster_cli.load_runner_defs")
+class TestMainSmoke:
+    @patch("simulate_cluster_cli.resolve_cluster")
     @patch("simulate_cluster_cli.discover_daemonsets")
-    def test_single_run(self, mock_ds, mock_runners, mock_util, mock_sim, capsys, tmp_path):
+    def test_single_run(self, mock_ds, mock_resolve, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("OSDC_UPSTREAM", str(tmp_path))
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
         mock_ds.return_value = FAKE_DS
-        mock_runners.return_value = [
-            {"name": "l-x86iavx512-8-16", "instance_type": "c7a.48xlarge", "vcpu": 8, "memory_mi": 16384, "gpu": 0}
-        ]
-        mock_sim.return_value = SimResult(
-            nodes=[SimNode("c7a.48xlarge", 10000, 20000, 0, used_cpu_m=8000, used_mem_mi=15000)],
-            deployed={"l-x86iavx512-8-16": 10},
-            targets={"l-x86iavx512-8-16": 10},
-            skipped_labels={},
+        # Use a runner whose new label matches a real PEAK_CONCURRENT entry.
+        mock_resolve.return_value = ClusterTopology(
+            cluster_id="test",
+            region="us-east-2",
+            modules=["nodepools", "arc-runners"],
+            nodepools=[
+                NodePoolEntry("c7i-runner-48xlarge", "c7i-runner", "c7i.48xlarge", "amd64", False, None),
+                NodePoolEntry("c7a-48xlarge", "c7a", "c7a.48xlarge", "amd64", False, None),
+            ],
+            runner_pool_fleet="c7i-runner",
+            workflow_pool_fleets={"c7a"},
+            runners=[_runner("l-x86iavx512-8-16", workflow_fleet="c7a")],
         )
-        mock_util.return_value = {
-            "cpu_pct": 80.0,
-            "mem_pct": 75.0,
-            "gpu_pct": 0.0,
-            "total_cpu_m": 10000,
-            "used_cpu_m": 8000,
-            "total_mem_mi": 20000,
-            "used_mem_mi": 15000,
-            "total_gpu": 0,
-            "used_gpu": 0,
-            "total_nodes": 1,
-            "gpu_nodes": 0,
-        }
-        result = main(
-            [
-                "--upstream-dir",
-                str(tmp_path),
-                "--consumer-root",
-                str(tmp_path),
-                "--seed",
-                "42",
-            ]
-        )
+        result = main(["--cluster", "test"])
         assert result == 0
+        out = capsys.readouterr().out
+        assert "Cluster Simulation Results" in out
 
-    @patch("simulate_cluster_cli.load_runner_defs", return_value=[])
-    @patch("simulate_cluster_cli.discover_daemonsets", return_value=FAKE_DS)
-    def test_no_runners_returns_1(self, mock_ds, mock_runners, capsys, tmp_path):
-        result = main(
-            [
-                "--upstream-dir",
-                str(tmp_path),
-                "--consumer-root",
-                str(tmp_path),
-            ]
+    @patch("simulate_cluster_cli.resolve_cluster")
+    @patch("simulate_cluster_cli.discover_daemonsets")
+    def test_multi_round(self, mock_ds, mock_resolve, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("OSDC_UPSTREAM", str(tmp_path))
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        mock_ds.return_value = FAKE_DS
+        mock_resolve.return_value = ClusterTopology(
+            cluster_id="test",
+            region="us-east-2",
+            modules=["nodepools", "arc-runners"],
+            nodepools=[
+                NodePoolEntry("c7i-runner-48xlarge", "c7i-runner", "c7i.48xlarge", "amd64", False, None),
+                NodePoolEntry("c7a-48xlarge", "c7a", "c7a.48xlarge", "amd64", False, None),
+            ],
+            runner_pool_fleet="c7i-runner",
+            workflow_pool_fleets={"c7a"},
+            runners=[_runner("l-x86iavx512-8-16", workflow_fleet="c7a")],
         )
+        result = main(["--cluster", "test", "--rounds", "2"])
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Multi-Round Summary" in out
+
+    @patch("simulate_cluster_cli.resolve_cluster")
+    @patch("simulate_cluster_cli.discover_daemonsets")
+    def test_no_targets_returns_1(self, mock_ds, mock_resolve, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("OSDC_UPSTREAM", str(tmp_path))
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        mock_ds.return_value = FAKE_DS
+        # Topology with no runners → no targets → return 1.
+        mock_resolve.return_value = ClusterTopology(
+            cluster_id="test",
+            region="us-east-2",
+            modules=["nodepools"],
+            nodepools=[],
+            runner_pool_fleet=None,
+            workflow_pool_fleets=set(),
+            runners=[],
+        )
+        result = main(["--cluster", "test"])
         assert result == 1
 
-    @patch("simulate_cluster_cli.run_simulation")
-    @patch("simulate_cluster_cli.compute_utilization")
-    @patch("simulate_cluster_cli.load_runner_defs")
+    @patch("simulate_cluster_cli.resolve_cluster")
     @patch("simulate_cluster_cli.discover_daemonsets")
-    def test_multi_round(self, mock_ds, mock_runners, mock_util, mock_sim, capsys, tmp_path):
-        mock_ds.return_value = FAKE_DS
-        mock_runners.return_value = [
-            {"name": "l-x86iavx512-8-16", "instance_type": "c7a.48xlarge", "vcpu": 8, "memory_mi": 16384, "gpu": 0}
-        ]
-        mock_sim.return_value = SimResult(
-            nodes=[SimNode("c7a.48xlarge", 10000, 20000, 0, used_cpu_m=8000, used_mem_mi=15000)],
-            deployed={"l-x86iavx512-8-16": 10},
-            targets={"l-x86iavx512-8-16": 10},
-        )
-        mock_util.return_value = {
-            "cpu_pct": 80.0,
-            "mem_pct": 75.0,
-            "gpu_pct": 0.0,
-            "total_gpu": 0,
-            "total_nodes": 1,
-        }
-        result = main(
-            [
-                "--upstream-dir",
-                str(tmp_path),
-                "--consumer-root",
-                str(tmp_path),
-                "--rounds",
-                "3",
-            ]
-        )
-        assert result == 0
-
-    @patch("simulate_cluster_cli.run_simulation")
-    @patch("simulate_cluster_cli.compute_utilization")
-    @patch("simulate_cluster_cli.load_runner_defs")
-    @patch("simulate_cluster_cli.discover_daemonsets")
-    def test_env_osdc_root(self, mock_ds, mock_runners, mock_util, mock_sim, capsys, tmp_path, monkeypatch):
-        """Tests the OSDC_ROOT env var path."""
-        mock_ds.return_value = FAKE_DS
-        mock_runners.return_value = [
-            {"name": "l-x86iavx512-8-16", "instance_type": "c7a.48xlarge", "vcpu": 8, "memory_mi": 16384, "gpu": 0}
-        ]
-        mock_sim.return_value = SimResult(
-            nodes=[SimNode("c7a.48xlarge", 10000, 20000, 0, used_cpu_m=8000, used_mem_mi=15000)],
-            deployed={"l-x86iavx512-8-16": 10},
-            targets={"l-x86iavx512-8-16": 10},
-            skipped_labels={},
-        )
-        mock_util.return_value = {
-            "cpu_pct": 80.0,
-            "mem_pct": 75.0,
-            "gpu_pct": 0.0,
-            "total_cpu_m": 10000,
-            "used_cpu_m": 8000,
-            "total_mem_mi": 20000,
-            "used_mem_mi": 15000,
-            "total_gpu": 0,
-            "used_gpu": 0,
-            "total_nodes": 1,
-            "gpu_nodes": 0,
-        }
+    def test_staging_warning(self, mock_ds, mock_resolve, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("OSDC_UPSTREAM", str(tmp_path))
         monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
-        result = main(["--upstream-dir", str(tmp_path)])
-        assert result == 0
-
-    @patch("simulate_cluster_cli.run_simulation")
-    @patch("simulate_cluster_cli.compute_utilization")
-    @patch("simulate_cluster_cli.load_runner_defs")
-    @patch("simulate_cluster_cli.discover_daemonsets")
-    def test_candidate_fallback_no_clusters_yaml(
-        self, mock_ds, mock_runners, mock_util, mock_sim, capsys, tmp_path, monkeypatch
-    ):
-        """When OSDC_ROOT unset and candidate has no clusters.yaml, falls back to upstream (lines 196-197)."""
         mock_ds.return_value = FAKE_DS
-        mock_runners.return_value = [
-            {"name": "r1", "instance_type": "c7a.48xlarge", "vcpu": 8, "memory_mi": 16384, "gpu": 0}
-        ]
-        mock_sim.return_value = SimResult(
-            nodes=[SimNode("c7a.48xlarge", 10000, 20000, 0, used_cpu_m=8000, used_mem_mi=15000)],
-            deployed={"r1": 10},
-            targets={"r1": 10},
-            skipped_labels={},
+        mock_resolve.return_value = ClusterTopology(
+            cluster_id="arc-staging",
+            region="us-west-1",
+            modules=["nodepools", "arc-runners"],
+            nodepools=[
+                NodePoolEntry("c7i-runner-48xlarge", "c7i-runner", "c7i.48xlarge", "amd64", False, None),
+                NodePoolEntry("c7a-48xlarge", "c7a", "c7a.48xlarge", "amd64", False, None),
+            ],
+            runner_pool_fleet="c7i-runner",
+            workflow_pool_fleets={"c7a"},
+            runners=[_runner("l-x86iavx512-8-16", workflow_fleet="c7a")],
         )
-        mock_util.return_value = {
-            "cpu_pct": 80.0,
-            "mem_pct": 75.0,
-            "gpu_pct": 0.0,
-            "total_cpu_m": 10000,
-            "used_cpu_m": 8000,
-            "total_mem_mi": 20000,
-            "used_mem_mi": 15000,
-            "total_gpu": 0,
-            "used_gpu": 0,
-            "total_nodes": 1,
-            "gpu_nodes": 0,
-        }
-        monkeypatch.delenv("OSDC_ROOT", raising=False)
-        # Use a deep tmp_path so candidate.parent.parent won't have clusters.yaml
-        upstream = tmp_path / "a" / "b" / "upstream"
-        upstream.mkdir(parents=True)
-        result = main(["--upstream-dir", str(upstream)])
+        result = main(["--cluster", "arc-staging"])
         assert result == 0
-
-    @patch("simulate_cluster_cli.run_simulation")
-    @patch("simulate_cluster_cli.compute_utilization")
-    @patch("simulate_cluster_cli.load_runner_defs")
-    @patch("simulate_cluster_cli.discover_daemonsets")
-    def test_consumer_with_runner_modules(self, mock_ds, mock_runners, mock_util, mock_sim, capsys, tmp_path):
-        """Tests consumer_root != upstream with runner modules."""
-        consumer = tmp_path / "consumer"
-        upstream = tmp_path / "upstream"
-        consumer.mkdir()
-        upstream.mkdir()
-        mod = consumer / "modules" / "custom-runners" / "defs"
-        mod.mkdir(parents=True)
-        # Write a runner def that will be found by the iterdir scanning
-        import yaml
-
-        runner_def = {"runner": {"name": "custom-r", "instance_type": "c7a.48xlarge", "vcpu": 4, "memory": "8Gi"}}
-        (mod / "custom.yaml").write_text(yaml.dump(runner_def))
-
-        mock_ds.return_value = FAKE_DS
-        mock_runners.return_value = [
-            {"name": "l-x86iavx512-8-16", "instance_type": "c7a.48xlarge", "vcpu": 8, "memory_mi": 16384, "gpu": 0}
-        ]
-        mock_sim.return_value = SimResult(
-            nodes=[SimNode("c7a.48xlarge", 10000, 20000, 0, used_cpu_m=8000, used_mem_mi=15000)],
-            deployed={"l-x86iavx512-8-16": 10},
-            targets={"l-x86iavx512-8-16": 10},
-            skipped_labels={},
-        )
-        mock_util.return_value = {
-            "cpu_pct": 80.0,
-            "mem_pct": 75.0,
-            "gpu_pct": 0.0,
-            "total_cpu_m": 10000,
-            "used_cpu_m": 8000,
-            "total_mem_mi": 20000,
-            "used_mem_mi": 15000,
-            "total_gpu": 0,
-            "used_gpu": 0,
-            "total_nodes": 1,
-            "gpu_nodes": 0,
-        }
-        result = main(
-            [
-                "--upstream-dir",
-                str(upstream),
-                "--consumer-root",
-                str(consumer),
-            ]
-        )
-        assert result == 0
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "PEAK_CONCURRENT" in out

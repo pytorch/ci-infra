@@ -1,11 +1,15 @@
-"""Tests for analyze_node_utilization module."""
+"""Tests for analyze_node_utilization + utilization_report + packing modules.
 
-from pathlib import Path
+Synthetic ClusterTopology fixtures follow the pattern from test_cluster_topology.py.
+"""
+
+from __future__ import annotations
+
 from unittest.mock import patch
 
-import yaml
 from analyze_node_utilization import (
-    _print_combo,
+    HOOKS_OVERHEAD_CPU_M,
+    HOOKS_OVERHEAD_MEM_MI,
     compute_allocatable,
     compute_daemonset_overhead,
     compute_node_slack,
@@ -13,18 +17,74 @@ from analyze_node_utilization import (
     find_valid_combos,
     format_mem,
     kubelet_reserved,
-    load_nodepool_defs,
-    load_runner_defs,
     main,
+    parse_args,
     parse_memory,
-    per_runner_total,
-    print_node_analysis,
+    per_runner_pod_total,
+    per_workflow_pod_total,
+    print_combo,
+    print_runner_pool_section,
+    print_unschedulable_section,
+    print_workflow_pool_section,
 )
+from cluster_topology import ClusterTopology, NodePoolEntry, RunnerEntry
 from daemonset_overhead import DaemonSetOverhead
+from utilization_report import analyze_pool
+
+# ---------------------------------------------------------------------------
+# Helpers / fixtures
+# ---------------------------------------------------------------------------
+
+
+def _make_runner(**overrides) -> RunnerEntry:
+    base = {
+        "name": "r1",
+        "scale_set_name": "c-mt-r1",
+        "instance_type": "c7a.48xlarge",
+        "workflow_fleet": "c7a",
+        "runner_class": None,
+        "runner_pod_cpu_m": 750,
+        "runner_pod_mem_mi": 512,
+        "workflow_pod_cpu_m": 8000,
+        "workflow_pod_mem_mi": 16384,
+        "workflow_pod_gpu": 0,
+        "schedulable": True,
+        "schedulable_reason": None,
+    }
+    base.update(overrides)
+    return RunnerEntry(**base)
+
+
+def _make_pool(**overrides) -> NodePoolEntry:
+    base = {
+        "name": "c7a-48xlarge",
+        "fleet": "c7a",
+        "instance_type": "c7a.48xlarge",
+        "arch": "amd64",
+        "gpu": False,
+        "runner_class": None,
+    }
+    base.update(overrides)
+    return NodePoolEntry(**base)
+
+
+def _make_topology(**overrides) -> ClusterTopology:
+    base = {
+        "cluster_id": "test-cluster",
+        "region": "us-east-2",
+        "modules": ["nodepools", "arc-runners"],
+        "nodepools": [],
+        "runner_pool_fleet": "c7i-runner",
+        "workflow_pool_fleets": {"c7a"},
+        "runners": [],
+    }
+    base.update(overrides)
+    return ClusterTopology(**base)
+
 
 FAKE_DS = [
-    DaemonSetOverhead("kube-proxy", 50, 80, False, "test"),
-    DaemonSetOverhead("gpu-plugin", 100, 256, True, "test"),
+    DaemonSetOverhead("kube-proxy", 50, 80, False, "test", fleet_selector=None),
+    DaemonSetOverhead("gpu-plugin", 100, 256, True, "test", fleet_selector=None),
 ]
 
 
@@ -58,25 +118,46 @@ class TestKubeletReserved:
 
 
 # ---------------------------------------------------------------------------
-# compute_daemonset_overhead
+# compute_daemonset_overhead (signature now takes is_gpu kw + optional fleet_name)
 # ---------------------------------------------------------------------------
 
 
 class TestComputeDaemonsetOverhead:
     def test_cpu_only_node(self):
         cpu, mem = compute_daemonset_overhead(FAKE_DS, is_gpu=False)
-        assert cpu == 50  # only kube-proxy
+        assert cpu == 50
         assert mem == 80
 
     def test_gpu_node(self):
         cpu, mem = compute_daemonset_overhead(FAKE_DS, is_gpu=True)
-        assert cpu == 150  # kube-proxy + gpu-plugin
+        assert cpu == 150
         assert mem == 336
 
     def test_empty_daemonsets(self):
         cpu, mem = compute_daemonset_overhead([], is_gpu=True)
         assert cpu == 0
         assert mem == 0
+
+    def test_fleet_filter_excludes_pinned_to_other(self):
+        ds = [
+            DaemonSetOverhead("a", 10, 32, False, "test", fleet_selector=None),
+            DaemonSetOverhead("b", 20, 64, False, "test", fleet_selector="c7i-runner"),
+            DaemonSetOverhead("c", 30, 128, False, "test", fleet_selector="m8g"),
+        ]
+        cpu, mem = compute_daemonset_overhead(ds, is_gpu=False, fleet_name="c7i-runner")
+        # a (None) + b (c7i-runner) only.
+        assert cpu == 30
+        assert mem == 96
+
+    def test_fleet_none_keeps_all(self):
+        ds = [
+            DaemonSetOverhead("b", 20, 64, False, "test", fleet_selector="c7i-runner"),
+            DaemonSetOverhead("c", 30, 128, False, "test", fleet_selector="m8g"),
+        ]
+        cpu, mem = compute_daemonset_overhead(ds, is_gpu=False, fleet_name=None)
+        # Legacy: no fleet_name => include both.
+        assert cpu == 50
+        assert mem == 192
 
 
 # ---------------------------------------------------------------------------
@@ -121,134 +202,39 @@ class TestFormatMem:
 
 
 # ---------------------------------------------------------------------------
-# per_runner_total
+# per_runner_pod_total / per_workflow_pod_total (RunnerEntry-based)
 # ---------------------------------------------------------------------------
 
 
-class TestPerRunnerTotal:
+class TestPerRunnerPodTotal:
     def test_basic(self):
-        runner = {"vcpu": 8, "memory_mi": 16384, "gpu": 0}
-        cpu, mem, gpu = per_runner_total(runner)
-        # 8*1000 + 750 (sidecar) + 320 (hooks) = 9070
-        assert cpu == 9070
-        # 16384 + 512 (sidecar) + 522 (hooks) = 17418
-        assert mem == 17418
+        r = _make_runner(runner_pod_cpu_m=750, runner_pod_mem_mi=512)
+        assert per_runner_pod_total(r) == (750, 512, 0)
+
+    def test_drops_workflow_fields(self):
+        r = _make_runner(workflow_pod_cpu_m=8000, workflow_pod_mem_mi=16384, workflow_pod_gpu=2)
+        # Runner pod doesn't get workflow CPU/mem/GPU.
+        assert per_runner_pod_total(r) == (r.runner_pod_cpu_m, r.runner_pod_mem_mi, 0)
+
+
+class TestPerWorkflowPodTotal:
+    def test_no_gpu_adds_hooks(self):
+        r = _make_runner(workflow_pod_cpu_m=8000, workflow_pod_mem_mi=16384, workflow_pod_gpu=0)
+        cpu, mem, gpu = per_workflow_pod_total(r)
+        assert cpu == 8000 + HOOKS_OVERHEAD_CPU_M
+        assert mem == 16384 + HOOKS_OVERHEAD_MEM_MI
         assert gpu == 0
 
     def test_with_gpu(self):
-        runner = {"vcpu": 16, "memory_mi": 32768, "gpu": 4}
-        _, _, gpu = per_runner_total(runner)
+        r = _make_runner(workflow_pod_cpu_m=16000, workflow_pod_mem_mi=32768, workflow_pod_gpu=4)
+        cpu, mem, gpu = per_workflow_pod_total(r)
+        assert cpu == 16000 + HOOKS_OVERHEAD_CPU_M
+        assert mem == 32768 + HOOKS_OVERHEAD_MEM_MI
         assert gpu == 4
 
 
 # ---------------------------------------------------------------------------
-# load_runner_defs
-# ---------------------------------------------------------------------------
-
-
-class TestLoadRunnerDefs:
-    def test_loads_runner_yaml(self, tmp_path):
-        runner_def = {
-            "runner": {
-                "name": "test-runner",
-                "instance_type": "c7a.48xlarge",
-                "vcpu": 8,
-                "memory": "16Gi",
-                "gpu": 0,
-            }
-        }
-        (tmp_path / "runner.yaml").write_text(yaml.dump(runner_def))
-        runners = load_runner_defs([tmp_path])
-        assert len(runners) == 1
-        assert runners[0]["name"] == "test-runner"
-        assert runners[0]["vcpu"] == 8
-        assert runners[0]["memory_mi"] == 16384
-
-    def test_skips_non_runner_yaml(self, tmp_path):
-        (tmp_path / "config.yaml").write_text(yaml.dump({"settings": {"key": "value"}}))
-        runners = load_runner_defs([tmp_path])
-        assert len(runners) == 0
-
-    def test_empty_yaml(self, tmp_path):
-        (tmp_path / "empty.yaml").write_text("")
-        runners = load_runner_defs([tmp_path])
-        assert len(runners) == 0
-
-    def test_nonexistent_dir(self):
-        runners = load_runner_defs([Path("/nonexistent")])
-        assert runners == []
-
-    def test_dedup_same_name(self, tmp_path):
-        """Last directory wins for same runner name."""
-        dir1 = tmp_path / "d1"
-        dir2 = tmp_path / "d2"
-        dir1.mkdir()
-        dir2.mkdir()
-        r1 = {"runner": {"name": "r1", "instance_type": "c7a.48xlarge", "vcpu": 8, "memory": "16Gi"}}
-        r2 = {"runner": {"name": "r1", "instance_type": "c7a.48xlarge", "vcpu": 16, "memory": "32Gi"}}
-        (dir1 / "r1.yaml").write_text(yaml.dump(r1))
-        (dir2 / "r1.yaml").write_text(yaml.dump(r2))
-        runners = load_runner_defs([dir1, dir2])
-        assert len(runners) == 1
-        assert runners[0]["vcpu"] == 16
-
-    def test_dedup_same_resolved_path(self, tmp_path):
-        """Duplicate resolved directories are skipped."""
-        runner_def = {
-            "runner": {
-                "name": "test-runner",
-                "instance_type": "c7a.48xlarge",
-                "vcpu": 8,
-                "memory": "16Gi",
-            }
-        }
-        (tmp_path / "r.yaml").write_text(yaml.dump(runner_def))
-        runners = load_runner_defs([tmp_path, tmp_path])
-        assert len(runners) == 1
-
-
-# ---------------------------------------------------------------------------
-# load_nodepool_defs
-# ---------------------------------------------------------------------------
-
-
-class TestLoadNodepoolDefs:
-    def test_loads_nodepool(self, tmp_path):
-        np_def = {
-            "nodepool": {
-                "name": "cpu-pool",
-                "instance_type": "c7a.48xlarge",
-                "gpu": False,
-            }
-        }
-        (tmp_path / "np.yaml").write_text(yaml.dump(np_def))
-        nodepools = load_nodepool_defs([tmp_path])
-        assert "c7a.48xlarge" in nodepools
-        assert nodepools["c7a.48xlarge"]["name"] == "cpu-pool"
-
-    def test_skips_non_nodepool(self, tmp_path):
-        (tmp_path / "other.yaml").write_text(yaml.dump({"runner": {"name": "r"}}))
-        nodepools = load_nodepool_defs([tmp_path])
-        assert nodepools == {}
-
-    def test_nonexistent_dir(self):
-        nodepools = load_nodepool_defs([Path("/nonexistent")])
-        assert nodepools == {}
-
-    def test_dedup_resolved_path(self, tmp_path):
-        np_def = {
-            "nodepool": {
-                "name": "pool",
-                "instance_type": "c7a.48xlarge",
-            }
-        }
-        (tmp_path / "np.yaml").write_text(yaml.dump(np_def))
-        nodepools = load_nodepool_defs([tmp_path, tmp_path])
-        assert len(nodepools) == 1
-
-
-# ---------------------------------------------------------------------------
-# compute_allocatable
+# compute_allocatable (signature gained fleet_name)
 # ---------------------------------------------------------------------------
 
 
@@ -263,8 +249,7 @@ class TestComputeAllocatable:
         assert alloc["is_gpu"] is False
 
     def test_unknown_instance_type(self):
-        alloc = compute_allocatable("z99.nonexistent", [])
-        assert alloc is None
+        assert compute_allocatable("z99.nonexistent", []) is None
 
     def test_gpu_instance(self):
         ds = [DaemonSetOverhead("gpu-ds", 100, 200, True, "test")]
@@ -273,131 +258,93 @@ class TestComputeAllocatable:
         assert alloc["is_gpu"] is True
         assert alloc["allocatable_gpu"] == 1
 
+    def test_fleet_name_filters_ds(self):
+        ds = [
+            DaemonSetOverhead("base", 100, 256, False, "test", fleet_selector=None),
+            DaemonSetOverhead("c7i-only", 50, 128, False, "test", fleet_selector="c7i-runner"),
+            DaemonSetOverhead("m8g-only", 25, 64, False, "test", fleet_selector="m8g"),
+        ]
+        alloc_runner = compute_allocatable("c7a.48xlarge", ds, fleet_name="c7i-runner")
+        alloc_m8g = compute_allocatable("c7a.48xlarge", ds, fleet_name="m8g")
+        assert alloc_runner is not None
+        assert alloc_m8g is not None
+        # Different fleet_name => different DS overhead.
+        assert alloc_runner["ds_cpu_m"] != alloc_m8g["ds_cpu_m"]
+        assert alloc_runner["ds_cpu_m"] == 100 + 50  # base + c7i-only
+        assert alloc_m8g["ds_cpu_m"] == 100 + 25  # base + m8g-only
+
+    def test_legacy_no_fleet_includes_all_ds(self):
+        ds = [
+            DaemonSetOverhead("base", 100, 256, False, "test", fleet_selector=None),
+            DaemonSetOverhead("c7i-only", 50, 128, False, "test", fleet_selector="c7i-runner"),
+        ]
+        alloc = compute_allocatable("c7a.48xlarge", ds)
+        # Legacy path: include everything.
+        assert alloc["ds_cpu_m"] == 150
+
 
 # ---------------------------------------------------------------------------
-# find_valid_combos
+# packing helpers (now take pod_cost tuples + names)
 # ---------------------------------------------------------------------------
 
 
 class TestFindValidCombos:
     def test_single_runner_fits(self):
-        alloc = {
-            "allocatable_cpu_m": 10000,
-            "allocatable_mem_mi": 20000,
-            "allocatable_gpu": 0,
-        }
-        runners = [{"name": "r1", "vcpu": 2, "memory_mi": 4096, "gpu": 0}]
-        combos = find_valid_combos(runners, alloc, max_pods=5)
+        alloc = {"allocatable_cpu_m": 10000, "allocatable_mem_mi": 20000, "allocatable_gpu": 0}
+        combos = find_valid_combos([(2000, 4096, 0)], ["r1"], alloc, max_pods=5)
         assert len(combos) > 0
         assert all(c["cpu_used_m"] <= 10000 for c in combos)
 
     def test_no_fit(self):
-        alloc = {
-            "allocatable_cpu_m": 100,
-            "allocatable_mem_mi": 100,
-            "allocatable_gpu": 0,
-        }
-        runners = [{"name": "r1", "vcpu": 8, "memory_mi": 16384, "gpu": 0}]
-        combos = find_valid_combos(runners, alloc, max_pods=5)
-        assert len(combos) == 0
-
-
-# ---------------------------------------------------------------------------
-# find_maximal_combos
-# ---------------------------------------------------------------------------
+        alloc = {"allocatable_cpu_m": 100, "allocatable_mem_mi": 100, "allocatable_gpu": 0}
+        combos = find_valid_combos([(8000, 16384, 0)], ["r1"], alloc, max_pods=5)
+        assert combos == []
 
 
 class TestFindMaximalCombos:
     def test_filters_non_maximal(self):
-        alloc = {
-            "allocatable_cpu_m": 10000,
-            "allocatable_mem_mi": 20000,
-            "allocatable_gpu": 0,
-        }
-        runners = [{"name": "r1", "vcpu": 2, "memory_mi": 4096, "gpu": 0}]
-        combos = find_valid_combos(runners, alloc, max_pods=5)
-        maximal = find_maximal_combos(combos, alloc, runners)
-        # Only the largest count should remain
+        alloc = {"allocatable_cpu_m": 10000, "allocatable_mem_mi": 20000, "allocatable_gpu": 0}
+        pod_costs = [(2000, 4096, 0)]
+        combos = find_valid_combos(pod_costs, ["r1"], alloc, max_pods=5)
+        maximal = find_maximal_combos(combos, alloc, pod_costs)
         for combo in maximal:
-            # No more runners can fit
-            c, m, _g = per_runner_total(runners[0])
+            c, m, _g = pod_costs[0]
             remaining_cpu = alloc["allocatable_cpu_m"] - combo["cpu_used_m"]
             remaining_mem = alloc["allocatable_mem_mi"] - combo["mem_used_mi"]
             assert remaining_cpu < c or remaining_mem < m
 
 
-# ---------------------------------------------------------------------------
-# compute_node_slack
-# ---------------------------------------------------------------------------
-
-
 class TestComputeNodeSlack:
     def test_homogeneous_only(self):
-        alloc = {
-            "allocatable_cpu_m": 10000,
-            "allocatable_mem_mi": 20000,
-            "allocatable_gpu": 0,
-        }
-        runners = [{"name": "r1", "vcpu": 2, "memory_mi": 4096, "gpu": 0}]
-        slack = compute_node_slack(alloc, runners, homogeneous_only=True)
+        alloc = {"allocatable_cpu_m": 10000, "allocatable_mem_mi": 20000, "allocatable_gpu": 0}
+        slack = compute_node_slack(alloc, [(2000, 4096, 0)], homogeneous_only=True)
         assert slack is not None
         assert "min_cpu_m" in slack
 
     def test_many_runners_forces_homogeneous(self):
-        """More than 8 runner types forces homogeneous-only path."""
-        alloc = {
-            "allocatable_cpu_m": 100000,
-            "allocatable_mem_mi": 200000,
-            "allocatable_gpu": 0,
-        }
-        runners = [{"name": f"r{i}", "vcpu": 2, "memory_mi": 4096, "gpu": 0} for i in range(10)]
-        slack = compute_node_slack(alloc, runners)
+        """More than 8 pod costs forces homogeneous-only path."""
+        alloc = {"allocatable_cpu_m": 100000, "allocatable_mem_mi": 200000, "allocatable_gpu": 0}
+        slack = compute_node_slack(alloc, [(2000, 4096, 0)] * 10)
         assert slack is not None
 
     def test_no_valid_combos(self):
-        alloc = {
-            "allocatable_cpu_m": 100,
-            "allocatable_mem_mi": 100,
-            "allocatable_gpu": 0,
-        }
-        runners = [{"name": "r1", "vcpu": 8, "memory_mi": 16384, "gpu": 0}]
-        slack = compute_node_slack(alloc, runners, homogeneous_only=True)
+        alloc = {"allocatable_cpu_m": 100, "allocatable_mem_mi": 100, "allocatable_gpu": 0}
+        slack = compute_node_slack(alloc, [(8000, 16384, 0)], homogeneous_only=True)
         assert slack is None
 
     def test_mixed_combos_path(self):
-        """Few runners triggers the full enumeration path."""
-        alloc = {
-            "allocatable_cpu_m": 20000,
-            "allocatable_mem_mi": 40000,
-            "allocatable_gpu": 0,
-        }
-        runners = [
-            {"name": "r1", "vcpu": 2, "memory_mi": 4096, "gpu": 0},
-            {"name": "r2", "vcpu": 4, "memory_mi": 8192, "gpu": 0},
-        ]
-        slack = compute_node_slack(alloc, runners, homogeneous_only=False)
+        alloc = {"allocatable_cpu_m": 20000, "allocatable_mem_mi": 40000, "allocatable_gpu": 0}
+        slack = compute_node_slack(alloc, [(2000, 4096, 0), (4000, 8192, 0)], homogeneous_only=False)
         assert slack is not None
 
     def test_mixed_no_maximal_returns_none(self):
-        """Mixed path returns None when no maximal combos found (line 329)."""
-        alloc = {
-            "allocatable_cpu_m": 100,
-            "allocatable_mem_mi": 100,
-            "allocatable_gpu": 0,
-        }
-        # Runners too big to fit; find_valid_combos returns empty -> maximal empty
-        runners = [{"name": "r1", "vcpu": 8, "memory_mi": 16384, "gpu": 0}]
-        slack = compute_node_slack(alloc, runners, homogeneous_only=False)
+        alloc = {"allocatable_cpu_m": 100, "allocatable_mem_mi": 100, "allocatable_gpu": 0}
+        slack = compute_node_slack(alloc, [(8000, 16384, 0)], homogeneous_only=False)
         assert slack is None
 
 
 # ---------------------------------------------------------------------------
-# print_node_analysis (smoke test for output, not assertions on content)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# _print_combo
+# print_combo (smoke output)
 # ---------------------------------------------------------------------------
 
 
@@ -411,10 +358,8 @@ class TestPrintCombo:
             "cpu_waste_m": 1500,
             "mem_waste_mi": 6000,
         }
-        alloc = {"allocatable_gpu": 0}
-        _print_combo(combo, alloc, 90.0, 1)
-        output = capsys.readouterr().out
-        assert "r1" in output
+        print_combo(combo, {"allocatable_gpu": 0}, 90.0, 1)
+        assert "r1" in capsys.readouterr().out
 
     def test_prints_combo_with_gpu(self, capsys):
         combo = {
@@ -425,192 +370,276 @@ class TestPrintCombo:
             "cpu_waste_m": 500,
             "mem_waste_mi": 2000,
         }
-        alloc = {"allocatable_gpu": 4}
-        _print_combo(combo, alloc, 90.0, 1)
-        output = capsys.readouterr().out
-        assert "GPU" in output
-
-    def test_color_green_above_threshold(self, capsys):
-        combo = {
-            "runners": ["r1"],
-            "cpu_util": 95.0,
-            "mem_util": 95.0,
-            "gpu_util": 0.0,
-            "cpu_waste_m": 500,
-            "mem_waste_mi": 1000,
-        }
-        alloc = {"allocatable_gpu": 0}
-        _print_combo(combo, alloc, 90.0, 1)
-        # Just ensure no crash for above-threshold
+        print_combo(combo, {"allocatable_gpu": 4}, 90.0, 1)
+        assert "GPU" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
-# print_node_analysis (smoke test for output, not assertions on content)
+# analyze_pool (per-pool analyzer used by both section printers)
 # ---------------------------------------------------------------------------
 
 
-class TestPrintNodeAnalysis:
-    def test_runs_without_error(self, capsys):
-        ds = [DaemonSetOverhead("ds1", 100, 200, False, "test")]
-        alloc = compute_allocatable("c7a.48xlarge", ds)
+class TestAnalyzePool:
+    def test_runs_workflow_pool(self, capsys):
         runners = [
-            {"name": "r1", "vcpu": 8, "memory_mi": 16384, "gpu": 0},
-            {"name": "r2", "vcpu": 16, "memory_mi": 32768, "gpu": 0},
+            _make_runner(name="r1", workflow_pod_cpu_m=8000, workflow_pod_mem_mi=16384),
+            _make_runner(name="r2", workflow_pod_cpu_m=16000, workflow_pod_mem_mi=32768),
         ]
-        # Just verify it does not raise
-        print_node_analysis("c7a.48xlarge", alloc, runners, 90.0)
-        output = capsys.readouterr().out
-        assert "c7a.48xlarge" in output
+        nodepools = [_make_pool()]
+        below, slacks = analyze_pool(
+            "Test Pool",
+            "c7a",
+            nodepools,
+            runners,
+            FAKE_DS,
+            threshold=90.0,
+            pod_total_fn=per_workflow_pod_total,
+            compute_allocatable_fn=compute_allocatable,
+        )
+        out = capsys.readouterr().out
+        assert "Test Pool" in out
+        assert "r1" in out
+        assert "r2" in out
+        assert isinstance(below, int)
+        assert "c7a.48xlarge" in slacks
 
-    def test_gpu_node(self, capsys):
-        ds = [DaemonSetOverhead("gpu-ds", 100, 256, True, "test")]
-        alloc = compute_allocatable("g5.8xlarge", ds)
-        runners = [
-            {"name": "r1", "vcpu": 8, "memory_mi": 16384, "gpu": 1},
-        ]
-        print_node_analysis("g5.8xlarge", alloc, runners, 90.0)
-        output = capsys.readouterr().out
-        assert "GPU" in output
+    def test_runs_runner_pool(self, capsys):
+        runners = [_make_runner(name="r1"), _make_runner(name="r2")]
+        nodepools = [_make_pool(name="c7i-runner-12xl", fleet="c7i-runner", instance_type="c7i.12xlarge")]
+        below, slacks = analyze_pool(
+            "Runner Pool",
+            "c7i-runner",
+            nodepools,
+            runners,
+            FAKE_DS,
+            threshold=90.0,
+            pod_total_fn=per_runner_pod_total,
+            compute_allocatable_fn=compute_allocatable,
+        )
+        out = capsys.readouterr().out
+        assert "Runner Pool" in out
+        # Runner pods are tiny → many fit per node.
+        assert "pods" in out
+        assert isinstance(below, int)
+        assert "c7i.12xlarge" in slacks
+
+    def test_no_runners(self, capsys):
+        below, slacks = analyze_pool(
+            "Empty",
+            "c7a",
+            [_make_pool()],
+            [],
+            FAKE_DS,
+            threshold=90.0,
+            pod_total_fn=per_workflow_pod_total,
+            compute_allocatable_fn=compute_allocatable,
+        )
+        assert below == 0
+        assert slacks == {}
+        assert "no runners" in capsys.readouterr().out
+
+    def test_no_nodepools(self, capsys):
+        below, slacks = analyze_pool(
+            "NoNP",
+            "c7a",
+            [],
+            [_make_runner()],
+            FAKE_DS,
+            threshold=90.0,
+            pod_total_fn=per_workflow_pod_total,
+            compute_allocatable_fn=compute_allocatable,
+        )
+        assert below == 0
+        assert slacks == {}
+        assert "no nodepools" in capsys.readouterr().out
+
+    def test_unknown_instance_type_warning(self, capsys):
+        nodepools = [_make_pool(name="z99-x", fleet="c7a", instance_type="z99.fake")]
+        below, slacks = analyze_pool(
+            "Unknown",
+            "c7a",
+            nodepools,
+            [_make_runner()],
+            FAKE_DS,
+            threshold=90.0,
+            pod_total_fn=per_workflow_pod_total,
+            compute_allocatable_fn=compute_allocatable,
+        )
+        assert below == 0
+        assert slacks == {}  # unknown skipped → no slack collected
+        assert "z99.fake" in capsys.readouterr().out
 
     def test_too_many_runners_skips_mixed(self, capsys):
-        """More than 8 runners prints skip message."""
-        ds = [DaemonSetOverhead("ds1", 50, 100, False, "test")]
-        alloc = compute_allocatable("c7a.48xlarge", ds)
-        runners = [{"name": f"r{i}", "vcpu": 2, "memory_mi": 4096, "gpu": 0} for i in range(10)]
-        print_node_analysis("c7a.48xlarge", alloc, runners, 90.0)
-        output = capsys.readouterr().out
-        assert "too many runner types" in output
+        # 10 runners triggers the > 8 path.
+        runners = [_make_runner(name=f"r{i}") for i in range(10)]
+        analyze_pool(
+            "Big",
+            "c7a",
+            [_make_pool()],
+            runners,
+            FAKE_DS,
+            threshold=90.0,
+            pod_total_fn=per_workflow_pod_total,
+            compute_allocatable_fn=compute_allocatable,
+        )
+        assert "too many runner types" in capsys.readouterr().out
 
-    def test_no_maximal_combos(self, capsys):
-        """When no maximal combos found, prints skip message (lines 426-427)."""
-        ds = [DaemonSetOverhead("ds1", 50, 100, False, "test")]
-        alloc = compute_allocatable("c7a.48xlarge", ds)
-        # Runners too big to fit at all -> no valid combos -> no maximal combos
+    def test_no_valid_combos_message(self, capsys):
+        # One huge runner that cannot fit on any node.
+        huge = _make_runner(name="huge", workflow_pod_cpu_m=999000, workflow_pod_mem_mi=999000)
+        analyze_pool(
+            "Huge",
+            "c7a",
+            [_make_pool()],
+            [huge],
+            FAKE_DS,
+            threshold=90.0,
+            pod_total_fn=per_workflow_pod_total,
+            compute_allocatable_fn=compute_allocatable,
+        )
+        assert "no valid combos found" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Section printers
+# ---------------------------------------------------------------------------
+
+
+class TestPrintWorkflowPoolSection:
+    def test_runs_with_schedulable_runner(self, capsys):
+        runners = [_make_runner(name="r1", workflow_fleet="c7a")]
+        nodepools = [_make_pool()]
+        topo = _make_topology(runners=runners, nodepools=nodepools, workflow_pool_fleets={"c7a"})
+        below, slacks = print_workflow_pool_section(topo, FAKE_DS, threshold=90.0)
+        out = capsys.readouterr().out
+        assert "WORKFLOW POOL PACKING" in out
+        assert "Workflow Pool [c7a]" in out
+        assert isinstance(below, int)
+        assert "c7a/c7a.48xlarge" in slacks
+
+    def test_no_schedulable_runners(self, capsys):
+        topo = _make_topology(runners=[_make_runner(schedulable=False, schedulable_reason="no pool")])
+        below, slacks = print_workflow_pool_section(topo, FAKE_DS, threshold=90.0)
+        assert below == 0
+        assert slacks == {}
+        assert "no schedulable runners" in capsys.readouterr().out
+
+    def test_release_runners_separated(self, capsys):
         runners = [
-            {"name": "huge", "vcpu": 999, "memory_mi": 999999, "gpu": 0},
+            _make_runner(name="r-normal", workflow_fleet="c7a", runner_class=None),
+            _make_runner(name="r-rel", workflow_fleet="c7a", runner_class="release"),
         ]
-        print_node_analysis("c7a.48xlarge", alloc, runners, 90.0)
-        output = capsys.readouterr().out
-        assert "no valid combos found" in output
+        nodepools = [
+            _make_pool(),
+            _make_pool(name="c7a-48xlarge-release", runner_class="release"),
+        ]
+        topo = _make_topology(runners=runners, nodepools=nodepools, workflow_pool_fleets={"c7a"})
+        print_workflow_pool_section(topo, FAKE_DS, threshold=90.0)
+        out = capsys.readouterr().out
+        assert "Workflow Pool [c7a]" in out
+        assert "Workflow Pool [c7a/release]" in out
+
+
+class TestPrintRunnerPoolSection:
+    def test_with_runner_pool(self, capsys):
+        runners = [_make_runner(name="r1", workflow_fleet="c7a")]
+        nodepools = [
+            _make_pool(),
+            _make_pool(name="c7i-runner-12xl", fleet="c7i-runner", instance_type="c7i.12xlarge"),
+        ]
+        topo = _make_topology(
+            runners=runners, nodepools=nodepools, workflow_pool_fleets={"c7a"}, runner_pool_fleet="c7i-runner"
+        )
+        below, slacks = print_runner_pool_section(topo, FAKE_DS, threshold=90.0)
+        out = capsys.readouterr().out
+        assert "RUNNER POOL PACKING" in out
+        assert "Runner Pool [c7i-runner]" in out
+        assert isinstance(below, int)
+        assert "c7i.12xlarge" in slacks
+
+    def test_no_runner_pool_warns(self, capsys):
+        topo = _make_topology(runner_pool_fleet=None)
+        below, slacks = print_runner_pool_section(topo, FAKE_DS, threshold=90.0)
+        assert below == 0
+        assert slacks == {}
+        out = capsys.readouterr().out
+        assert "No c7i-runner pool found" in out
+
+
+class TestPrintUnschedulableSection:
+    def test_lists_unschedulable(self, capsys):
+        runners = [
+            _make_runner(name="ok"),
+            _make_runner(name="bad", schedulable=False, schedulable_reason="missing fleet"),
+        ]
+        topo = _make_topology(runners=runners)
+        print_unschedulable_section(topo)
+        out = capsys.readouterr().out
+        assert "UNSCHEDULABLE RUNNERS" in out
+        assert "bad" in out
+        assert "missing fleet" in out
+        # Schedulable runners should NOT appear in this section.
+        assert "ok " not in out
+
+    def test_all_schedulable(self, capsys):
+        topo = _make_topology(runners=[_make_runner(name="ok")])
+        print_unschedulable_section(topo)
+        out = capsys.readouterr().out
+        assert "all runners are schedulable" in out
 
 
 # ---------------------------------------------------------------------------
-# main
+# parse_args / main
 # ---------------------------------------------------------------------------
+
+
+class TestParseArgs:
+    def test_required_cluster(self):
+        args = parse_args(["--cluster", "arc-staging"])
+        assert args.cluster == "arc-staging"
+        assert args.threshold == 90.0
+
+    def test_threshold_override(self):
+        args = parse_args(["--cluster", "x", "--threshold", "80"])
+        assert args.threshold == 80.0
 
 
 class TestMain:
-    def test_show_daemonsets(self, capsys):
-        """--show-daemonsets flag prints daemonsets and exits."""
-        # main() resolves __file__ to find upstream_dir, so we run against
-        # the real project tree. --show-daemonsets prints and returns 0.
-        result = main(["--show-daemonsets"])
-        assert result == 0
-        output = capsys.readouterr().out
-        assert "Discovered DaemonSets" in output
-
-    def test_runs_full_analysis(self, capsys):
-        """Full analysis against real project defs (smoke test)."""
-        # This exercises the main() code path against the real tree.
-        # It returns 0 (all good) or 1 (issues found); either is fine.
-        result = main(["--threshold", "99"])
-        assert result in (0, 1)
-        output = capsys.readouterr().out
-        assert "Node Utilization Analysis" in output
-
-    @patch("analyze_node_utilization.load_runner_defs", return_value=[])
-    def test_no_runners_returns_1(self, mock_load, capsys):
-        """main() returns 1 when no runner definitions found (lines 559-560)."""
-        result = main(["--threshold", "90"])
-        assert result == 1
-        output = capsys.readouterr().out
-        assert "No runner definitions found" in output
-
-    @patch("analyze_node_utilization.load_runner_defs")
-    def test_unknown_instance_type_warning(self, mock_load, capsys):
-        """main() warns about unknown instance types (line 570) and skips them (line 577)."""
-        mock_load.return_value = [
-            {"name": "r1", "instance_type": "z99.fake", "vcpu": 4, "memory_mi": 8192, "gpu": 0},
+    @patch("analyze_node_utilization.discover_daemonsets")
+    @patch("analyze_node_utilization.resolve_cluster")
+    def test_runs_with_synthetic_topology(self, mock_resolve, mock_discover, capsys):
+        """main() runs without crashing when topology + daemonsets are stubbed."""
+        runners = [
+            _make_runner(name="r1", workflow_fleet="c7a"),
+            _make_runner(name="bad", schedulable=False, schedulable_reason="fake"),
         ]
-        result = main(["--threshold", "90"])
-        assert result in (0, 1)
-        output = capsys.readouterr().out
-        assert "z99.fake" in output
-
-    @patch("analyze_node_utilization.load_runner_defs")
-    def test_all_good_message(self, mock_load, capsys):
-        """When all runners have good utilization, prints all-good message (line 607)."""
-        # Use controlled runner defs that pack well on their instance type
-        mock_load.return_value = [
-            {"name": "r1", "instance_type": "c7a.xlarge", "vcpu": 2, "memory_mi": 4096, "gpu": 0},
+        nodepools = [
+            _make_pool(),
+            _make_pool(name="c7i-runner-12xl", fleet="c7i-runner", instance_type="c7i.12xlarge"),
         ]
-        result = main(["--threshold", "1"])
-        assert result == 0
-        output = capsys.readouterr().out
-        assert "All runner types achieve" in output
-
-    def test_consumer_runner_defs_discovered(self, tmp_path, monkeypatch, capsys):
-        """main() discovers runner defs from consumer modules/ when OSDC_ROOT is set."""
-        # Create a fake consumer root with a module containing runner defs
-        consumer = tmp_path / "consumer"
-        defs = consumer / "modules" / "custom-runners" / "defs"
-        defs.mkdir(parents=True)
-        (defs / "big-runner.yaml").write_text(
-            yaml.dump(
-                {
-                    "runner": {
-                        "name": "consumer-big",
-                        "instance_type": "c7a.48xlarge",
-                        "vcpu": 96,
-                        "memory": "192Gi",
-                        "gpu": 0,
-                    }
-                }
-            )
+        mock_resolve.return_value = _make_topology(
+            cluster_id="fake-cluster",
+            runners=runners,
+            nodepools=nodepools,
+            workflow_pool_fleets={"c7a"},
+            runner_pool_fleet="c7i-runner",
         )
-        monkeypatch.setenv("OSDC_ROOT", str(consumer))
-        result = main(["--threshold", "1"])
-        assert result in (0, 1)
-        output = capsys.readouterr().out
-        assert str(defs) in output
+        mock_discover.return_value = FAKE_DS
 
-    def test_consumer_nodepool_defs_discovered(self, tmp_path, monkeypatch, capsys):
-        """main() discovers nodepool defs from consumer modules/ when OSDC_ROOT is set."""
-        consumer = tmp_path / "consumer"
-        defs = consumer / "modules" / "custom-nodepools" / "defs"
-        defs.mkdir(parents=True)
-        (defs / "big-pool.yaml").write_text(
-            yaml.dump(
-                {
-                    "nodepool": {
-                        "name": "consumer-pool",
-                        "instance_type": "c7a.48xlarge",
-                    }
-                }
-            )
-        )
-        monkeypatch.setenv("OSDC_ROOT", str(consumer))
-        result = main(["--threshold", "1"])
-        assert result in (0, 1)
-        output = capsys.readouterr().out
-        assert str(defs) in output
+        rc = main(["--cluster", "fake-cluster", "--threshold", "90"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Node Utilization Analysis" in out
+        assert "WORKFLOW POOL PACKING" in out
+        assert "RUNNER POOL PACKING" in out
+        assert "UNSCHEDULABLE RUNNERS" in out
 
-    def test_consumer_module_without_defs_ignored(self, tmp_path, monkeypatch, capsys):
-        """Consumer modules without a defs/ directory are silently skipped."""
-        consumer = tmp_path / "consumer"
-        (consumer / "modules" / "no-defs-module").mkdir(parents=True)
-        monkeypatch.setenv("OSDC_ROOT", str(consumer))
-        result = main(["--threshold", "1"])
-        assert result in (0, 1)
-
-    def test_consumer_module_non_runner_yaml_ignored(self, tmp_path, monkeypatch, capsys):
-        """Consumer module defs with non-runner/nodepool YAMLs are not added."""
-        consumer = tmp_path / "consumer"
-        defs = consumer / "modules" / "other-module" / "defs"
-        defs.mkdir(parents=True)
-        (defs / "config.yaml").write_text(yaml.dump({"something_else": True}))
-        monkeypatch.setenv("OSDC_ROOT", str(consumer))
-        result = main(["--threshold", "1"])
-        assert result in (0, 1)
-        output = capsys.readouterr().out
-        assert str(defs) not in output
+    @patch("analyze_node_utilization.discover_daemonsets")
+    @patch("analyze_node_utilization.resolve_cluster")
+    def test_main_no_runner_pool(self, mock_resolve, mock_discover, capsys):
+        """main() handles topology without c7i-runner gracefully."""
+        mock_resolve.return_value = _make_topology(runner_pool_fleet=None, workflow_pool_fleets={"c7a"})
+        mock_discover.return_value = FAKE_DS
+        rc = main(["--cluster", "x"])
+        assert rc == 0
+        assert "No c7i-runner pool found" in capsys.readouterr().out

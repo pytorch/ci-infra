@@ -5,11 +5,14 @@ from pathlib import Path
 
 import pytest
 import yaml
+from analyze_node_utilization import compute_daemonset_overhead
 from daemonset_overhead import (
     EKS_ADDON_DAEMONSETS,
     HELM_DAEMONSETS,
+    DaemonSetOverhead,
     _discover_from_yaml,
     _extract_container_resources,
+    _extract_fleet_selector,
     _is_gpu_only,
     discover_daemonsets,
     main,
@@ -611,3 +614,423 @@ class TestMainCli:
         assert result == 0
         output = capsys.readouterr().out
         assert "source:" in output
+
+
+# ---------------------------------------------------------------------------
+# _extract_fleet_selector
+# ---------------------------------------------------------------------------
+
+
+class TestExtractFleetSelector:
+    def test_node_selector_node_fleet(self):
+        """node-fleet via nodeSelector returns the value."""
+        pod_spec = {"nodeSelector": {"node-fleet": "c7i-runner"}}
+        assert _extract_fleet_selector(pod_spec) == "c7i-runner"
+
+    def test_node_selector_other_keys_only(self):
+        """nodeSelector without node-fleet returns None."""
+        pod_spec = {"nodeSelector": {"workload-type": "github-runner"}}
+        assert _extract_fleet_selector(pod_spec) is None
+
+    def test_node_affinity_in_single_value(self):
+        """nodeAffinity matchExpression with In + single value returns that value."""
+        pod_spec = {
+            "affinity": {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [
+                            {
+                                "matchExpressions": [
+                                    {
+                                        "key": "node-fleet",
+                                        "operator": "In",
+                                        "values": ["g4dn"],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        assert _extract_fleet_selector(pod_spec) == "g4dn"
+
+    def test_node_affinity_in_multiple_values(self):
+        """nodeAffinity matchExpression with In + multiple values returns None."""
+        pod_spec = {
+            "affinity": {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [
+                            {
+                                "matchExpressions": [
+                                    {
+                                        "key": "node-fleet",
+                                        "operator": "In",
+                                        "values": ["c7i-runner", "g4dn"],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        assert _extract_fleet_selector(pod_spec) is None
+
+    def test_node_affinity_not_in_operator(self):
+        """nodeAffinity matchExpression with operator != In returns None."""
+        pod_spec = {
+            "affinity": {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [
+                            {
+                                "matchExpressions": [
+                                    {
+                                        "key": "node-fleet",
+                                        "operator": "NotIn",
+                                        "values": ["c7i-runner"],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        assert _extract_fleet_selector(pod_spec) is None
+
+    def test_node_affinity_exists_operator(self):
+        """nodeAffinity matchExpression with operator=Exists returns None."""
+        pod_spec = {
+            "affinity": {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [
+                            {
+                                "matchExpressions": [
+                                    {
+                                        "key": "node-fleet",
+                                        "operator": "Exists",
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        assert _extract_fleet_selector(pod_spec) is None
+
+    def test_node_affinity_in_zero_values(self):
+        """nodeAffinity matchExpression with In + empty values returns None."""
+        pod_spec = {
+            "affinity": {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [
+                            {
+                                "matchExpressions": [
+                                    {
+                                        "key": "node-fleet",
+                                        "operator": "In",
+                                        "values": [],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        assert _extract_fleet_selector(pod_spec) is None
+
+    def test_node_affinity_other_key_only(self):
+        """nodeAffinity matchExpression with non-node-fleet key returns None."""
+        pod_spec = {
+            "affinity": {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [
+                            {
+                                "matchExpressions": [
+                                    {
+                                        "key": "workload-type",
+                                        "operator": "In",
+                                        "values": ["github-runner"],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        assert _extract_fleet_selector(pod_spec) is None
+
+    def test_no_selector_no_affinity(self):
+        """Empty pod spec returns None."""
+        assert _extract_fleet_selector({}) is None
+
+    def test_empty_node_selector(self):
+        """Empty nodeSelector dict returns None."""
+        assert _extract_fleet_selector({"nodeSelector": {}}) is None
+
+    def test_node_selector_takes_precedence_over_affinity(self):
+        """When both nodeSelector and nodeAffinity have node-fleet, nodeSelector wins."""
+        pod_spec = {
+            "nodeSelector": {"node-fleet": "c7i-runner"},
+            "affinity": {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [
+                            {
+                                "matchExpressions": [
+                                    {
+                                        "key": "node-fleet",
+                                        "operator": "In",
+                                        "values": ["different"],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            },
+        }
+        assert _extract_fleet_selector(pod_spec) == "c7i-runner"
+
+
+# ---------------------------------------------------------------------------
+# fleet_selector parsed via _discover_from_yaml
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverFromYamlFleetSelector:
+    def test_node_selector_fleet(self, tmp_path):
+        """fleet_selector parsed from spec.template.spec.nodeSelector["node-fleet"]."""
+        manifest = {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {"name": "hooks-warmer"},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "nodeSelector": {"node-fleet": "c7i-runner"},
+                        "containers": [{"name": "main"}],
+                    }
+                }
+            },
+        }
+        (tmp_path / "ds.yaml").write_text(yaml.dump(manifest))
+        results = _discover_from_yaml([tmp_path])
+        assert len(results) == 1
+        assert results[0].fleet_selector == "c7i-runner"
+
+    def test_node_affinity_fleet_single_value(self, tmp_path):
+        """fleet_selector parsed from nodeAffinity matchExpression with In + single value."""
+        manifest = {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {"name": "affinity-pinned"},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "affinity": {
+                            "nodeAffinity": {
+                                "requiredDuringSchedulingIgnoredDuringExecution": {
+                                    "nodeSelectorTerms": [
+                                        {
+                                            "matchExpressions": [
+                                                {
+                                                    "key": "node-fleet",
+                                                    "operator": "In",
+                                                    "values": ["g4dn"],
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "containers": [{"name": "main"}],
+                    }
+                }
+            },
+        }
+        (tmp_path / "ds.yaml").write_text(yaml.dump(manifest))
+        results = _discover_from_yaml([tmp_path])
+        assert len(results) == 1
+        assert results[0].fleet_selector == "g4dn"
+
+    def test_node_affinity_multiple_values_is_none(self, tmp_path):
+        """fleet_selector is None when matchExpression has multiple values (runs everywhere)."""
+        manifest = {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {"name": "multi-fleet"},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "affinity": {
+                            "nodeAffinity": {
+                                "requiredDuringSchedulingIgnoredDuringExecution": {
+                                    "nodeSelectorTerms": [
+                                        {
+                                            "matchExpressions": [
+                                                {
+                                                    "key": "node-fleet",
+                                                    "operator": "In",
+                                                    "values": ["c7i-runner", "g4dn"],
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "containers": [{"name": "main"}],
+                    }
+                }
+            },
+        }
+        (tmp_path / "ds.yaml").write_text(yaml.dump(manifest))
+        results = _discover_from_yaml([tmp_path])
+        assert len(results) == 1
+        assert results[0].fleet_selector is None
+
+    def test_no_fleet_selector(self, tmp_path):
+        """fleet_selector is None when no node-fleet anywhere."""
+        manifest = {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {"name": "unpinned"},
+            "spec": {
+                "template": {"spec": {"containers": [{"name": "main"}]}},
+            },
+        }
+        (tmp_path / "ds.yaml").write_text(yaml.dump(manifest))
+        results = _discover_from_yaml([tmp_path])
+        assert len(results) == 1
+        assert results[0].fleet_selector is None
+
+
+# ---------------------------------------------------------------------------
+# fleet_selector for HELM and EKS_ADDON constants
+# ---------------------------------------------------------------------------
+
+
+class TestConstantsFleetSelector:
+    def test_helm_constants_have_none_fleet_selector(self):
+        """All HELM_DAEMONSETS run on every node — fleet_selector must be None."""
+        for ds in HELM_DAEMONSETS:
+            assert ds.fleet_selector is None, f"{ds.name} should have fleet_selector=None"
+
+    def test_eks_addon_constants_have_none_fleet_selector(self):
+        """All EKS_ADDON_DAEMONSETS run on every node — fleet_selector must be None."""
+        for ds in EKS_ADDON_DAEMONSETS:
+            assert ds.fleet_selector is None, f"{ds.name} should have fleet_selector=None"
+
+
+# ---------------------------------------------------------------------------
+# DaemonSetOverhead dataclass field default
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonSetOverheadDefaultFleetSelector:
+    def test_default_fleet_selector_is_none(self):
+        """Constructing without fleet_selector sets it to None (backward-compatible)."""
+        ds = DaemonSetOverhead(
+            name="legacy",
+            cpu_millicores=10,
+            memory_mib=32,
+            gpu_only=False,
+            source="test",
+        )
+        assert ds.fleet_selector is None
+
+    def test_explicit_fleet_selector(self):
+        """Passing fleet_selector keyword stores it."""
+        ds = DaemonSetOverhead(
+            name="pinned",
+            cpu_millicores=10,
+            memory_mib=32,
+            gpu_only=False,
+            source="test",
+            fleet_selector="c7i-runner",
+        )
+        assert ds.fleet_selector == "c7i-runner"
+
+
+# ---------------------------------------------------------------------------
+# compute_daemonset_overhead — fleet-aware filtering
+# ---------------------------------------------------------------------------
+
+
+# Mixed fleet of DaemonSets used by the fleet-aware tests below.
+FLEET_DS = [
+    DaemonSetOverhead("kube-proxy", 50, 80, False, "test", fleet_selector=None),
+    DaemonSetOverhead("gpu-plugin", 100, 256, True, "test", fleet_selector=None),
+    DaemonSetOverhead("hooks-warmer", 10, 32, False, "test", fleet_selector="c7i-runner"),
+    DaemonSetOverhead("g4dn-only-tool", 25, 64, False, "test", fleet_selector="g4dn"),
+]
+
+
+class TestComputeDaemonsetOverheadFleetAware:
+    def test_legacy_no_fleet_includes_all(self):
+        """fleet_name=None (legacy) includes ALL DaemonSets (matching old behavior)."""
+        cpu, mem = compute_daemonset_overhead(FLEET_DS, is_gpu=False)
+        # kube-proxy (50/80) + hooks-warmer (10/32) + g4dn-only-tool (25/64).
+        # gpu-plugin excluded (is_gpu=False).
+        assert cpu == 50 + 10 + 25
+        assert mem == 80 + 32 + 64
+
+    def test_legacy_no_fleet_includes_all_gpu(self):
+        """fleet_name=None (legacy) on GPU node includes ALL DaemonSets."""
+        cpu, mem = compute_daemonset_overhead(FLEET_DS, is_gpu=True)
+        # All four.
+        assert cpu == 50 + 100 + 10 + 25
+        assert mem == 80 + 256 + 32 + 64
+
+    def test_c7i_runner_pool_excludes_other_fleets(self):
+        """fleet_name='c7i-runner' includes None-pinned + c7i-runner-pinned only."""
+        cpu, mem = compute_daemonset_overhead(FLEET_DS, is_gpu=False, fleet_name="c7i-runner")
+        # kube-proxy (None) + hooks-warmer (c7i-runner). g4dn-only-tool excluded.
+        # gpu-plugin excluded (is_gpu=False).
+        assert cpu == 50 + 10
+        assert mem == 80 + 32
+
+    def test_g4dn_pool_with_gpu_includes_gpu_ds(self):
+        """fleet_name='g4dn' on GPU node includes None + g4dn + GPU DaemonSets."""
+        cpu, mem = compute_daemonset_overhead(FLEET_DS, is_gpu=True, fleet_name="g4dn")
+        # kube-proxy (None) + gpu-plugin (None, gpu) + g4dn-only-tool (g4dn).
+        # hooks-warmer excluded (pinned to c7i-runner).
+        assert cpu == 50 + 100 + 25
+        assert mem == 80 + 256 + 64
+
+    def test_workflow_pool_excludes_runner_only_ds(self):
+        """A pool name not matching any pinned DaemonSet excludes all pinned ones."""
+        cpu, mem = compute_daemonset_overhead(FLEET_DS, is_gpu=False, fleet_name="workflow")
+        # Only kube-proxy (None) — both hooks-warmer and g4dn-only-tool excluded.
+        assert cpu == 50
+        assert mem == 80
+
+    def test_unknown_fleet_includes_unpinned_only(self):
+        """Pool name with no pinned DS still returns unpinned DaemonSets."""
+        cpu, mem = compute_daemonset_overhead([], is_gpu=False, fleet_name="anything")
+        assert cpu == 0
+        assert mem == 0
+
+    def test_gpu_only_filtered_when_not_gpu_even_with_fleet(self):
+        """gpu_only filtering still applies regardless of fleet."""
+        cpu, mem = compute_daemonset_overhead(FLEET_DS, is_gpu=False, fleet_name="g4dn")
+        # kube-proxy (None) + g4dn-only-tool (g4dn). gpu-plugin excluded (is_gpu=False).
+        assert cpu == 50 + 25
+        assert mem == 80 + 64
+
+    def test_keyword_only_signature(self):
+        """is_gpu and fleet_name are keyword-only — positional call must fail."""
+        with pytest.raises(TypeError):
+            # is_gpu is kw-only after the * marker.
+            compute_daemonset_overhead(FLEET_DS, True)  # type: ignore[misc]

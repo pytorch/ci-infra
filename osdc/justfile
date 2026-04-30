@@ -1232,21 +1232,33 @@ workload-test cluster *args:
 # ANALYSIS
 # ============================================================================
 
-# Analyze runner-to-node packing efficiency
-analyze-utilization *args:
+# Generate ARC runner manifests for a cluster (standalone — also runs as part of `deploy-module <cluster> arc-runners`)
+generate-runners cluster:
     @export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
-    uv run {{SCRIPTS}}/python/analyze_node_utilization.py {{args}}
+    uv run {{UPSTREAM}}/modules/arc-runners/scripts/python/generate_runners.py {{cluster}}; \
+    if [ -d "{{UPSTREAM}}/modules/arc-runners-b200/defs" ]; then \
+        ARC_RUNNERS_DEFS_DIR="{{UPSTREAM}}/modules/arc-runners-b200/defs" \
+        ARC_RUNNERS_OUTPUT_DIR="{{UPSTREAM}}/modules/arc-runners-b200/generated" \
+        ARC_RUNNERS_MODULE_NAME="arc-runners-b200" \
+        uv run {{UPSTREAM}}/modules/arc-runners/scripts/python/generate_runners.py {{cluster}}; \
+    fi
+
+# Analyze runner-to-node packing efficiency
+analyze-utilization cluster *args: (generate-runners cluster)
+    @export OSDC_ROOT="{{ROOT}}"; \
+    export OSDC_UPSTREAM="{{UPSTREAM}}"; \
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
+    uv run {{SCRIPTS}}/python/analyze_node_utilization.py --cluster {{cluster}} {{args}}
 
 # Monte Carlo cluster simulation for PyTorch CI load
-simulate-cluster *args:
+simulate-cluster cluster *args: (generate-runners cluster)
     @export OSDC_ROOT="{{ROOT}}"; \
     export OSDC_UPSTREAM="{{UPSTREAM}}"; \
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \
     uv run {{SCRIPTS}}/python/simulate_cluster_cli.py \
-        --upstream-dir "{{UPSTREAM}}" \
-        --consumer-root "{{ROOT}}" \
+        --cluster {{cluster}} \
         {{args}}
 
 # ============================================================================

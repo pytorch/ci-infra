@@ -31,27 +31,32 @@ class DaemonSetOverhead:
     memory_mib: int
     gpu_only: bool
     source: str  # e.g. "base/kubernetes/nvidia-device-plugin.yaml" or "constant:helm"
+    # If set, the DaemonSet runs ONLY on nodes with the matching `node-fleet`
+    # label (e.g. "c7i-runner"). When None, the DaemonSet runs on all fleets.
+    fleet_selector: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Constants for DaemonSets not discoverable from raw YAML manifests
 # ---------------------------------------------------------------------------
 
-# Helm-deployed DaemonSets — values from their respective Helm charts
+# Helm-deployed DaemonSets — values from their respective Helm charts.
+# These run on every node (no fleet pinning), so fleet_selector=None.
 HELM_DAEMONSETS: list[DaemonSetOverhead] = [
     # kube-prometheus-stack node-exporter (chart defaults)
     # Values from modules/monitoring/helm/values.yaml
-    DaemonSetOverhead("node-exporter", 15, 32, False, "constant:helm:kube-prometheus-stack"),
+    DaemonSetOverhead("node-exporter", 15, 32, False, "constant:helm:kube-prometheus-stack", fleet_selector=None),
     # Alloy logging DaemonSet
     # Values from modules/logging/helm/alloy-logging-values.yaml
-    DaemonSetOverhead("alloy-logging", 100, 256, False, "constant:helm:alloy-logging"),
+    DaemonSetOverhead("alloy-logging", 100, 256, False, "constant:helm:alloy-logging", fleet_selector=None),
 ]
 
-# EKS-managed addon DaemonSets — not in our manifests at all
+# EKS-managed addon DaemonSets — not in our manifests at all.
+# These run on every node (no fleet pinning), so fleet_selector=None.
 EKS_ADDON_DAEMONSETS: list[DaemonSetOverhead] = [
-    DaemonSetOverhead("kube-proxy", 50, 80, False, "constant:eks-addon"),
-    DaemonSetOverhead("vpc-cni", 50, 128, False, "constant:eks-addon"),
-    DaemonSetOverhead("ebs-csi-node", 10, 50, False, "constant:eks-addon"),
+    DaemonSetOverhead("kube-proxy", 50, 80, False, "constant:eks-addon", fleet_selector=None),
+    DaemonSetOverhead("vpc-cni", 50, 128, False, "constant:eks-addon", fleet_selector=None),
+    DaemonSetOverhead("ebs-csi-node", 10, 50, False, "constant:eks-addon", fleet_selector=None),
 ]
 
 
@@ -118,6 +123,46 @@ def _is_gpu_only(pod_spec: dict) -> bool:
     return False
 
 
+def _extract_fleet_selector(pod_spec: dict) -> str | None:
+    """Return the single `node-fleet` value the pod is pinned to, if any.
+
+    Checks (in order):
+    - spec.template.spec.nodeSelector["node-fleet"] -> use as-is
+    - spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution
+        .nodeSelectorTerms[*].matchExpressions[*] for a matchExpression where
+        key == "node-fleet" AND operator == "In" AND values has exactly one entry.
+
+    Returns:
+        The single fleet name (e.g. "c7i-runner") if the DaemonSet is pinned
+        to ONE fleet. Returns None if no node-fleet selector is present, OR if
+        the matchExpression allows multiple fleets / uses a different operator
+        (treated as "runs on multiple fleets — include everywhere").
+    """
+    # nodeSelector check (simple key/value map)
+    node_selector = pod_spec.get("nodeSelector", {}) or {}
+    if "node-fleet" in node_selector:
+        return str(node_selector["node-fleet"])
+
+    # nodeAffinity matchExpressions check
+    affinity = pod_spec.get("affinity", {}) or {}
+    node_affinity = affinity.get("nodeAffinity", {}) or {}
+    required = node_affinity.get("requiredDuringSchedulingIgnoredDuringExecution", {}) or {}
+    for term in required.get("nodeSelectorTerms", []) or []:
+        for expr in term.get("matchExpressions", []) or []:
+            if expr.get("key") != "node-fleet":
+                continue
+            if expr.get("operator") != "In":
+                # Different operator (NotIn, Exists, etc.) — treat as "all fleets".
+                return None
+            values = expr.get("values", []) or []
+            if len(values) == 1:
+                return str(values[0])
+            # Zero or multiple values — DS runs on multiple fleets, treat as "all".
+            return None
+
+    return None
+
+
 def _extract_container_resources(containers: list[dict]) -> tuple[int, int]:
     """Sum CPU and memory requests across all containers.
 
@@ -163,10 +208,20 @@ def _discover_from_yaml(search_dirs: list[Path]) -> list[DaemonSetOverhead]:
                 cpu, mem = _extract_container_resources(containers)
 
                 gpu_only = _is_gpu_only(pod_spec)
+                fleet_selector = _extract_fleet_selector(pod_spec)
 
                 # Build a short relative source path
                 source = str(yaml_file)
-                results.append(DaemonSetOverhead(name, cpu, mem, gpu_only, source))
+                results.append(
+                    DaemonSetOverhead(
+                        name=name,
+                        cpu_millicores=cpu,
+                        memory_mib=mem,
+                        gpu_only=gpu_only,
+                        source=source,
+                        fleet_selector=fleet_selector,
+                    )
+                )
 
     return results
 

@@ -1,123 +1,202 @@
-"""Monte Carlo cluster simulation library for PyTorch CI load.
+"""Monte Carlo cluster simulation library for PyTorch CI load (split-pool model).
 
-Places runners one-at-a-time using best-fit bin-packing (Karpenter-like)
-until deployed counts approximate observed peak concurrency.
+Each runner deployment now occupies TWO pods on TWO different node pools (per
+PROACTIVE_CAPACITY.md):
 
-CLI entry point: simulate_cluster_cli.py
+  1. A workflow pod on the per-runner-class workflow pool (heavy: vCPU + memory
+     + GPU + container-hooks overhead).
+  2. A runner pod on the dedicated ``c7i-runner`` runner pool (light: ~750m
+     CPU + ~512Mi memory).
+
+The simulator runs both placements per runner draw and reports utilization for
+both pools separately. Workload data is sourced from ``pytorch_workload_data``
+(global pytorch/pytorch snapshot). Cluster topology is supplied by
+``cluster_topology.resolve_cluster``.
+
+Placement / provisioning helpers live in ``sim_placement`` to keep this file
+under the 400-line ceiling. They are re-exported from this module so callers
+have a single entry point.
+
+CLI entry point: ``simulate_cluster_cli.py``.
 """
 
-import random
-from dataclasses import dataclass, field
+from __future__ import annotations
 
-from analyze_node_utilization import compute_allocatable, per_runner_total
-from daemonset_overhead import DaemonSetOverhead
+import random
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from sim_placement import (
+    best_fit_place_runner,
+    best_fit_place_workflow,
+    per_runner_pod_total,
+    per_workflow_pod_total,
+    provision_runner_node,
+    provision_workflow_node,
+)
+
+if TYPE_CHECKING:
+    from cluster_topology import ClusterTopology, NodePoolEntry, RunnerEntry
+    from daemonset_overhead import DaemonSetOverhead
+
+
+# Re-export placement helpers so simulate_cluster remains the public entry
+# point — callers import from here, not from sim_placement directly.
+__all__ = [
+    "PoolUtilization",
+    "SimNode",
+    "SimResult",
+    "SimulationUtilization",
+    "best_fit_place_runner",
+    "best_fit_place_workflow",
+    "build_peak_targets",
+    "build_weighted_pool",
+    "compute_utilization",
+    "per_runner_pod_total",
+    "per_workflow_pod_total",
+    "provision_runner_node",
+    "provision_workflow_node",
+    "run_simulation",
+    "weighted_mape",
+]
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class SimNode:
-    """A simulated cluster node."""
+    """A simulated cluster node.
+
+    ``fleet`` is the ``node-fleet`` label (e.g. ``c7i-runner``, ``g4dn``)
+    and disambiguates workflow vs runner pool nodes. ``runner_class`` is
+    set only for release-tagged workflow nodes; runner-pool nodes always
+    have ``runner_class=None``.
+    """
 
     instance_type: str
-    total_cpu_m: int
-    total_mem_mi: int
-    total_gpu: int
+    fleet: str
+    runner_class: str | None
+    cpu_m: int
+    mem_mi: int
+    gpu: int
     used_cpu_m: int = 0
     used_mem_mi: int = 0
     used_gpu: int = 0
-    runner_count: int = 0
+    pod_count: int = 0
 
     @property
     def remaining_cpu_m(self) -> int:
-        return self.total_cpu_m - self.used_cpu_m
+        return self.cpu_m - self.used_cpu_m
 
     @property
     def remaining_mem_mi(self) -> int:
-        return self.total_mem_mi - self.used_mem_mi
+        return self.mem_mi - self.used_mem_mi
 
     @property
     def remaining_gpu(self) -> int:
-        return self.total_gpu - self.used_gpu
+        return self.gpu - self.used_gpu
 
-    def fits(self, cpu_m: int, mem_mi: int, gpu: int) -> bool:
+    def can_fit(self, cpu_m: int, mem_mi: int, gpu: int) -> bool:
         return self.remaining_cpu_m >= cpu_m and self.remaining_mem_mi >= mem_mi and self.remaining_gpu >= gpu
+
+    def allocate(self, cpu_m: int, mem_mi: int, gpu: int) -> None:
+        self.used_cpu_m += cpu_m
+        self.used_mem_mi += mem_mi
+        self.used_gpu += gpu
+        self.pod_count += 1
+
+
+@dataclass
+class PoolUtilization:
+    """Per-pool resource accounting (workflow OR runner pool)."""
+
+    nodes: int = 0
+    used_cpu_m: int = 0
+    total_cpu_m: int = 0
+    used_mem_mi: int = 0
+    total_mem_mi: int = 0
+    used_gpu: int = 0
+    total_gpu: int = 0
+
+    @property
+    def cpu_pct(self) -> float:
+        return (self.used_cpu_m / self.total_cpu_m * 100) if self.total_cpu_m > 0 else 0.0
+
+    @property
+    def mem_pct(self) -> float:
+        return (self.used_mem_mi / self.total_mem_mi * 100) if self.total_mem_mi > 0 else 0.0
+
+    @property
+    def gpu_pct(self) -> float:
+        return (self.used_gpu / self.total_gpu * 100) if self.total_gpu > 0 else 0.0
+
+
+@dataclass
+class SimulationUtilization:
+    """Utilization broken out by pool."""
+
+    workflow: PoolUtilization
+    runner: PoolUtilization
 
 
 @dataclass
 class SimResult:
-    """Result of a simulation run."""
+    """Result of a simulation run.
 
-    nodes: list[SimNode] = field(default_factory=list)
+    ``workflow_nodes`` are nodes from the per-runner-class workflow pools;
+    ``runner_nodes`` are nodes from the dedicated runner pool. ``skipped``
+    lists target runner names that were not in topology or were not
+    schedulable.
+    """
+
+    workflow_nodes: list[SimNode] = field(default_factory=list)
+    runner_nodes: list[SimNode] = field(default_factory=list)
     deployed: dict[str, int] = field(default_factory=dict)
     targets: dict[str, int] = field(default_factory=dict)
-    skipped_labels: dict[str, str] = field(default_factory=dict)
+    skipped: list[str] = field(default_factory=list)
 
 
-def build_peak_targets(
-    old_to_new: dict[str, str],
-    peak_concurrent: dict[str, int],
-) -> tuple[dict[str, int], dict[str, str]]:
-    """Collapse old labels to new, summing peaks. Returns (targets, skipped)."""
-    targets: dict[str, int] = {}
-    skipped: dict[str, str] = {}
-    for old_label, peak in peak_concurrent.items():
-        if old_label not in old_to_new:
-            skipped[old_label] = "no mapping"
+# ---------------------------------------------------------------------------
+# Target / pool builders
+# ---------------------------------------------------------------------------
+
+
+def build_peak_targets(runners: list[RunnerEntry]) -> dict[str, int]:
+    """Map ``RunnerEntry`` → peak concurrent count via ``OLD_TO_NEW_LABEL``.
+
+    Sums peaks for any old labels that map to the same new runner name.
+    Only includes runners that are schedulable in the topology.
+    """
+    # Local import keeps the workload snapshot a runtime concern — keeps
+    # test fixtures cheap and avoids a top-of-file dependency cycle.
+    from pytorch_workload_data import OLD_TO_NEW_LABEL, PEAK_CONCURRENT
+
+    schedulable_names = {r.name for r in runners if r.schedulable}
+    targets: dict[str, int] = defaultdict(int)
+    for old_label, peak in PEAK_CONCURRENT.items():
+        new_name = OLD_TO_NEW_LABEL.get(old_label)
+        if new_name is None or new_name not in schedulable_names:
             continue
-        new_label = old_to_new[old_label]
-        targets[new_label] = targets.get(new_label, 0) + peak
-    return targets, skipped
+        targets[new_name] += peak
+    return dict(targets)
 
 
-def build_weighted_pool(targets: dict[str, int]) -> list[tuple[str, int]]:
-    """Create (runner_name, weight) tuples for weighted random drawing."""
-    return [(name, weight) for name, weight in targets.items() if weight > 0]
-
-
-def best_fit_place(
-    nodes: list[SimNode],
-    cpu_m: int,
-    mem_mi: int,
-    gpu: int,
-    instance_type: str,
-) -> int | None:
-    """Find matching node with least remaining capacity that fits the runner."""
-    best_idx = None
-    best_remaining = float("inf")
-    for i, node in enumerate(nodes):
-        if node.instance_type != instance_type:
+def build_weighted_pool(targets: dict[str, int]) -> list[str]:
+    """Expand ``{name: weight}`` into a list with each name repeated ``weight`` times."""
+    pool: list[str] = []
+    for name, weight in targets.items():
+        if weight <= 0:
             continue
-        if not node.fits(cpu_m, mem_mi, gpu):
-            continue
-        # Score: remaining resources (lower = tighter fit = preferred)
-        remaining = node.remaining_cpu_m + node.remaining_mem_mi
-        if node.total_gpu > 0:
-            # Scale GPU remaining to be comparable to CPU+mem magnitude
-            gpu_scale = (node.total_cpu_m + node.total_mem_mi) / max(node.total_gpu, 1)
-            remaining += node.remaining_gpu * gpu_scale
-        if remaining < best_remaining:
-            best_remaining = remaining
-            best_idx = i
-    return best_idx
-
-
-def provision_node(
-    instance_type: str,
-    daemonsets: list[DaemonSetOverhead],
-) -> SimNode | None:
-    """Create a new SimNode with allocatable capacity after overhead."""
-    alloc = compute_allocatable(instance_type, daemonsets)
-    if alloc is None:
-        return None
-    return SimNode(
-        instance_type=instance_type,
-        total_cpu_m=alloc["allocatable_cpu_m"],
-        total_mem_mi=alloc["allocatable_mem_mi"],
-        total_gpu=alloc["allocatable_gpu"],
-    )
+        pool.extend([name] * weight)
+    return pool
 
 
 def weighted_mape(deployed: dict[str, int], targets: dict[str, int]) -> float:
-    """Weighted MAPE: sum(|deployed_i - target_i|) / sum(target_i)."""
+    """Weighted MAPE: ``sum(|deployed - target|) / sum(target)``."""
     total_target = sum(targets.values())
     if total_target == 0:
         return 0.0
@@ -125,123 +204,124 @@ def weighted_mape(deployed: dict[str, int], targets: dict[str, int]) -> float:
     return total_error / total_target
 
 
+# ---------------------------------------------------------------------------
+# Simulation loop
+# ---------------------------------------------------------------------------
+
+
+def _stop_condition(deployed: dict[str, int], targets: dict[str, int], threshold: float, max_deploy: int) -> bool:
+    """Stop when MAPE drops to threshold or we hit the safety cap."""
+    total = sum(deployed.values())
+    if total == 0:
+        return False
+    if total >= max_deploy:
+        return True
+    return weighted_mape(deployed, targets) <= threshold
+
+
+def _place_runner_draw(
+    runner: RunnerEntry,
+    workflow_nodes: list[SimNode],
+    runner_nodes: list[SimNode],
+    runner_pool_fleet: str | None,
+    topology_nodepools: list[NodePoolEntry],
+    daemonsets: list[DaemonSetOverhead],
+) -> bool:
+    """Place one runner draw (workflow pod, then runner pod). Returns False when either provisioning fails."""
+    wf_node = best_fit_place_workflow(runner, workflow_nodes)
+    if wf_node is None:
+        wf_node = provision_workflow_node(runner, daemonsets)
+        if wf_node is None:
+            return False
+        workflow_nodes.append(wf_node)
+    wf_node.allocate(*per_workflow_pod_total(runner))
+
+    if runner_pool_fleet is None:
+        # No dedicated runner pool — runner pod placement is skipped, but
+        # the workflow placement above counts as a deployment.
+        return True
+    r_cpu, r_mem, _ = per_runner_pod_total(runner)
+    rn_node = best_fit_place_runner(runner_pool_fleet, r_cpu, r_mem, runner_nodes)
+    if rn_node is None:
+        rn_node = provision_runner_node(runner_pool_fleet, topology_nodepools, daemonsets)
+        if rn_node is None:
+            return False
+        runner_nodes.append(rn_node)
+    rn_node.allocate(r_cpu, r_mem, 0)
+    return True
+
+
 def run_simulation(
-    runner_defs: list[dict],
+    topology: ClusterTopology,
     targets: dict[str, int],
     daemonsets: list[DaemonSetOverhead],
+    *,
     seed: int = 42,
     threshold: float = 0.15,
 ) -> SimResult:
-    """Run Monte Carlo bin-packing: weighted random draw, best-fit place, stop at MAPE <= threshold."""
-    rng = random.Random(seed)  # noqa: S311 — simulation, not crypto
-    runner_by_name = {r["name"]: r for r in runner_defs}
-
-    # Filter targets to runners that have defs
-    active_targets: dict[str, int] = {}
-    skipped: dict[str, str] = {}
-    for name, peak in targets.items():
-        if name in runner_by_name:
-            active_targets[name] = peak
-        else:
-            skipped[name] = "no runner def"
+    """Run the two-phase simulation: workflow pod, then runner pod."""
+    schedulable = {r.name: r for r in topology.runners if r.schedulable}
+    active_targets = {name: count for name, count in targets.items() if name in schedulable}
+    skipped = sorted(name for name in targets if name not in schedulable)
 
     if not active_targets:
-        result = SimResult()
-        result.targets = targets
-        result.skipped_labels = skipped
-        return result
+        return SimResult(targets=active_targets, skipped=skipped)
 
-    pool = build_weighted_pool(active_targets)
-    if not pool:
-        # All targets have zero weight
-        return SimResult(targets=active_targets, skipped_labels=skipped)
+    weighted_pool = build_weighted_pool(active_targets)
+    if not weighted_pool:
+        return SimResult(targets=active_targets, skipped=skipped)
 
-    names = [p[0] for p in pool]
-    weights = [p[1] for p in pool]
-    total_target = sum(active_targets.values())
-    max_deploy = int(total_target * 1.05)
-
-    nodes: list[SimNode] = []
+    workflow_nodes: list[SimNode] = []
+    runner_nodes: list[SimNode] = []
     deployed: dict[str, int] = dict.fromkeys(active_targets, 0)
-    total_deployed = 0
-    failed_types: set[str] = set()  # instance types that can't be provisioned
+    failed: set[str] = set()
+    max_deploy = max(int(sum(active_targets.values()) * 1.05), 1)
+    rng = random.Random(seed)  # noqa: S311 — simulation, not crypto.
 
-    while True:
-        # Check stop conditions
-        if total_deployed > 0:
-            mape = weighted_mape(deployed, active_targets)
-            if mape <= threshold:
-                break
-        if total_deployed >= max_deploy:
+    while not _stop_condition(deployed, active_targets, threshold, max_deploy):
+        eligible = [name for name in weighted_pool if name not in failed]
+        if not eligible:
             break
-
-        # Draw a random runner
-        chosen = rng.choices(names, weights=weights, k=1)[0]
-        runner = runner_by_name[chosen]
-
-        # Skip runners whose instance type can't be provisioned
-        if runner["instance_type"] in failed_types:
-            # Remove from pool to avoid infinite draws of unplaceable runners
-            idx_in_pool = names.index(chosen)
-            names.pop(idx_in_pool)
-            weights.pop(idx_in_pool)
-            if not names:
-                break  # No runners left that can be placed
+        runner_name = rng.choice(eligible)
+        runner = schedulable[runner_name]
+        ok = _place_runner_draw(
+            runner, workflow_nodes, runner_nodes, topology.runner_pool_fleet, topology.nodepools, daemonsets
+        )
+        if not ok:
+            failed.add(runner_name)
             continue
-
-        cpu_m, mem_mi, gpu = per_runner_total(runner)
-
-        # Try best-fit placement
-        idx = best_fit_place(nodes, cpu_m, mem_mi, gpu, runner["instance_type"])
-        if idx is not None:
-            nodes[idx].used_cpu_m += cpu_m
-            nodes[idx].used_mem_mi += mem_mi
-            nodes[idx].used_gpu += gpu
-            nodes[idx].runner_count += 1
-        else:
-            # Provision new node
-            node = provision_node(runner["instance_type"], daemonsets)
-            if node is None:
-                failed_types.add(runner["instance_type"])
-                continue
-            node.used_cpu_m = cpu_m
-            node.used_mem_mi = mem_mi
-            node.used_gpu = gpu
-            node.runner_count = 1
-            nodes.append(node)
-
-        deployed[chosen] = deployed.get(chosen, 0) + 1
-        total_deployed += 1
+        deployed[runner_name] += 1
 
     return SimResult(
-        nodes=nodes,
+        workflow_nodes=workflow_nodes,
+        runner_nodes=runner_nodes,
         deployed=deployed,
         targets=active_targets,
-        skipped_labels=skipped,
+        skipped=skipped,
     )
 
 
-def compute_utilization(result: SimResult) -> dict:
-    """Compute cluster-wide utilization percentages."""
-    total_cpu = sum(n.total_cpu_m for n in result.nodes)
-    used_cpu = sum(n.used_cpu_m for n in result.nodes)
-    total_mem = sum(n.total_mem_mi for n in result.nodes)
-    used_mem = sum(n.used_mem_mi for n in result.nodes)
+# ---------------------------------------------------------------------------
+# Utilization
+# ---------------------------------------------------------------------------
 
-    gpu_nodes = [n for n in result.nodes if n.total_gpu > 0]
-    total_gpu = sum(n.total_gpu for n in gpu_nodes)
-    used_gpu = sum(n.used_gpu for n in gpu_nodes)
 
-    return {
-        "cpu_pct": (used_cpu / total_cpu * 100) if total_cpu > 0 else 0.0,
-        "mem_pct": (used_mem / total_mem * 100) if total_mem > 0 else 0.0,
-        "gpu_pct": (used_gpu / total_gpu * 100) if total_gpu > 0 else 0.0,
-        "total_cpu_m": total_cpu,
-        "used_cpu_m": used_cpu,
-        "total_mem_mi": total_mem,
-        "used_mem_mi": used_mem,
-        "total_gpu": total_gpu,
-        "used_gpu": used_gpu,
-        "total_nodes": len(result.nodes),
-        "gpu_nodes": len(gpu_nodes),
-    }
+def _aggregate(nodes: list[SimNode]) -> PoolUtilization:
+    util = PoolUtilization()
+    for node in nodes:
+        util.nodes += 1
+        util.used_cpu_m += node.used_cpu_m
+        util.total_cpu_m += node.cpu_m
+        util.used_mem_mi += node.used_mem_mi
+        util.total_mem_mi += node.mem_mi
+        util.used_gpu += node.used_gpu
+        util.total_gpu += node.gpu
+    return util
+
+
+def compute_utilization(result: SimResult) -> SimulationUtilization:
+    """Aggregate per-pool utilization from a SimResult."""
+    return SimulationUtilization(
+        workflow=_aggregate(result.workflow_nodes),
+        runner=_aggregate(result.runner_nodes),
+    )
