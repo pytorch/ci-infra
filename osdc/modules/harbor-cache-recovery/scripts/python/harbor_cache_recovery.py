@@ -41,10 +41,6 @@ CACHE_CORRUPTION_INDICATORS = (
 DEFAULT_MIN_POD_AGE_SECONDS = 120
 DEFAULT_HARBOR_URL = "http://harbor.harbor-system.svc.cluster.local:80"
 HARBOR_REQUEST_TIMEOUT_SECONDS = 10
-# Wall-clock budget for the purge loop. Must stay comfortably below
-# activeDeadlineSeconds in cronjob.yaml so the script can log a final tally
-# before K8s SIGTERMs the pod.
-PURGE_BUDGET_SECONDS = 240
 
 
 def get_config() -> dict:
@@ -266,23 +262,15 @@ def main() -> int:
 
     purged = 0
     failed = 0
-    skipped = 0
     for info in unique_repos.values():
-        # Bail out before issuing a request that could blow the K8s
-        # activeDeadlineSeconds. Remaining repos will be picked up on the next
-        # */5 cron run.
-        if time.monotonic() - start >= PURGE_BUDGET_SECONDS:
-            skipped = len(unique_repos) - purged - failed
-            log.warning("Budget %ds exhausted; skipping %d remaining repos", PURGE_BUDGET_SECONDS, skipped)
-            break
         if purge_cached_repo(session, config["harbor_url"], info["harbor_project"], info["repo_path"]):
             purged += 1
         else:
             failed += 1
 
     elapsed = time.monotonic() - start
-    log.info("Done in %.1fs: %d purged, %d failed, %d skipped", elapsed, purged, failed, skipped)
-    return 1 if failed > 0 or skipped > 0 else 0
+    log.info("Done in %.1fs: %d purged, %d failed", elapsed, purged, failed)
+    return 1 if failed > 0 else 0
 
 
 if __name__ == "__main__":

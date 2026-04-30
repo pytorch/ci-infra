@@ -502,31 +502,6 @@ class TestMain:
             mock_cls.return_value.list.side_effect = Exception("API error")
             assert main() == 1
 
-    def test_budget_exhausted_skips_remaining(self):
-        # Two distinct corrupted repos. With budget patched to 0 we never even
-        # attempt the first purge; both are reported as skipped and main()
-        # returns 1.
-        images = [
-            ("grafana/alloy:v1.14.0", "failed size validation: 1 != 2"),
-            ("ghcr.io/actions/runner:v3", "failed precondition"),
-        ]
-        pods = []
-        for img, msg in images:
-            cs = _make_container_status(image=img, reason="ImagePullBackOff", message=msg)
-            pods.append(_make_pod(name=f"pod-{img}", container_statuses=[cs]))
-        session = MagicMock()
-        session.get.return_value = MagicMock(headers={})
-        session.headers = {}
-        with (
-            patch("harbor_cache_recovery.Client") as mock_cls,
-            patch("harbor_cache_recovery.create_harbor_session", return_value=session),
-            patch("harbor_cache_recovery.PURGE_BUDGET_SECONDS", 0),
-            patch.dict("os.environ", {"HARBOR_ADMIN_PASSWORD": "pw"}, clear=True),
-        ):
-            mock_cls.return_value.list.return_value = pods
-            assert main() == 1
-            session.delete.assert_not_called()
-
 
 # ============================================================================
 # Constants

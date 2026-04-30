@@ -14,8 +14,6 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      # Headroom over the script's internal PURGE_BUDGET_SECONDS so it can
-      # exit cleanly (logs final tally) before K8s SIGTERMs the pod.
       activeDeadlineSeconds: 300
       template:
         metadata:
