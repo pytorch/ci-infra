@@ -215,7 +215,8 @@ locals {
         # Per-CR override for efa_network_cards (e.g. p5en.48xlarge caps at 16 vs p5e at 32)
         efa_network_cards = cr_config != null ? try(cr_config.efa_network_cards, gpu_config.efa_network_cards) : gpu_config.efa_network_cards
         # Optional MIG profile (e.g. "all-balanced", "all-1g.10gb"). When set, user-data labels the node so nvidia-mig-manager partitions the GPUs.
-        mig_profile = cr_config != null ? try(cr_config.mig_profile, null) : null
+        # Default to "" (not null) — null breaks templatefile() string interpolation downstream.
+        mig_profile = cr_config != null ? try(cr_config.mig_profile, "") : ""
         # Multi-EFA instances (>1 network card) must use private subnets (no public IP in launch template)
         use_private_subnet = (cr_config != null ? try(cr_config.efa_network_cards, try(gpu_config.efa_network_cards, 0)) : try(gpu_config.efa_network_cards, 0)) > 1
       }
@@ -427,7 +428,7 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
     region              = local.current_config.aws_region
     gpu_type            = local.gpu_type_kubernetes_labels[each.value.gpu_type]
     profiling_dedicated = try(each.value.gpu_config.profiling_dedicated, false)
-    mig_profile         = try(each.value.mig_profile, "")
+    mig_profile         = each.value.mig_profile != null ? each.value.mig_profile : ""
     container_image     = local.latest_image_uri
   }))
 
