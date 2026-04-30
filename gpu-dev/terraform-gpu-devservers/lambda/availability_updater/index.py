@@ -23,6 +23,13 @@ AVAILABILITY_TABLE = os.environ["AVAILABILITY_TABLE"]
 SUPPORTED_GPU_TYPES = json.loads(os.environ["SUPPORTED_GPU_TYPES"])
 
 
+def get_gpu_resource_name(gpu_type: str) -> str:
+    return SUPPORTED_GPU_TYPES.get(gpu_type, {}).get("k8s_resource", "nvidia.com/gpu")
+
+def get_node_label_value(gpu_type: str) -> str:
+    return SUPPORTED_GPU_TYPES.get(gpu_type, {}).get("node_gpu_type", gpu_type)
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Handle ASG capacity change events - update all GPU types"""
     try:
@@ -84,7 +91,9 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
         logger.info(f"Starting availability update for GPU type: {gpu_type}")
 
         # Get current ASG capacity - handle multiple ASGs per GPU type (e.g., capacity reservations)
-        asg_name_prefix = f"pytorch-gpu-dev-gpu-nodes-{gpu_type}"
+        # MIG SKUs share the underlying h100 ASGs (cr-dedicated MIG node), so use the physical type for ASG matching
+        asg_lookup_type = get_node_label_value(gpu_type)
+        asg_name_prefix = f"pytorch-gpu-dev-gpu-nodes-{asg_lookup_type}"
         logger.info(f"Checking ASGs matching pattern: {asg_name_prefix}*")
 
         # Get all ASGs and filter by name pattern
@@ -102,6 +111,9 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
         logger.info(f"Found {len(matching_asgs)} ASGs: {asg_names}")
 
         # Calculate total availability metrics across all matching ASGs
+        # For MIG SKUs we cannot tell from ASG alone which instances are MIG-partitioned;
+        # we override running_instances later from k8s allocatable.
+        is_mig_sku = "k8s_resource" in SUPPORTED_GPU_TYPES.get(gpu_type, {})
         desired_capacity = sum(asg["DesiredCapacity"] for asg in matching_asgs)
         running_instances = sum(
             len([
@@ -130,7 +142,7 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                     logger.info(f"Checking CPU node availability for {gpu_type}")
                     # Count available slots by checking pod count on each node
                     v1 = client.CoreV1Api(k8s_client)
-                    nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+                    nodes = v1.list_node(label_selector=f"GpuType={get_node_label_value(gpu_type)}")
 
                     total_available_slots = 0
                     for node in nodes.items:
@@ -178,16 +190,18 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             try:
                 from kubernetes import client as k8s_client_lib
                 v1 = k8s_client_lib.CoreV1Api(k8s_client)
-                nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+                node_label_value = get_node_label_value(gpu_type)
+                resource_name = get_gpu_resource_name(gpu_type)
+                nodes = v1.list_node(label_selector=f"GpuType={node_label_value}")
 
                 single_node_max = 0  # Max available on any single node
                 schedulable_total_gpus = 0  # Total GPUs on schedulable (non-cordoned) nodes
                 for node in nodes.items:
                     if is_node_ready_and_schedulable(node):
-                        available_on_node = get_available_gpus_on_node(v1, node)
+                        available_on_node = get_available_gpus_on_node(v1, node, gpu_type)
                         total_on_node = 0
                         if node.status.allocatable:
-                            gpu_allocatable = node.status.allocatable.get("nvidia.com/gpu", "0")
+                            gpu_allocatable = node.status.allocatable.get(resource_name, "0")
                             try:
                                 total_on_node = int(gpu_allocatable)
                             except (ValueError, TypeError):
@@ -203,6 +217,9 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                             full_nodes_available += 1
 
                 total_gpus = schedulable_total_gpus
+                # For MIG SKUs override running_instances to the number of MIG-partitioned nodes
+                if is_mig_sku:
+                    running_instances = sum(1 for n in nodes.items if is_node_ready_and_schedulable(n) and int((n.status.allocatable or {}).get(resource_name, "0")) > 0)
 
                 # Calculate max reservable considering multinode scenarios
                 # Only high-end GPU types support multinode (up to 4 nodes = 32 GPUs)
@@ -276,7 +293,7 @@ def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
         logger.info(f"Created CoreV1Api client for {gpu_type}")
 
         # Get all nodes with the specified GPU type
-        gpu_type_selector = f"GpuType={gpu_type}"
+        gpu_type_selector = f"GpuType={get_node_label_value(gpu_type)}"
         logger.info(f"Querying nodes with label selector: {gpu_type_selector}")
 
         nodes = v1.list_node(label_selector=gpu_type_selector)
@@ -297,7 +314,7 @@ def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
 
             logger.info(f"Node {node.metadata.name} is ready, checking GPU availability")
             # Get available GPUs on this node
-            available_on_node = get_available_gpus_on_node(v1, node)
+            available_on_node = get_available_gpus_on_node(v1, node, gpu_type)
             total_schedulable += available_on_node
             logger.info(f"Node {node.metadata.name}: {available_on_node} GPUs available")
 
@@ -332,11 +349,12 @@ def is_node_ready_and_schedulable(node) -> bool:
         return False
 
 
-def get_available_gpus_on_node(v1_api, node) -> int:
-    """Get number of available GPUs on a specific node"""
+def get_available_gpus_on_node(v1_api, node, gpu_type: str = None) -> int:
+    """Get number of available GPUs (or MIG slices) on a specific node for the given SKU."""
     try:
         node_name = node.metadata.name
-        logger.info(f"Checking GPU availability on node: {node_name}")
+        resource_name = get_gpu_resource_name(gpu_type) if gpu_type else "nvidia.com/gpu"
+        logger.info(f"Checking GPU availability on node: {node_name} (resource={resource_name})")
 
         # Get all pods on this node
         logger.info(f"Querying pods on node {node_name}")
@@ -350,7 +368,7 @@ def get_available_gpus_on_node(v1_api, node) -> int:
                 for container in pod.spec.containers:
                     if container.resources and container.resources.requests:
                         gpu_request = container.resources.requests.get(
-                            "nvidia.com/gpu", "0"
+                            resource_name, "0"
                         )
                         try:
                             used_gpus += int(gpu_request)
@@ -360,7 +378,7 @@ def get_available_gpus_on_node(v1_api, node) -> int:
         # Get total GPUs on this node
         total_gpus = 0
         if node.status.allocatable:
-            gpu_allocatable = node.status.allocatable.get("nvidia.com/gpu", "0")
+            gpu_allocatable = node.status.allocatable.get(resource_name, "0")
             try:
                 total_gpus = int(gpu_allocatable)
             except (ValueError, TypeError):

@@ -67,6 +67,10 @@ GPU_CONFIG = {
     "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 1},
     "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 1},
     "rtxpro6000": {"instance_type": "g7e.24xlarge", "max_gpus": 4, "cpus": 96, "memory_gb": 1024, "efa_count": 2},
+    # MIG slices on a dedicated H100 node (all-balanced profile: per GPU = 2x1g.10gb + 1x2g.20gb + 1x3g.40gb)
+    "h100-mig-1g": {"instance_type": "p5.48xlarge", "max_gpus": 16, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-1g.10gb", "node_gpu_type": "h100"},
+    "h100-mig-2g": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-2g.20gb", "node_gpu_type": "h100"},
+    "h100-mig-3g": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-3g.40gb", "node_gpu_type": "h100"},
     "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1, "cpus": 8, "memory_gb": 32, "efa_count": 0},
     "g5g": {"instance_type": "g5g.2xlarge", "max_gpus": 2, "cpus": 8, "memory_gb": 32, "efa_count": 0},
     "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152, "efa_count": 4},
@@ -77,6 +81,15 @@ GPU_CONFIG = {
     "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
 }
 GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 0}
+
+def get_gpu_resource_name(gpu_type: str) -> str:
+    """Kubernetes resource name for this SKU (nvidia.com/gpu or nvidia.com/mig-*)."""
+    return GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT).get("k8s_resource", "nvidia.com/gpu")
+
+def get_node_gpu_type(gpu_type: str) -> str:
+    """Value of the GpuType node label to select. MIG SKUs map to their underlying physical type."""
+    return GPU_CONFIG.get(gpu_type, {}).get("node_gpu_type", gpu_type)
+
 
 # GPU types under maintenance - only whitelisted users can reserve
 # Set to {} to disable maintenance mode for all types
@@ -232,7 +245,8 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
         # Get all nodes with the requested GPU type
         logger.info(
             f"Querying nodes for GPU type {gpu_type} with {gpus_requested} GPUs needed")
-        nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+        node_label_value = get_node_gpu_type(gpu_type)
+        nodes = v1.list_node(label_selector=f"GpuType={node_label_value}")
 
         candidate_nodes = []
         all_ready_nodes = []
@@ -271,7 +285,7 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
                 continue
 
             # Check available GPU capacity on this node
-            available_gpus = get_available_gpus_on_node(v1, node)
+            available_gpus = get_available_gpus_on_node(v1, node, gpu_type)
 
             # Track all ready nodes (for fallback AZ when no single node has enough)
             all_ready_nodes.append({
@@ -2152,7 +2166,8 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
 
     # Validate GPU type
     valid_gpu_types = ["t4", "l4", "a10g", "rtxpro6000", "t4-small", "a100",
-                       "h100", "h200", "b200", "cpu-arm", "cpu-x86"]
+                       "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g",
+                       "h200", "b200", "cpu-arm", "cpu-x86"]
     if gpu_type not in valid_gpu_types:
         error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
         logger.error(error_msg)
@@ -2238,10 +2253,11 @@ def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
         nodes = v1.list_node()
         schedulable_gpus = 0
 
+        node_label_value = get_node_gpu_type(gpu_type)
         for node in nodes.items:
             # Check if node has the right GPU type label
             node_labels = node.metadata.labels or {}
-            if node_labels.get("GpuType") != gpu_type:
+            if node_labels.get("GpuType") != node_label_value:
                 continue
 
             # Check if node is ready and schedulable
@@ -2252,7 +2268,7 @@ def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
                 continue
 
             # Get available GPUs on this node
-            node_gpus = get_available_gpus_on_node(v1, node)
+            node_gpus = get_available_gpus_on_node(v1, node, gpu_type)
             schedulable_gpus += node_gpus
             logger.info(
                 f"Node {node.metadata.name}: {node_gpus} available {gpu_type.upper()} GPUs"
@@ -2278,13 +2294,14 @@ def check_max_gpus_on_single_node(gpu_type: str) -> int:
         nodes = v1.list_node()
         max_gpus = 0
 
+        node_label_value = get_node_gpu_type(gpu_type)
         for node in nodes.items:
             node_labels = node.metadata.labels or {}
-            if node_labels.get("GpuType") != gpu_type:
+            if node_labels.get("GpuType") != node_label_value:
                 continue
             if not is_node_ready_and_schedulable(node):
                 continue
-            node_gpus = get_available_gpus_on_node(v1, node)
+            node_gpus = get_available_gpus_on_node(v1, node, gpu_type)
             max_gpus = max(max_gpus, node_gpus)
 
         return max_gpus
@@ -2320,12 +2337,13 @@ def is_node_ready_and_schedulable(node) -> bool:
     return True
 
 
-def get_available_gpus_on_node(v1_api, node) -> int:
-    """Get the number of available GPUs on a specific node"""
+def get_available_gpus_on_node(v1_api, node, gpu_type: str = None) -> int:
+    """Get the number of available GPUs (or MIG slices) on a specific node for the given SKU."""
     try:
+        resource_name = get_gpu_resource_name(gpu_type) if gpu_type else "nvidia.com/gpu"
         # Get allocatable GPUs from node status
         allocatable = node.status.allocatable or {}
-        total_gpus = int(allocatable.get("nvidia.com/gpu", "0"))
+        total_gpus = int(allocatable.get(resource_name, "0"))
 
         if total_gpus == 0:
             return 0
@@ -2342,7 +2360,7 @@ def get_available_gpus_on_node(v1_api, node) -> int:
                     for container in pod.spec.containers:
                         if container.resources and container.resources.requests:
                             gpu_request = container.resources.requests.get(
-                                "nvidia.com/gpu", "0"
+                                resource_name, "0"
                             )
                             used_gpus += int(gpu_request)
 
@@ -2368,13 +2386,15 @@ def update_gpu_availability_table(
         total_gpus = 0
         running_instances = 0
 
+        node_label_value = get_node_gpu_type(gpu_type)
+        resource_name = get_gpu_resource_name(gpu_type)
         for node in nodes.items:
             node_labels = node.metadata.labels or {}
-            if node_labels.get("GpuType") == gpu_type:
+            if node_labels.get("GpuType") == node_label_value:
                 running_instances += 1
                 # Get allocatable GPUs from node status
                 allocatable = node.status.allocatable or {}
-                node_gpus = int(allocatable.get("nvidia.com/gpu", "0"))
+                node_gpus = int(allocatable.get(resource_name, "0"))
                 total_gpus += node_gpus
 
         # Get GPU configuration for this type (for gpus_per_instance)
@@ -2385,6 +2405,9 @@ def update_gpu_availability_table(
             "rtxpro6000": {"gpus_per_instance": 4},
             "a100": {"gpus_per_instance": 8},
             "h100": {"gpus_per_instance": 8},
+            "h100-mig-1g": {"gpus_per_instance": 16},
+            "h100-mig-2g": {"gpus_per_instance": 8},
+            "h100-mig-3g": {"gpus_per_instance": 8},
             "h200": {"gpus_per_instance": 8},
             "b200": {"gpus_per_instance": 8},
         }
@@ -3697,7 +3720,8 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
     else:
         # GPU instances get proportional CPU/memory based on GPU allocation
         if gpu_count > 0:
-            limits["nvidia.com/gpu"] = str(gpu_count)
+            resource_name = config.get("k8s_resource", "nvidia.com/gpu")
+            limits[resource_name] = str(gpu_count)
 
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
@@ -3712,10 +3736,11 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
                 "memory": f"{proportional_memory_limit}Gi"
             })
 
-    # EFA optimization: Only use EFA for full-node multinode deployments
+    # EFA optimization: Only use EFA for full-node multinode deployments (skip MIG slices)
     use_efa = (
         gpu_type != "t4-small" and
         not gpu_type.startswith("cpu-") and
+        "mig" not in gpu_type and
         is_multinode and
         gpu_count == max_gpus
     )
@@ -3742,7 +3767,8 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
         requests.update({"cpu": "2", "memory": "4Gi"})
     else:
         if gpu_count > 0:
-            requests["nvidia.com/gpu"] = str(gpu_count)
+            resource_name = config.get("k8s_resource", "nvidia.com/gpu")
+            requests[resource_name] = str(gpu_count)
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
             # Calculate proportional requests (reserve 10% for system overhead)
@@ -3756,10 +3782,11 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
                 "memory": f"{proportional_memory_request}Gi"
             })
 
-    # EFA: Only for full-node multinode deployments
+    # EFA: Only for full-node multinode deployments (skip MIG slices)
     use_efa = (
         gpu_type != "t4-small" and
         not gpu_type.startswith("cpu-") and
+        "mig" not in gpu_type and
         is_multinode and
         gpu_count == max_gpus
     )
@@ -5243,7 +5270,7 @@ EOF
                 )
             ] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else []),
             node_selector={
-                "GpuType": gpu_type,
+                "GpuType": get_node_gpu_type(gpu_type),
                 **({} if target_az is None else {"topology.kubernetes.io/zone": target_az})
             },
             # Node affinity for profiling-dedicated preference
@@ -6846,7 +6873,7 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                                             f"Failed to convert to queued: {queue_err}")
 
                         # Show user-friendly scheduling messages while waiting
-                        if "Insufficient nvidia.com/gpu" in event.message:
+                        if "Insufficient nvidia.com/" in event.message and "gpu" in event.message.lower():
                             # Check if it's a fragmentation issue (GPUs exist but not enough on single node)
                             try:
                                 reservations_table = dynamodb.Table(
@@ -6882,7 +6909,7 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                                 k8s_client_temp = get_k8s_client()
                                 v1 = client.CoreV1Api(k8s_client_temp)
                                 nodes = v1.list_node(
-                                    label_selector=f"GpuType={gpu_type}")
+                                    label_selector=f"GpuType={get_node_gpu_type(gpu_type)}")
 
                                 if len(nodes.items) == 0:
                                     # No nodes exist for this GPU type - fail immediately

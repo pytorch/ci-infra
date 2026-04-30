@@ -136,7 +136,7 @@ spec:
         cpu: "2"
         memory: "4Gi"
     flags:
-      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false${profiling_dedicated ? ",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false" : ""}
+      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false${profiling_dedicated ? ",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false" : ""}${mig_profile != "" ? ",nvidia.com/mig.config=${mig_profile}" : ""}
 EOF
 
 # Configure EFA if hardware present (BEFORE nodeadm so kubelet sees hugepages)

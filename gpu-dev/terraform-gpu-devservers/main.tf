@@ -216,6 +216,45 @@ locals {
           architecture        = "x86_64"
           efa_network_cards   = 2
         }
+        # MIG slice SKUs — virtual: do NOT create an ASG. Surfaces the SKU to availability_updater
+        # + reservation_processor. Backed by the H100 CR labelled with mig_profile=all-balanced
+        # (per GPU = 2x1g.10gb + 1x2g.20gb + 1x3g.40gb).
+        "h100-mig-1g" = {
+          instance_type       = null
+          instance_types      = null
+          instance_count      = 0
+          gpus_per_instance   = 16 # 8 GPUs * 2 slices/GPU
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          virtual             = true
+          k8s_resource        = "nvidia.com/mig-1g.10gb"
+          node_gpu_type       = "h100"
+        }
+        "h100-mig-2g" = {
+          instance_type       = null
+          instance_types      = null
+          instance_count      = 0
+          gpus_per_instance   = 8 # 8 GPUs * 1 slice/GPU
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          virtual             = true
+          k8s_resource        = "nvidia.com/mig-2g.20gb"
+          node_gpu_type       = "h100"
+        }
+        "h100-mig-3g" = {
+          instance_type       = null
+          instance_types      = null
+          instance_count      = 0
+          gpus_per_instance   = 8 # 8 GPUs * 1 slice/GPU
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          virtual             = true
+          k8s_resource        = "nvidia.com/mig-3g.40gb"
+          node_gpu_type       = "h100"
+        }
         "cpu-arm" = {
           instance_type       = "c7g.8xlarge"
           instance_types      = null
@@ -267,6 +306,7 @@ locals {
         { key = "cr0", id = "cr-0a3f49b96fe03ca04", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
         { key = "cr1", id = null, instance_count = 2 },                   # H100 on-demand (2 instances)
         { key = "cr2", id = "cr-044bc72b0a6b56062", instance_count = 4 }, # H100 reservation us-east-2a (4 instances)
+        { key = "cr3", id = "cr-0211ea1e8d3a3c79e", instance_count = 1, mig_profile = "all-balanced" }, # H100 reservation us-east-2c (1 instance, MIG-dedicated, all-balanced: 2x1g.10gb + 1x2g.20gb + 1x3g.40gb per GPU)
       ]
       h200 = [
         { key = "cr0", id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 capacity block (may be expired - keep to prevent ASG destroy)
@@ -328,6 +368,7 @@ locals {
       # H100 capacity reservations
       "cr-0a3f49b96fe03ca04" = "tertiary" # us-east-2c (p5.48xlarge)
       "cr-044bc72b0a6b56062" = "primary"  # us-east-2a (p5.48xlarge)
+      "cr-0211ea1e8d3a3c79e" = "tertiary" # us-east-2c (p5.48xlarge, MIG-dedicated)
       # A100 capacity reservation
       "cr-01cc0f00f28b095af" = "primary" # us-east-2a
     }

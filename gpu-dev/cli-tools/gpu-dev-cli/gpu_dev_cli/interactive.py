@@ -157,6 +157,12 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
         valid_counts = [1, 2, 4]
         # Add multinode options
         multinode_counts = [8, 12, 16, 20, 24]  # multiples of 4
+    elif gpu_type == "h100-mig-1g":
+        valid_counts = [1, 2, 4, 8]
+        multinode_counts = []  # MIG slices live on a single node — no multinode
+    elif gpu_type in ["h100-mig-2g", "h100-mig-3g"]:
+        valid_counts = [1, 2, 4]
+        multinode_counts = []
     elif gpu_type == "g5g":
         valid_counts = [1, 2]
         multinode_counts = [4, 8]  # multiples of 4

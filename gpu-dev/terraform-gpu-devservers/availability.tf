@@ -142,7 +142,7 @@ resource "aws_cloudwatch_event_rule" "asg_capacity_change" {
       "EC2 Instance Terminate Successful"
     ]
     detail = {
-      AutoScalingGroupName = [for gpu_type in keys(local.current_config.supported_gpu_types) : "${var.prefix}-gpu-nodes-${gpu_type}"]
+      AutoScalingGroupName = [for gpu_type, cfg in local.current_config.supported_gpu_types : "${var.prefix}-gpu-nodes-${gpu_type}" if !try(cfg.virtual, false)]
     }
   })
 
