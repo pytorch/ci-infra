@@ -152,7 +152,7 @@ locals {
           efa_network_cards   = 8 # p6-b200.48xlarge supports max 8 network cards
         }
         "h200" = {
-          instance_type       = "p5e.48xlarge" # Match capacity reservation type
+          instance_type       = "p5en.48xlarge" # Match capacity reservation type
           instance_types      = ["p5e.48xlarge", "p5en.48xlarge"]
           instance_count      = 4 # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
@@ -272,6 +272,7 @@ locals {
         { key = "cr0", id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 capacity block (may be expired - keep to prevent ASG destroy)
         { key = "cr1", id = "cr-06c9c978dea756a26", instance_count = 3 }, # H200 reservation (3 instances)
         { key = "cr2", id = null, instance_count = 2 },                   # H200 on-demand (2 instances)
+        { key = "cr3", id = "cr-02949f61f1a761b54", instance_count = 1 }, # H200 reservation us-east-2a (1 instance, 8 GPUs)
       ]
       b200 = [
         { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 0 }, # B200 reservation us-east-2a (disabled - CR freed)
@@ -323,6 +324,7 @@ locals {
       # H200 capacity reservations
       "cr-0f6d0766f5d3339e6" = "tertiary" # us-east-2c (may be expired - kept to prevent ASG destroy)
       "cr-06c9c978dea756a26" = "tertiary"  # us-east-2c
+      "cr-02949f61f1a761b54" = "primary"   # us-east-2a
       # H100 capacity reservations
       "cr-0a3f49b96fe03ca04" = "tertiary" # us-east-2c (p5.48xlarge)
       "cr-044bc72b0a6b56062" = "primary"  # us-east-2a (p5.48xlarge)
