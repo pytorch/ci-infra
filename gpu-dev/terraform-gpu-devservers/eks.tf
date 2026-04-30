@@ -212,8 +212,10 @@ locals {
           ? lookup(local.capacity_reservation_azs[terraform.workspace], cr_config.id, local.gpu_subnet_assignments[terraform.workspace][gpu_type])
           : local.gpu_subnet_assignments[terraform.workspace][gpu_type]
         )
+        # Per-CR override for efa_network_cards (e.g. p5en.48xlarge caps at 16 vs p5e at 32)
+        efa_network_cards = cr_config != null ? try(cr_config.efa_network_cards, gpu_config.efa_network_cards) : gpu_config.efa_network_cards
         # Multi-EFA instances (>1 network card) must use private subnets (no public IP in launch template)
-        use_private_subnet = try(gpu_config.efa_network_cards, 0) > 1
+        use_private_subnet = (cr_config != null ? try(cr_config.efa_network_cards, try(gpu_config.efa_network_cards, 0)) : try(gpu_config.efa_network_cards, 0)) > 1
       }
     ]
   ])
@@ -363,7 +365,7 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
       associate_public_ip_address = true
       security_groups             = [aws_security_group.gpu_dev_sg.id]
       subnet_id                   = each.value.gpu_config.use_placement_group ? null : local.public_subnet_map[each.value.subnet_az]
-      interface_type              = try(each.value.gpu_config.efa_network_cards, 0) > 0 ? "efa" : "interface"
+      interface_type              = try(each.value.efa_network_cards, 0) > 0 ? "efa" : "interface"
       delete_on_termination       = true
     }
   }
@@ -386,7 +388,7 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
   # Each network card supports 2 device indices (0 and 1); device_index must be 0
   # since this is the only interface on each card
   dynamic "network_interfaces" {
-    for_each = each.value.use_private_subnet ? range(1, try(each.value.gpu_config.efa_network_cards, 1)) : []
+    for_each = each.value.use_private_subnet ? range(1, try(each.value.efa_network_cards, 1)) : []
     content {
       device_index          = 0
       interface_type        = "efa-only"

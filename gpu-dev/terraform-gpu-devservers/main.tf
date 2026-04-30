@@ -272,7 +272,7 @@ locals {
         { key = "cr0", id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 capacity block (may be expired - keep to prevent ASG destroy)
         { key = "cr1", id = "cr-06c9c978dea756a26", instance_count = 3 }, # H200 reservation (3 instances)
         { key = "cr2", id = null, instance_count = 2 },                   # H200 on-demand (2 instances)
-        { key = "cr3", id = "cr-02949f61f1a761b54", instance_count = 1 }, # H200 reservation us-east-2a (1 instance, 8 GPUs)
+        { key = "cr3", id = "cr-02949f61f1a761b54", instance_count = 1, efa_network_cards = 16 }, # H200 reservation us-east-2a (1 instance, 8 GPUs, p5en.48xlarge max 16 EFA)
       ]
       b200 = [
         { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 0 }, # B200 reservation us-east-2a (disabled - CR freed)
