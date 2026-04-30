@@ -107,10 +107,10 @@ kube-state-metrics:
         #   daemonset: health status (desired/ready/available/unavailable)
         #   deployment: replica status + conditions + desired count
         #   namespace/node/statefulset/pv/hpa/job: all metrics (low cardinality)
-        #   pod: info (node mapping), error indicators, restart count
+        #   pod: info (node mapping), error indicators, restart count, status reasons
         - action: keep
           sourceLabels: [__name__]
-          regex: "kube_daemonset_status_(desired_number_scheduled|number_ready|number_available|number_unavailable)|kube_deployment_status_(replicas_ready|replicas_available|replicas_unavailable|condition)|kube_deployment_spec_replicas|kube_(namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.*|kube_pod_info|kube_pod_container_status_last_terminated_reason|kube_pod_container_status_terminated_reason|kube_pod_container_status_last_terminated_exitcode|kube_pod_container_status_restarts_total"
+          regex: "kube_daemonset_status_(desired_number_scheduled|number_ready|number_available|number_unavailable)|kube_deployment_status_(replicas_ready|replicas_available|replicas_unavailable|condition)|kube_deployment_spec_replicas|kube_(namespace|node|statefulset|persistentvolume|horizontalpodautoscaler|job)_.*|kube_pod_info|kube_pod_container_status_last_terminated_reason|kube_pod_container_status_terminated_reason|kube_pod_container_status_last_terminated_exitcode|kube_pod_container_status_restarts_total|kube_pod_status_reason"
         # Drop low-value node metrics
         - action: drop
           sourceLabels: [__name__]
@@ -126,6 +126,11 @@ kube-state-metrics:
         - action: drop
           sourceLabels: [__name__, container_exit_code]
           regex: "kube_pod_container_status_last_terminated_exitcode;0"
+        # Drop routine pod status reasons (spot reclaim, scheduling changes)
+        # Keep only non-routine errors: Evicted, NodeLost, UnexpectedAdmissionError
+        - action: drop
+          sourceLabels: [__name__, reason]
+          regex: "kube_pod_status_reason;(Shutdown|NodeAffinity)"
   tolerations:
     - key: CriticalAddonsOnly
       operator: Equal
