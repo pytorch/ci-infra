@@ -54,8 +54,6 @@ spec:
                   value: "MIN_POD_AGE_PLACEHOLDER"
                 - name: DRY_RUN
                   value: "DRY_RUN_PLACEHOLDER"
-                - name: PURGE_BUDGET_SECONDS
-                  value: "240"
               resources:
                 requests:
                   cpu: 50m

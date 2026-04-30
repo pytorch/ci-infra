@@ -40,8 +40,11 @@ CACHE_CORRUPTION_INDICATORS = (
 
 DEFAULT_MIN_POD_AGE_SECONDS = 120
 DEFAULT_HARBOR_URL = "http://harbor.harbor-system.svc.cluster.local:80"
-DEFAULT_PURGE_BUDGET_SECONDS = 240
 HARBOR_REQUEST_TIMEOUT_SECONDS = 10
+# Wall-clock budget for the purge loop. Must stay comfortably below
+# activeDeadlineSeconds in cronjob.yaml so the script can log a final tally
+# before K8s SIGTERMs the pod.
+PURGE_BUDGET_SECONDS = 240
 
 
 def get_config() -> dict:
@@ -50,7 +53,6 @@ def get_config() -> dict:
         "harbor_password": os.environ.get("HARBOR_ADMIN_PASSWORD", ""),
         "min_pod_age_seconds": int(os.environ.get("MIN_POD_AGE_SECONDS", str(DEFAULT_MIN_POD_AGE_SECONDS))),
         "dry_run": os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes"),
-        "purge_budget_seconds": int(os.environ.get("PURGE_BUDGET_SECONDS", str(DEFAULT_PURGE_BUDGET_SECONDS))),
     }
 
 
@@ -223,10 +225,9 @@ def main() -> int:
         return 1
 
     log.info(
-        "Starting: dry_run=%s min_age=%ds budget=%ds",
+        "Starting: dry_run=%s min_age=%ds",
         config["dry_run"],
         config["min_pod_age_seconds"],
-        config["purge_budget_seconds"],
     )
 
     kube = Client()
@@ -266,14 +267,13 @@ def main() -> int:
     purged = 0
     failed = 0
     skipped = 0
-    budget = config["purge_budget_seconds"]
     for info in unique_repos.values():
         # Bail out before issuing a request that could blow the K8s
         # activeDeadlineSeconds. Remaining repos will be picked up on the next
         # */5 cron run.
-        if time.monotonic() - start >= budget:
+        if time.monotonic() - start >= PURGE_BUDGET_SECONDS:
             skipped = len(unique_repos) - purged - failed
-            log.warning("Budget %ds exhausted; skipping %d remaining repos", budget, skipped)
+            log.warning("Budget %ds exhausted; skipping %d remaining repos", PURGE_BUDGET_SECONDS, skipped)
             break
         if purge_cached_repo(session, config["harbor_url"], info["harbor_project"], info["repo_path"]):
             purged += 1
