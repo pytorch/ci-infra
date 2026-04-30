@@ -42,6 +42,8 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
             env:
               - name: CAPACITY_AWARE_PROACTIVE_CAPACITY
                 value: "{{PROACTIVE_CAPACITY}}"
+              - name: CAPACITY_AWARE_MAX_BURST_CAPACITY
+                value: "{{MAX_BURST_CAPACITY}}"
     template:
       spec:
         containers:
@@ -197,6 +199,7 @@ def make_def_file(
     runner_class=None,
     max_runners=None,
     proactive_capacity=None,
+    max_burst_capacity=None,
 ):
     """Write a runner def YAML and return the path."""
     runner = {
@@ -215,6 +218,8 @@ def make_def_file(
         runner["max_runners"] = max_runners
     if proactive_capacity is not None:
         runner["proactive_capacity"] = proactive_capacity
+    if max_burst_capacity is not None:
+        runner["max_burst_capacity"] = max_burst_capacity
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -676,6 +681,156 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all((output_dir / "kept-runner.yaml").read_text()))
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "10"
+
+    def test_max_burst_capacity_default_zero(self, tmp_path):
+        """max_burst_capacity defaults to 0 when not in the runner def."""
+        def_file = make_def_file(tmp_path, "burst-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "burst-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_MAX_BURST_CAPACITY"] == "0"
+
+    def test_max_burst_capacity_nonzero(self, tmp_path):
+        """max_burst_capacity: 50 renders as "50" in the listener env."""
+        def_file = make_def_file(tmp_path, "capped-runner", "c7i.24xlarge", 4, 16, max_burst_capacity=50)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "capped-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_MAX_BURST_CAPACITY"] == "50"
+
+    def test_invalid_max_burst_capacity_negative(self, tmp_path):
+        """max_burst_capacity must be a non-negative integer; -1 is rejected."""
+        def_file = make_def_file(tmp_path, "bad-burst", "c7i.24xlarge", 4, 16, max_burst_capacity=-1)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+
+    def test_invalid_max_burst_capacity_non_int(self, tmp_path):
+        """max_burst_capacity must be an int, not a string."""
+        def_file = make_def_file(tmp_path, "bad-burst2", "c7i.24xlarge", 4, 16, max_burst_capacity="50")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+
+    def test_max_burst_capacity_zero_allowed(self, tmp_path):
+        """max_burst_capacity: 0 is valid (means uncapped / disabled)."""
+        def_file = make_def_file(tmp_path, "zero-burst", "c7i.24xlarge", 4, 16, max_burst_capacity=0)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "zero-burst.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_MAX_BURST_CAPACITY"] == "0"
+
+    def test_max_burst_capacity_warning_when_below_proactive(self, tmp_path, capsys):
+        """Warn when max_burst_capacity (>0) is less than proactive_capacity — the cap
+        would prevent the listener from reaching its proactive baseline.
+        """
+        def_file = make_def_file(
+            tmp_path, "misconfig-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30, max_burst_capacity=10
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "max_burst_capacity" in combined
+        assert "proactive_capacity" in combined
+        assert "10" in combined
+        assert "30" in combined
+
+    def test_max_burst_capacity_no_warning_when_above_proactive(self, tmp_path, capsys):
+        """No warning when max_burst_capacity >= proactive_capacity."""
+        def_file = make_def_file(
+            tmp_path, "ok-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30, max_burst_capacity=100
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        # The warning text mentions both fields together — plain mentions in "Generating ..."
+        # don't trigger this assertion since neither field name appears in info logs.
+        assert "max_burst_capacity" not in combined
+
+    def test_max_burst_capacity_no_warning_when_proactive_zero(self, tmp_path, capsys):
+        """No warning when proactive_capacity is 0, regardless of max_burst_capacity."""
+        def_file = make_def_file(
+            tmp_path, "noproactive-runner", "c7i.24xlarge", 4, 16, proactive_capacity=0, max_burst_capacity=5
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "max_burst_capacity" not in combined
+
+    def test_max_burst_capacity_no_warning_when_burst_zero(self, tmp_path, capsys):
+        """No warning when max_burst_capacity is 0 (uncapped), regardless of proactive."""
+        def_file = make_def_file(
+            tmp_path, "uncapped-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30, max_burst_capacity=0
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "max_burst_capacity" not in combined
 
     def test_resource_values_match_def(self, tmp_path):
         def_file = make_def_file(tmp_path, "res-test", "c7i.24xlarge", 48, 96, disk_size=200)

@@ -9,3 +9,4 @@ runner:
   memory: 704Gi
   gpu: 8
   proactive_capacity: 5
+  max_burst_capacity: 30

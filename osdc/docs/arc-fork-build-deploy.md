@@ -154,6 +154,7 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 |---------|---------|-------------|
 | `CAPACITY_AWARE_ENABLED` | `true` | Enable the capacity monitor goroutine |
 | `CAPACITY_AWARE_PROACTIVE_CAPACITY` | `0` | Number of placeholder pairs to maintain ahead of demand |
+| `CAPACITY_AWARE_MAX_BURST_CAPACITY` | `0` | Caps the maximum total placeholder pairs (running + pending) the provisioner will create per cycle. `0` means unlimited. Used to prevent burst node provisioning from overloading downstream services (git-cache, Harbor, pypi-cache) |
 | `CAPACITY_AWARE_RECALCULATE_INTERVAL` | `30s` | Fallback reconciliation interval (event-driven is primary) |
 | `CAPACITY_AWARE_PLACEHOLDER_TIMEOUT` | `20m` | How long a placeholder can stay Pending before being deleted |
 | `CAPACITY_AWARE_WORKFLOW_CPU` | _(from runner def)_ | Workflow placeholder CPU request (template: `{{VCPU}}`) |

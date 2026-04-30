@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from helpers import assert_daemonset_healthy, filter_daemonsets, find_helm_release, run_kubectl
+from helpers import assert_daemonset_healthy, filter_daemonsets, filter_pods, find_helm_release, run_kubectl
 
 pytestmark = [pytest.mark.live]
 
@@ -20,6 +20,9 @@ pytestmark = [pytest.mark.live]
 # ---------------------------------------------------------------------------
 
 NAMESPACE = "arc-runners"
+LISTENER_NAMESPACE = "arc-systems"
+LISTENER_LABELS = {"app.kubernetes.io/component": "runner-scale-set-listener"}
+LISTENER_CONTAINER_NAME = "listener"
 MODULE_LABEL = "osdc.io/module=arc-runners"
 REQUIRED_FIELDS = {"name", "instance_type", "disk_size", "vcpu", "memory"}
 
@@ -242,6 +245,78 @@ class TestArcRunnersNamespace:
         assert labels.get("app.kubernetes.io/part-of") == "osdc-arc-runners", (
             f"Namespace missing label app.kubernetes.io/part-of=osdc-arc-runners, got: {labels}"
         )
+
+
+# ============================================================================
+# Live: Listener Pod Capacity-Aware Env Vars
+# ============================================================================
+
+
+class TestListenerCapacityAwareEnvVars:
+    """Verify ARC listener pods have all CAPACITY_AWARE_* env vars set.
+
+    These env vars drive the proactive-capacity placeholder controller in the
+    listener. If any are missing, capacity-aware behaviour silently degrades.
+    """
+
+    REQUIRED_ENV_VARS: frozenset[str] = frozenset(
+        {
+            "CAPACITY_AWARE_ENABLED",
+            "CAPACITY_AWARE_PROACTIVE_CAPACITY",
+            "CAPACITY_AWARE_MAX_BURST_CAPACITY",
+            "CAPACITY_AWARE_RECALCULATE_INTERVAL",
+            "CAPACITY_AWARE_PLACEHOLDER_TIMEOUT",
+            "CAPACITY_AWARE_WORKFLOW_CPU",
+            "CAPACITY_AWARE_WORKFLOW_MEMORY",
+            "CAPACITY_AWARE_WORKFLOW_GPU",
+            "CAPACITY_AWARE_WORKFLOW_DISK",
+            "CAPACITY_AWARE_RUNNER_CPU",
+            "CAPACITY_AWARE_RUNNER_MEMORY",
+            "CAPACITY_AWARE_NODE_FLEET",
+            "CAPACITY_AWARE_RUNNER_NODE_FLEET",
+            "CAPACITY_AWARE_RUNNER_CLASS",
+            "CAPACITY_AWARE_HUD_API_URL",
+            "CAPACITY_AWARE_HUD_API_TOKEN",
+        }
+    )
+
+    @staticmethod
+    def _env_has_value(env: dict) -> bool:
+        """Return True if the env entry has either a non-empty value or a valueFrom."""
+        if env.get("value") not in (None, ""):
+            return True
+        return bool(env.get("valueFrom"))
+
+    def test_listener_pods_have_capacity_aware_env_vars(self, all_pods: dict, enabled_modules: list[str]) -> None:
+        """Each listener pod's listener container has all CAPACITY_AWARE_* env vars set."""
+        if "arc-runners" not in enabled_modules:
+            pytest.skip("arc-runners module not enabled")
+
+        listener_pods = filter_pods(all_pods, namespace=LISTENER_NAMESPACE, labels=LISTENER_LABELS)
+        assert len(listener_pods) >= 1, (
+            f"No listener pods found in '{LISTENER_NAMESPACE}' with labels {LISTENER_LABELS}"
+        )
+
+        problems: list[str] = []
+        for pod in listener_pods:
+            pod_name = pod["metadata"]["name"]
+            containers = pod.get("spec", {}).get("containers", [])
+            listener = next((c for c in containers if c.get("name") == LISTENER_CONTAINER_NAME), None)
+            if listener is None:
+                problems.append(f"{pod_name}: no '{LISTENER_CONTAINER_NAME}' container")
+                continue
+
+            env_by_name = {e["name"]: e for e in listener.get("env", [])}
+            missing = self.REQUIRED_ENV_VARS - env_by_name.keys()
+            if missing:
+                problems.append(f"{pod_name}: missing env vars {sorted(missing)}")
+                continue
+
+            empty = sorted(name for name in self.REQUIRED_ENV_VARS if not self._env_has_value(env_by_name[name]))
+            if empty:
+                problems.append(f"{pod_name}: env vars present but with no value/valueFrom: {empty}")
+
+        assert not problems, "Listener pods with missing CAPACITY_AWARE_* env vars:\n" + "\n".join(problems)
 
 
 # ============================================================================
