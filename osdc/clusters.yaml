@@ -196,8 +196,10 @@ clusters:
       - arc
       - nodepools
       - nodepools-b200
+      - nodepools-h100
       - arc-runners
       - arc-runners-b200
+      - arc-runners-h100
       - buildkit
       - pypi-cache
       - cache-enforcer

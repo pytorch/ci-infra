@@ -1,0 +1,12 @@
+# ARC runner definition: l-x86iamx-22-225-h100 (1x NVIDIA H100)
+# Scheduled on NodePool: p5-48xlarge (from nodepools-h100 module)
+# Resource math: 176 usable vCPU / 8 GPUs = 22 vCPU/GPU, 1800 GiB / 8 = 225 GiB/GPU
+runner:
+  name: l-x86iamx-22-225-h100
+  instance_type: p5.48xlarge
+  disk_size: 200
+  vcpu: 22
+  memory: 225Gi
+  gpu: 1
+  # Fixed-capacity cap: 1 reserved 8-GPU node / 1 GPU per runner = 8 concurrent runners.
+  max_runners: 8

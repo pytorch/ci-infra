@@ -515,41 +515,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    {DIM}source: {ds.source}{NC}")
         return 0
 
-    # Collect runner defs from upstream + consumer
+    # Collect runner + nodepool defs from upstream and any peer/consumer modules.
+    # The walk also fires when consumer_root == upstream_dir (single-repo OSDC
+    # layout), which lets us discover sibling fixed-capacity modules like
+    # arc-runners-b200 / nodepools-b200 that live next to the upstream defaults.
+    # load_runner_defs / load_nodepool_defs dedupe by resolved path, so the
+    # explicit upstream entries are safe even when the walk re-yields them.
     runner_dirs = [
         upstream_dir / "modules" / "arc-runners" / "defs",
     ]
-    # Add consumer runner def dirs
-    if consumer_root != upstream_dir:
-        consumer_modules = consumer_root / "modules"
-        if consumer_modules.exists():
-            for mod_dir in sorted(consumer_modules.iterdir()):
-                defs = mod_dir / "defs"
-                if defs.exists() and any(defs.glob("*.yaml")):
-                    # Check if any def has runner key
-                    for f in defs.glob("*.yaml"):
-                        with open(f) as fh:
-                            d = yaml.safe_load(fh)
-                        if d and "runner" in d:
-                            runner_dirs.append(defs)
-                            break
-
-    # Collect nodepool defs
     nodepool_dirs = [
         upstream_dir / "modules" / "nodepools" / "defs",
     ]
-    if consumer_root != upstream_dir:
-        consumer_modules = consumer_root / "modules"
-        if consumer_modules.exists():
-            for mod_dir in sorted(consumer_modules.iterdir()):
-                defs = mod_dir / "defs"
-                if defs.exists() and any(defs.glob("*.yaml")):
-                    for f in defs.glob("*.yaml"):
-                        with open(f) as fh:
-                            d = yaml.safe_load(fh)
-                        if d and "nodepool" in d:
-                            nodepool_dirs.append(defs)
-                            break
+    consumer_modules = consumer_root / "modules"
+    if consumer_modules.exists():
+        for mod_dir in sorted(consumer_modules.iterdir()):
+            defs = mod_dir / "defs"
+            if not (defs.exists() and any(defs.glob("*.yaml"))):
+                continue
+            for f in defs.glob("*.yaml"):
+                with open(f) as fh:
+                    d = yaml.safe_load(fh)
+                if not d:
+                    continue
+                if "runner" in d and defs not in runner_dirs:
+                    runner_dirs.append(defs)
+                if "nodepool" in d and defs not in nodepool_dirs:
+                    nodepool_dirs.append(defs)
 
     print(f"{BOLD}Node Utilization Analysis{NC}")
     print(f"{'━' * 80}")
