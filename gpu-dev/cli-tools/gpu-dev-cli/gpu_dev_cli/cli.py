@@ -500,7 +500,7 @@ def main(ctx: click.Context) -> None:
     type=click.Choice(
         ["b200", "h200", "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
     ),
-    help="GPU type to reserve (b200/h200/h100/h100-mig-1g/h100-mig-2g/h100-mig-3g/a100/rtxpro6000/a10g/t4/l4/t4-small/cpu-arm/cpu-x86)",
+    help="GPU type to reserve. Full GPUs: b200, h200, h100, a100, rtxpro6000, a10g, t4, l4, t4-small. H100 MIG slices (partial GPU on a single shared node): h100-mig-1g (10 GB / 1/7 H100 compute), h100-mig-2g (20 GB / 2/7 H100), h100-mig-3g (40 GB / 3/7 H100). CPU only: cpu-arm, cpu-x86.",
 )
 @click.option(
     "--hours",
