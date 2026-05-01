@@ -25,3 +25,17 @@ check_warnings() {
 
 # Run warning check before every command prompt (zsh hook)
 precmd() { check_warnings }
+
+# Auto-cleanup of deprecated ANTHROPIC_MODEL pinning. An older docker image
+# hardcoded ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0 in
+# .shell_env, which then got cached on persistent disks. We unset it in the
+# current session and strip the line from disk so it doesn't come back.
+# Self-healing — once cleaned, the case statement no longer matches.
+case "${ANTHROPIC_MODEL:-}" in
+    *sonnet-4-20250514*)
+        unset ANTHROPIC_MODEL
+        if [ -f "$HOME/.shell_env" ]; then
+            sed -i '/ANTHROPIC_MODEL.*sonnet-4-20250514/d' "$HOME/.shell_env" 2>/dev/null || true
+        fi
+        ;;
+esac

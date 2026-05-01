@@ -64,6 +64,18 @@ def select_gpu_type_interactive(
         if "-mig-" not in gt
     }
 
+    # Aggregate MIG slice availability so we can hint it on the h100 row of this picker.
+    mig_total_available = sum(
+        int(info.get("available", 0))
+        for gt, info in (availability_info or {}).items()
+        if gt.startswith("h100-mig-")
+    )
+    mig_total_capacity = sum(
+        int(info.get("total", 0))
+        for gt, info in (availability_info or {}).items()
+        if gt.startswith("h100-mig-")
+    )
+
     # Display availability table first
     console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
     table = Table()
@@ -132,6 +144,8 @@ def select_gpu_type_interactive(
             )
             if queue_length > 0:
                 choice_label += f" - {queue_length} in queue"
+            if gpu_type == "h100" and mig_total_capacity > 0:
+                choice_label += f" — also {mig_total_available}/{mig_total_capacity} MIG slices"
 
             choices.append(questionary.Choice(title=choice_label, value=gpu_type))
 

@@ -76,6 +76,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 logger.error(f"=== Failed to update availability for {gpu_type}: {gpu_error} ===")
                 # Continue with other GPU types
 
+        # Best-effort: delete stale rows for SKUs no longer in SUPPORTED_GPU_TYPES
+        # (e.g. after a GPU type rename like g7e -> rtxpro6000).
+        try:
+            cleanup_stale_availability_rows()
+        except Exception as cleanup_err:
+            logger.warning(f"Stale-row cleanup failed: {cleanup_err}")
+
         return {
             "statusCode": 200,
             "body": json.dumps(
@@ -594,3 +601,29 @@ def compute_size_etas(v1, gpu_type, node_label_value, resource_name, gpus_per_in
 
     return etas
 
+
+def cleanup_stale_availability_rows():
+    """Delete rows in the availability table whose gpu_type isn't in SUPPORTED_GPU_TYPES.
+
+    Triggered on every Lambda invocation. Idempotent. Used to garbage-collect renamed
+    SKUs (e.g. g7e -> rtxpro6000) that would otherwise linger as zero rows.
+    """
+    table = dynamodb.Table(AVAILABILITY_TABLE)
+    valid_keys = set(SUPPORTED_GPU_TYPES.keys())
+    last_key = None
+    deleted = []
+    while True:
+        kwargs = {"ProjectionExpression": "gpu_type"}
+        if last_key:
+            kwargs["ExclusiveStartKey"] = last_key
+        resp = table.scan(**kwargs)
+        for item in resp.get("Items", []):
+            gt = item.get("gpu_type")
+            if gt and gt not in valid_keys:
+                table.delete_item(Key={"gpu_type": gt})
+                deleted.append(gt)
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+    if deleted:
+        logger.info(f"Deleted {len(deleted)} stale availability rows: {deleted}")

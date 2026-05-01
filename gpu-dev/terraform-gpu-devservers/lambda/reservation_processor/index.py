@@ -4030,7 +4030,9 @@ def create_pod(
                 client.V1Container(
                     name="gpu-dev",
                     image=container_image,
-                    image_pull_policy="IfNotPresent",
+                    # :latest is a moving tag — always re-pull so a new docker image
+                    # rolled out to ECR is picked up by every fresh reservation.
+                    image_pull_policy="Always",
                     **({
                         "command": ["/bin/bash"],
                         "args": [
@@ -4442,6 +4444,34 @@ EOF_ZSHRC_EXT
                             fi
                         done
                         echo "[STARTUP] ✓ Shell extension sourcing configured"
+
+                        # Surgically remove the deprecated ANTHROPIC_MODEL pinning that older docker
+                        # images baked into shell_env. claude-sonnet-4-20250514 is being deprecated
+                        # by Anthropic, and an old hardcoded value lingers on persistent disks.
+                        # Idempotent — strips only the matching line, leaves any user-customized value alone.
+                        if [ -f /home/dev/.shell_env ] && grep -q "ANTHROPIC_MODEL.*sonnet-4-20250514" /home/dev/.shell_env 2>/dev/null; then
+                            echo "[STARTUP] Removing deprecated ANTHROPIC_MODEL=sonnet-4-20250514 line from .shell_env"
+                            sed -i '/ANTHROPIC_MODEL.*sonnet-4-20250514/d' /home/dev/.shell_env || true
+                        fi
+
+                        # Remove the legacy npm-based Claude install (~/.npm-global/bin/claude).
+                        # Older docker images ran `npm install -g @anthropic-ai/claude-code` and that
+                        # binary still lingers on persistent disks where it shadows the system-wide
+                        # /usr/local/bin/claude (because $HOME/.npm-global/bin precedes /usr/local/bin
+                        # on PATH). The system-wide install is kept current via image rebuilds; the
+                        # user's own ~/.local/bin/claude (from `claude install` in their home, or
+                        # Claude's self-update mechanism) is left intact so users can opt into newer
+                        # versions ahead of our image refresh.
+                        if [ -e /home/dev/.npm-global/bin/claude ]; then
+                            echo "[STARTUP] Removing legacy npm-installed claude at /home/dev/.npm-global/bin/claude"
+                            rm -f /home/dev/.npm-global/bin/claude || true
+                        fi
+                        # Also drop the npm package files for @anthropic-ai/claude-code so npm doesn't
+                        # think it's still installed on next `npm list -g`.
+                        if [ -d /home/dev/.npm-global/lib/node_modules/@anthropic-ai/claude-code ]; then
+                            echo "[STARTUP] Removing legacy @anthropic-ai/claude-code npm package files"
+                            rm -rf /home/dev/.npm-global/lib/node_modules/@anthropic-ai/claude-code || true
+                        fi
 
                         # Fix ownership - recursive only for new disks (fast, empty disk)
                         # For existing disks, only fix the specific files we just created/modified
@@ -6233,7 +6263,13 @@ def should_use_persistent_disk(user_id: str, current_reservation_id: str) -> boo
 
 
 def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]:
-    """Get instance type and GPU type from the node where pod is scheduled"""
+    """Get instance type and GPU type from the node where pod is scheduled.
+
+    For MIG slice pods, the SKU is derived from the pod's resource request
+    (nvidia.com/mig-Ng.NNgb) rather than the host instance type, so the DDB
+    record reflects the actual partition the user reserved instead of the
+    physical card.
+    """
     try:
         v1 = client.CoreV1Api(k8s_client)
 
@@ -6250,7 +6286,27 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
             "node.kubernetes.io/instance-type", "unknown"
         )
 
-        # Map instance type to GPU type
+        # If the pod requests a MIG slice resource, the GPU type is the slice SKU.
+        # Map back to the canonical SKU stored elsewhere in this code (matches CLI flag).
+        mig_resource_to_sku = {
+            "nvidia.com/mig-1g.10gb": "h100-mig-1g",
+            "nvidia.com/mig-1g.20gb": "h100-mig-1g",  # memory-doubled variant, same SKU bucket
+            "nvidia.com/mig-2g.20gb": "h100-mig-2g",
+            "nvidia.com/mig-3g.40gb": "h100-mig-3g",
+            "nvidia.com/mig-4g.40gb": "h100-mig-4g",
+            "nvidia.com/mig-7g.80gb": "h100-mig-7g",
+        }
+        if pod.spec.containers:
+            for c in pod.spec.containers:
+                reqs = (c.resources.requests if c.resources and c.resources.requests else {}) or {}
+                for r_name, sku in mig_resource_to_sku.items():
+                    if reqs.get(r_name):
+                        logger.info(
+                            f"Pod {pod_name} on {node_name} requests {r_name} -> MIG SKU {sku}"
+                        )
+                        return instance_type, sku
+
+        # Map instance type to GPU type for non-MIG (full GPU) pods
         gpu_type_mapping = {
             "g4dn.4xlarge": "T4",
             "g4dn.8xlarge": "T4",
@@ -6261,6 +6317,7 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
             "g6.12xlarge": "L4",
             "g6.16xlarge": "L4",
             "g6.24xlarge": "L4",
+            "g7e.24xlarge": "rtxpro6000",
             "p4d.24xlarge": "A100",
             "p5.48xlarge": "H100",
             "p5e.48xlarge": "H200",

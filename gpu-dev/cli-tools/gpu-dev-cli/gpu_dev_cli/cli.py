@@ -161,11 +161,8 @@ def _show_single_reservation(connection_info: dict) -> None:
     gpu_type = connection_info.get("gpu_type", "Unknown")
     instance_type = connection_info.get("instance_type", "unknown")
 
-    # Format GPU information
-    if gpu_type != "Unknown" and gpu_type != "unknown":
-        gpu_info = f"{gpu_count}x {gpu_type}"
-    else:
-        gpu_info = f"{gpu_count} GPU(s)"
+    # Format GPU information (MIG-aware)
+    gpu_info = _format_gpu_display(gpu_count, gpu_type)
 
     # Format timestamps - only show launched_at (started time), not created time
     launched_at = connection_info.get("launched_at", "N/A")
@@ -2042,11 +2039,8 @@ def cancel(
                 status = reservation.get("status", "unknown")
                 created_at = reservation.get("created_at", "N/A")
 
-                # Format GPU information
-                if gpu_type and gpu_type not in ["unknown", "Unknown"]:
-                    gpu_display = f"{gpu_count}x {gpu_type.upper()}"
-                else:
-                    gpu_display = str(gpu_count)
+                # Format GPU information (MIG-aware)
+                gpu_display = _format_gpu_display(gpu_count, gpu_type)
 
                 # Format created_at
                 created_formatted = "N/A"
@@ -2377,6 +2371,28 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
 
     except Exception as e:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+
+def _format_gpu_display(gpu_count, gpu_type):
+    """Render a friendly '{N}× {type}' string for reservation listings.
+
+    For MIG slice SKUs, surface the slice memory + the underlying physical type
+    (e.g. '2× 10GB H100 (MIG)') instead of the raw 'H100-MIG-1G' identifier.
+    """
+    if not gpu_type or str(gpu_type).lower() in ("unknown", ""):
+        return f"{gpu_count} GPU(s)"
+    gt_lower = str(gpu_type).lower()
+    mig_friendly = {
+        "h100-mig-1g": "10GB H100 (MIG)",
+        "h100-mig-2g": "20GB H100 (MIG)",
+        "h100-mig-3g": "40GB H100 (MIG)",
+        "h100-mig-4g": "40GB H100 (MIG)",
+        "h100-mig-7g": "80GB H100 (MIG)",
+    }
+    if gt_lower in mig_friendly:
+        return f"{gpu_count}× {mig_friendly[gt_lower]}"
+    return f"{gpu_count}x {str(gpu_type).upper()}"
 
 
 def _show_availability() -> None:

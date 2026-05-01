@@ -132,13 +132,32 @@ RUN mkdir -p /run/sshd /var/run/sshd && \
 # Create SSH config
 COPY ssh_config /etc/ssh/sshd_config
 
-# Set up npm global directory for dev user and install Claude CLI
+# Install Claude Code SYSTEM-WIDE via the official native installer (as root).
+# Lives in /opt/claude with a /usr/local/bin/claude symlink, survives every reservation
+# regardless of persistent-disk state, and can't be shadowed by stale npm installs on
+# user disks. Image rebuilds are the only update path — controlled, reproducible.
+USER root
+RUN curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash || echo "Claude native install failed (non-fatal at build time)"
+RUN if [ -e /opt/claude/.local/bin/claude ]; then \
+        ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude; \
+        chmod -R a+rX /opt/claude; \
+    fi
+
+# Set up npm global directory for dev user (kept for ad-hoc dev-installed CLIs).
 USER dev
 WORKDIR /home/dev
-
 RUN mkdir -p ~/.npm-global && \
-    npm config set prefix ~/.npm-global && \
-    npm install -g @anthropic-ai/claude-code || echo "Claude CLI install failed, will retry at runtime"
+    npm config set prefix ~/.npm-global
+
+# OpenAI Codex CLI installed SYSTEM-WIDE as root (parallels the Claude install above).
+# Auth is per-user: either `export OPENAI_API_KEY=sk-…` in their shell, or `codex login`
+# for the browser/ChatGPT-account flow. AWS Bedrock now serves Codex (announced 2026-04-28
+# at openai.com/index/openai-on-aws) — once we have early access, swap in the Bedrock-backed
+# install + flip an env var; users won't need their own keys anymore.
+USER root
+RUN npm install -g --prefix /usr/local @openai/codex || echo "Codex CLI install failed (non-fatal at build time)"
+
+USER dev
 
 # Install oh-my-zsh for dev user
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
