@@ -57,6 +57,13 @@ def select_gpu_type_interactive(
     if not check_interactive_support():
         return None
 
+    # Hide MIG slice SKUs from the top-level selector — reached via the h100 submenu.
+    # Direct `--gpu-type h100-mig-1g` still works for non-interactive scripts.
+    visible_info = {
+        gt: info for gt, info in availability_info.items()
+        if "-mig-" not in gt
+    }
+
     # Display availability table first
     console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
     table = Table()
@@ -67,7 +74,7 @@ def select_gpu_type_interactive(
     table.add_column("Est. Wait Time", style="magenta")
 
     choices = []
-    for gpu_type, info in availability_info.items():
+    for gpu_type, info in visible_info.items():
         available = info.get("available", 0)
         total = info.get("total", 0)
         queue_length = info.get("queue_length", 0)
@@ -143,8 +150,16 @@ def select_gpu_type_interactive(
         return None
 
 
-def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
-    """Interactive GPU count selection"""
+def select_gpu_count_interactive(
+    gpu_type: str,
+    max_gpus: int,
+    availability_info: Optional[Dict[str, Dict[str, Any]]] = None,
+):
+    """Interactive GPU count selection.
+
+    Returns int (gpu_count) for normal selections, or a (effective_gpu_type, gpu_count)
+    tuple when the user picks a MIG slice option from the h100 submenu.
+    """
     if not check_interactive_support():
         return None
 
@@ -174,6 +189,28 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
         # Add multinode options
         multinode_counts = [16, 24, 32, 40, 48]  # multiples of 8
 
+    # MIG slice submenu: only for h100. Each tuple is (target_gpu_type, gpu_count, gb_label).
+    mig_options = []
+    if gpu_type == "h100":
+        # Map to internal SKUs; the count menu surfaces 1/2/4 of each slice size.
+        mig_specs = [
+            ("h100-mig-1g", "10GB"),
+            ("h100-mig-2g", "20GB"),
+            ("h100-mig-3g", "40GB"),
+        ]
+        for sku, gb in mig_specs:
+            slice_max = {"h100-mig-1g": 16, "h100-mig-2g": 8, "h100-mig-3g": 8}[sku]
+            free = None
+            if availability_info and sku in availability_info:
+                free = availability_info[sku].get("available", 0)
+            for n in [1, 2, 4]:
+                if n > slice_max:
+                    continue
+                noun = "slice" if n == 1 else "slices"
+                avail_suffix = f"  [{free} free]" if free is not None else ""
+                label = f"{n} × {gb} {noun}{avail_suffix}"
+                mig_options.append((sku, n, label))
+
     # Filter single-node by actual max for this GPU type
     valid_counts = [count for count in valid_counts if count <= max_gpus]
 
@@ -183,7 +220,18 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
 
     choices = []
 
-    # Add single-node options
+    # MIG slice options come first (smallest unit), h100-only.
+    if mig_options:
+        choices.append(questionary.Separator(
+            "--- MIG slices (partial GPU, single node) ---"))
+        for sku, count, label in mig_options:
+            choices.append(questionary.Choice(title=label, value=(sku, count)))
+
+    # Full single-node options. Header only when slices were rendered above
+    # (otherwise the type already implies "Full GPUs").
+    if mig_options:
+        choices.append(questionary.Separator(
+            "--- Full GPUs (single node) ---"))
     for count in valid_counts:
         if count == 1:
             label = f"1 GPU (single node)"
@@ -191,7 +239,7 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
             label = f"{count} GPUs (single node)"
         choices.append(questionary.Choice(title=label, value=count))
 
-    # Add separator and multinode options
+    # Multinode at the bottom.
     if multinode_counts:
         choices.append(questionary.Separator(
             "--- Multinode (Distributed) ---"))

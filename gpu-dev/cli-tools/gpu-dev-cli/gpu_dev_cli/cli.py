@@ -727,11 +727,18 @@ def reserve(
                     return
 
                 max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
-                gpu_count = select_gpu_count_interactive(
-                    gpu_type_lower, max_gpus)
-                if gpu_count is None:
+                result = select_gpu_count_interactive(
+                    gpu_type_lower, max_gpus, availability_info=availability_info)
+                if result is None:
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
+                # If user picked a MIG slice, the function returns (gpu_type, count).
+                if isinstance(result, tuple):
+                    gpu_type, gpu_count = result
+                    gpu_type_lower = gpu_type.lower()
+                    max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
+                else:
+                    gpu_count = result
 
                 # Show distributed warning for interactive multinode selections (always show)
                 if gpu_count > max_gpus:
