@@ -515,8 +515,14 @@ def compute_size_etas(v1, gpu_type, node_label_value, resource_name, gpus_per_in
                         pass
         if gpus > 0:
             pod_to_info[pod.metadata.name] = (pod.spec.node_name, gpus)
+            # used_now is the k8s ground-truth — count every running/pending pod, not just those
+            # we can match to a reservation row. Otherwise pods without DDB rows look like free GPUs.
+            node_state[pod.spec.node_name]["used_now"] += gpus
 
-    # 3) Cross-reference active reservations to populate per-node expirations.
+    # 3) Cross-reference active reservations to attach expiry timestamps to each known pod.
+    #    Pods without a matching reservation row keep their GPUs marked as used_now but have no
+    #    expiration → they're treated as "never expiring" by the simulation, which is the safe
+    #    fallback (we don't fabricate ETAs for usage we can't trace).
     target_gpu_type_lower = gpu_type.lower()
     for r in active_reservations:
         # Reservations table stores gpu_type uppercased ("H100"); compare case-insensitively.
@@ -534,7 +540,6 @@ def compute_size_etas(v1, gpu_type, node_label_value, resource_name, gpus_per_in
         except (ValueError, TypeError):
             continue
         node_name, gpus = pod_to_info[pod_name]
-        node_state[node_name]["used_now"] += gpus
         node_state[node_name]["expirations"].append((ts, gpus))
 
     # Sort each node's expirations by time.
