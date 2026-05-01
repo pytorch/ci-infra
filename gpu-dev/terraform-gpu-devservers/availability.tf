@@ -32,6 +32,7 @@ resource "aws_lambda_function" "availability_updater" {
   environment {
     variables = {
       AVAILABILITY_TABLE  = aws_dynamodb_table.gpu_availability.name
+      RESERVATIONS_TABLE  = aws_dynamodb_table.gpu_reservations.name
       # Filter out nsight variants - they're counted under base types (h200/b200) via GpuType label mapping
       SUPPORTED_GPU_TYPES = jsonencode({
         for k, v in local.current_config.supported_gpu_types : k => v
@@ -102,6 +103,17 @@ resource "aws_iam_role_policy" "availability_updater_policy" {
           "dynamodb:GetItem"
         ]
         Resource = aws_dynamodb_table.gpu_availability.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Scan",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          aws_dynamodb_table.gpu_reservations.arn,
+          "${aws_dynamodb_table.gpu_reservations.arn}/index/*"
+        ]
       },
       {
         Effect = "Allow"

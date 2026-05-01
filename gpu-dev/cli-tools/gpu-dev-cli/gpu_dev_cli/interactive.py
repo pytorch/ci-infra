@@ -150,6 +150,17 @@ def select_gpu_type_interactive(
         return None
 
 
+def _format_eta_seconds(delta_seconds: int) -> str:
+    """Format a positive seconds delta as e.g. '12min', '1h24min', '<1min'."""
+    if delta_seconds < 60:
+        return "<1min"
+    if delta_seconds < 3600:
+        return f"{delta_seconds // 60}min"
+    h = delta_seconds // 3600
+    m = (delta_seconds % 3600) // 60
+    return f"{h}h" if m == 0 else f"{h}h{m}min"
+
+
 def select_gpu_count_interactive(
     gpu_type: str,
     max_gpus: int,
@@ -190,10 +201,13 @@ def select_gpu_count_interactive(
         multinode_counts = [16, 24, 32, 40, 48]  # multiples of 8
 
     # Pull live availability for the parent SKU once — used to annotate every option.
+    import time as _time
     parent_info = (availability_info or {}).get(gpu_type, {}) if availability_info else {}
     parent_max_reservable = int(parent_info.get("max_reservable", 0))
     parent_full_nodes = int(parent_info.get("full_nodes_available", 0))
     parent_available = int(parent_info.get("available", 0))
+    parent_size_etas = parent_info.get("size_etas", {}) or {}
+    _now_ts = int(_time.time())
 
     # MIG slice submenu: only for h100. Each tuple is (target_gpu_type, gpu_count, gb_label).
     mig_options = []
@@ -247,7 +261,15 @@ def select_gpu_count_interactive(
             if parent_max_reservable >= count:
                 label += f"  [{parent_available} free]"
             else:
-                label += "  [unavailable now]"
+                eta_ts = parent_size_etas.get(str(count))
+                try:
+                    eta_int = int(eta_ts) if eta_ts is not None else None
+                except (TypeError, ValueError):
+                    eta_int = None
+                if eta_int is not None and eta_int > _now_ts:
+                    label += f"  [available in {_format_eta_seconds(eta_int - _now_ts)}]"
+                else:
+                    label += "  [unavailable now]"
         choices.append(questionary.Choice(title=label, value=count))
 
     # Multinode at the bottom.
@@ -261,7 +283,15 @@ def select_gpu_count_interactive(
                 if parent_max_reservable >= count:
                     label += f"  [{parent_full_nodes} full nodes free]"
                 else:
-                    label += "  [unavailable now]"
+                    eta_ts = parent_size_etas.get(str(count))
+                    try:
+                        eta_int = int(eta_ts) if eta_ts is not None else None
+                    except (TypeError, ValueError):
+                        eta_int = None
+                    if eta_int is not None and eta_int > _now_ts:
+                        label += f"  [available in {_format_eta_seconds(eta_int - _now_ts)}]"
+                    else:
+                        label += "  [unavailable now]"
             choices.append(questionary.Choice(title=label, value=count))
 
     try:

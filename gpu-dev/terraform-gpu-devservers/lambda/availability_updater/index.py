@@ -20,6 +20,7 @@ autoscaling = boto3.client("autoscaling")
 
 # Environment variables
 AVAILABILITY_TABLE = os.environ["AVAILABILITY_TABLE"]
+RESERVATIONS_TABLE = os.environ.get("RESERVATIONS_TABLE", "pytorch-gpu-dev-reservations")
 SUPPORTED_GPU_TYPES = json.loads(os.environ["SUPPORTED_GPU_TYPES"])
 
 
@@ -55,12 +56,20 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             logger.error(f"Failed to setup Kubernetes client: {k8s_setup_error}")
             k8s_client = None
 
+        # Cache active reservations once for the whole invocation (used for per-size ETAs)
+        try:
+            active_reservations = scan_active_reservations()
+            logger.info(f"Cached {len(active_reservations)} active reservations for ETA computation")
+        except Exception as scan_err:
+            logger.warning(f"Failed to scan reservations table for ETAs: {scan_err}")
+            active_reservations = []
+
         # Update availability for ALL GPU types (use any ASG event as trigger to refresh all)
         updated_types = []
         for gpu_type in SUPPORTED_GPU_TYPES.keys():
             try:
                 logger.info(f"=== Starting update for GPU type: {gpu_type} ===")
-                update_gpu_availability(gpu_type, k8s_client)
+                update_gpu_availability(gpu_type, k8s_client, active_reservations=active_reservations)
                 updated_types.append(gpu_type)
                 logger.info(f"=== Successfully updated availability for GPU type: {gpu_type} ===")
             except Exception as gpu_error:
@@ -85,8 +94,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         raise
 
 
-def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
-    """Update availability information for a specific GPU type"""
+def update_gpu_availability(gpu_type: str, k8s_client=None, active_reservations=None) -> None:
+    """Update availability information for a specific GPU type."""
     try:
         logger.info(f"Starting availability update for GPU type: {gpu_type}")
 
@@ -246,6 +255,25 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             full_nodes_available = available_gpus  # Each "GPU" represents one CPU node slot
             max_reservable = 1 if available_gpus > 0 else 0  # Max 1 CPU node per reservation
 
+        # Compute per-size ETAs (when each interesting reservation size first becomes reservable).
+        size_etas: Dict[str, int] = {}
+        if k8s_client is not None and not is_cpu_type and active_reservations is not None:
+            try:
+                from kubernetes import client as k8s_lib
+                v1 = k8s_lib.CoreV1Api(k8s_client)
+                size_etas = compute_size_etas(
+                    v1=v1,
+                    gpu_type=gpu_type,
+                    node_label_value=get_node_label_value(gpu_type),
+                    resource_name=get_gpu_resource_name(gpu_type),
+                    gpus_per_instance=int(gpus_per_instance),
+                    active_reservations=active_reservations,
+                )
+                logger.info(f"Computed size_etas for {gpu_type}: {size_etas}")
+            except Exception as eta_err:
+                logger.warning(f"Failed to compute size_etas for {gpu_type}: {eta_err}")
+                size_etas = {}
+
         # Update DynamoDB table (update_item preserves maintenance fields set manually)
         table = dynamodb.Table(AVAILABILITY_TABLE)
         last_updated = context.aws_request_id if "context" in locals() else "unknown"
@@ -256,7 +284,8 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             UpdateExpression=(
                 "SET total_gpus = :tg, available_gpus = :ag, max_reservable = :mr, "
                 "full_nodes_available = :fn, running_instances = :ri, desired_capacity = :dc, "
-                "gpus_per_instance = :gpi, last_updated = :lu, last_updated_timestamp = :lut"
+                "gpus_per_instance = :gpi, last_updated = :lu, last_updated_timestamp = :lut, "
+                "size_etas = :se"
             ),
             ExpressionAttributeValues={
                 ":tg": total_gpus,
@@ -268,6 +297,7 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                 ":gpi": gpus_per_instance,
                 ":lu": last_updated,
                 ":lut": last_updated_ts,
+                ":se": size_etas,
             },
         )
 
@@ -394,3 +424,168 @@ def get_available_gpus_on_node(v1_api, node, gpu_type: str = None) -> int:
             f"Error getting available GPUs on node {node.metadata.name}: {str(e)}"
         )
         return 0
+
+def scan_active_reservations():
+    """Return list of active reservation rows from the reservations DDB table.
+
+    Each row is the raw DDB resource-style dict (keys + native types). Caller is
+    responsible for tolerating Decimals and missing fields.
+    """
+    table = dynamodb.Table(RESERVATIONS_TABLE)
+    items = []
+    last_key = None
+    while True:
+        kwargs = {
+            "FilterExpression": "#s = :s",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":s": "active"},
+        }
+        if last_key:
+            kwargs["ExclusiveStartKey"] = last_key
+        resp = table.scan(**kwargs)
+        items.extend(resp.get("Items", []))
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+    return items
+
+
+# Multinode-eligible types (mirrors the older multinode_gpu_types list elsewhere in this file).
+_MULTINODE_TYPES = {"h100", "h200", "b200", "a100"}
+
+
+def compute_size_etas(v1, gpu_type, node_label_value, resource_name, gpus_per_instance, active_reservations):
+    """For each interesting reservation size, compute when it first becomes reservable.
+
+    Returns a dict mapping the size (as a string) to a unix timestamp (int).
+    A timestamp <= now means the size is currently available; sizes that won't
+    fit in any foreseeable future (e.g. cluster too small) are omitted.
+    """
+    import time as _time
+    now = int(_time.time())
+
+    # 1) Get nodes and per-node capacity for this resource.
+    try:
+        nodes = v1.list_node(label_selector=f"GpuType={node_label_value}")
+    except Exception as e:
+        logger.warning(f"compute_size_etas: list_node failed: {e}")
+        return {}
+
+    node_state = {}  # node_name -> {capacity, used_now, expirations: [(ts, gpus)]}
+    for node in nodes.items:
+        if not is_node_ready_and_schedulable(node):
+            continue
+        capacity = 0
+        try:
+            capacity = int((node.status.allocatable or {}).get(resource_name, "0"))
+        except (ValueError, TypeError):
+            capacity = 0
+        if capacity == 0:
+            continue
+        node_state[node.metadata.name] = {
+            "capacity": capacity,
+            "used_now": 0,
+            "expirations": [],
+        }
+
+    if not node_state:
+        return {}
+
+    # 2) Map pods on these nodes to their gpu request and node.
+    pod_to_info = {}  # pod_name -> (node_name, gpus_requested)
+    try:
+        pods = v1.list_namespaced_pod("gpu-dev")
+    except Exception as e:
+        logger.warning(f"compute_size_etas: list_pod failed: {e}")
+        return {}
+    for pod in pods.items:
+        if not pod.spec or not pod.spec.node_name:
+            continue
+        if pod.spec.node_name not in node_state:
+            continue
+        if pod.status and pod.status.phase not in ("Running", "Pending"):
+            continue
+        gpus = 0
+        if pod.spec.containers:
+            for c in pod.spec.containers:
+                if c.resources and c.resources.requests:
+                    try:
+                        gpus += int(c.resources.requests.get(resource_name, "0"))
+                    except (ValueError, TypeError):
+                        pass
+        if gpus > 0:
+            pod_to_info[pod.metadata.name] = (pod.spec.node_name, gpus)
+
+    # 3) Cross-reference active reservations to populate per-node expirations.
+    target_gpu_type_lower = gpu_type.lower()
+    for r in active_reservations:
+        # Reservations table stores gpu_type uppercased ("H100"); compare case-insensitively.
+        rgt = r.get("gpu_type", "")
+        if isinstance(rgt, str) and rgt.lower() != target_gpu_type_lower:
+            continue
+        pod_name = r.get("pod_name")
+        expires_at = r.get("expires_at")
+        if not pod_name or expires_at is None:
+            continue
+        if pod_name not in pod_to_info:
+            continue
+        try:
+            ts = int(float(expires_at))
+        except (ValueError, TypeError):
+            continue
+        node_name, gpus = pod_to_info[pod_name]
+        node_state[node_name]["used_now"] += gpus
+        node_state[node_name]["expirations"].append((ts, gpus))
+
+    # Sort each node's expirations by time.
+    for ns in node_state.values():
+        ns["expirations"].sort()
+
+    def first_time_size_fits_single_node(size):
+        """Earliest timestamp at which any single node has `size` GPUs free."""
+        earliest = None
+        for ns in node_state.values():
+            free_now = ns["capacity"] - ns["used_now"]
+            if free_now >= size:
+                return now
+            cum = free_now
+            for ts, gpus in ns["expirations"]:
+                cum += gpus
+                if cum >= size:
+                    if earliest is None or ts < earliest:
+                        earliest = ts
+                    break
+        return earliest
+
+    def first_time_k_full_nodes(k):
+        """Earliest timestamp at which K nodes are simultaneously fully free."""
+        free_at = []
+        for ns in node_state.values():
+            if ns["used_now"] == 0:
+                free_at.append(now)
+            elif ns["expirations"]:
+                free_at.append(max(ts for ts, _ in ns["expirations"]))
+        free_at.sort()
+        if len(free_at) >= k:
+            return free_at[k - 1]
+        return None
+
+    etas = {}
+    # Single-node sizes 1, 2, 4, 8 (capped at the per-instance maximum).
+    for size in (1, 2, 4, 8):
+        if size > gpus_per_instance:
+            break
+        eta = first_time_size_fits_single_node(size)
+        if eta is not None:
+            etas[str(size)] = eta
+
+    # Multinode sizes — only for SXM types with 8 GPUs per node.
+    if gpus_per_instance == 8 and target_gpu_type_lower in _MULTINODE_TYPES:
+        for k_nodes in (2, 3, 4, 5, 6):
+            count = k_nodes * gpus_per_instance
+            eta = first_time_k_full_nodes(k_nodes)
+            if eta is not None:
+                etas[str(count)] = eta
+
+    return etas
+
