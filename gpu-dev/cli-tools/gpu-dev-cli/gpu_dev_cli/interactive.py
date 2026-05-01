@@ -189,6 +189,12 @@ def select_gpu_count_interactive(
         # Add multinode options
         multinode_counts = [16, 24, 32, 40, 48]  # multiples of 8
 
+    # Pull live availability for the parent SKU once — used to annotate every option.
+    parent_info = (availability_info or {}).get(gpu_type, {}) if availability_info else {}
+    parent_max_reservable = int(parent_info.get("max_reservable", 0))
+    parent_full_nodes = int(parent_info.get("full_nodes_available", 0))
+    parent_available = int(parent_info.get("available", 0))
+
     # MIG slice submenu: only for h100. Each tuple is (target_gpu_type, gpu_count, gb_label).
     mig_options = []
     if gpu_type == "h100":
@@ -237,6 +243,11 @@ def select_gpu_count_interactive(
             label = f"1 GPU (single node)"
         else:
             label = f"{count} GPUs (single node)"
+        if parent_info:
+            if parent_max_reservable >= count:
+                label += f"  [{parent_available} free]"
+            else:
+                label += "  [unavailable now]"
         choices.append(questionary.Choice(title=label, value=count))
 
     # Multinode at the bottom.
@@ -246,6 +257,11 @@ def select_gpu_count_interactive(
         for count in multinode_counts:
             nodes = count // max_gpus
             label = f"{count} GPUs ({nodes} nodes × {max_gpus} GPUs)"
+            if parent_info:
+                if parent_max_reservable >= count:
+                    label += f"  [{parent_full_nodes} full nodes free]"
+                else:
+                    label += "  [unavailable now]"
             choices.append(questionary.Choice(title=label, value=count))
 
     try:
