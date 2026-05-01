@@ -1032,6 +1032,11 @@ class ReservationManager:
                 queue_length = self._get_queue_length_for_gpu_type(gpu_type)
                 estimated_wait = queue_length * 15 if queue_length > 0 else 0
 
+                # size_etas is a DDB Map of {size_str: epoch_seconds (Decimal)} — pass through
+                # so the interactive count menu can render "[available in 1h24m]" labels.
+                raw_etas = item.get("size_etas", {}) or {}
+                size_etas = {str(k): int(v) for k, v in raw_etas.items()} if raw_etas else {}
+
                 availability_info[gpu_type] = {
                     "available": int(item.get("available_gpus", 0)),
                     "total": int(item.get("total_gpus", 0)),
@@ -1045,6 +1050,7 @@ class ReservationManager:
                     "last_updated": item.get("last_updated_timestamp", 0),
                     "maintenance": bool(item.get("maintenance", False)),
                     "maintenance_reason": item.get("maintenance_reason", ""),
+                    "size_etas": size_etas,
                 }
 
             return availability_info

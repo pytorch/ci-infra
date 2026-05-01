@@ -27,7 +27,9 @@ resource "aws_lambda_function" "availability_updater" {
   handler          = "index.handler"
   runtime          = "python3.11"
   timeout                        = 300
-  memory_size                    = 512
+  # 1769 MB is the sweet spot — Lambda allocates one full vCPU at this threshold.
+  # Beyond 1769 MB you get fractional second vCPUs (less linear gain), and our work is single-threaded.
+  memory_size                    = 1769
   # Cap concurrent invocations at 1: each run does ~30 EKS API calls per gpu_type, and
   # uncapped concurrency was hammering the cluster API into throttling, leaving later
   # gpu_types in each run timing out and never producing size_etas.

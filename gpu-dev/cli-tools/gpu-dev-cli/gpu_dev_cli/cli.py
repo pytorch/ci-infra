@@ -681,29 +681,55 @@ def reserve(
             rprint(
                 "[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
 
-            # Setup config early for availability check
+            # Run auth + SSH validation + availability fetch in parallel — they're independent
+            # and total wall-clock time drops from sum to max(each).
+            from concurrent.futures import ThreadPoolExecutor
+            config = load_config()
+
             with Live(
-                Spinner("dots", text="📡 Loading GPU availability..."), console=console
+                Spinner("dots", text="🚀 Loading…"), console=console
             ) as live:
-                config = load_config()
-                try:
-                    user_info = authenticate_user(config)
-                except RuntimeError as e:
-                    live.stop()
-                    rprint(f"[red]❌ {str(e)}[/red]")
-                    return
+                with ThreadPoolExecutor(max_workers=3) as ex:
+                    f_auth = ex.submit(authenticate_user, config)
+                    # SSH validation may invoke `ssh git@github.com` interactively for password-protected keys;
+                    # do it on the main thread when the cache is cold so prompts work. Probe cache first.
+                    from .auth import _load_ssh_cache, validate_ssh_key_matches_github_user
+                    cached_ssh = _load_ssh_cache(config.get_github_username() or "")
+                    if cached_ssh is not None:
+                        f_ssh = None
+                        ssh_result = cached_ssh
+                    else:
+                        f_ssh = ex.submit(validate_ssh_key_matches_github_user, config, None)
+                        ssh_result = None
+                    f_avail = ex.submit(
+                        lambda: ReservationManager(config).get_gpu_availability_by_type()
+                    )
 
-                # Validate SSH key matches configured GitHub username
-                live.update(Spinner("dots", text="🔐 Validating SSH key..."))
-                if not _validate_ssh_key_or_exit(config, live):
-                    return
+                    # Surface auth failure first (most actionable).
+                    try:
+                        user_info = f_auth.result()
+                    except RuntimeError as e:
+                        live.stop()
+                        rprint(f"[red]❌ {str(e)}[/red]")
+                        return
 
-                live.update(
-                    Spinner("dots", text="📡 Loading GPU availability..."))
-                reservation_mgr = ReservationManager(config)
-                availability_info = reservation_mgr.get_gpu_availability_by_type()
+                    if ssh_result is None:
+                        ssh_result = f_ssh.result()
+                    availability_info = f_avail.result()
 
-            live.stop()
+            # Surface SSH validation failure with the same UX as before.
+            if not ssh_result.get("valid"):
+                rprint("[red]❌ Github SSH key validation failed[/red]")
+                if ssh_result.get("ssh_user") and ssh_result.get("configured_user"):
+                    rprint("\n[yellow]💡 Fix by updating your config:[/yellow]")
+                    rprint(f"   [cyan]gpu-dev config set github_user {ssh_result['ssh_user']}[/cyan]")
+                elif not ssh_result.get("configured_user"):
+                    rprint("\n[yellow]💡 Fix by configuring your GitHub username:[/yellow]")
+                    rprint("   [cyan]gpu-dev config set github_user <your-github-username>[/cyan]")
+                else:
+                    rprint("\n[yellow]💡 gpu-dev utilizes Github keys for auth![/yellow]")
+                    rprint("[yellow]💡 Check https://fburl.com/gh-ssh for info on how to add your ssh key to Github[/yellow]")
+                return
 
             if not availability_info:
                 rprint("[red]❌ Could not get GPU availability information[/red]")

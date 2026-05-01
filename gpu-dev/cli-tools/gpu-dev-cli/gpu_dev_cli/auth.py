@@ -1,10 +1,52 @@
 """Minimal AWS-only authentication for GPU Dev CLI"""
 
+import json
+import os
 import subprocess
 import re
-from typing import Dict, Any
+import time
+from pathlib import Path
+from typing import Dict, Any, Optional
 from .config import Config
 from rich.spinner import Spinner
+
+# SSH validation result is cached locally for 24h. New keys pushed to GitHub still take effect
+# at reservation time (pods fetch live keys via init container) — caching only skips the
+# pre-flight "are you who you say you are" check.
+_SSH_CACHE_TTL_SECONDS = 24 * 60 * 60
+_SSH_CACHE_PATH = Path(os.path.expanduser("~/.config/gpu-dev/ssh-validation-cache.json"))
+
+
+def _load_ssh_cache(github_user: str) -> Optional[Dict[str, Any]]:
+    """Return cached validation if it's fresh and matches the configured github_user, else None."""
+    try:
+        if not _SSH_CACHE_PATH.exists():
+            return None
+        with open(_SSH_CACHE_PATH) as f:
+            data = json.load(f)
+        if data.get("configured_user") != github_user:
+            return None
+        if time.time() - float(data.get("ts", 0)) > _SSH_CACHE_TTL_SECONDS:
+            return None
+        return data.get("result")
+    except Exception:
+        return None
+
+
+def _save_ssh_cache(github_user: str, result: Dict[str, Any]) -> None:
+    """Persist a successful validation result. Failures are not cached (so they can recover)."""
+    if not result.get("valid"):
+        return
+    try:
+        _SSH_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_SSH_CACHE_PATH, "w") as f:
+            json.dump({
+                "configured_user": github_user,
+                "ts": int(time.time()),
+                "result": result,
+            }, f)
+    except Exception:
+        pass
 
 
 def authenticate_user(config: Config) -> Dict[str, Any]:
@@ -58,6 +100,13 @@ def validate_ssh_key_matches_github_user(config: Config, live=None) -> Dict[str,
                 "ssh_user": None,
                 "error": "GitHub username not configured. Run: gpu-dev config set github_user <username>",
             }
+
+        # Cache short-circuit — skip the SSH handshake (~1-3s) if we recently validated this user.
+        # Cache TTL is 24h. New keys pushed to GitHub still take effect at reservation time
+        # (pods fetch live keys via init container), so caching the pre-flight check is safe.
+        cached = _load_ssh_cache(github_user)
+        if cached is not None:
+            return cached
 
         # Run ssh git@github.com with interactive host verification support
         ssh_output = None
@@ -139,7 +188,7 @@ def validate_ssh_key_matches_github_user(config: Config, live=None) -> Dict[str,
         # Compare usernames (case-insensitive)
         is_valid = ssh_detected_user.lower() == github_user.lower()
 
-        return {
+        result = {
             "valid": is_valid,
             "configured_user": github_user,
             "ssh_user": ssh_detected_user,
@@ -147,6 +196,8 @@ def validate_ssh_key_matches_github_user(config: Config, live=None) -> Dict[str,
             if is_valid
             else f"SSH key belongs to '{ssh_detected_user}' but configured user is '{github_user}'",
         }
+        _save_ssh_cache(github_user, result)
+        return result
 
     except Exception as e:
         return {
