@@ -24,6 +24,45 @@ RESERVATIONS_TABLE = os.environ.get("RESERVATIONS_TABLE", "pytorch-gpu-dev-reser
 SUPPORTED_GPU_TYPES = json.loads(os.environ["SUPPORTED_GPU_TYPES"])
 
 
+def _parse_expires_at(value):
+    """Parse the reservations table's `expires_at` field to a unix epoch (int).
+
+    DDB stores it as either an ISO-8601 datetime string ("2026-05-02T00:12:03.674845") OR
+    occasionally a numeric epoch — handle both. Returns None if unparseable.
+    """
+    if value is None:
+        return None
+    # Numeric (Decimal/int/float) → epoch seconds directly.
+    if not isinstance(value, str):
+        try:
+            return int(float(value))
+        except (ValueError, TypeError):
+            return None
+    s = value.strip()
+    if not s:
+        return None
+    # ISO-8601 first (the actual production format).
+    try:
+        from datetime import datetime, timezone
+        # `fromisoformat` accepts microseconds; tolerate optional 'Z' suffix.
+        if s.endswith("Z"):
+            s2 = s[:-1] + "+00:00"
+        else:
+            s2 = s
+        dt = datetime.fromisoformat(s2)
+        if dt.tzinfo is None:
+            # Convention in this codebase: timestamps written via datetime.utcnow().isoformat() are UTC.
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except (ValueError, TypeError):
+        pass
+    # Numeric-as-string fallback.
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return None
+
+
 def get_gpu_resource_name(gpu_type: str) -> str:
     return SUPPORTED_GPU_TYPES.get(gpu_type, {}).get("k8s_resource", "nvidia.com/gpu")
 
@@ -542,9 +581,8 @@ def compute_size_etas(v1, gpu_type, node_label_value, resource_name, gpus_per_in
             continue
         if pod_name not in pod_to_info:
             continue
-        try:
-            ts = int(float(expires_at))
-        except (ValueError, TypeError):
+        ts = _parse_expires_at(expires_at)
+        if ts is None:
             continue
         node_name, gpus = pod_to_info[pod_name]
         node_state[node_name]["expirations"].append((ts, gpus))
