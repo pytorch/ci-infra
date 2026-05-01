@@ -26,8 +26,13 @@ resource "aws_lambda_function" "availability_updater" {
   role             = aws_iam_role.availability_updater_role.arn
   handler          = "index.handler"
   runtime          = "python3.11"
-  timeout          = 300
-  source_code_hash = null_resource.availability_updater_build.triggers.code_hash
+  timeout                        = 300
+  memory_size                    = 512
+  # Cap concurrent invocations at 1: each run does ~30 EKS API calls per gpu_type, and
+  # uncapped concurrency was hammering the cluster API into throttling, leaving later
+  # gpu_types in each run timing out and never producing size_etas.
+  reserved_concurrent_executions = 1
+  source_code_hash               = null_resource.availability_updater_build.triggers.code_hash
 
   environment {
     variables = {
