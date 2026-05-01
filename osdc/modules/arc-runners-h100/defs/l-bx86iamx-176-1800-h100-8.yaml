@@ -1,0 +1,11 @@
+# ARC runner definition: l-bx86iamx-176-1800-h100-8 (8x NVIDIA H100, full node)
+# Scheduled on NodePool: p5-48xlarge (from nodepools-h100 module)
+runner:
+  name: l-bx86iamx-176-1800-h100-8
+  instance_type: p5.48xlarge
+  disk_size: 200
+  vcpu: 176
+  memory: 1800Gi
+  gpu: 8
+  # Fixed-capacity cap: 1 reserved 8-GPU node / 8 GPUs per runner = 1 concurrent runner.
+  max_runners: 1

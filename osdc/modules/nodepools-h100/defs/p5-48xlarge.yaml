@@ -1,0 +1,18 @@
+# Karpenter NodePool definition: p5.48xlarge (GPU compute, 8x NVIDIA H100 80GB SXM5)
+# Used by: l-x86iamx-22-225-h100, l-x86iamx-44-450-h100-2, l-x86iamx-88-900-h100-4, l-bx86iamx-176-1800-h100-8
+# Capacity: AWS Capacity Blocks (reserved)
+# Node disk: 100Gi OS only — NVMe instance storage (8x3840GB) handles container data
+nodepool:
+  name: p5-48xlarge
+  instance_type: p5.48xlarge
+  arch: amd64
+  node_disk_size: 100
+  gpu: true
+  has_nvme: true
+  topology_manager_policy: single-numa-node
+  topology_manager_scope: pod
+  capacity_type: reserved
+  capacity_reservation_ids:
+    - cr-0fea9e9472d5e76c6
+  baremetal: true
+  user_data_script: scripts/h100-node-setup.sh

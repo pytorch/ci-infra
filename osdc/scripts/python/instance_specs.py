@@ -92,6 +92,7 @@ INSTANCE_SPECS: dict[str, dict] = {
     "g4dn.metal": {"vcpu": 96, "memory_gib": 384, "memory_mi": 363724, "gpu": 8, "arch": "amd64"},
     "g5.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 8, "arch": "amd64"},
     "g6.48xlarge": {"vcpu": 192, "memory_gib": 768, "memory_mi": 727449, "gpu": 8, "arch": "amd64"},
+    "p5.48xlarge": {"vcpu": 192, "memory_gib": 2048, "memory_mi": 1939865, "gpu": 8, "arch": "amd64"},
     "p6-b200.48xlarge": {"vcpu": 192, "memory_gib": 2048, "memory_mi": 1939865, "gpu": 8, "arch": "amd64"},
     # pypi-cache instances
     "r7i.2xlarge": {"vcpu": 8, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "amd64"},
@@ -172,6 +173,7 @@ ENI_MAX_PODS: dict[str, int] = {
     "g6.12xlarge": 234,
     "g6.24xlarge": 234,
     "g6.48xlarge": 737,
+    "p5.48xlarge": 198,
     "p6-b200.48xlarge": 198,
     # pypi-cache instance types
     "r7i.2xlarge": 56,  # 4 ENIs x 15 IPs - 4
