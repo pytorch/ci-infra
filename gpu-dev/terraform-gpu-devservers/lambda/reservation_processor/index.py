@@ -323,12 +323,12 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
             return target_az
 
         logger.warning(f"No ready/schedulable {gpu_type} nodes found in cluster")
-        return None
+        return None, None
 
     except Exception as e:
         logger.error(f"Error determining target AZ for {gpu_type}: {str(e)}")
-        # Fallback to primary AZ if detection fails
-        return PRIMARY_AVAILABILITY_ZONE
+        # Fallback to primary AZ if detection fails (no node hint — let k8s pick).
+        return PRIMARY_AVAILABILITY_ZONE, None
 
 
 def check_for_multiple_volumes(user_id):
