@@ -1,0 +1,183 @@
+# algif_aead Module Mitigation DaemonSet (CVE-2026-31431 "Copy Fail")
+#
+# Linux kernel LPE in the algif_aead AF_ALG interface. The flaw crosses
+# container boundaries via the shared page cache, so on a multi-tenant CI
+# cluster any unprivileged workflow code can escalate to root on the node.
+# CVSS 7.8 / CISA KEV.
+#
+# AL2023 ships algif_aead as a loadable module (CONFIG_CRYPTO_USER_API_AEAD=m),
+# verified on kernel 6.12.79-101.147.amzn2023. The module is not loaded by
+# default — this DaemonSet writes /etc/modprobe.d/disable-algif.conf to
+# block on-demand loading, then defensively rmmod's it if anything has
+# already loaded it.
+#
+# Runs on EVERY node (base infra + Karpenter ARC + BuildKit + GPU + H100/B200).
+# Same shape as registry-mirror-config.yaml.
+#
+# REMOVE this DaemonSet (and the modprobe.d file via the script's exit path)
+# once all nodes are running a patched AL2023 AMI (kernel 6.12.85+).
+# Track: https://explore.alas.aws.amazon.com/CVE-2026-31431.html
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: algif-mitigation-script
+  namespace: kube-system
+data:
+  disable-algif.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "=== algif_aead Mitigation (CVE-2026-31431 'Copy Fail') ==="
+    echo "Node: $(hostname 2>/dev/null || echo 'unknown')"
+    echo "Date: $(date)"
+    echo ""
+
+    MARKER_FILE="/var/lib/algif-mitigation/.configured"
+    MODPROBE_FILE="/etc/modprobe.d/disable-algif.conf"
+
+    # =========================================================================
+    # Idempotency — re-verify on pod restart, skip rewrite if still in place
+    # =========================================================================
+    if [ -f "$MARKER_FILE" ] && [ -f "$MODPROBE_FILE" ]; then
+      echo "Already configured. Re-checking module is not loaded..."
+      if lsmod | awk '{print $1}' | grep -qx algif_aead; then
+        echo "  WARNING: algif_aead is loaded despite blacklist. Unloading..."
+        modprobe -r algif_aead || echo "  rmmod failed (module in use); reboot required for full mitigation."
+      else
+        echo "  algif_aead not loaded — mitigation effective."
+      fi
+      exit 0
+    fi
+
+    # =========================================================================
+    # Step 1 — install modprobe.d blacklist
+    # =========================================================================
+    echo "[1/2] Writing $MODPROBE_FILE..."
+    mkdir -p "$(dirname "$MODPROBE_FILE")"
+    cat > "$MODPROBE_FILE" <<'EOF'
+    # CVE-2026-31431 ("Copy Fail") — algif_aead LPE mitigation.
+    # Redirects on-demand loading of algif_aead to /bin/false so the module
+    # is never inserted into the running kernel.
+    # Managed by base/kubernetes/algif-mitigation.yaml DaemonSet.
+    # Remove this file (and the DaemonSet) once nodes are running a patched
+    # AL2023 kernel (6.12.85+).
+    install algif_aead /bin/false
+    EOF
+    echo "  Wrote blacklist."
+
+    # =========================================================================
+    # Step 2 — unload module if currently loaded (defensive)
+    # =========================================================================
+    echo "[2/2] Checking if algif_aead is loaded..."
+    if lsmod | awk '{print $1}' | grep -qx algif_aead; then
+      echo "  Module loaded. Unloading (modprobe -r)..."
+      if modprobe -r algif_aead; then
+        echo "  Unloaded."
+      else
+        echo "  WARNING: rmmod failed. Module may be in use by an active AF_ALG"
+        echo "  socket. New bind() calls will be blocked from now on, but the"
+        echo "  vulnerable code path remains reachable until the node reboots."
+      fi
+    else
+      echo "  Module not loaded."
+    fi
+
+    # Marker — written last so a partial run re-attempts on next pod start
+    mkdir -p "$(dirname "$MARKER_FILE")"
+    date -Iseconds 2>/dev/null > "$MARKER_FILE" || date > "$MARKER_FILE"
+
+    echo ""
+    echo "=== Mitigation Applied ==="
+    echo "Future kernel attempts to load algif_aead will be redirected to /bin/false."
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: algif-mitigation
+  namespace: kube-system
+  labels:
+    app: algif-mitigation
+    app.kubernetes.io/name: algif-mitigation
+    app.kubernetes.io/component: node-configuration
+spec:
+  selector:
+    matchLabels:
+      app: algif-mitigation
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "25%"
+
+  template:
+    metadata:
+      labels:
+        app: algif-mitigation
+
+    spec:
+      hostNetwork: true
+      hostPID: true
+
+      priorityClassName: system-node-critical
+
+      # Run on ALL nodes (base infra + Karpenter-managed: ARC, BuildKit, GPU, H100, B200)
+      tolerations:
+        - operator: Exists
+
+      # NO nodeSelector — must run on every node in the cluster
+
+      serviceAccountName: algif-mitigation
+
+      initContainers:
+        - name: disable-algif
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          command: ["/bin/bash", "-c"]
+          args:
+            # hostPID gives access to host's PID 1 root filesystem.
+            # nsenter runs the script in the host's mount/UTS/IPC/net namespaces
+            # so modprobe, lsmod, and writes to /etc/modprobe.d hit the host.
+            # stdin redirection reads the script from the container's ConfigMap
+            # mount before nsenter switches namespaces.
+            - /proc/1/root/usr/bin/nsenter -t 1 -m -u -i -n -- /bin/bash < /scripts/disable-algif.sh
+
+          securityContext:
+            privileged: true
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+
+      containers:
+        - name: sleep
+          image: public.ecr.aws/docker/library/alpine:3.19
+          command:
+            - /bin/sh
+            - -c
+            - "echo 'algif_aead mitigation applied. Sleeping...'; sleep infinity"
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: algif-mitigation-script
+            defaultMode: 0755
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: algif-mitigation
+  namespace: kube-system
+  labels:
+    app: algif-mitigation

@@ -8,6 +8,10 @@ kind: EC2NodeClass
 metadata:
   name: pypi-cache
 spec:
+  # TODO(CVE-2026-31431): al2023@latest tracks the newest AL2023 AMI; once node
+  # rotation picks up a kernel 6.12.85+ AMI, remove
+  # osdc/base/kubernetes/algif-mitigation.yaml.
+  # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
   amiSelectorTerms:
     - alias: al2023@latest
 

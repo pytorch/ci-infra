@@ -157,6 +157,11 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         compactor_label = ""
 
     # ----- GPU vs CPU settings -----
+    # TODO(CVE-2026-31431): the AL2023 aliases / name globs below already track
+    # @latest, so node rotation picks up the fix automatically once AWS ships a
+    # kernel 6.12.85+ AMI. Once rolled out across all nodes, remove
+    # osdc/base/kubernetes/algif-mitigation.yaml.
+    # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
     if is_gpu:
         ami_family_block = "  amiFamily: AL2023"
         ami_selector_block = """  amiSelectorTerms:
