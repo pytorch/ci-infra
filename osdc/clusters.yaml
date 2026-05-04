@@ -24,6 +24,9 @@ defaults:
   base_node_count: 5
   base_node_instance_type: m7i.4xlarge
   base_node_max_unavailable_percentage: 33
+  # TODO(CVE-2026-31431): when bumping to a kernel 6.12.85+ AL2023 AMI,
+  # remove osdc/base/kubernetes/algif-mitigation.yaml.
+  # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
   base_node_ami_version: "v20260318"
   eks_version: "1.35"
   single_nat_gateway: false

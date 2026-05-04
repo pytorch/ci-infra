@@ -117,6 +117,16 @@ Runs a privileged init container (`tune-node`) that configures:
 
 Runs on nodes with `workload-type` in `[github-runner, buildkit]`.
 
+### algif_aead Module Blacklist (TEMPORARY — CVE-2026-31431)
+
+**File**: `base/kubernetes/algif-mitigation.yaml`
+
+Writes `/etc/modprobe.d/disable-algif.conf` (`install algif_aead /bin/false`) and defensively `modprobe -r algif_aead` on every node. Mitigates CVE-2026-31431 ("Copy Fail" — Linux kernel `algif_aead` LPE that crosses container boundaries via the shared page cache). Privileged init container `nsenter`'s into PID 1's namespaces to operate on the host kernel.
+
+Runs on ALL nodes (no nodeSelector, tolerates everything). Idempotent via `/var/lib/algif-mitigation/.configured` marker.
+
+**TODO — REMOVE this DaemonSet** once all nodes are running an AL2023 AMI with kernel 6.12.85+. Watch https://explore.alas.aws.amazon.com/CVE-2026-31431.html and the AMI pinnings tagged with the same TODO marker (`clusters.yaml`, `modules/nodepools/scripts/python/generate_nodepools.py`, `modules/buildkit/scripts/python/generate_buildkit.py`, `modules/pypi-cache/kubernetes/ec2nodeclass.yaml.tpl`).
+
 ## Taint Summary
 
 | Taint Key | Type | Effect | Scope | Removed By |
@@ -179,4 +189,5 @@ This ensures DaemonSet pods schedule on nodes immediately at provisioning time, 
 | `modules/arc-runners/templates/runner.yaml.tpl` | Runner pod template with `wait-for-hooks` init container |
 | `base/kubernetes/registry-mirror-config.yaml` | Containerd registry mirror DaemonSet |
 | `base/kubernetes/node-performance-tuning.yaml` | CPU/GPU tuning DaemonSet |
+| `base/kubernetes/algif-mitigation.yaml` | TEMPORARY: blacklists algif_aead module to mitigate CVE-2026-31431 (remove when AL2023 AMI has kernel 6.12.85+) |
 | `modules/arc-runners/scripts/python/validate_runner_qos.py` | Deploy-time validation (checks hooks init container exists) |
