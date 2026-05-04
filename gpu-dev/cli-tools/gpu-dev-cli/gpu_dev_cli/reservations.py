@@ -543,6 +543,9 @@ class ReservationManager:
                 "h100-mig-1g": {"max_gpus": 16},
                 "h100-mig-2g": {"max_gpus": 8},
                 "h100-mig-3g": {"max_gpus": 8},
+                "b200-mig-1g": {"max_gpus": 4},
+                "b200-mig-2g": {"max_gpus": 2},
+                "b200-mig-3g": {"max_gpus": 2},
                 "h200": {"max_gpus": 8},
                 "b200": {"max_gpus": 8},
             }

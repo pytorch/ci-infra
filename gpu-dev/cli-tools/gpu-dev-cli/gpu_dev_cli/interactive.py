@@ -64,17 +64,25 @@ def select_gpu_type_interactive(
         if "-mig-" not in gt
     }
 
-    # Aggregate MIG slice availability so we can hint it on the h100 row of this picker.
-    mig_total_available = sum(
-        int(info.get("available", 0))
-        for gt, info in (availability_info or {}).items()
-        if gt.startswith("h100-mig-")
-    )
-    mig_total_capacity = sum(
-        int(info.get("total", 0))
-        for gt, info in (availability_info or {}).items()
-        if gt.startswith("h100-mig-")
-    )
+    # Aggregate MIG slice availability per parent type, hinted on the h100/b200 rows.
+    def _mig_aggregates(parent: str):
+        avail = sum(
+            int(info.get("available", 0))
+            for gt, info in (availability_info or {}).items()
+            if gt.startswith(f"{parent}-mig-")
+        )
+        cap = sum(
+            int(info.get("total", 0))
+            for gt, info in (availability_info or {}).items()
+            if gt.startswith(f"{parent}-mig-")
+        )
+        return avail, cap
+
+    h100_mig_avail, h100_mig_capacity = _mig_aggregates("h100")
+    b200_mig_avail, b200_mig_capacity = _mig_aggregates("b200")
+    # Backwards-compat aliases for the existing h100 row code below.
+    mig_total_available = h100_mig_avail
+    mig_total_capacity = h100_mig_capacity
 
     # Display availability table first
     console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
@@ -146,6 +154,8 @@ def select_gpu_type_interactive(
                 choice_label += f" - {queue_length} in queue"
             if gpu_type == "h100" and mig_total_capacity > 0:
                 choice_label += f" — also {mig_total_available}/{mig_total_capacity} MIG slices"
+            elif gpu_type == "b200" and b200_mig_capacity > 0:
+                choice_label += f" — also {b200_mig_avail}/{b200_mig_capacity} MIG slices"
 
             choices.append(questionary.Choice(title=choice_label, value=gpu_type))
 
@@ -223,27 +233,31 @@ def select_gpu_count_interactive(
     parent_size_etas = parent_info.get("size_etas", {}) or {}
     _now_ts = int(_time.time())
 
-    # MIG slice submenu: only for h100. Each tuple is (target_gpu_type, gpu_count, gb_label).
+    # MIG slice submenu: h100 (16+8+8 slices/node) or b200 (4+2+2 slices/node).
     mig_options = []
-    if gpu_type == "h100":
-        # Map to internal SKUs; the count menu surfaces 1/2/4 of each slice size.
-        mig_specs = [
-            ("h100-mig-1g", "10GB"),
-            ("h100-mig-2g", "20GB"),
-            ("h100-mig-3g", "40GB"),
-        ]
-        for sku, gb in mig_specs:
-            slice_max = {"h100-mig-1g": 16, "h100-mig-2g": 8, "h100-mig-3g": 8}[sku]
-            free = None
-            if availability_info and sku in availability_info:
-                free = availability_info[sku].get("available", 0)
-            for n in [1, 2, 4]:
-                if n > slice_max:
-                    continue
-                noun = "slice" if n == 1 else "slices"
-                avail_suffix = f"  [{free} free]" if free is not None else ""
-                label = f"{n} × {gb} {noun}{avail_suffix}"
-                mig_options.append((sku, n, label))
+    mig_spec_map = {
+        "h100": [
+            ("h100-mig-1g", "10GB", 16),
+            ("h100-mig-2g", "20GB", 8),
+            ("h100-mig-3g", "40GB", 8),
+        ],
+        "b200": [
+            ("b200-mig-1g", "23GB", 4),
+            ("b200-mig-2g", "45GB", 2),
+            ("b200-mig-3g", "90GB", 2),
+        ],
+    }
+    for sku, gb, slice_max in mig_spec_map.get(gpu_type, []):
+        free = None
+        if availability_info and sku in availability_info:
+            free = availability_info[sku].get("available", 0)
+        for n in [1, 2, 4]:
+            if n > slice_max:
+                continue
+            noun = "slice" if n == 1 else "slices"
+            avail_suffix = f"  [{free} free]" if free is not None else ""
+            label = f"{n} × {gb} {noun}{avail_suffix}"
+            mig_options.append((sku, n, label))
 
     # Filter single-node by actual max for this GPU type
     valid_counts = [count for count in valid_counts if count <= max_gpus]

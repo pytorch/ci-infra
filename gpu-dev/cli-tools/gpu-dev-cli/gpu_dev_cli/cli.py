@@ -495,9 +495,9 @@ def main(ctx: click.Context) -> None:
     "--gpu-type",
     "-t",
     type=click.Choice(
-        ["b200", "h200", "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
+        ["b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
     ),
-    help="GPU type to reserve. Full GPUs: b200, h200, h100, a100, rtxpro6000, a10g, t4, l4, t4-small. H100 MIG slices (partial GPU on a single shared node): h100-mig-1g (10 GB / 1/7 H100 compute), h100-mig-2g (20 GB / 2/7 H100), h100-mig-3g (40 GB / 3/7 H100). CPU only: cpu-arm, cpu-x86.",
+    help="GPU type to reserve. Full GPUs: b200, h200, h100, a100, rtxpro6000, a10g, t4, l4, t4-small. H100 MIG slices: h100-mig-1g (10 GB), h100-mig-2g (20 GB), h100-mig-3g (40 GB). B200 MIG slices (on the mixed B200 node): b200-mig-1g (23 GB), b200-mig-2g (45 GB), b200-mig-3g (90 GB). CPU: cpu-arm, cpu-x86.",
 )
 @click.option(
     "--hours",
@@ -656,6 +656,9 @@ def reserve(
             "h100-mig-1g": {"max_gpus": 16, "instance_type": "p5.48xlarge"},
             "h100-mig-2g": {"max_gpus": 8, "instance_type": "p5.48xlarge"},
             "h100-mig-3g": {"max_gpus": 8, "instance_type": "p5.48xlarge"},
+            "b200-mig-1g": {"max_gpus": 4, "instance_type": "p6-b200.48xlarge"},
+            "b200-mig-2g": {"max_gpus": 2, "instance_type": "p6-b200.48xlarge"},
+            "b200-mig-3g": {"max_gpus": 2, "instance_type": "p6-b200.48xlarge"},
             "h200": {"max_gpus": 8, "instance_type": "p5e.48xlarge"},
             "b200": {"max_gpus": 8, "instance_type": "p6-b200.48xlarge"},
             "cpu-arm": {"max_gpus": 0, "instance_type": "c7g.4xlarge"},
@@ -2454,6 +2457,9 @@ def _show_availability() -> None:
                 "h100-mig-1g": "Hopper (sm90, MIG 10GB)",
                 "h100-mig-2g": "Hopper (sm90, MIG 20GB)",
                 "h100-mig-3g": "Hopper (sm90, MIG 40GB)",
+                "b200-mig-1g": "Blackwell (sm100, MIG 23GB)",
+                "b200-mig-2g": "Blackwell (sm100, MIG 45GB)",
+                "b200-mig-3g": "Blackwell (sm100, MIG 90GB)",
                 "t4": "Turing (sm75)",
                 "cpu-x86": "CPU (x86_64)",
                 "cpu-arm": "CPU (arm64)",
@@ -2462,6 +2468,9 @@ def _show_availability() -> None:
             # Sort order: newest GPU architectures first, then CPUs at the bottom
             arch_priority = {
                 "Blackwell (sm100)": 0,
+                "Blackwell (sm100, MIG 90GB)": 0,
+                "Blackwell (sm100, MIG 45GB)": 0,
+                "Blackwell (sm100, MIG 23GB)": 0,
                 "Blackwell (sm120)": 0,
                 "Hopper (sm90)": 1,
                 "Hopper (sm90, MIG 40GB)": 1,
@@ -2609,6 +2618,9 @@ def _show_availability_watch(interval: int) -> None:
                             "h100-mig-1g": "Hopper (sm90, MIG 10GB)",
                             "h100-mig-2g": "Hopper (sm90, MIG 20GB)",
                             "h100-mig-3g": "Hopper (sm90, MIG 40GB)",
+                            "b200-mig-1g": "Blackwell (sm100, MIG 23GB)",
+                            "b200-mig-2g": "Blackwell (sm100, MIG 45GB)",
+                            "b200-mig-3g": "Blackwell (sm100, MIG 90GB)",
                             "t4": "Turing (sm75)",
                             "cpu-x86": "CPU (x86_64)",
                             "cpu-arm": "CPU (arm64)",
@@ -2617,6 +2629,9 @@ def _show_availability_watch(interval: int) -> None:
                         # Sort order: newest GPU architectures first, then CPUs at the bottom
                         arch_priority = {
                             "Blackwell (sm100)": 0,
+                            "Blackwell (sm100, MIG 90GB)": 0,
+                            "Blackwell (sm100, MIG 45GB)": 0,
+                            "Blackwell (sm100, MIG 23GB)": 0,
                             "Blackwell (sm120)": 0,
                             "Hopper (sm90)": 1,
                             "Hopper (sm90, MIG 40GB)": 1,

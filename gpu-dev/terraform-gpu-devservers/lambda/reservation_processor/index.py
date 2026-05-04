@@ -71,6 +71,10 @@ GPU_CONFIG = {
     "h100-mig-1g": {"instance_type": "p5.48xlarge", "max_gpus": 16, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-1g.10gb", "node_gpu_type": "h100"},
     "h100-mig-2g": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-2g.20gb", "node_gpu_type": "h100"},
     "h100-mig-3g": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-3g.40gb", "node_gpu_type": "h100"},
+    # B200 MIG slices on the b200-6full-2mig-balanced node (6 full GPUs + 2 partitioned per node).
+    "b200-mig-1g": {"instance_type": "p6-b200.48xlarge", "max_gpus": 4, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-1g.23gb", "node_gpu_type": "b200"},
+    "b200-mig-2g": {"instance_type": "p6-b200.48xlarge", "max_gpus": 2, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-2g.45gb", "node_gpu_type": "b200"},
+    "b200-mig-3g": {"instance_type": "p6-b200.48xlarge", "max_gpus": 2, "cpus": 192, "memory_gb": 2048, "efa_count": 0, "k8s_resource": "nvidia.com/mig-3g.90gb", "node_gpu_type": "b200"},
     "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1, "cpus": 8, "memory_gb": 32, "efa_count": 0},
     "g5g": {"instance_type": "g5g.2xlarge", "max_gpus": 2, "cpus": 8, "memory_gb": 32, "efa_count": 0},
     "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152, "efa_count": 4},
@@ -2167,7 +2171,8 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     # Validate GPU type
     valid_gpu_types = ["t4", "l4", "a10g", "rtxpro6000", "t4-small", "a100",
                        "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g",
-                       "h200", "b200", "cpu-arm", "cpu-x86"]
+                       "h200", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g",
+                       "cpu-arm", "cpu-x86"]
     if gpu_type not in valid_gpu_types:
         error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
         logger.error(error_msg)
@@ -2408,6 +2413,9 @@ def update_gpu_availability_table(
             "h100-mig-1g": {"gpus_per_instance": 16},
             "h100-mig-2g": {"gpus_per_instance": 8},
             "h100-mig-3g": {"gpus_per_instance": 8},
+            "b200-mig-1g": {"gpus_per_instance": 4},
+            "b200-mig-2g": {"gpus_per_instance": 2},
+            "b200-mig-3g": {"gpus_per_instance": 2},
             "h200": {"gpus_per_instance": 8},
             "b200": {"gpus_per_instance": 8},
         }

@@ -255,6 +255,46 @@ locals {
           k8s_resource        = "nvidia.com/mig-3g.40gb"
           node_gpu_type       = "h100"
         }
+        # B200 MIG slices — virtual SKUs backed by ONE B200 node labelled with the custom
+        # mig_profile "b200-6full-2mig-balanced": GPUs 0-5 stay as full B200 (still reservable
+        # via --gpu-type b200), GPUs 6-7 get partitioned per-GPU into 2x1g.23gb + 1x2g.45gb +
+        # 1x3g.90gb. Per node: 6 full + 4 small + 2 medium + 2 large slices.
+        "b200-mig-1g" = {
+          instance_type       = null
+          instance_types      = null
+          instance_count      = 0
+          gpus_per_instance   = 4 # 2 partitioned GPUs * 2 slices each
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          virtual             = true
+          k8s_resource        = "nvidia.com/mig-1g.23gb"
+          node_gpu_type       = "b200"
+        }
+        "b200-mig-2g" = {
+          instance_type       = null
+          instance_types      = null
+          instance_count      = 0
+          gpus_per_instance   = 2 # 2 partitioned GPUs * 1 slice each
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          virtual             = true
+          k8s_resource        = "nvidia.com/mig-2g.45gb"
+          node_gpu_type       = "b200"
+        }
+        "b200-mig-3g" = {
+          instance_type       = null
+          instance_types      = null
+          instance_count      = 0
+          gpus_per_instance   = 2 # 2 partitioned GPUs * 1 slice each
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          virtual             = true
+          k8s_resource        = "nvidia.com/mig-3g.90gb"
+          node_gpu_type       = "b200"
+        }
         "cpu-arm" = {
           instance_type       = "c7g.8xlarge"
           instance_types      = null
