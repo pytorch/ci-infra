@@ -16,6 +16,53 @@ from rich.spinner import Spinner
 _SSH_CACHE_TTL_SECONDS = 24 * 60 * 60
 _SSH_CACHE_PATH = Path(os.path.expanduser("~/.config/gpu-dev/ssh-validation-cache.json"))
 
+# Cache for authenticate_user. STS GetCallerIdentity is stable per AWS profile and slow under SSO
+# (~500ms-1.5s). Cache for 24h keyed by AWS_PROFILE; if creds rotate the user_id rarely changes,
+# and the next AWS call (DDB/SQS) will surface a credential error if it does.
+_AUTH_CACHE_TTL_SECONDS = 24 * 60 * 60
+_AUTH_CACHE_PATH = Path(os.path.expanduser("~/.config/gpu-dev/auth-cache.json"))
+
+
+def _auth_cache_key() -> str:
+    return os.environ.get("AWS_PROFILE", "default")
+
+
+def _load_auth_cache(github_user: str) -> Optional[Dict[str, Any]]:
+    try:
+        if not _AUTH_CACHE_PATH.exists():
+            return None
+        with open(_AUTH_CACHE_PATH) as f:
+            data = json.load(f)
+        entry = data.get(_auth_cache_key())
+        if not entry or entry.get("github_user") != github_user:
+            return None
+        if time.time() - float(entry.get("ts", 0)) > _AUTH_CACHE_TTL_SECONDS:
+            return None
+        return entry.get("result")
+    except Exception:
+        return None
+
+
+def _save_auth_cache(github_user: str, result: Dict[str, Any]) -> None:
+    try:
+        _AUTH_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if _AUTH_CACHE_PATH.exists():
+            try:
+                with open(_AUTH_CACHE_PATH) as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        data[_auth_cache_key()] = {
+            "github_user": github_user,
+            "ts": int(time.time()),
+            "result": result,
+        }
+        with open(_AUTH_CACHE_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
 
 def _load_ssh_cache(github_user: str) -> Optional[Dict[str, Any]]:
     """Return cached validation if it's fresh and matches the configured github_user, else None."""
@@ -50,31 +97,33 @@ def _save_ssh_cache(github_user: str, result: Dict[str, Any]) -> None:
 
 
 def authenticate_user(config: Config) -> Dict[str, Any]:
-    """Authenticate using AWS credentials - if you can call AWS, you're authorized"""
+    """Authenticate using AWS credentials - if you can call AWS, you're authorized.
+
+    Cached for 24h per AWS profile. The previous SQS get_queue_url probe was dropped:
+    it's a redundant permission check; reserve/cancel call SQS directly and surface
+    failures themselves, while list/show/avail don't touch SQS at all.
+    """
+    github_user = config.get_github_username()
+    if not github_user:
+        raise RuntimeError(
+            "GitHub username not configured. Please run: gpu-dev config set github_user <your-github-username>"
+        )
+
+    cached = _load_auth_cache(github_user)
+    if cached is not None:
+        return cached
+
     try:
-        # Test AWS access by getting caller identity
         identity = config.get_user_identity()
-
-        # Test specific resource access by trying to get queue URL
-        config.get_queue_url()
-
-        # Extract user info from AWS ARN
         arn = identity["arn"]
-        user_name = arn.split("/")[-1]  # Extract username from ARN
-
-        # Get GitHub username from config
-        github_user = config.get_github_username()
-        if not github_user:
-            raise RuntimeError(
-                f"GitHub username not configured. Please run: gpu-dev config set github_user <your-github-username>"
-            )
-
-        return {
-            "user_id": user_name,  # AWS username for reservation ownership
-            "github_user": github_user,  # GitHub username for SSH keys
+        user_name = arn.split("/")[-1]
+        result = {
+            "user_id": user_name,
+            "github_user": github_user,
             "arn": arn,
         }
-
+        _save_auth_cache(github_user, result)
+        return result
     except Exception as e:
         raise RuntimeError(f"AWS authentication failed: {e}")
 
