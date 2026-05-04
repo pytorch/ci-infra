@@ -19,7 +19,7 @@ _SSH_CACHE_PATH = Path(os.path.expanduser("~/.config/gpu-dev/ssh-validation-cach
 # Cache for authenticate_user. STS GetCallerIdentity is stable per AWS profile and slow under SSO
 # (~500ms-1.5s). Cache for 24h keyed by AWS_PROFILE; if creds rotate the user_id rarely changes,
 # and the next AWS call (DDB/SQS) will surface a credential error if it does.
-_AUTH_CACHE_TTL_SECONDS = 24 * 60 * 60
+_AUTH_CACHE_TTL_SECONDS = 60 * 60
 _AUTH_CACHE_PATH = Path(os.path.expanduser("~/.config/gpu-dev/auth-cache.json"))
 
 
@@ -60,6 +60,22 @@ def _save_auth_cache(github_user: str, result: Dict[str, Any]) -> None:
         }
         with open(_AUTH_CACHE_PATH, "w") as f:
             json.dump(data, f)
+    except Exception:
+        pass
+
+
+def clear_auth_cache() -> None:
+    """Drop the cached auth entry for the current AWS profile. Call this after a credential
+    error to force the next authenticate_user() to re-hit STS."""
+    try:
+        if not _AUTH_CACHE_PATH.exists():
+            return
+        with open(_AUTH_CACHE_PATH) as f:
+            data = json.load(f)
+        if _auth_cache_key() in data:
+            del data[_auth_cache_key()]
+            with open(_AUTH_CACHE_PATH, "w") as f:
+                json.dump(data, f)
     except Exception:
         pass
 
@@ -125,6 +141,7 @@ def authenticate_user(config: Config) -> Dict[str, Any]:
         _save_auth_cache(github_user, result)
         return result
     except Exception as e:
+        clear_auth_cache()
         raise RuntimeError(f"AWS authentication failed: {e}")
 
 
