@@ -25,23 +25,40 @@ resource "kubernetes_config_map" "gpu_dev_mig_parted_config" {
   depends_on = [helm_release.nvidia_gpu_operator]
 }
 
-# Optional declarative B200 MIG node label. Set b200_mig_node_name in tfvars (or override the
-# variable's default below) to dedicate a specific B200 node to the mixed profile. Empty string
-# means "no node currently labelled" — the existing all-disabled stays in effect.
+# Declarative B200 MIG node label. Set b200_mig_node_name (per workspace via the locals lookup
+# below, or override via tfvars / -var) to dedicate a specific B200 node to the mixed profile.
+# Empty string means "no node labelled" — every B200 stays full.
+#
+# Future cleanup: when we split a B200 CR into two ASGs (one with mig_profile, one without),
+# the user_data path will set this label at boot for any instance in the MIG-dedicated ASG —
+# matching the H100 cr3 pattern. Until then, this declarative label pins the role to a hostname.
+locals {
+  # Workspace-scoped defaults so the resource is a no-op in non-prod and no apply ever tries to
+  # label a node that doesn't exist.
+  default_b200_mig_node_by_workspace = {
+    prod = "ip-10-0-67-125.us-east-2.compute.internal"
+  }
+  b200_mig_node_effective = (
+    var.b200_mig_node_name != ""
+    ? var.b200_mig_node_name
+    : lookup(local.default_b200_mig_node_by_workspace, terraform.workspace, "")
+  )
+}
+
 variable "b200_mig_node_name" {
-  description = "Hostname of the B200 node to label with nvidia.com/mig.config=b200-6full-2mig-balanced. Leave empty to skip."
+  description = "Hostname of the B200 node to label with nvidia.com/mig.config=b200-6full-2mig-balanced. Leave empty to use the per-workspace default in mig-config.tf."
   type        = string
   default     = ""
 }
 
 resource "kubernetes_labels" "b200_mig_node" {
-  count = var.b200_mig_node_name == "" ? 0 : 1
+  count = local.b200_mig_node_effective == "" ? 0 : 1
 
   api_version = "v1"
   kind        = "Node"
 
   metadata {
-    name = var.b200_mig_node_name
+    name = local.b200_mig_node_effective
   }
 
   labels = {
