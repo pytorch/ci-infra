@@ -308,30 +308,35 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
                     f"Node {node.metadata.name} in {node_az}: {available_gpus} available GPUs")
 
         if candidate_nodes:
-            # Return the AZ of the first suitable node (Kubernetes scheduler will make the final decision)
+            # Binpacking: pack into the most-loaded node that still fits the request.
+            # Sort by free GPUs ASC so the fullest node comes first; ties broken by node name
+            # so the choice is deterministic across Lambda invocations.
+            candidate_nodes.sort(key=lambda n: (n['available_gpus'], n['node_name']))
             selected_node = candidate_nodes[0]
             target_az = selected_node['az']
+            target_node = selected_node['node_name']
             logger.info(
-                f"Target AZ for {gpu_type} reservation: {target_az} (node: {selected_node['node_name']})")
-            return target_az
+                f"Binpacked target for {gpu_type} {gpus_requested}gpu: "
+                f"node={target_node} az={target_az} free={selected_node['available_gpus']} "
+                f"(candidates considered: {len(candidate_nodes)})")
+            return target_az, target_node
 
         if all_ready_nodes:
-            # No single node has enough GPUs, but nodes exist — return AZ of the node
-            # with the most available GPUs so the disk is created in the right AZ
+            # No single node has enough GPUs — return AZ of the node with the most available GPUs
+            # so disk lands in the right AZ. No node hint (pod will Pending until something frees up).
             best_node = max(all_ready_nodes, key=lambda n: n['available_gpus'])
             target_az = best_node['az']
             logger.info(
                 f"No single node has {gpus_requested} {gpu_type} GPUs, "
                 f"but {len(all_ready_nodes)} nodes exist. Using AZ {target_az} "
                 f"from node {best_node['node_name']} ({best_node['available_gpus']} GPUs available)")
-            return target_az
+            return target_az, None
 
         logger.warning(f"No ready/schedulable {gpu_type} nodes found in cluster")
         return None, None
 
     except Exception as e:
         logger.error(f"Error determining target AZ for {gpu_type}: {str(e)}")
-        # Fallback to primary AZ if detection fails (no node hint — let k8s pick).
         return PRIMARY_AVAILABILITY_ZONE, None
 
 
@@ -2722,6 +2727,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         persistent_volume_id = None
         device_name = None
         target_az = None  # Initialize target_az for use in connection info update
+        target_node = None  # Initialize target_node (binpacking hostname pin) for create_pod
         is_new_disk = False  # Initialize is_new_disk for all code paths
 
         # If we're using persistent disk, immediately mark this reservation as having a volume
@@ -2749,8 +2755,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                     detailed_status="Setting up persistent disk" + (f" '{disk_name}'" if disk_name else "")
                 )
 
-                # Determine target AZ for this reservation
-                target_az = get_target_az_for_reservation(gpu_type, gpu_count)
+                # Determine target AZ + node for this reservation (binpacking)
+                target_az, target_node = get_target_az_for_reservation(gpu_type, gpu_count)
                 if not target_az:
                     raise ValueError(f"No {gpu_type} nodes found in cluster")
 
@@ -2881,6 +2887,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             dockerfile_base64_data=dockerfile_base64_data,
             dockerimage=dockerimage,
             target_az=target_az,
+            target_node=target_node,
             preserve_entrypoint=preserve_entrypoint,
             node_labels=node_labels,
             trace_data=trace_data,
@@ -3421,6 +3428,7 @@ def create_kubernetes_resources(
     recreate_env: bool = False,
     efs_filesystem_id: str = None,
     is_multinode: bool = False,
+    target_node: str = None,
     dockerfile_base64_data: str = None,
     dockerimage: str = None,
     target_az: str = None,
@@ -3524,6 +3532,7 @@ def create_kubernetes_resources(
                         dockerfile_base64_data=dockerfile_base64_data,
                         dockerimage=dockerimage,
                         target_az=target_az,
+                        target_node=target_node,
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
                         trace_data=trace_data,
@@ -3610,6 +3619,7 @@ def create_kubernetes_resources(
                         dockerfile_base64_data=dockerfile_base64_data,
                         dockerimage=dockerimage,
                         target_az=target_az,
+                        target_node=target_node,
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
                         trace_data=trace_data,
@@ -3902,6 +3912,7 @@ def create_pod(
     dockerfile_base64_data: str = None,
     dockerimage: str = None,
     target_az: str = None,
+    target_node: str = None,
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
     trace_data: dict = None,
@@ -5309,7 +5320,12 @@ EOF
             ] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else []),
             node_selector={
                 "GpuType": get_node_gpu_type(gpu_type),
-                **({} if target_az is None else {"topology.kubernetes.io/zone": target_az})
+                **({} if target_az is None else {"topology.kubernetes.io/zone": target_az}),
+                # Hard-pin to the binpacked node when Lambda picked one. Lambda runs
+                # serialized (reserved_concurrent_executions=1), so allocations seen by the
+                # next invocation include this pod. If the node is unavailable, the pod
+                # stays Pending and surfaces the error rather than spreading.
+                **({} if target_node is None else {"kubernetes.io/hostname": target_node}),
             },
             # Node affinity for profiling-dedicated preference
             # If user requests nsight=true, prefer profiling-dedicated nodes
