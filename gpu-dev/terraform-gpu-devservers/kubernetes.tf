@@ -305,6 +305,14 @@ resource "helm_release" "nvidia_gpu_operator" {
     value = "all-disabled"
   }
 
+  # Read profiles from our forked ConfigMap (managed in mig-config.tf) instead of the
+  # operator's auto-created default-mig-parted-config. Lets us add custom mixed profiles
+  # like b200-6full-2mig-balanced without ClusterPolicy reconciliation reverting our edits.
+  set {
+    name  = "migManager.config.name"
+    value = "gpu-dev-mig-parted-config"
+  }
+
   set {
     name  = "nodeStatusExporter.enabled"
     value = "true"
