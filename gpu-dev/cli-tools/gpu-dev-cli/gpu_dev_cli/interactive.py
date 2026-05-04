@@ -88,9 +88,9 @@ def select_gpu_type_interactive(
     console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
     table = Table()
     table.add_column("GPU Type", style="cyan")
-    table.add_column("Available", style="green")
+    table.add_column("Avail", style="green")
     table.add_column("Total", style="blue")
-    table.add_column("Queue Length", style="yellow")
+    table.add_column("Queue\nLength", style="yellow")
     table.add_column("Est. Wait Time", style="magenta")
 
     choices = []

@@ -688,6 +688,7 @@ def reserve(
             # and total wall-clock time drops from sum to max(each).
             from concurrent.futures import ThreadPoolExecutor
             config = load_config()
+            reservation_mgr = ReservationManager(config)
 
             with Live(
                 Spinner("dots", text="🚀 Loading…"), console=console
@@ -704,9 +705,7 @@ def reserve(
                     else:
                         f_ssh = ex.submit(validate_ssh_key_matches_github_user, config, None)
                         ssh_result = None
-                    f_avail = ex.submit(
-                        lambda: ReservationManager(config).get_gpu_availability_by_type()
-                    )
+                    f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
 
                     # Surface auth failure first (most actionable).
                     try:
@@ -2496,10 +2495,10 @@ def _show_availability() -> None:
             table = Table(
                 title="GPU Availability by Type (numbers are GPUs, not nodes)")
             table.add_column("GPU Type", style="cyan")
-            table.add_column("Available", style="green")
-            table.add_column("Max Reservable", style="bright_green")
+            table.add_column("Avail", style="green")
+            table.add_column("Max\nReservable", style="bright_green")
             table.add_column("Total", style="blue")
-            table.add_column("Queue Length", style="yellow")
+            table.add_column("Queue\nLength", style="yellow")
             table.add_column("Architecture", style="dim")
             table.add_column("Est. Wait Time", style="magenta")
 
@@ -2657,10 +2656,10 @@ def _show_availability_watch(interval: int) -> None:
                         table = Table(
                             title="GPU Availability by Type (numbers are GPUs, not nodes)")
                         table.add_column("GPU Type", style="cyan")
-                        table.add_column("Available", style="green")
-                        table.add_column("Max Reservable", style="blue")
+                        table.add_column("Avail", style="green")
+                        table.add_column("Max\nReservable", style="blue")
                         table.add_column("Total", style="blue")
-                        table.add_column("Queue Length", style="yellow")
+                        table.add_column("Queue\nLength", style="yellow")
                         table.add_column("Architecture", style="dim")
                         table.add_column("Est. Wait Time", style="magenta")
 
