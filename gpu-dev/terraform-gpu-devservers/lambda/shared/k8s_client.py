@@ -31,9 +31,14 @@ def get_bearer_token() -> str:
     """
     Create a k8s-aws-v1 bearer token by presigning STS:GetCallerIdentity.
     IMPORTANT: base64url-encode the FULL presigned URL, then strip padding.
+
+    expires_in must match _EFFECTIVE_TOKEN_TTL: previously this was 60s while the cache
+    held the token for 14 min, so warm Lambda containers handed EKS expired URLs and got
+    401s for ~13 min until the next refresh. 900s is the typical EKS get-token default
+    and the max for IAM-role-derived presigned URLs.
     """
     logger.info("Starting bearer token generation")
-    STS_TOKEN_EXPIRES_IN = 60
+    STS_TOKEN_EXPIRES_IN = 900
     session = boto3.session.Session(region_name=REGION)
     logger.info(f"Created boto3 session for region {REGION}")
 
