@@ -1542,13 +1542,12 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     if "@" in user_id:
                         user_display = user_id.split("@")[0]
 
-                    # Format GPU information
+                    # Format GPU information (MIG-friendly via _format_gpu_display)
                     if gpu_type and gpu_type not in ["unknown", "Unknown"]:
-                        # For CPU nodes (gpu_count = 0), show just the type
                         if gpu_count == 0:
                             gpu_display = gpu_type
                         else:
-                            gpu_display = f"{gpu_count}x {gpu_type}"
+                            gpu_display = _format_gpu_display(gpu_count, gpu_type)
                     else:
                         gpu_display = str(gpu_count)
 
@@ -1844,7 +1843,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                         if gpu_count == 0:
                                             gpu_display = gpu_type
                                         else:
-                                            gpu_display = f"{gpu_count}x {gpu_type}"
+                                            gpu_display = _format_gpu_display(gpu_count, gpu_type)
                                     else:
                                         gpu_display = str(gpu_count)
 
@@ -2417,6 +2416,9 @@ def _format_gpu_display(gpu_count, gpu_type):
         "h100-mig-3g": "40GB H100 (MIG)",
         "h100-mig-4g": "40GB H100 (MIG)",
         "h100-mig-7g": "80GB H100 (MIG)",
+        "b200-mig-1g": "23GB B200 (MIG)",
+        "b200-mig-2g": "45GB B200 (MIG)",
+        "b200-mig-3g": "90GB B200 (MIG)",
     }
     if gt_lower in mig_friendly:
         return f"{gpu_count}× {mig_friendly[gt_lower]}"
