@@ -6,12 +6,13 @@ ConfigMaps + Helm releases exist in the cluster for each definition.
 
 from __future__ import annotations
 
-import os
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 from helpers import assert_daemonset_healthy, filter_daemonsets, filter_pods, find_helm_release, run_kubectl
+from runner_defs import def_for_listener_pod, load_defs_by_name, load_runner_defs
 
 pytestmark = [pytest.mark.live]
 
@@ -31,28 +32,11 @@ def _normalize_name(name: str) -> str:
     return name.replace(".", "-").replace("_", "-")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _defs_dir(upstream_dir: Path) -> Path:
-    """Resolve the runner definitions directory, respecting env override."""
-    override = os.environ.get("ARC_RUNNERS_DEFS_DIR")
-    if override:
-        return Path(override)
-    return upstream_dir / "modules" / "arc-runners" / "defs"
-
-
+# Backwards-compatible local alias — tests below pass `upstream_dir` and the
+# runner-def loader lives in runner_defs.py. Keep this thin shim so the call
+# sites here read naturally.
 def _load_all_defs(upstream_dir: Path) -> list[dict]:
-    """Load all runner definition YAML files and return the runner dicts."""
-    defs_path = _defs_dir(upstream_dir)
-    defs = []
-    for f in sorted(defs_path.glob("*.yaml")):
-        data = yaml.safe_load(f.read_text())
-        if data and "runner" in data:
-            defs.append(data["runner"])
-    return defs
+    return load_runner_defs(upstream_dir)
 
 
 # ============================================================================
@@ -252,43 +236,69 @@ class TestArcRunnersNamespace:
 # ============================================================================
 
 
-class TestListenerCapacityAwareEnvVars:
-    """Verify ARC listener pods have all CAPACITY_AWARE_* env vars set.
+def _listener_env_from_generated_yaml(generated_doc: dict) -> dict[str, dict]:
+    """Extract the listener container's env list (as a {name: env_entry} map).
 
-    These env vars drive the proactive-capacity placeholder controller in the
-    listener. If any are missing, capacity-aware behaviour silently degrades.
+    Looks up ``listenerTemplate.spec.containers[0].env`` from a parsed
+    generated YAML. Uses ``[0]`` because the chart values define exactly one
+    container under ``listenerTemplate``; a missing/empty env list returns ``{}``
+    so callers see "expected env vars missing" rather than a KeyError.
+    """
+    containers = generated_doc.get("listenerTemplate", {}).get("spec", {}).get("containers", []) or []
+    if not containers:
+        return {}
+    return {e["name"]: e for e in containers[0].get("env", []) or []}
+
+
+def _capacity_aware_env(env_by_name: dict[str, dict]) -> dict[str, dict]:
+    """Filter an env-by-name map down to CAPACITY_AWARE_* entries."""
+    return {name: entry for name, entry in env_by_name.items() if name.startswith("CAPACITY_AWARE_")}
+
+
+class TestListenerCapacityAwareEnvVars:
+    """Verify ARC listener pods have CAPACITY_AWARE_* env vars matching the
+    GENERATED runner YAML (post-override, post-template-substitution).
+
+    The generated YAML is the single source of truth for what should be
+    deployed: it already accounts for cluster-specific overrides such as
+    ``force_proactive_capacity_zero`` (staging) and any future generator
+    transformations. Comparing the deployed listener directly against the
+    runner def would re-introduce knowledge of those overrides into the test.
     """
 
-    REQUIRED_ENV_VARS: frozenset[str] = frozenset(
-        {
-            "CAPACITY_AWARE_ENABLED",
-            "CAPACITY_AWARE_PROACTIVE_CAPACITY",
-            "CAPACITY_AWARE_MAX_BURST_CAPACITY",
-            "CAPACITY_AWARE_RECALCULATE_INTERVAL",
-            "CAPACITY_AWARE_PLACEHOLDER_TIMEOUT",
-            "CAPACITY_AWARE_WORKFLOW_CPU",
-            "CAPACITY_AWARE_WORKFLOW_MEMORY",
-            "CAPACITY_AWARE_WORKFLOW_GPU",
-            "CAPACITY_AWARE_WORKFLOW_DISK",
-            "CAPACITY_AWARE_RUNNER_CPU",
-            "CAPACITY_AWARE_RUNNER_MEMORY",
-            "CAPACITY_AWARE_NODE_FLEET",
-            "CAPACITY_AWARE_RUNNER_NODE_FLEET",
-            "CAPACITY_AWARE_RUNNER_CLASS",
-            "CAPACITY_AWARE_HUD_API_URL",
-            "CAPACITY_AWARE_HUD_API_TOKEN",
-        }
-    )
-
     @staticmethod
-    def _env_has_value(env: dict) -> bool:
-        """Return True if the env entry has either a non-empty value or a valueFrom."""
-        if env.get("value") not in (None, ""):
-            return True
-        return bool(env.get("valueFrom"))
+    def _env_value_signature(entry: dict) -> tuple:
+        """Hashable signature for an env entry's value source.
 
-    def test_listener_pods_have_capacity_aware_env_vars(self, all_pods: dict, enabled_modules: list[str]) -> None:
-        """Each listener pod's listener container has all CAPACITY_AWARE_* env vars set."""
+        For literal-value entries, returns ``("value", <str>)``. For
+        ``valueFrom`` entries, returns ``("valueFrom", <normalized dict>)``
+        so secret/configmap references compare structurally without trying
+        to read the actual secret.
+        """
+        if "valueFrom" in entry and entry["valueFrom"] is not None:
+            # Sort keys for deterministic comparison; valueFrom blocks are
+            # small dicts (e.g. {"secretKeyRef": {...}}) — JSON-style sort is
+            # cheap and stable.
+            return ("valueFrom", json.dumps(entry["valueFrom"], sort_keys=True))
+        # Treat missing value as empty string (matches K8s behavior).
+        return ("value", entry.get("value", "") or "")
+
+    def test_listener_env_vars_match_generated_yaml(
+        self,
+        all_pods: dict,
+        upstream_dir: Path,
+        enabled_modules: list[str],
+        resolve_config,
+        generated_arc_runners: dict[str, dict],
+    ) -> None:
+        """Each listener pod's CAPACITY_AWARE_* env vars match its generated YAML.
+
+        For each CAPACITY_AWARE_* env var present in the generated YAML's
+        listener container, the deployed pod must have an entry with the
+        same value (literal) or the same valueFrom (secret/configmap ref).
+        Also catches deployed env vars that exist in the pod but are absent
+        from the generated YAML — surfaces drift from a stale chart install.
+        """
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
@@ -296,6 +306,11 @@ class TestListenerCapacityAwareEnvVars:
         assert len(listener_pods) >= 1, (
             f"No listener pods found in '{LISTENER_NAMESPACE}' with labels {LISTENER_LABELS}"
         )
+
+        runner_name_prefix = resolve_config("arc-runners.runner_name_prefix", "")
+        # Reuse load_defs_by_name only for the listener→def mapping helper —
+        # value comparisons go through generated_arc_runners.
+        defs_by_name = load_defs_by_name(upstream_dir)
 
         problems: list[str] = []
         for pod in listener_pods:
@@ -306,17 +321,52 @@ class TestListenerCapacityAwareEnvVars:
                 problems.append(f"{pod_name}: no '{LISTENER_CONTAINER_NAME}' container")
                 continue
 
-            env_by_name = {e["name"]: e for e in listener.get("env", [])}
-            missing = self.REQUIRED_ENV_VARS - env_by_name.keys()
-            if missing:
-                problems.append(f"{pod_name}: missing env vars {sorted(missing)}")
+            def_name, _runner = def_for_listener_pod(pod, defs_by_name, runner_name_prefix)
+            if def_name is None:
+                problems.append(
+                    f"{pod_name}: missing/invalid 'actions.github.com/scale-set-name' label "
+                    f"(prefix={runner_name_prefix!r})"
+                )
                 continue
 
-            empty = sorted(name for name in self.REQUIRED_ENV_VARS if not self._env_has_value(env_by_name[name]))
-            if empty:
-                problems.append(f"{pod_name}: env vars present but with no value/valueFrom: {empty}")
+            generated = generated_arc_runners.get(def_name)
+            if generated is None:
+                problems.append(f"{pod_name}: no generated YAML found for def {def_name!r} (stale scale-set?)")
+                continue
 
-        assert not problems, "Listener pods with missing CAPACITY_AWARE_* env vars:\n" + "\n".join(problems)
+            generated_env = _capacity_aware_env(_listener_env_from_generated_yaml(generated))
+            if not generated_env:
+                problems.append(
+                    f"{pod_name} (def={def_name}): generated YAML has no CAPACITY_AWARE_* env vars in "
+                    f"listenerTemplate — template/generator regression?"
+                )
+                continue
+
+            deployed_env = _capacity_aware_env({e["name"]: e for e in listener.get("env", []) or []})
+
+            # Every CAPACITY_AWARE_* env var in the generated YAML must be in
+            # the deployed pod with an identical value/valueFrom shape.
+            for var, want_entry in generated_env.items():
+                got_entry = deployed_env.get(var)
+                if got_entry is None:
+                    problems.append(f"{pod_name} (def={def_name}): missing env var {var!r}")
+                    continue
+                want_sig = self._env_value_signature(want_entry)
+                got_sig = self._env_value_signature(got_entry)
+                if want_sig != got_sig:
+                    problems.append(
+                        f"{pod_name} (def={def_name}): {var} mismatch — generated {want_sig!r}, deployed {got_sig!r}"
+                    )
+
+            # Catch the reverse: env vars deployed but no longer in the
+            # generated YAML (chart out of sync with the latest generator).
+            extra = sorted(deployed_env.keys() - generated_env.keys())
+            if extra:
+                problems.append(
+                    f"{pod_name} (def={def_name}): unexpected CAPACITY_AWARE_* env vars not in generated YAML: {extra}"
+                )
+
+        assert not problems, "Listener CAPACITY_AWARE_* env-var coherence failures:\n" + "\n".join(problems)
 
 
 # ============================================================================
