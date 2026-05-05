@@ -6319,6 +6319,9 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
             "nvidia.com/mig-3g.40gb": "h100-mig-3g",
             "nvidia.com/mig-4g.40gb": "h100-mig-4g",
             "nvidia.com/mig-7g.80gb": "h100-mig-7g",
+            "nvidia.com/mig-1g.23gb": "b200-mig-1g",
+            "nvidia.com/mig-2g.45gb": "b200-mig-2g",
+            "nvidia.com/mig-3g.90gb": "b200-mig-3g",
         }
         if pod.spec.containers:
             for c in pod.spec.containers:
