@@ -3722,6 +3722,30 @@ def find_available_node_port(k8s_client) -> int:
         return random.randint(30000, 32767)
 
 
+def _mig_slice_fraction(gpu_type: str) -> float:
+    """For MIG SKUs return slice fraction of a single GPU (1g=1/7, 2g=2/7, ..., 7g=1).
+
+    Slice naming counts GPCs (compute slices). H100 and B200 both have 7 GPCs per GPU
+    in the typical all-balanced profile, so a 1g slice is 1/7 of a GPU regardless of
+    family. Used to size CPU/memory requests proportional to the GPU fraction the pod
+    actually consumes — the older `gpu_count/max_gpus` ratio over-claimed node resources
+    (a 1g slice would claim 1/4 or 1/16 of the host instead of 1/56).
+    """
+    if "mig" not in gpu_type:
+        return 1.0
+    try:
+        slices = int(gpu_type.split("-mig-")[1].rstrip("g"))
+    except (IndexError, ValueError):
+        return 1.0
+    return slices / 7.0
+
+
+# Number of full GPUs on the underlying instance — used to convert the slice fraction
+# into a fraction of the host's CPU/memory. Both p5.48xlarge (H100) and p6-b200.48xlarge
+# (B200) have 8 GPUs, which matches every MIG-capable instance type we currently run.
+_FULL_GPUS_PER_MIG_NODE = 8
+
+
 def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource limits for pod based on GPU type and deployment mode"""
     gpu_count = int(gpu_count)
@@ -3741,13 +3765,19 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
             resource_name = config.get("k8s_resource", "nvidia.com/gpu")
             limits[resource_name] = str(gpu_count)
 
-            gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
-
-            # Calculate proportional limits with CPU overprovisioning for burst capacity
-            # Give 1.5x CPU limit to allow burst, capped at node total
-            fractional_cpu = config["cpus"] * gpu_ratio
-            proportional_cpu_limit = min(config["cpus"], int(fractional_cpu * 1.5))
-            proportional_memory_limit = int(config["memory_gb"] * gpu_ratio)
+            if "mig" in gpu_type:
+                # Scale by GPC fraction (slice of one GPU), not slice count over max slices.
+                slice_fraction = _mig_slice_fraction(gpu_type)
+                cpu_per_full_gpu = config["cpus"] / _FULL_GPUS_PER_MIG_NODE
+                mem_per_full_gpu = config["memory_gb"] / _FULL_GPUS_PER_MIG_NODE
+                fractional_cpu = cpu_per_full_gpu * slice_fraction * gpu_count
+                proportional_cpu_limit = max(1, min(config["cpus"], int(fractional_cpu * 1.5)))
+                proportional_memory_limit = max(1, int(mem_per_full_gpu * slice_fraction * gpu_count))
+            else:
+                gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
+                fractional_cpu = config["cpus"] * gpu_ratio
+                proportional_cpu_limit = min(config["cpus"], int(fractional_cpu * 1.5))
+                proportional_memory_limit = int(config["memory_gb"] * gpu_ratio)
 
             limits.update({
                 "cpu": str(proportional_cpu_limit),
@@ -3787,13 +3817,16 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
         if gpu_count > 0:
             resource_name = config.get("k8s_resource", "nvidia.com/gpu")
             requests[resource_name] = str(gpu_count)
-            gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
-
-            # Calculate proportional requests (reserve 10% for system overhead)
-            # This ensures requests don't exceed node allocatable resources
-            # Limits can be higher for burst capacity (Burstable QoS)
-            proportional_cpu_request = int(config["cpus"] * gpu_ratio * 0.9)
-            proportional_memory_request = int(config["memory_gb"] * gpu_ratio * 0.9)
+            if "mig" in gpu_type:
+                slice_fraction = _mig_slice_fraction(gpu_type)
+                cpu_per_full_gpu = config["cpus"] / _FULL_GPUS_PER_MIG_NODE
+                mem_per_full_gpu = config["memory_gb"] / _FULL_GPUS_PER_MIG_NODE
+                proportional_cpu_request = max(1, int(cpu_per_full_gpu * slice_fraction * gpu_count * 0.9))
+                proportional_memory_request = max(1, int(mem_per_full_gpu * slice_fraction * gpu_count * 0.9))
+            else:
+                gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
+                proportional_cpu_request = int(config["cpus"] * gpu_ratio * 0.9)
+                proportional_memory_request = int(config["memory_gb"] * gpu_ratio * 0.9)
 
             requests.update({
                 "cpu": str(proportional_cpu_request),
