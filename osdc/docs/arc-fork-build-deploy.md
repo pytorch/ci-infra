@@ -17,8 +17,8 @@
 Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image and publishes the chart to GHCR.
 
 - **OCI registry**: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.6`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
-- **Image tags**: `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (set during workflow dispatch — pass `release_tag_name=0.14.1-jeanschmidt.6` to match the chart)
+- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.8`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
+- **Image tags**: `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (set during workflow dispatch — pass `release_tag_name=0.14.1-jeanschmidt.8` to match the chart)
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
 
@@ -129,14 +129,14 @@ This runs `modules/arc/deploy.sh`, which:
 3. **Applies RBAC** from `modules/arc/kubernetes/capacity-monitor-rbac.yaml`
 4. **Helm upgrade** of the fork chart:
    - Chart: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.6`)
+   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.8`)
    - Image: defaults to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<chart_version>`. Override with `arc.image_repository` / `arc.image_tag` in `clusters.yaml` for local Harbor builds.
 
 Other deploy.sh config knobs (all from `clusters.yaml`):
 
 | Key | Default | What |
 |-----|---------|------|
-| `arc.chart_version` | `0.14.1-jeanschmidt.6` | Helm chart version (fork) |
+| `arc.chart_version` | `0.14.1-jeanschmidt.8` | Helm chart version (fork) |
 | `arc.image_repository` | `ghcr.io/jeanschmidt/gha-runner-scale-set-controller` | Controller image repo (override for local Harbor builds) |
 | `arc.image_tag` | _(chart_version)_ | Controller image tag (override for local Harbor builds) |
 | `arc.replica_count` | `2` | Controller replicas |
@@ -154,6 +154,7 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 |---------|---------|-------------|
 | `CAPACITY_AWARE_ENABLED` | `true` | Enable the capacity monitor goroutine |
 | `CAPACITY_AWARE_PROACTIVE_CAPACITY` | `0` | Number of placeholder pairs to maintain ahead of demand |
+| `CAPACITY_AWARE_MAX_BURST_CAPACITY` | `0` | Caps the maximum total placeholder pairs (running + pending) the provisioner will create per cycle. `0` means unlimited. Used to prevent burst node provisioning from overloading downstream services (git-cache, Harbor, pypi-cache) |
 | `CAPACITY_AWARE_RECALCULATE_INTERVAL` | `30s` | Fallback reconciliation interval (event-driven is primary) |
 | `CAPACITY_AWARE_PLACEHOLDER_TIMEOUT` | `20m` | How long a placeholder can stay Pending before being deleted |
 | `CAPACITY_AWARE_WORKFLOW_CPU` | _(from runner def)_ | Workflow placeholder CPU request (template: `{{VCPU}}`) |

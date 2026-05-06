@@ -52,7 +52,7 @@ defaults:
     pdb_enabled: true
     pdb_min_available: 1
   arc:
-    chart_version: "0.14.1-jeanschmidt.6"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
+    chart_version: "0.14.1-jeanschmidt.9"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
     runner_image_tag: "2.334.0"  # ghcr.io/actions/actions-runner tag — pin to avoid :latest
     replica_count: 2
     log_level: info
@@ -193,7 +193,7 @@ clusters:
       github_secret_name: pytorch-arc-cbr-production
       runner_name_prefix: "mt-"
     pypi_cache:
-      replicas: 4
+      replicas: 5
     modules:
       - karpenter
       - arc

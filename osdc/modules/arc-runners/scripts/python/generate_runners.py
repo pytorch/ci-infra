@@ -32,12 +32,17 @@ if _scripts_python not in sys.path:
 
 # ANSI colors
 GREEN = "\033[0;32m"
+YELLOW = "\033[0;33m"
 RED = "\033[0;31m"
 NC = "\033[0m"
 
 
 def log_info(msg):
     print(f"{GREEN}\u2192{NC} {msg}")
+
+
+def log_warning(msg):
+    print(f"{YELLOW}\u26a0{NC} {msg}", file=sys.stderr)
 
 
 def log_error(msg):
@@ -146,6 +151,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # that can scale out on demand.
     max_runners = runner.get("max_runners")
     proactive_capacity = runner.get("proactive_capacity", 0)
+    max_burst_capacity = runner.get("max_burst_capacity", 0)
     if cluster_config.get("force_proactive_capacity_zero"):
         proactive_capacity = 0
 
@@ -156,6 +162,20 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     if max_runners is not None and (not isinstance(max_runners, int) or max_runners < 1):
         log_error(f"Invalid definition file {def_file}: max_runners must be a positive integer, got {max_runners!r}")
         return False
+
+    if max_burst_capacity is not None and (not isinstance(max_burst_capacity, int) or max_burst_capacity < 0):
+        log_error(
+            f"Invalid definition file {def_file}: max_burst_capacity must be a non-negative integer, "
+            f"got {max_burst_capacity!r}"
+        )
+        return False
+
+    if max_burst_capacity > 0 and proactive_capacity > 0 and max_burst_capacity < proactive_capacity:
+        log_warning(
+            f"In {def_file}: max_burst_capacity ({max_burst_capacity}) < proactive_capacity ({proactive_capacity}); "
+            f"the cap will prevent the listener from reaching its proactive baseline. "
+            f"Consider raising max_burst_capacity."
+        )
 
     node_fleet = derive_fleet_name(instance_type)
 
@@ -255,6 +275,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{GPU_COUNT}}": str(gpu),
         "{{RUNNER_CLASS}}": runner_class,
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
+        "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
     }
 
     for placeholder, value in replacements.items():

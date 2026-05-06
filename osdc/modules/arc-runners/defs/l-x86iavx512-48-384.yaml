@@ -8,3 +8,4 @@ runner:
   memory: 384Gi
   gpu: 0
   proactive_capacity: 10
+  max_burst_capacity: 250
