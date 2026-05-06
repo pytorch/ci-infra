@@ -16,6 +16,25 @@ READY_RETRY_DELAY = 15  # seconds
 MIN_NODE_AGE_SECONDS = 600  # Nodes must be Ready for 10+ min to count as stable
 RECENTLY_STABLE_AGE_SECONDS = 1200  # Nodes < 20 min may still have DaemonSet pods starting
 
+# Taint keys signalling the node is unstable — about to be terminated, or
+# already known to be unhealthy by the kubelet/node-controller. The first
+# two are set by cluster-level controllers (Karpenter consolidating/expiring,
+# OSDC node-compactor draining) while the kubelet still reports Ready=True
+# for a brief window. The remaining three are well-known K8s lifecycle taints
+# that the node-controller / kubelet apply when a node is unreachable or
+# being marked out-of-service. DaemonSet pods on any of these will be killed
+# (or have already been rejected) by the kubelet's NodeShutdown admission, so
+# they shouldn't count as "should host healthy pods right now" in smoke tests.
+_DISRUPTION_TAINT_KEYS: frozenset[str] = frozenset(
+    {
+        "karpenter.sh/disrupted",
+        "node-compactor.osdc.io/consolidating",
+        "node.kubernetes.io/unreachable",
+        "node.kubernetes.io/not-ready",
+        "node.kubernetes.io/out-of-service",
+    }
+)
+
 
 def _proxy_bypass_env() -> dict[str, str]:
     """Return an env dict that bypasses corporate proxy for AWS and EKS API calls.
@@ -204,12 +223,15 @@ def pod_age_seconds(pod: dict) -> float | None:
 
 
 def _is_node_unstable(node: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> bool:
-    """Check if a single node is unstable (new, NotReady, cordoned, or being deleted)."""
+    """Check if a single node is unstable (new, NotReady, cordoned, deleting, or being disrupted)."""
     meta = node.get("metadata", {})
     if meta.get("deletionTimestamp"):
         return True
     if node.get("spec", {}).get("unschedulable"):
         return True
+    for taint in node.get("spec", {}).get("taints", []) or []:
+        if taint.get("key") in _DISRUPTION_TAINT_KEYS:
+            return True
     conditions = {c["type"]: c["status"] for c in node.get("status", {}).get("conditions", [])}
     if conditions.get("Ready") != "True":
         return True
@@ -227,6 +249,7 @@ def _count_unstable_nodes(all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECO
     A node is "unstable" if any of:
     - It has a deletionTimestamp (being deleted)
     - It is cordoned (spec.unschedulable is true)
+    - It carries a disruption taint (Karpenter / node-compactor draining)
     - Its Ready condition is not True
     - It was created less than min_node_age seconds ago
     """
@@ -234,8 +257,36 @@ def _count_unstable_nodes(all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECO
 
 
 def get_unstable_node_names(all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> set[str]:
-    """Return names of nodes that are new, NotReady, or being deleted."""
+    """Return names of nodes that are new, NotReady, cordoned, being deleted, or being disrupted."""
     return {node["metadata"]["name"] for node in all_nodes.get("items", []) if _is_node_unstable(node, min_node_age=min_node_age)}
+
+
+def pod_is_on_unstable_node(pod: dict, all_nodes: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> bool:
+    """True if the pod's host node is missing from the snapshot OR unstable.
+
+    Handles two cases that should both be excluded from "should be running"
+    accounting in smoke tests:
+
+    1. The Node object the pod was scheduled to has been garbage-collected
+       between the time we listed nodes and the time we listed pods. Karpenter
+       disruption rolls produce a steady stream of such pods (DaemonSet
+       controller schedules onto a dying nodeName, kubelet rejects with
+       NodeShutdown, but by the time we observe the pod the Node object is
+       gone — so ``get_unstable_node_names`` cannot mark it).
+    2. The Node object still exists but is unstable (deleting, cordoned,
+       disruption-tainted, NotReady, or too young — see ``_is_node_unstable``).
+
+    Pods with no ``spec.nodeName`` (unscheduled — extremely rare for
+    DaemonSets) are also treated as on an unstable host.
+    """
+    node_name = pod.get("spec", {}).get("nodeName")
+    if not node_name:
+        return True
+    nodes_by_name = {n["metadata"]["name"]: n for n in all_nodes.get("items", [])}
+    node = nodes_by_name.get(node_name)
+    if node is None:
+        return True
+    return _is_node_unstable(node, min_node_age=min_node_age)
 
 
 def get_all_node_names(all_nodes: dict) -> set[str]:

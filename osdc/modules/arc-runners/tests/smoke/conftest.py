@@ -1,14 +1,12 @@
 """arc-runners smoke test fixtures.
 
 Reuses the shared smoke fixtures via star-import, then layers on arc-runners
-specific fixtures (currently: regenerated runner YAMLs for the cluster under
+specific fixtures (currently: parsed runner YAMLs for the cluster under
 test).
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,84 +22,50 @@ _ARC_RUNNERS_MODULE_PREFIX = "arc-runners"
 
 
 @pytest.fixture(scope="session")
-def generated_arc_runners(
-    cluster_id: str,
-    upstream_dir: Path,
-    enabled_modules: list[str],
-    tmp_path_factory: pytest.TempPathFactory,
-) -> dict[str, dict]:
-    """Regenerate ARC runner YAMLs for the cluster and return them parsed.
+def generated_arc_runners(cluster_id: str, upstream_dir: Path) -> dict[str, dict]:
+    """Parse pre-generated ARC runner YAMLs across every arc-runners* module.
 
-    Runs ``just generate-arc-runners <cluster>`` exactly once per enabled
-    ``arc-runners*`` module (session scope). Per-class submodules
-    (arc-runners-b200, arc-runners-h100, ...) reuse the same generator with
-    ``ARC_RUNNERS_DEFS_DIR`` / ``ARC_RUNNERS_OUTPUT_DIR`` /
-    ``ARC_RUNNERS_MODULE_NAME`` overrides so their listener pods are covered
-    by the coherence tests too. Without this aggregation, listeners owned by
-    GPU submodules look like "stale scale-sets" to the test.
+    Multiple modules can deploy ARC runners — the canonical ``arc-runners``
+    plus per-GPU-arch variants (``arc-runners-b200``, ``arc-runners-h100``,
+    ...). Each variant owns its own ``defs/`` and ``generated/`` dir; this
+    fixture unions YAMLs across all of them so listener-pod ↔ def coherence
+    checks see the complete set deployed to the cluster.
 
-    Output is redirected to a per-worker tmpdir rather than each module's
-    on-disk ``generated/`` directory: pytest-xdist runs this session-scoped
-    fixture once per worker, and concurrent regenerations into the same
-    repo path race (one worker can wipe-and-rewrite while another is mid-read,
-    yielding a ``FileNotFoundError``).
+    The YAMLs are produced by ``just smoke``'s pre-generation loop, which
+    invokes ``just generate-arc-runners`` once per enabled arc-runners*
+    module before pytest starts. We do NOT regenerate from inside this
+    fixture — under pytest-xdist multiple workers would race on the shared
+    output directories. If you're running pytest directly (outside
+    ``just smoke``), run the recipe yourself for each variant first.
 
     Returns:
         Mapping ``def_name -> parsed first YAML document`` (the chart values
-        block, which contains ``listenerTemplate``). The second YAML doc (the
-        ConfigMap) is intentionally dropped — coherence tests only need the
-        listener env block. Def names are unique across modules.
+        block, which contains ``listenerTemplate``). The second YAML doc
+        (the ConfigMap) is intentionally dropped — coherence tests only
+        need the listener env block.
     """
-    arc_modules = [
-        m for m in enabled_modules if m == _ARC_RUNNERS_MODULE_PREFIX or m.startswith(f"{_ARC_RUNNERS_MODULE_PREFIX}-")
-    ]
-    if not arc_modules:
-        pytest.skip("no arc-runners* modules enabled for this cluster")
-
-    base_tmp = tmp_path_factory.mktemp("generated-arc-runners")
+    modules_dir = upstream_dir / "modules"
+    generated_dirs = sorted(modules_dir.glob("arc-runners*/generated"))
+    if not generated_dirs:
+        pytest.fail(
+            f"No arc-runners*/generated directories under {modules_dir}. "
+            f"Run `just generate-arc-runners {cluster_id}` first (or invoke "
+            f"`just smoke {cluster_id}`, which does it for you)."
+        )
 
     out: dict[str, dict] = {}
-    for module in arc_modules:
-        module_dir = upstream_dir / "modules" / module
-        if not module_dir.is_dir():
-            # Consumer-only module not present in this checkout — skip rather
-            # than fail; the live cluster may still have its listeners, but
-            # we have no defs to validate them against here.
-            continue
-        defs_dir = module_dir / "defs"
-        generated_dir = base_tmp / module
-        generated_dir.mkdir(parents=True, exist_ok=True)
-        env = {
-            **os.environ,
-            "ARC_RUNNERS_DEFS_DIR": str(defs_dir),
-            "ARC_RUNNERS_OUTPUT_DIR": str(generated_dir),
-            "ARC_RUNNERS_MODULE_NAME": module,
-        }
-        result = subprocess.run(
-            ["just", "generate-arc-runners", cluster_id],
-            cwd=str(upstream_dir),
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-            env=env,
-        )
-        if result.returncode != 0:
-            pytest.fail(
-                f"`just generate-arc-runners {cluster_id}` failed for module {module!r} "
-                f"(rc={result.returncode}):\n"
-                f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
-            )
-
+    for generated_dir in generated_dirs:
         for yaml_file in sorted(generated_dir.glob("*.yaml")):
             # Each generated YAML is a multi-doc file: doc 1 = chart values
-            # (with listenerTemplate), doc 2 = job-pod hook ConfigMap. Coherence
-            # tests only consume doc 1; keep just that.
+            # (with listenerTemplate), doc 2 = job-pod hook ConfigMap.
+            # Coherence tests only consume doc 1; keep just that.
             docs = list(yaml.safe_load_all(yaml_file.read_text()))
             if not docs or not isinstance(docs[0], dict):
                 pytest.fail(f"Generated YAML {yaml_file} has no parseable first document")
             out[yaml_file.stem] = docs[0]
-
     if not out:
-        pytest.fail(f"No generated YAMLs found across enabled arc-runners modules: {arc_modules}")
+        pytest.fail(
+            f"No generated YAMLs found in {[str(d) for d in generated_dirs]}. "
+            f"Run `just generate-arc-runners {cluster_id}` first."
+        )
     return out

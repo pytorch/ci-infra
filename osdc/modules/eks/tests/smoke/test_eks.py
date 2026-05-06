@@ -2,14 +2,7 @@
 
 import pytest
 import yaml
-from helpers import (
-    RECENTLY_STABLE_AGE_SECONDS,
-    get_recently_stable_node_names,
-    get_unstable_node_names,
-    pod_age_seconds,
-    run_aws,
-    run_kubectl,
-)
+from helpers import get_unstable_node_names, pod_is_on_unstable_node, run_aws, run_kubectl
 
 pytestmark = [pytest.mark.live, pytest.mark.aws]
 
@@ -119,37 +112,25 @@ class TestEKSAddons:
         assert len(pods) > 0, f"Addon {addon_name}: no pods found with label {label_key}={label_value} in {ns}"
 
         nodes_result = run_kubectl(["get", "nodes"])
-        unstable = get_unstable_node_names(nodes_result)
-        # Recently-stable nodes (between min_node_age and recently_stable_age)
-        # passed the unstable threshold but DaemonSet pods on them may still
-        # be pulling images or creating containers. Tolerate Pending phase
-        # there — same grace window the rest of the smoke suite applies.
-        recently_stable = get_recently_stable_node_names(nodes_result)
+        unstable_nodes = get_unstable_node_names(nodes_result)
 
-        not_running = []
+        # Bucket non-Running pods into "on stable host" (real failure) vs "on
+        # unstable/missing host" (Karpenter-roll race). Counting both for the
+        # diagnostic message even though only the first triggers the assertion.
+        not_running: list[str] = []
+        excluded: list[str] = []
         for p in pods:
-            phase = p["status"].get("phase")
-            if phase == "Running":
+            if p["status"].get("phase") == "Running":
                 continue
-            node = p["spec"].get("nodeName")
-            if node in unstable:
-                continue
-            if phase == "Pending":
-                # Skip Pending pods that are still inside the startup window
-                # — either because the node itself is recently stable, or
-                # because the pod was freshly (re)scheduled (rolling restart,
-                # eviction) onto a long-stable node and is still pulling
-                # images / initializing containers.
-                if node in recently_stable:
-                    continue
-                age = pod_age_seconds(p)
-                if age is not None and age < RECENTLY_STABLE_AGE_SECONDS:
-                    continue
-            not_running.append(p["metadata"]["name"])
+            if pod_is_on_unstable_node(p, nodes_result):
+                excluded.append(p["metadata"]["name"])
+            else:
+                not_running.append(p["metadata"]["name"])
 
         assert not not_running, (
             f"Addon {addon_name} status is {status} and pods are unhealthy on stable nodes: "
-            f"{not_running} ({len(unstable)} unstable, {len(recently_stable)} recently-stable nodes excluded)"
+            f"{not_running} ({len(unstable_nodes)} unstable nodes, "
+            f"{len(excluded)} pods on unstable/missing hosts excluded)"
         )
 
 

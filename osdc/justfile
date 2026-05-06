@@ -1135,6 +1135,26 @@ smoke cluster:
     for d in $SMOKE_DIRS; do echo "  - ${d#${UPSTREAM}/}"; done
     echo ""
 
+    # Pre-generate ARC runner YAMLs for every enabled arc-runners* module
+    # (canonical + per-GPU-arch variants like arc-runners-b200 / arc-runners-h100).
+    # Each variant has its own defs/ and generated/ but shares the canonical
+    # generator (parameterized via ARC_RUNNERS_* env vars — same pattern as
+    # each variant's own deploy.sh, e.g. modules/arc-runners-b200/deploy.sh).
+    # Generation must happen ONCE before any pytest worker starts —
+    # previously the test fixture shelled out, which raced under pytest-xdist.
+    for mod in $MODULES; do
+        case "$mod" in
+            arc-runners | arc-runners-*)
+                echo "── Pre-generating YAMLs for $mod (test prerequisite) ──"
+                ARC_RUNNERS_DEFS_DIR="$UPSTREAM/modules/$mod/defs" \
+                    ARC_RUNNERS_OUTPUT_DIR="$UPSTREAM/modules/$mod/generated" \
+                    ARC_RUNNERS_MODULE_NAME="$mod" \
+                    just generate-arc-runners "$CLUSTER"
+                echo ""
+                ;;
+        esac
+    done
+
     export OSDC_ROOT="${ROOT}"
     export OSDC_UPSTREAM="${UPSTREAM}"
     export PYTHONPATH="${UPSTREAM}/tests/smoke:${PYTHONPATH:-}"
