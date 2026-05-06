@@ -1,446 +1,356 @@
 # PyPI Package Cache for CI Runners
 
-## Problem
-
-Every CI job creates a fresh virtualenv and pulls every Python package from remote PyPI. This causes:
+## Overview
+
+Every CI job creates a fresh virtualenv and pulls Python packages. Without a local
+cache this means slow downloads, PyPI rate limiting, and repeated source builds for
+packages without pre-built wheels for our target platform (e.g. CUDA extensions).
+
+The pypi-cache module (`modules/pypi-cache/`) addresses this with a per-cluster
+deployment that:
 
-- **Slow installs**: large packages (torch, numpy, etc.) take significant time to download and, in some cases, build from source
-- **Rate limiting**: high concurrency across many runner pods triggers PyPI throttling
-- **Build-from-source cost**: packages without pre-built wheels for the target platform are compiled on every job, wasting minutes of CPU
-
-The git-cache-warmer DaemonSet already solves an analogous problem for git clones. This document evaluates equivalent strategies for Python packages.
-
-## Requirements
-
-1. Both `pip` and `uv` must work transparently (no workflow changes)
-2. Pre-built wheels (compiled from source) must be cacheable and reusable across pods
-3. Cache misses must fall back to upstream PyPI
-4. Must fit the existing DaemonSet-on-NVMe architecture
-5. Lightweight enough to run per-node
-
-## Approaches Evaluated
-
-### Approach 1: Wheelhouse DaemonSet (find-links)
-
-A DaemonSet pre-downloads (and pre-builds) wheels to NVMe. Job pods mount the directory read-only and use `--find-links` to find packages locally.
-
-**Mechanism:**
-- DaemonSet runs `pip wheel -r requirements.txt -w /mnt/pypi-cache/wheelhouse/` and `pip download -r requirements.txt -d /mnt/pypi-cache/wheelhouse/`
-- Job pods mount the wheelhouse at `/opt/pypi-cache` (read-only)
-- Env vars: `PIP_FIND_LINKS=/opt/pypi-cache`, `UV_FIND_LINKS=/opt/pypi-cache`
-- pip and uv check the local directory first, fall back to PyPI for misses
-
-**Strengths:**
-- Closest to the existing git-cache pattern (DaemonSet + hostPath + dual-slot rotation + startup taint)
-- Read-only mount works fine for both pip and uv
-- No proxy process running on the node
-- Zero network overhead for cached packages
-
-**Pitfalls:**
-- Requires a **fully curated requirements list** — every package (including transitives) must be listed or it won't be in the cache
-- Cache misses still hit PyPI directly (no on-demand caching)
-- The requirements list must be maintained as dependencies evolve
-- Platform-specific: wheels built for `linux_x86_64 + cp311` won't work on `aarch64` or `cp312`
-- Pre-building source packages in the DaemonSet init can be slow (delays node readiness)
-
-### Approach 2: nginx Caching Reverse Proxy (DaemonSet)
-
-A DaemonSet runs nginx as a caching reverse proxy to `pypi.org` on each node.
-
-**Mechanism:**
-- nginx proxies requests to `pypi.org/simple/` and `files.pythonhosted.org`, caching responses on NVMe
-- Job pods: `PIP_INDEX_URL=http://localhost:3141/simple/`, `UV_INDEX_URL=http://localhost:3141/simple/`
-- First request for a package proxies to PyPI and caches; subsequent requests served from disk
-- Optional pre-warming: `pip download -i http://localhost:3141/simple/ -r requirements.txt`
-
-**Strengths:**
-- No curated package list needed — caches on demand
-- After a few builds on a node, the working set is fully cached
-- Extremely lightweight (~10 MB RAM)
-- Battle-tested at scale (1000+ downloads/min reported)
-- Natural upstream fallback for cache misses
-- Reference implementation: [hauntsaninja/nginx_pypi_cache](https://github.com/hauntsaninja/nginx_pypi_cache)
-
-**Pitfalls:**
-- **Cannot cache locally-built wheels** — only caches downloads from PyPI. Packages built from source are rebuilt every time on every node.
-- Cold cache on fresh nodes (first build is slow)
-- nginx config requires SNI (`proxy_ssl_server_name on`) and dual-host proxying (index host + file download host)
-- Does not solve the build-from-source problem at all
+- Serves a PEP 503/691 simple index that merges a local wheelhouse with upstream PyPI
+- Proxies and caches wheel downloads from `pypi.org`/`files.pythonhosted.org` and
+  `download.pytorch.org` on local NVMe
+- Hosts pre-built wheels for packages that lack wheels on PyPI (CUDA extensions,
+  niche source-only packages) on shared EFS storage
+- Self-discovers which packages need building by scanning its own access logs and
+  uploading a wants list to S3, where an out-of-cluster builder consumes it
 
-### Approach 3: Shared uv Cache Directory (hostPath)
+The cache is paired with the `cache-enforcer` DaemonSet, which iptables-blocks
+direct egress from runner nodes to `pypi.org`, `files.pythonhosted.org`, and
+`download.pytorch.org` — so all pip/uv traffic on runners is routed through
+pypi-cache by force, not by env var alone.
+
+> Detailed operational notes (slug naming, NVMe sizing math, IRSA roles, log
+> rotation, etc.) live in the `osdc-pypi-cache` skill. This document covers the
+> architecture and the load-bearing invariants that are easy to break.
+
+## Components
 
-A DaemonSet warms uv's native cache on NVMe. Job pods share it via `UV_CACHE_DIR`.
+The module deploys five distinct workloads per cluster, all in the `pypi-cache`
+namespace.
 
-**Mechanism:**
-- DaemonSet runs `uv pip install -r requirements.txt` into a throwaway venv, populating the cache
-- Job pods: `UV_CACHE_DIR=/opt/uv-cache`
-- uv's cache is append-only and thread-safe for concurrent writes
+### 1. `pypi-cache-{slug}` Deployments (one per CUDA slug)
 
-**Strengths:**
-- Simplest approach — no proxy process, no server
-- uv's cache includes built wheels (compiled from source)
-- Cache is deduplicated across venvs via hardlinks/reflinks
+A separate Deployment + ClusterIP Service is generated for each entry in
+`pypi_cache.cuda_versions` plus a mandatory `cpu` slug. Defaults from
+`clusters.yaml` produce slugs `cpu`, `cu126`, `cu128`, `cu130`.
 
-**Pitfalls:**
-- **uv cannot use a read-only cache** — fails with `Permission denied (os error 13)`. Tracked as [astral-sh/uv#15934](https://github.com/astral-sh/uv/issues/15934), still open. Mount must be read-write.
-- **uv only** — pip uses a different cache format. Jobs using pip get no benefit.
-- No `uv pip download` command exists yet ([astral-sh/uv#2078](https://github.com/astral-sh/uv/issues/2078))
-- Concurrent read-write from multiple pods to the same hostPath is risky (even though uv claims thread safety, multiple containers are not the same as multiple threads)
+Each pod runs three containers:
 
-### Approach 4: Centralized devpi Proxy (Deployment)
+- **nginx** (`docker.io/nginxinc/nginx-unprivileged:1.27-alpine`) on port 8080 —
+  the only port exposed via Service. Runs as caching reverse proxy and njs index
+  merger.
+- **pypiserver** (`pypiserver/pypiserver:v2.4.1`) on localhost port 8081 with
+  `--backend cached-dir`. Serves locally-built wheels from the per-slug EFS
+  wheelhouse subdirectory. The `cached-dir` backend rescans on directory mtime
+  change, so wheels added by `wheel-syncer` become servable without restart.
+- **nginx-prometheus-exporter** (`docker.io/nginx/nginx-prometheus-exporter:1.4.1`)
+  on port 9113 scraping `/stub_status` for monitoring.
 
-A single devpi-server Deployment + PVC in the cluster, serving as both a PyPI proxy and a host for pre-built wheels.
+Replicas: default 2, override per-cluster (`arc-staging: 1`,
+`arc-cbr-production: 5`). Pods spread across nodes via `podAntiAffinity` on
+`kubernetes.io/hostname`.
 
-**Mechanism:**
-- devpi-server proxies PyPI and caches packages on first fetch
-- Pre-built wheels can be uploaded via `devpi upload`
-- All job pods: `PIP_INDEX_URL=http://devpi.pypi-cache:3141/root/pypi/+simple/`
-- devpi-builder can batch-build and upload wheels from a requirements file
+Pods are scheduled on dedicated Karpenter nodes (`workload=pypi-cache:NoSchedule`
+taint, default `r5d.12xlarge`). Per-pod CPU/memory is computed from instance
+specs in `compute_pod_resources()` for Guaranteed QoS — nginx gets a fixed
+`4 vCPU / 64 GiB` slice (sized for njs subrequest buffers under load) and
+pypiserver gets the remainder.
 
-**Strengths:**
-- Single cache instance — warm once, all nodes benefit immediately
-- Supports uploading custom/pre-built wheels alongside PyPI proxy
-- Mature project with a large user base
-- Supports multiple indexes with inheritance (e.g., private packages + PyPI)
+### 2. `pypi-wants-collector` Deployment (1 replica)
 
-**Pitfalls:**
-- **Heavyweight**: ~300 MB RAM minimum (without devpi-web), can grow to 2-4 GB with the web UI
-- Single point of failure (unless replicated, which adds complexity)
-- Network hop across nodes for every package fetch (latency for large wheels)
-- Requires a PVC for persistent storage (not NVMe-local)
-- Does not leverage per-node NVMe locality like the git-cache pattern
-- SQLite-backed — potential bottleneck under high concurrency
-- Overkill for a pure caching use case
+Long-lived pod running `scripts/python/wants_collector.py`. Each cycle (default
+every 120s):
 
-### Approach 5: proxpi (Lightweight PyPI Caching Proxy)
+1. Scans EFS access logs at `/data/logs/upstream/fallback.YYYY-MM-DD.log`
+2. Downloads the shared `prebuilt-cache.txt` from S3 (header-versioned by the
+   target matrix; mismatch invalidates the entire cache)
+3. Downloads `needbuild.txt` from S3 (manual override list)
+4. For each package not yet in the prebuilt cache, queries PyPI's JSON API to
+   check whether a wheel covering the full
+   `(python_versions × architectures × manylinux)` matrix already exists
+5. Writes packages still needing builds to `s3://pytorch-pypi-wheel-cache/wants/{cluster_id}.txt`
+6. Updates `prebuilt-cache.txt` with newly verified packages
+7. Deletes log files older than `--max-log-age-days` (default 30)
 
-A purpose-built lightweight PyPI caching proxy, designed for CI.
+The collector is the **only S3 writer** in the loop.
 
-**Mechanism:**
-- Single Python process, Docker image available
-- Caches both index responses (30-min TTL) and package files (5 GB default)
-- Config via env vars: `PROXPI_CACHE_DIR`, `PROXPI_CACHE_SIZE`, `PROXPI_INDEX_URL`
+### 3. `pypi-wheel-syncer` Deployment (1 replica)
 
-**Strengths:**
-- Purpose-built for CI — understands PyPI's index format natively
-- Lighter than devpi (~50-100 MB RAM)
-- Simple configuration via environment variables
+Long-lived pod running `scripts/python/wheel_syncer.py`. Each cycle (default
+every 60s) lists `s3://pytorch-pypi-wheel-cache/{slug}/*.whl` for every
+configured slug, downloads anything missing from the local EFS wheelhouse using
+atomic rename for safe placement.
 
-**Pitfalls:**
-- **Cannot cache locally-built wheels** (same limitation as nginx)
-- Heavier than nginx for what is essentially the same function
-- Smaller community and less battle-tested than nginx or devpi
-- No support for uploading/serving custom wheels
+This is the **only S3 reader for wheels** in the cluster — pods do not pull
+wheels from S3 directly.
 
-### Approach 6: bandersnatch (Selective PyPI Mirror)
+### 4. External wheel-build pipeline
 
-Official PyPA mirroring tool. Syncs selected packages from PyPI to local storage.
+Lives outside this repository. Reads `wants/{cluster}.txt` and `needbuild.txt`
+from S3, builds wheels for the configured matrix, and pushes them to
+`s3://pytorch-pypi-wheel-cache/{slug}/*.whl`. The `wheel-syncer` then surfaces
+them on EFS within ~60s.
 
-**Mechanism:**
-- Configure an allowlist of packages in `bandersnatch.conf`
-- Run `bandersnatch mirror` to sync selected packages to local disk
-- Serve the mirror with a separate web server (nginx, pypiserver)
+### 5. `cache-enforcer` DaemonSet (separate module)
 
-**Strengths:**
-- Official PyPA project, PEP 503/691 compliant
-- Selective mirroring keeps storage manageable
-- Full control over what is mirrored
+`modules/cache-enforcer/` runs on `workload-type: github-runner` nodes (NOT on
+pypi-cache nodes). Loads the `xt_string` kernel module and installs iptables
+REJECT rules in OUTPUT and FORWARD chains that match domain strings in TLS
+ClientHello SNI fields and HTTP Host headers for `pypi.org`,
+`files.pythonhosted.org`, and `download.pytorch.org`.
 
-**Pitfalls:**
-- **Not a proxy** — no pass-through fallback for unlisted packages
-- Requires a separate serving layer (two components to manage)
-- Requires scheduled sync runs to pick up new versions
-- Cannot serve locally-built wheels
-- Operational complexity disproportionate to the problem
+This is what forces pip/uv traffic through pypi-cache. **If pypi-cache is
+unhealthy, all pip installs on runners fail — there is no bypass.**
 
-## Transparent Serving (No Workflow Changes Needed)
+## Storage Layout
 
-Both pip and uv respect environment variables for index URL. Setting these on job pods is sufficient to transparently route all package downloads through the local proxy — no workflow changes needed.
+Two distinct storage layers with different semantics:
 
-- `PIP_INDEX_URL` — affects all `pip install` commands in the container
-- `UV_INDEX_URL` / `UV_DEFAULT_INDEX` — affects all `uv` commands
-- uv also reads `PIP_INDEX_URL` for compatibility
+| Layer | Type | Lifetime | Contents |
+|-------|------|----------|----------|
+| Wheelhouse | EFS PVC `pypi-cache-data` (RWX) | Persistent across rescheduling | Built `.whl` files synced from S3 (`/data/wheelhouse/{slug}/`); fallback access logs (`/data/logs/upstream/`) |
+| nginx cache | NVMe hostPath `/mnt/k8s-disks/0/nginx-cache-{slug}` (or emptyDir fallback) | Ephemeral; gone on pod rescheduling | Cached PEP 503/691 index responses; cached wheel downloads from PyPI/PyTorch fallback |
 
-**Precedence chain (pip):** CLI `--index-url` > requirements.txt `--index-url` > `PIP_INDEX_URL` env > `pip.conf` > pypi.org default
+The EFS PVC is `ReadWriteMany` with StorageClass `efs-pypi-cache` (provisioner
+`efs.csi.aws.com`, `basePath: /pypi-cache`, `reclaimPolicy: Retain`). It's
+mounted by every pypi-cache pod, plus the wants-collector and wheel-syncer.
 
-**Precedence chain (uv):** CLI `--index-url` > `UV_INDEX_URL` env > `pyproject.toml`/`uv.toml` > pypi.org default
+NVMe size per pod is computed as `floor(nvme_gib * 0.95 / pods_per_node)`. For
+`r5d.12xlarge` (~1,800 GiB NVMe RAID0) with 4 slugs that's ~427 GiB per pod.
+Adding CUDA versions shrinks it. `inactive=7d` on the nginx cache key zone evicts
+unused entries regardless of TTL.
 
-### What bypasses the proxy (not captured)
+The EFS CSI driver is installed by this module's Terraform via
+`aws_eks_addon` — not a base infra concern.
 
-- Workflows that explicitly set `--index-url` on CLI or in requirements.txt (overrides env var)
-- Direct URL installs: `pip install https://some-url/package.whl` (bypasses index entirely)
-- VCS installs: `pip install git+https://github.com/...` (cloned directly, not via index)
-- `--no-index --find-links` (ignores all indexes)
+### S3 bucket layout
 
-Note: dependencies of direct-URL and VCS packages still resolve through the configured index, so transitive deps are captured.
+Bucket: `s3://pytorch-pypi-wheel-cache/` (single shared bucket across all
+clusters; managed in `terraform/wheel-cache-bucket/`):
 
-**Coverage estimate:** Env vars alone capture ~85-90% of real-world pip/uv usage.
+| Path | Scope | Writer | Reader |
+|------|-------|--------|--------|
+| `wants/{cluster_id}.txt` | per-cluster (7-day lifecycle expiry) | wants-collector | external builder |
+| `prebuilt-cache.txt` | shared, monotonic | wants-collector | external builder, wants-collector |
+| `needbuild.txt` | shared, manual | human via `aws s3 cp` | external builder, wants-collector |
+| `{slug}/*.whl` | shared per-slug | external builder | wheel-syncer |
 
-### Optional hardening with iptables
+The metadata files (`wants/*`, `prebuilt-cache.txt`, `needbuild.txt`) are
+public-read so the external builder doesn't need IAM. Wheels are private.
 
-For bulletproof interception, an init container with `NET_ADMIN` can install iptables rules redirecting `pypi.org`/`files.pythonhosted.org` traffic to the local proxy by SNI. This catches even explicit `--index-url` overrides. But it adds complexity (`NET_ADMIN` capability, TLS handling, uv needs `UV_NATIVE_TLS=true` for custom CAs).
+## Index Routing
 
-## Transparent Capture (Self-Learning Cache via Proxy Logs)
+The single Service exposes one HTTP port (`8080`) with several path prefixes
+handled by different nginx locations.
 
-**Key insight: the proxy IS the telemetry.** If all pip/uv traffic flows through a local proxy (pypiserver, nginx, or devpi), the proxy access log captures everything needed — no `pip --report` flag required, no user cooperation needed.
+### `/simple/` and `/simple/{pkg}/` — njs merge handler
 
-What a single proxy access log line captures:
+Routed to `merge_indexes.js` via `js_content`. The handler issues two
+subrequests in parallel:
 
-- **Package name, version, platform tags** — from the wheel filename in the URL path (e.g., `torch-2.5.1-cp311-cp311-manylinux_2_17_x86_64.whl`)
-- **Python version, ABI** — from the wheel filename
-- **Installer tool** — from User-Agent header (pip includes a rich JSON blob with pip version, Python version, OS, CPU arch, distro)
-- **Timestamp** — when it was requested
-- **Cache hit/miss** — HTTP status code (200 vs 304)
-- **Transfer size** — bytes transferred
-- **Whether it was an sdist** — URL ends in `.tar.gz` or `.zip` instead of `.whl`, meaning the client will build from source
+- `/_internal/local/simple/...` → pypiserver (local wheelhouse contents)
+- `/_internal/upstream/simple/...` → `https://pypi.org/simple/...`
 
-This is **richer than `pip --report`** because:
+Both responses are parsed (HTML for PEP 503, JSON for PEP 691, with HTML→JSON
+fallback for pypiserver v2.x which doesn't support PEP 691). The result lists
+are deduplicated by filename — local entries win on collision — and rendered
+back to the client in the format the client requested.
 
-- Tool-agnostic: captures pip, uv, poetry, conda, any HTTP client
-- Zero user cooperation: developers write `pip install torch` and have no idea telemetry exists
-- No overwrite problems: one log line per HTTP request, naturally appending
-- Already available if running a cache proxy for performance
+This **resolves the BY/BZ index shadowing problem**: pypiserver previously
+returned 200 for some packages with wrong-variant wheels, which short-circuited
+nginx's `proxy_intercept_errors` fallback to PyPI. Merging guarantees both
+sources are always considered.
 
-### pip --report: useful but not required
+The root listing `/simple/` is passed through to upstream (pypiserver's root
+listing is incomplete by design).
 
-`pip install --report` (stable since pip 23.0) generates structured JSON with every package installed, including whether it was a wheel or sdist. However:
+### `/whl/...` — PyTorch wheel index
 
-- Each invocation **overwrites** the file (no append mode)
-- **uv has no equivalent** (issue #1442, still open)
-- Requires setting `PIP_REPORT` env var or using a wrapper — opt-in, not transparent
-- Only captures pip, not uv/poetry/other tools
+Proxies to `https://download.pytorch.org/whl/...` with sub_filter rewriting and
+caching. **This is NOT the locally-built CUDA wheelhouse** — those live behind
+the per-slug Service and are served via `/simple/`. The `/whl/` path is purely
+for the upstream PyTorch index (`/whl/cu128/torch/`, `/whl/cpu/torchvision/`,
+etc.).
 
-The proxy log approach supersedes this for telemetry. `pip --report` remains useful for detailed dependency resolution debugging but is not needed for the cache learning loop.
+Two notable rewrites on this path:
 
-### Why NOT pip wrappers/shims
+- `error_page 403 =404` and `500 502 503 504 =404` — `download.pytorch.org`
+  returns 403 for packages it doesn't carry (e.g. `/whl/cpu/six/`); uv treats
+  403 as auth error and aborts resolution. Rewriting to 404 makes uv fall
+  through to the default index. **Don't change this.**
+- `proxy_redirect https://download.pytorch.org/ /` — clients can't follow
+  HTTPS redirects from the proxy (cache-enforcer blocks the destination).
 
-Placing a wrapper script named `pip` earlier in PATH that injects flags is fragile:
+### `/packages/{2-hex}/...` — pythonhosted file downloads
 
-- `python -m pip` bypasses the shim entirely (very common in CI)
-- `pip3`, `pip3.11`, etc. need separate shims
-- uv needs its own shim with different flags
-- Virtualenv creation installs its own pip, bypassing shims
-- More moving parts than the proxy approach with worse coverage
+Hash-based paths from rewritten pypi.org index responses. Proxied directly to
+`https://files.pythonhosted.org/...` with long-term caching (`200 301 1M`).
 
-### Comparison of capture mechanisms
+The regex matches only hash-based paths (two hex characters after `/packages/`)
+so flat paths like `/packages/{filename}.whl` (generated by pypiserver for
+local wheelhouse packages) fall through to the generic wheel handler.
 
-| Mechanism | pip | uv | poetry | No user action | Structured data | Covers sdist builds |
-|-----------|-----|-----|--------|---------------|-----------------|---------------------|
-| Proxy access log | Yes | Yes | Yes | Yes | Parse from URL | Yes (detects .tar.gz) |
-| PIP_REPORT env var | Yes | No | No | Partial (env var) | JSON | Yes |
-| PIP_LOG env var | Yes | No | No | Partial (env var) | Unstructured text | Yes |
-| pip wrapper/shim | Partial | No | No | No | Depends | Yes |
-| Network iptables | Yes | Yes | Yes | Yes | Parse from traffic | Yes |
+### `*.whl|*.tar.gz|*.zip` — wheel/tarball downloads
 
-**Recommended: proxy access log** as primary telemetry. Optionally add `PIP_LOG` env var for pip-specific debugging detail.
+Proxies to local pypiserver, with `proxy_intercept_errors` falling through to
+`pypi.org` on 404/5xx via `@pypi_fallback`. The fallback writes its access log
+to `/data/logs/upstream/fallback.YYYY-MM-DD.log` on EFS — that's the
+input that the wants-collector tails.
 
-## Recommended Approach: Self-Learning pypiserver DaemonSet
+### Per-CUDA isolation: per-slug Service, not per-path
 
-**pypiserver** is a single-process, ~30 MB Python server that serves `.whl` files from a directory and falls through to upstream PyPI for anything not found locally. Combined with proxy log analysis, the cache becomes fully self-learning — no curated package list required, no workflow changes needed, the cache self-populates from actual usage.
-
-### Architecture
+CUDA isolation is **not** done at the URL level. There is no
+`/cu128/simple/...` route. Instead, each CUDA slug gets its own Deployment +
+Service + EFS subdirectory (`/data/wheelhouse/{slug}/`), and runners are
+configured at pod creation time with the URL of the right slug:
 
 ```
-Job pods (no changes needed):
-  pip install torch  ──►  PIP_INDEX_URL=http://localhost:8080/simple/
-  uv pip install numpy ──► UV_INDEX_URL=http://localhost:8080/simple/
-
-DaemonSet per node (on NVMe):
-┌───────────────────────────────────────────────────────────┐
-│  pypiserver (or nginx reverse proxy)                      │
-│  - serves pre-built wheels from per-CUDA wheelhouses      │
-│  - falls back to pypi.org for cache misses                │
-│  - access log captures ALL requests (the telemetry)       │
-│                                                           │
-│  Index paths:                                             │
-│    /cpu/simple/   → wheelhouse-cpu/                       │
-│    /cu118/simple/ → wheelhouse-cu118/                     │
-│    /cu121/simple/ → wheelhouse-cu121/                     │
-│    /cu124/simple/ → wheelhouse-cu124/                     │
-│                                                           │
-│  builder (periodic, e.g. every 6h):                       │
-│  1. parse access log for .tar.gz downloads                │
-│     (these are packages downloaded as sdists =             │
-│      built from source by the client)                     │
-│  2. for each CUDA version configured:                     │
-│       pip wheel <pkg>==<ver> → wheelhouse-<cuda>/         │
-│  3. next request for same pkg gets pre-built wheel        │
-│                                                           │
-│  NVMe hostPath: /mnt/pypi-cache/                          │
-└───────────────────────────────────────────────────────────┘
+PIP_INDEX_URL=http://pypi-cache-cu128.pypi-cache.svc.cluster.local:8080/simple/
+PIP_EXTRA_INDEX_URL=http://pypi-cache-cu128.pypi-cache.svc.cluster.local:8080/whl/cu128/
 ```
 
-### Request flow
+The `cuda_slug()` helper strips the patch version (`12.8.1` → `cu128`) to
+match PyTorch's `download.pytorch.org/whl/cu128/` convention.
 
-1. Composite GitHub Action sets `PIP_INDEX_URL=http://localhost:8080/{cuda_slug}/simple/` for the job (see "CI integration" below)
-2. pip/uv queries `localhost:8080/{cuda_slug}/simple/{package}/`
-3. pypiserver checks the corresponding wheelhouse (`wheelhouse-{cuda_slug}/`) — if a matching `.whl` exists, serves it directly
-4. If not found, pypiserver returns 404; nginx intercepts and proxies to `pypi.org` server-side (transparent fallback — no client-side redirect)
-5. Access log records every request regardless of hit/miss
+## CI Integration
 
-### Self-learning convergence
-
-1. **Day 1:** job downloads `foo-1.0.tar.gz` via proxy (e.g., through `/cu121/simple/`) — builds from source — takes 5 minutes. Proxy logs the `.tar.gz` download.
-2. **Builder** sees `.tar.gz` in logs — runs `pip wheel foo==1.0` for each configured CUDA version — places `foo-1.0+cu118-cp311-cp311-linux_x86_64.whl` in `wheelhouse-cu118/`, `foo-1.0+cu121-...` in `wheelhouse-cu121/`, etc.
-3. **Day 2:** job requests `foo` via `/cu121/simple/` — pypiserver serves pre-built wheel from `wheelhouse-cu121/` — instant install.
-
-No curated list. No workflow changes. Cache self-populates from actual usage.
-
-### Cache aging
-
-Delete wheels from the wheelhouse if the package hasn't appeared in access logs for N days (e.g., 30 days). Keeps cache size bounded without manual intervention.
-
-### What to pre-build (optional heavy-packages.txt)
-
-For faster Day-1 performance, optionally seed the wheelhouse with known heavy packages — those that **must be compiled from source** and lack pre-built wheels for the target platform. This list is:
-- Small (typically 5-20 packages)
-- Stable (doesn't change often)
-- Discoverable: grep CI logs for `Building wheel` taking >30 seconds
-
-The self-learning loop will discover and build these automatically, but seeding avoids the initial slow build on first request.
-
-### What NOT to curate
-
-- Pure-Python packages (fetched from PyPI via fallback)
-- Packages that ship manylinux wheels on PyPI (fetched from PyPI via fallback)
-- Anything that pip/uv can install directly from PyPI without building
-
-### Dual-slot rotation
-
-Same pattern as git-cache-warmer:
-- Build wheels into inactive slot (`pypi-cache-b/`)
-- Swap symlink atomically when build completes
-- pypiserver serves from the symlink target
-- Optional startup taint `pypi-cache-not-ready` cleared after first successful build
-
-### Platform considerations
-
-Wheels are platform-specific. The DaemonSet builds on the node it runs on, so architecture (x86_64 vs aarch64) is handled automatically. If multiple Python versions are in use, the build list must cover each version:
-
-```bash
-pip3.11 wheel -r heavy-packages.txt -w /mnt/pypi-cache/wheelhouse/
-pip3.12 wheel -r heavy-packages.txt -w /mnt/pypi-cache/wheelhouse/
-```
-
-### CUDA variant handling
-
-CUDA is fundamentally different from architecture and Python version — those are properties of the *environment* (detectable automatically), while CUDA version is a *build-time choice* that isn't encoded in standard wheel platform tags.
-
-**The problem:** building flash-attn (or any CUDA extension) with three CUDA toolkits produces identically-named wheels:
+There is **no composite GitHub Action** for index selection. Routing is baked
+into the runner pod itself by the `arc-runners` module: each runner type is
+generated per CUDA slug, and the runner ConfigMap sets these env vars on the
+workflow container:
 
 ```
-flash_attn-2.5.6-cp311-cp311-linux_x86_64.whl  # built with CUDA 11.8
-flash_attn-2.5.6-cp311-cp311-linux_x86_64.whl  # built with CUDA 12.1
-flash_attn-2.5.6-cp311-cp311-linux_x86_64.whl  # built with CUDA 12.4
+PIP_INDEX_URL          = http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/simple/
+PIP_EXTRA_INDEX_URL    = http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/whl/{slug}/
+PIP_TRUSTED_HOST       = pypi-cache-{slug}.pypi-cache.svc.cluster.local
+UV_DEFAULT_INDEX       = http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/simple/
+UV_INDEX               = http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/whl/{slug}/
+UV_INSECURE_HOST       = pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080
+UV_INDEX_STRATEGY      = unsafe-best-match
+PYPI_CACHE_SIMPLE_URL  = http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/simple/
+PYPI_CACHE_WHL_URL     = http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/whl/{slug}/
 ```
 
-Same filename, different contents. A single wheelhouse directory can only hold one. pip has no way to distinguish them because the platform tags are identical.
+CI authors don't need to do anything — pip/uv pick up these env vars
+automatically. cache-enforcer prevents anyone from bypassing them.
 
-**The solution:** separate index paths per CUDA version, following the same pattern PyTorch uses for `download.pytorch.org/whl/cu121/`. Each CUDA variant gets its own wheelhouse directory and index endpoint:
+The PYPI_CACHE_* variables are exposed for workflow scripts that build their own
+URLs (e.g. for `--find-links`).
 
-```
-pypiserver (per node):
-  /cu118/simple/  →  wheelhouse-cu118/
-  /cu121/simple/  →  wheelhouse-cu121/
-  /cu124/simple/  →  wheelhouse-cu124/
-  /cpu/simple/    →  wheelhouse-cpu/    (fallthrough to pypi.org)
-```
+## Self-Learning Loop
 
-The builder uses PEP 440 local version segments to make filenames unique per CUDA variant (e.g., `flash_attn-2.5.6+cu121-cp311-cp311-linux_x86_64.whl`) and places each wheel in the corresponding wheelhouse directory.
+End-to-end flow when a CI job triggers a source build:
 
-**Builder configuration:** the builder pre-builds CUDA packages for all configured CUDA versions, even if not all are used by every CI job. The cost of extra builds is low (runs in background on NVMe), and it avoids the complexity of trying to auto-detect which CUDA versions are needed. The CUDA version matrix is static config maintained alongside the builder:
+1. Job runs `pip install foo-1.0.tar.gz` (or `pip install foo` and PyPI lacks a
+   matching wheel). pip downloads the sdist via the proxy.
+2. nginx serves the sdist from `pypi.org` via `@pypi_fallback`, recording the
+   request in `/data/logs/upstream/fallback.YYYY-MM-DD.log` on EFS.
+3. wants-collector tails the log on its next cycle, normalizes the package
+   name (PEP 503), checks PyPI's JSON API for wheel coverage of the full
+   `(python_versions × architectures × manylinux)` matrix, and if anything
+   is missing writes the package to `wants/{cluster}.txt` in S3.
+4. The external builder consumes `wants/*.txt` + `needbuild.txt`, builds the
+   wheels, uploads them to `s3://pytorch-pypi-wheel-cache/{slug}/`.
+5. wheel-syncer downloads new wheels to `/data/wheelhouse/{slug}/` on EFS via
+   atomic rename. pypiserver's `cached-dir` backend picks them up on its next
+   directory rescan.
+6. Next time a job requests `foo` via `/simple/foo/`, the merge handler sees
+   the local wheel, includes it (and prefers it on filename collision).
 
-```bash
-# Builder runs for each CUDA toolkit
-for cuda in cu118 cu121 cu124; do
-  # Activate the corresponding CUDA toolkit
-  pip wheel flash-attn==2.5.6 -w /mnt/pypi-cache/wheelhouse-${cuda}/
-done
-```
+`needbuild.txt` is a manual override — packages listed there bypass both the
+`prebuilt-cache.txt` check and the PyPI availability check, forcing them to the
+wants list every cycle. This is how operators force-build packages that PyPI
+*does* have wheels for (e.g. when those wheels are broken for our target
+platform).
 
-**Self-learning interaction with CUDA:** the self-learning loop still discovers *which packages* need source builds (by detecting `.tar.gz` downloads in proxy access logs). But the CUDA version matrix is static config — access logs don't reveal which CUDA version a job needed, only that a source download occurred. The builder builds discovered packages for all configured CUDA versions.
+## Operational Gotchas
 
-### CI integration: composite GitHub Action
+These are easy to break and have caused real outages.
 
-To make CUDA variant selection transparent for CI developers, a composite action sets the job-wide index URL. CI developers don't need to know about the cache internals — they just declare which CUDA version they need:
+### nginx cache key MUST include `$http_accept`
 
-```yaml
-# .github/actions/pip-cache-cuda/action.yml
-name: 'PyPI Cache (CUDA)'
-inputs:
-  cuda-version:
-    description: 'CUDA version (e.g., 11.8, 12.1, 12.4)'
-    required: true
+`proxy_cache_key "$request_uri|$http_accept"` (and `local:`/`upstream:` prefixes
+for the internal merge subrequests). Removing `$http_accept` causes silent
+collisions between PEP 503 (HTML) and PEP 691 (JSON) responses for the same URL,
+serving HTML to JSON-expecting clients and vice versa. Hard to debug.
 
-runs:
-  using: composite
-  steps:
-    - shell: bash
-      run: |
-        CUDA_SLUG="cu$(echo '${{ inputs.cuda-version }}' | tr -d '.')"
-        echo "PIP_INDEX_URL=http://localhost:8080/${CUDA_SLUG}/simple/" >> "$GITHUB_ENV"
-        echo "UV_INDEX_URL=http://localhost:8080/${CUDA_SLUG}/simple/" >> "$GITHUB_ENV"
-        echo "PIP_EXTRA_INDEX_URL=https://pypi.org/simple/" >> "$GITHUB_ENV"
-```
+### sub_filter and njs URL rewriting are required, not cosmetic
 
-Usage in workflows:
+nginx `sub_filter` rewrites `https://files.pythonhosted.org` and
+`https://download.pytorch.org` to relative paths in upstream index responses.
+`merge_indexes.js` does the same in subrequest results (sub_filter does not
+apply to njs subrequest responses). Without this rewriting, pip would receive
+absolute URLs that cache-enforcer blocks at the iptables level — every install
+would fail.
 
-```yaml
-jobs:
-  test-cu121:
-    steps:
-      - uses: ./.github/actions/pip-cache-cuda
-        with:
-          cuda-version: '12.1'
-      # every pip/uv install after this hits the cu121 index automatically
-      - run: pip install flash-attn torch
-```
+### `proxy_redirect` rewrites also matter
 
-`GITHUB_ENV` persists for all subsequent steps in the job — no wrapper scripts, no per-step repetition. Shorthand aliases (e.g., `.github/actions/pip-cache-cuda11`) can wrap the parameterized action for even simpler usage:
+`proxy_redirect https://pypi.org/ /` and
+`proxy_redirect https://download.pytorch.org/ /` strip absolute hosts from
+`Location` headers in 301/302 responses. Same reasoning as sub_filter — clients
+can't reach the destination directly.
 
-```yaml
-# .github/actions/pip-cache-cuda11/action.yml
-runs:
-  using: composite
-  steps:
-    - uses: ./.github/actions/pip-cache-cuda
-      with:
-        cuda-version: '11.8'
-```
+### `subrequest_output_buffer_size 100m` is load-bearing
 
-For CPU-only jobs, either use the default `PIP_INDEX_URL` (set via pod env var to the `/cpu/simple/` path), or provide a matching `pip-cache-cpu` action.
+njs subrequests buffer the full upstream response in memory before merging.
+Default is 4k, which is far too small. Indexes for grpcio (~6 MB), aiohttp
+(~7 MB), and the root pypi `/simple/` listing (~40 MB) all need the larger
+buffer. nginx memory sizing (64 GiB on default `r5d.12xlarge` allocation) is
+calibrated assuming this is set.
 
-### Comparison to git-cache-warmer
+### `/whl/` 403→404 rewrite — uv compatibility
 
-| Aspect | git-cache | pypi-cache (proposed) |
-|--------|-----------|----------------------|
-| DaemonSet | Yes | Yes |
-| Storage | NVMe hostPath | NVMe hostPath |
-| Dual-slot rotation | Yes | Yes |
-| Startup taint | `git-cache-not-ready` | `pypi-cache-not-ready` |
-| Transparency mechanism | `GIT_ALTERNATE_OBJECT_DIRECTORIES` | `PIP_INDEX_URL` / `UV_INDEX_URL` |
-| Serving | Filesystem (read-only mount) | pypiserver process (localhost HTTP) |
-| Fallback | GitHub (network fetch) | PyPI (redirect) |
-| What's cached | Git objects | Wheel files (pre-built + downloaded) |
-| Self-learning | N/A (repo list is static) | Yes (proxy logs drive builder) |
+`error_page 403 =404 @pytorch_not_found;` and `error_page 500 502 503 504 =404`
+on the PyTorch path. `download.pytorch.org` returns 403 for packages it
+doesn't carry; uv treats 403 as auth error and aborts the entire resolution.
+404 lets uv fall through to the default index. Don't change this.
 
-## Open Questions
+### `prebuilt-cache.txt` header invalidation
 
-1. ~~**Which packages need source builds?** Need to audit CI logs for `Building wheel` entries to populate `heavy-packages.txt`.~~ **Solved:** The self-learning builder detects `.tar.gz` downloads in proxy access logs and automatically builds wheels for them. An optional `heavy-packages.txt` can seed the cache for Day-1 performance but is not required.
-2. **Multiple Python versions?** If jobs use different Python versions (3.11, 3.12, etc.), wheels must be built for each. The builder should detect the Python version from the wheel filename in the access log and build with the matching interpreter.
-3. ~~**CUDA variants?** If torch or CUDA extensions are built from source, the build may need CUDA toolkit on the node (or use NVIDIA base images in the DaemonSet).~~ **Solved:** Separate index paths per CUDA version (`/cu118/simple/`, `/cu121/simple/`, etc.), each backed by its own wheelhouse directory. The builder pre-builds for all configured CUDA versions. CI jobs select the variant via a composite GitHub Action (`pip-cache-cuda`) that sets `PIP_INDEX_URL`/`UV_INDEX_URL` for the entire job via `GITHUB_ENV`. See "CUDA variant handling" and "CI integration" sections above.
-4. ~~**Cache invalidation:** How often to rebuild? On a schedule (daily)? On requirements.txt changes?~~ **Solved:** The builder runs periodically (e.g., every 6h), and unused packages are aged out after N days without access log hits. The dual-slot rotation makes rebuilds safe (old cache serves until new one is ready).
-5. ~~**Capture mechanism:** How to discover which packages are actually used without requiring workflow changes?~~ **Solved:** Proxy access logs provide complete, transparent telemetry. See "Transparent Capture" section above.
-6. **Builder concurrency:** Should the builder run on every node independently, or should one node build and distribute wheels? Per-node is simpler and avoids cross-node transfer, but wastes CPU if many nodes build the same wheels.
-7. **Access log rotation:** The builder parses access logs — need a retention/rotation policy so logs don't grow unbounded. Standard logrotate with the builder processing logs before rotation.
+The first line is `# matrix: py3.10,... x86_64,aarch64 manylinux_2_28`. If
+`python_versions`, `target_architectures`, or `target_manylinux` change in
+`clusters.yaml`, the header in S3 won't match what the collector expects, and
+the entire prebuilt cache is invalidated (every package gets re-walked against
+PyPI's JSON API). This is intentional — but it's a heavy operation and worth
+doing during quiet hours.
+
+### Adding a CUDA version is a fanout operation
+
+A new entry in `pypi_cache.cuda_versions` produces a new Deployment, Service,
+PDB, EFS subdirectory, and slot in the per-pod NVMe cache. Per-pod CPU/memory
+shrinks (`pods_per_node = len(slugs)` in `compute_pod_resources`). Re-run the
+deploy script after editing `clusters.yaml`.
+
+### pypi-cache health is a hard runtime dependency
+
+cache-enforcer blocks all direct egress to PyPI/pythonhosted/download.pytorch
+on runner nodes. If the pypi-cache pods are unhealthy or the Service has no
+endpoints, every `pip install` on every runner pod fails with a connection
+error. Treat pypi-cache rollouts during business hours as risky.
+
+### NetworkPolicy: ingress restricted to `arc-runners` namespace
+
+`networkpolicy.yaml` allows ingress only from pods in namespace
+`kubernetes.io/metadata.name: arc-runners`. Pods in other namespaces (e.g.
+`buildkit`, `kube-system`) cannot reach pypi-cache directly.
+
+### `docker/Dockerfile` is unused legacy
+
+The `docker/` directory contains a Dockerfile that declares
+`ENTRYPOINT ["python3", "/scripts/orchestrator.py"]` — but `orchestrator.py`
+does not exist anywhere in the repo, and the deployed images are upstream
+`pypiserver/pypiserver:v2.4.1` and `nginxinc/nginx-unprivileged:1.27-alpine`.
+The Dockerfile is a vestige of an earlier architecture and is not built or
+referenced by the deploy path.
 
 ## References
 
-- [pypiserver](https://github.com/pypiserver/pypiserver) — lightweight PyPI server with fallback
-- [hauntsaninja/nginx_pypi_cache](https://github.com/hauntsaninja/nginx_pypi_cache) — nginx reverse proxy config for PyPI
-- [proxpi](https://github.com/EpicWink/proxpi) — lightweight CI-focused PyPI proxy
-- [devpi-server](https://pypi.org/project/devpi-server/) — full PyPI proxy + private index
-- [pip caching docs](https://pip.pypa.io/en/stable/topics/caching/)
-- [uv caching docs](https://docs.astral.sh/uv/concepts/cache/)
-- [uv read-only cache issue #15934](https://github.com/astral-sh/uv/issues/15934)
-- [uv pip download issue #2078](https://github.com/astral-sh/uv/issues/2078)
+- `osdc-pypi-cache` skill — full operational reference (slug naming, NVMe
+  sizing, IRSA roles, log rotation, NetworkPolicy, etc.)
+- `modules/pypi-cache/` — module source (deploy script, manifests, scripts,
+  terraform)
+- `modules/cache-enforcer/` — iptables egress enforcement DaemonSet
+- `clusters.yaml` — per-cluster `pypi_cache:` config block

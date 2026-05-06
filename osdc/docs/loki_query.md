@@ -2,7 +2,7 @@
 
 ## Context
 
-The OSDC clusters ship logs to Grafana Cloud Loki via an Alloy DaemonSet. This is useful when `kubectl logs` is unavailable (pod terminated, node evicted, etc.). This doc covers how to query Loki from the CLI as an agent.
+The OSDC clusters ship three log sources to Grafana Cloud Loki: **pod logs** and **system journal logs** via an Alloy DaemonSet, and **Kubernetes events** via a separate Alloy Deployment (`alloy-events`). This is useful when `kubectl logs` is unavailable (pod terminated, node evicted, etc.) or when you need cluster-wide event history. This doc covers how to query Loki from the CLI as an agent.
 
 ## Prerequisites
 
@@ -68,23 +68,30 @@ The `start` and `end` parameters are Unix timestamps in **nanoseconds**.
 
 ## Available Labels
 
+Three log sources flow into the same Loki tenant: **pod logs**, **system journal logs**, and **Kubernetes events**. Different label sets apply per source.
+
 ### Indexed Labels (go inside `{}`)
 
-| Label | Example values | Description |
-|-------|---------------|-------------|
-| `cluster` | `pytorch-arc-cbr-production` | Cluster name from clusters.yaml |
-| `job` | `loki.source.journal.system` | Log source type |
-| `service_name` | `loki.source.journal.system` | Service name |
-| `unit` | `kubelet.service`, `containerd.service` | Systemd unit (journal logs only) |
+| Label | Source | Example values | Description |
+|-------|--------|---------------|-------------|
+| `cluster` | all | `pytorch-arc-cbr-production` | Cluster name from clusters.yaml (external label on the writer) |
+| `namespace` | pod logs | `arc-runners`, `kube-system`, `harbor-system` | Kubernetes namespace |
+| `container` | pod logs | `runner`, `coredns`, `kube-proxy` | Container name |
+| `app` | pod logs | `coredns`, `karpenter`, `harbor` | From `app.kubernetes.io/name` pod label |
+| `level` | pod + journal logs | `error`, `warn`, `info`, `debug`, `fatal` | Normalized log level (lowercase) |
+| `unit` | journal logs | `kubelet.service`, `containerd.service`, `kernel`, `nvidia-fabricmanager.service`, `nvidia-persistenced.service` | Systemd unit |
+| `kind` | k8s events | `Pod`, `Node`, `Deployment` | Event involved-object kind |
+| `type` | k8s events | `Normal`, `Warning` | Event type |
 
 ### Structured Metadata (go after `{}` with pipe `|` syntax)
 
-| Label | Example | Description |
-|-------|---------|-------------|
-| `node` | `ip-10-4-154-0.us-east-2.compute.internal` | Node hostname |
-| `pod` | `runner-abcdef-xyz` | Pod name |
-| `namespace` | `arc-runners` | Kubernetes namespace |
-| `container` | `runner` | Container name |
+| Label | Source | Example | Description |
+|-------|--------|---------|-------------|
+| `node` | pod + journal logs | `ip-10-4-154-0.us-east-2.compute.internal` | Node hostname |
+| `pod` | pod logs | `runner-abcdef-xyz` | Pod name |
+| `workflow_run_id` | pod logs (arc-runners) | `12345678901` | GitHub Actions workflow run id (extracted from runner pod logs) |
+| `reason` | k8s events | `FailedScheduling`, `BackOff` | Event reason |
+| `sourcecomponent` | k8s events | `kubelet`, `default-scheduler` | Component that emitted the event |
 
 **Key distinction**: Structured metadata uses pipe syntax AFTER the stream selector:
 ```
@@ -141,6 +148,71 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
 ```
 
+### Pod logs by namespace and container
+
+```bash
+# ... (credential extraction) ... && \
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="arc-runners", container="runner"}' \
+    --data-urlencode "limit=50" \
+    --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+```
+
+### Filter pod logs by level
+
+```bash
+# ... (credential extraction) ... && \
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="karpenter", level="error"}' \
+    --data-urlencode "limit=50" \
+    --data-urlencode "start=$(date -u -v-6H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+```
+
+### ARC runner logs for a specific GitHub workflow run
+
+```bash
+# ... (credential extraction) ... && \
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="arc-runners"} | workflow_run_id="12345678901"' \
+    --data-urlencode "limit=200" \
+    --data-urlencode "start=$(date -u -v-6H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+```
+
+### Kubernetes events
+
+```bash
+# All events
+# ... (credential extraction) ... && \
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", kind=~".+"}' \
+    --data-urlencode "limit=100" \
+    --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+
+# Warning events for Pods only
+--data-urlencode 'query={cluster="pytorch-arc-cbr-production", kind="Pod", type="Warning"}'
+
+# Filter by reason (structured metadata)
+--data-urlencode 'query={cluster="pytorch-arc-cbr-production", kind=~".+"} | reason="FailedScheduling"'
+```
+
+### GPU-related journal logs
+
+```bash
+# nvidia-fabricmanager and nvidia-persistenced events on GPU nodes
+--data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit=~"nvidia-.+"}'
+
+# Kernel messages (OOM kills, hardware errors)
+--data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="kernel"}'
+```
+
 ### Text search within logs
 
 Use LogQL's line filter after the stream selector:
@@ -170,11 +242,13 @@ To include timestamps:
 ... | jq -r '.data.result[].values[] | "\(.[0]) \(.[1])"'
 ```
 
-## Current Limitations (as of 2026-03-20)
+## Notes on what's collected
 
-- **Only journal/system logs are ingested.** The Alloy config currently ships `kubelet.service` and `containerd.service` journal logs. Kubernetes pod logs (namespace, container, pod labels) are **not** being collected. If you need pod logs, use `kubectl logs` for live pods.
-- **Structured metadata labels** (`node`, `pod`, `namespace`, `container`) may not all be populated depending on what log sources are active.
+- **Pod logs** are collected from every node by the Alloy DaemonSet (`loki.source.file` reading CRI logs from `/var/log/pods/`). Pods in the `logging` namespace are excluded to prevent feedback loops; pods in `Succeeded` or `Failed` phase are dropped at discovery; lines matching `DEBUG`/`TRACE` levels and lines longer than 16KB are dropped; per-pod rate limit is 1000 lines/s sustained / 5000 burst.
+- **Journal logs** are collected for `kubelet.service`, `containerd.service`, `kernel`, `nvidia-fabricmanager.service`, and `nvidia-persistenced.service` only. Debug-priority entries (syslog priority 7) are dropped.
+- **Kubernetes events** are collected by a separate Alloy Deployment (`alloy-events`, single replica) via the K8s Events API. Events from the `logging` namespace are dropped.
+- Some module pipelines apply additional sampling (e.g. `arc-runners` non-error logs are sampled at 10%, `buildkit` non-error logs at 50%, `harbor-system` non-error logs are throttled to 100 lines/s burst 500).
 
 ## Source
 
-Reference: `CLAUDE.md`, section "Querying Logs in Grafana Cloud Loki". Verified via live queries against `pytorch-arc-cbr-production` on 2026-03-20.
+Reference: `osdc-observability` skill ("Querying Logs in Grafana Cloud Loki" section) and `docs/observability.md`. Pipeline definitions in `modules/logging/pipelines/base.alloy`, `modules/logging/helm/alloy-events-values.yaml`, and per-module `modules/<name>/logging/pipeline.alloy` files.

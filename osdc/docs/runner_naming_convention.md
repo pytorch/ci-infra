@@ -7,7 +7,7 @@ Runner labels must stay under **~42 characters**. This limit comes from three st
 1. **ARC Helm chart** enforces a **45-character** maximum on scale set names. With ARC, the scale set name *is* the `runs-on` label — you cannot add extra labels to target ARC runners.
 2. **Kubernetes label values** are capped at **63 characters**. ARC derives resource names by appending suffixes (e.g. `-gha-rs-no-permission`, 21 chars) to the scale set name. 45 + 18 (fullname infix) = 63, exactly at the K8s ceiling.
 3. **Cilium/Istio CNI** plugins create `CiliumIdentity` resources using the ServiceAccount name as a label value. Derived SA names from a 45-char scale set name can reach ~66 chars, exceeding the 63-char limit. Keeping names at **~42 characters** avoids this entirely.
-This is why every field is abbreviated (`l` not `linux`, `avx512` not `avx-512`, no units on vCPU/memory). The longest label from our current runner catalog is 32 characters (`c-mt-l-bx86iavx512-94-344-t4-8`) — well within the ceiling.
+This is why every field is abbreviated (`l` not `linux`, `avx512` not `avx-512`, no units on vCPU/memory). The longest label from our current runner catalog is 33 characters (`c-mt-l-bx86iavx512-88-1000-a100-8`) — well within the ceiling.
 
 Reference: [actions/actions-runner-controller#2697](https://github.com/actions/actions-runner-controller/issues/2697)
 
@@ -21,16 +21,16 @@ Reference: [actions/actions-runner-controller#2697](https://github.com/actions/a
 | **Field** | **Required** | **Description** | **Values** |
 | --- | --- | --- | --- |
 | `c` (prefix) | No | Canary runner (staging / testing). Omitted for production runners. | `c` = canary, omitted = production |
-| `provider` | Yes | Organization that operates and funds the runner fleet | `mt` = Meta, `lf` = Linux Foundation, `am` = AMD, `in` = Intel, `nv` = NVIDIA, `ib` = IBM |
+| `provider` | Yes | Organization that operates and funds the runner fleet. Currently only `mt` is in active use across OSDC clusters (see `clusters.yaml`); the other codes are reserved for future provider-funded fleets. | `mt` = Meta (in use), reserved: `lf` = Linux Foundation, `am` = AMD, `in` = Intel, `nv` = NVIDIA, `ib` = IBM |
 | `rel` (prefix) | No | Release runner — dedicated runner group (`release-runners`) and node isolation (`osdc.io/runner-class: release`). Omitted for CI runners. | `rel` = release, omitted = CI |
 | `os` | Yes | Operating system | `l` = Linux, `w` = Windows, `m` = MacOS  |
 | `b` (prefix) | No | Bare-metal / dedicated instance (gets the full node — no bin-packing) | `b` = bare-metal, omitted = shared (multiple runners per node) |
 | `arch` | Yes | CPU architecture | `x86` = x86_64, `arm64` = AArch64 |
-| `vendor` | Yes | CPU vendor + generation (for ARM, this is the Graviton generation) | `i` = Intel, `a` = AMD, `g2` = Graviton 2, `g3` = Graviton 3, `g4` = Graviton 4 |
+| `vendor` | Yes | ISA family / generation, **not silicon vendor** (for ARM, this is the Graviton generation). The letter encodes the ISA convention used historically by the runner class — the underlying NodePool may run on a different vendor's silicon (e.g. `i`-named AVX-512 runners commonly run on AMD c7a/r7a; `a`-named runners may run on Intel m6i). | `i` = Intel-style ISA (AVX-512 / AMX runner classes; may run on AMD silicon supporting the same ISA), `a` = AMD-style ISA (m6a/m7a-style classes; may also run on Intel), `g2` = Graviton 2, `g3` = Graviton 3, `g4` = Graviton 4 |
 | `features` | Yes (x86 only) | CPU instruction set extensions — tells the workflow what SIMD/AI instructions are available | `avx2` = AVX2, `avx512` = AVX-512, `amx` = Intel AMX (Advanced Matrix Extensions) |
 | `vcpu` | Yes | Number of vCPUs allocated to the runner | Integer (e.g. `2`, `8`, `16`, `48`, `94`) |
 | `memory` | Yes | Memory in GiB allocated to the runner | Integer (e.g. `4`, `16`, `64`, `192`, `768`) |
-| `gpu_type` | No | GPU model (omitted for CPU-only runners) | `t4` = NVIDIA T4, `a10g` = NVIDIA A10G, `l4` = NVIDIA L4, `b200` = NVIDIA B200 |
+| `gpu_type` | No | GPU model (omitted for CPU-only runners) | `t4` = NVIDIA T4, `a10g` = NVIDIA A10G, `l4` = NVIDIA L4, `a100` = NVIDIA A100 80GB, `h100` = NVIDIA H100, `b200` = NVIDIA B200 |
 | `gpu_count` | No | Number of GPUs (omitted when count is 1) | Integer (e.g. `4`, `8`) |
 
 ## Examples
@@ -81,6 +81,17 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | linux.2xlarge.amx | m7i-flex.2xlarge | mt-l-x86iamx-8-32 |
 | linux.4xlarge.amx | m7i-flex.4xlarge | *— no equivalent* |
 | linux.8xlarge.amx | m7i-flex.8xlarge | mt-l-x86iamx-32-128 |
+
+Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI workloads):
+
+| **New Label** | **Instance** | **vCPU / memory** |
+| --- | --- | --- |
+| mt-l-x86iamx-8-16 | c7i.12xlarge | 8 / 16 GiB |
+| mt-l-x86iamx-14-27 | c7i.12xlarge | 14 / 27 GiB |
+| mt-l-x86iamx-22-41 | c7i.12xlarge | 22 / 41 GiB |
+| mt-l-x86iamx-46-84 | c7i.12xlarge | 46 / 84 GiB |
+| mt-l-x86iamx-8-64 | r7i.48xlarge | 8 / 64 GiB |
+| mt-l-x86iamx-16-128 | r7i.48xlarge | 16 / 128 GiB |
 
 ### x86 CPU — Intel AVX2 (m4 family)
 
@@ -156,6 +167,26 @@ Maps each `scale-config.yml` runner label to its OSDC ARC equivalent, matched by
 | a.linux.b200.4 | p6-b200.48xlarge | mt-l-x86iamx-88-900-b200-4 |
 | a.linux.b200.8 | p6-b200.48xlarge | mt-l-bx86iamx-176-1800-b200-8 |
 
+### x86 GPU — H100 (p5 family)
+
+
+| **Old Label** | **Instance** | **New Label** |
+| --- | --- | --- |
+| a.linux.h100 | p5.48xlarge | mt-l-x86iamx-22-225-h100 |
+| a.linux.h100.2 | p5.48xlarge | mt-l-x86iamx-44-450-h100-2 |
+| a.linux.h100.4 | p5.48xlarge | mt-l-x86iamx-88-900-h100-4 |
+| a.linux.h100.8 | p5.48xlarge | mt-l-bx86iamx-176-1800-h100-8 |
+
+### x86 GPU — A100 (p4de family)
+
+
+| **Old Label** | **Instance** | **New Label** |
+| --- | --- | --- |
+| a.linux.a100 | p4de.24xlarge | mt-l-x86iavx512-11-125-a100 |
+| a.linux.a100.2 | p4de.24xlarge | mt-l-x86iavx512-22-250-a100-2 |
+| a.linux.a100.4 | p4de.24xlarge | mt-l-x86iavx512-44-500-a100-4 |
+| a.linux.a100.8 | p4de.24xlarge | mt-l-bx86iavx512-88-1000-a100-8 |
+
 ### x86 GPU — V100 (p3 family)
 
 
@@ -197,7 +228,7 @@ Excluding trivial `.ephemeral` / `.nonephemeral` duplicates, these are the cases
 | mt-l-x86iavx512-48-384 | linux.r7i.12xlarge, linux.12xlarge.memory | r7i.12xlarge, r5.12xlarge |
 | mt-l-x86iavx512-29-115-t4 | linux.4xlarge.nvidia.gpu, linux.g4dn.4xlarge.nvidia.gpu | g4dn.4xlarge |
 
-**Note on r7i vs r5:** r7i is Sapphire Rapids (has AMX), while r5 is Cascade Lake (AVX-512 only). Both are mapped to `x86iavx512` in our current defs because the underlying OSDC NodePool runs on r5.24xlarge regardless — the label reflects what is actually delivered, not what the old instance could do.
+**Note on r7i vs r5:** r7i is Sapphire Rapids (has AMX), while r5 is Cascade Lake (AVX-512 only). Both are mapped to `x86iavx512` in our current defs because the underlying OSDC memory-optimized NodePool runs on `r7a.48xlarge` (AMD EPYC, AVX-512 only — no AMX) regardless. The previous `r5.24xlarge` NodePool has been retired for ARC use (it is retained only for RE job-assigner workloads — see `docs/node-utilization-optimization.md`). The label reflects what is actually delivered, not what the old instance type could do.
 
 ### What do workflows actually lose?
 
@@ -205,7 +236,7 @@ There are two categories of collapse, with different implications:
 
 **1. The **`.ephemeral`** / **`.nonephemeral`** duplicates — no difference at all.** Both members of each pair run the exact same instance type with `is_ephemeral: true` in scale-config.yml. They were created as separate labels historically (likely during a migration from persistent to ephemeral runners), but the config is identical. Workflows just happened to pick one label or the other. Pure cruft.
 
-**2. The cross-instance-family collapses — the difference is CPU microarchitecture.** In the old system, a workflow author could target a specific CPU generation by picking the right label (e.g., `linux.r7i.2xlarge` for Sapphire Rapids with AMX vs `linux.2xlarge.memory` for Cascade Lake with AVX-512). In OSDC, the NodePool decides the instance type — and right now those NodePools run on Cascade Lake (r5), so both old labels collapse to `mt-...-x86iavx512-...`. A workflow that previously ran on r7i and depended on AMX instructions would silently lose that capability.
+**2. The cross-instance-family collapses — the difference is CPU microarchitecture.** In the old system, a workflow author could target a specific CPU generation by picking the right label (e.g., `linux.r7i.2xlarge` for Sapphire Rapids with AMX vs `linux.2xlarge.memory` for Cascade Lake with AVX-512). In OSDC, the NodePool decides the instance type — and right now the memory-optimized NodePool runs on AMD `r7a.48xlarge` (AVX-512, no AMX), so both old labels collapse to `mt-...-x86iavx512-...`. A workflow that previously ran on r7i and depended on AMX instructions would silently lose that capability.
 
 In practice, **no PyTorch CI workflow uses AMX instructions directly** — the r7i and c7i runners were added as cheaper/newer alternatives, not because workflows needed AMX. The collapse is safe. If AMX becomes important later, the naming convention already supports it: create a separate `x86iamx` runner backed by a NodePool targeting Sapphire Rapids or newer instances.
 

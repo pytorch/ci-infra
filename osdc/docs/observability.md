@@ -31,6 +31,8 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
                   │ exporters:    │  │ /var/log/journal │
                   │ - node-export │  │ (every node)    │
                   │ - kube-state  │  └─────────────────┘
+                  │ - kubelet/    │
+                  │   cAdvisor    │
                   │ - operator    │
                   └───────────────┘
 ```
@@ -48,7 +50,7 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
 | **Config source** | Helm-generated (alloy-values.yaml) | Assembled ConfigMap (`assemble_config.py`) | Inline in Helm values |
 | **Data destination** | Grafana Cloud Mimir (metrics) | Grafana Cloud Loki (logs) | Grafana Cloud Loki (logs) |
 | **Secret name** | `grafana-cloud-credentials` in `monitoring` | `grafana-cloud-credentials` in `logging` | `grafana-cloud-credentials` in `logging` |
-| **Secret keys** | `username`, `password` (URL from `clusters.yaml`) | `loki-username`, `loki-api-key-write`, `loki-api-key-read` | Same as Logging Alloy |
+| **Secret keys** | `username`, `password` (URL from `clusters.yaml`) | `loki-username`, `loki-api-key-write` (Alloy uses write only; `loki-api-key-read` is required by `docs/loki_query.md` tooling, not Alloy) | Same as Logging Alloy |
 
 ### Why three separate installations?
 
@@ -83,55 +85,86 @@ The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 | ServiceMonitor | dcgm-exporter | monitoring | NVIDIA GPU metrics (DCGM) |
 | ServiceMonitor | buildkit | buildkit | BuildKit daemon metrics |
 | ServiceMonitor | buildkit-haproxy | buildkit | BuildKit HAProxy LB metrics |
+| ServiceMonitor | pushgateway | monitoring | Prometheus Pushgateway (push-based metrics from short-lived jobs) |
+| ServiceMonitor | pypi-cache | pypi-cache | pypi-cache nginx metrics (`nginx_up`, requests, active connections) |
 | PodMonitor | coredns | kube-system | CoreDNS request rate, latency, cache hit/miss, errors |
 | PodMonitor | git-cache-daemonset | kube-system | Git cache DaemonSet metrics |
 | PodMonitor | arc-listeners | arc-systems | ARC listener pods metrics |
 
 Plus kube-prometheus-stack built-in targets:
-- **node-exporter** — DaemonSet on ALL nodes (tolerates all taints), 60s interval
+- **node-exporter** — DaemonSet on ALL nodes (tolerates all taints), 60s interval; heavily filtered (see "Layer 2" below — only `node_memory_MemAvailable_bytes` and `node_memory_MemTotal_bytes` are kept)
 - **kube-state-metrics** — Deployment on base-infrastructure nodes
-- **cAdvisor** — Built-in to kubelet, scraped via Prometheus Operator configs
+- **kubelet ServiceMonitor** — built-in scrape of `/metrics` and cAdvisor at 60s interval; `/metrics/probes` is disabled. Heavily filtered: kubelet keeps only `kubelet_running_(pods|containers)|kubelet_node_name`; cAdvisor keeps only `container_memory_working_set_bytes|container_memory_rss`
 
-### Cost-control filtering
+### Cost-control filtering (three layers)
 
-Alloy applies `prometheus.relabel "cost_control"` rules before `remote_write` to drop high-cardinality or low-value metrics:
+Filtering happens at three layers, each closer to the source than the previous:
 
-| Category | Dropped metrics |
-|----------|----------------|
-| cAdvisor network/tasks | `container_network_(tcp\|udp)_usage_total`, `container_tasks_state`, `container_cpu_load_average_10s`, `container_memory_failures_total` |
-| cAdvisor lifecycle/spec | `container_blkio_device_usage_total`, `container_last_seen`, `container_start_time_seconds`, `container_spec_.*` |
-| KSM low-value | `kube_.*_created`, `kube_.*_metadata_resource_version`, `kube_secret_.*`, `kube_configmap_.*`, `kube_endpoint_.*`, `kube_lease_.*` |
-| ARC histogram buckets | `gha_job_(execution\|startup)_duration_seconds_bucket` (sum/count kept) |
-| API server low-value | `go_.*`, `process_.*`, `workqueue_.*` (runtime/process/queue internals) |
-| API server histogram buckets | `apiserver_request_duration_seconds_bucket`, `apiserver_request_sli_duration_seconds_bucket`, `apiserver_response_sizes_bucket`, `apiserver_watch_events_sizes_bucket`, `apiserver_admission_controller_admission_duration_seconds_bucket` (sum/count kept) |
-| CoreDNS low-value | `go_.*`, `process_.*` (runtime/process internals) |
-| CoreDNS histogram buckets | `coredns_dns_request_duration_seconds_bucket`, `coredns_forward_request_duration_seconds_bucket` (sum/count kept) |
+1. **`--metric-allowlist` (KSM server-side)** — controls which resource groups KSM generates at all.
+2. **ServiceMonitor / PodMonitor `metricRelabelings`** — `keep` whitelists per source. This is where most per-target filtering happens.
+3. **Alloy `prometheus.relabel "cost_control"`** — final safety net before `remote_write`, catches anything not filtered at source.
 
-**KSM metric allowlist** — only these resource types are emitted:
+#### Layer 1: KSM metric allowlist
+
+Only these resource types are emitted by kube-state-metrics:
+
 ```
 kube_(daemonset|deployment|pod|namespace|node|statefulset|persistentvolume|
-      horizontalpodautoscaler|replicaset|job)_.+
+      horizontalpodautoscaler|job)_.+
 ```
 
-**Node-exporter disabled collectors**: bcache, bonding, infiniband, nfs, nfsd, fibrechannel, ipvs, rapl, schedstat, interrupts. Filesystem and netdev have exclusion patterns for virtual filesystems and virtual network interfaces.
+(No `replicaset` group — ReplicaSet metrics are intentionally excluded.)
 
-**DCGM label drops**: `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id` dropped to reduce cardinality.
+A second `keep` rule on the KSM ServiceMonitor narrows further (e.g. `kube_daemonset_status_(desired_number_scheduled|number_ready|...)`, only specific deployment fields, only error/restart pod metrics) and several `drop` rules strip routine reasons (`Completed`, `Shutdown`, `NodeAffinity`) and successful exit codes.
+
+#### Layer 2: ServiceMonitor / PodMonitor `metricRelabelings`
+
+Per-source `keep` whitelists or targeted `drop` rules — most filtering lives here. Examples (not exhaustive):
+
+| Source | Filter |
+|--------|--------|
+| `apiserver` ServiceMonitor | `keep`: `apiserver_request_total\|apiserver_request_terminations_total` only |
+| `coredns` PodMonitor | `drop`: `go_.*`, `process_.*`, `coredns_dns_request_duration_seconds_bucket\|coredns_forward_request_duration_seconds_bucket` |
+| `pypi-cache` ServiceMonitor | `keep`: `nginx_up\|nginx_http_requests_total\|nginx_connections_active` only |
+| kubelet (built-in) | `keep`: `kubelet_running_(pods\|containers)\|kubelet_node_name` |
+| cAdvisor (built-in via kubelet) | `keep`: `container_memory_working_set_bytes\|container_memory_rss` only — `/metrics/probes` is disabled |
+| node-exporter (built-in) | `keep`: `node_memory_MemAvailable_bytes\|node_memory_MemTotal_bytes` only — drops everything else including all CPU, disk I/O, filesystem, network, and load metrics |
+| DCGM ServiceMonitor | label drops: `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id` |
+
+#### Layer 3: Alloy `cost_control` (safety net)
+
+Final drops applied to anything that escapes layers 1–2:
+
+| Rule | What it does |
+|------|----|
+| KSM low-value drop | Drops `kube_.*_created`, `kube_.*_metadata_resource_version`, `kube_secret_.*`, `kube_configmap_.*`, `kube_endpoint_.*`, `kube_lease_.*` |
+| Control-plane scoping (load-bearing) | Two-step replace+drop: `kube_pod_container_status_restarts_total`, `container_memory_working_set_bytes`, `container_memory_rss` are KEPT only for namespaces `arc-systems\|karpenter\|harbor-system\|monitoring\|logging\|buildkit` and DROPPED for all others. RE2 has no lookahead so the rule tags survivors with `__keep_cp__="true"` then drops anything matching but not tagged. The `arc-runners` exclusion is intentional cost control — alerting (e.g. `ControlPlaneCrashLoop`) only fires on these namespaces. |
+| Misc high-cardinality drop | Drops `kubernetes_feature_enabled` |
+| ARC histogram buckets | Drops `gha_job_(execution\|startup)_duration_seconds_bucket` (sum/count kept) |
+| Runtime/operator internals | Drops `go_.*`, `process_.*`, `promhttp_.*`, `prometheus_operator_.*` from any source |
+
+**Node-exporter disabled collectors** (Layer 1, via `--no-collector.*` extra args): bcache, bonding, infiniband, nfs, nfsd, fibrechannel, ipvs, rapl, schedstat, interrupts. Filesystem and netdev also have exclusion patterns for virtual filesystems and virtual network interfaces.
 
 ### Alerting
 
-PrometheusRule CRDs are defined locally and synced to Grafana Cloud Mimir via Alloy's `mimir.rules.kubernetes` component for remote evaluation. Three alert groups:
+PrometheusRule CRDs are defined locally and synced to Grafana Cloud Mimir via Alloy's `mimir.rules.kubernetes` component for remote evaluation. Six alert groups across six PrometheusRule files in `kubernetes/alerts/`:
 
-| Alert | Condition |
-|-------|-----------|
-| `ARCListenerStall` | Assigned jobs stuck for 15m |
-| `GPUDoublebitECCError` | Uncorrectable memory errors |
-| `GPUXIDCriticalError` | XID 48/79/94/95 errors |
-| `GPURowRemapFailure` | Row remapping failed |
-| `GPUTemperatureCritical` | GPU temp >95C for 5m |
-| `NodeNotReady` | Node not ready for 5m |
-| `ControlPlaneCrashLoop` | >5 restarts/hr in control-plane namespaces |
-| `HarborDown` | Harbor not responding for 5m |
-| `KarpenterNodeClaimNotReady` | NodeClaim created but no node joins for 15m |
+| Group | Alert | Condition |
+|-------|-------|-----------|
+| arc | `ARCListenerStall` | Assigned jobs stuck for 15m |
+| gpu | `GPUDoublebitECCError` | Uncorrectable memory errors |
+| gpu | `GPUXIDCriticalError` | XID 48/79/94/95 errors |
+| gpu | `GPURowRemapFailure` | Row remapping failed |
+| gpu | `GPUTemperatureCritical` | GPU temp >95C for 5m |
+| infrastructure | `NodeNotReady` | Node not ready for 5m |
+| infrastructure | `ControlPlaneCrashLoop` | >5 restarts/hr in control-plane namespaces |
+| infrastructure | `HarborDown` | Harbor not responding for 5m |
+| infrastructure | `KarpenterNodeClaimNotReady` | NodeClaim created but no node joins for 15m |
+| node-compactor | `NodeCompactorReconcileErrors` | Continuous reconciliation errors for 15m (burst-absorption offline) |
+| zombie-cleanup | `ZombieCleanupCapReached` | Per-round cap reached — zombie pods deferred to next run |
+| harbor-cache-recovery | `HarborCacheRecoveryFailing` | Cache-recovery CronJob failing for 15m (≥3 consecutive runs at */5) |
+| harbor-cache-recovery | `HarborCacheRecoveryOOM` | Recovery pod OOMKilled (most common root cause — listing pods cluster-wide) |
+| harbor-cache-recovery | `HarborCacheRecoveryStale` | No successful recovery run in >30m (CronJob suspended/stuck) |
 
 ### Adding a new ServiceMonitor/PodMonitor
 
@@ -173,7 +206,31 @@ See [observability-estimates.md](observability-estimates.md#metrics-cardinality-
 
 1. **Pod logs** — `loki.source.file` reads CRI-format logs from `/var/log/pods/` on each node (Alloy DaemonSet)
 2. **System journal** — `loki.source.journal` reads kubelet, containerd, kernel, nvidia-fabricmanager, and nvidia-persistenced logs from `/var/log/journal` (Alloy DaemonSet)
-3. **Kubernetes events** — `loki.source.kubernetes_events` watches the K8s Events API and pushes events as JSON log lines (Alloy Events Deployment, single replica)
+3. **Kubernetes events** — `loki.source.kubernetes_events` watches the K8s Events API and pushes events as JSON log lines (Alloy Events Deployment, single replica). The events Alloy is more than a passthrough: it does its own JSON extraction (`reason`, `type`, `kind`, `sourcecomponent`), drops events from the `logging` namespace (feedback-loop prevention), promotes `type` and `kind` to labels, and attaches `reason` and `sourcecomponent` as structured metadata.
+
+### Base pipeline drops
+
+The base pipeline applies hard drops that affect every log line — these run before module pipelines and the final rate-limit:
+
+- **Completed pods** — drop pods in `Succeeded|Failed` phase (target relabel before `loki.source.file`).
+- **`logging` namespace** — drop all pods in the `logging` namespace (feedback-loop prevention; Alloy's own log shipping must not be ingested).
+- **DEBUG/TRACE lines** — `stage.drop` with case-insensitive level token match (`drop_counter_reason="low_log_level"`).
+- **Oversized lines** — drop lines >16KB (`drop_counter_reason="oversized_line"`).
+- **Health probes** — drop lines containing `kube-probe/`.
+- **Journal debug** — drop journal entries with priority 7 (`drop_counter_reason="journal_debug"`).
+
+### Level normalization
+
+After module pipelines run (which may extract a `level` value), the base pipeline normalizes any extracted `level`:
+
+1. Lowercases the value (e.g. `ERROR` → `error`, `WARN` → `warn`).
+2. Maps short aliases to canonical names: `err|e` → `error`, `warning|w` → `warn`, `information|i` → `info`, `dbg|d` → `debug`, `f` → `fatal`.
+
+Modules that extract `level` get this normalization for free.
+
+### Rate limiting
+
+After module pipelines and level normalization, a global per-pod rate-limit applies: `stage.limit { rate = 1000, burst = 5000, by_label_name = "pod" }`. This is a safety valve — well-behaved noisy sources should be sampled or rate-limited in their module pipeline so important logs are protected before this limiter fires.
 
 ### Label strategy
 
@@ -195,9 +252,10 @@ Each module can contribute log parsing rules by placing a `logging/pipeline.allo
 During deploy, `assemble_config.py`:
 
 1. Reads `clusters.yaml` to get the cluster's enabled modules
-2. For each module, checks `modules/<name>/logging/pipeline.alloy`
-3. Inserts all discovered blocks at the `// MODULE_PIPELINES` marker in `base.alloy`
-4. Outputs the assembled config as a ConfigMap YAML (`alloy-logging-config`)
+2. For each module (except `logging` itself, which owns the base pipeline), checks `modules/<name>/logging/pipeline.alloy`
+3. **Consumer/upstream overlay**: the assembler is invoked with both `--modules-dir` (consumer, `OSDC_ROOT/modules`) and `--upstream-modules-dir` (`OSDC_UPSTREAM/modules`). The consumer path is checked first; if absent, it falls back to upstream. An empty/whitespace-only consumer file is an explicit **opt-out** — the upstream pipeline is NOT used as a fallback in that case, allowing consumers to suppress a module's logging pipeline.
+4. Inserts all discovered blocks at the `// MODULE_PIPELINES` marker in `base.alloy`
+5. Outputs the assembled config as a ConfigMap YAML (`alloy-logging-config`)
 
 **Example module pipeline** (`modules/karpenter/logging/pipeline.alloy`):
 
@@ -218,6 +276,16 @@ stage.match {
 }
 ```
 
+**Per-module sampling and rate limits** — module pipelines do more than parsing; they also enforce volume controls before the base pipeline's global rate-limit:
+
+| Module | Behavior |
+|--------|----------|
+| `arc` (controller) | Logfmt parse, extract `level` |
+| `arc` (runners) | Extract `level`, then **sample non-error logs at 10%**. `workflow_run_id` regex extraction runs only on the survivors and is promoted to structured metadata. Errors/warns/fatals/panics always kept. |
+| `buildkit` | Logfmt parse, extract `level`, then **sample non-error logs at 50%**. |
+| `monitoring` | Parses Prometheus operator JSON, kube-state-metrics klog, Harbor JSON, Harbor nginx access logs (drops `/health` probes, extracts status). **Rate-limits non-error `harbor-system` logs** (`stage.limit` rate=100, burst=500). |
+| `karpenter` | Extract `level` from zap JSON (the example above). |
+
 ### Credential setup (logging)
 
 ```bash
@@ -228,6 +296,8 @@ kubectl create secret generic grafana-cloud-credentials \
   --from-literal=loki-api-key-write='<API_KEY_WITH_LOGS_WRITE_SCOPE>' \
   --from-literal=loki-api-key-read='<API_KEY_WITH_LOGS_READ_SCOPE>'
 ```
+
+Alloy (DaemonSet + events Deployment) only consumes `loki-username` and `loki-api-key-write`. The `loki-api-key-read` key is consumed by the read tooling described in `docs/loki_query.md` — it must exist in the cluster but is not mounted into Alloy.
 
 ### Configuration (clusters.yaml)
 
@@ -247,9 +317,10 @@ See [observability-estimates.md](observability-estimates.md#log-volume-estimatio
 ### Monitoring (module — runs during `deploy-module`)
 
 1. Justfile applies `kubernetes/kustomization.yaml` (namespace + DCGM DaemonSet)
-2. `deploy.sh` installs kube-prometheus-stack (CRDs + exporters)
-3. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors, PodMonitors, and PrometheusRules — alerts are included via kustomization, requires CRDs from step 2)
-4. `deploy.sh` conditionally installs Alloy (if `grafana-cloud-credentials` secret exists)
+2. `deploy.sh` installs kube-prometheus-stack (CRDs + exporters), chart `v82.10.3`
+3. `deploy.sh` installs Prometheus Pushgateway (chart `v3.6.0`, runs on base-infrastructure, scraped by the `pushgateway` ServiceMonitor)
+4. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors, PodMonitors, and PrometheusRules — alerts are included via kustomization, requires CRDs from step 2)
+5. `deploy.sh` conditionally installs Alloy (chart version from `clusters.yaml` `alloy_chart_version`, currently `1.6.2`) if `grafana-cloud-credentials` secret exists
 
 ### Logging (module — runs during `deploy-module`)
 
@@ -279,6 +350,10 @@ kube-prometheus-stack's Prometheus Operator admission webhook pre-install job ha
 ### Alloy memory on high-throughput nodes
 
 CI nodes can have 100+ concurrent runner pods each producing logs. The logging Alloy DaemonSet is configured with 1Gi request / 2Gi limit and GC tuning (`GOGC=200`, `GOMEMLIMIT=1800MiB`). Under sustained backpressure (Loki down, rate-limited), Alloy may still OOM on high-throughput nodes. Check `kubectl describe pod` for OOMKilled events. The `stage.limit` rate limiter (1000 lines/s, burst 5000, scoped `by_label_name = "pod"` so each source pod is rate-limited independently) helps bound memory usage.
+
+### `NODE_NAME` env var (logging DaemonSet)
+
+`deploy.sh` injects `NODE_NAME` into the logging Alloy pod from `spec.nodeName` via the downward API. The base pipeline depends on it for two things: the pod-discovery field selector (`field = "spec.nodeName=" + env("NODE_NAME")`) so each DaemonSet pod only discovers pods on its own node, and as the `node` static label on journal entries. If `NODE_NAME` is not set, pod discovery and journal labelling break.
 
 ### Module pipeline ordering
 
