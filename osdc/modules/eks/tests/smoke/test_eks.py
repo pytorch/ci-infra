@@ -2,7 +2,7 @@
 
 import pytest
 import yaml
-from helpers import get_unstable_node_names, run_aws, run_kubectl
+from helpers import get_unstable_node_names, pod_is_on_unstable_node, run_aws, run_kubectl
 
 pytestmark = [pytest.mark.live, pytest.mark.aws]
 
@@ -112,16 +112,25 @@ class TestEKSAddons:
         assert len(pods) > 0, f"Addon {addon_name}: no pods found with label {label_key}={label_value} in {ns}"
 
         nodes_result = run_kubectl(["get", "nodes"])
-        unstable = get_unstable_node_names(nodes_result)
+        unstable_nodes = get_unstable_node_names(nodes_result)
 
-        not_running = [
-            p["metadata"]["name"]
-            for p in pods
-            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable
-        ]
+        # Bucket non-Running pods into "on stable host" (real failure) vs "on
+        # unstable/missing host" (Karpenter-roll race). Counting both for the
+        # diagnostic message even though only the first triggers the assertion.
+        not_running: list[str] = []
+        excluded: list[str] = []
+        for p in pods:
+            if p["status"].get("phase") == "Running":
+                continue
+            if pod_is_on_unstable_node(p, nodes_result):
+                excluded.append(p["metadata"]["name"])
+            else:
+                not_running.append(p["metadata"]["name"])
+
         assert not not_running, (
             f"Addon {addon_name} status is {status} and pods are unhealthy on stable nodes: "
-            f"{not_running} ({len(unstable)} unstable nodes excluded)"
+            f"{not_running} ({len(unstable_nodes)} unstable nodes, "
+            f"{len(excluded)} pods on unstable/missing hosts excluded)"
         )
 
 
