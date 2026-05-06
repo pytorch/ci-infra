@@ -4,7 +4,7 @@ project-doc: enabled
 
 ## What This Is
 
-Modular Kubernetes infrastructure platform on AWS EKS. A shared `base/` provides the cluster (VPC, EKS, Harbor, git cache, GPU plugins), and optional `modules/` layer services on top (ARC, runners, BuildKit, future projects). One codebase drives multiple clusters across regions via `clusters.yaml`.
+Modular Kubernetes infrastructure platform on AWS EKS. The `modules/eks/` module provisions the cluster (VPC, EKS, Harbor S3/IAM via tofu); `base/` layers cluster-wide k8s resources on top (Harbor Helm chart, git cache, NVIDIA device plugin, image-cache-janitor, node tuning, runner-base image). Optional `modules/` (ARC, runners, BuildKit, nodepools, pypi-cache, monitoring, logging, etc.) deploy on top. One codebase drives multiple clusters across regions via `clusters.yaml`.
 
 Working directory: `osdc/`. Run all commands from here.
 
@@ -39,7 +39,7 @@ If either fails, fix the issues before finishing. Do not defer lint or test fail
 
 ## GPU Fleet Unification & NUMA Topology
 
-GPU families (g5, g6, g4dn) use unified single-fleet definitions (all GPU counts in one fleet). GPU allocation is handled by `nvidia.com/gpu` resource requests, not fleet-level isolation. All Karpenter nodes use `topologyManagerPolicy: restricted` — mixed GPU packing on multi-GPU nodes can cause NUMA fragmentation and TopologyAffinityError livelocks. Monitor for this; switch to `best-effort` policy if observed. See `actions-knowledge-base/docs/osdc/numa-topology-gpu-fleet-unification.md` for details.
+GPU families (g5, g6, g4dn) use unified single-fleet definitions (all GPU counts in one fleet). GPU allocation is handled by `nvidia.com/gpu` resource requests, not fleet-level isolation. Default `topologyManagerPolicy` is `best-effort`; multi-NUMA GPU instances (p4de, p5, p6-b200) override per-def to `single-numa-node` to prevent NUMA fragmentation and TopologyAffinityError livelocks under mixed GPU packing. See `actions-knowledge-base/docs/osdc/numa-topology-gpu-fleet-unification.md` for details.
 
 ## Skills Reference
 
@@ -54,6 +54,7 @@ Detailed instructions are broken into on-demand skills. Load the relevant skill 
 | `osdc-observability` | Monitoring + logging pipelines, three-Alloy architecture, Loki log queries, label strategy, module pipelines, credentials | Working on monitoring, logging, Alloy, querying logs |
 | `osdc-cli-debugging` | Read-only kubectl, aws, helm, tofu commands and safety boundaries | Investigating cluster state, debugging pods |
 | `osdc-harbor` | Harbor Helm chart gotchas, image mirroring, proxy cache configuration | Working on Harbor or container registry config |
+| `osdc-pypi-cache` | PyPI wheel cache module — per-CUDA nginx+pypiserver fanout, EFS wheelhouse, S3 wheel pipeline, slug naming, prebuilt-cache.txt, NetworkPolicy, IRSA | Working on the pypi-cache module or debugging pip install failures on runners |
 
 Load the relevant `osdc-*` skill when you need detailed instructions on any specific topic.
 
@@ -74,5 +75,5 @@ Reference documentation in `docs/`:
 | `docs/current_runner_load_distribution.md` | Job counts and peak concurrency by runner type (pytorch/pytorch, from ClickHouse) |
 | `docs/node-utilization-optimization.md` | Runner-to-node packing efficiency analysis and instance type recommendations |
 | `docs/node-warmup-and-scheduling-gates.md` | Full node initialization sequence — taints, DaemonSets, init containers before job scheduling |
-| `docs/initialize-containers-slowness.md` | Root-cause analysis of "Initialize containers" delays (ARC workspace copy + CPU starvation) |
-| `docs/pr-migration.md` | Migration plan from monolithic `arc/` to modular `osdc/` layout |
+| `docs/arc-fork-build-deploy.md` | ARC fork (jeanschmidt/actions-runner-controller) build/release workflow and chart publishing |
+| `docs/pypi-package-cache.md` | PyPI wheel cache architecture, slug naming, S3 layout, runner integration |

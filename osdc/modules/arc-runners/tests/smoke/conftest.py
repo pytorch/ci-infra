@@ -13,6 +13,13 @@ import pytest
 import yaml
 from smoke_conftest import *  # noqa: F403
 
+# Submodules that delegate to arc-runners/deploy.sh with their own defs/
+# (e.g. arc-runners-b200, arc-runners-h100). They share the upstream template
+# but live under their own modules/ directory and emit YAMLs into their own
+# generated/ dir. The fixture below regenerates each one separately so the
+# coherence tests see ALL listener pods, not just the base arc-runners ones.
+_ARC_RUNNERS_MODULE_PREFIX = "arc-runners"
+
 
 @pytest.fixture(scope="session")
 def generated_arc_runners(cluster_id: str, upstream_dir: Path) -> dict[str, dict]:
