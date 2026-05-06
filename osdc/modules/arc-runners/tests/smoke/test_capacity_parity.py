@@ -188,21 +188,32 @@ def _toleration_key(t: dict[str, Any]) -> tuple:
     return (t.get("key"), t.get("operator"), t.get("value"), t.get("effect"))
 
 
-# Tolerations the K8s `DefaultTolerationSeconds` admission controller injects
-# on every pod that doesn't already declare them. The placeholder pod is
-# observed LIVE (post-admission) while the workflow pod is loaded from the
-# hook ConfigMap (pre-admission template), so these would always appear as
-# spurious "excess" entries. Filter them out — when the workflow pod is
-# actually scheduled, admission will inject the same defaults.
-_K8S_DEFAULT_TOLERATION_KEYS = frozenset({"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"})
+# Tolerations injected by K8s admission controllers that are absent from the
+# pre-admission workflow pod template loaded from the hook ConfigMap. The
+# placeholder is observed LIVE (post-admission), so these would always
+# appear as spurious "excess" entries. Filter them on the placeholder side
+# — when the workflow pod is actually scheduled, admission will inject the
+# same tolerations.
+#
+# Sources:
+#   - DefaultTolerationSeconds → not-ready / unreachable @ NoExecute (300s)
+#     added to every pod that doesn't already declare them.
+#   - ExtendedResourceToleration → nvidia.com/gpu @ NoSchedule added to any
+#     pod requesting that extended resource. Workflow pods request the GPU
+#     so they get it; placeholders mirror it explicitly to land on the same
+#     nodes (placeholders themselves don't request the resource).
+_ADMISSION_NOEXECUTE_KEYS = frozenset({"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"})
+_ADMISSION_NOSCHEDULE_EXTENDED_RESOURCE_KEYS = frozenset({"nvidia.com/gpu"})
 
 
-def _is_k8s_default_toleration(t: dict[str, Any]) -> bool:
-    return (
-        t.get("key") in _K8S_DEFAULT_TOLERATION_KEYS
-        and t.get("operator") == "Exists"
-        and t.get("effect") == "NoExecute"
-    )
+def _is_admission_injected_toleration(t: dict[str, Any]) -> bool:
+    if t.get("operator") != "Exists":
+        return False
+    effect = t.get("effect")
+    key = t.get("key")
+    if effect == "NoExecute" and key in _ADMISSION_NOEXECUTE_KEYS:
+        return True
+    return effect == "NoSchedule" and key in _ADMISSION_NOSCHEDULE_EXTENDED_RESOURCE_KEYS
 
 
 def _excess_tolerations(placeholder_spec: dict, workflow_spec: dict) -> list[dict]:
@@ -216,7 +227,7 @@ def _excess_tolerations(placeholder_spec: dict, workflow_spec: dict) -> list[dic
     return [
         t
         for t in (placeholder_spec.get("tolerations") or [])
-        if _toleration_key(t) not in wf and not _is_k8s_default_toleration(t)
+        if _toleration_key(t) not in wf and not _is_admission_injected_toleration(t)
     ]
 
 
