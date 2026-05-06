@@ -188,6 +188,23 @@ def _toleration_key(t: dict[str, Any]) -> tuple:
     return (t.get("key"), t.get("operator"), t.get("value"), t.get("effect"))
 
 
+# Tolerations the K8s `DefaultTolerationSeconds` admission controller injects
+# on every pod that doesn't already declare them. The placeholder pod is
+# observed LIVE (post-admission) while the workflow pod is loaded from the
+# hook ConfigMap (pre-admission template), so these would always appear as
+# spurious "excess" entries. Filter them out — when the workflow pod is
+# actually scheduled, admission will inject the same defaults.
+_K8S_DEFAULT_TOLERATION_KEYS = frozenset({"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"})
+
+
+def _is_k8s_default_toleration(t: dict[str, Any]) -> bool:
+    return (
+        t.get("key") in _K8S_DEFAULT_TOLERATION_KEYS
+        and t.get("operator") == "Exists"
+        and t.get("effect") == "NoExecute"
+    )
+
+
 def _excess_tolerations(placeholder_spec: dict, workflow_spec: dict) -> list[dict]:
     """Return placeholder tolerations NOT present on the workflow pod.
 
@@ -196,7 +213,11 @@ def _excess_tolerations(placeholder_spec: dict, workflow_spec: dict) -> list[dic
     pod cannot. Returns [] when placeholder ⊆ workflow.
     """
     wf = {_toleration_key(t) for t in (workflow_spec.get("tolerations") or [])}
-    return [t for t in (placeholder_spec.get("tolerations") or []) if _toleration_key(t) not in wf]
+    return [
+        t
+        for t in (placeholder_spec.get("tolerations") or [])
+        if _toleration_key(t) not in wf and not _is_k8s_default_toleration(t)
+    ]
 
 
 # ---------------------------------------------------------------------------
