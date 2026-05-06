@@ -190,6 +190,19 @@ def _parse_k8s_timestamp(ts: str) -> float:
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
 
 
+def pod_age_seconds(pod: dict) -> float | None:
+    """Pod age in seconds from metadata.creationTimestamp, or None if missing.
+
+    Use to grant a startup window to freshly-(re)scheduled pods independent
+    of node age — DaemonSets can roll/evict onto long-stable nodes, and the
+    new pod needs the same image-pull/init time as one on a young node.
+    """
+    created = pod.get("metadata", {}).get("creationTimestamp", "")
+    if not created:
+        return None
+    return time.time() - _parse_k8s_timestamp(created)
+
+
 def _is_node_unstable(node: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> bool:
     """Check if a single node is unstable (new, NotReady, cordoned, or being deleted)."""
     meta = node.get("metadata", {})

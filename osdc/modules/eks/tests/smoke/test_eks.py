@@ -2,7 +2,14 @@
 
 import pytest
 import yaml
-from helpers import get_unstable_node_names, run_aws, run_kubectl
+from helpers import (
+    RECENTLY_STABLE_AGE_SECONDS,
+    get_recently_stable_node_names,
+    get_unstable_node_names,
+    pod_age_seconds,
+    run_aws,
+    run_kubectl,
+)
 
 pytestmark = [pytest.mark.live, pytest.mark.aws]
 
@@ -113,15 +120,36 @@ class TestEKSAddons:
 
         nodes_result = run_kubectl(["get", "nodes"])
         unstable = get_unstable_node_names(nodes_result)
+        # Recently-stable nodes (between min_node_age and recently_stable_age)
+        # passed the unstable threshold but DaemonSet pods on them may still
+        # be pulling images or creating containers. Tolerate Pending phase
+        # there — same grace window the rest of the smoke suite applies.
+        recently_stable = get_recently_stable_node_names(nodes_result)
 
-        not_running = [
-            p["metadata"]["name"]
-            for p in pods
-            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable
-        ]
+        not_running = []
+        for p in pods:
+            phase = p["status"].get("phase")
+            if phase == "Running":
+                continue
+            node = p["spec"].get("nodeName")
+            if node in unstable:
+                continue
+            if phase == "Pending":
+                # Skip Pending pods that are still inside the startup window
+                # — either because the node itself is recently stable, or
+                # because the pod was freshly (re)scheduled (rolling restart,
+                # eviction) onto a long-stable node and is still pulling
+                # images / initializing containers.
+                if node in recently_stable:
+                    continue
+                age = pod_age_seconds(p)
+                if age is not None and age < RECENTLY_STABLE_AGE_SECONDS:
+                    continue
+            not_running.append(p["metadata"]["name"])
+
         assert not not_running, (
             f"Addon {addon_name} status is {status} and pods are unhealthy on stable nodes: "
-            f"{not_running} ({len(unstable)} unstable nodes excluded)"
+            f"{not_running} ({len(unstable)} unstable, {len(recently_stable)} recently-stable nodes excluded)"
         )
 
 
