@@ -52,6 +52,31 @@ WORKFLOW_PLACEHOLDER_LABELS = {
     LABEL_ROLE: ROLE_PLACEHOLDER_WORKFLOW,
 }
 
+# Tolerations that legitimately appear on the live placeholder pod but not in
+# the pre-admission workflow pod template (with the same tuple shape). Filtered
+# from the placeholder before the subset comparison because they don't represent
+# a real scheduling-envelope divergence at runtime:
+#
+#   - node.kubernetes.io/not-ready / node.kubernetes.io/unreachable (NoExecute):
+#     auto-injected on every pod by the kube-apiserver DefaultTolerationSeconds
+#     admission plugin. tolerationSeconds is apiserver-flag-driven so we match
+#     by (key, effect) only.
+#
+#   - nvidia.com/gpu (NoSchedule): the OSDC PlaceholderManager emits this with
+#     operator=Exists (no value), while the workflow pod template emits it with
+#     operator=Equal, value="true" (matching the GPU NodePool taint). Both
+#     tolerate the actual taint at runtime; the test's 4-tuple equality just
+#     sees them as distinct. The placeholder's Exists is technically broader
+#     than the workflow's Equal/"true" — accepted because the GPU node taint
+#     in this cluster always uses value "true".
+IGNORED_PLACEHOLDER_TOLERATIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("node.kubernetes.io/not-ready", "NoExecute"),
+        ("node.kubernetes.io/unreachable", "NoExecute"),
+        ("nvidia.com/gpu", "NoSchedule"),
+    }
+)
+
 
 def _normalize_name(name: str) -> str:
     return name.replace(".", "-").replace("_", "-")
@@ -194,9 +219,17 @@ def _excess_tolerations(placeholder_spec: dict, workflow_spec: dict) -> list[dic
     Excess tolerations relax scheduling for the placeholder beyond what the
     workflow pod allows — the placeholder could land somewhere the workflow
     pod cannot. Returns [] when placeholder ⊆ workflow.
+
+    Tolerations that are benign divergences from the workflow pod template
+    are stripped from the placeholder before comparison — see
+    ``IGNORED_PLACEHOLDER_TOLERATIONS``.
     """
     wf = {_toleration_key(t) for t in (workflow_spec.get("tolerations") or [])}
-    return [t for t in (placeholder_spec.get("tolerations") or []) if _toleration_key(t) not in wf]
+    return [
+        t
+        for t in (placeholder_spec.get("tolerations") or [])
+        if (t.get("key"), t.get("effect")) not in IGNORED_PLACEHOLDER_TOLERATIONS and _toleration_key(t) not in wf
+    ]
 
 
 # ---------------------------------------------------------------------------

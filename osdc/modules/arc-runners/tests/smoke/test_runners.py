@@ -7,12 +7,13 @@ ConfigMaps + Helm releases exist in the cluster for each definition.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
 import yaml
 from helpers import assert_daemonset_healthy, filter_daemonsets, filter_pods, find_helm_release, run_kubectl
-from runner_defs import def_for_listener_pod, load_defs_by_name, load_runner_defs
+from runner_defs import arc_runners_module_names, def_for_listener_pod, load_defs_by_name, load_runner_defs
 
 pytestmark = [pytest.mark.live]
 
@@ -24,7 +25,7 @@ NAMESPACE = "arc-runners"
 LISTENER_NAMESPACE = "arc-systems"
 LISTENER_LABELS = {"app.kubernetes.io/component": "runner-scale-set-listener"}
 LISTENER_CONTAINER_NAME = "listener"
-MODULE_LABEL = "osdc.io/module=arc-runners"
+MODULE_LABEL_KEY = "osdc.io/module"
 REQUIRED_FIELDS = {"name", "instance_type", "disk_size", "vcpu", "memory"}
 
 
@@ -35,8 +36,8 @@ def _normalize_name(name: str) -> str:
 # Backwards-compatible local alias — tests below pass `upstream_dir` and the
 # runner-def loader lives in runner_defs.py. Keep this thin shim so the call
 # sites here read naturally.
-def _load_all_defs(upstream_dir: Path) -> list[dict]:
-    return load_runner_defs(upstream_dir)
+def _load_all_defs(upstream_dir: Path, modules: Iterable[str] | None = None) -> list[dict]:
+    return load_runner_defs(upstream_dir, modules)
 
 
 # ============================================================================
@@ -80,9 +81,18 @@ class TestRunnerConfigMaps:
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
-        defs = _load_all_defs(upstream_dir)
-        result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL, "-o", "json"], namespace=NAMESPACE)
-        cm_names = {item["metadata"]["name"] for item in result.get("items", [])}
+        # Scope to arc-runners* modules actually enabled on this cluster — defs
+        # from unenabled-but-present-in-codebase variants would otherwise be
+        # expected as CMs that genuinely don't exist on this cluster.
+        enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
+
+        defs = _load_all_defs(upstream_dir, enabled_arc)
+        result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL_KEY, "-o", "json"], namespace=NAMESPACE)
+        cm_names = {
+            item["metadata"]["name"]
+            for item in result.get("items", [])
+            if item.get("metadata", {}).get("labels", {}).get(MODULE_LABEL_KEY) in enabled_arc
+        }
 
         missing = []
         for d in defs:
@@ -118,14 +128,24 @@ class TestRunnerConfigMapEnvVars:
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
-        defs = _load_all_defs(upstream_dir)
-        result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL, "-o", "json"], namespace=NAMESPACE)
+        # Scope to arc-runners* modules actually enabled on this cluster — defs
+        # from unenabled-but-present-in-codebase variants would otherwise be
+        # expected as CMs that genuinely don't exist on this cluster.
+        enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
+
+        defs = _load_all_defs(upstream_dir, enabled_arc)
+        result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL_KEY, "-o", "json"], namespace=NAMESPACE)
+        items = [
+            item
+            for item in result.get("items", [])
+            if item.get("metadata", {}).get("labels", {}).get(MODULE_LABEL_KEY) in enabled_arc
+        ]
 
         missing_vars: list[str] = []
         for d in defs:
             cm_name = f"arc-runner-hook-{_normalize_name(d['name'])}"
             cm = None
-            for item in result.get("items", []):
+            for item in items:
                 if item["metadata"]["name"] == cm_name:
                     cm = item
                     break
@@ -166,7 +186,12 @@ class TestRunnerHelmReleases:
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
-        defs = _load_all_defs(upstream_dir)
+        # Scope to arc-runners* modules actually enabled on this cluster — defs
+        # from unenabled-but-present-in-codebase variants would otherwise be
+        # expected as releases that genuinely don't exist on this cluster.
+        enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
+
+        defs = _load_all_defs(upstream_dir, enabled_arc)
         missing = []
         for d in defs:
             release_name = f"arc-{_normalize_name(d['name'])}"
@@ -190,11 +215,20 @@ class TestNoStaleRunners:
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
-        defs = _load_all_defs(upstream_dir)
+        # Scope to arc-runners* modules actually enabled on this cluster — defs
+        # from unenabled-but-present-in-codebase variants would otherwise be
+        # expected as CMs that genuinely don't exist on this cluster.
+        enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
+
+        defs = _load_all_defs(upstream_dir, enabled_arc)
         expected_cms = {f"arc-runner-hook-{_normalize_name(d['name'])}" for d in defs}
 
-        result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL, "-o", "json"], namespace=NAMESPACE)
-        actual_cms = {item["metadata"]["name"] for item in result.get("items", [])}
+        result = run_kubectl(["get", "configmaps", "-l", MODULE_LABEL_KEY, "-o", "json"], namespace=NAMESPACE)
+        actual_cms = {
+            item["metadata"]["name"]
+            for item in result.get("items", [])
+            if item.get("metadata", {}).get("labels", {}).get(MODULE_LABEL_KEY) in enabled_arc
+        }
 
         stale = actual_cms - expected_cms
         assert not stale, f"Stale ConfigMaps (no matching def): {stale}"
