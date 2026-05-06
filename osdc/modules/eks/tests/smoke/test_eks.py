@@ -2,7 +2,7 @@
 
 import pytest
 import yaml
-from helpers import get_unstable_node_names, run_aws, run_kubectl
+from helpers import get_recently_stable_node_names, get_unstable_node_names, run_aws, run_kubectl
 
 pytestmark = [pytest.mark.live, pytest.mark.aws]
 
@@ -113,15 +113,26 @@ class TestEKSAddons:
 
         nodes_result = run_kubectl(["get", "nodes"])
         unstable = get_unstable_node_names(nodes_result)
+        # Recently-stable nodes (between min_node_age and recently_stable_age)
+        # passed the unstable threshold but DaemonSet pods on them may still
+        # be pulling images or creating containers. Tolerate Pending phase
+        # there — same grace window the rest of the smoke suite applies.
+        recently_stable = get_recently_stable_node_names(nodes_result)
 
-        not_running = [
-            p["metadata"]["name"]
-            for p in pods
-            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable
-        ]
+        not_running = []
+        for p in pods:
+            if p["status"].get("phase") == "Running":
+                continue
+            node = p["spec"].get("nodeName")
+            if node in unstable:
+                continue
+            if node in recently_stable and p["status"].get("phase") == "Pending":
+                continue
+            not_running.append(p["metadata"]["name"])
+
         assert not not_running, (
             f"Addon {addon_name} status is {status} and pods are unhealthy on stable nodes: "
-            f"{not_running} ({len(unstable)} unstable nodes excluded)"
+            f"{not_running} ({len(unstable)} unstable, {len(recently_stable)} recently-stable nodes excluded)"
         )
 
 

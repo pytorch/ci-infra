@@ -28,6 +28,7 @@ def generated_arc_runners(
     cluster_id: str,
     upstream_dir: Path,
     enabled_modules: list[str],
+    tmp_path_factory: pytest.TempPathFactory,
 ) -> dict[str, dict]:
     """Regenerate ARC runner YAMLs for the cluster and return them parsed.
 
@@ -38,6 +39,12 @@ def generated_arc_runners(
     ``ARC_RUNNERS_MODULE_NAME`` overrides so their listener pods are covered
     by the coherence tests too. Without this aggregation, listeners owned by
     GPU submodules look like "stale scale-sets" to the test.
+
+    Output is redirected to a per-worker tmpdir rather than each module's
+    on-disk ``generated/`` directory: pytest-xdist runs this session-scoped
+    fixture once per worker, and concurrent regenerations into the same
+    repo path race (one worker can wipe-and-rewrite while another is mid-read,
+    yielding a ``FileNotFoundError``).
 
     Returns:
         Mapping ``def_name -> parsed first YAML document`` (the chart values
@@ -51,6 +58,8 @@ def generated_arc_runners(
     if not arc_modules:
         pytest.skip("no arc-runners* modules enabled for this cluster")
 
+    base_tmp = tmp_path_factory.mktemp("generated-arc-runners")
+
     out: dict[str, dict] = {}
     for module in arc_modules:
         module_dir = upstream_dir / "modules" / module
@@ -60,7 +69,8 @@ def generated_arc_runners(
             # we have no defs to validate them against here.
             continue
         defs_dir = module_dir / "defs"
-        generated_dir = module_dir / "generated"
+        generated_dir = base_tmp / module
+        generated_dir.mkdir(parents=True, exist_ok=True)
         env = {
             **os.environ,
             "ARC_RUNNERS_DEFS_DIR": str(defs_dir),
