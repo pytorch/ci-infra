@@ -21,8 +21,8 @@
 
 defaults:
   # --- Terraform / base infra ---
-  base_node_count: 5
-  base_node_instance_type: m7i.4xlarge
+  base_node_count: 6
+  base_node_instance_type: m7i.12xlarge
   base_node_max_unavailable_percentage: 33
   # TODO(CVE-2026-31431): when bumping to a kernel 6.12.85+ AL2023 AMI,
   # remove osdc/base/kubernetes/algif-mitigation.yaml.
@@ -41,20 +41,20 @@ defaults:
 
   # --- Base component tuning ---
   harbor:
-    core_replicas: 2
-    registry_replicas: 2
-    nginx_replicas: 3
+    core_replicas: 4
+    registry_replicas: 4
+    nginx_replicas: 6
 
   # --- Module defaults ---
   karpenter:
-    replicas: 2
+    replicas: 4
     log_level: info
     pdb_enabled: true
     pdb_min_available: 1
   arc:
     chart_version: "0.14.1-jeanschmidt.9"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
     runner_image_tag: "2.334.0"  # ghcr.io/actions/actions-runner tag — pin to avoid :latest
-    replica_count: 2
+    replica_count: 4
     log_level: info
     controller_cpu_request: "1"
     controller_cpu_limit: "4"
@@ -67,13 +67,13 @@ defaults:
     min_nodes: 1
     dry_run: false
   nodepools:
-    gpu_consolidate_after: "20m"
+    gpu_consolidate_after: "40m"
     cpu_consolidate_after: "20m"
     baremetal_consolidate_after: "1h"
     gpu_disruption_budget: "20%"
     cpu_disruption_budget: "20%"
   buildkit:
-    replicas_per_arch: 4
+    replicas_per_arch: 5
   monitoring:
     grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
     grafana_cloud_read_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
@@ -177,11 +177,11 @@ clusters:
     base:
       vpc_cidr: "10.4.0.0/16"
     git_cache:
-      central_replicas: 5
-      central_cpu_request: "6"
+      central_replicas: 15
+      central_cpu_request: "10"
       central_cpu_limit: "15"
-      central_memory_request: "8Gi"
-      central_memory_limit: "32Gi"
+      central_memory_request: "10Gi"
+      central_memory_limit: "50Gi"
     node_compactor:
       min_node_age_seconds: 900
     buildkit:
@@ -193,7 +193,7 @@ clusters:
       github_secret_name: pytorch-arc-cbr-production
       runner_name_prefix: "mt-"
     pypi_cache:
-      replicas: 5
+      replicas: 10
     modules:
       - karpenter
       - arc
