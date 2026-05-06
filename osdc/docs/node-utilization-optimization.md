@@ -2,6 +2,10 @@
 
 Analysis of runner-to-node packing efficiency across all OSDC nodepools, with recommendations for instance type changes to reduce waste.
 
+> **Snapshot status**: This is a Phase 1 + Phase 2 right-sizing retrospective from the time of commit `fcc4df1`. The recommendations were applied. Several things have changed since: nodepool defs were migrated to fleet format (`fa950b4`), A100 (`93a2d66`) and H100 (`ed01267`) GPU nodepools were added, release runners (`903d1d4`) and the dedicated `c7i-runner` pool now exist, and tunables like `r7g.16xlarge` `node_disk_size` have been retuned. See the inline notes for specifics.
+>
+> **Pricing disclaimer**: Dollar figures throughout this doc are point-in-time AWS list prices captured during the Phase 2 analysis. They may have drifted with AWS pricing changes, region differences, RI/Savings Plan coverage, and Capacity Block pricing. Use them as **relative** indicators of cost differences between instance types — re-check current AWS pricing before basing budget decisions on the absolute numbers.
+
 ## Problem Statement
 
 OSDC uses Kubernetes Guaranteed QoS pods (requests == limits) for all runner workloads. Each runner type has fixed CPU and memory requirements, and each nodepool uses a single AWS instance type. When runners with different CPU:memory ratios share a nodepool, the mismatched resource is wasted.
@@ -66,6 +70,8 @@ Runners have ISA (instruction set) requirements encoded in their names that cons
 | g4dn.12xlarge | 48c/192Gi @ $3.91/hr | 1 (T4) | **95.6%** | `l-x86iavx512-45-172-t4-4` fills the node (FIXED) |
 | g4dn.metal | 96c/384Gi @ $7.82/hr | 1 (T4) | 96.0% | Good — `l-bx86iavx512-94-344-t4-8` fills the node |
 | p6-b200.48xlarge | 192c/2048Gi @ $55.47/hr | 4 (B200) | 88.1% | Good — runners scale proportionally to GPU count |
+| p4de.24xlarge | 96c/1152Gi (8x A100) | 4 (A100) | n/a | Added after this snapshot — `l-x86iavx512-{11-125,22-250,44-500}-a100*` + `l-bx86iavx512-88-1000-a100-8`, 1/2/4/8 GPU splits |
+| p5.48xlarge | 192c/2048Gi (8x H100) | 4 (H100) | n/a | Added after this snapshot — `l-x86iamx-{22-225,44-450,88-900}-h100*` + `l-bx86iamx-176-1800-h100-8`, 1/2/4/8 GPU splits |
 
 ### Critical Issue: T4 Runner Cannot Schedule (RESOLVED)
 
@@ -123,12 +129,14 @@ AVX-512 runners can use either Intel or AMD instances with AVX-512 support.
 
 | Pool | Instance | Runners | Worst Util | Cost/hr |
 |------|----------|---------|-----------|---------|
-| Balanced | **m8g.48xlarge** (192c/768Gi) | 4 runners | 88.3% | $8.29 |
+| Balanced | **m8g.48xlarge** (192c/768Gi) | 3 runners | 88.3% | $8.29 |
 | Memory | **r7g.16xlarge** (64c/512Gi) | 1 runner | 75.3% | $3.43 |
+| Bare-metal (dedicated) | **m8g.16xlarge** (64c/256Gi) | 1 bare-metal runner | n/a | — |
 
 **Runner assignments**:
-- Balanced pool: `l-arm64g2-6-32`, `l-arm64g3-16-62`, `l-arm64g4-16-62`, `l-barm64g4-62-226`
+- Balanced pool: `l-arm64g2-6-32`, `l-arm64g3-16-62`, `l-arm64g4-16-62`
 - Memory pool (keep current): `l-arm64g3-61-463`
+- Dedicated bare-metal pool: `l-barm64g4-62-226` runs on `m8g.16xlarge` (one runner per node, for inductor CPU perf benchmarks that need bare-metal noise isolation)
 
 **Improvement**: worst-case utilization 37.9% → 75.3% (+37.4pp). The balanced pool achieves 88-99% utilization for all 4 runners.
 
@@ -148,10 +156,14 @@ GPU nodepools are constrained by GPU count, limiting instance options. The curre
 
 | State | CPU Nodepools | GPU Nodepools | Total |
 |-------|--------------|---------------|-------|
-| Current | 2 (r5.24xlarge, r7g.16xlarge) | 6 (g4dn.8xl, g4dn.12xl, g4dn.metal, g5.48xl, g6.48xl, p6-b200) | 8 |
-| Proposed | 8 (3×amx/avx2 + 3×avx512 + 2×arm64) | 6 (unchanged) | 14 |
+| Pre-Phase 2 | 2 (r5.24xlarge, r7g.16xlarge) | 6 (g4dn.8xl, g4dn.12xl, g4dn.metal, g5.48xl, g6.48xl, p6-b200) | 8 |
+| Phase 2 (proposed at the time) | 8 (3×amx/avx2 + 3×avx512 + 2×arm64) | 6 (unchanged) | 14 |
 
-This increases from 8 to 14 nodepools (+6). Each nodepool is a Karpenter NodePool CRD — lightweight, no ongoing cost. The infrastructure impact is minimal.
+This increased from 8 to 14 nodepool defs in the original Phase 2 plan. Each nodepool is a Karpenter NodePool CRD — lightweight, no ongoing cost. The infrastructure impact is minimal.
+
+**Post-snapshot state**: After commit `fa950b4` ("Migrate nodepool defs from single-instance to fleet format"), the per-instance-size nodepool defs were collapsed into family-level **fleet** files. Each fleet lists multiple weighted instance sizes (`c7i.48xlarge`, `c7i.24xlarge`, …) and Karpenter picks an appropriate size per workload. The current `modules/nodepools/defs/` directory holds 14 fleet files (`c7a`, `c7i`, `c7i-runner`, `g4dn`, `g5`, `g6`, `m6i`, `m7i`, `m8g`, `p4de-24xlarge`, `r5`, `r7a`, `r7g`, `r7i`), plus separate `nodepools-h100/defs/p5-48xlarge.yaml` and `nodepools-b200/defs/p6-b200-48xlarge.yaml`. The runner-to-instance-size pinning shown above is now a soft preference (fleet weights), not a hard one-pool-per-size split.
+
+**Dedicated runner pool (`c7i-runner`)**: Added after this snapshot for the proactive-capacity / preemption design. It is a name-only clone of the `c7i` fleet, separated by the `node-fleet=c7i-runner` taint, and hosts the lightweight ARC runner pods (placeholders) — workflow pods continue to land on c7a/c7i/m7i/etc. See `PROACTIVE_CAPACITY.md`.
 
 ## Cost Analysis
 
@@ -168,7 +180,7 @@ The savings compound: nodes with better packing serve more concurrent runners, r
 
 ## Why 85% Utilization Is Hard for Large Runners
 
-Some runners (46c/85Gi, 94c/192Gi, 94c/384Gi) consistently achieve only 74-76% utilization even on perfectly-matched instance types. This is because:
+Some runners (46c/85Gi, 94c/192Gi, 48c/384Gi) consistently achieve only 74-76% utilization even on perfectly-matched instance types. This is because:
 
 1. **Overhead is fixed**: Kubelet + DaemonSet overhead (~500m CPU, ~1.5Gi memory) is constant regardless of instance size
 2. **Large runners don't divide evenly**: A 94c runner on a 128c node leaves 34c unused — only 1 pod fits
@@ -183,23 +195,28 @@ The only way to push these above 85% is to use instances where `N × runner_size
 2. Regenerate and redeploy
 
 ### Phase 2: Split x86 CPU + ARM64 Nodepools by Ratio (DONE)
-1. Created 8 new nodepool defs: c7i-12xlarge, c7i-metal-24xl, m7i-48xlarge, r7i-48xlarge, c7a-48xlarge, m6i-32xlarge, r7a-48xlarge, m8g-48xlarge
-2. Updated 22 x86 runner defs to reference ratio-matched instance types (see Recommendations 1 & 2 above)
-3. Updated 4 ARM64 runner defs to m8g.48xlarge; 1 ARM64 runner stays on r7g.16xlarge
+1. Created 8 new nodepool defs: c7i-12xlarge, c7i-metal-24xl, m7i-48xlarge, r7i-48xlarge, c7a-48xlarge, m6i-32xlarge, r7a-48xlarge, m8g-48xlarge (these per-instance defs were later collapsed into family-level fleets; see "Nodepool Count Impact" → Post-snapshot state)
+2. Updated 22 x86 runner defs to reference ratio-matched instance types (see Recommendations 1 & 2 above). The bare-metal `l-bx86iamx-92-167` is included in the AMX/AVX2 compute pool, bringing the total x86 CPU runners covered to 23.
+3. Updated 4 ARM64 runner defs to m8g.48xlarge; 1 ARM64 runner stays on r7g.16xlarge; the bare-metal `l-barm64g4-62-226` runs on a dedicated m8g.16xlarge (see Recommendation 2).
 4. Kept r5-24xlarge nodepool def for RE (Release Engineering) job-assigner workloads (cpu-44, cpu-85); no ARC runners use it
-5. Updated r7g-16xlarge node_disk_size from 2660 to 700 (now serves only 1 runner)
+5. Updated r7g-16xlarge node_disk_size from 2660 to 700 (now serves only 1 runner; current value is 1200 after later tuning)
+
+**Not covered by this analysis** (added later): the dedicated **release runner class** (`rel-l-x86iavx512-8-64`, `rel-l-arm64g4-16-62`) introduced in commit `903d1d4`, and the A100 / H100 GPU runners (see GPU Nodepools table for instance details).
 
 ### Phase 3: Retire Old Nodepools (DONE — merged into Phase 2)
 No ARC runners use r5.24xlarge anymore. The nodepool is retained solely for RE job-assigner workloads. r7g.16xlarge kept for the single memory-heavy ARM64 runner. Karpenter will drain underutilized r5 nodes naturally after redeployment.
 
 ## Analysis Tools
 
-Two Python scripts were used for this analysis:
+The original Phase 2 analysis used `scripts/python/analyze_node_utilization.py` (per-node-type packing efficiency) plus a throwaway script (`/tmp/optimize_multi_nodepool.py`, not committed) that evaluated splitting constraint groups into ratio-matched nodepools. The captured results live in this document.
 
-- **`scripts/python/analyze_node_utilization.py`**: Reads runner and nodepool defs, computes packing efficiency per node type
-- **`/tmp/optimize_multi_nodepool.py`**: Evaluates splitting constraint groups into multiple nodepools with ratio-matched instance families (c/m/r series). Not committed — results are captured in this document.
+The throwaway script has since been superseded by the simulation tooling now in the repo:
 
-Both scripts model EKS kubelet reserves, DaemonSet overhead, runner sidecars, and ISA/GPU compatibility constraints.
+- **`scripts/python/analyze_node_utilization.py`** (`just analyze-utilization`): per-node-type packing efficiency, CPU/memory waste, best/worst mixed combos
+- **`scripts/python/simulate_cluster.py`** (`just simulate-cluster`): full cluster simulation — maps peak concurrency targets to runners, bin-packs onto nodes, reports fleet size and per-runner deployment accuracy
+- **`scripts/python/simulate_cluster_cli.py`**: Monte Carlo stability runner (`just simulate-cluster --rounds N`)
+
+All scripts model EKS kubelet reserves, DaemonSet overhead, runner sidecars, and ISA/GPU compatibility constraints. See `docs/current_runner_load_distribution.md` for current reproduction commands.
 
 ## Runner Name vs Actual Resource Values
 

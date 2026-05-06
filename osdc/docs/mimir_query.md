@@ -64,7 +64,7 @@ curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
 # ... (credential extraction) ... && \
 curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
     "$MIMIR_URL/api/v1/query_range" \
-    --data-urlencode 'query=rate(node_cpu_seconds_total{cluster="pytorch-arc-cbr-production", mode="idle"}[5m])' \
+    --data-urlencode 'query=sum(node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"})' \
     --data-urlencode "start=$(date -u -v-1H +%s)" \
     --data-urlencode "end=$(date -u +%s)" \
     --data-urlencode "step=60" | jq .
@@ -90,36 +90,56 @@ Common lookback expressions (macOS `date`):
 
 ## Available Scrape Jobs
 
-These are the `job` label values present in the cluster:
+These are the scrape jobs configured in the cluster. **Most jobs apply tight `keep` allowlists at scrape time** — see `modules/monitoring/CLAUDE.md` for the three filtering layers (`--metric-allowlist` → `metricRelabelings` → Alloy `cost_control`). Querying a metric not in the keep allowlist will silently return zero results.
 
-| Job | Description |
-|-----|-------------|
-| `node-exporter` | Node-level system metrics (CPU, memory, disk, network) — 32 targets |
-| `kubelet` | Kubelet metrics (pod lifecycle, volumes, runtime) — 73 targets |
-| `kube-proxy` | kube-proxy networking metrics — 29 targets |
-| `kube-state-metrics` | Kubernetes object state (pods, deployments, nodes) — 1 target |
-| `kube-prometheus-stack-operator` | Prometheus operator metrics — 1 target |
-| `apiserver` | Kubernetes API server metrics — 2 targets |
-| `coredns` | DNS resolution metrics — 2 targets |
-| `karpenter` | Karpenter autoscaler metrics (NodePools, provisioning) — 2 targets |
-| `monitoring/git-cache-daemonset` | Git cache per-node metrics — 24 targets |
-| `git-cache-central-metrics` | Git cache central service metrics — 1 target |
+Target counts vary continuously with cluster size and are not listed here — query `count(up{cluster="...", job="<job>"})` for live counts.
+
+| Job | Description | Filter notes |
+|-----|-------------|--------------|
+| `node-exporter` | Node-level memory metrics only | Only `node_memory_MemAvailable_bytes` and `node_memory_MemTotal_bytes` are kept; CPU/disk/network are dropped at scrape |
+| `kubelet` | Running pod/container counts only | Only `kubelet_running_(pods\|containers)` and `kubelet_node_name` are kept |
+| `kubelet` (cAdvisor port) | Pod-level memory only | Only `container_memory_working_set_bytes` and `container_memory_rss` are kept; CPU/network/filesystem dropped. Alloy further restricts to control-plane namespaces (`arc-systems\|karpenter\|harbor-system\|monitoring\|logging\|buildkit`) |
+| `kube-state-metrics` | Filtered KSM allowlist | Keeps `kube_pod_info`, `kube_pod_container_status_*`, `kube_pod_status_reason`, `kube_deployment_status_*`, daemonset/namespace/node/statefulset/pv/hpa/job metrics |
+| `apiserver` | API server health | Only `apiserver_request_total` and `apiserver_request_terminations_total` are kept |
+| `coredns` | DNS resolution metrics | All `coredns_*` except buckets, plus `go_*`/`process_*` dropped |
+| `karpenter` | Autoscaler counters and capacity | Only `karpenter_nodeclaims_created_total`, `karpenter_nodes_created_total`, `karpenter_nodes_terminated_total`, `karpenter_nodepools_usage`, `karpenter_nodepools_limit`, `karpenter_nodes_allocatable`, `karpenter_interruption_received_messages_total` |
+| `git-cache-central-metrics` | Git cache central service metrics | No filter — all `git_cache_central_*` flow through |
+| Git cache daemonset | Per-node git cache metrics (PodMonitor) | No filter — all `git_cache_node_*` flow through |
+| `arc-listeners` | ARC runner-scale-set listener metrics (PodMonitor) | Keeps `gha_assigned_jobs`, `gha_completed_jobs_total`, `gha_started_jobs_total`, `gha_running_jobs`, `gha_job_*_duration_seconds_(sum\|count)`, `gha_capacity_*` |
+| `arc-controller` | ARC controller metrics | See ServiceMonitor for filter |
+| `harbor` | Harbor registry exporter | All metrics except `go_*`/`process_*`/`promhttp_*` |
+| `buildkit` / `buildkit-haproxy` | BuildKit pods + LB metrics | See ServiceMonitors for filter |
+| `node-compactor` | Node consolidation/compactor metrics | No filter |
+| `pushgateway` | Prometheus Pushgateway (ad-hoc job metrics) | No filter |
+| `pypi-cache` | PyPI cache nginx metrics | Only `nginx_up`, `nginx_http_requests_total`, `nginx_connections_active` |
+| `dcgm-exporter` | NVIDIA GPU metrics (only on GPU nodes) | See ServiceMonitor for filter |
+
+In addition, the `kube-prometheus-stack-operator` job exists but Alloy's `cost_control` drops every `prometheus_operator_*` metric (and `go_*`/`process_*`/`promhttp_*`), so only the `up` metric is queryable in practice.
+
+Job naming follows two conventions:
+
+- **ServiceMonitors**: the `job` label is the target Service name (e.g. `karpenter`, `kubernetes` for the API server, `buildkitd-pods`).
+- **PodMonitors**: the `job` label is `<namespace>/<podmonitor-name>` (e.g. `monitoring/arc-listeners`, `monitoring/coredns`, `monitoring/git-cache-daemonset`).
+
+Confirm exact job names by running `count(up{cluster="..."}) by (job)`.
 
 ## Key Labels
 
-All metrics include `cluster="pytorch-arc-cbr-production"`. Other common labels:
+All metrics include `cluster="pytorch-arc-cbr-production"` (set by Alloy as an external label). Other common labels:
 
 | Label | Example | Notes |
 |-------|---------|-------|
 | `namespace` | `arc-runners`, `kube-system` | Kubernetes namespace |
 | `pod` | `runner-xyz-abc` | Pod name |
 | `container` | `runner`, `git-cache` | Container name |
-| `node` | `ip-10-4-154-0.us-east-2.compute.internal` | Node hostname |
+| `node` | `ip-10-4-154-0.us-east-2.compute.internal` | Node hostname (use `kube_pod_info` to map pod → node) |
 | `instance` | `10.4.154.0:9100` | Scrape target address |
-| `job` | `node-exporter` | Scrape job name |
-| `nodepool` | `c7i-12xlarge`, `g5-48xlarge` | Karpenter NodePool name |
+| `job` | `node-exporter`, `karpenter` | Scrape job name |
+| `nodepool` | `c7i-12xlarge`, `g5-48xlarge` | **Only present on Karpenter and node-compactor metrics**, NOT a global label |
 
 ## Example Queries
+
+> **IMPORTANT**: After PR #428 (2026-04-08) tightened the metric allowlist, many "obvious" PromQL queries return zero results because the source metric is dropped at scrape time. The examples below only use metrics that actually pass through the three filtering layers. See `modules/monitoring/CLAUDE.md` for the layer breakdown, and the "Available Scrape Jobs" table above for what each job emits.
 
 ### Cluster Overview
 
@@ -130,8 +150,8 @@ count(kube_node_info{cluster="pytorch-arc-cbr-production"})
 # Pod count by namespace
 count(kube_pod_info{cluster="pytorch-arc-cbr-production"}) by (namespace)
 
-# Cluster-wide CPU usage %
-100 - avg(rate(node_cpu_seconds_total{cluster="pytorch-arc-cbr-production", mode="idle"}[5m])) * 100
+# Cluster-wide memory available (bytes)
+sum(node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"})
 
 # Cluster-wide memory usage %
 100 * (1 - sum(node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"}) / sum(node_memory_MemTotal_bytes{cluster="pytorch-arc-cbr-production"}))
@@ -140,59 +160,88 @@ count(kube_pod_info{cluster="pytorch-arc-cbr-production"}) by (namespace)
 count(up{cluster="pytorch-arc-cbr-production"}) by (job)
 ```
 
+> **Note**: CPU, disk, and network metrics from `node_exporter` are dropped at scrape (only `node_memory_MemAvailable_bytes` and `node_memory_MemTotal_bytes` are kept). For per-pod CPU you need a different source (e.g. KSM pod resource metrics) — `node_cpu_seconds_total`, `node_filesystem_*`, and `node_network_*` will return empty.
+
 ### Node Metrics
 
 ```promql
-# CPU usage per node (%)
-100 - avg(rate(node_cpu_seconds_total{cluster="pytorch-arc-cbr-production", mode="idle"}[5m])) by (instance) * 100
+# Memory available per node (bytes)
+node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"}
 
 # Memory usage per node (%)
 100 * (1 - node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"} / node_memory_MemTotal_bytes{cluster="pytorch-arc-cbr-production"})
 
-# Disk usage per node (%)
-100 * (1 - node_filesystem_avail_bytes{cluster="pytorch-arc-cbr-production", mountpoint="/"} / node_filesystem_size_bytes{cluster="pytorch-arc-cbr-production", mountpoint="/"})
+# Running pod count per node
+kubelet_running_pods{cluster="pytorch-arc-cbr-production"}
 
-# Network receive rate per node (bytes/sec)
-rate(node_network_receive_bytes_total{cluster="pytorch-arc-cbr-production", device="eth0"}[5m])
+# Running container count per node
+kubelet_running_containers{cluster="pytorch-arc-cbr-production"}
 ```
 
 ### Pod / Container Health
 
 ```promql
-# Container restarts in last 24h (top 10)
+# Pod-to-node mapping (use to join pod-level metrics with node info)
+kube_pod_info{cluster="pytorch-arc-cbr-production"}
+
+# Container restarts in last 24h — control-plane namespaces only
+# (kube_pod_container_status_restarts_total is filtered to arc-systems|karpenter|harbor-system|monitoring|logging|buildkit by Alloy)
 topk(10, increase(kube_pod_container_status_restarts_total{cluster="pytorch-arc-cbr-production"}[24h]))
 
-# Pods not in Running state
-kube_pod_status_phase{cluster="pytorch-arc-cbr-production", phase!="Running", phase!="Succeeded"} == 1
+# Pods that exited with a non-Completed reason (last terminated)
+kube_pod_container_status_last_terminated_reason{cluster="pytorch-arc-cbr-production"}
 
-# Container CPU usage
-rate(container_cpu_usage_seconds_total{cluster="pytorch-arc-cbr-production", namespace="arc-runners"}[5m])
+# Pods that exited with non-zero exit code
+kube_pod_container_status_last_terminated_exitcode{cluster="pytorch-arc-cbr-production", container_exit_code!="0"}
 
-# Container memory usage
-container_memory_working_set_bytes{cluster="pytorch-arc-cbr-production", namespace="arc-runners"}
+# Pod status reasons (Evicted, NodeLost, UnexpectedAdmissionError — routine reasons are dropped)
+kube_pod_status_reason{cluster="pytorch-arc-cbr-production"} == 1
+
+# Container memory (working set) — control-plane namespaces only
+# (Alloy drops container_memory_working_set_bytes for non-control-plane namespaces)
+container_memory_working_set_bytes{cluster="pytorch-arc-cbr-production", namespace="monitoring"}
 ```
+
+> **Note**: `kube_pod_status_phase` is NOT in the KSM keep allowlist — phase-based queries return nothing. Use `kube_pod_info` joined with `kube_pod_container_status_*` instead. Container CPU (`container_cpu_usage_seconds_total`) is dropped at scrape — only the two memory metrics survive cAdvisor filtering.
 
 ### Karpenter (Autoscaling)
 
 ```promql
-# Allowed disruptions per NodePool
-karpenter_nodepools_allowed_disruptions{cluster="pytorch-arc-cbr-production"}
+# NodePool usage (current allocation per nodepool)
+karpenter_nodepools_usage{cluster="pytorch-arc-cbr-production"}
 
-# Nodes managed by Karpenter per NodePool
-karpenter_nodes_total{cluster="pytorch-arc-cbr-production"}
+# NodePool limits
+karpenter_nodepools_limit{cluster="pytorch-arc-cbr-production"}
 
-# Provisioning duration
-karpenter_provisioner_scheduling_duration_seconds{cluster="pytorch-arc-cbr-production"}
+# Allocatable capacity per Karpenter-managed node
+karpenter_nodes_allocatable{cluster="pytorch-arc-cbr-production"}
+
+# Nodes created in the last hour
+increase(karpenter_nodes_created_total{cluster="pytorch-arc-cbr-production"}[1h])
+
+# Nodes terminated in the last hour
+increase(karpenter_nodes_terminated_total{cluster="pytorch-arc-cbr-production"}[1h])
+
+# NodeClaims created (provisioning attempts)
+increase(karpenter_nodeclaims_created_total{cluster="pytorch-arc-cbr-production"}[1h])
+
+# Spot interruptions received in the last hour
+increase(karpenter_interruption_received_messages_total{cluster="pytorch-arc-cbr-production"}[1h])
 ```
+
+> **Note**: Only the seven karpenter metrics above are kept by the Karpenter ServiceMonitor. `karpenter_nodepools_allowed_disruptions`, `karpenter_nodes_total`, and `karpenter_provisioner_scheduling_duration_seconds` will return empty.
 
 ### Git Cache
 
 ```promql
-# Repo sizes (bytes)
+# Repo sizes (bytes) — central git cache
 git_cache_central_repo_size_bytes{cluster="pytorch-arc-cbr-production"}
 
-# Fetch errors in last hour
+# Fetch errors in last hour — central git cache
 increase(git_cache_central_fetch_errors_total{cluster="pytorch-arc-cbr-production"}[1h])
+
+# Fetch duration — central git cache
+git_cache_central_fetch_duration_seconds{cluster="pytorch-arc-cbr-production"}
 
 # Per-node cache age (seconds since last sync)
 time() - git_cache_node_last_sync_timestamp{cluster="pytorch-arc-cbr-production"}
@@ -200,18 +249,65 @@ time() - git_cache_node_last_sync_timestamp{cluster="pytorch-arc-cbr-production"
 # Per-node cache size (bytes)
 git_cache_node_cache_size_bytes{cluster="pytorch-arc-cbr-production"}
 
-# Sync duration
+# Per-node sync duration
 git_cache_node_sync_duration_seconds{cluster="pytorch-arc-cbr-production"}
 ```
 
-### ARC Runners
+### ARC Listeners (Runner Scale Sets)
 
 ```promql
-# Runner pods by phase
-count(kube_pod_status_phase{cluster="pytorch-arc-cbr-production", namespace="arc-runners"} == 1) by (phase)
+# Currently assigned jobs per runner scale set
+gha_assigned_jobs{cluster="pytorch-arc-cbr-production"}
 
-# Runner container CPU usage
-sum(rate(container_cpu_usage_seconds_total{cluster="pytorch-arc-cbr-production", namespace="arc-runners", container="runner"}[5m]))
+# Currently running jobs per runner scale set
+gha_running_jobs{cluster="pytorch-arc-cbr-production"}
+
+# Job completion rate (last hour)
+rate(gha_completed_jobs_total{cluster="pytorch-arc-cbr-production"}[1h])
+
+# Job start rate (last hour)
+rate(gha_started_jobs_total{cluster="pytorch-arc-cbr-production"}[1h])
+
+# Average job execution duration (sum/count — buckets dropped)
+rate(gha_job_execution_duration_seconds_sum{cluster="pytorch-arc-cbr-production"}[1h])
+  / rate(gha_job_execution_duration_seconds_count{cluster="pytorch-arc-cbr-production"}[1h])
+```
+
+### Control Plane
+
+```promql
+# API server request rate by verb
+sum by (verb) (rate(apiserver_request_total{cluster="pytorch-arc-cbr-production"}[5m]))
+
+# API server terminations (rate-limited / dropped requests)
+rate(apiserver_request_terminations_total{cluster="pytorch-arc-cbr-production"}[5m])
+
+# CoreDNS request rate
+rate(coredns_dns_requests_total{cluster="pytorch-arc-cbr-production"}[5m])
+```
+
+### PyPI Cache
+
+```promql
+# nginx availability per pypi-cache instance
+nginx_up{cluster="pytorch-arc-cbr-production"}
+
+# Request rate
+rate(nginx_http_requests_total{cluster="pytorch-arc-cbr-production"}[5m])
+
+# Active connections
+nginx_connections_active{cluster="pytorch-arc-cbr-production"}
+```
+
+### Bad Node Detection (Join Pattern)
+
+`kube_pod_info` provides pod-to-node mapping. Join with error metrics to find nodes producing failures:
+
+```promql
+count(
+  kube_pod_container_status_last_terminated_exitcode{cluster="pytorch-arc-cbr-production", container_exit_code!="0"}
+  * on(namespace, pod) group_left(node) kube_pod_info{cluster="pytorch-arc-cbr-production"}
+) by (node)
 ```
 
 ## Compact Output Patterns
@@ -254,8 +350,10 @@ curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
 
 References:
 - `CLAUDE.md` — general architecture
-- `modules/monitoring/CLAUDE.md` — monitoring module docs, credential setup
+- `modules/monitoring/CLAUDE.md` — monitoring module docs, three filtering layers
 - `clusters.yaml` — Mimir read/write URLs
-- `upstream/osdc/modules/monitoring/helm/alloy-values.yaml` — Alloy remote_write config
+- `modules/monitoring/helm/values.yaml` — kube-prometheus-stack scrape filters
+- `modules/monitoring/helm/alloy-values.yaml` — Alloy `cost_control` rules + remote_write config
+- `modules/monitoring/kubernetes/monitors/` — ServiceMonitor / PodMonitor metric allowlists
 
-Verified via live queries against `pytorch-arc-cbr-production` on 2026-03-20.
+Verification stamp: doc setup/credential mechanics verified 2026-03-20. Example queries rewritten 2026-05-06 to reflect the metric allowlist tightening from PR #428 (2026-04-08). If you see queries returning empty results, cross-check the relevant ServiceMonitor / PodMonitor allowlist before assuming Mimir is broken.
