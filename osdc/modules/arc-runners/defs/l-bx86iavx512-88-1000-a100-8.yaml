@@ -1,8 +1,8 @@
-# ARC runner definition: l-bx86iavx512-88-1000-a100-8 (8x NVIDIA A100 80GB, full node)
-# Scheduled on NodePool: p4de-24xlarge (from nodepools-a100 module)
+# ARC runner definition: l-bx86iavx512-88-1000-a100-8 (8x NVIDIA A100 40GB, full node)
+# Scheduled on NodePool: p4d-24xlarge (from nodepools module)
 runner:
   name: l-bx86iavx512-88-1000-a100-8
-  instance_type: p4de.24xlarge
+  instance_type: p4d.24xlarge
   disk_size: 200
   vcpu: 88
   memory: 1000Gi

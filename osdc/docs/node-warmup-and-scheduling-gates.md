@@ -69,7 +69,7 @@ Runner pods include an init container that polls for a file on the host filesyst
 - Extracts to `/mnt/runner-container-hooks/dist/` on host NVMe
 - Validates `dist/index.js` exists after extraction
 - Writes version marker for idempotency
-- Pinned via `nodeSelector: node-fleet: c7i-runner` — runs only on the dedicated c7i-runner pool, where runner pods live. Workflow-pool nodes and GPU runner pools (g4dn/g5/g6/p4de/p5/p6) do NOT get this DaemonSet because runner pods never schedule there.
+- Pinned via `nodeSelector: node-fleet: c7i-runner` — runs only on the dedicated c7i-runner pool, where runner pods live. Workflow-pool nodes and GPU runner pools (g4dn/g5/g6/p4d/p5/p6) do NOT get this DaemonSet because runner pods never schedule there.
 
 **Init container**: `wait-for-hooks` (`modules/arc-runners/templates/runner.yaml.tpl`)
 - Polls `/mnt/host-hooks/dist/index.js` every 10 seconds
@@ -145,7 +145,7 @@ Runs on ALL nodes (no nodeSelector, tolerates everything). Idempotent via `/var/
 | `instance-type={type}` | Permanent | `NoSchedule` | ARC runner NodePools | Never (scheduling constraint) |
 | `node-fleet={fleet}` | Permanent | `NoSchedule` | ARC runner NodePools | Never (fleet-based scheduling) |
 | `workload/buildkit-{arch}=true` | Permanent | `NoSchedule` | BuildKit NodePools | Never (scheduling constraint) |
-| `nvidia.com/gpu=true` | Permanent | `NoSchedule` | GPU NodePools only — applied by both the standard `generate_nodepools.py` (g4dn, g5, g6, p4de) and the specialized H100 (`modules/nodepools-h100`) and B200 (`modules/nodepools-b200`) generators. H100/B200 pools also pin `topology_manager_policy: single-numa-node` (scope `pod`) instead of the runner default (`best-effort`/`container`). | Never (scheduling constraint) |
+| `nvidia.com/gpu=true` | Permanent | `NoSchedule` | GPU NodePools only — applied by both the standard `generate_nodepools.py` (g4dn, g5, g6, p4d) and the specialized H100 (`modules/nodepools-h100`) and B200 (`modules/nodepools-b200`) generators. H100/B200 pools also pin `topology_manager_policy: single-numa-node` (scope `pod`) instead of the runner default (`best-effort`/`container`). | Never (scheduling constraint) |
 | `node-compactor.osdc.io/consolidating=true` | Runtime (dynamic) | `NoSchedule` | Applied by node-compactor | node-compactor controller (protected by `min_node_age`: 900s) |
 | `CriticalAddonsOnly=true` | Permanent | `NoSchedule` | Base infrastructure nodes (EKS-managed) | Never |
 

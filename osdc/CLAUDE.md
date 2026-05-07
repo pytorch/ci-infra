@@ -39,7 +39,7 @@ If either fails, fix the issues before finishing. Do not defer lint or test fail
 
 ## GPU Fleet Unification & NUMA Topology
 
-GPU families (g5, g6, g4dn) use unified single-fleet definitions (all GPU counts in one fleet). GPU allocation is handled by `nvidia.com/gpu` resource requests, not fleet-level isolation. Default `topologyManagerPolicy` is `best-effort`; multi-NUMA GPU instances (p4de, p5, p6-b200) override per-def to `single-numa-node` to prevent NUMA fragmentation and TopologyAffinityError livelocks under mixed GPU packing. See `actions-knowledge-base/docs/osdc/numa-topology-gpu-fleet-unification.md` for details.
+GPU families (g5, g6, g4dn) use unified single-fleet definitions (all GPU counts in one fleet). GPU allocation is handled by `nvidia.com/gpu` resource requests, not fleet-level isolation. Default `topologyManagerPolicy` is `best-effort`; multi-NUMA GPU instances (p4d, p5, p6-b200) override per-def to `single-numa-node` to prevent NUMA fragmentation and TopologyAffinityError livelocks under mixed GPU packing. See `actions-knowledge-base/docs/osdc/numa-topology-gpu-fleet-unification.md` for details.
 
 ## Skills Reference
 

@@ -4,7 +4,7 @@ Job counts and peak concurrency by runner type over the last 30 days. Source: `d
 
 > **Staleness note:** The load tables below are a point-in-time snapshot from 2026-03-18. They do **not** reflect changes made since then, including:
 > - H100 runners (`l-x86iamx-22-225-h100`, `…-2`, `…-4`, `…-8` on `nodepools-h100/p5-48xlarge`, added 2026-05-01).
-> - A100 runners (`l-x86iavx512-11-125-a100`, `…-2`, `…-4`, `l-bx86iavx512-88-1000-a100-8` on `nodepools/p4de-24xlarge`, added 2026-05-06).
+> - A100 runners (`l-x86iavx512-11-125-a100`, `…-2`, `…-4`, `l-bx86iavx512-88-1000-a100-8` on `nodepools/p4d-24xlarge`, added 2026-05-06).
 > - The `c7i-runner` Karpenter NodePool (proactive-capacity PoC; isolated from the shared `c7i` pool by the `node-fleet=c7i-runner` taint).
 > - Release runners (`rel-l-arm64g4-16-62`, `rel-l-x86iavx512-8-64`) on `m8g-48xlarge-release` / `r7a-48xlarge-release` nodepools — they have `proactive_capacity: 30` and consume real fleet capacity but are not modelled because they don't run pytorch/pytorch jobs.
 >
@@ -152,7 +152,7 @@ Estimated node count and resource usage when all runners hit their peak concurre
 
 **Date:** 2026-03-24. **Scope:** pytorch/pytorch self-hosted Linux runners only (same scope as the load data above). Runner types with no old-label mapping (e.g., some AMX variants on c7i.12xlarge and r7i.48xlarge) are not included — actual fleet will be slightly larger.
 
-> **Stale snapshot.** The fleet sizing below predates the H100 (`nodepools-h100/p5-48xlarge`, 8x H100 reserved-capacity nodes), A100 (`nodepools/p4de-24xlarge`, on-demand), and `c7i-runner` nodepools. Reserved-capacity GPU nodes don't terminate during low-load periods — they sit warm — so the daily-churn model below also no longer holds for the GPU portion of the fleet. Re-run `just simulate-cluster` after the next load-data refresh.
+> **Stale snapshot.** The fleet sizing below predates the H100 (`nodepools-h100/p5-48xlarge`, 8x H100 reserved-capacity nodes), A100 (`nodepools/p4d-24xlarge`, on-demand), and `c7i-runner` nodepools. Reserved-capacity GPU nodes don't terminate during low-load periods — they sit warm — so the daily-churn model below also no longer holds for the GPU portion of the fleet. Re-run `just simulate-cluster` after the next load-data refresh.
 >
 > **Release runners excluded.** `rel-l-arm64g4-16-62` (m8g.48xlarge-release) and `rel-l-x86iavx512-8-64` (r7a.48xlarge-release) are in the fleet but `runner_class: release` and serve no pytorch/pytorch jobs; their `proactive_capacity: 30` floor still consumes nodes that are not represented in the totals below.
 
