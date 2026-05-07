@@ -295,11 +295,18 @@ template:
           # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.10
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /home/runner/hook-extensions/wrapper.js
-          # Allow more time for workflow pods to come online during demand surges.
-          # Default is 600s (10 min), which is exceeded when node provisioning +
-          # git-cache sync takes longer than expected under concurrent load.
+          # PyTorch CI workflows depend on Docker images built in parallel by
+          # pytorch/pytorch's docker-builds.yml. Consumer jobs use test-infra's
+          # calculate-docker-image action, which polls ECR for the built image
+          # for up to 2h. While the image is still building, the workflow pod
+          # sits in ImagePullBackOff and the container hook stays in
+          # prepare_job's waitForPodPhases. Both runner and workflow pods are
+          # already protected from node disruption via the
+          # karpenter.sh/do-not-disrupt annotation set on each template; this
+          # timeout is the last knob that would otherwise fail the job before
+          # the image arrives.
           - name: ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS
-            value: "1500"
+            value: "7200"
           # Memory management: the runner pod has 1Gi shared between the .NET
           # runner agent and Node.js container hooks. Without explicit caps,
           # .NET claims 75% (768Mi) and Node.js claims 50% (512Mi) of the
