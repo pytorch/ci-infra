@@ -69,4 +69,41 @@ systemctl enable cpu-performance.service
 
 # Enable GPU persistence mode for consistent performance
 nvidia-smi -pm 1 || true
+
+# ---- Fabric Manager + IMEX channel (required for NCCL NVLS multicast) ----
+# NVSwitch-connected multi-GPU nodes need the Fabric Manager running and the
+# IMEX channel device available for NCCL to use NVLS. Without these, any
+# multi-process NCCL collective will fail with:
+#   "Failed to bind NVLink SHARP (NVLS) Multicast memory"
+cat >/etc/modules-load.d/nvidia-caps-imex-channels.conf <<'EOFS'
+nvidia-caps-imex-channels
+EOFS
+
+systemctl enable nvidia-fabricmanager || {
+  echo "ERROR: failed to enable nvidia-fabricmanager" >&2
+  exit 1
+}
+
+systemctl start nvidia-fabricmanager || {
+  systemctl status nvidia-fabricmanager --no-pager || true
+  echo "ERROR: failed to start nvidia-fabricmanager" >&2
+  exit 1
+}
+
+systemctl is-active --quiet nvidia-fabricmanager || {
+  systemctl status nvidia-fabricmanager --no-pager || true
+  echo "ERROR: nvidia-fabricmanager is not active" >&2
+  exit 1
+}
+
+modprobe nvidia-caps-imex-channels || {
+  echo "ERROR: failed to load nvidia-caps-imex-channels" >&2
+  exit 1
+}
+
+if ! lsmod | grep -q '^nvidia_caps_imex_channels '; then
+  echo "ERROR: nvidia-caps-imex-channels is not loaded" >&2
+  exit 1
+fi
+
 echo "Performance configuration complete for p6-b200.48xlarge"
