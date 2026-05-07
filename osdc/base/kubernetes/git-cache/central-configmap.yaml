@@ -69,6 +69,7 @@ data:
             "git_cache_central_active_slot": ("gauge", "Current active slot (0=a, 1=b)"),
             "git_cache_central_cycle_duration_seconds": ("gauge", "Duration of last full update cycle"),
             "git_cache_central_rsyncd_restarts_total": ("counter", "rsyncd daemon restart count"),
+            "git_cache_central_cycle_failed_total": ("counter", "Update cycles that did not rotate the active slot due to failures"),
             "git_cache_central_repos_total": ("gauge", "Number of repos being cached"),
             "git_cache_central_clone_total": ("counter", "Total clone/fetch operations"),
             "git_cache_central_clone_duration_seconds": ("histogram", "Time to clone/fetch each repo"),
@@ -238,6 +239,11 @@ data:
         "pytorch/test-infra",
     ]
 
+    # Common args for `git fetch` calls. --force --prune-tags is required because
+    # PyTorch CI rewrites mutable tags (ciflow/*, viable/strict/*) — without --force,
+    # git rejects "would clobber existing tag" and the fetch exits non-zero.
+    FETCH_ARGS = ["--prune", "--prune-tags", "--tags", "--force"]
+
 
     def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
         """Run a command, logging it and raising on failure unless check=False."""
@@ -293,13 +299,13 @@ data:
         log.info("Wrote %s", gitconfig)
 
 
-    def clone_full_repo(slot: Path, repo: str) -> None:
+    def clone_full_repo(slot: Path, repo: str) -> bool:
         """Clone a repo with submodules into the slot."""
         org, name = repo.split("/")
         repo_dir = slot / org / name
         if (repo_dir / ".git").is_dir():
             log.info("Already cloned: %s", repo)
-            return
+            return True
 
         log.info("Cloning %s with submodules...", repo)
         (slot / org).mkdir(parents=True, exist_ok=True)
@@ -308,7 +314,7 @@ data:
                 run(["git", "clone", "--recurse-submodules", "--jobs=4",
                      f"https://github.com/{repo}.git", str(repo_dir)])
                 log.info("Cloned %s (attempt %d)", repo, attempt)
-                return
+                return True
             except subprocess.CalledProcessError:
                 log.warning("Clone attempt %d/3 failed for %s", attempt, repo)
                 if repo_dir.exists():
@@ -316,15 +322,16 @@ data:
                 if attempt < 3:
                     time.sleep(10)
         log.error("Failed to clone %s after 3 attempts", repo)
+        return False
 
 
-    def clone_bare_repo(slot: Path, repo: str) -> None:
+    def clone_bare_repo(slot: Path, repo: str) -> bool:
         """Clone a repo as a bare repo into the slot."""
         org, name = repo.split("/")
         repo_dir = slot / org / f"{name}.git"
         if (repo_dir / "objects").is_dir() and _bare_has_refs(repo_dir):
             log.info("Already cloned: %s (bare)", repo)
-            return
+            return True
 
         log.info("Cloning %s (bare)...", repo)
         (slot / org).mkdir(parents=True, exist_ok=True)
@@ -336,14 +343,15 @@ data:
 
         for attempt in range(1, 4):
             try:
-                run(["git", "-C", str(repo_dir), "fetch", "origin"])
+                run(["git", "-C", str(repo_dir), "fetch", "origin", *FETCH_ARGS])
                 log.info("Fetched %s (bare, attempt %d)", repo, attempt)
-                return
+                return True
             except subprocess.CalledProcessError:
                 log.warning("Fetch attempt %d/3 failed for %s", attempt, repo)
                 if attempt < 3:
                     time.sleep(10)
         log.error("Failed to fetch %s after 3 attempts", repo)
+        return False
 
 
     def _bare_has_refs(repo_dir: Path) -> bool:
@@ -401,15 +409,14 @@ data:
         log.info("Symlink /data/current -> %s", slot)
 
 
-    def fetch_full_repo(repo_dir: Path, repo: str) -> None:
+    def fetch_full_repo(repo_dir: Path, repo: str) -> bool:
         """Fetch updates for a full (non-bare) repo with submodules."""
         if not (repo_dir / ".git").is_dir():
-            return
+            return False
         labels = {"repo": repo}
         t0 = time.monotonic()
         try:
-            run(["git", "-C", str(repo_dir), "fetch", "origin",
-                 "--prune", "--tags"])
+            run(["git", "-C", str(repo_dir), "fetch", "origin", *FETCH_ARGS])
             log.info("Fetched %s", repo)
         except subprocess.CalledProcessError:
             duration = time.monotonic() - t0
@@ -418,14 +425,20 @@ data:
             metrics.inc("git_cache_central_clone_total", {"repo": repo, "status": "error"})
             metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
             log.warning("Fetch failed for %s (will retry next cycle)", repo)
-            return
+            return False
 
         try:
             run(["git", "-C", str(repo_dir), "submodule", "update",
                  "--init", "--recursive", "--jobs=4"])
             log.info("Updated submodules for %s", repo)
         except subprocess.CalledProcessError:
+            duration = time.monotonic() - t0
+            metrics.set("git_cache_central_fetch_duration_seconds", duration, labels)
+            metrics.inc("git_cache_central_fetch_errors_total", labels)
+            metrics.inc("git_cache_central_clone_total", {"repo": repo, "status": "error"})
+            metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
             log.warning("Submodule update failed for %s (will retry next cycle)", repo)
+            return False
 
         duration = time.monotonic() - t0
         now = time.time()
@@ -435,17 +448,17 @@ data:
         metrics.inc("git_cache_central_clone_total", {"repo": repo, "status": "success"})
         metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
         metrics.set("git_cache_central_last_success_timestamp", now, labels)
+        return True
 
 
-    def fetch_bare_repo_update(repo_dir: Path, repo: str) -> None:
+    def fetch_bare_repo_update(repo_dir: Path, repo: str) -> bool:
         """Fetch updates for a bare repo."""
         if not (repo_dir / "objects").is_dir():
-            return
+            return False
         labels = {"repo": repo}
         t0 = time.monotonic()
         try:
-            run(["git", "-C", str(repo_dir), "fetch", "origin",
-                 "--prune", "--tags"])
+            run(["git", "-C", str(repo_dir), "fetch", "origin", *FETCH_ARGS])
             duration = time.monotonic() - t0
             now = time.time()
             metrics.set("git_cache_central_fetch_duration_seconds", duration, labels)
@@ -455,6 +468,7 @@ data:
             metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
             metrics.set("git_cache_central_last_success_timestamp", now, labels)
             log.info("Fetched %s", repo)
+            return True
         except subprocess.CalledProcessError:
             duration = time.monotonic() - t0
             metrics.set("git_cache_central_fetch_duration_seconds", duration, labels)
@@ -462,6 +476,7 @@ data:
             metrics.inc("git_cache_central_clone_total", {"repo": repo, "status": "error"})
             metrics.observe("git_cache_central_clone_duration_seconds", duration, labels)
             log.warning("Fetch failed for %s (will retry next cycle)", repo)
+            return False
 
 
     def rsync_slot(src: Path, dst: Path) -> None:
@@ -536,6 +551,10 @@ data:
         counter_thread.start()
         log.info("Connection counter started")
 
+        # Initialize counters that may not increment for a long time, so they
+        # appear in /metrics from the first scrape (Prometheus rate() needs the series).
+        metrics.inc("git_cache_central_cycle_failed_total", amount=0)
+
         # Phase 3: Periodic update loop
         # Rsync active -> staging, git fetch in staging, swap symlink
         while True:
@@ -555,31 +574,43 @@ data:
             # Copy current -> staging
             rsync_slot(src, dst)
 
+            cycle_ok = True
+
             # Fetch updates in staging slot
             for repo in REPOS_FULL:
                 org, name = repo.split("/")
                 repo_dir = dst / org / name
                 if (repo_dir / ".git").is_dir():
-                    fetch_full_repo(repo_dir, repo)
-                else:
-                    clone_full_repo(dst, repo)
+                    if not fetch_full_repo(repo_dir, repo):
+                        cycle_ok = False
+                elif not clone_full_repo(dst, repo):
+                    cycle_ok = False
                 _record_repo_size(dst, repo, bare=False)
 
             for repo in REPOS_BARE:
                 org, name = repo.split("/")
                 repo_dir = dst / org / f"{name}.git"
                 if (repo_dir / "objects").is_dir():
-                    fetch_bare_repo_update(repo_dir, repo)
-                else:
-                    clone_bare_repo(dst, repo)
+                    if not fetch_bare_repo_update(repo_dir, repo):
+                        cycle_ok = False
+                elif not clone_bare_repo(dst, repo):
+                    cycle_ok = False
                 _record_repo_size(dst, repo, bare=True)
 
             write_gitconfig(dst)
-
-            # Atomic swap
-            set_current(dst)
             metrics.set("git_cache_central_cycle_duration_seconds", time.monotonic() - cycle_start)
-            log.info("Update cycle complete — active slot: %s", dst)
+
+            if cycle_ok:
+                # Only rotate if every repo updated cleanly, so silent
+                # fetch failures cannot mask stale content as fresh.
+                set_current(dst)
+                log.info("Update cycle complete — active slot: %s", dst)
+            else:
+                metrics.inc("git_cache_central_cycle_failed_total")
+                log.warning(
+                    "Update cycle had failures — keeping previous active slot %s",
+                    active_slot(),
+                )
 
 
     if __name__ == "__main__":
