@@ -1,6 +1,6 @@
-# Karpenter NodePool definition: p4de.24xlarge (GPU compute, 8x NVIDIA A100 80GB SXM4)
+# Karpenter NodePool definition: p4d.24xlarge (GPU compute, 8x NVIDIA A100 40GB SXM4)
 # Used by: l-x86iavx512-11-125-a100, l-x86iavx512-22-250-a100-2, l-x86iavx512-44-500-a100-4, l-bx86iavx512-88-1000-a100-8
-# Capacity: on-demand (no Capacity Block reservation — AWS sells p4de.24xlarge on-demand,
+# Capacity: on-demand (no Capacity Block reservation — AWS sells p4d.24xlarge on-demand,
 # Karpenter provisions on demand). Nodes scale fully with workload — no warm
 # floor; a cold start adds ~5-10 min to the first job after consolidation.
 # Node disk: 100Gi OS only — NVMe instance storage (8x1000GB) handles container data
@@ -8,8 +8,8 @@
 # registry-mirror-config and node-performance-tuning DaemonSets — no per-nodepool
 # user_data_script needed (same pattern as g5/g6/g4dn).
 nodepool:
-  name: p4de-24xlarge
-  instance_type: p4de.24xlarge
+  name: p4d-24xlarge
+  instance_type: p4d.24xlarge
   arch: amd64
   node_disk_size: 100
   gpu: true

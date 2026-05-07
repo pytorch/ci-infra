@@ -1,9 +1,9 @@
-# ARC runner definition: l-x86iavx512-11-125-a100 (1x NVIDIA A100 80GB)
-# Scheduled on NodePool: p4de-24xlarge (from nodepools module)
+# ARC runner definition: l-x86iavx512-11-125-a100 (1x NVIDIA A100 40GB)
+# Scheduled on NodePool: p4d-24xlarge (from nodepools module)
 # Resource math: 88 usable vCPU / 8 GPUs = 11 vCPU/GPU, 1000 GiB / 8 = 125 GiB/GPU
 runner:
   name: l-x86iavx512-11-125-a100
-  instance_type: p4de.24xlarge
+  instance_type: p4d.24xlarge
   disk_size: 200
   vcpu: 11
   memory: 125Gi
