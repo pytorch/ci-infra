@@ -1423,6 +1423,11 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
             logger.info(
                 f"Starting parallel processing for {total_nodes} nodes")
 
+            # Deterministic peer pod names by node_index so MULTINODE_RANK aligns with the
+            # position of this pod in MULTINODE_HOSTS across all replicas.
+            nodes_sorted = sorted(nodes, key=lambda n: int(n.get("node_index", 0)))
+            peer_pod_names = [f"gpu-dev-{n['reservation_id'][:8]}" for n in nodes_sorted]
+
             def process_single_node(node_data):
                 """Process a single node - to be run in parallel"""
                 i, node = node_data
@@ -1435,7 +1440,8 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
                         'action': 'process_multinode_individual',
                         'node_index': int(node_index),
                         'total_nodes': int(total_nodes),
-                        'master_reservation_id': str(master_reservation_id)
+                        'master_reservation_id': str(master_reservation_id),
+                        'multinode_peer_pods': peer_pod_names,
                     }
 
                     logger.info(
@@ -1540,6 +1546,12 @@ def process_multinode_individual_node(message_body: dict) -> bool:
             return False
 
         node_data = response["Item"]
+
+        # Forward peer pod list from coordinator into request dict so create_pod can
+        # bake MULTINODE_HOSTS / MASTER_ADDR / MULTINODE_RANK env vars into the pod.
+        peer_pods = message_body.get("multinode_peer_pods")
+        if peer_pods:
+            node_data["multinode_peer_pods"] = peer_pods
 
         # Update status to preparing pod
         update_multinode_pod_status(
@@ -2888,6 +2900,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             dockerimage=dockerimage,
             target_az=target_az,
             target_node=target_node,
+            multinode_peer_pods=request.get("multinode_peer_pods"),
+            multinode_rank=int(request.get("node_index", 0)) if is_multinode else 0,
             preserve_entrypoint=preserve_entrypoint,
             node_labels=node_labels,
             trace_data=trace_data,
@@ -3429,6 +3443,8 @@ def create_kubernetes_resources(
     efs_filesystem_id: str = None,
     is_multinode: bool = False,
     target_node: str = None,
+    multinode_peer_pods: list = None,
+    multinode_rank: int = 0,
     dockerfile_base64_data: str = None,
     dockerimage: str = None,
     target_az: str = None,
@@ -3533,6 +3549,8 @@ def create_kubernetes_resources(
                         dockerimage=dockerimage,
                         target_az=target_az,
                         target_node=target_node,
+                        multinode_peer_pods=multinode_peer_pods,
+                        multinode_rank=multinode_rank,
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
                         trace_data=trace_data,
@@ -3620,6 +3638,8 @@ def create_kubernetes_resources(
                         dockerimage=dockerimage,
                         target_az=target_az,
                         target_node=target_node,
+                        multinode_peer_pods=multinode_peer_pods,
+                        multinode_rank=multinode_rank,
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
                         trace_data=trace_data,
@@ -3929,6 +3949,30 @@ def get_nccl_env_vars(gpu_type: str) -> list:
     return env_vars
 
 
+def _get_multinode_env_vars(peer_pods: list, rank: int) -> list:
+    """Build env vars exposing peer hostnames/rank/master to the pod.
+
+    Hostnames use the per-pod headless service we already create elsewhere, so they
+    resolve to the current pod IP via cluster DNS even if a pod is recreated. We
+    don\'t inject IPs at pod-creation time (they aren\'t known until kube schedules
+    everyone) — the bashrc/zshrc helper resolves and exports MULTINODE_IPS at shell
+    start, and a /usr/local/bin/multinode-ips helper is available for non-interactive
+    callers.
+    """
+    if not peer_pods or len(peer_pods) <= 1:
+        return []
+    namespace = "gpu-dev"
+    hosts = [f"{p}-headless.{namespace}.svc.cluster.local" for p in peer_pods]
+    return [
+        client.V1EnvVar(name="MULTINODE_HOSTS", value=",".join(hosts)),
+        client.V1EnvVar(name="MULTINODE_PEER_PODS", value=",".join(peer_pods)),
+        client.V1EnvVar(name="MULTINODE_RANK", value=str(rank)),
+        client.V1EnvVar(name="MULTINODE_SIZE", value=str(len(peer_pods))),
+        client.V1EnvVar(name="MASTER_ADDR", value=hosts[0]),
+        client.V1EnvVar(name="MASTER_PORT", value="29500"),
+    ]
+
+
 def create_pod(
     k8s_client,
     pod_name: str,
@@ -3946,6 +3990,8 @@ def create_pod(
     dockerimage: str = None,
     target_az: str = None,
     target_node: str = None,
+    multinode_peer_pods: list = None,
+    multinode_rank: int = 0,
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
     trace_data: dict = None,
@@ -4448,6 +4494,22 @@ check_warnings() {{
 
 # Run warning check before every command prompt
 PROMPT_COMMAND="check_warnings; \$PROMPT_COMMAND"
+
+# Multinode peer IP resolution: MULTINODE_HOSTS is baked at pod creation, but per-pod
+# IPs are only known once kube schedules them. Resolve at shell start so users can do
+# torchrun --master_addr=\$MASTER_ADDR or mpirun -H "\$MULTINODE_IPS" without extra steps.
+if [ -n "\$MULTINODE_HOSTS" ]; then
+    _MULTINODE_IPS=""
+    for _h in \$(echo "\$MULTINODE_HOSTS" | tr ',' ' '); do
+        _ip=\$(getent hosts "\$_h" 2>/dev/null | awk '{{print \$1}}' | head -1)
+        if [ -n "\$_ip" ]; then
+            _MULTINODE_IPS="\${{_MULTINODE_IPS:+\$_MULTINODE_IPS,}}\$_ip"
+        fi
+    done
+    export MULTINODE_IPS="\$_MULTINODE_IPS"
+    [ -n "\$MULTINODE_IPS" ] && export MASTER_IP=\$(echo "\$MULTINODE_IPS" | cut -d, -f1)
+    unset _MULTINODE_IPS _h _ip
+fi
 EOF_BASHRC_EXT
 
                         cat > /home/dev/.zshrc_ext << EOF_ZSHRC_EXT
@@ -4477,6 +4539,20 @@ check_warnings() {{
 
 # Run warning check before every command prompt (zsh hook)
 precmd() {{ check_warnings }}
+
+# Multinode peer IP resolution (see .bashrc_ext for rationale)
+if [[ -n "\$MULTINODE_HOSTS" ]]; then
+    _MULTINODE_IPS=""
+    for _h in \${{(s:,:)MULTINODE_HOSTS}}; do
+        _ip=\$(getent hosts "\$_h" 2>/dev/null | awk '{{print \$1}}' | head -1)
+        if [[ -n "\$_ip" ]]; then
+            _MULTINODE_IPS="\${{_MULTINODE_IPS:+\$_MULTINODE_IPS,}}\$_ip"
+        fi
+    done
+    export MULTINODE_IPS="\$_MULTINODE_IPS"
+    [[ -n "\$MULTINODE_IPS" ]] && export MASTER_IP="\${{MULTINODE_IPS%%,*}}"
+    unset _MULTINODE_IPS _h _ip
+fi
 EOF_ZSHRC_EXT
 
                         chown 1081:1081 /home/dev/.bashrc_ext /home/dev/.zshrc_ext
@@ -5207,7 +5283,7 @@ EOF
                         client.V1EnvVar(
                             name="NVIDIA_DRIVER_CAPABILITIES", value="compute,utility"
                         )
-                    ] + get_nccl_env_vars(gpu_type) + get_cpu_thread_env_vars(gpu_count, gpu_type),
+                    ] + get_nccl_env_vars(gpu_type) + get_cpu_thread_env_vars(gpu_count, gpu_type) + _get_multinode_env_vars(multinode_peer_pods, multinode_rank),
                     resources=client.V1ResourceRequirements(
                         limits=get_pod_resource_limits(
                             gpu_count, gpu_type, is_multinode),
