@@ -4476,6 +4476,16 @@ EOF_PROFILE
 # User identification
 export GPU_DEV_USER_ID="{user_id or 'dev'}"
 
+# Multinode peer info — inlined from container env at pod startup. sshd strips
+# container env vars from login shells, so we materialize the values into rc files.
+# Skipped (empty exports) for single-node reservations where MULTINODE_* aren't set.
+export MULTINODE_HOSTS="$MULTINODE_HOSTS"
+export MULTINODE_PEER_PODS="$MULTINODE_PEER_PODS"
+export MULTINODE_RANK="$MULTINODE_RANK"
+export MULTINODE_SIZE="$MULTINODE_SIZE"
+export MASTER_ADDR="$MASTER_ADDR"
+export MASTER_PORT="$MASTER_PORT"
+
 # Function to check for GPU reservation expiry warnings and startup script status
 check_warnings() {{
     # Check for startup script still running
@@ -4519,6 +4529,15 @@ EOF_BASHRC_EXT
 
 # User identification
 export GPU_DEV_USER_ID="{user_id or 'dev'}"
+
+# Multinode peer info — inlined from container env at pod startup. sshd strips
+# container env vars from login shells, so we materialize the values into rc files.
+export MULTINODE_HOSTS="$MULTINODE_HOSTS"
+export MULTINODE_PEER_PODS="$MULTINODE_PEER_PODS"
+export MULTINODE_RANK="$MULTINODE_RANK"
+export MULTINODE_SIZE="$MULTINODE_SIZE"
+export MASTER_ADDR="$MASTER_ADDR"
+export MASTER_PORT="$MASTER_PORT"
 
 # Function to check for GPU reservation expiry warnings and startup script status
 check_warnings() {{
