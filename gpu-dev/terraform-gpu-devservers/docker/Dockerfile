@@ -6,15 +6,15 @@ FROM pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
-# Update package lists with retries and install essential packages
+# Update apt and install base packages in a single layer so the package metadata
+# is always fresh relative to the install. Splitting update from install causes
+# Ubuntu to 404 on stale cached versions whenever security updates retire old .debs.
 RUN for attempt in 1 2 3; do \
         echo "Package update attempt $attempt..." && \
         apt-get update -qq && break || \
         ([ $attempt -lt 3 ] && echo "Update failed, waiting 30s..." && sleep 30) \
-    done
-
-# Install system packages in layers for better caching
-RUN apt-get install -y --no-install-recommends \
+    done && \
+    apt-get install -y --no-install-recommends \
         openssh-server \
         sudo \
         curl \
