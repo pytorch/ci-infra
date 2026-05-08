@@ -44,12 +44,12 @@ EXPECTED_REGISTRY_DOMAINS = [
 EXPECTED_PYPI_DOMAINS = [
     "pypi.org",
     "files.pythonhosted.org",
-    "download.pytorch.org",
 ]
 
 # Domains that must NOT be blocked (no rate limits, used for bootstrap).
 ALLOWED_DOMAINS = [
     "public.ecr.aws",
+    "download.pytorch.org",
 ]
 
 # The DaemonSet only runs on Karpenter-managed runner nodes.
@@ -149,14 +149,8 @@ class TestCacheEnforcerConfigMap:
         # REGISTRY_DOMAINS or PYPI_DOMAINS variable assignments.
         in_registry = domain_in_variable_block(configmap_script, "REGISTRY_DOMAINS", domain)
         in_pypi = domain_in_variable_block(configmap_script, "PYPI_DOMAINS", domain)
-        assert not in_registry, (
-            f"Domain '{domain}' found in REGISTRY_DOMAINS but should be allowed. "
-            f"public.ecr.aws has no rate limits and must not be blocked."
-        )
-        assert not in_pypi, (
-            f"Domain '{domain}' found in PYPI_DOMAINS but should be allowed. "
-            f"public.ecr.aws has no rate limits and must not be blocked."
-        )
+        assert not in_registry, f"Domain '{domain}' found in REGISTRY_DOMAINS but should be allowed."
+        assert not in_pypi, f"Domain '{domain}' found in PYPI_DOMAINS but should be allowed."
 
     def test_xt_string_module_loaded(self, configmap_script: str) -> None:
         """Script must load the xt_string kernel module for SNI matching."""
