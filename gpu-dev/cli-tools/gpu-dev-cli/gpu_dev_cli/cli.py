@@ -1398,6 +1398,18 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, dockerfile, doc
         rprint("[red]❌ Provide a command after --, e.g. gpu-dev submit --runtime ./ -- python train.py[/red]")
         sys.exit(2)
 
+    # Catch the common typo where the user drops the leading -- on an option name and
+    # the option's value gets swept into the command (because submit accepts arbitrary
+    # commands via ignore_unknown_options). Without this guard the remote shell happily
+    # runs `gpus 1 bash run.sh` and the user wonders why.
+    _submit_flag_names = {"gpus", "gpu-type", "hours", "disk", "no-persistent-disk",
+                          "dockerfile", "dockerimage", "preserve-entrypoint", "runtime",
+                          "no-pull", "keep-alive", "name", "timeout"}
+    if command[0] in _submit_flag_names:
+        rprint(f"[red]❌ '{command[0]}' looks like a missing '--'. Did you mean '--{command[0]}'? "
+               f"Put your command after '--', e.g. gpu-dev submit --{command[0]} <value> ... -- bash run.sh[/red]")
+        sys.exit(2)
+
     # rsync is on macOS by default and on virtually every Linux distro; bail early with a
     # readable message if the user has somehow uninstalled it locally rather than failing
     # mid-flight after the reservation has already been created.
