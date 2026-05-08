@@ -58,7 +58,6 @@ data:
     PYPI_DOMAINS="
     pypi.org
     files.pythonhosted.org
-    download.pytorch.org
     "
 
     ALL_DOMAINS="$REGISTRY_DOMAINS $PYPI_DOMAINS"
