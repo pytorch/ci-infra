@@ -103,6 +103,8 @@ ENV NCCL_ASYNC_ERROR_HANDLING=1
 ENV SUPPORTS_EFA=true
 
 # Install Python packages (Jupyter and common ML packages)
+# gpu-dev itself is bundled so users can run `gpu-dev submit` from inside their pod
+# (combined with IRSA on the pod's service account, no manual aws sso login needed).
 RUN pip install --no-cache-dir --break-system-packages \
         jupyterlab \
         ipywidgets \
@@ -112,7 +114,8 @@ RUN pip install --no-cache-dir --break-system-packages \
         numpy \
         scikit-learn \
         plotly \
-        tensorboard
+        tensorboard \
+        gpu-dev
 
 # Create dev user with UID 1081 to avoid conflicts with common base image users (e.g., ubuntu=1000)
 RUN useradd -u 1081 -m -s /usr/bin/zsh dev && \

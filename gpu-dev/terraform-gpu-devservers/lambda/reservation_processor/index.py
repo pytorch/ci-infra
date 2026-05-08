@@ -4577,6 +4577,16 @@ EOF_ZSHRC_EXT
                         chown 1081:1081 /home/dev/.bashrc_ext /home/dev/.zshrc_ext
                         echo "[STARTUP] ✓ Shell extension files written"
 
+                        # Background-refresh gpu-dev so older images / persistent disks pick up the
+                        # latest CLI without forcing the user to pip install it themselves. The
+                        # baseline gpu-dev is already in the image; this just upgrades.
+                        (
+                            pip install --no-cache-dir --break-system-packages --upgrade gpu-dev \
+                                > /tmp/gpu-dev-upgrade.log 2>&1 \
+                                && echo "[STARTUP] gpu-dev upgraded to $(gpu-dev --version 2>&1 | tail -1)" \
+                                || echo "[STARTUP] gpu-dev upgrade failed (non-fatal); see /tmp/gpu-dev-upgrade.log"
+                        ) &
+
                         # Ensure existing rc files source the extensions (for persistent disks with old configs)
                         for rcfile in /home/dev/.bashrc /home/dev/.zshrc; do
                             if [ -f "$rcfile" ]; then
@@ -5301,6 +5311,9 @@ EOF
                         ),
                         client.V1EnvVar(
                             name="NVIDIA_DRIVER_CAPABILITIES", value="compute,utility"
+                        ),
+                        client.V1EnvVar(
+                            name="AWS_ROLE_SESSION_NAME", value=(user_id or "gpu-dev-pod")[:64]
                         )
                     ] + get_nccl_env_vars(gpu_type) + get_cpu_thread_env_vars(gpu_count, gpu_type) + _get_multinode_env_vars(multinode_peer_pods, multinode_rank),
                     resources=client.V1ResourceRequirements(
@@ -5483,6 +5496,11 @@ EOF
             ] if not gpu_type.startswith("cpu-") else [],
             # Faster pod deletion (default is 30s)
             termination_grace_period_seconds=10,
+            # IRSA: bind the pod to the gpu-dev-pod-sa service account so boto3 inside
+            # the pod gets temporary creds via STS AssumeRoleWithWebIdentity. Combined
+            # with the AWS_ROLE_SESSION_NAME env var below this lets users run
+            # `gpu-dev submit` from inside their dev pod with no manual aws sso login.
+            service_account_name="gpu-dev-pod-sa",
             # EFA requires host network namespace for RDMA access to efa0 interface
             **({
                 "host_network": True,
