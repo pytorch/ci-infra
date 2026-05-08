@@ -416,6 +416,17 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
           app = "image-prepuller"
         }
       }
+      # The prepuller does nothing but pull an image + sit in a pause container.
+      # Default maxUnavailable=1 makes a 32GB image roll out across 26 nodes take
+      # ~2.5h, so user pods landing on un-updated nodes still pull from ECR fresh.
+      # Parallel is safe here — restarting the prepuller doesn't disrupt anything,
+      # and the kubelet's image cache is independent of the prepuller pod's lifecycle.
+      updateStrategy = {
+        type = "RollingUpdate"
+        rollingUpdate = {
+          maxUnavailable = "100%"
+        }
+      }
       template = {
         metadata = {
           labels = {
