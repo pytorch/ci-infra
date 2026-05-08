@@ -1357,18 +1357,26 @@ _SUBMIT_GPU_TYPES = ["b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200"
 @main.command(context_settings={"ignore_unknown_options": True})
 @click.option("--gpu-type", type=click.Choice(_SUBMIT_GPU_TYPES, case_sensitive=False), default="a100", show_default=True)
 @click.option("--gpus", type=int, default=1, show_default=True, help="GPU count (multinode if > per-node max).")
-@click.option("--hours", type=float, default=1.0, show_default=True, help="Reservation duration ceiling (job auto-cancels on exit).")
+@click.option("--hours", type=float, default=1.0, show_default=True, help="Reservation lifetime ceiling — job auto-cancels well before this if it finishes.")
 @click.option("--disk", type=str, default=None, help="Persistent disk name (master node only). Omit for ephemeral storage.")
 @click.option("--no-persistent-disk", is_flag=True, help="Skip persistent disk entirely.")
+@click.option("--dockerfile", type=click.Path(exists=True, dir_okay=False, resolve_path=True), default=None,
+              help="Local Dockerfile to build into the pod image (build context = the Dockerfile's directory).")
+@click.option("--dockerimage", type=str, default=None,
+              help="Pre-built container image reference (e.g. ghcr.io/me/img:tag) to run instead of the default.")
+@click.option("--preserve-entrypoint", is_flag=True,
+              help="Keep the custom image's ENTRYPOINT/CMD instead of letting gpu-dev wrap with the SSH harness. Note: submit needs SSH to work.")
 @click.option("--runtime", type=click.Path(exists=True, file_okay=False, resolve_path=True), default=None,
               help="Local directory to rsync to /workspace/submit-<id>/ on master node before run.")
 @click.option("--no-pull", is_flag=True, help="Skip syncing the remote workspace back to --runtime after the job finishes.")
 @click.option("--keep-alive", is_flag=True, help="Don't cancel the reservation when the job exits.")
 @click.option("--name", type=str, default=None, help="Reservation name.")
-@click.option("--timeout", type=int, default=20, show_default=True, help="Minutes to wait for the reservation to become active.")
+@click.option("--timeout", type=int, default=24 * 60, show_default=True,
+              help="Minutes to wait for the reservation to become active. Defaults to 24h since GPU reservations may queue when the cluster is full.")
 @click.argument("command", nargs=-1, required=True)
 @click.pass_context
-def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, runtime, no_pull, keep_alive, name, timeout, command):
+def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, dockerfile, dockerimage, preserve_entrypoint,
+           runtime, no_pull, keep_alive, name, timeout, command):
     """Submit a job: reserve, sync code, run, sync results back, auto-cancel.
 
     \b
@@ -1421,12 +1429,47 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, runtime, no_pul
     # SSH into rank 0, so passing --disk is fine.
     disk_name = None if no_persistent_disk else disk
 
+    # Build dockerfile context if provided (mirrors the reserve-flow logic)
+    dockerfile_payload = None
+    if dockerfile:
+        import os, tarfile, tempfile, base64
+        if os.path.getsize(dockerfile) > 512 * 1024:
+            rprint("[red]❌ Dockerfile too large (max 512KB)[/red]")
+            sys.exit(2)
+        ctx_dir = os.path.dirname(os.path.abspath(dockerfile))
+        rprint(f"[cyan]📦 Building tar.gz context from {ctx_dir}[/cyan]")
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            with tarfile.open(tmp.name, "w:gz") as tar:
+                for root, _, files in os.walk(ctx_dir):
+                    for f in files:
+                        full = os.path.join(root, f)
+                        tar.add(full, arcname=os.path.relpath(full, ctx_dir))
+                if os.path.basename(dockerfile).lower() != "dockerfile":
+                    tar.add(dockerfile, arcname="Dockerfile")
+            tar_size = os.path.getsize(tmp.name)
+            if tar_size > 700 * 1024:
+                os.unlink(tmp.name)
+                rprint(f"[red]❌ Build context too large: {tar_size}B (max ~700KB compressed)[/red]")
+                sys.exit(2)
+            with open(tmp.name, "rb") as fh:
+                dockerfile_payload = base64.b64encode(fh.read()).decode("utf-8")
+            os.unlink(tmp.name)
+        rprint(f"[green]✅ Dockerfile context: {tar_size}B compressed[/green]")
+
+    if dockerimage and not preserve_entrypoint:
+        rprint("[dim]Note: passing --dockerimage without --preserve-entrypoint, so gpu-dev wraps the image with the SSH harness.[/dim]")
+    if preserve_entrypoint and not (dockerfile or dockerimage):
+        rprint("[red]❌ --preserve-entrypoint requires --dockerfile or --dockerimage[/red]")
+        sys.exit(2)
+
     rprint(f"[cyan]🎫 Reserving {gpus}x {gpu_type.upper()} for up to {hours}h...[/cyan]")
     if is_multinode:
         reservation_ids = rm.create_multinode_reservation(
             user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gt,
             duration_hours=hours, name=name, github_user=user_info["github_user"],
-            no_persistent_disk=no_persistent_disk, disk_name=disk_name)
+            no_persistent_disk=no_persistent_disk, disk_name=disk_name,
+            dockerfile=dockerfile_payload, dockerimage=dockerimage,
+            preserve_entrypoint=preserve_entrypoint)
         if not reservation_ids:
             rprint("[red]❌ Failed to create multinode reservation[/red]")
             sys.exit(2)
@@ -1435,7 +1478,9 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, runtime, no_pul
         primary_id = rm.create_reservation(
             user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gt,
             duration_hours=hours, name=name, github_user=user_info["github_user"],
-            no_persistent_disk=no_persistent_disk, disk_name=disk_name)
+            no_persistent_disk=no_persistent_disk, disk_name=disk_name,
+            dockerfile=dockerfile_payload, dockerimage=dockerimage,
+            preserve_entrypoint=preserve_entrypoint)
         if not primary_id:
             rprint("[red]❌ Failed to create reservation[/red]")
             sys.exit(2)
@@ -1456,7 +1501,11 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, runtime, no_pul
                 rprint(f"[dim]   cancel {rid[:8]} failed: {ce}[/dim]")
 
     try:
-        rprint(f"[cyan]⏳ Waiting for reservation {short_id} to become active (up to {timeout}m)...[/cyan]")
+        if timeout >= 60:
+            wait_str = f"up to {timeout//60}h{(" " + str(timeout%60) + "m") if timeout%60 else ""}"
+        else:
+            wait_str = f"up to {timeout}m"
+        rprint(f"[cyan]⏳ Waiting for reservation {short_id} to become active ({wait_str}; can queue when cluster is full)...[/cyan]")
         if is_multinode:
             results = rm.wait_for_multinode_reservation_completion(reservation_ids, timeout_minutes=timeout)
         else:
