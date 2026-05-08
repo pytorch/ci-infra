@@ -1398,6 +1398,15 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, dockerfile, doc
         rprint("[red]❌ Provide a command after --, e.g. gpu-dev submit --runtime ./ -- python train.py[/red]")
         sys.exit(2)
 
+    # rsync is on macOS by default and on virtually every Linux distro; bail early with a
+    # readable message if the user has somehow uninstalled it locally rather than failing
+    # mid-flight after the reservation has already been created.
+    if runtime:
+        import shutil
+        if not shutil.which("rsync"):
+            rprint("[red]❌ rsync not found on PATH locally. Install it (Mac: 'brew install rsync', Debian/Ubuntu: 'sudo apt install rsync') and retry.[/red]")
+            sys.exit(2)
+
     gt = gpu_type.lower()
     # Per-type max GPUs (mirrors gpu_configs in reserve flow)
     max_per_node = {
