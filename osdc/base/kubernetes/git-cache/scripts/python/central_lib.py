@@ -30,6 +30,10 @@ class MetricsServer:
         "git_cache_central_active_slot": ("gauge", "Current active slot (0=a, 1=b)"),
         "git_cache_central_cycle_duration_seconds": ("gauge", "Duration of last full update cycle"),
         "git_cache_central_rsyncd_restarts_total": ("counter", "rsyncd daemon restart count"),
+        "git_cache_central_cycle_failed_total": (
+            "counter",
+            "Update cycles that did not rotate the active slot due to failures",
+        ),
         "git_cache_central_repos_total": ("gauge", "Number of repos being cached"),
         "git_cache_central_clone_total": ("counter", "Total clone/fetch operations"),
         "git_cache_central_clone_duration_seconds": ("histogram", "Time to clone/fetch each repo"),
