@@ -1349,6 +1349,205 @@ def reserve(
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
+_SUBMIT_GPU_TYPES = ["b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100",
+                     "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000",
+                     "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"]
+
+
+@main.command(context_settings={"ignore_unknown_options": True})
+@click.option("--gpu-type", type=click.Choice(_SUBMIT_GPU_TYPES, case_sensitive=False), default="a100", show_default=True)
+@click.option("--gpus", type=int, default=1, show_default=True, help="GPU count (multinode if > per-node max).")
+@click.option("--hours", type=float, default=1.0, show_default=True, help="Reservation duration ceiling (job auto-cancels on exit).")
+@click.option("--disk", type=str, default=None, help="Persistent disk name (master node only). Omit for ephemeral storage.")
+@click.option("--no-persistent-disk", is_flag=True, help="Skip persistent disk entirely.")
+@click.option("--runtime", type=click.Path(exists=True, file_okay=False, resolve_path=True), default=None,
+              help="Local directory to rsync to /workspace/submit-<id>/ on master node before run.")
+@click.option("--no-pull", is_flag=True, help="Skip syncing the remote workspace back to --runtime after the job finishes.")
+@click.option("--keep-alive", is_flag=True, help="Don't cancel the reservation when the job exits.")
+@click.option("--name", type=str, default=None, help="Reservation name.")
+@click.option("--timeout", type=int, default=20, show_default=True, help="Minutes to wait for the reservation to become active.")
+@click.argument("command", nargs=-1, required=True)
+@click.pass_context
+def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, runtime, no_pull, keep_alive, name, timeout, command):
+    """Submit a job: reserve, sync code, run, sync results back, auto-cancel.
+
+    \b
+    Examples:
+      gpu-dev submit --runtime ./ -- python train.py
+      gpu-dev submit --gpus 16 --gpu-type h100 --runtime . -- bash run.sh
+      gpu-dev submit --keep-alive -- nvidia-smi
+
+    The job runs on rank 0 (master pod). For multinode jobs, MULTINODE_HOSTS / RANK /
+    SIZE / MASTER_ADDR / MASTER_PORT are exported on every pod so torchrun and friends
+    work without manual wiring. Exit code mirrors the remote command's exit code.
+    """
+    import subprocess
+    import shlex
+    import sys
+    from pathlib import Path
+
+    if not command:
+        rprint("[red]❌ Provide a command after --, e.g. gpu-dev submit --runtime ./ -- python train.py[/red]")
+        sys.exit(2)
+
+    gt = gpu_type.lower()
+    # Per-type max GPUs (mirrors gpu_configs in reserve flow)
+    max_per_node = {
+        "t4": 4, "l4": 4, "a10g": 4, "rtxpro6000": 4, "t4-small": 1,
+        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
+        "h100-mig-1g": 16, "h100-mig-2g": 8, "h100-mig-3g": 8,
+        "b200-mig-1g": 4, "b200-mig-2g": 2, "b200-mig-3g": 2,
+        "cpu-arm": 0, "cpu-x86": 0,
+    }.get(gt)
+    if max_per_node is None:
+        rprint(f"[red]❌ Unknown gpu-type '{gpu_type}'[/red]")
+        sys.exit(2)
+
+    is_multinode = gt not in ("cpu-arm", "cpu-x86") and gpus > max_per_node
+    if is_multinode and gpus % max_per_node != 0:
+        rprint(f"[red]❌ For multinode {gt}, --gpus must be a multiple of {max_per_node}[/red]")
+        sys.exit(2)
+
+    config = load_config()
+    try:
+        user_info = authenticate_user(config)
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+        sys.exit(2)
+
+    rm = ReservationManager(config)
+
+    # Determine effective disk handling. Multinode: only master gets persistent disk; we always
+    # SSH into rank 0, so passing --disk is fine.
+    disk_name = None if no_persistent_disk else disk
+
+    rprint(f"[cyan]🎫 Reserving {gpus}x {gpu_type.upper()} for up to {hours}h...[/cyan]")
+    if is_multinode:
+        reservation_ids = rm.create_multinode_reservation(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gt,
+            duration_hours=hours, name=name, github_user=user_info["github_user"],
+            no_persistent_disk=no_persistent_disk, disk_name=disk_name)
+        if not reservation_ids:
+            rprint("[red]❌ Failed to create multinode reservation[/red]")
+            sys.exit(2)
+        primary_id = reservation_ids[0]
+    else:
+        primary_id = rm.create_reservation(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gt,
+            duration_hours=hours, name=name, github_user=user_info["github_user"],
+            no_persistent_disk=no_persistent_disk, disk_name=disk_name)
+        if not primary_id:
+            rprint("[red]❌ Failed to create reservation[/red]")
+            sys.exit(2)
+        reservation_ids = [primary_id]
+
+    short_id = primary_id[:8]
+    cancelled = {"done": False}
+
+    def maybe_cancel(reason: str):
+        if cancelled["done"] or keep_alive:
+            return
+        cancelled["done"] = True
+        rprint(f"[yellow]🛑 Cancelling reservation {short_id} ({reason})[/yellow]")
+        for rid in reservation_ids:
+            try:
+                rm.cancel_reservation(rid, user_info["user_id"])
+            except Exception as ce:
+                rprint(f"[dim]   cancel {rid[:8]} failed: {ce}[/dim]")
+
+    try:
+        rprint(f"[cyan]⏳ Waiting for reservation {short_id} to become active (up to {timeout}m)...[/cyan]")
+        if is_multinode:
+            results = rm.wait_for_multinode_reservation_completion(reservation_ids, timeout_minutes=timeout)
+        else:
+            single = rm.wait_for_reservation_completion(primary_id, timeout_minutes=timeout)
+            results = [single] if single else None
+        if not results:
+            rprint("[red]❌ Reservation never became active[/red]")
+            maybe_cancel("activation timeout")
+            sys.exit(1)
+
+        # Resolve master pod (rank 0)
+        conn = rm.get_connection_info(primary_id, user_info["user_id"])
+        if not conn:
+            rprint("[red]❌ Could not fetch connection info[/red]")
+            maybe_cancel("no connection info")
+            sys.exit(1)
+        if conn.get("is_multinode"):
+            nodes = sorted(conn["nodes"], key=lambda n: n.get("node_index", 0))
+            master = nodes[0]
+            master_id, master_pod, master_fqdn, master_name = (
+                master["reservation_id"], master["pod_name"],
+                master.get("fqdn"), master.get("name"))
+        else:
+            master_id, master_pod, master_fqdn, master_name = (
+                primary_id, conn["pod_name"], conn.get("fqdn"), conn.get("name"))
+
+        # Ensure SSH config exists
+        gpu_dev_dir = Path.home() / ".gpu-dev"
+        config_file = gpu_dev_dir / f"{master_id[:8]}-sshconfig"
+        if not config_file.exists():
+            if not (master_fqdn and master_pod):
+                rprint("[red]❌ Master pod has no FQDN yet — can't SSH[/red]")
+                maybe_cancel("no fqdn")
+                sys.exit(1)
+            create_ssh_config_for_reservation(master_fqdn, master_pod, master_id, master_name)
+
+        ssh_alias = master_pod
+        ssh_base = ["ssh", "-F", str(config_file), "-o", "StrictHostKeyChecking=accept-new"]
+        rsync_e = " ".join(shlex.quote(x) for x in ssh_base)
+
+        # Working directory and rsync up
+        if runtime:
+            workdir = f"/workspace/submit-{master_id[:8]}"
+            rprint(f"[cyan]📦 Syncing {runtime} → {ssh_alias}:{workdir}[/cyan]")
+            r = subprocess.run(ssh_base + [ssh_alias, f"mkdir -p {shlex.quote(workdir)}"])
+            if r.returncode != 0:
+                rprint("[red]❌ Failed to create remote workspace[/red]")
+                maybe_cancel("mkdir failed"); sys.exit(2)
+            r = subprocess.run([
+                "rsync", "-az", "--delete", "-e", rsync_e,
+                f"{runtime.rstrip('/')}/", f"{ssh_alias}:{workdir}/",
+            ])
+            if r.returncode != 0:
+                rprint("[red]❌ Upload rsync failed[/red]")
+                maybe_cancel("upload failed"); sys.exit(2)
+        else:
+            workdir = "/home/dev"
+
+        # Run remote command via login shell so MULTINODE_* etc. are loaded
+        remote_cmd = " ".join(shlex.quote(c) for c in command)
+        rprint(f"[cyan]🚀 Running on {ssh_alias}: {remote_cmd}[/cyan]\n")
+        ssh_run = ssh_base + [ssh_alias,
+                              f"cd {shlex.quote(workdir)} && bash -lc {shlex.quote(remote_cmd)}"]
+        rc = subprocess.call(ssh_run)
+        rprint(f"\n[dim]Job exited with code {rc}[/dim]")
+
+        # Sync back results before cancelling
+        if runtime and not no_pull:
+            rprint(f"[cyan]📥 Syncing {ssh_alias}:{workdir}/ → {runtime}[/cyan]")
+            pull = subprocess.run([
+                "rsync", "-az", "-e", rsync_e,
+                f"{ssh_alias}:{workdir}/", f"{runtime.rstrip('/')}/",
+            ])
+            if pull.returncode != 0:
+                rprint(f"[yellow]⚠️  Result rsync exited with {pull.returncode} — your output may be incomplete[/yellow]")
+
+        maybe_cancel("job complete")
+        sys.exit(rc)
+
+    except KeyboardInterrupt:
+        rprint("\n[yellow]Interrupted — cancelling[/yellow]")
+        maybe_cancel("user interrupt")
+        sys.exit(130)
+    except SystemExit:
+        raise
+    except Exception as e:
+        rprint(f"[red]❌ Submit error: {e}[/red]")
+        maybe_cancel("submit error")
+        sys.exit(2)
+
+
 @main.command()
 @click.option(
     "--user",
