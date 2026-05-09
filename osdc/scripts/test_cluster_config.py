@@ -166,6 +166,29 @@ class TestTfvars:
         assert '-var="base_node_max_unavailable_percentage=33"' in out
         assert '-var="base_node_ami_version=v*"' in out
         assert '-var="eks_version=1.35"' in out
+        # coredns.replicas not set anywhere — falls back to hardcoded default 6
+        assert '-var="coredns_replicas=6"' in out
+
+    def test_coredns_replicas_from_defaults(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+        }
+        defaults = {"coredns": {"replicas": 4}}
+        cluster_config.tfvars("c", cluster_cfg, defaults)
+        out = capsys.readouterr().out.strip()
+        assert '-var="coredns_replicas=4"' in out
+
+    def test_coredns_replicas_cluster_override(self, capsys):
+        cluster_cfg = {
+            "cluster_name": "c",
+            "region": "r",
+            "coredns": {"replicas": 2},
+        }
+        defaults = {"coredns": {"replicas": 6}}
+        cluster_config.tfvars("c", cluster_cfg, defaults)
+        out = capsys.readouterr().out.strip()
+        assert '-var="coredns_replicas=2"' in out
 
     def test_cluster_overrides(self, capsys):
         cluster_cfg = {

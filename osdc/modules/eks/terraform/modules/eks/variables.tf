@@ -54,6 +54,17 @@ variable "base_node_count" {
   default     = 5
 }
 
+variable "coredns_replicas" {
+  description = "Number of CoreDNS replicas (pinned; autoscaling disabled). Per-cluster via clusters.yaml."
+  type        = number
+  default     = 6
+
+  validation {
+    condition     = var.coredns_replicas >= 2
+    error_message = "coredns_replicas must be >= 2 (single-replica CoreDNS deadlocks the PDB; zero replicas means no DNS)."
+  }
+}
+
 variable "base_node_instance_type" {
   description = "Instance type for base infrastructure nodes"
   type        = string
