@@ -706,6 +706,164 @@ untaint-nodes cluster:
         echo "Warning: $FAILED node(s) failed to untaint. Re-run to retry."
     fi
 
+# Drain ARC runner scale sets cluster-wide and wait for in-flight runner pods to finish
+drain-runners cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+
+    # Ensure kubectl is configured for the target cluster
+    just kubeconfig "$CLUSTER"
+
+    echo "Draining ARC runner scale sets for $CLUSTER ($CNAME)..."
+    echo ""
+
+    ARS_NAMES=$(kubectl get autoscalingrunnersets -n arc-runners --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null || true)
+    if [ -z "$ARS_NAMES" ]; then
+        echo "  No AutoscalingRunnerSets found in arc-runners — nothing to drain."
+        DRAINED=0
+        ALREADY=0
+        ARS_FAILED=0
+    else
+        DRAINED=0
+        ALREADY=0
+        ARS_FAILED=0
+        for ars in $ARS_NAMES; do
+            CURRENT=$(kubectl get autoscalingrunnerset "$ars" -n arc-runners -o jsonpath='{.spec.maxRunners}' 2>/dev/null || echo "")
+            if [ "$CURRENT" = "0" ]; then
+                echo "  $ars — already at 0"
+                ALREADY=$((ALREADY + 1))
+                continue
+            fi
+            if PATCH_OUT=$(kubectl patch autoscalingrunnerset "$ars" -n arc-runners --type=merge -p '{"spec":{"maxRunners":0}}' 2>&1); then
+                echo "  $ars — drained (maxRunners=0)"
+                DRAINED=$((DRAINED + 1))
+            else
+                echo "  $ars — FAILED: ${PATCH_OUT}"
+                ARS_FAILED=$((ARS_FAILED + 1))
+            fi
+        done
+    fi
+
+    echo ""
+    echo "Applying refresh taint to runner nodes..."
+    just taint-nodes "$CLUSTER"
+    TAINTED_NODES=$(kubectl get nodes -l workload-type=github-runner --no-headers 2>/dev/null | wc -l | tr -d ' ')
+
+    echo ""
+    # Default 1h covers typical PyTorch suite duration; override via OSDC_DRAIN_TIMEOUT_SECS for longer/shorter windows.
+    DRAIN_TIMEOUT="${OSDC_DRAIN_TIMEOUT_SECS:-3600}"
+    DRAIN_INTERVAL=30
+    echo "Waiting for in-flight runner pods to drain (timeout: ${DRAIN_TIMEOUT}s)..."
+    SECONDS=0
+    DRAIN_DEADLINE=$((SECONDS + DRAIN_TIMEOUT))
+    REMAINING=$(kubectl get pods -n arc-runners -l app.kubernetes.io/component=runner --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    while [ "$REMAINING" -gt 0 ] && [ "$SECONDS" -lt "$DRAIN_DEADLINE" ]; do
+        echo "  ${REMAINING} runner pod(s) still running (elapsed: ${SECONDS}s)..."
+        sleep "$DRAIN_INTERVAL"
+        REMAINING=$(kubectl get pods -n arc-runners -l app.kubernetes.io/component=runner --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    done
+
+    if (( SECONDS < 60 )); then elapsed="${SECONDS}s"; else elapsed="$((SECONDS / 60))m$((SECONDS % 60))s"; fi
+
+    echo ""
+    if [ "$REMAINING" -eq 0 ]; then
+        echo "All runner pods drained (elapsed: ${elapsed})."
+        STRAGGLERS_MSG="all drained"
+        EXIT_CODE=0
+    else
+        echo "Drain timeout reached after ${DRAIN_TIMEOUT}s. Override with OSDC_DRAIN_TIMEOUT_SECS=<seconds> to extend."
+        echo "Timed out after ${elapsed} with ${REMAINING} runner pod(s) still running."
+        echo "Stragglers:"
+        kubectl get pods -n arc-runners -l app.kubernetes.io/component=runner -o wide 2>/dev/null || true
+        echo ""
+        echo "Operator decision required:"
+        echo "  (a) Wait — re-run with OSDC_DRAIN_TIMEOUT_SECS=<larger> to give jobs more time to finish."
+        echo "  (b) Force-terminate stragglers: kubectl delete pod -n arc-runners <pod> --grace-period=0 --force"
+        echo "      WARNING: this aborts the running GitHub Actions job mid-execution. The job will be"
+        echo "      marked failed/timeout on the GitHub side and may auto-retry. The runner registration"
+        echo "      may dangle in the GitHub UI until the ARC controller reconciles. Coordinate with"
+        echo "      pytorch/pytorch on-call before force-terminating."
+        STRAGGLERS_MSG="${REMAINING} stragglers remaining"
+        EXIT_CODE=1
+    fi
+
+    echo ""
+    echo "Summary: ${DRAINED} AutoscalingRunnerSets drained, ${TAINTED_NODES} nodes tainted, ${STRAGGLERS_MSG}."
+    if [ "$ARS_FAILED" -gt 0 ]; then
+        echo "Warning: ${ARS_FAILED} AutoscalingRunnerSet(s) failed to patch."
+    fi
+    if [ "$ALREADY" -gt 0 ]; then
+        echo "Note: ${ALREADY} AutoscalingRunnerSet(s) were already at maxRunners=0."
+    fi
+    exit "$EXIT_CODE"
+
+# Restore maxRunners on every live AutoscalingRunnerSet from def files (out-of-band recovery; cutover uses just deploy)
+resume-runners cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+
+    # Ensure kubectl is configured for the target cluster
+    just kubeconfig "$CLUSTER"
+
+    echo "Resuming ARC runner scale sets for $CLUSTER ($CNAME)..."
+    echo ""
+
+    # Build desired-state map { ars-name: maxRunners } from def files
+    MAP=$(uv run "{{UPSTREAM}}/modules/arc-runners/scripts/python/runner_max_map.py" "$CLUSTER")
+
+    EXIT_CODE=0
+    ARS_NAMES=$(kubectl get autoscalingrunnersets -n arc-runners -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+    if [ -z "$ARS_NAMES" ]; then
+        echo "  No AutoscalingRunnerSets found in arc-runners — nothing to resume."
+        RESTORED=0
+        WARNINGS=0
+        RES_FAILED=0
+    else
+        RESTORED=0
+        WARNINGS=0
+        RES_FAILED=0
+        for ars in $ARS_NAMES; do
+            DESIRED=$(echo "$MAP" | jq -r --arg n "$ars" '.[$n] // empty')
+            if [ -z "$DESIRED" ]; then
+                echo "  $ars — WARNING: no matching def, leaving as-is"
+                WARNINGS=$((WARNINGS + 1))
+                EXIT_CODE=1
+                continue
+            fi
+            if PATCH_OUT=$(kubectl patch autoscalingrunnerset "$ars" -n arc-runners --type=merge -p "{\"spec\":{\"maxRunners\":$DESIRED}}" 2>&1); then
+                echo "  $ars — restored maxRunners=${DESIRED}"
+                RESTORED=$((RESTORED + 1))
+            else
+                echo "  $ars — FAILED: ${PATCH_OUT}"
+                RES_FAILED=$((RES_FAILED + 1))
+                EXIT_CODE=1
+            fi
+        done
+    fi
+
+    echo ""
+    echo "Removing refresh taint from runner nodes..."
+    just untaint-nodes "$CLUSTER"
+
+    echo ""
+    echo "Summary: ${RESTORED} restored, ${WARNINGS} warnings, ${RES_FAILED} failures."
+    if [ "$EXIT_CODE" -ne 0 ]; then
+        echo "Action: investigate failures/warnings above. Run \`just deploy $CLUSTER\` to reconcile from def files."
+    fi
+    exit "$EXIT_CODE"
+
 # ============================================================================
 # INTERNAL: Base sub-deploys
 # ============================================================================
