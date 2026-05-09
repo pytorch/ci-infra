@@ -13,7 +13,7 @@ Every cluster gets the same base infrastructure:
 - **VPC** — public/private subnets, NAT gateways, route tables
 - **EKS** — managed Kubernetes cluster with OIDC, addons (vpc-cni, coredns, kube-proxy, ebs-csi), fixed-size base node group
 - **Harbor** — S3 bucket, IAM roles/user for pull-through container image cache
-- **Base k8s resources** — gp3 StorageClass, NVIDIA device plugin, node performance tuning DaemonSet, git-cache (two-tier: central StatefulSet + rsync DaemonSet), Harbor namespace, image-cache-janitor (prunes stale image content from node disks)
+- **Base k8s resources** — gp3 StorageClass, NVIDIA device plugin, node performance tuning DaemonSet, git-cache (two-tier: central StatefulSet + rsync DaemonSet), Harbor namespace, image-cache-janitor (prunes stale image content from node disks), NodeLocal DNSCache (per-node CoreDNS DaemonSet that intercepts pod DNS via iptables-mode NOTRACK)
 - **Node compactor** — Taints underutilized Karpenter nodes for workload consolidation (configurable via `clusters.yaml`)
 - **Karpenter** — installed as a module but required for the autoscaling story; deployed before any compute-provisioning module
 
@@ -85,7 +85,8 @@ just deploy <cluster-id>
 │   ├── git-cache/deploy.sh                         ← Git cache central StatefulSet
 │   ├── deploy-harbor                               ← Helm install Harbor (pull-through cache)
 │   ├── node-compactor/deploy.sh                    ← if enabled in clusters.yaml
-│   └── image-cache-janitor/deploy.sh               ← prunes stale image content from node disks
+│   ├── image-cache-janitor/deploy.sh               ← prunes stale image content from node disks
+│   └── nodelocaldns/deploy.sh                      ← per-node CoreDNS cache (resolves kube-dns ClusterIP at apply time)
 │
 └── deploy-module (for each module in order)
     ├── tofu apply (modules/<mod>/terraform/)        ← if exists

@@ -1,0 +1,45 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nodelocaldns-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  groups:
+    - name: nodelocaldns
+      rules:
+        - alert: NodeLocalDNSSetupErrors
+          expr: increase(coredns_nodecache_setup_errors_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "NodeLocal DNSCache setup errors on {{ $labels.pod }}"
+            description: |
+              Pod {{ $labels.pod }} on node {{ $labels.node }} reported NLD setup errors in the last 5 minutes.
+              This usually means iptables NOTRACK rules failed to install. Per-node DNS interception is degraded
+              until the next setup cycle succeeds.
+
+        - alert: NodeLocalDNSPodRestarting
+          expr: rate(kube_pod_container_status_restarts_total{namespace="kube-system", container="node-cache"}[15m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "NodeLocal DNSCache pod restarting"
+            description: |
+              Pod {{ $labels.pod }} restarted in the last 15m. During restart, per-node DNS resolution falls back
+              to the cluster-wide kube-dns Service. If many NLD pods restart simultaneously, cluster CoreDNS QPS
+              will spike.
+
+        - alert: NodeLocalDNSDaemonSetDegraded
+          expr: kube_daemonset_status_number_unavailable{namespace="kube-system", daemonset="node-local-dns"} > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "NodeLocal DNSCache DaemonSet has unavailable pods"
+            description: |
+              {{ $value }} NLD pods unavailable for >15m. Nodes without NLD lose DNS-cache benefit and put
+              additional load on cluster CoreDNS.

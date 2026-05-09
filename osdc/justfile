@@ -410,6 +410,10 @@ deploy-base cluster:
     {{UPSTREAM}}/base/kubernetes/image-cache-janitor/deploy.sh "$CLUSTER"
 
     echo ""
+    echo "━━━ BASE: Deploy NodeLocal DNSCache ━━━"
+    {{UPSTREAM}}/base/kubernetes/nodelocaldns/deploy.sh "$CLUSTER"
+
+    echo ""
     echo "Base deployment complete."
 
     # Deploy audit logging — record successful completion

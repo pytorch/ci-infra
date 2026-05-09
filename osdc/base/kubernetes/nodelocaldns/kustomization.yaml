@@ -1,0 +1,15 @@
+# NodeLocal DNSCache (NLD): per-node CoreDNS DaemonSet that absorbs DNS
+# queries from local pods via iptables NOTRACK interception.
+# kube-dns ClusterIP is dynamic per cluster — deploy.sh resolves it at
+# apply time and substitutes the __KUBE_DNS_CLUSTER_IP__ placeholder.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kube-system
+
+resources:
+  - serviceaccount.yaml
+  - upstream-service.yaml
+  - metrics-service.yaml
+  - configmap.yaml
+  - daemonset.yaml

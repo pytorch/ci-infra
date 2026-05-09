@@ -8,3 +8,4 @@ resources:
   - node-compactor-alerts.yaml
   - zombie-cleanup-alerts.yaml
   - harbor-cache-recovery-alerts.yaml
+  - nodelocaldns-alerts.yaml
