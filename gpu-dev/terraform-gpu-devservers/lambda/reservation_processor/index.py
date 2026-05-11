@@ -81,6 +81,7 @@ GPU_CONFIG = {
     "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
     "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
     "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
+    "b300": {"instance_type": "p6e-b300.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 8},
     "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
     "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
 }
@@ -2188,7 +2189,7 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     # Validate GPU type
     valid_gpu_types = ["t4", "l4", "a10g", "rtxpro6000", "t4-small", "a100",
                        "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g",
-                       "h200", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g",
+                       "h200", "b200", "b300", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g",
                        "cpu-arm", "cpu-x86"]
     if gpu_type not in valid_gpu_types:
         error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
@@ -2435,6 +2436,7 @@ def update_gpu_availability_table(
             "b200-mig-3g": {"gpus_per_instance": 2},
             "h200": {"gpus_per_instance": 8},
             "b200": {"gpus_per_instance": 8},
+            "b300": {"gpus_per_instance": 8},
         }
 
         gpu_config = gpu_type_configs.get(gpu_type, {"gpus_per_instance": 8})
@@ -6529,6 +6531,7 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
             "p5e.48xlarge": "H200",
             "p5en.48xlarge": "H200",
             "p6-b200.48xlarge": "B200",
+            "p6e-b300.48xlarge": "B300",
         }
 
         gpu_type = gpu_type_mapping.get(instance_type, "Unknown")

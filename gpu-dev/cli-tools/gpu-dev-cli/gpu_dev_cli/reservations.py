@@ -557,6 +557,7 @@ class ReservationManager:
                 "b200-mig-3g": {"max_gpus": 2},
                 "h200": {"max_gpus": 8},
                 "b200": {"max_gpus": 8},
+                "b300": {"max_gpus": 8},
             }
 
             max_gpus_per_node = gpu_configs[gpu_type]["max_gpus"]

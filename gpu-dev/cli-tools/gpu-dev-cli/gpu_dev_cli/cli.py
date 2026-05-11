@@ -496,7 +496,7 @@ def main(ctx: click.Context) -> None:
     "--gpu-type",
     "-t",
     type=click.Choice(
-        ["b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
+        ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
     ),
     help="GPU type to reserve. Full GPUs: b200, h200, h100, a100, rtxpro6000, a10g, t4, l4, t4-small. H100 MIG slices: h100-mig-1g (10 GB), h100-mig-2g (20 GB), h100-mig-3g (40 GB). B200 MIG slices (on the mixed B200 node): b200-mig-1g (23 GB), b200-mig-2g (45 GB), b200-mig-3g (90 GB). CPU: cpu-arm, cpu-x86.",
 )
@@ -662,6 +662,7 @@ def reserve(
             "b200-mig-3g": {"max_gpus": 2, "instance_type": "p6-b200.48xlarge"},
             "h200": {"max_gpus": 8, "instance_type": "p5e.48xlarge"},
             "b200": {"max_gpus": 8, "instance_type": "p6-b200.48xlarge"},
+            "b300": {"max_gpus": 8, "instance_type": "p6e-b300.48xlarge"},
             "cpu-arm": {"max_gpus": 0, "instance_type": "c7g.4xlarge"},
             "cpu-x86": {"max_gpus": 0, "instance_type": "c7i.4xlarge"},
         }
@@ -1350,7 +1351,7 @@ def reserve(
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
-_SUBMIT_GPU_TYPES = ["b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100",
+_SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100",
                      "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000",
                      "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"]
 
@@ -2719,6 +2720,7 @@ def _show_availability() -> None:
             # GPU architecture mapping (for display)
             gpu_architectures = {
                 "b200": "Blackwell (sm100)",
+                "b300": "Blackwell (sm100)",
                 "h200": "Hopper (sm90)",
                 "h100": "Hopper (sm90)",
                 "a100": "Ampere (sm80)",
@@ -2880,6 +2882,7 @@ def _show_availability_watch(interval: int) -> None:
                         # GPU architecture mapping (for display)
                         gpu_architectures = {
                             "b200": "Blackwell (sm100)",
+                "b300": "Blackwell (sm100)",
                             "h200": "Hopper (sm90)",
                             "h100": "Hopper (sm90)",
                             "a100": "Ampere (sm80)",
