@@ -3698,10 +3698,7 @@ def environment(env_name: str) -> None:
         rprint(f"[dim]Configuration saved to {cfg.CONFIG_FILE}[/dim]")
 
         # Instructions for shell export
-        rprint(f"\n[yellow]💡 To apply in your current shell:[/yellow]")
-        rprint(f"   export AWS_DEFAULT_REGION={env_config['region']}")
-        rprint(f"\n[yellow]💡 Or use the switch-to.sh script:[/yellow]")
-        rprint(f"   ./switch-to.sh {env_name}")
+        rprint(f"\n[dim]Region saved. All gpu-dev commands now target {env_config['region']}.[/dim]")
 
     except Exception as e:
         rprint(f"[red]❌ Error setting environment: {str(e)}[/red]")
