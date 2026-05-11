@@ -38,6 +38,19 @@ def _load_auth_cache(github_user: str) -> Optional[Dict[str, Any]]:
             return None
         if time.time() - float(entry.get("ts", 0)) > _AUTH_CACHE_TTL_SECONDS:
             return None
+        # Defense against stale cache on a persistent disk that pre-dates the IRSA fix:
+        # if AWS_ROLE_ARN points at a role the cached ARN doesn\'t reference, the cache
+        # is from a different identity (e.g. IMDS-fallback before fs_group=1081 landed)
+        # and should be ignored.
+        expected_role_arn = os.environ.get("AWS_ROLE_ARN", "")
+        cached_arn = (entry.get("result") or {}).get("arn", "")
+        if expected_role_arn:
+            try:
+                role_name = expected_role_arn.rsplit("/", 1)[-1]
+                if role_name and role_name not in cached_arn:
+                    return None
+            except Exception:
+                pass
         return entry.get("result")
     except Exception:
         return None
