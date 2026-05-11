@@ -689,6 +689,13 @@ def reserve(
             rprint(
                 "[dim]Use --no-interactive flag to disable interactive mode[/dim]\n")
 
+            # Auto-acknowledge spot in spot-only environments so users don't need --spot
+            from .config import Config as _Cfg
+            _env_name = load_config().user_config.get("environment", "prod")
+            if _Cfg.ENVIRONMENTS.get(_env_name, {}).get("all_spot") and not spot:
+                spot = True
+                rprint("[dim]Spot environment — --spot auto-acknowledged. Instances may be preempted by AWS with 2-min notice.[/dim]\n")
+
             # Run auth + SSH validation + availability fetch in parallel — they're independent
             # and total wall-clock time drops from sum to max(each).
             from concurrent.futures import ThreadPoolExecutor

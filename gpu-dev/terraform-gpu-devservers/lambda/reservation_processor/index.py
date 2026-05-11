@@ -2331,6 +2331,7 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
             error_msg = (
                 f"{gpu_type.upper()} is only available as a spot instance in this environment. "
                 f"Spot instances are ~1/3 the cost but can be reclaimed by AWS with 2-min notice. "
+                f"Even if availability shows 0/0, a spot node will be requested from AWS when you reserve — it\'s worth trying. "
                 f"Pass --spot to confirm: gpu-dev reserve --gpu-type {gpu_type} --spot"
             )
             logger.warning(f"Reservation: spot acknowledgment missing for {gpu_type}")
