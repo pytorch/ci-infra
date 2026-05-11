@@ -3664,7 +3664,7 @@ def set(key: str, value: str) -> None:
 
 
 @config.command()
-@click.argument("env_name", type=click.Choice(list(Config.ENVIRONMENTS.keys())))
+@click.argument("env_name", type=click.Choice(["test", "prod", "prod-east1"]))
 def environment(env_name: str) -> None:
     """Set the environment
 
