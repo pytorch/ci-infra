@@ -401,11 +401,14 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
     }
   }
 
-  # Conditionally add instance_market_options for capacity block instances (only when capacity reservation exists)
+  # instance_market_options: capacity-block when bound to a reservation, spot when
+  # the workspace's gpu_config has use_spot=true, otherwise on-demand (no block).
+  # Spot is mutually exclusive with capacity reservations — AWS rejects launch templates
+  # carrying both, so the precedence here is CR > spot > on-demand.
   dynamic "instance_market_options" {
-    for_each = each.value.capacity_reservation_id != null ? [1] : []
+    for_each = (each.value.capacity_reservation_id != null || try(each.value.gpu_config.use_spot, false)) ? [1] : []
     content {
-      market_type = "capacity-block"
+      market_type = each.value.capacity_reservation_id != null ? "capacity-block" : "spot"
     }
   }
 

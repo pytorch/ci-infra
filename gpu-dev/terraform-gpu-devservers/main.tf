@@ -315,6 +315,50 @@ locals {
         }
       }
     }
+    # us-east-1 spot-only experimental cluster.
+    # Same provisioning shape as prod (managed via the terraform.workspace switch) but
+    # backed entirely by EC2 Spot — first cheap-and-cheerful environment we can deploy
+    # new instance types into (B300 land here once on-demand quota arrives).
+    "prod-east1" = {
+      aws_region             = "us-east-1"
+      environment            = "prod-east1"
+      domain_name            = "east1.devservers.io"
+      gpu_instance_count     = 1
+      use_self_managed_nodes = true
+      instance_type          = "g4dn.12xlarge"
+      supported_gpu_types = {
+        "t4" = {
+          instance_type       = "g4dn.12xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 4
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          use_spot            = true
+        }
+        "l4" = {
+          instance_type       = "g6.12xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 4
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 1
+          use_spot            = true
+        }
+        "cpu-x86" = {
+          instance_type       = "c7i.8xlarge"
+          instance_types      = null
+          instance_count      = 5
+          gpus_per_instance   = 0
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          use_spot            = true
+        }
+      }
+    }
   }
 
   # Current workspace configuration
@@ -322,6 +366,9 @@ locals {
 
   # Workspace-specific capacity reservations (with manual instance counts)
   capacity_reservations = {
+    "prod-east1" = {
+      # No capacity reservations — this workspace is spot-only.
+    }
     default = {
       # Test environment capacity reservations
       # h100 = [
@@ -366,6 +413,13 @@ locals {
 
   # Workspace-specific GPU type to subnet mappings
   gpu_subnet_assignments = {
+    "prod-east1" = {
+      # All node types land in the primary subnet (us-east-1a). Spot availability is
+      # better than placement-group-strictness on these small ASGs.
+      t4         = "primary"
+      l4         = "primary"
+      "cpu-x86"  = "primary"
+    }
     default = {
       # Test environment - T4 nodes in multiple AZs for testing
       t4         = "primary"   # T4 in us-west-1a (primary AZ)
@@ -392,6 +446,9 @@ locals {
 
   # Per-capacity-reservation AZ mappings (overrides gpu_subnet_assignments when CR is used)
   capacity_reservation_azs = {
+    "prod-east1" = {
+      # Empty — no CRs in this workspace.
+    }
     default = {
       "cr-04d3d1d84e127a562" = "secondary" # us-west-1c
     }

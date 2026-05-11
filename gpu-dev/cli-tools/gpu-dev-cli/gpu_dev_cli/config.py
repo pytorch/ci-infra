@@ -22,6 +22,11 @@ class Config:
             "workspace": "prod",
             "description": "Production environment",
         },
+        "prod-east1": {
+            "region": "us-east-1",
+            "workspace": "prod-east1",
+            "description": "Spot-only us-east-1 environment (T4/L4/CPU)",
+        },
     }
     DEFAULT_ENVIRONMENT = "prod"
 
