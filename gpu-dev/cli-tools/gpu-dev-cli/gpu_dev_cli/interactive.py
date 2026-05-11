@@ -175,7 +175,7 @@ def select_gpu_type_interactive(
 
     console.print(table)
     if has_spot_types:
-        console.print("[dim]* = spot instance: ~70% cheaper, but AWS can reclaim with 2-min notice.[/dim]")
+        console.print("[dim]* = spot instance: ~70% cheaper, but AWS can reclaim with 2-min notice and fulfillment is not guaranteed (may queue for a long time).[/dim]")
         console.print("[dim]  A node spins up when you reserve (even if showing 0 available). Pass --spot to confirm.[/dim]")
     console.print()
 
