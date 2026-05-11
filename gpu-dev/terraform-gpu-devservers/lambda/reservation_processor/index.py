@@ -84,7 +84,7 @@ def _get_spot_provision_status(gpu_type: str) -> str:
         inst = instances[0]
         state = inst.get("LifecycleState", "")
         if state in ("Pending", "Pending:Wait", "Pending:Proceed"):
-            return f"Spot instance allocated — node booting (~2-3 min)"
+            return f"Node found! Instance launching (~2-3 min)"
         if state == "InService":
             try:
                 k8s = get_k8s_client()
@@ -99,8 +99,8 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                     if ready:
                         return "Node ready — processing reservation"
                     else:
-                        return "Node registered — kubelet initializing (~1-2 min)"
-                return "Instance running — waiting for node to join cluster (~1-2 min)"
+                        return "Node found! Kubelet initializing, installing drivers (~3-5 min)"
+                return "Node found! Booting and installing GPU drivers (~3-5 min for new instance types)"
             except Exception:
                 return "Instance running — checking cluster status"
         return f"Instance state: {state}"
