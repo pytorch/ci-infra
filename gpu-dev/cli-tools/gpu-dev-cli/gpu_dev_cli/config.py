@@ -240,8 +240,17 @@ class Config:
         return self.user_config.get(key)
 
     def get_github_username(self) -> Optional[str]:
-        """Get GitHub username from config."""
-        return self.user_config.get("github_user")
+        """Get GitHub username, falling back to GPU_DEV_GITHUB_USER env var.
+
+        Lambda sets GPU_DEV_GITHUB_USER on every pod from the reservation's
+        github_user field, so a user running gpu-dev from inside their dev pod
+        doesn\'t have to `gpu-dev config set github_user <name>` first.
+        """
+        v = self.user_config.get("github_user")
+        if v:
+            return v
+        v = os.environ.get("GPU_DEV_GITHUB_USER")
+        return v or None
 
 
 def load_config() -> Config:

@@ -4486,6 +4486,18 @@ export MULTINODE_SIZE="$MULTINODE_SIZE"
 export MASTER_ADDR="$MASTER_ADDR"
 export MASTER_PORT="$MASTER_PORT"
 
+# IRSA + region — same reason as MULTINODE: sshd strips these from login shells, so
+# we bake the current container values into the rc file. Lets gpu-dev / aws / boto3
+# inside an SSH session pick up the gpu-dev-pod-sa IAM role automatically.
+export AWS_ROLE_ARN="$AWS_ROLE_ARN"
+export AWS_WEB_IDENTITY_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE"
+export AWS_ROLE_SESSION_NAME="$AWS_ROLE_SESSION_NAME"
+export AWS_REGION="$AWS_REGION"
+export AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION"
+export AWS_STS_REGIONAL_ENDPOINTS="$AWS_STS_REGIONAL_ENDPOINTS"
+# CLI falls back to this when ~/.config/gpu-dev/config.json has no github_user
+export GPU_DEV_GITHUB_USER="$GPU_DEV_GITHUB_USER"
+
 # Function to check for GPU reservation expiry warnings and startup script status
 check_warnings() {{
     # Check for startup script still running
@@ -4538,6 +4550,15 @@ export MULTINODE_RANK="$MULTINODE_RANK"
 export MULTINODE_SIZE="$MULTINODE_SIZE"
 export MASTER_ADDR="$MASTER_ADDR"
 export MASTER_PORT="$MASTER_PORT"
+
+# IRSA + region (see .bashrc_ext for rationale)
+export AWS_ROLE_ARN="$AWS_ROLE_ARN"
+export AWS_WEB_IDENTITY_TOKEN_FILE="$AWS_WEB_IDENTITY_TOKEN_FILE"
+export AWS_ROLE_SESSION_NAME="$AWS_ROLE_SESSION_NAME"
+export AWS_REGION="$AWS_REGION"
+export AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION"
+export AWS_STS_REGIONAL_ENDPOINTS="$AWS_STS_REGIONAL_ENDPOINTS"
+export GPU_DEV_GITHUB_USER="$GPU_DEV_GITHUB_USER"
 
 # Function to check for GPU reservation expiry warnings and startup script status
 check_warnings() {{
@@ -5314,6 +5335,9 @@ EOF
                         ),
                         client.V1EnvVar(
                             name="AWS_ROLE_SESSION_NAME", value=(user_id or "gpu-dev-pod")[:64]
+                        ),
+                        client.V1EnvVar(
+                            name="GPU_DEV_GITHUB_USER", value=github_user or ""
                         )
                     ] + get_nccl_env_vars(gpu_type) + get_cpu_thread_env_vars(gpu_count, gpu_type) + _get_multinode_env_vars(multinode_peer_pods, multinode_rank),
                     resources=client.V1ResourceRequirements(
@@ -5501,6 +5525,10 @@ EOF
             # with the AWS_ROLE_SESSION_NAME env var below this lets users run
             # `gpu-dev submit` from inside their dev pod with no manual aws sso login.
             service_account_name="gpu-dev-pod-sa",
+            # fs_group=1081 makes the IRSA-projected token (default 0600 root:root)
+            # readable by the dev user. Without it boto3-as-dev falls through to IMDS
+            # and gets the node's IAM role, which doesn't have DDB/SQS permissions.
+            security_context=client.V1PodSecurityContext(fs_group=1081),
             # EFA requires host network namespace for RDMA access to efa0 interface
             **({
                 "host_network": True,
