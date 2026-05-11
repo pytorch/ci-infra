@@ -3664,24 +3664,25 @@ def set(key: str, value: str) -> None:
 
 
 @config.command()
-@click.argument("env_name", type=click.Choice(["test", "prod"]))
+@click.argument("env_name", type=click.Choice(list(Config.ENVIRONMENTS.keys())))
 def environment(env_name: str) -> None:
-    """Set the environment (test or prod)
+    """Set the environment
 
     Sets the AWS region and Terraform workspace for the specified environment.
-    This configuration is used by the switch-to.sh script.
 
     Arguments:
-        ENV_NAME: Environment name (test or prod)
+        ENV_NAME: Environment name
 
     \b
     Examples:
-        gpu-dev config environment test   # Set to test environment (us-west-1)
-        gpu-dev config environment prod   # Set to prod environment (us-east-2)
+        gpu-dev config environment prod        # Production (us-east-2)
+        gpu-dev config environment prod-east1  # Spot-only us-east-1
+        gpu-dev config environment test        # Test (us-west-1)
 
     Environment configurations:
-        test: us-west-1, Terraform workspace 'default'
-        prod: us-east-2, Terraform workspace 'prod'
+        test:       us-west-1, Terraform workspace 'default'
+        prod:       us-east-2, Terraform workspace 'prod'
+        prod-east1: us-east-1, Terraform workspace 'prod-east1' (spot-only)'
     """
     from .config import Config
 
