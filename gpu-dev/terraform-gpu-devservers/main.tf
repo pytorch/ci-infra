@@ -339,7 +339,7 @@ locals {
         # sits at 0 and gpu-dev reservations queue. Bump counts once we see what
         # actually gets fulfilled in us-east-1.
         "b300" = {
-          instance_type       = "p6e-b300.48xlarge"
+          instance_type       = "p6-b300.48xlarge"
           instance_types      = null
           instance_count      = 1
           gpus_per_instance   = 8

@@ -81,7 +81,7 @@ GPU_CONFIG = {
     "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
     "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
     "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
-    "b300": {"instance_type": "p6e-b300.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 8},
+    "b300": {"instance_type": "p6-b300.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 8},
     "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
     "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
 }
@@ -6531,7 +6531,7 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
             "p5e.48xlarge": "H200",
             "p5en.48xlarge": "H200",
             "p6-b200.48xlarge": "B200",
-            "p6e-b300.48xlarge": "B300",
+            "p6-b300.48xlarge": "B300",
         }
 
         gpu_type = gpu_type_mapping.get(instance_type, "Unknown")

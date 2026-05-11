@@ -662,7 +662,7 @@ def reserve(
             "b200-mig-3g": {"max_gpus": 2, "instance_type": "p6-b200.48xlarge"},
             "h200": {"max_gpus": 8, "instance_type": "p5e.48xlarge"},
             "b200": {"max_gpus": 8, "instance_type": "p6-b200.48xlarge"},
-            "b300": {"max_gpus": 8, "instance_type": "p6e-b300.48xlarge"},
+            "b300": {"max_gpus": 8, "instance_type": "p6-b300.48xlarge"},
             "cpu-arm": {"max_gpus": 0, "instance_type": "c7g.4xlarge"},
             "cpu-x86": {"max_gpus": 0, "instance_type": "c7i.4xlarge"},
         }
