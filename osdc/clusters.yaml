@@ -31,6 +31,10 @@ defaults:
   eks_version: "1.35"
   single_nat_gateway: false
 
+  # --- CoreDNS sizing ---
+  coredns:
+    replicas: 6
+
   # --- Git cache central ---
   git_cache:
     central_replicas: 2
@@ -123,6 +127,8 @@ clusters:
       base_node_max_unavailable_percentage: 100  # all-at-once for staging
       single_nat_gateway: true       # cost optimization for staging
       vpc_cidr: "10.0.0.0/16"
+    coredns:
+      replicas: 2
     harbor:
       core_replicas: 1
       registry_replicas: 1
