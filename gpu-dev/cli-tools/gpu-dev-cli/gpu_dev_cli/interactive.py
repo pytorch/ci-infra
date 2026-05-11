@@ -94,10 +94,7 @@ def select_gpu_type_interactive(
     has_spot_types = len(_spot_types) > 0
 
     # Display availability table first
-    if has_spot_types:
-        console.print("\n[cyan]🖥️  GPU Availability[/cyan] [dim](* = spot instance, requires --spot)[/dim]")
-    else:
-        console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
+    console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
     table = Table()
     table.add_column("GPU Type", style="cyan")
     table.add_column("Avail", style="green")
@@ -105,8 +102,6 @@ def select_gpu_type_interactive(
     table.add_column("Total", style="blue")
     table.add_column("Queue\nLength", style="yellow")
     table.add_column("Est. Wait Time", style="magenta")
-    if has_spot_types:
-        table.add_column("Spot\nStatus", style="dim")
 
     choices = []
     for gpu_type, info in visible_info.items():
@@ -156,15 +151,6 @@ def select_gpu_type_interactive(
             str(queue_length) if not is_maintenance else "-",
             wait_display,
         ]
-        if gpu_type in _spot_types:
-            ri = info.get("running_instances", 0)
-            dc = info.get("desired_capacity", 0)
-            if ri > 0:
-                row.append("[green]Active[/green]")
-            elif dc > 0:
-                row.append("[yellow]Provisioning[/yellow]")
-            else:
-                row.append("[dim]On demand[/dim]")
         table.add_row(*row)
 
         if is_maintenance:
@@ -189,7 +175,8 @@ def select_gpu_type_interactive(
 
     console.print(table)
     if has_spot_types:
-        console.print("[dim]* = spot instance (--spot required, ~1/3 cost, may be preempted by AWS)[/dim]")
+        console.print("[dim]* = spot instance: ~70% cheaper, but AWS can reclaim with 2-min notice.[/dim]")
+        console.print("[dim]  A node spins up when you reserve (even if showing 0 available). Pass --spot to confirm.[/dim]")
     console.print()
 
     # Interactive selection
