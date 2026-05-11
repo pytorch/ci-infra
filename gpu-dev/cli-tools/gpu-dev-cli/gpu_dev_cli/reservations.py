@@ -18,6 +18,26 @@ from rich.spinner import Spinner
 
 from .config import Config
 from .name_generator import sanitize_name
+
+
+def _spot_stage_number(status: str) -> tuple:
+    """Map a spot provisioning status message to a numbered step (N, total)."""
+    s = status.lower()
+    if "requested" in s or "waiting for aws" in s or "allocate capacity" in s:
+        return 1, 7
+    if "allocated" in s or "launching" in s or "booting" in s:
+        return 2, 7
+    if "joining" in s or "waiting for node" in s or "register" in s:
+        return 3, 7
+    if "kubelet" in s or "initializing" in s:
+        return 4, 7
+    if "pulling" in s or "image" in s or "container" in s:
+        return 5, 7
+    if "creating pod" in s or "processing" in s:
+        return 6, 7
+    if "ready" in s or "complete" in s:
+        return 7, 7
+    return 1, 7  # default to step 1
 from . import __version__
 
 console = Console()
@@ -1869,10 +1889,11 @@ class ReservationManager:
                                     )
 
                                 detailed = first_queued.get("current_detailed_status", "")
-                                # Spot stages come through current_detailed_status — show those
-                                # directly instead of generic "Position #1, est wait X min"
+                                # Spot stages come through current_detailed_status — show as
+                                # numbered steps so users see progress and don't give up.
                                 if detailed and ("spot" in detailed.lower() or "node" in detailed.lower() or "instance" in detailed.lower()):
-                                    message = f"⏳ {detailed}"
+                                    step, total = _spot_stage_number(detailed)
+                                    message = f"⏳ Step {step}/{total}: {detailed}"
                                 elif is_multinode:
                                     total_gpus = sum(
                                         node["gpu_count"] for node in node_details if node["reservation"])
