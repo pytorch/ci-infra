@@ -54,6 +54,11 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
         ]
       },
       {
+        Effect   = "Allow"
+        Action   = ["autoscaling:DescribeAutoScalingGroups", "autoscaling:SetDesiredCapacity"]
+        Resource = "*"
+      },
+      {
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
@@ -184,6 +189,7 @@ resource "aws_lambda_function" "reservation_processor" {
       MIN_CLI_VERSION                    = "0.5.16"
       # Comma-separated GPU types that require --spot flag, or "all" for every type.
       # Empty = no spot types (on-demand / reserved). Set per-workspace.
+      ASG_NAME_PREFIX                    = "${var.prefix}-gpu-nodes"
       SPOT_GPU_TYPES                     = lookup({
         "prod-east1" = "all"
       }, terraform.workspace, "")

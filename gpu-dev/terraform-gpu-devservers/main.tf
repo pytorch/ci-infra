@@ -341,7 +341,7 @@ locals {
         "b300" = {
           instance_type       = "p6-b300.48xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -351,7 +351,7 @@ locals {
         "b200" = {
           instance_type       = "p6-b200.48xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -361,7 +361,7 @@ locals {
         "h200" = {
           instance_type       = "p5e.48xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -371,7 +371,7 @@ locals {
         "h100" = {
           instance_type       = "p5.48xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -381,7 +381,7 @@ locals {
         "a100" = {
           instance_type       = "p4d.24xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
@@ -391,7 +391,7 @@ locals {
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 4
           use_placement_group = false
           architecture        = "x86_64"
@@ -401,7 +401,7 @@ locals {
         "l4" = {
           instance_type       = "g6.12xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 4
           use_placement_group = false
           architecture        = "x86_64"
@@ -411,7 +411,7 @@ locals {
         "cpu-x86" = {
           instance_type       = "c7i.8xlarge"
           instance_types      = null
-          instance_count      = 5
+          instance_count      = 0
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"

@@ -235,8 +235,13 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
   for_each = local.gpu_asg_configs
 
   name = "${var.prefix}-gpu-nodes-${each.key}"
-  # Multi-EFA instances use private subnets (NAT GW for internet), others use public
-  vpc_zone_identifier = [
+  # Spot ASGs spread across all AZs for better fulfillment; on-demand/CR ASGs pin to
+  # the configured subnet_az. Multi-EFA instances always use private subnets.
+  vpc_zone_identifier = try(each.value.gpu_config.use_spot, false) ? (
+    each.value.use_private_subnet
+    ? values(local.private_subnet_map)
+    : values(local.public_subnet_map)
+  ) : [
     each.value.use_private_subnet
     ? local.private_subnet_map[each.value.subnet_az]
     : local.public_subnet_map[each.value.subnet_az]
