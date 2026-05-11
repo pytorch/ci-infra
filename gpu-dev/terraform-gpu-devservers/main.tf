@@ -334,6 +334,60 @@ locals {
       use_self_managed_nodes = true
       instance_type          = "g4dn.12xlarge"
       supported_gpu_types = {
+        # 8-GPU spot instances. instance_count=1 means the ASG tries to maintain 1
+        # spot instance per type — if AWS can't grant it (capacity / quota), the ASG
+        # sits at 0 and gpu-dev reservations queue. Bump counts once we see what
+        # actually gets fulfilled in us-east-1.
+        "b300" = {
+          instance_type       = "p6e-b300.48xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 8
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 8
+          use_spot            = true
+        }
+        "b200" = {
+          instance_type       = "p6-b200.48xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 8
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 8
+          use_spot            = true
+        }
+        "h200" = {
+          instance_type       = "p5e.48xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 8
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 16
+          use_spot            = true
+        }
+        "h100" = {
+          instance_type       = "p5.48xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 8
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 32
+          use_spot            = true
+        }
+        "a100" = {
+          instance_type       = "p4d.24xlarge"
+          instance_types      = null
+          instance_count      = 1
+          gpus_per_instance   = 8
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 4
+          use_spot            = true
+        }
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
@@ -421,8 +475,15 @@ locals {
   # Workspace-specific GPU type to subnet mappings
   gpu_subnet_assignments = {
     "prod-east1" = {
-      # All node types land in the primary subnet (us-east-1a). Spot availability is
-      # better than placement-group-strictness on these small ASGs.
+      # All node types land in the primary subnet (us-east-1a). Multi-EFA types
+      # (efa_network_cards > 1) automatically use the private subnet in the same AZ.
+      # Specific instance types may not have capacity in us-east-1a — those ASGs will
+      # sit at 0 until we widen to other AZs, that's expected for beta.
+      b300       = "primary"
+      b200       = "primary"
+      h200       = "primary"
+      h100       = "primary"
+      a100       = "primary"
       t4         = "primary"
       l4         = "primary"
       "cpu-x86"  = "primary"

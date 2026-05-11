@@ -12,7 +12,8 @@ resource "helm_release" "aws_node_termination_handler" {
   repository       = "https://aws.github.io/eks-charts"
   chart            = "aws-node-termination-handler"
   namespace        = "kube-system"
-  version          = "0.27.1"
+  # No version pin — chart versions advance frequently and my first guess (0.27.1)
+  # didn't exist. helm picks current latest stable. Add a pin once we hit a regression.
   cleanup_on_fail  = true
 
   values = [yamlencode({
