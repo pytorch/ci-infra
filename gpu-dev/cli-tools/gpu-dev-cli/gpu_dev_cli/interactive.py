@@ -163,6 +163,8 @@ def select_gpu_type_interactive(
             choices.append(questionary.Choice(title=choice_label, value=gpu_type))
 
     console.print(table)
+    if is_all_spot:
+        console.print("[dim]* = spot instance (--spot required, ~1/3 cost, may be preempted by AWS)[/dim]")
     console.print()
 
     # Interactive selection

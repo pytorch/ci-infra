@@ -26,6 +26,7 @@ class Config:
             "region": "us-east-1",
             "workspace": "prod-east1",
             "description": "Spot-only us-east-1 environment (T4/L4/CPU)",
+            "all_spot": True,
         },
     }
     DEFAULT_ENVIRONMENT = "prod"
