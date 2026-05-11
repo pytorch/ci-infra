@@ -60,7 +60,7 @@ fi
 
 # Install fabric manager for multi-GPU NVSwitch systems (A100-SXM4, B200, H200, H100)
 # Fabric manager is required for proper CUDA initialization on these GPUs
-if [[ "${gpu_type}" == "a100" || "${gpu_type}" == "b200" || "${gpu_type}" == "h200" || "${gpu_type}" == "h100" ]]; then
+if [[ "${gpu_type}" == "a100" || "${gpu_type}" == "b200" || "${gpu_type}" == "b300" || "${gpu_type}" == "h200" || "${gpu_type}" == "h100" ]]; then
     echo "Installing fabric manager for multi-GPU system: ${gpu_type}"
 
     # Install InfiniBand tools - EFA hardware is already present and configured
