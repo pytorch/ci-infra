@@ -250,9 +250,10 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
   health_check_type         = "EC2"
   health_check_grace_period = 300
 
-  # Use dynamic instance count from capacity reservation
+  # Spot ASGs scale to zero (min=desired=0) but need max>0 so Lambda can call
+  # SetDesiredCapacity(1) when a reservation arrives. On-demand ASGs keep min=max=desired.
   min_size         = each.value.instance_count
-  max_size         = each.value.instance_count
+  max_size         = try(each.value.gpu_config.use_spot, false) ? max(2, each.value.instance_count) : each.value.instance_count
   desired_capacity = each.value.instance_count
 
   # Don't wait for instances to become healthy - prevents Terraform failures when AWS can't place instances
