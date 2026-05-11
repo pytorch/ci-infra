@@ -125,3 +125,46 @@ class TestHarborProxyCacheProjects:
         for pod in core_pods:
             phase = pod["status"].get("phase", "Unknown")
             assert phase == "Running", f"Harbor core pod {pod['metadata']['name']} is {phase}"
+
+
+# ============================================================================
+# Harbor PodDisruptionBudgets
+# ============================================================================
+
+
+# Components covered by Harbor PDBs. Replicas key is derived as
+# f"harbor.{component}_replicas" — single source of truth is clusters.yaml.
+_HARBOR_PDB_COMPONENTS: list[tuple[str, str]] = [
+    ("harbor-core", "core"),
+    ("harbor-registry", "registry"),
+    ("harbor-nginx", "nginx"),
+]
+
+
+class TestHarborPDBs:
+    """Verify Harbor PodDisruptionBudgets exist, are healthy, and match clusters.yaml."""
+
+    @pytest.mark.parametrize(("pdb_name", "component"), _HARBOR_PDB_COMPONENTS)
+    def test_pdb_exists_and_healthy(self, all_pods, resolve_config, pdb_name, component):
+        pdb = run_kubectl(["get", "pdb", pdb_name], namespace=HARBOR_NAMESPACE)
+        assert pdb["metadata"]["name"] == pdb_name
+
+        expected_max = resolve_config("harbor.pdb_max_unavailable")
+        assert pdb["spec"].get("maxUnavailable") == expected_max, (
+            f"{pdb_name}: spec.maxUnavailable={pdb['spec'].get('maxUnavailable')!r}, expected {expected_max!r}"
+        )
+
+        status = pdb.get("status", {})
+        current = status.get("currentHealthy", 0)
+        desired = status.get("desiredHealthy", 0)
+        assert current >= desired, f"{pdb_name}: currentHealthy={current} < desiredHealthy={desired}"
+
+        selector_labels = pdb["spec"].get("selector", {}).get("matchLabels", {})
+        assert selector_labels, f"{pdb_name}: selector.matchLabels is empty"
+        matched = filter_pods(all_pods, namespace=HARBOR_NAMESPACE, labels=selector_labels)
+        replicas_key = f"harbor.{component}_replicas"
+        expected_replicas = int(resolve_config(replicas_key))
+        assert len(matched) == expected_replicas, (
+            f"{pdb_name}: selector matches {len(matched)} pods, expected {expected_replicas} "
+            f"(selector={selector_labels})"
+        )
