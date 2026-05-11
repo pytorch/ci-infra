@@ -83,6 +83,7 @@ just deploy <cluster-id>
 │   ├── mirror-images                               ← Harbor images to ECR
 │   ├── kubectl apply -k base/kubernetes/           ← StorageClass, NVIDIA, image-cache-janitor, etc.
 │   ├── git-cache/deploy.sh                         ← Git cache central StatefulSet
+│   ├── eniconfigs/deploy.sh                          ← AZ-named ENIConfig CRs (one per AZ from terraform output)
 │   ├── deploy-harbor                               ← Helm install Harbor (pull-through cache)
 │   ├── node-compactor/deploy.sh                    ← if enabled in clusters.yaml
 │   └── image-cache-janitor/deploy.sh               ← prunes stale image content from node disks
