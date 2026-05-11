@@ -598,6 +598,7 @@ def reserve(
     preserve_entrypoint: bool,
     disk: Optional[str],
     node_label: tuple,
+    spot: bool = False,
 ) -> None:
     """Reserve GPU development server(s)
 
