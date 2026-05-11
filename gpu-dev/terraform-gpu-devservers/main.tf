@@ -58,6 +58,13 @@ provider "helm" {
 # Data sources
 data "aws_availability_zones" "available" {
   state = "available"
+  # Exclude Local Zones (e.g. us-east-1-dfw-2a) and Wavelength Zones — EKS control
+  # plane only supports standard AZs. us-east-2 doesn't have Local Zones so the
+  # existing prod workspace was unaffected; us-east-1 has several (dfw, bos, …).
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
 }
 
 data "aws_caller_identity" "current" {}
