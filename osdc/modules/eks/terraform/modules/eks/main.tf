@@ -178,8 +178,19 @@ resource "aws_eks_addon" "coredns" {
   addon_version               = "v1.13.2-eksbuild.1"
   resolve_conflicts_on_update = "PRESERVE"
 
-  # CoreDNS must tolerate base node taints to run on infrastructure nodes
+  # CoreDNS pinned topology:
+  # - replicaCount: per-cluster from clusters.yaml (default 6, staging 2)
+  # - autoScaling explicitly disabled (defensive against addon-version flips)
+  # - Hard zone spread (DoNotSchedule, maxSkew=2) + soft hostname spread (ScheduleAnyway, maxSkew=1)
+  # - PDB maxUnavailable=1 (matches addon default)
+  # - Required so CoreDNS pods land on the CriticalAddonsOnly-tainted base nodes.
+  #   Setting tolerations REPLACES (does not merge with) the addon default —
+  #   the addon's default tolerations include this one, so we preserve compat.
   configuration_values = jsonencode({
+    replicaCount = var.coredns_replicas
+    autoScaling = {
+      enabled = false
+    }
     tolerations = [
       {
         key      = "CriticalAddonsOnly"
@@ -188,6 +199,33 @@ resource "aws_eks_addon" "coredns" {
         effect   = "NoSchedule"
       }
     ]
+    topologySpreadConstraints = [
+      {
+        # maxSkew=2 tolerates AWS subnet placement drift (e.g. 4-2-0 across AZs after
+        # AMI rolls) while still preventing catastrophic 6-0-0 single-AZ pinning.
+        maxSkew           = 2
+        topologyKey       = "topology.kubernetes.io/zone"
+        whenUnsatisfiable = "DoNotSchedule"
+        labelSelector = {
+          matchLabels = {
+            "k8s-app" = "kube-dns"
+          }
+        }
+      },
+      {
+        maxSkew           = 1
+        topologyKey       = "kubernetes.io/hostname"
+        whenUnsatisfiable = "ScheduleAnyway"
+        labelSelector = {
+          matchLabels = {
+            "k8s-app" = "kube-dns"
+          }
+        }
+      }
+    ]
+    podDisruptionBudget = {
+      maxUnavailable = 1
+    }
   })
 
   tags = var.tags

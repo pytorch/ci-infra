@@ -78,6 +78,8 @@ module "eks" {
   base_node_max_unavailable_percentage = var.base_node_max_unavailable_percentage
   base_node_ami_version                = var.base_node_ami_version
 
+  coredns_replicas = var.coredns_replicas
+
   authentication_mode      = var.authentication_mode
   cluster_admin_role_names = var.cluster_admin_role_names
 

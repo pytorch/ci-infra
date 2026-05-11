@@ -52,6 +52,11 @@ def resolve(cluster_cfg, defaults, dotpath):
 def tfvars(cluster_id, cluster_cfg, defaults):
     """Produce -var flags for tofu from cluster config."""
     base = {**defaults, **(cluster_cfg.get("base") or {})}
+    # Resolve nested config (e.g. coredns.replicas) using the same lookup
+    # rules as resolve(): cluster value wins; otherwise defaults.
+    coredns_replicas = resolve(cluster_cfg, defaults, "coredns.replicas")
+    if coredns_replicas is None:
+        coredns_replicas = 6
     pairs = {
         "cluster_name": cluster_cfg["cluster_name"],
         "aws_region": cluster_cfg["region"],
@@ -62,6 +67,7 @@ def tfvars(cluster_id, cluster_cfg, defaults):
         "base_node_max_unavailable_percentage": base.get("base_node_max_unavailable_percentage", 33),
         "base_node_ami_version": base.get("base_node_ami_version", defaults.get("base_node_ami_version", "v*")),
         "eks_version": base.get("eks_version", defaults.get("eks_version", "1.35")),
+        "coredns_replicas": coredns_replicas,
     }
     # Optional fields — only emit if explicitly set
     access_config = cluster_cfg.get("access_config") or base.get("access_config") or {}

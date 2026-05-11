@@ -1,5 +1,7 @@
 """Smoke tests for EKS cluster and AWS infrastructure."""
 
+import subprocess
+
 import pytest
 import yaml
 from helpers import get_unstable_node_names, pod_is_on_unstable_node, run_aws, run_kubectl
@@ -158,3 +160,107 @@ class TestECRImages:
 
         missing = [repo for repo in expected_repos if repo not in ecr_repo_names]
         assert not missing, f"ECR repositories missing for bootstrap images: {missing}"
+
+
+# ============================================================================
+# CoreDNS Topology Pinning
+# ============================================================================
+
+
+class TestCoreDNSTopology:
+    """Verify CoreDNS replicaCount, topology spread, autoscaling, and PDB.
+
+    Pinned via aws_eks_addon.coredns configuration_values in
+    modules/eks/terraform/modules/eks/main.tf. Replica count is per-cluster
+    via clusters.yaml (coredns.replicas — default 6, staging 2).
+    """
+
+    def test_replica_count_matches_clusters_yaml(self, resolve_config):
+        expected = resolve_config("coredns.replicas", 6)
+        deploy = run_kubectl(["get", "deployment", "coredns"], namespace="kube-system")
+        actual = deploy.get("spec", {}).get("replicas")
+        assert actual == expected, (
+            f"CoreDNS Deployment.spec.replicas={actual} does not match clusters.yaml expected={expected}"
+        )
+
+    def test_zone_topology_spread_is_hard(self, resolve_config):
+        deploy = run_kubectl(["get", "deployment", "coredns"], namespace="kube-system")
+        constraints = deploy.get("spec", {}).get("template", {}).get("spec", {}).get("topologySpreadConstraints", [])
+        zone_rules = [
+            c
+            for c in constraints
+            if c.get("topologyKey") == "topology.kubernetes.io/zone" and c.get("whenUnsatisfiable") == "DoNotSchedule"
+        ]
+        assert zone_rules, (
+            f"CoreDNS Deployment missing hard zone spread (topology.kubernetes.io/zone, DoNotSchedule). "
+            f"Found constraints: {constraints}"
+        )
+        # maxSkew=2 tolerates AWS subnet placement drift (e.g. 4-2-0 across AZs after
+        # AMI rolls) while still preventing catastrophic 6-0-0 single-AZ pinning.
+        for rule in zone_rules:
+            assert rule.get("maxSkew") == 2, (
+                f"CoreDNS zone spread maxSkew={rule.get('maxSkew')}, expected 2. Constraint: {rule}"
+            )
+            assert rule.get("labelSelector", {}).get("matchLabels", {}).get("k8s-app") == "kube-dns", (
+                f"CoreDNS zone spread labelSelector mismatch. Constraint: {rule}"
+            )
+
+    def test_hostname_topology_spread_is_soft(self, resolve_config):
+        """Soft hostname spread (ScheduleAnyway) keeps replicas off the same node when possible."""
+        deploy = run_kubectl(["get", "deployment", "coredns"], namespace="kube-system")
+        constraints = deploy.get("spec", {}).get("template", {}).get("spec", {}).get("topologySpreadConstraints", [])
+        host_rules = [
+            c
+            for c in constraints
+            if c.get("topologyKey") == "kubernetes.io/hostname" and c.get("whenUnsatisfiable") == "ScheduleAnyway"
+        ]
+        assert host_rules, (
+            f"CoreDNS Deployment missing soft hostname spread (kubernetes.io/hostname, ScheduleAnyway). "
+            f"Found constraints: {constraints}"
+        )
+        for rule in host_rules:
+            assert rule.get("maxSkew") == 1, (
+                f"CoreDNS hostname spread maxSkew={rule.get('maxSkew')}, expected 1. Constraint: {rule}"
+            )
+            assert rule.get("labelSelector", {}).get("matchLabels", {}).get("k8s-app") == "kube-dns", (
+                f"CoreDNS hostname spread labelSelector mismatch. Constraint: {rule}"
+            )
+
+    def test_no_cluster_proportional_autoscaler(self, cluster_config):
+        """Addon-managed autoscaling must be off — no CPA Deployment should exist for coredns.
+
+        EKS CoreDNS uses the cluster-proportional-autoscaler (CPA), which runs as a
+        Deployment named 'coredns-autoscaler' (newer addon versions) or 'eks-coredns-autoscaler'
+        (older spelling). It is NOT a HorizontalPodAutoscaler. With autoScaling.enabled=false
+        in the addon configuration_values, neither Deployment should be present.
+        """
+        cluster_name = cluster_config["cluster"]["cluster_name"]
+        for cpa_name in ("coredns-autoscaler", "eks-coredns-autoscaler"):
+            try:
+                deploy = run_kubectl(["get", "deployment", cpa_name], namespace="kube-system")
+            except subprocess.CalledProcessError:
+                # 'NotFound' surfaces as kubectl exit 1 — that's the desired state.
+                continue
+            # If we got JSON back, the CPA Deployment exists — that's a regression.
+            pytest.fail(
+                f"Unexpected cluster-proportional-autoscaler Deployment '{cpa_name}' in kube-system "
+                f"on {cluster_name} (autoScaling.enabled=false should prevent this): {deploy}"
+            )
+
+    def test_pdb_max_unavailable_is_one(self):
+        pdbs = run_kubectl(["get", "poddisruptionbudgets"], namespace="kube-system")
+        items = pdbs.get("items", [])
+        coredns_pdbs = [
+            p
+            for p in items
+            if p.get("spec", {}).get("selector", {}).get("matchLabels", {}).get("k8s-app") == "kube-dns"
+        ]
+        assert coredns_pdbs, f"No PodDisruptionBudget found targeting CoreDNS (k8s-app=kube-dns). Items: {items}"
+        # EKS addon picks one PDB resource name (typically 'coredns'); assert all
+        # found PDBs have maxUnavailable=1 (defensive against multiple stale PDBs).
+        for pdb in coredns_pdbs:
+            spec = pdb.get("spec", {})
+            max_unavail = spec.get("maxUnavailable")
+            assert max_unavail == 1, (
+                f"CoreDNS PDB {pdb['metadata']['name']} has maxUnavailable={max_unavail}, expected 1"
+            )
