@@ -512,6 +512,22 @@ locals {
     }
   }
 
+  # Subdomain NS delegations to create in *this* workspace's parent zone. Lets
+  # prod (which owns devservers.io) auto-publish NS records pointing at child zones
+  # in other workspaces (prod-east1, future regions) without manual -var flags.
+  # The NS values come from `tofu output devservers_name_servers` in the child
+  # workspace once its hosted zone has been created.
+  prod_subdomain_delegations = {
+    prod = {
+      "east1.devservers.io" = [
+        "ns-1079.awsdns-06.org",
+        "ns-1999.awsdns-57.co.uk",
+        "ns-341.awsdns-42.com",
+        "ns-624.awsdns-14.net",
+      ]
+    }
+  }
+
   # Per-capacity-reservation AZ mappings (overrides gpu_subnet_assignments when CR is used)
   capacity_reservation_azs = {
     "prod-east1" = {

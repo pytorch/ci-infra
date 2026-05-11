@@ -51,6 +51,19 @@ resource "aws_route53_record" "manual_subdomain_delegation" {
   records = var.subdomain_ns_records
 }
 
+# Auto-published NS delegations for child workspaces. Iterates prod_subdomain_delegations
+# (defined in main.tf) for the current workspace and creates an NS record per entry in
+# the parent zone — so `tofu apply` in prod automatically wires up east1.devservers.io
+# (and any future region) without -var flags.
+resource "aws_route53_record" "workspace_subdomain_delegations" {
+  for_each = local.effective_domain_name != "" && !local.is_subdomain ? try(local.prod_subdomain_delegations[terraform.workspace], {}) : {}
+  zone_id  = data.aws_route53_zone.parent[0].zone_id
+  name     = each.key
+  type     = "NS"
+  ttl      = 300
+  records  = each.value
+}
+
 # Use appropriate hosted zone (subdomain if created, otherwise parent)
 locals {
   hosted_zone_id = local.is_subdomain ? aws_route53_zone.subdomain[0].zone_id : (local.effective_domain_name != "" ? data.aws_route53_zone.parent[0].zone_id : "")
