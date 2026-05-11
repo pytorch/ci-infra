@@ -17,6 +17,47 @@ logger.setLevel(logging.INFO)
 # AWS clients
 dynamodb = boto3.resource("dynamodb")
 autoscaling = boto3.client("autoscaling")
+ec2_client = boto3.client("ec2")
+
+# Instance types per GPU type (for spot price lookups)
+GPU_INSTANCE_TYPES = {
+    "b300": "p6-b300.48xlarge", "b200": "p6-b200.48xlarge",
+    "h200": "p5e.48xlarge", "h100": "p5.48xlarge", "a100": "p4d.24xlarge",
+    "t4": "g4dn.12xlarge", "l4": "g6.12xlarge",
+    "rtxpro6000": "g7e.24xlarge", "a10g": "g5.12xlarge",
+    "cpu-x86": "c7i.8xlarge", "cpu-arm": "c7g.8xlarge",
+}
+SPOT_GPU_TYPES = os.environ.get("SPOT_GPU_TYPES", "")
+
+
+def get_spot_price_info(gpu_type: str) -> dict:
+    """Query AWS for current spot price and derive availability signal."""
+    instance_type = GPU_INSTANCE_TYPES.get(gpu_type)
+    if not instance_type:
+        return {}
+    try:
+        resp = ec2_client.describe_spot_price_history(
+            InstanceTypes=[instance_type],
+            ProductDescriptions=["Linux/UNIX"],
+            MaxResults=5,
+        )
+        prices = resp.get("SpotPriceHistory", [])
+        if not prices:
+            return {"spot_price": None, "spot_available": False, "spot_signal": "No spot data"}
+        latest = prices[0]
+        price = float(latest["SpotPrice"])
+        az = latest["AvailabilityZone"]
+        ts = latest["Timestamp"].isoformat() if hasattr(latest["Timestamp"], "isoformat") else str(latest["Timestamp"])
+        return {
+            "spot_price": str(round(price, 2)),
+            "spot_az": az,
+            "spot_price_updated": ts,
+            "spot_available": True,
+            "spot_signal": f"${round(price, 2)}/hr in {az}",
+        }
+    except Exception as e:
+        logger.warning(f"Spot price lookup failed for {gpu_type}: {e}")
+        return {}
 
 # Environment variables
 AVAILABILITY_TABLE = os.environ["AVAILABILITY_TABLE"]
@@ -325,26 +366,37 @@ def update_gpu_availability(gpu_type: str, k8s_client=None, active_reservations=
         last_updated = context.aws_request_id if "context" in locals() else "unknown"
         last_updated_ts = int(time.time()) if "time" in dir() else 0
 
+        # Fetch spot price info for spot-eligible types
+        spot_info = {}
+        if SPOT_GPU_TYPES and (SPOT_GPU_TYPES.strip() == "all" or gpu_type in [t.strip() for t in SPOT_GPU_TYPES.split(",")]):
+            spot_info = get_spot_price_info(gpu_type)
+
+        update_expr = (
+            "SET total_gpus = :tg, available_gpus = :ag, max_reservable = :mr, "
+            "full_nodes_available = :fn, running_instances = :ri, desired_capacity = :dc, "
+            "gpus_per_instance = :gpi, last_updated = :lu, last_updated_timestamp = :lut, "
+            "size_etas = :se"
+        )
+        expr_values = {
+            ":tg": total_gpus,
+            ":ag": available_gpus,
+            ":mr": max_reservable,
+            ":fn": full_nodes_available,
+            ":ri": running_instances,
+            ":dc": desired_capacity,
+            ":gpi": gpus_per_instance,
+            ":lu": last_updated,
+            ":lut": last_updated_ts,
+            ":se": size_etas,
+        }
+        if spot_info:
+            update_expr += ", spot_info = :si"
+            expr_values[":si"] = spot_info
+
         table.update_item(
             Key={"gpu_type": gpu_type},
-            UpdateExpression=(
-                "SET total_gpus = :tg, available_gpus = :ag, max_reservable = :mr, "
-                "full_nodes_available = :fn, running_instances = :ri, desired_capacity = :dc, "
-                "gpus_per_instance = :gpi, last_updated = :lu, last_updated_timestamp = :lut, "
-                "size_etas = :se"
-            ),
-            ExpressionAttributeValues={
-                ":tg": total_gpus,
-                ":ag": available_gpus,
-                ":mr": max_reservable,
-                ":fn": full_nodes_available,
-                ":ri": running_instances,
-                ":dc": desired_capacity,
-                ":gpi": gpus_per_instance,
-                ":lu": last_updated,
-                ":lut": last_updated_ts,
-                ":se": size_etas,
-            },
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_values,
         )
 
         logger.info(

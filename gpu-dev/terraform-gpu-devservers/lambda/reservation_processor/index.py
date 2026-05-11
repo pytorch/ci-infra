@@ -2242,7 +2242,7 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 if available_gpus == 0:
                     if _is_spot_type(gpu_type):
                         scale_up_spot_asg(gpu_type, reservation_id)
-                        queue_message = f"Spot instance requested — waiting for AWS to provision {gpu_type.upper()} node (~5-10 min)"
+                        queue_message = f"Spot instance requested for {gpu_type.upper()} — fulfillment depends on AWS capacity (not guaranteed)"
                     else:
                         queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
                 elif available_gpus >= requested_gpus and max_single_node < requested_gpus:
@@ -7836,7 +7836,9 @@ def process_scheduled_queue_management():
                         if _is_spot_type(gpu_type):
                             scale_up_spot_asg(gpu_type, reservation_id)
                             spot_status = _get_spot_provision_status(gpu_type)
-                            estimated_wait_minutes = 10
+                            # Don\'t fake an ETA — spot fulfillment is unpredictable.
+                            # Set to None so the CLI shows "depends on AWS spot capacity" not "10min"
+                            estimated_wait_minutes = None
                             logger.info(
                                 f"Spot status for {gpu_type.upper()} reservation {reservation_id}: {spot_status}")
                         else:

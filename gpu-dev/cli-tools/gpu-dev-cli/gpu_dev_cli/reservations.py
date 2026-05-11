@@ -1070,6 +1070,7 @@ class ReservationManager:
                     "maintenance": bool(item.get("maintenance", False)),
                     "maintenance_reason": item.get("maintenance_reason", ""),
                     "size_etas": size_etas,
+                    "spot_info": item.get("spot_info", {}),
                 }
 
             return availability_info
@@ -1867,7 +1868,12 @@ class ReservationManager:
                                         else "Calculating..."
                                     )
 
-                                if is_multinode:
+                                detailed = first_queued.get("current_detailed_status", "")
+                                # Spot stages come through current_detailed_status — show those
+                                # directly instead of generic "Position #1, est wait X min"
+                                if detailed and ("spot" in detailed.lower() or "node" in detailed.lower() or "instance" in detailed.lower()):
+                                    message = f"⏳ {detailed}"
+                                elif is_multinode:
                                     total_gpus = sum(
                                         node["gpu_count"] for node in node_details if node["reservation"])
                                     message = f"📋 Position #{queue_position} in queue • Estimated wait: {wait_display} • {total_gpus} GPUs across {total_nodes} nodes"
