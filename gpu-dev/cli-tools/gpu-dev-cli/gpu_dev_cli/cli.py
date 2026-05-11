@@ -4,6 +4,7 @@ Reserve and manage GPU development servers
 """
 
 import click
+import os
 from typing import Optional
 from rich.console import Console
 from rich.table import Table
@@ -3217,6 +3218,20 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         # Add agent forwarding if not already present
         if "-A" not in ssh_command and "-o ForwardAgent=yes" not in ssh_command:
             ssh_command = ssh_command.replace("ssh ", "ssh -A ", 1)
+
+        # When running from inside a gpu-dev pod (=GPU_DEV_USER_ID env var set) and the
+        # forwarded SSH agent is reachable but empty, the next hop is going to fail with
+        # 'Permission denied (publickey)'. Warn upfront so the user knows to ssh-add on
+        # their laptop instead of debugging an opaque auth failure on the remote side.
+        if os.environ.get("GPU_DEV_USER_ID") and os.environ.get("SSH_AUTH_SOCK"):
+            try:
+                import subprocess as _sp
+                r = _sp.run(["ssh-add", "-L"], capture_output=True, text=True, timeout=3)
+                if r.returncode != 0 or not r.stdout.strip() or "no identities" in r.stdout.lower():
+                    rprint("[yellow]⚠️  Forwarded SSH agent is empty — second-hop SSH from a pod will fail auth.[/yellow]")
+                    rprint("[yellow]   On your laptop: `ssh-add ~/.ssh/id_ed25519` (or your GitHub key), then reconnect to this pod with `gpu-dev connect`.[/yellow]\n")
+            except Exception:
+                pass
 
         # Parse and execute the command, capturing exit code for auth failures
         rprint(f"[dim]Executing: {ssh_command}[/dim]\n")

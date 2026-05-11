@@ -162,11 +162,20 @@ def _generate_ssh_config(hostname: str, pod_name: str) -> str:
     Returns:
         SSH config content as string
     """
+    import sys
+    # AddKeysToAgent makes SSH stash the IdentityFile into ssh-agent the first time it
+    # uses it for this Host, so the next agent-forwarding hop (pod → pod) actually has
+    # something to forward. On macOS, UseKeychain persists the passphrase via Keychain
+    # so users aren\'t prompted on every shell restart. Linux ssh errors on UseKeychain,
+    # so guard it with IgnoreUnknown.
+    extra = "    AddKeysToAgent yes\n"
+    if sys.platform == "darwin":
+        extra += "    IgnoreUnknown UseKeychain\n    UseKeychain yes\n"
     config_content = f"""Host {pod_name}
     HostName {hostname}
     User dev
     ForwardAgent yes
-    ProxyCommand gpu-dev-ssh-proxy %h %p
+{extra}    ProxyCommand gpu-dev-ssh-proxy %h %p
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 """
