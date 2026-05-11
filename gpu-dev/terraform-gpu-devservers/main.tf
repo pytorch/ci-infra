@@ -345,7 +345,7 @@ locals {
           gpus_per_instance   = 8
           use_placement_group = false
           architecture        = "x86_64"
-          efa_network_cards   = 8
+          efa_network_cards   = 0  # EFA disabled until quota approved for p6-b300 in us-east-1
           use_spot            = true
         }
         "b200" = {
