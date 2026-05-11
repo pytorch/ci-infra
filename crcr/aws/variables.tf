@@ -60,3 +60,9 @@ variable "hud_bot_key" {
   type        = string
   sensitive   = true
 }
+
+variable "oot_status_ttl" {
+  description = "OOT workflow run status TTL in Redis (seconds)"
+  type        = number
+  default     = 259200
+}

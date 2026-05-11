@@ -18,13 +18,14 @@ resource "aws_lambda_function" "result" {
 
   environment {
     variables = {
-      GITHUB_APP_ID         = var.github_app_id
-      REDIS_ENDPOINT        = aws_elasticache_replication_group.redis.primary_endpoint_address
-      SECRET_STORE_ARN      = local.secret_store_arn
-      UPSTREAM_REPO         = var.upstream_repo
-      ALLOWLIST_URL         = var.allowlist_url
-      ALLOWLIST_TTL_SECONDS = tostring(var.allowlist_ttl)
-      HUD_API_URL           = var.hud_api_url
+      GITHUB_APP_ID           = var.github_app_id
+      REDIS_ENDPOINT          = aws_elasticache_replication_group.redis.primary_endpoint_address
+      SECRET_STORE_ARN        = local.secret_store_arn
+      UPSTREAM_REPO           = var.upstream_repo
+      ALLOWLIST_URL           = var.allowlist_url
+      ALLOWLIST_TTL_SECONDS   = tostring(var.allowlist_ttl)
+      HUD_API_URL             = var.hud_api_url
+      OOT_STATUS_TTL          = tostring(var.oot_status_ttl)
     }
   }
 
