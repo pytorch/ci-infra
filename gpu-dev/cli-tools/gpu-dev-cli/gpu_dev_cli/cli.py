@@ -576,6 +576,8 @@ def main(ctx: click.Context) -> None:
     multiple=True,
     help="Request nodes with specific label (format: key=value). Example: --node-label nsight=true for Nsight profiling nodes",
 )
+@click.option("--spot", is_flag=True, default=False,
+              help="Acknowledge spot instance (~1/3 cost, may be preempted with 2-min notice). Required for spot-only types.")
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -1271,6 +1273,7 @@ def reserve(
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
                     disk_name=disk,
+                    spot=spot,
                     node_labels=node_labels if node_labels else None,
                 )
             else:
@@ -1289,6 +1292,7 @@ def reserve(
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
                     disk_name=disk,
+                    spot=spot,
                     node_labels=node_labels if node_labels else None,
                     trace=trace,
                 )
@@ -1362,6 +1366,8 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
 @click.option("--hours", type=float, default=1.0, show_default=True, help="Reservation lifetime ceiling — job auto-cancels well before this if it finishes.")
 @click.option("--disk", type=str, default=None, help="Persistent disk name (master node only). Omit for ephemeral storage.")
 @click.option("--no-persistent-disk", is_flag=True, help="Skip persistent disk entirely.")
+@click.option("--spot", is_flag=True, default=False,
+              help="Acknowledge spot instance (~1/3 cost, may be preempted). Required for spot-only types.")
 @click.option("--dockerfile", type=click.Path(exists=True, dir_okay=False, resolve_path=True), default=None,
               help="Local Dockerfile to build into the pod image (build context = the Dockerfile's directory).")
 @click.option("--dockerimage", type=str, default=None,
@@ -1377,7 +1383,7 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
               help="Minutes to wait for the reservation to become active. Defaults to 24h since GPU reservations may queue when the cluster is full.")
 @click.argument("command", nargs=-1, required=True)
 @click.pass_context
-def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, dockerfile, dockerimage, preserve_entrypoint,
+def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, spot, dockerfile, dockerimage, preserve_entrypoint,
            runtime, no_pull, keep_alive, name, timeout, command):
     """Submit a job: reserve, sync code, run, sync results back, auto-cancel.
 
@@ -1491,7 +1497,7 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, dockerfile, doc
             user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gt,
             duration_hours=hours, name=name, github_user=user_info["github_user"],
             no_persistent_disk=no_persistent_disk, disk_name=disk_name,
-            dockerfile=dockerfile_payload, dockerimage=dockerimage,
+            spot=spot, dockerfile=dockerfile_payload, dockerimage=dockerimage,
             preserve_entrypoint=preserve_entrypoint)
         if not reservation_ids:
             rprint("[red]❌ Failed to create multinode reservation[/red]")
@@ -1502,7 +1508,7 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, dockerfile, doc
             user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gt,
             duration_hours=hours, name=name, github_user=user_info["github_user"],
             no_persistent_disk=no_persistent_disk, disk_name=disk_name,
-            dockerfile=dockerfile_payload, dockerimage=dockerimage,
+            spot=spot, dockerfile=dockerfile_payload, dockerimage=dockerimage,
             preserve_entrypoint=preserve_entrypoint)
         if not primary_id:
             rprint("[red]❌ Failed to create reservation[/red]")

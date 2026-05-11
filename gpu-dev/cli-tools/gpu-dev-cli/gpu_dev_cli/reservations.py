@@ -421,6 +421,7 @@ class ReservationManager:
         disk_name: Optional[str] = None,
         node_labels: Optional[Dict[str, str]] = None,
         trace: bool = False,
+        spot: bool = False,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
@@ -500,6 +501,9 @@ class ReservationManager:
             if node_labels:
                 message["node_labels"] = node_labels
 
+            if spot:
+                message["spot"] = True
+
             # Add trace flag and CLI start timestamp
             if trace:
                 message["trace"] = True
@@ -536,6 +540,7 @@ class ReservationManager:
         preserve_entrypoint: bool = False,
         disk_name: Optional[str] = None,
         node_labels: Optional[Dict[str, str]] = None,
+        spot: bool = False,
     ) -> Optional[List[str]]:
         """Create multiple GPU reservations for multinode setup"""
         try:
@@ -602,6 +607,7 @@ class ReservationManager:
                     "recreate_env": recreate_env,
                     "is_multinode": True,
                     "no_persistent_disk": no_persistent_disk,
+                    "spot": spot,
                 }
 
                 if github_user:

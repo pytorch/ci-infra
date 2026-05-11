@@ -59,6 +59,7 @@ ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 # Version validation - injected via Terraform
 LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.9")
 MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.9")
+SPOT_GPU_TYPES = os.environ.get("SPOT_GPU_TYPES", "")
 OPERATIONS_TABLE = os.environ.get("OPERATIONS_TABLE", "pytorch-gpu-dev-operations")
 
 # GPU Configuration - single source of truth for all GPU type mappings
@@ -2204,6 +2205,19 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
             reason = maintenance.get("reason", "under maintenance")
             error_msg = f"GPU type {gpu_type.upper()} is currently unavailable: {reason}"
             logger.warning(f"User {user_id} blocked from {gpu_type}: maintenance mode")
+            return False, error_msg
+
+    # Spot acknowledgment: if this workspace marks the GPU type as spot-only and
+    # the user didn't pass --spot, reject with a clear message.
+    if SPOT_GPU_TYPES and not request.get("spot", False):
+        is_spot = SPOT_GPU_TYPES.strip() == "all" or gpu_type in [t.strip() for t in SPOT_GPU_TYPES.split(",")]
+        if is_spot:
+            error_msg = (
+                f"{gpu_type.upper()} is only available as a spot instance in this environment. "
+                f"Spot instances are ~1/3 the cost but can be reclaimed by AWS with 2-min notice. "
+                f"Pass --spot to confirm: gpu-dev reserve --gpu-type {gpu_type} --spot"
+            )
+            logger.warning(f"Reservation: spot acknowledgment missing for {gpu_type}")
             return False, error_msg
 
     # Validate GPU count based on type
