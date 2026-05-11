@@ -3219,6 +3219,20 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         if "-A" not in ssh_command and "-o ForwardAgent=yes" not in ssh_command:
             ssh_command = ssh_command.replace("ssh ", "ssh -A ", 1)
 
+        # Inject AddKeysToAgent so the first connect from this laptop loads the user\'s
+        # IdentityFile into ssh-agent — without this the forwarded agent is empty on
+        # subsequent pod→pod hops. UseKeychain persists the passphrase across reboots on
+        # macOS; IgnoreUnknown lets Linux SSH ignore the macOS-only option cleanly.
+        # The same options live in ~/.gpu-dev/<id>-sshconfig but ssh only honours them
+        # when the command-line target matches a Host block, which this connect command
+        # bypasses by passing the FQDN directly.
+        if "AddKeysToAgent" not in ssh_command:
+            ssh_command = ssh_command.replace(
+                "ssh ",
+                "ssh -o AddKeysToAgent=yes -o IgnoreUnknown=UseKeychain -o UseKeychain=yes ",
+                1,
+            )
+
         # When running from inside a gpu-dev pod (=GPU_DEV_USER_ID env var set) and the
         # forwarded SSH agent is reachable but empty, the next hop is going to fail with
         # 'Permission denied (publickey)'. Warn upfront so the user knows to ssh-add on
