@@ -692,9 +692,7 @@ def reserve(
             # Auto-acknowledge spot in spot-only environments so users don't need --spot
             from .config import Config as _Cfg
             _env_name = load_config().user_config.get("environment", "prod")
-            if _Cfg.ENVIRONMENTS.get(_env_name, {}).get("all_spot") and not spot:
-                spot = True
-                rprint("[dim]Spot environment — --spot auto-acknowledged. Instances may be preempted by AWS with 2-min notice.[/dim]\n")
+            _spot_types_env = _Cfg.ENVIRONMENTS.get(_env_name, {}).get("spot_types", [])
 
             # Run auth + SSH validation + availability fetch in parallel — they're independent
             # and total wall-clock time drops from sum to max(each).
@@ -755,6 +753,11 @@ def reserve(
                 if gpu_type is None:
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
+
+            # Auto-acknowledge spot for spot types in this environment
+            if _spot_types_env and gpu_type and gpu_type.lower() in _spot_types_env and not spot:
+                spot = True
+                rprint(f"[dim]{gpu_type.upper()} is a spot instance in this environment — --spot auto-acknowledged. May be preempted by AWS.[/dim]")
 
             # Interactive GPU count selection
             if gpus is None:

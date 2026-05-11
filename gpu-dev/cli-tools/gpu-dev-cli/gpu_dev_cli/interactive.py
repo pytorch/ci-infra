@@ -89,11 +89,13 @@ def select_gpu_type_interactive(
     _cfg = load_config()
     _env_name = _cfg.user_config.get("environment", "prod")
     _env_config = Config.ENVIRONMENTS.get(_env_name, {})
-    is_all_spot = _env_config.get("all_spot", False)
+    _spot_types = set(_env_config.get("spot_types", []))
+    is_all_spot = False  # legacy compat
+    has_spot_types = len(_spot_types) > 0
 
     # Display availability table first
-    if is_all_spot:
-        console.print("\n[cyan]🖥️  GPU Availability[/cyan] [dim](spot environment — all instances require --spot)[/dim]")
+    if has_spot_types:
+        console.print("\n[cyan]🖥️  GPU Availability[/cyan] [dim](* = spot instance, requires --spot)[/dim]")
     else:
         console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
     table = Table()
@@ -103,7 +105,7 @@ def select_gpu_type_interactive(
     table.add_column("Total", style="blue")
     table.add_column("Queue\nLength", style="yellow")
     table.add_column("Est. Wait Time", style="magenta")
-    if is_all_spot:
+    if has_spot_types:
         table.add_column("Spot\nStatus", style="dim")
 
     choices = []
@@ -145,7 +147,7 @@ def select_gpu_type_interactive(
         else:
             available_display = f"[red]{available}[/red]"
 
-        type_label = f"{gpu_type.upper()} *" if is_all_spot else gpu_type.upper()
+        type_label = f"{gpu_type.upper()} *" if gpu_type in _spot_types else gpu_type.upper()
         row = [
             type_label,
             available_display,
@@ -154,7 +156,7 @@ def select_gpu_type_interactive(
             str(queue_length) if not is_maintenance else "-",
             wait_display,
         ]
-        if is_all_spot:
+        if gpu_type in _spot_types:
             ri = info.get("running_instances", 0)
             dc = info.get("desired_capacity", 0)
             if ri > 0:
@@ -186,7 +188,7 @@ def select_gpu_type_interactive(
             choices.append(questionary.Choice(title=choice_label, value=gpu_type))
 
     console.print(table)
-    if is_all_spot:
+    if has_spot_types:
         console.print("[dim]* = spot instance (--spot required, ~1/3 cost, may be preempted by AWS)[/dim]")
     console.print()
 
