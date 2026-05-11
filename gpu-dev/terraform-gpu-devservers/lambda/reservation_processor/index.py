@@ -2127,7 +2127,11 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
 
                 # Provide more specific queued message based on availability
                 if available_gpus == 0:
-                    queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
+                    _is_spot = SPOT_GPU_TYPES and (SPOT_GPU_TYPES.strip() == "all" or gpu_type in [t.strip() for t in SPOT_GPU_TYPES.split(",")])
+                    if _is_spot:
+                        queue_message = f"Waiting for {gpu_type.upper()} spot instance — requesting from AWS"
+                    else:
+                        queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
                 elif available_gpus >= requested_gpus and max_single_node < requested_gpus:
                     queue_message = f"Need {requested_gpus} {gpu_type.upper()} GPUs on one node, max available on single node is {max_single_node} - position #{queue_info.get('position', '?')}"
                 else:
@@ -7709,10 +7713,21 @@ def process_scheduled_queue_management():
 
                     # Calculate estimated wait time
                     if type_available_gpus == 0:
-                        # No GPUs of this type available - infinite wait or contact oncall
-                        estimated_wait_minutes = 999999  # Effectively infinite
-                        logger.warning(
-                            f"No {gpu_type.upper()} GPUs available for reservation {reservation_id} - contact oncall:pytorch_release_engineering")
+                        # No GPUs of this type available. If spot, the ASG is trying to
+                        # fulfill — give a reasonable estimate. If on-demand with no
+                        # nodes, it's genuinely stuck.
+                        is_spot_type = SPOT_GPU_TYPES and (
+                            SPOT_GPU_TYPES.strip() == "all"
+                            or gpu_type in [t.strip() for t in SPOT_GPU_TYPES.split(",")]
+                        )
+                        if is_spot_type:
+                            estimated_wait_minutes = 10  # optimistic; spot can take 2-15 min
+                            logger.info(
+                                f"No {gpu_type.upper()} spot nodes up for reservation {reservation_id} — ASG requesting from AWS")
+                        else:
+                            estimated_wait_minutes = 999999
+                            logger.warning(
+                                f"No {gpu_type.upper()} GPUs available for reservation {reservation_id} - contact oncall:pytorch_release_engineering")
                     else:
                         # Some GPUs available, use K8s tracker for normal estimation
                         try:
@@ -7740,7 +7755,14 @@ def process_scheduled_queue_management():
                     # Update status with human-readable timestamps if needed
                     if current_status == "pending":
                         if type_available_gpus == 0:
-                            status_message = f"In queue position #{queue_position} - No {gpu_type.upper()} GPUs available, contact oncall:pytorch_release_engineering"
+                            is_spot_type2 = SPOT_GPU_TYPES and (
+                                SPOT_GPU_TYPES.strip() == "all"
+                                or gpu_type in [t.strip() for t in SPOT_GPU_TYPES.split(",")]
+                            )
+                            if is_spot_type2:
+                                status_message = f"Waiting for {gpu_type.upper()} spot instance — AWS fulfilling ASG request"
+                            else:
+                                status_message = f"In queue position #{queue_position} - No {gpu_type.upper()} GPUs available, contact oncall:pytorch_release_engineering"
                         else:
                             status_message = f"In queue position #{queue_position}"
 
