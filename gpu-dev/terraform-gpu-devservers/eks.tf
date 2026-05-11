@@ -256,6 +256,14 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
   max_size         = try(each.value.gpu_config.use_spot, false) ? max(2, each.value.instance_count) : each.value.instance_count
   desired_capacity = each.value.instance_count
 
+  # Let Lambda manage desired_capacity dynamically (spot scale-up/down) without
+  # tofu apply resetting it to 0 every time. For on-demand ASGs this is harmless:
+  # min=max=instance_count constrains desired to the right value anyway, so changing
+  # instance_count in main.tf still works (AWS auto-adjusts desired to stay in [min,max]).
+  lifecycle {
+    ignore_changes = [desired_capacity]
+  }
+
   # Don't wait for instances to become healthy - prevents Terraform failures when AWS can't place instances
   wait_for_capacity_timeout = "0"
 
