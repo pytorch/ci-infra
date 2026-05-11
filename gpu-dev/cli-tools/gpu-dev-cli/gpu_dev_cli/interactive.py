@@ -84,8 +84,18 @@ def select_gpu_type_interactive(
     mig_total_available = h100_mig_avail
     mig_total_capacity = h100_mig_capacity
 
+    # Detect if this environment is all-spot
+    from .config import Config, load_config
+    _cfg = load_config()
+    _env_name = _cfg.user_config.get("environment", "prod")
+    _env_config = Config.ENVIRONMENTS.get(_env_name, {})
+    is_all_spot = _env_config.get("all_spot", False)
+
     # Display availability table first
-    console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
+    if is_all_spot:
+        console.print("\n[cyan]🖥️  GPU Availability[/cyan] [dim](spot environment — all instances require --spot)[/dim]")
+    else:
+        console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
     table = Table()
     table.add_column("GPU Type", style="cyan")
     table.add_column("Avail", style="green")
