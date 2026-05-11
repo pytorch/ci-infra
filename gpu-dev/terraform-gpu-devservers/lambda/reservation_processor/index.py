@@ -70,6 +70,44 @@ def _is_spot_type(gpu_type: str) -> bool:
     return SPOT_GPU_TYPES.strip() == "all" or gpu_type in [t.strip() for t in SPOT_GPU_TYPES.split(",")]
 
 
+def _get_spot_provision_status(gpu_type: str) -> str:
+    """Check ASG instance state + k8s node readiness to give granular progress."""
+    asg_name = f"{ASG_NAME_PREFIX}-{gpu_type}"
+    try:
+        resp = autoscaling_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
+        groups = resp.get("AutoScalingGroups", [])
+        if not groups:
+            return "Spot instance requested — waiting for AWS"
+        instances = groups[0].get("Instances", [])
+        if not instances:
+            return "Spot instance requested — waiting for AWS to allocate capacity"
+        inst = instances[0]
+        state = inst.get("LifecycleState", "")
+        if state in ("Pending", "Pending:Wait", "Pending:Proceed"):
+            return f"Spot instance allocated — node booting (~2-3 min)"
+        if state == "InService":
+            try:
+                k8s = get_k8s_client()
+                v1 = client.CoreV1Api(k8s)
+                node_label = gpu_type_kubernetes_labels.get(gpu_type, gpu_type) if 'gpu_type_kubernetes_labels' in dir() else gpu_type
+                nodes = v1.list_node(label_selector=f"GpuType={node_label}")
+                for node in nodes.items:
+                    ready = any(
+                        c.type == "Ready" and c.status == "True"
+                        for c in (node.status.conditions or [])
+                    )
+                    if ready:
+                        return "Node ready — processing reservation"
+                    else:
+                        return "Node registered — kubelet initializing (~1-2 min)"
+                return "Instance running — waiting for node to join cluster (~1-2 min)"
+            except Exception:
+                return "Instance running — checking cluster status"
+        return f"Instance state: {state}"
+    except Exception:
+        return "Spot instance requested — waiting for AWS"
+
+
 def scale_up_spot_asg(gpu_type: str, reservation_id: str = ""):
     """Request a spot node by bumping the ASG's desired capacity from 0 to 1."""
     if not _is_spot_type(gpu_type):
@@ -7796,9 +7834,10 @@ def process_scheduled_queue_management():
                         )
                         if _is_spot_type(gpu_type):
                             scale_up_spot_asg(gpu_type, reservation_id)
+                            spot_status = _get_spot_provision_status(gpu_type)
                             estimated_wait_minutes = 10
                             logger.info(
-                                f"No {gpu_type.upper()} spot nodes up for reservation {reservation_id} — ASG requesting from AWS")
+                                f"Spot status for {gpu_type.upper()} reservation {reservation_id}: {spot_status}")
                         else:
                             estimated_wait_minutes = 999999
                             logger.warning(
@@ -7831,7 +7870,7 @@ def process_scheduled_queue_management():
                     if current_status == "pending":
                         if type_available_gpus == 0:
                             if _is_spot_type(gpu_type):
-                                status_message = f"Spot instance requested — waiting for AWS to provision {gpu_type.upper()} node"
+                                status_message = _get_spot_provision_status(gpu_type)
                             else:
                                 status_message = f"In queue position #{queue_position} - No {gpu_type.upper()} GPUs available, contact oncall:pytorch_release_engineering"
                         else:

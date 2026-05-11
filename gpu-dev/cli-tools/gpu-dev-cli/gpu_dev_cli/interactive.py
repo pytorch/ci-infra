@@ -93,6 +93,8 @@ def select_gpu_type_interactive(
     table.add_column("Total", style="blue")
     table.add_column("Queue\nLength", style="yellow")
     table.add_column("Est. Wait Time", style="magenta")
+    if is_all_spot:
+        table.add_column("Spot\nStatus", style="dim")
 
     choices = []
     for gpu_type, info in visible_info.items():
@@ -133,14 +135,25 @@ def select_gpu_type_interactive(
         else:
             available_display = f"[red]{available}[/red]"
 
-        table.add_row(
-            gpu_type.upper(),
+        type_label = f"{gpu_type.upper()} *" if is_all_spot else gpu_type.upper()
+        row = [
+            type_label,
             available_display,
             "-" if is_maintenance else str(max_reservable),
             str(total),
             str(queue_length) if not is_maintenance else "-",
             wait_display,
-        )
+        ]
+        if is_all_spot:
+            ri = info.get("running_instances", 0)
+            dc = info.get("desired_capacity", 0)
+            if ri > 0:
+                row.append("[green]Active[/green]")
+            elif dc > 0:
+                row.append("[yellow]Provisioning[/yellow]")
+            else:
+                row.append("[dim]On demand[/dim]")
+        table.add_row(*row)
 
         if is_maintenance:
             choices.append(questionary.Choice(
