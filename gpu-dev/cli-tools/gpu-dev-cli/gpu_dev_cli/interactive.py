@@ -89,6 +89,7 @@ def select_gpu_type_interactive(
     table = Table()
     table.add_column("GPU Type", style="cyan")
     table.add_column("Avail", style="green")
+    table.add_column("Max\nReservable", style="bright_green")
     table.add_column("Total", style="blue")
     table.add_column("Queue\nLength", style="yellow")
     table.add_column("Est. Wait Time", style="magenta")
@@ -96,6 +97,7 @@ def select_gpu_type_interactive(
     choices = []
     for gpu_type, info in visible_info.items():
         available = info.get("available", 0)
+        max_reservable = info.get("max_reservable", 0)
         total = info.get("total", 0)
         queue_length = info.get("queue_length", 0)
         est_wait = info.get("estimated_wait_minutes", 0)
@@ -134,6 +136,7 @@ def select_gpu_type_interactive(
         table.add_row(
             gpu_type.upper(),
             available_display,
+            "-" if is_maintenance else str(max_reservable),
             str(total),
             str(queue_length) if not is_maintenance else "-",
             wait_display,
