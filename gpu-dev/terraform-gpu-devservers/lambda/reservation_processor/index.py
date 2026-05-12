@@ -76,10 +76,10 @@ def _get_spot_provision_status(gpu_type: str) -> str:
         resp = autoscaling_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
         groups = resp.get("AutoScalingGroups", [])
         if not groups:
-            return "Spot instance requested — fulfillment not guaranteed. Best case ~10-15 min total if capacity exists"
+            return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
         instances = groups[0].get("Instances", [])
         if not instances:
-            return "Spot instance requested — waiting for AWS (~1-2 min typical). Fulfillment not guaranteed"
+            return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
         inst = instances[0]
         state = inst.get("LifecycleState", "")
         if state in ("Pending", "Pending:Wait", "Pending:Proceed"):
@@ -113,7 +113,7 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                 return "Instance running — checking cluster status (~5-10 min remaining)"
         return f"Instance lifecycle: {state}"
     except Exception:
-        return "Spot instance requested — fulfillment not guaranteed. Best case ~10-15 min"
+        return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
 
 
 autoscaling_client = boto3.client("autoscaling", region_name=REGION)
@@ -2212,7 +2212,7 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 if available_gpus == 0:
                     if _is_spot_type(gpu_type):
                         scale_up_spot_asg(gpu_type, reservation_id)
-                        queue_message = f"Spot instance requested for {gpu_type.upper()} — fulfillment not guaranteed. Best case ~10-15 min if capacity exists"
+                        queue_message = f"Spot instance requested for {gpu_type.upper()} — ~1-2 min if available. Fulfillment not guaranteed"
                     else:
                         queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
                 elif available_gpus >= requested_gpus and max_single_node < requested_gpus:
