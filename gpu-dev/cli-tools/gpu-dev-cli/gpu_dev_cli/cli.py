@@ -754,6 +754,23 @@ def reserve(
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
 
+            # Handle spot: prefix from cross-region selection — switch config to prod-east1
+            if isinstance(gpu_type, str) and gpu_type.startswith("spot:"):
+                gpu_type = gpu_type[5:]  # strip prefix
+                spot = True
+                rprint(f"\n[cyan]⚡ Switching to spot cluster (us-east-1) for {gpu_type.upper()}[/cyan]")
+                rprint("[dim]Spot instance: ~70% cheaper, may be preempted, separate disks.[/dim]\n")
+                # Rebuild config + reservation_mgr for the east1 region
+                config.set_environment("prod-east1")
+                config = load_config()
+                reservation_mgr = ReservationManager(config)
+                # Re-auth with new region
+                try:
+                    user_info = authenticate_user(config)
+                except RuntimeError as e:
+                    rprint(f"[red]❌ {str(e)}[/red]")
+                    return
+
             # Auto-acknowledge spot for spot types in this environment
             if _spot_types_env and gpu_type and gpu_type.lower() in _spot_types_env and not spot:
                 spot = True
