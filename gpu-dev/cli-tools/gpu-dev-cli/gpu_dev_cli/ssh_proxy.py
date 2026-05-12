@@ -41,8 +41,10 @@ async def tunnel_ssh(target_host: str, target_port: int):
     for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         os.environ.pop(var, None)
 
-    # Determine proxy URL based on target host
-    if ".test.devservers.io" in target_host:
+    # Determine proxy URL based on target host — each region has its own ALB
+    if ".east1.devservers.io" in target_host:
+        proxy_host = "ssh.east1.devservers.io"
+    elif ".test.devservers.io" in target_host:
         proxy_host = "ssh.test.devservers.io"
     elif ".devservers.io" in target_host:
         proxy_host = "ssh.devservers.io"
