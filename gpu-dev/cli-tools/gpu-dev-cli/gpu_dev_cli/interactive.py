@@ -84,100 +84,157 @@ def select_gpu_type_interactive(
     mig_total_available = h100_mig_avail
     mig_total_capacity = h100_mig_capacity
 
-    # Detect if this environment is all-spot
+    # Detect spot types and fetch cross-region spot availability
     from .config import Config, load_config
     _cfg = load_config()
     _env_name = _cfg.user_config.get("environment", "prod")
     _env_config = Config.ENVIRONMENTS.get(_env_name, {})
     _spot_types = set(_env_config.get("spot_types", []))
-    is_all_spot = False  # legacy compat
+    is_all_spot = False
     has_spot_types = len(_spot_types) > 0
 
-    # Display availability table first
-    console.print("\n[cyan]🖥️  GPU Availability:[/cyan]")
-    table = Table()
-    table.add_column("GPU Type", style="cyan")
-    table.add_column("Avail", style="green")
-    table.add_column("Max\nReservable", style="bright_green")
-    table.add_column("Total", style="blue")
-    table.add_column("Queue\nLength", style="yellow")
-    table.add_column("Est. Wait Time", style="magenta")
+    # Cross-region: if we're on prod, also fetch prod-east1 spot availability
+    spot_region_info = {}
+    spot_region_name = None
+    if _env_name == "prod":
+        east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+        if east1_env:
+            spot_region_name = "prod-east1"
+            _spot_types = set(east1_env.get("spot_types", []))
+            has_spot_types = len(_spot_types) > 0
+            try:
+                import boto3
+                east1_ddb = boto3.resource("dynamodb", region_name=east1_env["region"])
+                east1_table = east1_ddb.Table("pytorch-gpu-dev-gpu-availability")
+                east1_resp = east1_table.scan()
+                for item in east1_resp.get("Items", []):
+                    gt = item.get("gpu_type", "")
+                    spot_region_info[gt] = {
+                        "available": int(item.get("available_gpus", 0)),
+                        "total": int(item.get("total_gpus", 0)),
+                        "max_reservable": int(item.get("max_reservable", 0)),
+                        "queue_length": 0,
+                        "estimated_wait_minutes": 0,
+                        "running_instances": int(item.get("running_instances", 0)),
+                        "desired_capacity": int(item.get("desired_capacity", 0)),
+                    }
+            except Exception as e:
+                pass  # east1 not accessible — show without spot
 
-    choices = []
-    for gpu_type, info in visible_info.items():
-        available = info.get("available", 0)
-        max_reservable = info.get("max_reservable", 0)
-        total = info.get("total", 0)
-        queue_length = info.get("queue_length", 0)
-        est_wait = info.get("estimated_wait_minutes", 0)
+    # Categorize GPU types into 3 sections
+    full_gpus = {}
+    mig_gpus = {}
+    for gt, info in visible_info.items():
+        if "mig" in gt:
+            mig_gpus[gt] = info
+        else:
+            full_gpus[gt] = info
 
-        # Format wait time
+    # Spot types from cross-region (prod-east1) — only non-MIG, non-CPU spot types
+    spot_gpus = {k: v for k, v in spot_region_info.items() if k in _spot_types}
+
+    def _format_wait(available, est_wait):
         if available > 0:
-            wait_display = "Available now"
-            status_indicator = "✅"
+            return "Available now", "✅"
         elif est_wait == 0:
-            wait_display = "Unknown"
-            status_indicator = "⚠️"
-        elif est_wait < 60:
-            wait_display = f"{int(est_wait)}min"
-            status_indicator = "⏳"
-        else:
-            hours = int(est_wait // 60)
-            minutes = int(est_wait % 60)
-            if minutes == 0:
-                wait_display = f"{hours}h"
-            else:
-                wait_display = f"{hours}h {minutes}min"
-            status_indicator = "⏳"
+            return "Unknown", "⚠️"
+        elif est_wait and est_wait < 60:
+            return f"{int(est_wait)}min", "⏳"
+        elif est_wait and est_wait >= 60:
+            h, m = int(est_wait // 60), int(est_wait % 60)
+            return f"{h}h{f' {m}min' if m else ''}", "⏳"
+        return "Unknown", "⚠️"
 
-        # Check maintenance mode
-        is_maintenance = info.get("maintenance", False)
-        maintenance_reason = info.get("maintenance_reason", "")
-
+    def _format_avail(available, is_maintenance, maintenance_reason):
         if is_maintenance:
-            available_display = f"[red]MAINTENANCE[/red]"
-            wait_display = maintenance_reason or "Under maintenance"
-        elif available > 0:
-            available_display = f"[green]{available}[/green]"
-        else:
-            available_display = f"[red]{available}[/red]"
+            return f"[red]MAINTENANCE[/red]"
+        return f"[green]{available}[/green]" if available > 0 else f"[red]{available}[/red]"
 
-        type_label = f"{gpu_type.upper()} *" if gpu_type in _spot_types else gpu_type.upper()
-        row = [
-            type_label,
-            available_display,
-            "-" if is_maintenance else str(max_reservable),
-            str(total),
-            str(queue_length) if not is_maintenance else "-",
-            wait_display,
-        ]
-        table.add_row(*row)
-
-        if is_maintenance:
-            choices.append(questionary.Choice(
-                title=f"🔧 {gpu_type.upper()} - MAINTENANCE: {maintenance_reason}",
-                value=gpu_type,
-                disabled="Under maintenance",
-            ))
-        else:
-            # Create choice label with status
-            choice_label = (
-                f"{status_indicator} {gpu_type.upper()} ({available}/{total} available)"
+    def _build_table(title, items, is_spot=False):
+        console.print(f"\n[cyan]{title}[/cyan]")
+        table = Table()
+        table.add_column("GPU Type", style="cyan")
+        table.add_column("Avail", style="green")
+        table.add_column("Max\nReservable", style="bright_green")
+        table.add_column("Total", style="blue")
+        table.add_column("Est. Wait Time", style="magenta")
+        for gt, info in items.items():
+            avail = info.get("available", 0)
+            maint = info.get("maintenance", False)
+            maint_reason = info.get("maintenance_reason", "")
+            wait_display, _ = _format_wait(avail, info.get("estimated_wait_minutes", 0))
+            if maint:
+                wait_display = maint_reason or "Under maintenance"
+            label = f"{gt.upper()} *" if is_spot else gt.upper()
+            table.add_row(
+                label,
+                _format_avail(avail, maint, maint_reason),
+                "-" if maint else str(info.get("max_reservable", 0)),
+                str(info.get("total", 0)),
+                wait_display,
             )
-            if queue_length > 0:
-                choice_label += f" - {queue_length} in queue"
-            if gpu_type == "h100" and mig_total_capacity > 0:
-                choice_label += f" — also {mig_total_available}/{mig_total_capacity} MIG slices"
-            elif gpu_type == "b200" and b200_mig_capacity > 0:
-                choice_label += f" — also {b200_mig_avail}/{b200_mig_capacity} MIG slices"
+        console.print(table)
 
-            choices.append(questionary.Choice(title=choice_label, value=gpu_type))
+    # Section 1: Full GPUs & CPUs
+    _build_table("━━━ Full GPUs & CPUs ━━━", full_gpus)
 
-    console.print(table)
-    if has_spot_types:
-        console.print("[dim]* = spot instance: ~70% cheaper, but AWS can reclaim with 2-min notice and fulfillment is not guaranteed (may queue for a long time).[/dim]")
-        console.print("[dim]  A node spins up when you reserve (even if showing 0 available). Pass --spot to confirm.[/dim]")
+    # Section 2: MIG Slices
+    if mig_gpus:
+        console.print("[dim]  Sliced GPUs — isolated fractions of a physical GPU. Perfect for smaller jobs[/dim]")
+        console.print("[dim]  that don\'t need full performance or VRAM.[/dim]")
+        _build_table("━━━ 🔬 MIG Slices ━━━", mig_gpus)
+
+    # Section 3: Spot Instances (cross-region)
+    if spot_gpus:
+        _build_table("━━━ ⚡ Spot Instances (us-east-1, ~70% cheaper) ━━━", spot_gpus, is_spot=True)
+        console.print("[dim]* = spot: ~70% cheaper, AWS can reclaim with 2-min notice, fulfillment not guaranteed.[/dim]")
+        console.print("[dim]  Separate cluster with separate disks. A node spins up when you reserve.[/dim]")
+
+    # Build choices across all 3 sections
+    choices = []
+    if full_gpus:
+        choices.append(questionary.Separator("═══ Full GPUs & CPUs ═══"))
+    for gt, info in full_gpus.items():
+        avail = info.get("available", 0)
+        total = info.get("total", 0)
+        maint = info.get("maintenance", False)
+        maint_reason = info.get("maintenance_reason", "")
+        _, status_indicator = _format_wait(avail, info.get("estimated_wait_minutes", 0))
+        ql = info.get("queue_length", 0)
+        if maint:
+            choices.append(questionary.Choice(
+                title=f"🔧 {gt.upper()} - MAINTENANCE: {maint_reason}", value=gt, disabled="Under maintenance"))
+        else:
+            label = f"{status_indicator} {gt.upper()} ({avail}/{total} available)"
+            if ql > 0:
+                label += f" - {ql} in queue"
+            if gt == "h100" and mig_total_capacity > 0:
+                label += f" — also {mig_total_available}/{mig_total_capacity} MIG slices"
+            elif gt == "b200" and b200_mig_capacity > 0:
+                label += f" — also {b200_mig_avail}/{b200_mig_capacity} MIG slices"
+            choices.append(questionary.Choice(title=label, value=gt))
+
+    if mig_gpus:
+        choices.append(questionary.Separator("═══ 🔬 MIG Slices (fractional GPUs) ═══"))
+        for gt, info in mig_gpus.items():
+            avail = info.get("available", 0)
+            total = info.get("total", 0)
+            _, si = _format_wait(avail, info.get("estimated_wait_minutes", 0))
+            choices.append(questionary.Choice(
+                title=f"{si} {gt.upper()} ({avail}/{total} available)", value=gt))
+
+    if spot_gpus:
+        choices.append(questionary.Separator("═══ ⚡ Spot Instances (us-east-1) ═══"))
+        for gt, info in spot_gpus.items():
+            avail = info.get("available", 0)
+            total = info.get("total", 0)
+            _, si = _format_wait(avail, info.get("estimated_wait_minutes", 0))
+            choices.append(questionary.Choice(
+                title=f"{si} {gt.upper()} * ({avail}/{total} available, spot)", value=f"spot:{gt}"))
+
     console.print()
+
+    # Interactive selection    console.print()
 
     # Interactive selection
     try:
