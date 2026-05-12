@@ -18,10 +18,12 @@ UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/state-config.sh"
+: "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 BUCKET=$(uv run "$CFG" "$CLUSTER" state_bucket)
-STATE_REGION="us-west-2"
 
 # Read karpenter module terraform outputs
 cd "$MODULE_DIR/terraform"

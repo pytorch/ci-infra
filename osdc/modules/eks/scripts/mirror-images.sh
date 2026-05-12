@@ -13,10 +13,17 @@ set -euo pipefail
 if [[ -n "${OSDC_UPSTREAM:-}" ]]; then
   # shellcheck source=/dev/null
   source "$OSDC_UPSTREAM/scripts/mise-activate.sh"
-else
   # shellcheck source=/dev/null
-  source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" && pwd)/mise-activate.sh"
+  source "$OSDC_UPSTREAM/scripts/state-config.sh"
+else
+  _SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" && pwd)"
+  # shellcheck source=/dev/null
+  source "$_SCRIPTS_DIR/mise-activate.sh"
+  # shellcheck source=/dev/null
+  source "$_SCRIPTS_DIR/state-config.sh"
+  unset _SCRIPTS_DIR
 fi
+: "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
 
 # Colors
 RED='\033[0;31m'
@@ -79,7 +86,7 @@ log_info "Initializing tofu backend for $CLUSTER..."
   tofu init -reconfigure \
     -backend-config="bucket=$BUCKET" \
     -backend-config="key=$CLUSTER/base/terraform.tfstate" \
-    -backend-config="region=us-west-2" \
+    -backend-config="region=$STATE_REGION" \
     -backend-config="dynamodb_table=ciforge-terraform-locks" \
     >/dev/null 2>&1
 )

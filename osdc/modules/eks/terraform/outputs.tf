@@ -22,6 +22,11 @@ output "private_subnet_ids" {
   value = module.vpc.private_subnet_ids
 }
 
+output "private_subnets_by_az" {
+  description = "Map of availability zone name to private subnet ID"
+  value       = module.vpc.private_subnets_by_az
+}
+
 output "cluster_security_group_id" {
   value = module.eks.cluster_security_group_id
 }

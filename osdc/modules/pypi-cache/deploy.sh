@@ -25,6 +25,9 @@ UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
+# shellcheck source=/dev/null
+source "$UPSTREAM_ROOT/scripts/state-config.sh"
+: "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 CLUSTERS_YAML="${CLUSTERS_YAML:-$UPSTREAM_ROOT/clusters.yaml}"
 
@@ -36,7 +39,6 @@ TARGET_ARCH=$(uv run "$CFG" "$CLUSTER" pypi_cache.target_architectures "x86_64,a
 TARGET_MANYLINUX=$(uv run "$CFG" "$CLUSTER" pypi_cache.target_manylinux "2_28")
 LOG_MAX_AGE_DAYS=$(uv run "$CFG" "$CLUSTER" pypi_cache.log_max_age_days "30")
 BUCKET=$(uv run "$CFG" "$CLUSTER" state_bucket)
-STATE_REGION="us-west-2"
 
 # --- Read terraform output: EFS filesystem ID ---
 echo "[pypi-cache] Reading terraform outputs..."

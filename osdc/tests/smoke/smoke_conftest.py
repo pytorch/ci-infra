@@ -23,10 +23,19 @@ import contextlib
 import importlib.util
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from helpers import run_helm, run_kubectl
+
+# Make scripts/python/ importable from smoke tests so they can share the
+# same constants modules as generators (e.g. cni_constants.ENI_CONFIG_LABEL).
+# Mirrors the sys.path insert pattern used by every generator under
+# modules/.../scripts/python/.
+_scripts_python = str(Path(__file__).resolve().parents[2] / "scripts" / "python")
+if _scripts_python not in sys.path:
+    sys.path.insert(0, _scripts_python)
 
 __all__ = [
     "all_daemonsets",

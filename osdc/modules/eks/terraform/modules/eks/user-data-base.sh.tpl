@@ -24,6 +24,11 @@ spec:
 --==BOUNDARY==
 Content-Type: text/x-shellscript; charset="us-ascii"
 
+${pre_nodeadm_script}
+
+--==BOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+
 ${post_bootstrap_script}
 
 --==BOUNDARY==--

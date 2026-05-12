@@ -306,6 +306,8 @@ deploy-base cluster:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/state-config.sh"
+    : "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
     export OSDC_ROOT="{{ROOT}}"
     export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
@@ -314,7 +316,6 @@ deploy-base cluster:
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
     BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
     TFVARS=$(uv run {{CFG}} "$CLUSTER" tfvars)
-    STATE_REGION="us-west-2"  # state buckets always in us-west-2
 
     # Preflight: check state bucket exists
     if ! aws s3api head-bucket --bucket "${BUCKET}" --region "${STATE_REGION}" 2>/dev/null; then
@@ -397,6 +398,10 @@ deploy-base cluster:
     {{UPSTREAM}}/base/kubernetes/git-cache/deploy.sh "$CLUSTER"
 
     echo ""
+    echo "━━━ BASE: Deploy ENIConfigs ━━━"
+    {{UPSTREAM}}/base/kubernetes/eniconfigs/deploy.sh "$CLUSTER"
+
+    echo ""
     echo "━━━ BASE: Deploy Harbor ━━━"
     cd "{{ROOT}}"
     just _deploy-harbor "$CLUSTER"
@@ -425,6 +430,8 @@ deploy-module cluster module force="":
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/state-config.sh"
+    : "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
     export OSDC_ROOT="{{ROOT}}"
     export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
@@ -472,7 +479,7 @@ deploy-module cluster module force="":
         tofu init -reconfigure \
             -backend-config="bucket=${BUCKET}" \
             -backend-config="key=${CLUSTER}/${MODULE}/terraform.tfstate" \
-            -backend-config="region=us-west-2" \
+            -backend-config="region=${STATE_REGION}" \
             -backend-config="dynamodb_table=ciforge-terraform-locks"
 
         # Modules get cluster_name and aws_region as minimum vars
@@ -530,6 +537,8 @@ plan cluster:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/state-config.sh"
+    : "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
     export OSDC_ROOT="{{ROOT}}"
     export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
@@ -538,7 +547,6 @@ plan cluster:
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
     BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
     TFVARS=$(uv run {{CFG}} "$CLUSTER" tfvars)
-    STATE_REGION="us-west-2"
 
     if ! aws s3api head-bucket --bucket "${BUCKET}" --region "${STATE_REGION}" 2>/dev/null; then
         echo "ERROR: State bucket '${BUCKET}' does not exist. Run: just bootstrap ${CLUSTER}"
@@ -878,6 +886,8 @@ _deploy-harbor cluster:
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
     source "{{UPSTREAM}}/scripts/helm-upgrade.sh"
+    source "{{UPSTREAM}}/scripts/state-config.sh"
+    : "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
     source "{{UPSTREAM}}/scripts/kubectl-apply.sh"
     export OSDC_ROOT="{{ROOT}}"
     export OSDC_UPSTREAM="{{UPSTREAM}}"
@@ -905,7 +915,7 @@ _deploy-harbor cluster:
     tofu init -reconfigure \
         -backend-config="bucket=${BUCKET}" \
         -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
-        -backend-config="region=us-west-2" \
+        -backend-config="region=${STATE_REGION}" \
         -backend-config="dynamodb_table=ciforge-terraform-locks" \
         >/dev/null 2>&1
     HARBOR_ROLE=$(tofu output -raw harbor_role_arn)

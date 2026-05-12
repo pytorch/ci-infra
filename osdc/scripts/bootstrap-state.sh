@@ -16,11 +16,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/mise-activate.sh"
+# State buckets live in a fixed region regardless of cluster region.
+# STATE_REGION is exported by state-config.sh.
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/state-config.sh"
+: "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
 CONFIG_PY="$SCRIPT_DIR/cluster-config.py"
 
 LOCK_TABLE="ciforge-terraform-locks"
-# State buckets live in a fixed region regardless of cluster region
-STATE_REGION="us-west-2"
 
 bootstrap_cluster() {
   local cluster_id="$1"
