@@ -141,8 +141,9 @@ alloy:
           key: loki-api-key-write
     - name: GOGC
       value: "200"
+    # Centralized Deployment — generous limits, GOMEMLIMIT at ~85% of cgroup. The alloy-logging DaemonSet is tuned smaller because its cost multiplies by node count.
     - name: GOMEMLIMIT
-      value: "1800MiB"
+      value: "3500MiB"
 EOF
 
 helm_upgrade_if_changed alloy-events "$NAMESPACE" \

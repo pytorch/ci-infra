@@ -25,11 +25,11 @@ alloy:
     enabled: true
   resources:
     requests:
-      cpu: 250m
-      memory: 1536Mi
+      cpu: 500m
+      memory: 2Gi
     limits:
-      cpu: "2"
-      memory: 2560Mi
+      cpu: "4"
+      memory: 8Gi
   configMap:
     content: |-
       // Discover and scrape all ServiceMonitor targets across namespaces.
