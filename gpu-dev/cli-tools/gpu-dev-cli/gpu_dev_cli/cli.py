@@ -2751,7 +2751,7 @@ def _show_availability() -> None:
         # Cross-region: fetch spot availability from prod-east1
         spot_region_info = {}
         _env_name = config.user_config.get("environment", "prod")
-        _east1_spot_types = set(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
+        _east1_spot_types = frozenset(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
         if _env_name == "prod" and _east1_spot_types:
             try:
                 import boto3 as _b3
@@ -2923,7 +2923,7 @@ def _show_availability() -> None:
 
 def _show_availability_watch(interval: int) -> None:
     _env_name = load_config().user_config.get("environment", "prod")
-    _spot_types = set(Config.ENVIRONMENTS.get(_env_name, {}).get("spot_types", []))
+    _spot_types = frozenset(Config.ENVIRONMENTS.get(_env_name, {}).get("spot_types", []))
 
     """Watch mode for GPU availability with auto-refresh"""
     import time
