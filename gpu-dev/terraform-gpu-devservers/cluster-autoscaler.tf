@@ -8,6 +8,10 @@
 # skip-nodes-with-system-pods=false: scale down even if DaemonSet pods remain.
 
 resource "helm_release" "cluster_autoscaler" {
+  # Only deploy in workspaces that have spot ASGs — prod is all on-demand/reserved.
+  count            = lookup({
+    "prod-east1" = 1
+  }, terraform.workspace, 0)
   name             = "cluster-autoscaler"
   repository       = "https://kubernetes.github.io/autoscaler"
   chart            = "cluster-autoscaler"
