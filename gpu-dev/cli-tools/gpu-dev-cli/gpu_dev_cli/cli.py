@@ -754,17 +754,20 @@ def reserve(
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
 
-            # Handle spot: prefix from cross-region selection — switch config to prod-east1
+            # Handle spot: prefix from cross-region selection — use a TEMPORARY config
+            # for prod-east1 without persisting the environment change to disk.
             if isinstance(gpu_type, str) and gpu_type.startswith("spot:"):
                 gpu_type = gpu_type[5:]  # strip prefix
                 spot = True
                 rprint(f"\n[cyan]⚡ Switching to spot cluster (us-east-1) for {gpu_type.upper()}[/cyan]")
                 rprint("[dim]Spot instance: ~70% cheaper, may be preempted, separate disks.[/dim]\n")
-                # Rebuild config + reservation_mgr for the east1 region
-                config.set_environment("prod-east1")
-                config = load_config()
+                # Build a temporary Config pointing at prod-east1 WITHOUT touching disk
+                import os as _os
+                east1_cfg = Config.ENVIRONMENTS.get("prod-east1", {})
+                _os.environ["AWS_DEFAULT_REGION"] = east1_cfg["region"]
+                config = Config()
+                config.aws_region = east1_cfg["region"]
                 reservation_mgr = ReservationManager(config)
-                # Re-auth with new region
                 try:
                     user_info = authenticate_user(config)
                 except RuntimeError as e:
