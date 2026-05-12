@@ -250,16 +250,13 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
   health_check_type         = "EC2"
   health_check_grace_period = 300
 
-  # Spot ASGs scale to zero (min=desired=0) but need max>0 so Lambda can call
-  # SetDesiredCapacity(1) when a reservation arrives. On-demand ASGs keep min=max=desired.
+  # Spot ASGs: don't declare desired_capacity at all — Lambda manages it via
+  # SetDesiredCapacity, and omitting it means terraform can never reset it (even
+  # as a side effect of updating other ASG fields). On-demand: desired=instance_count.
   min_size         = each.value.instance_count
   max_size         = try(each.value.gpu_config.use_spot, false) ? max(2, each.value.instance_count) : each.value.instance_count
-  desired_capacity = each.value.instance_count
+  desired_capacity = try(each.value.gpu_config.use_spot, false) ? null : each.value.instance_count
 
-  # Let Lambda manage desired_capacity dynamically (spot scale-up/down) without
-  # tofu apply resetting it to 0 every time. For on-demand ASGs this is harmless:
-  # min=max=instance_count constrains desired to the right value anyway, so changing
-  # instance_count in main.tf still works (AWS auto-adjusts desired to stay in [min,max]).
   lifecycle {
     ignore_changes = [desired_capacity]
   }
@@ -299,11 +296,16 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
     }
   }
 
-  # Fast instance replacement
-  instance_refresh {
-    strategy = "Rolling"
-    preferences {
-      min_healthy_percentage = 0 # Replace all at once for speed
+  # Instance refresh for on-demand ASGs only. Spot ASGs should NOT do rolling
+  # refresh — it terminates the running instance and if AWS has no spot capacity,
+  # the replacement never launches and the user's pod dies for nothing.
+  dynamic "instance_refresh" {
+    for_each = try(each.value.gpu_config.use_spot, false) ? [] : [1]
+    content {
+      strategy = "Rolling"
+      preferences {
+        min_healthy_percentage = 0
+      }
     }
   }
 
