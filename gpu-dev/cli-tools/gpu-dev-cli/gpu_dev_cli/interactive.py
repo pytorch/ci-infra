@@ -257,13 +257,31 @@ def select_gpu_type_interactive(
                 title=f"{si} {gt.upper()} ({avail}/{total} available)", value=gt))
 
     if spot_gpus:
+        _spot_per_node = {"b300": 8, "b200": 8, "h200": 8, "h100": 8, "a100": 8, "t4": 4, "l4": 4}
+        _on_demand = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
         choices.append(questionary.Separator("═══ ⚡ Spot Instances (us-east-1) ═══"))
         for gt, info in spot_gpus.items():
             avail = info.get("available", 0)
-            total = info.get("total", 0)
-            _, si = _format_wait(avail, info.get("estimated_wait_minutes", 0))
-            choices.append(questionary.Choice(
-                title=f"{si} {gt.upper()} * ({avail}/{total} available, spot)", value=f"spot:{gt}"))
+            pn = _spot_per_node.get(gt, 8)
+            si_data = info.get("spot_info", {}) or {}
+            sp = si_data.get("spot_price", "") if isinstance(si_data, dict) else ""
+            # Derive availability signal
+            if not sp or "No spot data" in str(si_data.get("spot_signal", "")):
+                # Not offered — skip from choices
+                continue
+            try:
+                ratio = float(sp) / _on_demand.get(gt, 50)
+                pct = int((1 - ratio) * 100)
+                if ratio < 0.4: signal = f"🟢 High avail ({pct}% off)"
+                elif ratio < 0.7: signal = f"🟡 Medium ({pct}% off)"
+                else: signal = f"🔴 Low ({pct}% off)"
+            except (ValueError, TypeError):
+                signal = "availability unknown"
+            if avail > 0:
+                label = f"✅ {gt.upper()} * ({avail} free, {pn}/node, {signal})"
+            else:
+                label = f"⚡ {gt.upper()} * ({pn} GPUs/node, {signal})"
+            choices.append(questionary.Choice(title=label, value=f"spot:{gt}"))
 
     console.print()
 
