@@ -1,0 +1,25 @@
+# Second Service in front of cluster CoreDNS. NLD forwards to this
+# ClusterIP from its Corefile; the existing kube-dns Service stays
+# untouched (kubelet's --cluster-dns still points at it). Required
+# by upstream NLD so it has a separate ClusterIP to forward to
+# without iptables-redirecting through itself.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-dns-upstream
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns
+    app.kubernetes.io/managed-by: osdc-base
+spec:
+  selector:
+    k8s-app: kube-dns
+  ports:
+    - name: dns
+      port: 53
+      protocol: UDP
+      targetPort: 53
+    - name: dns-tcp
+      port: 53
+      protocol: TCP
+      targetPort: 53

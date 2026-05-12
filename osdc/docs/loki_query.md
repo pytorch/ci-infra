@@ -184,6 +184,18 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
 ```
 
+### NodeLocal DNSCache logs
+
+```bash
+# ... (credential extraction) ... && \
+curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
+    "$LOKI_URL/loki/api/v1/query_range" \
+    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="kube-system", app="node-local-dns"}' \
+    --data-urlencode "limit=50" \
+    --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
+    --data-urlencode "end=$(date -u +%s)000000000" | jq .
+```
+
 ### Kubernetes events
 
 ```bash

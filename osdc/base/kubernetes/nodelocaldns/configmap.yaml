@@ -1,0 +1,71 @@
+# Corefile for NodeLocal DNSCache.
+# - __PILLAR__CLUSTER__DNS__ is substituted at runtime by the
+#   k8s-dns-node-cache binary from the kube-dns-upstream Service ClusterIP
+#   (resolved via the -upstreamsvc flag in the DaemonSet args).
+# - __KUBE_DNS_CLUSTER_IP__ is OUR placeholder; deploy.sh sed-substitutes
+#   the live kube-dns Service ClusterIP at apply time (cluster service CIDR
+#   is dynamic, cannot be hardcoded).
+# - force_tcp on cluster.local/in-addr.arpa/ip6.arpa: persistent TCP back to
+#   cluster CoreDNS reduces conntrack churn and improves head-of-line behavior.
+# - .:53 (catch-all) forwards to /etc/resolv.conf so external lookups bypass
+#   cluster CoreDNS entirely (upstream default).
+# - health 169.254.20.10:8080 is declared ONLY on cluster.local:53. The health
+#   plugin opens a singleton listener; declaring it in a second server block
+#   would race for the same address and risk "address already in use" at
+#   CoreDNS startup. Matches upstream nodelocaldns.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-local-dns
+  namespace: kube-system
+  labels:
+    k8s-app: node-local-dns
+    app.kubernetes.io/managed-by: osdc-base
+data:
+  Corefile: |
+    cluster.local:53 {
+        errors
+        cache {
+            success 9984 30
+            denial 9984 5
+        }
+        reload
+        loop
+        bind 169.254.20.10 __KUBE_DNS_CLUSTER_IP__
+        forward . __PILLAR__CLUSTER__DNS__ {
+            force_tcp
+        }
+        prometheus :9253
+        health 169.254.20.10:8080
+    }
+    in-addr.arpa:53 {
+        errors
+        cache 30
+        reload
+        loop
+        bind 169.254.20.10 __KUBE_DNS_CLUSTER_IP__
+        forward . __PILLAR__CLUSTER__DNS__ {
+            force_tcp
+        }
+        prometheus :9253
+    }
+    ip6.arpa:53 {
+        errors
+        cache 30
+        reload
+        loop
+        bind 169.254.20.10 __KUBE_DNS_CLUSTER_IP__
+        forward . __PILLAR__CLUSTER__DNS__ {
+            force_tcp
+        }
+        prometheus :9253
+    }
+    .:53 {
+        errors
+        cache 30
+        reload
+        loop
+        bind 169.254.20.10 __KUBE_DNS_CLUSTER_IP__
+        forward . /etc/resolv.conf
+        prometheus :9253
+    }

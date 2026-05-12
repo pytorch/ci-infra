@@ -89,6 +89,7 @@ The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 | ServiceMonitor | pypi-cache | pypi-cache | pypi-cache nginx metrics (`nginx_up`, requests, active connections) |
 | PodMonitor | coredns | kube-system | CoreDNS request rate, latency, cache hit/miss, errors |
 | PodMonitor | git-cache-daemonset | kube-system | Git cache DaemonSet metrics |
+| PodMonitor | nodelocaldns | kube-system | NodeLocal DNSCache — two endpoints: `:9253` (CoreDNS plugin metrics, `coredns_*`) and `:9353` (binary-emitted `coredns_nodecache_*` setup/error counters) |
 | PodMonitor | arc-listeners | arc-systems | ARC listener pods metrics |
 
 Plus kube-prometheus-stack built-in targets:
@@ -165,6 +166,9 @@ PrometheusRule CRDs are defined locally and synced to Grafana Cloud Mimir via Al
 | harbor-cache-recovery | `HarborCacheRecoveryFailing` | Cache-recovery CronJob failing for 15m (≥3 consecutive runs at */5) |
 | harbor-cache-recovery | `HarborCacheRecoveryOOM` | Recovery pod OOMKilled (most common root cause — listing pods cluster-wide) |
 | harbor-cache-recovery | `HarborCacheRecoveryStale` | No successful recovery run in >30m (CronJob suspended/stuck) |
+| nodelocaldns | `NodeLocalDNSSetupErrors` | `increase(coredns_nodecache_setup_errors_total[5m]) > 0` — iptables NOTRACK rule install failed |
+| nodelocaldns | `NodeLocalDNSPodRestarting` | NLD container restarting (per-node DNS interception briefly degrades to fallthrough) |
+| nodelocaldns | `NodeLocalDNSDaemonSetDegraded` | DaemonSet has unavailable pods for >15m |
 
 ### Adding a new ServiceMonitor/PodMonitor
 
