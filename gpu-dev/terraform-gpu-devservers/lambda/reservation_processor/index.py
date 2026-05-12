@@ -79,12 +79,15 @@ def _get_spot_provision_status(gpu_type: str) -> str:
             return "Spot instance requested — fulfillment not guaranteed. Best case ~10-15 min total if capacity exists"
         instances = groups[0].get("Instances", [])
         if not instances:
-            return "Spot instance requested — waiting for AWS to allocate capacity. Best case ~10-15 min if fulfilled"
+            return "Spot instance requested — waiting for AWS (~1-2 min typical). Fulfillment not guaranteed"
         inst = instances[0]
         state = inst.get("LifecycleState", "")
         if state in ("Pending", "Pending:Wait", "Pending:Proceed"):
-            return "Node found! Instance launching (~8-12 min remaining)"
+            return "Node found! Instance launching (~10-12 min remaining)"
         if state == "InService":
+            # B300/B200 (Blackwell) drivers take longer than H100/A100
+            is_blackwell = gpu_type in ("b300", "b200")
+            driver_eta = "8-12 min" if is_blackwell else "3-5 min"
             try:
                 k8s = get_k8s_client()
                 v1 = client.CoreV1Api(k8s)
@@ -96,16 +99,15 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                         for c in (node.status.conditions or [])
                     )
                     if ready:
-                        # Check if GPUs are available (driver installed)
                         allocatable = node.status.allocatable or {}
                         gpu_count = int(allocatable.get("nvidia.com/gpu", "0"))
                         if gpu_count > 0:
-                            return "Node ready with GPUs — processing reservation (~1-2 min)"
+                            return f"Node ready with {gpu_count} GPUs — processing reservation (~1-2 min)"
                         else:
-                            return "Node registered — installing GPU drivers + pulling operator images (~4-8 min remaining)"
+                            return f"Node registered — installing GPU drivers (~{driver_eta} remaining)"
                     else:
-                        return "Node found! Kubelet initializing (~5-10 min remaining)"
-                return "Node found! Booting and registering with cluster (~6-10 min remaining)"
+                        return f"Node found! Kubelet initializing (~{driver_eta} + ~1 min remaining)"
+                return "Node found! Booting and registering with cluster (~3 min remaining)"
             except Exception:
                 return "Instance running — checking cluster status (~5-10 min remaining)"
         return f"Instance lifecycle: {state}"
