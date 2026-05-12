@@ -41,6 +41,36 @@ from .interactive import (
 console = Console()
 
 
+def _fetch_reservations_cross_region(reservation_mgr, user_filter, statuses, config=None):
+    """Fetch reservations from current region + prod-east1 if on prod."""
+    reservations = reservation_mgr.list_reservations(
+        user_filter=user_filter, statuses_to_include=statuses)
+    # Cross-region fetch
+    try:
+        cfg = config or load_config()
+        if cfg.user_config.get("environment") == "prod":
+            east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+            if east1_env:
+                import boto3 as _b3
+                east1_ddb = _b3.resource("dynamodb", region_name=east1_env["region"])
+                east1_table = east1_ddb.Table("pytorch-gpu-dev-reservations")
+                for st in (statuses or ["active"]):
+                    resp = east1_table.query(
+                        IndexName="StatusIndex",
+                        KeyConditionExpression="#s = :status",
+                        ExpressionAttributeNames={"#s": "status"},
+                        ExpressionAttributeValues={":status": st},
+                    )
+                    for item in resp.get("Items", []):
+                        if user_filter and item.get("user_id") != user_filter:
+                            continue
+                        item["_region"] = "us-east-1"
+                        reservations.append(item)
+    except Exception:
+        pass
+    return reservations
+
+
 def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
     """Format timestamp as relative time if within 24h, otherwise absolute"""
     if not timestamp_str or timestamp_str == "N/A":
@@ -2376,12 +2406,10 @@ def cancel(
 
                 reservation_mgr = ReservationManager(config)
 
-                # Get cancellable reservations
-                reservations = reservation_mgr.list_reservations(
-                    user_filter=user_info["user_id"],
-                    statuses_to_include=[
-                        "active", "queued", "pending", "preparing"],
-                )
+                # Get cancellable reservations (cross-region)
+                reservations = _fetch_reservations_cross_region(
+                    reservation_mgr, user_info["user_id"],
+                    ["active", "queued", "pending", "preparing"], config)
 
             live.stop()
 
@@ -3183,10 +3211,8 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
 
             # If no reservation ID provided, show interactive selection
             if reservation_id is None:
-                reservations = reservation_mgr.list_reservations(
-                    user_filter=user_info["user_id"],
-                    statuses_to_include=["active"]
-                )
+                reservations = _fetch_reservations_cross_region(
+                    reservation_mgr, user_info["user_id"], ["active"], config)
 
                 live.stop()
 
@@ -3424,10 +3450,8 @@ def get_ssh_config_cmd(ctx: click.Context, reservation_id: Optional[str]) -> Non
 
             # If no reservation ID provided, show interactive selection
             if reservation_id is None:
-                reservations = reservation_mgr.list_reservations(
-                    user_filter=user_info["user_id"],
-                    statuses_to_include=["active"]
-                )
+                reservations = _fetch_reservations_cross_region(
+                    reservation_mgr, user_info["user_id"], ["active"], config)
 
                 live.stop()
 
