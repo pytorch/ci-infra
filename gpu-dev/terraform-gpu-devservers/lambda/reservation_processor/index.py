@@ -83,11 +83,12 @@ def _get_spot_provision_status(gpu_type: str) -> str:
         inst = instances[0]
         state = inst.get("LifecycleState", "")
         if state in ("Pending", "Pending:Wait", "Pending:Proceed"):
-            return "Node found! Instance launching (~10-12 min remaining)"
+            return "Node allocated! Instance launching (~20-22 min remaining)"
         if state == "InService":
-            # B300/B200 (Blackwell) drivers take longer than H100/A100
+            # Measured ETAs: Blackwell drivers ~13 min, Hopper/Ampere ~5 min
             is_blackwell = gpu_type in ("b300", "b200")
-            driver_eta = "8-12 min" if is_blackwell else "3-5 min"
+            driver_eta = "10-13 min" if is_blackwell else "3-5 min"
+            total_remaining = "~18-20 min" if is_blackwell else "~10-12 min"
             try:
                 k8s = get_k8s_client()
                 v1 = client.CoreV1Api(k8s)
@@ -102,12 +103,12 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                         allocatable = node.status.allocatable or {}
                         gpu_count = int(allocatable.get("nvidia.com/gpu", "0"))
                         if gpu_count > 0:
-                            return f"Node ready with {gpu_count} GPUs — processing reservation (~1-2 min)"
+                            return f"Node ready with {gpu_count} GPUs — creating pod + pulling image (~6-8 min remaining)"
                         else:
-                            return f"Node registered — installing GPU drivers (~{driver_eta} remaining)"
+                            return f"Node registered — installing GPU drivers (~{driver_eta} + ~6 min image pull remaining)"
                     else:
-                        return f"Node found! Kubelet initializing (~{driver_eta} + ~1 min remaining)"
-                return "Node found! Booting and registering with cluster (~3 min remaining)"
+                        return f"Node found! Joining cluster (~{total_remaining} remaining)"
+                return "Node found! Booting and registering (~3 min + drivers + image pull remaining)"
             except Exception:
                 return "Instance running — checking cluster status (~5-10 min remaining)"
         return f"Instance lifecycle: {state}"
