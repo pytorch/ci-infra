@@ -1,0 +1,25 @@
+# Headless Service for PodMonitor discovery. Two ports:
+# - metrics (9253): CoreDNS plugin metrics (cache hits, forward latency, etc.)
+# - metrics-binary (9353): k8s-dns-node-cache binary metrics (coredns_nodecache_*)
+# Both must be scraped — setup-error counter lives on the binary endpoint.
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-local-dns-metrics
+  namespace: kube-system
+  labels:
+    k8s-app: node-local-dns
+    app.kubernetes.io/managed-by: osdc-base
+spec:
+  clusterIP: None
+  selector:
+    k8s-app: node-local-dns
+  ports:
+    - name: metrics
+      port: 9253
+      protocol: TCP
+      targetPort: 9253
+    - name: metrics-binary
+      port: 9353
+      protocol: TCP
+      targetPort: 9353

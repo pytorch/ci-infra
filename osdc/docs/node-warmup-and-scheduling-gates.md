@@ -15,6 +15,10 @@ Node provisioned by Karpenter
 │  (blocks runner pods from scheduling on this node)
 │
 ├─ DaemonSets schedule immediately (tolerate all taints):
+│  ├─ nodelocaldns             → per-node CoreDNS cache (system-node-critical priority)
+│  │                            (ALL nodes; image lazy-pulled via Harbor proxy cache —
+│  │                             ~30-60s ImagePullBackOff race on fresh nodes until
+│  │                             registry-mirror-config writes containerd hosts.toml)
 │  ├─ git-cache-warmer         → rsyncs git repos from a central git-cache replica to local NVMe
 │  │                            (only on workload-type ∈ [github-runner, buildkit])
 │  ├─ runner-hooks-warmer      → downloads patched runner-container-hooks
@@ -101,6 +105,18 @@ This ensures freshly provisioned nodes complete their full warm-up sequence (git
 
 These DaemonSets also run on new nodes but do not block runner scheduling:
 
+### NodeLocal DNSCache (NLD)
+
+**File**: `base/kubernetes/nodelocaldns/` (deployed via `base/kubernetes/nodelocaldns/deploy.sh`, invoked from the `deploy-base` just recipe — last step, after `image-cache-janitor`)
+
+Per-node CoreDNS cache running as a DaemonSet on **every** node. Reduces cluster-wide DNS load and lowers per-pod resolution latency. Pod spec uses `priorityClassName: system-node-critical` so it lands early and won't be evicted under kubelet pressure. Resource footprint is `25m` CPU / `100Mi` memory requests, no limits (memory limit risks OOMKill → orphan iptables → cluster-wide DNS degradation).
+
+**Why no startup taint blocks workloads on NLD readiness**: NLD operates in iptables-mode. The kubelet's `--cluster-dns` value is **unchanged** — pods continue resolving via the kube-dns Service ClusterIP. NLD installs NOTRACK iptables rules on a dummy `nodelocaldns` interface that binds both `169.254.20.10` and the kube-dns Service ClusterIP. While the NLD pod is not yet ready (or fails), DNS queries fall through gracefully to cluster CoreDNS via the unchanged kube-dns Service Endpoints. There is no scheduling deadlock to protect against, so no startup taint is needed.
+
+**Cold-pull race on fresh Karpenter nodes**: The image (`registry.k8s.io/dns/k8s-dns-node-cache:1.26.8`, ~50MB) is lazy-pulled via the Harbor proxy cache — it is **not** pre-mirrored to ECR. On a brand-new node, NLD typically sees ~30-60s of `ImagePullBackOff` until `registry-mirror-config` writes containerd's `hosts.toml` and the proxy-cache pull succeeds. During that window, pods on the node continue to use cluster CoreDNS via the unchanged kube-dns Service — no pod-visible failure, just no per-node cache yet.
+
+**Tolerations**: explicit list (NOT `operator: Exists`) — `CriticalAddonsOnly`, `nvidia.com/gpu`, `node-fleet`, `instance-type`, `git-cache-not-ready`. Covers all standard runner/buildkit/GPU taints so it schedules at provisioning time.
+
 ### NVIDIA Device Plugin (GPU nodes only)
 
 **File**: `base/kubernetes/nvidia-device-plugin.yaml`
@@ -183,6 +199,8 @@ tolerations:
 ```
 
 This ensures DaemonSet pods schedule on nodes immediately at provisioning time, before any startup taints are removed.
+
+**Exception**: The `nodelocaldns` DaemonSet uses an **explicit** toleration list (NOT `operator: Exists` blanket-tolerating each key) — it explicitly tolerates `CriticalAddonsOnly`, `nvidia.com/gpu`, `node-fleet`, `instance-type`, and `git-cache-not-ready`. This is sufficient to cover all standard runner/buildkit/GPU NodePool taints. If a new permanent taint is added to any NodePool, NLD's toleration list must be updated explicitly.
 
 ## Key Files
 

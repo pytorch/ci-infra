@@ -1,7 +1,7 @@
 """Smoke tests for base Kubernetes resources (DaemonSets, StorageClass, nodes)."""
 
 import pytest
-from helpers import assert_daemonset_healthy
+from helpers import assert_daemonset_healthy, filter_services
 
 pytestmark = [pytest.mark.live]
 
@@ -27,6 +27,33 @@ class TestBaseDaemonSets:
 
     def test_node_performance_tuning(self, all_daemonsets, all_nodes):
         assert_daemonset_healthy(all_daemonsets, all_nodes, NAMESPACE, "node-performance-tuning", allow_zero=True)
+
+    def test_nodelocaldns_daemonset(self, all_daemonsets, all_nodes):
+        """NodeLocal DNSCache DaemonSet runs on every node."""
+        assert_daemonset_healthy(all_daemonsets, all_nodes, NAMESPACE, "node-local-dns")
+
+
+# ============================================================================
+# NodeLocal DNSCache Services
+# ============================================================================
+
+
+class TestNodeLocalDNSServices:
+    """Verify NodeLocal DNSCache supporting Services are present and correctly configured."""
+
+    def test_nodelocaldns_metrics_service_headless(self, all_services):
+        """NLD metrics service is headless (clusterIP: None) for PodMonitor discovery."""
+        svcs = filter_services(all_services, namespace=NAMESPACE, name="node-local-dns-metrics")
+        assert len(svcs) == 1, f"node-local-dns-metrics service not found in {NAMESPACE}"
+        cluster_ip = svcs[0]["spec"].get("clusterIP")
+        assert cluster_ip == "None", f"expected headless service (clusterIP: None), got {cluster_ip!r}"
+
+    def test_nodelocaldns_upstream_service_selects_kube_dns(self, all_services):
+        """kube-dns-upstream service exists and selects kube-dns pods (NLD's forward target)."""
+        svcs = filter_services(all_services, namespace=NAMESPACE, name="kube-dns-upstream")
+        assert len(svcs) == 1, f"kube-dns-upstream service not found in {NAMESPACE}"
+        selector = svcs[0]["spec"].get("selector", {})
+        assert selector.get("k8s-app") == "kube-dns", f"expected selector k8s-app=kube-dns, got {selector!r}"
 
 
 # ============================================================================

@@ -1,0 +1,215 @@
+# DirtyFrag Mitigation DaemonSet (CVE-2026-43284 + CVE-2026-43500)
+#
+# DirtyFrag = two related Linux kernel page-cache write LPEs in the IPv4/IPv6
+# datagram zero-copy path. __ip_append_data() fails to set SKBFL_SHARED_FRAG
+# on splice-attached pages, then ESP (xfrm) and RxRPC perform in-place crypto
+# over them — mutating the page cache of read-only files like /usr/bin/su
+# and /etc/passwd.
+#   - CVE-2026-43284: xfrm-ESP variant. Requires unshare(CLONE_NEWUSER|
+#     CLONE_NEWNET) to acquire CAP_NET_ADMIN in a user namespace.
+#   - CVE-2026-43500: RxRPC variant. Requires no privileges — but rxrpc.ko
+#     is not built into the AL2023 default kernel (blacklisted defensively
+#     per AWS bulletin 2026-027-AWS).
+#
+# Crosses container boundaries via the shared page cache, so on a multi-tenant
+# CI cluster any unprivileged workflow code can escalate to root on the node.
+#
+# AWS Security Bulletin: https://aws.amazon.com/security/security-bulletins/2026-027-aws/
+# ALAS2023-2026-1694 (kernel 6.1, fixed in 6.1.170-210.320.amzn2023)
+# ALAS2023-2026-1695 (kernel 6.12, fixed in 6.12.83-113.160.amzn2023)
+# Released 2026-05-09.
+#
+# AS OF 2026-05-11, no patched EKS-optimized AMI exists yet (latest v20260505
+# ships kernel 6.1.168 / 6.12.80 — both pre-patch).
+#
+# This DaemonSet writes /etc/modprobe.d/disable-dirtyfrag.conf to block
+# on-demand loading of esp4, esp6, and rxrpc, then defensively rmmod's any
+# that have already loaded, then drops the page cache to evict any
+# DirtyFrag-poisoned pages of read-only files.
+#
+# Runs on EVERY node (base infra + Karpenter ARC + BuildKit + GPU + H100/B200).
+# Same shape as algif-mitigation.yaml.
+#
+# REMOVE this DaemonSet once all nodes are running a patched AL2023 AMI
+# (kernel 6.1.170+ or 6.12.83+).
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dirtyfrag-mitigation-script
+  namespace: kube-system
+data:
+  disable-dirtyfrag.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "=== DirtyFrag Mitigation (CVE-2026-43284 + CVE-2026-43500) ==="
+    echo "Node: $(hostname 2>/dev/null || echo 'unknown')"
+    echo "Date: $(date)"
+    echo ""
+
+    MARKER_FILE="/var/lib/dirtyfrag-mitigation/.configured"
+    MODPROBE_FILE="/etc/modprobe.d/disable-dirtyfrag.conf"
+    MODULES="esp4 esp6 rxrpc"
+
+    # =========================================================================
+    # Idempotency — re-verify on pod restart, skip rewrite if still in place
+    # =========================================================================
+    if [ -f "$MARKER_FILE" ] && [ -f "$MODPROBE_FILE" ]; then
+      echo "Already configured. Re-checking modules are not loaded..."
+      for mod in $MODULES; do
+        if lsmod | awk '{print $1}' | grep -qx "$mod"; then
+          echo "  WARNING: $mod is loaded despite blacklist. Unloading..."
+          modprobe -r "$mod" || echo "  rmmod $mod failed (module in use); reboot required for full mitigation."
+        else
+          echo "  $mod not loaded — mitigation effective."
+        fi
+      done
+      exit 0
+    fi
+
+    # =========================================================================
+    # Step 1 — install modprobe.d blacklist
+    # =========================================================================
+    echo "[1/3] Writing $MODPROBE_FILE..."
+    mkdir -p "$(dirname "$MODPROBE_FILE")"
+    cat > "$MODPROBE_FILE" <<'EOF'
+    # CVE-2026-43284 + CVE-2026-43500 ("DirtyFrag") — page-cache write LPE mitigation.
+    # Redirects on-demand loading of esp4, esp6, and rxrpc to /bin/false so the
+    # modules are never inserted into the running kernel.
+    # Managed by base/kubernetes/dirtyfrag-mitigation.yaml DaemonSet.
+    # Remove this file (and the DaemonSet) once nodes are running a patched
+    # AL2023 kernel (6.1.170+ or 6.12.83+).
+    install esp4 /bin/false
+    install esp6 /bin/false
+    install rxrpc /bin/false
+    EOF
+    echo "  Wrote blacklist."
+
+    # =========================================================================
+    # Step 2 — unload modules if currently loaded (defensive, each individually)
+    # =========================================================================
+    echo "[2/3] Checking if vulnerable modules are loaded..."
+    for mod in $MODULES; do
+      if lsmod | awk '{print $1}' | grep -qx "$mod"; then
+        echo "  $mod loaded. Unloading (modprobe -r)..."
+        if modprobe -r "$mod"; then
+          echo "  Unloaded $mod."
+        else
+          echo "  WARNING: rmmod $mod failed. Module may be in use. New attempts"
+          echo "  will be blocked from now on, but the vulnerable code path"
+          echo "  remains reachable until the node reboots."
+        fi
+      else
+        echo "  $mod not loaded."
+      fi
+    done
+
+    # =========================================================================
+    # Step 3 — drop page cache to evict any DirtyFrag-poisoned pages
+    # =========================================================================
+    # Best-effort: only evicts unmapped clean pages. Pages currently mapped by
+    # running processes (libc, sshd, /etc/passwd held open, etc.) cannot be
+    # evicted this way and will retain any prior poisoning until the node
+    # reboots or the holding process exits.
+    echo "[3/3] Dropping page cache (echo 3 > /proc/sys/vm/drop_caches)..."
+    echo 3 > /proc/sys/vm/drop_caches || echo "  WARNING: drop_caches failed."
+
+    # Marker — written last so a partial run re-attempts on next pod start
+    mkdir -p "$(dirname "$MARKER_FILE")"
+    date -Iseconds 2>/dev/null > "$MARKER_FILE" || date > "$MARKER_FILE"
+
+    echo ""
+    echo "=== Mitigation Applied ==="
+    echo "Future kernel attempts to load esp4/esp6/rxrpc will be redirected to /bin/false."
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dirtyfrag-mitigation
+  namespace: kube-system
+  labels:
+    app: dirtyfrag-mitigation
+    app.kubernetes.io/name: dirtyfrag-mitigation
+    app.kubernetes.io/component: node-configuration
+spec:
+  selector:
+    matchLabels:
+      app: dirtyfrag-mitigation
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "25%"
+
+  template:
+    metadata:
+      labels:
+        app: dirtyfrag-mitigation
+
+    spec:
+      hostNetwork: true
+      hostPID: true
+
+      priorityClassName: system-node-critical
+
+      # Run on ALL nodes (base infra + Karpenter-managed: ARC, BuildKit, GPU, H100, B200)
+      tolerations:
+        - operator: Exists
+
+      # NO nodeSelector — must run on every node in the cluster
+
+      serviceAccountName: dirtyfrag-mitigation
+
+      initContainers:
+        - name: disable-dirtyfrag
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          command: ["/bin/bash", "-c"]
+          args:
+            # hostPID gives access to host's PID 1 root filesystem.
+            # nsenter runs the script in the host's mount/UTS/IPC/net namespaces
+            # so modprobe, lsmod, and writes to /etc/modprobe.d hit the host.
+            # stdin redirection reads the script from the container's ConfigMap
+            # mount before nsenter switches namespaces.
+            - /proc/1/root/usr/bin/nsenter -t 1 -m -u -i -n -- /bin/bash < /scripts/disable-dirtyfrag.sh
+
+          securityContext:
+            privileged: true
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+
+      containers:
+        - name: sleep
+          image: public.ecr.aws/docker/library/alpine:3.19
+          command:
+            - /bin/sh
+            - -c
+            - "echo 'DirtyFrag mitigation applied. Sleeping...'; sleep infinity"
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: dirtyfrag-mitigation-script
+            defaultMode: 0755
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dirtyfrag-mitigation
+  namespace: kube-system
+  labels:
+    app: dirtyfrag-mitigation

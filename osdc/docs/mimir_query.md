@@ -102,6 +102,7 @@ Target counts vary continuously with cluster size and are not listed here — qu
 | `kube-state-metrics` | Filtered KSM allowlist | Keeps `kube_pod_info`, `kube_pod_container_status_*`, `kube_pod_status_reason`, `kube_deployment_status_*`, daemonset/namespace/node/statefulset/pv/hpa/job metrics |
 | `apiserver` | API server health | Only `apiserver_request_total` and `apiserver_request_terminations_total` are kept |
 | `coredns` | DNS resolution metrics | All `coredns_*` except buckets, plus `go_*`/`process_*` dropped |
+| `monitoring/nodelocaldns` | Per-node NodeLocal DNSCache (NLD) DaemonSet metrics; scrapes both ports `9253` (CoreDNS plugin) and `9353` (binary `coredns_nodecache_setup_errors_total`) at 60s | All `coredns_*` except `coredns_*_request_duration_seconds_bucket`, plus `go_*`/`process_*` dropped |
 | `karpenter` | Autoscaler counters and capacity | Only `karpenter_nodeclaims_created_total`, `karpenter_nodes_created_total`, `karpenter_nodes_terminated_total`, `karpenter_nodepools_usage`, `karpenter_nodepools_limit`, `karpenter_nodes_allocatable`, `karpenter_interruption_received_messages_total` |
 | `git-cache-central-metrics` | Git cache central service metrics | No filter — all `git_cache_central_*` flow through |
 | Git cache daemonset | Per-node git cache metrics (PodMonitor) | No filter — all `git_cache_node_*` flow through |
@@ -284,6 +285,42 @@ rate(apiserver_request_terminations_total{cluster="pytorch-arc-cbr-production"}[
 
 # CoreDNS request rate
 rate(coredns_dns_requests_total{cluster="pytorch-arc-cbr-production"}[5m])
+```
+
+### NodeLocal DNSCache (NLD)
+
+Per-node DaemonSet — each pod emits CoreDNS plugin metrics on port `9253` (zone-scoped request/cache counters) and the binary's own `coredns_nodecache_setup_errors_total` on port `9353`. The PodMonitor labels both ports with `job="monitoring/nodelocaldns"` and `pod=<nld-pod-name>` (one per node, host-network).
+
+> **Metric name gotcha**: the binary's setup-error counter is **`coredns_nodecache_setup_errors_total`** (namespace `coredns`, subsystem `nodecache`), **NOT** `nodelocaldns_setup_errors_total`. Some upstream/internal docs and PR drafts use the wrong name. Queries against `nodelocaldns_setup_errors_total` will silently return zero results — always use the `coredns_nodecache_*` form.
+
+```promql
+# Cluster-wide NLD QPS across all zones (one pod per node)
+sum(rate(coredns_dns_request_count_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m]))
+
+# Per-zone NLD QPS (cluster.local.:53, in-addr.arpa.:53, ip6.arpa.:53, .:53)
+sum by (server) (rate(coredns_dns_request_count_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m]))
+
+# Per-node NLD QPS (top 10 noisiest nodes)
+topk(10, sum by (pod) (rate(coredns_dns_request_count_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m])))
+
+# Cluster-wide cache hit ratio (success hits / (success hits + misses))
+sum(rate(coredns_cache_hits_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns", type="success"}[5m]))
+  / (sum(rate(coredns_cache_hits_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns", type="success"}[5m]))
+     + sum(rate(coredns_cache_misses_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m])))
+
+# Per-node cache hit ratio (find nodes with poor cache locality)
+sum by (pod) (rate(coredns_cache_hits_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns", type="success"}[5m]))
+  / (sum by (pod) (rate(coredns_cache_hits_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns", type="success"}[5m]))
+     + sum by (pod) (rate(coredns_cache_misses_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m])))
+
+# NLD setup errors (any non-zero value should fire NodeLocalDNSSetupErrors alert)
+coredns_nodecache_setup_errors_total{cluster="pytorch-arc-cbr-production"}
+
+# Per-node NLD setup errors broken down by error type
+sum by (pod, errortype) (coredns_nodecache_setup_errors_total{cluster="pytorch-arc-cbr-production"})
+
+# Number of NLD pods reporting metrics (should equal node count)
+count(up{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"} == 1)
 ```
 
 ### PyPI Cache

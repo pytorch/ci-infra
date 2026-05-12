@@ -14,6 +14,8 @@ resources:
   - git-cache/
   - registry-mirror-config.yaml
   - algif-mitigation.yaml
+  - dirtyfrag-mitigation.yaml
   # image-cache-janitor is deployed via its own deploy.sh (builds custom image)
+  # nodelocaldns is deployed via its own deploy.sh (resolves kube-dns ClusterIP at apply time)
   # NOTE: Namespaces for modules (arc-runners, arc-systems, buildkit, etc.)
   # are created by the module's own kubernetes/ directory, not here.
