@@ -7805,6 +7805,16 @@ def process_scheduled_queue_management():
                         if _is_spot_type(gpu_type):
                             scale_up_spot_asg(gpu_type, reservation_id)
                             spot_status = _get_spot_provision_status(gpu_type)
+                            # Add elapsed time to status
+                            created_at_str = reservation.get("created_at", "")
+                            if created_at_str:
+                                try:
+                                    from datetime import datetime
+                                    created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                                    elapsed = (datetime.utcnow() - created.replace(tzinfo=None)).total_seconds() / 60
+                                    spot_status = f"{spot_status} [{int(elapsed)}m elapsed]"
+                                except Exception:
+                                    pass
                             estimated_wait_minutes = None
                             logger.info(
                                 f"Spot status for {gpu_type.upper()} reservation {reservation_id}: {spot_status}")
