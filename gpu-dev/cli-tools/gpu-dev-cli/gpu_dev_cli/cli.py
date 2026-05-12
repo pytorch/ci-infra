@@ -1820,7 +1820,9 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             east1_ddb = _b3.resource("dynamodb", region_name=east1_env["region"])
                             east1_table = east1_ddb.Table("pytorch-gpu-dev-reservations")
                             results = []
-                            for s in (statuses_to_include or ["active", "preparing", "queued", "pending"]):
+                            # Fetch active + recent failures/expired (last 24h) from east1
+                            all_statuses = list(statuses_to_include or ["active", "preparing", "queued", "pending"]) + ["failed", "expired", "cancelled"]
+                            for s in all_statuses:
                                 resp = east1_table.query(
                                     IndexName="StatusIndex",
                                     KeyConditionExpression="#s = :status",
@@ -1830,6 +1832,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                 for item in resp.get("Items", []):
                                     if user_filter and item.get("user_id") != user_filter:
                                         continue
+                                    # For failed/expired/cancelled, only show last 24h
+                                    if s in ("failed", "expired", "cancelled"):
+                                        created = item.get("created_at", "")
+                                        if created and created < one_hour_ago:
+                                            continue
                                     item["_region"] = "us-east-1"
                                     results.append(item)
                             return results
