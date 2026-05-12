@@ -2763,6 +2763,7 @@ def _show_availability() -> None:
                             "available": int(item.get("available_gpus", 0)),
                             "total": int(item.get("total_gpus", 0)),
                             "max_reservable": int(item.get("max_reservable", 0)),
+                            "spot_info": item.get("spot_info", {}),
                         }
             except Exception:
                 pass
@@ -2866,19 +2867,29 @@ def _show_availability() -> None:
 
             # Spot section from prod-east1
             if spot_region_info:
+                # Spot GPU configs for max reservable (what you CAN get per node)
+                spot_gpus_per_node = {
+                    "b300": 8, "b200": 8, "h200": 8, "h100": 8, "a100": 8,
+                    "t4": 4, "l4": 4,
+                }
                 spot_table = Table(title="⚡ Spot Instances (us-east-1, ~70% cheaper)")
                 spot_table.add_column("GPU Type", style="cyan")
-                spot_table.add_column("Avail", style="green")
-                spot_table.add_column("Max\nReservable", style="bright_green")
-                spot_table.add_column("Total", style="blue")
+                spot_table.add_column("Avail\nNow", style="green")
+                spot_table.add_column("Per\nNode", style="bright_green")
                 spot_table.add_column("Status", style="magenta")
+                spot_table.add_column("Spot Price", style="dim")
                 for gt, info in sorted(spot_region_info.items()):
                     avail = info.get("available", 0)
-                    avail_display = f"[green]{avail}[/green]" if avail > 0 else f"[red]{avail}[/red]"
-                    wait = "Available now" if avail > 0 else "Spins up on reserve"
-                    spot_table.add_row(
-                        f"{gt.upper()} *", avail_display,
-                        str(info.get("max_reservable", 0)), str(info.get("total", 0)), wait)
+                    per_node = spot_gpus_per_node.get(gt, 8)
+                    avail_display = f"[green]{avail}[/green]" if avail > 0 else f"[dim]0[/dim]"
+                    if avail > 0:
+                        status = "[green]Node up[/green]"
+                    else:
+                        status = "Spins up on reserve (~10 min)"
+                    # Spot price from availability table
+                    spot_info = info.get("spot_info", {}) or {}
+                    price = spot_info.get("spot_signal", "")
+                    spot_table.add_row(f"{gt.upper()} *", avail_display, str(per_node), status, price or "-")
                 console.print(spot_table)
                 rprint("[dim]* = spot: ~70% cheaper, AWS can reclaim with 2-min notice, fulfillment not guaranteed.[/dim]")
                 rprint("[dim]  Separate cluster (us-east-1) with separate disks. Select via gpu-dev reserve (interactive).[/dim]")
