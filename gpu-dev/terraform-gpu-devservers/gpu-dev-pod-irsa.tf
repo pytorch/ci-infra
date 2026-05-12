@@ -72,6 +72,14 @@ resource "aws_iam_role_policy" "gpu_dev_pod_policy" {
         Effect = "Allow"
         Action = "sts:GetCallerIdentity"
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = "*"
       }
     ]
   })
