@@ -367,7 +367,9 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
   for_each = local.gpu_asg_configs
 
   name_prefix = "${var.prefix}-gpu-${each.key}-"
-  image_id    = local.architecture_ami_map[try(each.value.gpu_config.architecture, "x86_64")]
+  # Use baked AMI (drivers pre-compiled + Docker image cached) when available,
+  # fall back to standard EKS AMI for first-ever apply or non-x86_64 architectures.
+  image_id    = try(each.value.gpu_config.architecture, "x86_64") == "x86_64" ? local.gpu_ami_id : local.architecture_ami_map[each.value.gpu_config.architecture]
   key_name    = var.key_pair_name
 
   # Set instance_type if not using mixed instances policy OR if using capacity reservations
