@@ -3239,6 +3239,16 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
 
                 live.start()
 
+            # If the selected reservation is from east1, switch to east1 reservation_mgr
+            _sel = next((r for r in (locals().get("reservations") or []) if r.get("reservation_id", "").startswith(reservation_id)), None)
+            if _sel and _sel.get("_region") == "us-east-1":
+                import os as _os
+                east1_cfg = Config.ENVIRONMENTS.get("prod-east1", {})
+                _os.environ["AWS_DEFAULT_REGION"] = east1_cfg["region"]
+                _east1_config = Config()
+                _east1_config.aws_region = east1_cfg["region"]
+                reservation_mgr = ReservationManager(_east1_config)
+
             # Get connection info
             connection_info = reservation_mgr.get_connection_info(
                 reservation_id, user_info["user_id"]
