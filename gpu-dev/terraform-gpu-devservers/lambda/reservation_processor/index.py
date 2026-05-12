@@ -113,7 +113,33 @@ def _get_spot_provision_status(gpu_type: str) -> str:
         return "Spot instance requested — fulfillment not guaranteed. Best case ~10-15 min"
 
 
-# Scale up/down removed — Cluster Autoscaler handles ASG scaling natively.
+autoscaling_client = boto3.client("autoscaling", region_name=REGION)
+
+
+def scale_up_spot_asg(gpu_type: str, reservation_id: str = ""):
+    """Bump the spot ASG from 0 to 1 so the node starts coming up.
+
+    Scale-DOWN is handled by Cluster Autoscaler (20-min idle cooldown).
+    Scale-UP must be Lambda-driven because CA only reacts to Pending pods,
+    but Lambda queues the reservation (no pod) when GPUs = 0 → chicken-and-egg.
+    """
+    if not _is_spot_type(gpu_type):
+        return
+    asg_name = f"{ASG_NAME_PREFIX}-{gpu_type}"
+    try:
+        resp = autoscaling_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
+        groups = resp.get("AutoScalingGroups", [])
+        if not groups:
+            logger.warning(f"ASG {asg_name} not found")
+            return
+        current = groups[0]["DesiredCapacity"]
+        if current > 0:
+            logger.info(f"ASG {asg_name} already at desired={current}")
+            return
+        logger.info(f"Scaling up ASG {asg_name} 0 -> 1 for reservation {reservation_id[:8]}")
+        autoscaling_client.set_desired_capacity(AutoScalingGroupName=asg_name, DesiredCapacity=1)
+    except Exception as e:
+        logger.error(f"Failed to scale up ASG {asg_name}: {e}")
 OPERATIONS_TABLE = os.environ.get("OPERATIONS_TABLE", "pytorch-gpu-dev-operations")
 
 # GPU Configuration - single source of truth for all GPU type mappings
@@ -2182,6 +2208,7 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 # Provide more specific queued message based on availability
                 if available_gpus == 0:
                     if _is_spot_type(gpu_type):
+                        scale_up_spot_asg(gpu_type, reservation_id)
                         queue_message = f"Spot instance requested for {gpu_type.upper()} — fulfillment not guaranteed. Best case ~10-15 min if capacity exists"
                     else:
                         queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
@@ -7774,6 +7801,7 @@ def process_scheduled_queue_management():
                             or gpu_type in [t.strip() for t in SPOT_GPU_TYPES.split(",")]
                         )
                         if _is_spot_type(gpu_type):
+                            scale_up_spot_asg(gpu_type, reservation_id)
                             spot_status = _get_spot_provision_status(gpu_type)
                             estimated_wait_minutes = None
                             logger.info(
