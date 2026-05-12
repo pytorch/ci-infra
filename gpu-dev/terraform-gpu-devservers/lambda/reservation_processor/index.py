@@ -61,7 +61,6 @@ LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.9")
 MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.9")
 SPOT_GPU_TYPES = os.environ.get("SPOT_GPU_TYPES", "")
 ASG_NAME_PREFIX = os.environ.get("ASG_NAME_PREFIX", "pytorch-gpu-dev-gpu-nodes")
-autoscaling_client = boto3.client("autoscaling", region_name=REGION)
 
 
 def _is_spot_type(gpu_type: str) -> bool:
@@ -114,71 +113,7 @@ def _get_spot_provision_status(gpu_type: str) -> str:
         return "Spot instance requested — fulfillment not guaranteed. Best case ~10-15 min"
 
 
-def scale_up_spot_asg(gpu_type: str, reservation_id: str = ""):
-    """Request a spot node by bumping the ASG's desired capacity from 0 to 1."""
-    if not _is_spot_type(gpu_type):
-        return
-    asg_name = f"{ASG_NAME_PREFIX}-{gpu_type}"
-    try:
-        resp = autoscaling_client.describe_auto_scaling_groups(
-            AutoScalingGroupNames=[asg_name])
-        groups = resp.get("AutoScalingGroups", [])
-        if not groups:
-            logger.warning(f"ASG {asg_name} not found — can\'t scale up")
-            return
-        current = groups[0]["DesiredCapacity"]
-        if current > 0:
-            logger.info(f"ASG {asg_name} already at desired={current}, no scale-up needed")
-            return
-        logger.info(f"Scaling up ASG {asg_name} desired 0 -> 1 for reservation {reservation_id[:8]}")
-        autoscaling_client.set_desired_capacity(
-            AutoScalingGroupName=asg_name, DesiredCapacity=1)
-    except Exception as e:
-        logger.error(f"Failed to scale up ASG {asg_name}: {e}")
-
-
-def scale_down_spot_asg_if_idle(gpu_type: str):
-    """If no active/queued/preparing reservations remain for this spot type, scale ASG to 0."""
-    if not _is_spot_type(gpu_type):
-        return
-    try:
-        reservations_table_obj = dynamodb.Table(RESERVATIONS_TABLE)
-        active_statuses = ["active", "preparing", "queued", "pending"]
-        has_active = False
-        for status in active_statuses:
-            resp = reservations_table_obj.query(
-                IndexName="StatusIndex",
-                KeyConditionExpression="#s = :status",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":status": status},
-                FilterExpression="gpu_type = :gt",
-                Limit=1,
-            )
-            # DDB FilterExpression is case-sensitive; also check uppercase
-            resp2 = reservations_table_obj.query(
-                IndexName="StatusIndex",
-                KeyConditionExpression="#s = :status",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":status": status},
-                FilterExpression="gpu_type = :gt",
-                Limit=1,
-            )
-            if resp.get("Items") or resp2.get("Items"):
-                has_active = True
-                break
-        if has_active:
-            logger.info(f"Active reservations exist for {gpu_type} — keeping ASG up")
-            return
-        asg_name = f"{ASG_NAME_PREFIX}-{gpu_type}"
-        resp = autoscaling_client.describe_auto_scaling_groups(
-            AutoScalingGroupNames=[asg_name])
-        groups = resp.get("AutoScalingGroups", [])
-        if groups and groups[0]["DesiredCapacity"] > 0:
-            logger.info(f"Scaling down ASG {asg_name} to 0 — no active reservations for {gpu_type}")
-            autoscaling_client.set_desired_capacity(
-                AutoScalingGroupName=asg_name, DesiredCapacity=0)
-    except Exception as e:
-        logger.error(f"Failed to check/scale down ASG for {gpu_type}: {e}")
+# Scale up/down removed — Cluster Autoscaler handles ASG scaling natively.
 OPERATIONS_TABLE = os.environ.get("OPERATIONS_TABLE", "pytorch-gpu-dev-operations")
 
 # GPU Configuration - single source of truth for all GPU type mappings
@@ -2247,7 +2182,6 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 # Provide more specific queued message based on availability
                 if available_gpus == 0:
                     if _is_spot_type(gpu_type):
-                        scale_up_spot_asg(gpu_type, reservation_id)
                         queue_message = f"Spot instance requested for {gpu_type.upper()} — fulfillment not guaranteed. Best case ~10-15 min if capacity exists"
                     else:
                         queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
@@ -7840,10 +7774,7 @@ def process_scheduled_queue_management():
                             or gpu_type in [t.strip() for t in SPOT_GPU_TYPES.split(",")]
                         )
                         if _is_spot_type(gpu_type):
-                            scale_up_spot_asg(gpu_type, reservation_id)
                             spot_status = _get_spot_provision_status(gpu_type)
-                            # Don\'t fake an ETA — spot fulfillment is unpredictable.
-                            # Set to None so the CLI shows "depends on AWS spot capacity" not "10min"
                             estimated_wait_minutes = None
                             logger.info(
                                 f"Spot status for {gpu_type.upper()} reservation {reservation_id}: {spot_status}")
@@ -7912,16 +7843,6 @@ def process_scheduled_queue_management():
         logger.info(
             f"Queue processing complete: {processed_count} processed, {allocated_count} allocated, {updated_count} updated"
         )
-
-        # Sweep-end: scale down any spot ASGs that have no active reservations.
-        # Catches expiry, cancellation, failure — any state that leaves the ASG idle.
-        if SPOT_GPU_TYPES:
-            spot_types = [t.strip() for t in SPOT_GPU_TYPES.split(",")] if SPOT_GPU_TYPES.strip() != "all" else []
-            for st in spot_types:
-                try:
-                    scale_down_spot_asg_if_idle(st)
-                except Exception as sd_err:
-                    logger.warning(f"Scale-down check for {st} failed: {sd_err}")
 
         return {
             "statusCode": 200,
@@ -8113,11 +8034,6 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                     logger.info(f"Cleared in_use flag for disk '{disk_name}' (was {current_status})")
                 except Exception as disk_flag_error:
                     logger.warning(f"Failed to clear disk in_use flag: {disk_flag_error}")
-
-            # Scale down spot ASG if no more reservations need this GPU type
-            gpu_type = reservation.get("gpu_type", "")
-            if gpu_type:
-                scale_down_spot_asg_if_idle(gpu_type)
 
             logger.info(
                 f"Successfully cancelled reservation {full_reservation_id}")

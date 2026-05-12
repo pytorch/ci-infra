@@ -325,6 +325,27 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
     propagate_at_launch = true
   }
 
+  # Cluster Autoscaler auto-discovery: CA finds ASGs with this tag and manages
+  # scale-up (Pending pods) + scale-down (idle nodes after 20m). Only tagged on
+  # spot ASGs — on-demand ASGs have fixed instance counts and shouldn't be scaled.
+  dynamic "tag" {
+    for_each = try(each.value.gpu_config.use_spot, false) ? [1] : []
+    content {
+      key                 = "k8s.io/cluster-autoscaler/${aws_eks_cluster.gpu_dev_cluster.name}"
+      value               = "owned"
+      propagate_at_launch = true
+    }
+  }
+
+  dynamic "tag" {
+    for_each = try(each.value.gpu_config.use_spot, false) ? [1] : []
+    content {
+      key                 = "k8s.io/cluster-autoscaler/enabled"
+      value               = "true"
+      propagate_at_launch = true
+    }
+  }
+
   tag {
     key                 = "GpuType"
     value               = each.value.gpu_type
