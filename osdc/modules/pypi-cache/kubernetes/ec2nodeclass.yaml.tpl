@@ -12,6 +12,10 @@ spec:
   # rotation picks up a kernel 6.12.85+ AMI, remove
   # osdc/base/kubernetes/algif-mitigation.yaml.
   # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
+  # TODO(CVE-2026-43284): al2023@latest tracks the newest AL2023 AMI; once node
+  # rotation picks up a kernel with the DirtyFrag fix (6.1.170+ or 6.12.83+),
+  # remove osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
+  # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
   amiSelectorTerms:
     - alias: al2023@latest
 

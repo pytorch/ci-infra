@@ -27,6 +27,10 @@ defaults:
   # TODO(CVE-2026-31431): when bumping to a kernel 6.12.85+ AL2023 AMI,
   # remove osdc/base/kubernetes/algif-mitigation.yaml.
   # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
+  # TODO(CVE-2026-43284): when bumping to a kernel with the DirtyFrag fix
+  # (6.1.170+ or 6.12.83+ on AL2023), remove
+  # osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
+  # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
   base_node_ami_version: "v20260318"
   eks_version: "1.35"
   single_nat_gateway: false
