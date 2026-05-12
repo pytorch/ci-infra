@@ -77,7 +77,30 @@ resource "aws_iam_role_policy" "gpu_dev_pod_policy" {
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ListInferenceProfiles",
+          "bedrock:GetInferenceProfile",
+          "bedrock:ListFoundationModels",
+          "bedrock-mantle:*"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket",
+          "s3:HeadObject"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer"
         ]
         Resource = "*"
       }
