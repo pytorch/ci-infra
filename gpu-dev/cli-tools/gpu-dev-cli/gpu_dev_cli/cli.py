@@ -2869,6 +2869,9 @@ def _show_availability() -> None:
 
 
 def _show_availability_watch(interval: int) -> None:
+    _env_name = load_config().user_config.get("environment", "prod")
+    _spot_types = set(Config.ENVIRONMENTS.get(_env_name, {}).get("spot_types", []))
+
     """Watch mode for GPU availability with auto-refresh"""
     import time
     from datetime import datetime
@@ -3001,8 +3004,9 @@ def _show_availability_watch(interval: int) -> None:
                             else:
                                 available_display = f"[yellow]{available}[/yellow]"
 
+                            type_label = f"{gpu_type.upper()} *" if gpu_type in _spot_types else gpu_type.upper()
                             table.add_row(
-                                gpu_type.upper(),
+                                type_label,
                                 available_display,
                                 str(max_reservable) if not is_maintenance else "-",
                                 str(total),
