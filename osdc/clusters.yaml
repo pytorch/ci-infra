@@ -48,6 +48,7 @@ defaults:
     core_replicas: 4
     registry_replicas: 4
     nginx_replicas: 6
+    pdb_max_unavailable: 1  # conservative: at most 1 pod down per component
 
   # --- Module defaults ---
   karpenter:
@@ -133,6 +134,7 @@ clusters:
       core_replicas: 1
       registry_replicas: 1
       nginx_replicas: 1
+      pdb_max_unavailable: "100%"  # aggressive: staging has 1 replica each
     karpenter:
       replicas: 1
       log_level: debug
