@@ -130,6 +130,26 @@
       "type": "timeseries"
     },
     {
+      "type": "text",
+      "title": "Caveat: high queue-time percentiles",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 7,
+      "options": {
+        "mode": "markdown",
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "Due to design considerations, queue time on the high percentiles are **NOT** representative of infra limitations. This is due to the job being queued on GH side, assigned to a node, fully ready to start and using cluster capacity/resources BUT waiting on `ImagePullBackOff` for image builds."
+      }
+    },
+    {
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "${chdatasource}"
@@ -190,7 +210,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 11
       },
       "id": 2,
       "options": {
@@ -249,7 +269,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 11
       },
       "id": 4,
       "options": {
@@ -383,7 +403,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 19
       },
       "id": 5,
       "options": {
@@ -442,7 +462,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 16
+        "y": 19
       },
       "id": 6,
       "options": {
@@ -576,7 +596,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 27
       },
       "id": 1,
       "options": {
