@@ -2869,13 +2869,32 @@ def _show_availability() -> None:
 
             console.print(table)
 
+            # Spot section from prod-east1
+            if spot_region_info:
+                spot_table = Table(title="⚡ Spot Instances (us-east-1, ~70% cheaper)")
+                spot_table.add_column("GPU Type", style="cyan")
+                spot_table.add_column("Avail", style="green")
+                spot_table.add_column("Max\nReservable", style="bright_green")
+                spot_table.add_column("Total", style="blue")
+                spot_table.add_column("Status", style="magenta")
+                for gt, info in sorted(spot_region_info.items()):
+                    avail = info.get("available", 0)
+                    avail_display = f"[green]{avail}[/green]" if avail > 0 else f"[red]{avail}[/red]"
+                    wait = "Available now" if avail > 0 else "Spins up on reserve"
+                    spot_table.add_row(
+                        f"{gt.upper()} *", avail_display,
+                        str(info.get("max_reservable", 0)), str(info.get("total", 0)), wait)
+                console.print(spot_table)
+                rprint("[dim]* = spot: ~70% cheaper, AWS can reclaim with 2-min notice, fulfillment not guaranteed.[/dim]")
+                rprint("[dim]  Separate cluster (us-east-1) with separate disks. Select via gpu-dev reserve (interactive).[/dim]")
+
             # Show color legend
             rprint("\n[bold]Availability legend:[/bold]")
             rprint("  [green]●[/green]: 1+ full node available - [yellow]●[/yellow]: GPUs available, but no full node - [red]●[/red]: No GPUs available")
 
             # Show usage tip
             rprint(
-                "\n[dim]💡 Use 'gpu-dev reserve --gpu-type <type>' to reserve GPUs of a specific type[/dim]"
+                "\n[dim]💡 Use 'gpu-dev reserve' (interactive) to see all options including MIG slices and spot instances[/dim]"
             )
 
         else:
