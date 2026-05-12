@@ -71,25 +71,25 @@ def _is_spot_type(gpu_type: str) -> bool:
 
 
 def _get_spot_provision_status(gpu_type: str) -> str:
-    """Check ASG instance state + k8s node readiness to give granular progress."""
+    """Check ASG instance state + k8s node readiness to give granular progress with ETAs."""
     asg_name = f"{ASG_NAME_PREFIX}-{gpu_type}"
     try:
         resp = autoscaling_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
         groups = resp.get("AutoScalingGroups", [])
         if not groups:
-            return "Spot instance requested — waiting for AWS"
+            return "Spot instance requested — fulfillment not guaranteed. Best case ~10-15 min total if capacity exists"
         instances = groups[0].get("Instances", [])
         if not instances:
-            return "Spot instance requested — waiting for AWS to allocate capacity"
+            return "Spot instance requested — waiting for AWS to allocate capacity. Best case ~10-15 min if fulfilled"
         inst = instances[0]
         state = inst.get("LifecycleState", "")
         if state in ("Pending", "Pending:Wait", "Pending:Proceed"):
-            return f"Node found! Instance launching (~2-3 min)"
+            return "Node found! Instance launching (~8-12 min remaining)"
         if state == "InService":
             try:
                 k8s = get_k8s_client()
                 v1 = client.CoreV1Api(k8s)
-                node_label = gpu_type_kubernetes_labels.get(gpu_type, gpu_type) if 'gpu_type_kubernetes_labels' in dir() else gpu_type
+                node_label = get_node_gpu_type(gpu_type)
                 nodes = v1.list_node(label_selector=f"GpuType={node_label}")
                 for node in nodes.items:
                     ready = any(
@@ -97,15 +97,21 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                         for c in (node.status.conditions or [])
                     )
                     if ready:
-                        return "Node ready — processing reservation"
+                        # Check if GPUs are available (driver installed)
+                        allocatable = node.status.allocatable or {}
+                        gpu_count = int(allocatable.get("nvidia.com/gpu", "0"))
+                        if gpu_count > 0:
+                            return "Node ready with GPUs — processing reservation (~1-2 min)"
+                        else:
+                            return "Node registered — installing GPU drivers + pulling operator images (~4-8 min remaining)"
                     else:
-                        return "Node found! Kubelet initializing, installing drivers (~3-5 min)"
-                return "Node found! Booting and installing GPU drivers (~3-5 min for new instance types)"
+                        return "Node found! Kubelet initializing (~5-10 min remaining)"
+                return "Node found! Booting and registering with cluster (~6-10 min remaining)"
             except Exception:
-                return "Instance running — checking cluster status"
-        return f"Instance state: {state}"
+                return "Instance running — checking cluster status (~5-10 min remaining)"
+        return f"Instance lifecycle: {state}"
     except Exception:
-        return "Spot instance requested — waiting for AWS"
+        return "Spot instance requested — fulfillment not guaranteed. Best case ~10-15 min"
 
 
 def scale_up_spot_asg(gpu_type: str, reservation_id: str = ""):
@@ -2242,7 +2248,7 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 if available_gpus == 0:
                     if _is_spot_type(gpu_type):
                         scale_up_spot_asg(gpu_type, reservation_id)
-                        queue_message = f"Spot instance requested for {gpu_type.upper()} — fulfillment depends on AWS capacity (not guaranteed)"
+                        queue_message = f"Spot instance requested for {gpu_type.upper()} — fulfillment not guaranteed. Best case ~10-15 min if capacity exists"
                     else:
                         queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
                 elif available_gpus >= requested_gpus and max_single_node < requested_gpus:
