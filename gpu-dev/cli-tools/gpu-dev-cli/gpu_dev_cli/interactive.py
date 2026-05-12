@@ -117,6 +117,7 @@ def select_gpu_type_interactive(
                         "estimated_wait_minutes": 0,
                         "running_instances": int(item.get("running_instances", 0)),
                         "desired_capacity": int(item.get("desired_capacity", 0)),
+                        "spot_info": item.get("spot_info", {}),
                     }
             except Exception as e:
                 pass  # east1 not accessible — show without spot
@@ -184,9 +185,25 @@ def select_gpu_type_interactive(
         console.print("[dim]  that don\'t need full performance or VRAM.[/dim]")
         _build_table("━━━ 🔬 MIG Slices ━━━", mig_gpus)
 
-    # Section 3: Spot Instances (cross-region)
+    # Section 3: Spot Instances (cross-region) — custom table with per-node + price
     if spot_gpus:
-        _build_table("━━━ ⚡ Spot Instances (us-east-1, ~70% cheaper) ━━━", spot_gpus, is_spot=True)
+        spot_per_node = {"b300": 8, "b200": 8, "h200": 8, "h100": 8, "a100": 8, "t4": 4, "l4": 4}
+        console.print(f"\n[cyan]━━━ ⚡ Spot Instances (us-east-1, ~70% cheaper) ━━━[/cyan]")
+        st = Table()
+        st.add_column("GPU Type", style="cyan")
+        st.add_column("Avail\nNow", style="green")
+        st.add_column("Per\nNode", style="bright_green")
+        st.add_column("Status", style="magenta")
+        st.add_column("Spot Price", style="dim")
+        for gt, info in spot_gpus.items():
+            avail = info.get("available", 0)
+            pn = spot_per_node.get(gt, 8)
+            ad = f"[green]{avail}[/green]" if avail > 0 else "[dim]0[/dim]"
+            status = "[green]Node up[/green]" if avail > 0 else "Spins up on reserve (~10 min)"
+            si = info.get("spot_info", {}) or {}
+            price = si.get("spot_signal", "-") if isinstance(si, dict) else "-"
+            st.add_row(f"{gt.upper()} *", ad, str(pn), status, price)
+        console.print(st)
         console.print("[dim]* = spot: ~70% cheaper, AWS can reclaim with 2-min notice, fulfillment not guaranteed.[/dim]")
         console.print("[dim]  Separate cluster with separate disks. A node spins up when you reserve.[/dim]")
 
