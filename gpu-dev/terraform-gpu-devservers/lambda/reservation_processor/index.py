@@ -7913,6 +7913,16 @@ def process_scheduled_queue_management():
             f"Queue processing complete: {processed_count} processed, {allocated_count} allocated, {updated_count} updated"
         )
 
+        # Sweep-end: scale down any spot ASGs that have no active reservations.
+        # Catches expiry, cancellation, failure — any state that leaves the ASG idle.
+        if SPOT_GPU_TYPES:
+            spot_types = [t.strip() for t in SPOT_GPU_TYPES.split(",")] if SPOT_GPU_TYPES.strip() != "all" else []
+            for st in spot_types:
+                try:
+                    scale_down_spot_asg_if_idle(st)
+                except Exception as sd_err:
+                    logger.warning(f"Scale-down check for {st} failed: {sd_err}")
+
         return {
             "statusCode": 200,
             "body": json.dumps(
@@ -8103,6 +8113,11 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                     logger.info(f"Cleared in_use flag for disk '{disk_name}' (was {current_status})")
                 except Exception as disk_flag_error:
                     logger.warning(f"Failed to clear disk in_use flag: {disk_flag_error}")
+
+            # Scale down spot ASG if no more reservations need this GPU type
+            gpu_type = reservation.get("gpu_type", "")
+            if gpu_type:
+                scale_down_spot_asg_if_idle(gpu_type)
 
             logger.info(
                 f"Successfully cancelled reservation {full_reservation_id}")
