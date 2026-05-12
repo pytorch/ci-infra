@@ -36,203 +36,6 @@
   "panels": [
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Growing gap = jobs queued but not executing",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 16
-      },
-      "id": 1,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "max_over_time(sum(gha_assigned_jobs{cluster=\"pytorch-arc-cbr-production\"})[$__interval:])",
-          "legendFormat": "Assigned",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "max_over_time(sum(gha_running_jobs{cluster=\"pytorch-arc-cbr-production\"})[$__interval:])",
-          "legendFormat": "Running",
-          "refId": "B"
-        }
-      ],
-      "title": "Jobs Assigned vs Running (less reliable metrics due quirks on prometheus/grafana aggregations)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "${chdatasource}"
-      },
-      "description": "Time spent in queue (created_at -> started_at) for arc-cbr-production runners. Hourly aggregation.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "m"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 8
-      },
-      "id": 2,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "${chdatasource}"
-          },
-          "editorType": "sql",
-          "format": 0,
-          "queryType": "timeseries",
-          "rawSql": "WITH hourly AS (\n    SELECT\n        toStartOfHour(started_at) AS t,\n        avg(dateDiff('second', created_at, started_at)) / 60.0 AS avg_q,\n        quantile(0.5)(dateDiff('second', created_at, started_at)) / 60.0 AS p50_q,\n        quantile(0.9)(dateDiff('second', created_at, started_at)) / 60.0 AS p90_q\n    FROM default.workflow_job\n    WHERE repository_full_name = 'pytorch/pytorch'\n        AND arrayExists(x -> startsWith(x, 'mt-l-'), labels)\n        AND $__timeFilter(started_at)\n        AND started_at > toDateTime('2020-01-01')\n        AND started_at > created_at\n    GROUP BY t\n)\nSELECT\n    $__timeInterval(t) AS time,\n    max(avg_q) AS avg_queue_minutes,\n    max(p50_q) AS p50_queue_minutes,\n    max(p90_q) AS p90_queue_minutes\nFROM hourly\nGROUP BY time\nORDER BY time ASC",
-          "refId": "A"
-        }
-      ],
-      "title": "Queue Time (avg / p50 / p90)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "${chdatasource}"
       },
@@ -324,6 +127,494 @@
         }
       ],
       "title": "Jobs Queued and Running",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${chdatasource}"
+      },
+      "description": "Median (p50) queue time, excluding capacity-constrained GPU runners (h100, b200, gb200).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "m"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${chdatasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "WITH hourly AS (\n    SELECT\n        toStartOfHour(started_at) AS t,\n        quantile(0.5)(dateDiff('second', created_at, started_at)) / 60.0 AS p50_q\n    FROM default.workflow_job\n    WHERE repository_full_name = 'pytorch/pytorch'\n        AND arrayExists(x -> startsWith(x, 'mt-l-'), labels)\n        AND NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n        AND $__timeFilter(started_at)\n        AND started_at > toDateTime('2020-01-01')\n        AND started_at > created_at\n    GROUP BY t\n)\nSELECT\n    $__timeInterval(t) AS time,\n    max(p50_q) AS p50_queue_minutes\nFROM hourly\nGROUP BY time\nORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Queue Time p50 (excl. capacity-constrained instances)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${chdatasource}"
+      },
+      "description": "Per-job queue time distribution over time, excluding capacity-constrained GPU runners (h100, b200, gb200). Y-axis log scale.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "xBuckets": {
+            "mode": "size",
+            "value": ""
+          },
+          "yBuckets": {
+            "mode": "count",
+            "value": "30",
+            "scale": {
+              "type": "log",
+              "log": 10
+            }
+          }
+        },
+        "cellGap": 1,
+        "cellValues": {
+          "unit": "short"
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Spectral",
+          "steps": 64,
+          "exponent": 0.5,
+          "reverse": false
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-9
+        },
+        "legend": {
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "showValue": "never",
+        "tooltip": {
+          "show": true,
+          "yHistogram": false,
+          "mode": "single"
+        },
+        "yAxis": {
+          "axisLabel": "Queue (min)",
+          "axisPlacement": "left",
+          "decimals": 1,
+          "min": 0.01,
+          "reverse": false,
+          "unit": "m"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${chdatasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE repository_full_name = 'pytorch/pytorch'\n    AND arrayExists(x -> startsWith(x, 'mt-l-'), labels)\n    AND NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at",
+          "refId": "A"
+        }
+      ],
+      "title": "Queue Time Distribution (excl. capacity-constrained instances)",
+      "type": "heatmap"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${chdatasource}"
+      },
+      "description": "Median (p50) queue time, all arc-cbr-production runners including capacity-constrained GPUs (h100, b200, gb200).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "m"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${chdatasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "WITH hourly AS (\n    SELECT\n        toStartOfHour(started_at) AS t,\n        quantile(0.5)(dateDiff('second', created_at, started_at)) / 60.0 AS p50_q\n    FROM default.workflow_job\n    WHERE repository_full_name = 'pytorch/pytorch'\n        AND arrayExists(x -> startsWith(x, 'mt-l-'), labels)\n        AND $__timeFilter(started_at)\n        AND started_at > toDateTime('2020-01-01')\n        AND started_at > created_at\n    GROUP BY t\n)\nSELECT\n    $__timeInterval(t) AS time,\n    max(p50_q) AS p50_queue_minutes\nFROM hourly\nGROUP BY time\nORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Queue Time p50 (incl. capacity-constrained instances)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${chdatasource}"
+      },
+      "description": "Per-job queue time distribution over time, all arc-cbr-production runners including capacity-constrained GPUs (h100, b200, gb200). Y-axis log scale.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 6,
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "xBuckets": {
+            "mode": "size",
+            "value": ""
+          },
+          "yBuckets": {
+            "mode": "count",
+            "value": "30",
+            "scale": {
+              "type": "log",
+              "log": 10
+            }
+          }
+        },
+        "cellGap": 1,
+        "cellValues": {
+          "unit": "short"
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Spectral",
+          "steps": 64,
+          "exponent": 0.5,
+          "reverse": false
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-9
+        },
+        "legend": {
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "showValue": "never",
+        "tooltip": {
+          "show": true,
+          "yHistogram": false,
+          "mode": "single"
+        },
+        "yAxis": {
+          "axisLabel": "Queue (min)",
+          "axisPlacement": "left",
+          "decimals": 1,
+          "min": 0.01,
+          "reverse": false,
+          "unit": "m"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${chdatasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE repository_full_name = 'pytorch/pytorch'\n    AND arrayExists(x -> startsWith(x, 'mt-l-'), labels)\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at",
+          "refId": "A"
+        }
+      ],
+      "title": "Queue Time Distribution (incl. capacity-constrained instances)",
+      "type": "heatmap"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Growing gap = jobs queued but not executing",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max_over_time(sum(gha_assigned_jobs{cluster=\"pytorch-arc-cbr-production\"})[$__interval:])",
+          "legendFormat": "Assigned",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max_over_time(sum(gha_running_jobs{cluster=\"pytorch-arc-cbr-production\"})[$__interval:])",
+          "legendFormat": "Running",
+          "refId": "B"
+        }
+      ],
+      "title": "Jobs Assigned vs Running (less reliable metrics due quirks on prometheus/grafana aggregations)",
       "type": "timeseries"
     }
   ],
