@@ -7875,16 +7875,21 @@ def process_scheduled_queue_management():
                         type_available_gpus,
                     )
 
-                    # Update status with human-readable timestamps if needed
-                    if current_status == "pending":
+                    # Update status — for spot types, update EVERY sweep so the CLI
+                    # sees step progression (Step 1→2→3...). For non-spot, only on
+                    # the first pending→queued transition.
+                    if _is_spot_type(gpu_type):
+                        status_message = _get_spot_provision_status(gpu_type)
+                        update_reservation_status(
+                            reservation_id,
+                            "queued",
+                            status_message,
+                        )
+                    elif current_status == "pending":
                         if type_available_gpus == 0:
-                            if _is_spot_type(gpu_type):
-                                status_message = _get_spot_provision_status(gpu_type)
-                            else:
-                                status_message = f"In queue position #{queue_position} - No {gpu_type.upper()} GPUs available, contact oncall:pytorch_release_engineering"
+                            status_message = f"In queue position #{queue_position} - No {gpu_type.upper()} GPUs available, contact oncall:pytorch_release_engineering"
                         else:
                             status_message = f"In queue position #{queue_position}"
-
                         update_reservation_status(
                             reservation_id,
                             "queued",
