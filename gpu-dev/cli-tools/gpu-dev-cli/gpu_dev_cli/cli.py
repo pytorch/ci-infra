@@ -2807,84 +2807,62 @@ def _show_availability() -> None:
                 "CPU (arm64)": 6,
             }
 
-            # Sort GPU types by architecture priority, then by name
-            sorted_gpu_types = sorted(
-                availability_info.items(),
-                key=lambda x: (
-                    arch_priority.get(
-                        gpu_architectures.get(x[0], "Unknown"), 99),
-                    x[0]
-                )
-            )
+            # Split into categories
+            full_types = {k: v for k, v in availability_info.items() if "mig" not in k}
+            mig_types = {k: v for k, v in availability_info.items() if "mig" in k}
 
-            table = Table(
-                title="GPU Availability by Type (numbers are GPUs, not nodes)")
-            table.add_column("GPU Type", style="cyan")
-            table.add_column("Avail", style="green")
-            table.add_column("Max\nReservable", style="bright_green")
-            table.add_column("Total", style="blue")
-            table.add_column("Queue\nLength", style="yellow")
-            table.add_column("Architecture", style="dim")
-            table.add_column("Est. Wait Time", style="magenta")
+            def _sort_by_arch(items):
+                return sorted(items.items(), key=lambda x: (
+                    arch_priority.get(gpu_architectures.get(x[0], "Unknown"), 99), x[0]))
 
-            last_arch = None
-            for gpu_type, info in sorted_gpu_types:
-                arch = gpu_architectures.get(gpu_type, "Unknown")
+            def _fmt_wait(available, est_wait):
+                if available > 0: return "Available now"
+                if not est_wait: return "Unknown"
+                if est_wait < 60: return f"{int(est_wait)}min"
+                h, m = int(est_wait // 60), int(est_wait % 60)
+                return f"{h}h{f' {m}min' if m else ''}"
 
-                # Add separator before CPU section
-                if last_arch and not last_arch.startswith("CPU") and arch.startswith("CPU"):
-                    table.add_row("---", "---", "---",
-                                  "---", "---", "---", "---")
-
-                last_arch = arch
-                available = info.get("available", 0)
-                max_reservable = info.get("max_reservable", 0)
-                total = info.get("total", 0)
-                full_nodes_available = info.get("full_nodes_available", 0)
-                gpus_per_instance = info.get("gpus_per_instance", 0)
-                queue_length = info.get("queue_length", 0)
-                est_wait = info.get("estimated_wait_minutes", 0)
-
-                # Format wait time
-                if available > 0:
-                    wait_display = "Available now"
-                elif est_wait == 0:
-                    wait_display = "Unknown"
-                elif est_wait < 60:
-                    wait_display = f"{int(est_wait)}min"
-                else:
-                    hours = int(est_wait // 60)
-                    minutes = int(est_wait % 60)
-                    if minutes == 0:
-                        wait_display = f"{hours}h"
+            def _build_avail_table(title, items):
+                t = Table(title=title)
+                t.add_column("GPU Type", style="cyan")
+                t.add_column("Avail", style="green")
+                t.add_column("Max\nReservable", style="bright_green")
+                t.add_column("Total", style="blue")
+                t.add_column("Queue\nLength", style="yellow")
+                t.add_column("Architecture", style="dim")
+                t.add_column("Est. Wait Time", style="magenta")
+                for gpu_type, info in _sort_by_arch(items):
+                    avail = info.get("available", 0)
+                    maint = info.get("maintenance", False)
+                    maint_reason = info.get("maintenance_reason", "")
+                    fn = info.get("full_nodes_available", 0)
+                    if maint:
+                        ad = "[red]MAINTENANCE[/red]"
+                        wd = maint_reason or "Under maintenance"
+                    elif avail == 0:
+                        ad = f"[red]{avail}[/red]"
+                        wd = _fmt_wait(avail, info.get("estimated_wait_minutes", 0))
+                    elif fn > 0:
+                        ad = f"[green]{avail}[/green]"
+                        wd = _fmt_wait(avail, info.get("estimated_wait_minutes", 0))
                     else:
-                        wait_display = f"{hours}h {minutes}min"
+                        ad = f"[yellow]{avail}[/yellow]"
+                        wd = _fmt_wait(avail, info.get("estimated_wait_minutes", 0))
+                    t.add_row(
+                        gpu_type.upper(), ad,
+                        "-" if maint else str(info.get("max_reservable", 0)),
+                        str(info.get("total", 0)),
+                        "-" if maint else str(info.get("queue_length", 0)),
+                        gpu_architectures.get(gpu_type, "Unknown"), wd)
+                console.print(t)
 
-                # Check maintenance mode
-                is_maintenance = info.get("maintenance", False)
-                maintenance_reason = info.get("maintenance_reason", "")
+            # Section 1: Full GPUs & CPUs
+            _build_avail_table("━━━ Full GPUs & CPUs ━━━", full_types)
 
-                if is_maintenance:
-                    available_display = f"[red]MAINTENANCE[/red]"
-                    wait_display = maintenance_reason or "Under maintenance"
-                elif available == 0:
-                    available_display = f"[red]{available}[/red]"
-                elif full_nodes_available > 0:
-                    available_display = f"[green]{available}[/green]"
-                else:
-                    available_display = f"[yellow]{available}[/yellow]"
-
-                table.add_row(
-                    gpu_type.upper(),
-                    available_display,
-                    str(max_reservable) if not is_maintenance else "-",
-                    str(total),
-                    str(queue_length) if not is_maintenance else "-",
-                    arch,
-                    wait_display,
-                )
-
-            console.print(table)
+            # Section 2: MIG Slices
+            if mig_types:
+                rprint("[dim]  Sliced GPUs — isolated fractions of a physical GPU, perfect for smaller jobs.[/dim]")
+                _build_avail_table("━━━ 🔬 MIG Slices ━━━", mig_types)
 
             # Spot section from prod-east1
             if spot_region_info:
