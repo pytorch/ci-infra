@@ -162,6 +162,11 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     # kernel 6.12.85+ AMI. Once rolled out across all nodes, remove
     # osdc/base/kubernetes/algif-mitigation.yaml.
     # https://explore.alas.aws.amazon.com/CVE-2026-31431.html
+    # TODO(CVE-2026-43284): the AL2023 aliases / name globs below already track
+    # @latest, so node rotation picks up the fix automatically once AWS ships a
+    # kernel with the DirtyFrag fix (6.1.170+ or 6.12.83+). Once rolled out
+    # across all nodes, remove osdc/base/kubernetes/dirtyfrag-mitigation.yaml.
+    # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
     if is_gpu:
         ami_family_block = "  amiFamily: AL2023"
         ami_selector_block = """  amiSelectorTerms:
