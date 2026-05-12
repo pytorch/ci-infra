@@ -2877,19 +2877,27 @@ def _show_availability() -> None:
                 spot_table.add_column("Avail\nNow", style="green")
                 spot_table.add_column("Per\nNode", style="bright_green")
                 spot_table.add_column("Status", style="magenta")
-                spot_table.add_column("Spot Price", style="dim")
+                spot_table.add_column("Availability", style="dim")
+                _on_demand = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
                 for gt, info in sorted(spot_region_info.items()):
                     avail = info.get("available", 0)
                     per_node = spot_gpus_per_node.get(gt, 8)
                     avail_display = f"[green]{avail}[/green]" if avail > 0 else f"[dim]0[/dim]"
-                    if avail > 0:
-                        status = "[green]Node up[/green]"
+                    status = "[green]Node up[/green]" if avail > 0 else "Spins up on reserve (~10 min)"
+                    si = info.get("spot_info", {}) or {}
+                    sp = si.get("spot_price", "") if isinstance(si, dict) else ""
+                    if not sp or (isinstance(si, dict) and "No spot data" in str(si.get("spot_signal", ""))):
+                        avail_signal = "[red]Not offered[/red]"
                     else:
-                        status = "Spins up on reserve (~10 min)"
-                    # Spot price from availability table
-                    spot_info = info.get("spot_info", {}) or {}
-                    price = spot_info.get("spot_signal", "")
-                    spot_table.add_row(f"{gt.upper()} *", avail_display, str(per_node), status, price or "-")
+                        try:
+                            ratio = float(sp) / _on_demand.get(gt, 50)
+                            pct = int((1 - ratio) * 100)
+                            if ratio < 0.4: avail_signal = f"[green]High ({pct}% off)[/green]"
+                            elif ratio < 0.7: avail_signal = f"[yellow]Medium ({pct}% off)[/yellow]"
+                            else: avail_signal = f"[red]Low ({pct}% off)[/red]"
+                        except (ValueError, TypeError):
+                            avail_signal = "[yellow]Unknown[/yellow]"
+                    spot_table.add_row(f"{gt.upper()} *", avail_display, str(per_node), status, avail_signal)
                 console.print(spot_table)
                 rprint("[dim]* = spot: ~70% cheaper, AWS can reclaim with 2-min notice, fulfillment not guaranteed.[/dim]")
                 rprint("[dim]  Separate cluster (us-east-1) with separate disks. Select via gpu-dev reserve (interactive).[/dim]")
