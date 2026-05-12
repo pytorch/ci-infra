@@ -15,15 +15,14 @@ locals {
   ]))
   ami_baker_name = "gpu-dev-baked-${substr(local.ami_baker_trigger, 0, 8)}"
 
-  # Use baked AMI when available, fall back to standard
-  gpu_ami_id = try(data.aws_ami.gpu_baked[0].id, data.aws_ami.eks_gpu_ami_x86_64.id)
+  # Use baked AMI when available, fall back to standard.
+  # aws_ami_ids returns an empty list (no error) when no AMI exists yet.
+  gpu_ami_id = length(data.aws_ami_ids.gpu_baked.ids) > 0 ? data.aws_ami_ids.gpu_baked.ids[0] : data.aws_ami.eks_gpu_ami_x86_64.id
 }
 
-# Look up existing baked AMI (skips build if already exists)
-data "aws_ami" "gpu_baked" {
-  count       = 1
-  most_recent = true
-  owners      = ["self"]
+# Look up existing baked AMI — uses aws_ami_ids which returns [] instead of erroring
+data "aws_ami_ids" "gpu_baked" {
+  owners = ["self"]
 
   filter {
     name   = "name"
@@ -33,12 +32,14 @@ data "aws_ami" "gpu_baked" {
     name   = "state"
     values = ["available"]
   }
+
+  sort_ascending = false
 }
 
 # Build the baked AMI when inputs change
 resource "null_resource" "ami_baker" {
   # Only run when the target AMI doesn't exist yet
-  count = try(data.aws_ami.gpu_baked[0].id, "") == "" ? 1 : 0
+  count = length(data.aws_ami_ids.gpu_baked.ids) == 0 ? 1 : 0
 
   triggers = {
     ami_hash = local.ami_baker_trigger
