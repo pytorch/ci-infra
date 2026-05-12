@@ -70,40 +70,27 @@ systemctl enable cpu-performance.service
 # Enable GPU persistence mode for consistent performance
 nvidia-smi -pm 1 || true
 
-# ---- Fabric Manager + IMEX channel (required for NCCL NVLS multicast) ----
-# NVSwitch-connected multi-GPU nodes need the Fabric Manager running and the
-# IMEX channel device available for NCCL to use NVLS. Without these, any
-# multi-process NCCL collective will fail with:
-#   "Failed to bind NVLink SHARP (NVLS) Multicast memory"
-cat >/etc/modules-load.d/nvidia-caps-imex-channels.conf <<'EOFS'
-nvidia-caps-imex-channels
-EOFS
-
-systemctl enable nvidia-fabricmanager || {
-  echo "ERROR: failed to enable nvidia-fabricmanager" >&2
-  exit 1
-}
-
-systemctl start nvidia-fabricmanager || {
-  systemctl status nvidia-fabricmanager --no-pager || true
-  echo "ERROR: failed to start nvidia-fabricmanager" >&2
-  exit 1
-}
-
-systemctl is-active --quiet nvidia-fabricmanager || {
-  systemctl status nvidia-fabricmanager --no-pager || true
-  echo "ERROR: nvidia-fabricmanager is not active" >&2
-  exit 1
-}
-
-modprobe nvidia-caps-imex-channels || {
-  echo "ERROR: failed to load nvidia-caps-imex-channels" >&2
-  exit 1
-}
-
-if ! lsmod | grep -q '^nvidia_caps_imex_channels '; then
-  echo "ERROR: nvidia-caps-imex-channels is not loaded" >&2
-  exit 1
-fi
+# ---- Fabric Manager / IMEX: do nothing here ----
+# Background for future maintainers:
+#  * The AMI (amazon-eks-node-al2023-x86_64-nvidia-*) already installs and
+#    enables nvidia-fabricmanager and nvidia-persistenced. systemd brings FM
+#    up later in boot, after the GPU-resident "local FM" instances have
+#    initialized.
+#  * Starting FM from cloud-init (user_data) races with that GPU-side init:
+#    the host FM finishes NVSwitch routing in seconds but then waits up to
+#    GFM Wait Timeout (30 s) for the GPU local-FM instances to register over
+#    NVLink Inband. During cloud-init they are usually not ready yet, so FM
+#    exits with "config error type 8 / not all local fabric manager
+#    instances finished their configuration", taking the whole node out.
+#  * IMEX support on this AMI is compiled into nvidia.ko (char device class
+#    nvidia-caps-imex-channels, major 242). There is no separate
+#    nvidia-caps-imex-channels.ko; `modprobe nvidia-caps-imex-channels`
+#    will always fail.
+#  * Single-node NVLS multicast on p6-b200 does not require an IMEX channel
+#    device - NCCL uses POSIX FD handles intranode. IMEX channels are only
+#    needed for multi-node NVLink (MNNVL / GB200 UltraServers).
+# If a fresh provision ever shows FM failing on the normal boot path (not
+# cloud-init), prefer a systemd drop-in with After=nvidia-persistenced.service
+# and Restart=on-failure over taking control of FM here.
 
 echo "Performance configuration complete for p6-b200.48xlarge"
