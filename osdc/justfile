@@ -410,6 +410,10 @@ deploy-base cluster:
     {{UPSTREAM}}/base/kubernetes/image-cache-janitor/deploy.sh "$CLUSTER"
 
     echo ""
+    echo "━━━ BASE: Deploy NodeLocal DNSCache ━━━"
+    {{UPSTREAM}}/base/kubernetes/nodelocaldns/deploy.sh "$CLUSTER"
+
+    echo ""
     echo "Base deployment complete."
 
     # Deploy audit logging — record successful completion
@@ -874,6 +878,7 @@ _deploy-harbor cluster:
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
     source "{{UPSTREAM}}/scripts/helm-upgrade.sh"
+    source "{{UPSTREAM}}/scripts/kubectl-apply.sh"
     export OSDC_ROOT="{{ROOT}}"
     export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
@@ -972,6 +977,16 @@ _deploy-harbor cluster:
     HARBOR_CORE_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.core_replicas 2)
     HARBOR_REGISTRY_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.registry_replicas 2)
     HARBOR_NGINX_REPLICAS=$(uv run {{CFG}} "$CLUSTER" harbor.nginx_replicas 3)
+    HARBOR_PDB_MAX_UNAVAILABLE=$(uv run {{CFG}} "$CLUSTER" harbor.pdb_max_unavailable 1)
+
+    # Validate: positive integer or "1%"-"100%". Rejects 0/"0%" (deadlocks
+    # all evictions), empty strings (renders broken YAML), and any value
+    # containing sed/shell metacharacters that would corrupt the substitution.
+    if [[ ! "$HARBOR_PDB_MAX_UNAVAILABLE" =~ ^([1-9][0-9]*|[1-9][0-9]?%|100%)$ ]]; then
+        echo "ERROR: harbor.pdb_max_unavailable='${HARBOR_PDB_MAX_UNAVAILABLE}' is invalid." >&2
+        echo "       Expected: positive integer (e.g., 1, 2, 5) or percentage '1%'-'100%' (quoted)." >&2
+        exit 1
+    fi
 
     # Install Harbor (using traditional Helm repo to avoid ghcr.io auth/rate-limit issues)
     echo "Installing Harbor..."
@@ -1025,6 +1040,17 @@ _deploy-harbor cluster:
         echo "  Helm upgrade attempt $attempt/$HELM_MAX_RETRIES failed, retrying in 30s..."
         sleep 30
     done
+    echo ""
+
+    # Apply Harbor PodDisruptionBudgets (chart has no native PDB support).
+    # Generated from base/kubernetes/harbor/pdb.yaml.tpl with maxUnavailable
+    # substituted from clusters.yaml -> harbor.pdb_max_unavailable.
+    echo "Applying Harbor PodDisruptionBudgets..."
+    GENERATED_HARBOR_PDB=$(mktemp)
+    trap 'rm -f "$GENERATED_HARBOR_PDB"' EXIT
+    sed -e "s|__MAX_UNAVAILABLE__|${HARBOR_PDB_MAX_UNAVAILABLE}|g" \
+        "{{UPSTREAM}}/base/kubernetes/harbor/pdb.yaml.tpl" >"$GENERATED_HARBOR_PDB"
+    kubectl_apply_if_changed -f "$GENERATED_HARBOR_PDB"
     echo ""
 
     # Ensure Harbor admin password matches the K8s secret.

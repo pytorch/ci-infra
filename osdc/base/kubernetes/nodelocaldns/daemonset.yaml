@@ -1,0 +1,123 @@
+# NodeLocal DNSCache DaemonSet: per-node CoreDNS instance that absorbs
+# DNS queries from local pods via iptables NOTRACK interception.
+#
+# Design notes (see ~/meta/actions-knowledge-base/docs/osdc/ for full rationale):
+# - hostNetwork + privileged: NLD manipulates iptables, the dummy nodelocaldns
+#   interface, and binds the link-local IP. NET_ADMIN alone does not cover
+#   all of these on AL2023.
+# - dnsPolicy: Default (NOT ClusterFirstWithHostNet): NLD must NOT depend on
+#   itself for DNS resolution. Default uses the host's resolv.conf.
+# - No memory limit: OOMKill orphans iptables → cluster-wide DNS degradation.
+#   system-node-critical priorityClass already prevents eviction.
+# - No CPU limit: throttling = DNS latency.
+# - terminationGracePeriodSeconds: 30 matches upstream NLD default; gives the
+#   binary's signal-handler TeardownNetworking() time to delete iptables NOTRACK
+#   rules and the dummy nodelocaldns interface before kubelet kills the pod.
+#   Spec §4.9 had 5s but that risks orphaned rules on slow nodes during rolling
+#   restart.
+# - __KUBE_DNS_CLUSTER_IP__ is substituted by deploy.sh at apply time.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-local-dns
+  namespace: kube-system
+  labels:
+    k8s-app: node-local-dns
+    app.kubernetes.io/managed-by: osdc-base
+spec:
+  selector:
+    matchLabels:
+      k8s-app: node-local-dns
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1%
+  template:
+    metadata:
+      labels:
+        k8s-app: node-local-dns
+    spec:
+      priorityClassName: system-node-critical
+      serviceAccountName: node-local-dns
+      hostNetwork: true
+      dnsPolicy: Default
+      terminationGracePeriodSeconds: 30
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        - key: node-fleet
+          operator: Exists
+          effect: NoSchedule
+        - key: instance-type
+          operator: Exists
+          effect: NoSchedule
+        - key: git-cache-not-ready
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: node-cache
+          image: registry.k8s.io/dns/k8s-dns-node-cache:1.26.8
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-localip"
+            - "169.254.20.10,__KUBE_DNS_CLUSTER_IP__"
+            - "-conf"
+            - "/etc/Corefile"
+            - "-upstreamsvc"
+            - "kube-dns-upstream"
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 100Mi
+          ports:
+            - name: dns
+              containerPort: 53
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 53
+              protocol: TCP
+            - name: metrics
+              containerPort: 9253
+              protocol: TCP
+            - name: metrics-binary
+              containerPort: 9353
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              host: 169.254.20.10
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: xtables-lock
+              mountPath: /run/xtables.lock
+              readOnly: false
+            - name: kube-dns-config
+              mountPath: /etc/kube-dns
+            - name: config-volume
+              mountPath: /etc/coredns
+      volumes:
+        - name: xtables-lock
+          hostPath:
+            path: /run/xtables.lock
+            type: FileOrCreate
+        - name: kube-dns-config
+          configMap:
+            name: kube-dns
+            optional: true
+        - name: config-volume
+          configMap:
+            name: node-local-dns
+            items:
+              - key: Corefile
+                path: Corefile.base

@@ -1,0 +1,47 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: nodelocaldns
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  # NodeLocal DNSCache (NLD) DaemonSet pods in kube-system. NLD exposes metrics
+  # on TWO ports: :9253 (CoreDNS plugin metrics, prefixed coredns_*) and :9353
+  # (binary metrics including coredns_nodecache_setup_errors_total). Both are
+  # scraped to capture the full operational picture.
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      k8s-app: node-local-dns
+  podMetricsEndpoints:
+    # :9253 — CoreDNS plugin metrics (request counts, forward latency, cache hits)
+    - port: metrics
+      interval: 60s
+      metricRelabelings:
+        # Drop Go runtime metrics (high cardinality, low operational value)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "go_.*"
+        # Drop process metrics (CPU/memory of node-cache itself)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "process_.*"
+        # Drop histogram buckets (keep _sum/_count for latency tracking)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "coredns_.*_request_duration_seconds_bucket"
+    # :9353 — binary-emitted coredns_nodecache_* metrics (incl. setup_errors_total)
+    - port: metrics-binary
+      interval: 60s
+      metricRelabelings:
+        # Drop Go runtime metrics (high cardinality, low operational value)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "go_.*"
+        # Drop process metrics (CPU/memory of node-cache itself)
+        - action: drop
+          sourceLabels: [__name__]
+          regex: "process_.*"

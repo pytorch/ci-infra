@@ -31,15 +31,16 @@ Every node managed by Karpenter runs several DaemonSets that produce metrics. Th
 | **kubelet** | Built-in (kubelet ServiceMonitor) | Whitelisted to `kubelet_running_pods`, `kubelet_running_containers`, `kubelet_node_name`. `/metrics/probes` disabled. | small fixed set per node |
 | **cAdvisor** | Built-in (kubelet) | Whitelisted to `container_memory_working_set_bytes` and `container_memory_rss`, then restricted by Alloy `cost_control` to control-plane namespaces only (`arc-systems\|karpenter\|harbor-system\|monitoring\|logging\|buildkit`). Runner nodes contribute zero cAdvisor series. | ~2 per control-plane container; 0 per runner pod |
 | **git-cache-warmer** | DaemonSet (all nodes) | Clone/fetch durations, cache sizes, rsync stats | ~10-20 |
+| **nodelocaldns** | DaemonSet (all nodes) | Two scrape ports: `:9253` exposes CoreDNS plugin metrics per zone (4 zones — `cluster.local`, `in-addr.arpa`, `ip6.arpa`, `.`) — request counts by type/proto/family, response codes, cache hits/misses/entries, forward stats, plus `_sum`/`_count` for duration histograms. `:9353` exposes the binary's `coredns_nodecache_setup_errors_total` (single series). Drops `go_*`, `process_*`, and `coredns_*_request_duration_seconds_bucket` at PodMonitor level (matches `coredns.yaml` convention). | ~40-60 per node (~10-15 per zone × 4 zones, plus 1 setup-errors series) |
 | **DCGM exporter** | DaemonSet (GPU nodes only) | 25 curated GPU metrics per GPU (Tier 1: 22, Tier 2: 3): utilization, memory, temp, power, ECC, XID errors, NVLink, PCIe, clocks, throttling | 25 per GPU |
 
 **Per-node totals** (varies by node type — see the stale-estimates warning at the top of this doc; the numbers below are pre-whitelist and overstate cardinality by 1–2 orders of magnitude):
 
-| Node type | node-exporter | cAdvisor | git-cache-warmer | DCGM | Total per node |
-|-----------|:---:|:---:|:---:|:---:|:---:|
-| CPU runner node (~10 containers) | ~300 | ~400 | ~15 | 0 | ~715 |
-| GPU node (8x GPUs, ~10 containers) | ~300 | ~400 | ~15 | ~208 | ~923 |
-| Base infra node (~30 containers) | ~300 | ~1200 | ~15 | 0 | ~1515 |
+| Node type | node-exporter | cAdvisor | git-cache-warmer | nodelocaldns | DCGM | Total per node |
+|-----------|:---:|:---:|:---:|:---:|:---:|:---:|
+| CPU runner node (~10 containers) | ~300 | ~400 | ~15 | ~50 | 0 | ~765 |
+| GPU node (8x GPUs, ~10 containers) | ~300 | ~400 | ~15 | ~50 | ~208 | ~973 |
+| Base infra node (~30 containers) | ~300 | ~1200 | ~15 | ~50 | 0 | ~1565 |
 
 ### Cluster-Wide (Fixed per Source)
 
@@ -62,14 +63,14 @@ These metrics come from centralized Deployments or StatefulSets. Series counts b
 
 ### Scaling Formula (Metrics)
 
-> **NOTE:** the per-node and per-pod multipliers below are stale (see warning at top of doc). They predate the metric whitelisting work — node-exporter is now ~2 series per node (not ~300) and runner-pod cAdvisor is now 0 series (not 40). The DCGM term should use 25, not 26 (the curated metrics CSV defines exactly 25 metrics). Use the formula structure but expect totals to be 1–2 orders of magnitude lower in practice.
+> **NOTE:** the per-node and per-pod multipliers below are stale (see warning at top of doc). They predate the metric whitelisting work — node-exporter is now ~2 series per node (not ~300) and runner-pod cAdvisor is now 0 series (not 40). The DCGM term should use 25, not 26 (the curated metrics CSV defines exactly 25 metrics). The nodelocaldns term (~50 per node) is post-whitelist and stable. Use the formula structure but expect totals to be 1–2 orders of magnitude lower in practice.
 
 ```
 Total series ≈ C_fixed
              + N_runner_pods × 40
-             + N_cpu_nodes × 715
-             + N_gpu_nodes × 715 + 25 × N_total_GPUs
-             + N_base_nodes × 1515
+             + N_cpu_nodes × 765      (was 715; +50 nodelocaldns)
+             + N_gpu_nodes × 765 + 25 × N_total_GPUs
+             + N_base_nodes × 1565    (was 1515; +50 nodelocaldns)
              + N_scale_sets × 85
 ```
 
@@ -130,6 +131,7 @@ Every Karpenter-managed node runs DaemonSets that produce logs. This is the per-
 | **GPU: nvidia-persistenced** (journal) | System | 0-2 | GPU nodes only |
 | **cache-enforcer** | Pod log | 1-5 | DaemonSet on `arc-cbr-production` (`modules/cache-enforcer/kubernetes/daemonset.yaml`) |
 | **image-cache-janitor** | Pod log | 1-5 | DaemonSet in base — runs on every node (`base/kubernetes/image-cache-janitor/daemonset.yaml`) |
+| **nodelocaldns** | Pod log | <1 | DaemonSet in base — runs on every node (`base/kubernetes/nodelocaldns/`). CoreDNS plugin reports + "Setup OK" messages only; near-silent at steady state |
 
 **Per-node totals**:
 

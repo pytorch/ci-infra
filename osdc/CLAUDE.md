@@ -55,6 +55,7 @@ Detailed instructions are broken into on-demand skills. Load the relevant skill 
 | `osdc-cli-debugging` | Read-only kubectl, aws, helm, tofu commands and safety boundaries | Investigating cluster state, debugging pods |
 | `osdc-harbor` | Harbor Helm chart gotchas, image mirroring, proxy cache configuration | Working on Harbor or container registry config |
 | `osdc-pypi-cache` | PyPI wheel cache module — per-CUDA nginx+pypiserver fanout, EFS wheelhouse, S3 wheel pipeline, slug naming, prebuilt-cache.txt, NetworkPolicy, IRSA | Working on the pypi-cache module or debugging pip install failures on runners |
+| `osdc-nodelocaldns` | NodeLocal DNSCache base component — iptables-mode rationale, kube-dns ClusterIP substitution, Service-before-DaemonSet ordering, two metrics ports (9253/9353), `coredns_nodecache_*` prefix, soak gate | Working on the nodelocaldns base component or debugging DNS issues on runner nodes |
 
 Load the relevant `osdc-*` skill when you need detailed instructions on any specific topic.
 

@@ -20,7 +20,7 @@ Each node's allocatable resources are reduced by:
 
 1. **Kubelet reserved CPU**: 60m (first core) + 10m/core (cores 2-4) + 5m/core (cores 5-8) + 2.5m/core (cores 9+)
 2. **Kubelet reserved memory**: 255Mi + 11Mi per max_pod (ENI-based) + 100Mi eviction threshold
-3. **DaemonSet overhead**: 245m CPU / 640Mi memory (non-GPU), 345m CPU / 896Mi memory (GPU nodes)
+3. **DaemonSet overhead**: 270m CPU / 740Mi memory (non-GPU), 370m CPU / 996Mi memory (GPU nodes). Includes NodeLocal DNSCache (NLD) at 25m CPU / 100Mi memory per node, deployed on every node via DaemonSet.
 
 Each runner pod also includes a sidecar (750m CPU, 512Mi memory) on top of its job container resources.
 
@@ -182,7 +182,7 @@ The savings compound: nodes with better packing serve more concurrent runners, r
 
 Some runners (46c/85Gi, 94c/192Gi, 48c/384Gi) consistently achieve only 74-76% utilization even on perfectly-matched instance types. This is because:
 
-1. **Overhead is fixed**: Kubelet + DaemonSet overhead (~500m CPU, ~1.5Gi memory) is constant regardless of instance size
+1. **Overhead is fixed**: Kubelet + DaemonSet overhead (~525m CPU, ~1.6Gi memory; includes NLD at 25m CPU / 100Mi memory per node) is constant regardless of instance size
 2. **Large runners don't divide evenly**: A 94c runner on a 128c node leaves 34c unused — only 1 pod fits
 3. **Sidecar tax**: Each pod adds 750m CPU + 512Mi memory, which compounds at large sizes
 
