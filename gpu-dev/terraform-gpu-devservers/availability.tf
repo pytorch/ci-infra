@@ -50,6 +50,7 @@ resource "aws_lambda_function" "availability_updater" {
       SPOT_GPU_TYPES      = lookup({
         "prod-east1" = "b300,b200,h200,h100,a100"
       }, terraform.workspace, "")
+      ASG_NAME_PREFIX     = "${var.prefix}-gpu-nodes"
     }
   }
 
@@ -128,7 +129,8 @@ resource "aws_iam_role_policy" "availability_updater_policy" {
       {
         Effect = "Allow"
         Action = [
-          "autoscaling:DescribeAutoScalingGroups"
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity"
         ]
         Resource = "*"
       },

@@ -163,6 +163,41 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         except Exception as cleanup_err:
             logger.warning(f"Stale-row cleanup failed: {cleanup_err}")
 
+        # Scale down idle spot ASGs. This runs every ~5 min (EventBridge schedule)
+        # and catches cases where: reservation cancelled/expired → no SQS messages
+        # → reservation_processor's sweep-end scale-down never fires because SQS
+        # has nothing to deliver.
+        if SPOT_GPU_TYPES:
+            spot_list = [t.strip() for t in SPOT_GPU_TYPES.split(",")] if SPOT_GPU_TYPES.strip() != "all" else list(SUPPORTED_GPU_TYPES.keys())
+            for st in spot_list:
+                try:
+                    asg = f"{os.environ.get('ASG_NAME_PREFIX', 'pytorch-gpu-dev-gpu-nodes')}-{st}"
+                    # Check if any active/queued/preparing reservations exist for this type
+                    has_active = False
+                    reservations_table = dynamodb.Table(os.environ.get("RESERVATIONS_TABLE", "pytorch-gpu-dev-reservations"))
+                    for status in ["active", "preparing", "queued", "pending"]:
+                        resp = reservations_table.query(
+                            IndexName="StatusIndex",
+                            KeyConditionExpression="#s = :status",
+                            ExpressionAttributeNames={"#s": "status"},
+                            ExpressionAttributeValues={":status": status, ":gt": st},
+                            FilterExpression="gpu_type = :gt",
+                            Limit=1,
+                        )
+                        if resp.get("Items"):
+                            has_active = True
+                            break
+                    if not has_active:
+                        resp = autoscaling.describe_auto_scaling_groups(AutoScalingGroupNames=[asg])
+                        groups = resp.get("AutoScalingGroups", [])
+                        if groups and groups[0]["DesiredCapacity"] > 0:
+                            logger.info(f"Scaling down idle spot ASG {asg} to 0")
+                            autoscaling.set_desired_capacity(AutoScalingGroupName=asg, DesiredCapacity=0)
+                        else:
+                            logger.debug(f"Spot ASG {asg} already at 0 or not found")
+                except Exception as sd_err:
+                    logger.warning(f"Spot scale-down check for {st} failed: {sd_err}")
+
         return {
             "statusCode": 200,
             "body": json.dumps(
