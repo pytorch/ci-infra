@@ -25,7 +25,7 @@ resource "helm_release" "cluster_autoscaler" {
     awsRegion = local.current_config.aws_region
     extraArgs = {
       "scale-down-unneeded-time"       = "20m"
-      "scale-down-delay-after-add"     = "5m"
+      "scale-down-delay-after-add"     = "60m"
       "scale-down-utilization-threshold" = "0.3"
       "skip-nodes-with-system-pods"    = "false"
       "skip-nodes-with-local-storage"  = "false"

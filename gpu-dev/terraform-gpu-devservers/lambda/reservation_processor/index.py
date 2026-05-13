@@ -83,12 +83,12 @@ def _get_spot_provision_status(gpu_type: str) -> str:
         inst = instances[0]
         state = inst.get("LifecycleState", "")
         if state in ("Pending", "Pending:Wait", "Pending:Proceed"):
-            return "Node allocated! Instance launching (~20-22 min remaining)"
+            return "Node allocated! Instance launching (~4-5 min to cluster join)"
         if state == "InService":
-            # Measured ETAs: Blackwell drivers ~13 min, Hopper/Ampere ~5 min
+            # Measured ETAs (without baked AMI): Blackwell drivers ~13 min, Hopper/Ampere ~5 min
+            # With baked AMI: drivers pre-compiled, ~0 min
             is_blackwell = gpu_type in ("b300", "b200")
             driver_eta = "10-13 min" if is_blackwell else "3-5 min"
-            total_remaining = "~18-20 min" if is_blackwell else "~10-12 min"
             try:
                 k8s = get_k8s_client()
                 v1 = client.CoreV1Api(k8s)
@@ -103,14 +103,14 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                         allocatable = node.status.allocatable or {}
                         gpu_count = int(allocatable.get("nvidia.com/gpu", "0"))
                         if gpu_count > 0:
-                            return f"Node ready with {gpu_count} GPUs — creating pod + pulling image (~6-8 min remaining)"
+                            return f"Node ready with {gpu_count} GPUs — creating pod (~1 min remaining)"
                         else:
-                            return f"Node registered — installing GPU drivers (~{driver_eta} + ~6 min image pull remaining)"
+                            return f"Node registered — installing GPU drivers (~{driver_eta} remaining)"
                     else:
-                        return f"Node found! Joining cluster (~{total_remaining} remaining)"
-                return "Node found! Booting and registering (~3 min + drivers + image pull remaining)"
+                        return f"Node found! Joining cluster (~3-4 min + drivers remaining)"
+                return "Node found! Booting and registering (~3-4 min remaining)"
             except Exception:
-                return "Instance running — checking cluster status (~5-10 min remaining)"
+                return "Instance running — checking cluster status"
         return f"Instance lifecycle: {state}"
     except Exception:
         return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
@@ -4199,6 +4199,9 @@ def create_pod(
                         echo '{github_public_key}' > /home/dev/.ssh/authorized_keys
                         chmod 700 /home/dev/.ssh
                         chmod 600 /home/dev/.ssh/authorized_keys
+                        # Fix permissions on any existing private keys (fsGroup can set 0660)
+                        find /home/dev/.ssh -name 'id_*' ! -name '*.pub' -exec chmod 600 {{}} \;
+                        chmod 644 /home/dev/.ssh/*.pub 2>/dev/null || true
                         chown -R 1081:1081 /home/dev/.ssh
 
                         # Only run expensive chown -R on NEW disks (takes 30-40s on restored disks with 100K+ files)
@@ -5636,7 +5639,10 @@ EOF
             # fs_group=1081 makes the IRSA-projected token (default 0600 root:root)
             # readable by the dev user. Without it boto3-as-dev falls through to IMDS
             # and gets the node's IAM role, which doesn't have DDB/SQS permissions.
-            security_context=client.V1PodSecurityContext(fs_group=1081),
+            security_context=client.V1PodSecurityContext(
+                fs_group=1081,
+                fs_group_change_policy="OnRootMismatch",
+            ),
             # EFA requires host network namespace for RDMA access to efa0 interface
             **({
                 "host_network": True,

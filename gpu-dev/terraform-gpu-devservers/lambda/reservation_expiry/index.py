@@ -1278,12 +1278,42 @@ def warn_user_expiring(reservation: dict[str, Any], warning_minutes: int) -> Non
 
 
 def expire_reservation_due_to_missing_pod(reservation: dict[str, Any]) -> None:
-    """Mark reservation as expired when pod is missing (likely manually deleted)"""
+    """Mark reservation as expired when pod is missing (spot preemption or manual delete)"""
     try:
         reservation_id = reservation["reservation_id"]
+        gpu_type = reservation.get("gpu_type", "").lower()
+
+        # Check if this was a spot preemption by looking at the EC2 instance
+        spot_gpu_types = os.environ.get("SPOT_GPU_TYPES", "")
+        is_spot = (
+            spot_gpu_types.strip() == "all"
+            or gpu_type in [t.strip().lower() for t in spot_gpu_types.split(",") if t.strip()]
+        )
+
+        reason = "Pod was removed outside of reservation system"
+        if is_spot:
+            node_ip = reservation.get("node_ip", "")
+            if node_ip:
+                try:
+                    ec2 = boto3.client("ec2", region_name=os.environ.get("REGION", "us-east-1"))
+                    instances = ec2.describe_instances(
+                        Filters=[{"Name": "private-ip-address", "Values": [node_ip]}]
+                    ).get("Reservations", [])
+                    for r in instances:
+                        for inst in r.get("Instances", []):
+                            state_reason = inst.get("StateTransitionReason", "")
+                            if "Server.SpotInstanceTermination" in state_reason:
+                                reason = f"Spot instance reclaimed by AWS ({gpu_type.upper()})"
+                            elif inst.get("State", {}).get("Name") == "terminated":
+                                reason = f"Spot node terminated ({gpu_type.upper()}) — {state_reason}"
+                            elif inst.get("State", {}).get("Name") in ("running", "pending"):
+                                reason = f"Pod removed while node still running ({gpu_type.upper()})"
+                except Exception as ec2_err:
+                    logger.warning(f"Could not check EC2 instance state: {ec2_err}")
+                    reason = f"Spot instance lost ({gpu_type.upper()})"
 
         logger.info(
-            f"Marking reservation {reservation_id} as expired due to missing pod"
+            f"Marking reservation {reservation_id} as expired due to missing pod (spot={is_spot})"
         )
 
         # Update reservation status to expired
@@ -1297,7 +1327,7 @@ def expire_reservation_due_to_missing_pod(reservation: dict[str, Any]) -> None:
                 ":status": "expired",
                 ":expired_at": now,
                 ":reservation_ended": now,
-                ":reason": "Pod was manually deleted or removed outside of reservation system",
+                ":reason": reason,
             },
         )
 

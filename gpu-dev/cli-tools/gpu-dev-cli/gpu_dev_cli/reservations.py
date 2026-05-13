@@ -738,7 +738,7 @@ class ReservationManager:
         values = {":uid": user_id, ":status": status}
         filters = []
         if created_after:
-            filters.append("created_at >= :after")
+            filters.append("(attribute_exists(reservation_ended) AND reservation_ended >= :after OR attribute_not_exists(reservation_ended) AND created_at >= :after)")
             values[":after"] = created_after
         query_kwargs = {
             "IndexName": "UserStatusIndex",

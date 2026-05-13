@@ -173,6 +173,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 try:
                     asg = f"{os.environ.get('ASG_NAME_PREFIX', 'pytorch-gpu-dev-gpu-nodes')}-{st}"
                     # Check if any active/queued/preparing reservations exist for this type
+                    # gpu_type in DDB may be upper or lowercase, so check both
                     has_active = False
                     reservations_table = dynamodb.Table(os.environ.get("RESERVATIONS_TABLE", "pytorch-gpu-dev-reservations"))
                     for status in ["active", "preparing", "queued", "pending"]:
@@ -180,8 +181,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                             IndexName="StatusIndex",
                             KeyConditionExpression="#s = :status",
                             ExpressionAttributeNames={"#s": "status"},
-                            ExpressionAttributeValues={":status": status, ":gt": st},
-                            FilterExpression="gpu_type = :gt",
+                            ExpressionAttributeValues={":status": status, ":gt_lower": st.lower(), ":gt_upper": st.upper()},
+                            FilterExpression="gpu_type = :gt_lower OR gpu_type = :gt_upper",
                             Limit=1,
                         )
                         if resp.get("Items"):

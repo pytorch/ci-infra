@@ -1807,7 +1807,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     def fetch_recent_failures():
                         return reservation_mgr.list_reservations(
                             user_filter=user_filter,
-                            statuses_to_include=["failed", "cancelled"],
+                            statuses_to_include=["failed", "cancelled", "expired"],
                             created_after=one_hour_ago)
 
                     # Also fetch from prod-east1 (cross-region) if we're on prod
@@ -1821,7 +1821,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             east1_table = east1_ddb.Table("pytorch-gpu-dev-reservations")
                             results = []
                             # Fetch active + recent failures/expired (last 24h) from east1
-                            all_statuses = list(statuses_to_include or ["active", "preparing", "queued", "pending"]) + ["failed", "expired", "cancelled"]
+                            all_statuses = (statuses_to_include or ["active", "preparing", "queued", "pending"]) + ["failed", "expired", "cancelled"]
                             for s in all_statuses:
                                 resp = east1_table.query(
                                     IndexName="StatusIndex",
@@ -1832,10 +1832,10 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                 for item in resp.get("Items", []):
                                     if user_filter and item.get("user_id") != user_filter:
                                         continue
-                                    # For failed/expired/cancelled, only show last 24h
+                                    # For failed/expired/cancelled, only show if ended recently
                                     if s in ("failed", "expired", "cancelled"):
-                                        created = item.get("created_at", "")
-                                        if created and created < one_hour_ago:
+                                        ended = item.get("reservation_ended") or item.get("expired_at") or item.get("created_at", "")
+                                        if ended and ended < one_hour_ago:
                                             continue
                                     item["_region"] = "us-east-1"
                                     results.append(item)
@@ -1942,6 +1942,26 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             expires_formatted = f"~{estimated_wait}min"
                         else:
                             expires_formatted = "Calculating..."
+                    elif res_status in ("expired", "failed", "cancelled"):
+                        reason = reservation.get("failure_reason", "")
+                        ended = reservation.get("reservation_ended") or reservation.get("expired_at", "")
+                        ended_str = ""
+                        if ended:
+                            try:
+                                from datetime import datetime, timezone
+                                ended_dt = datetime.fromisoformat(ended.replace("Z", "+00:00"))
+                                ended_str = ended_dt.astimezone().strftime("%H:%M")
+                            except Exception:
+                                pass
+                        if "preempted" in reason.lower():
+                            expires_formatted = f"Preempted{' @' + ended_str if ended_str else ''}"
+                        elif res_status == "cancelled":
+                            expires_formatted = f"Cancelled{' @' + ended_str if ended_str else ''}"
+                        elif reason:
+                            short = reason.split("\n")[0][:20]
+                            expires_formatted = short
+                        else:
+                            expires_formatted = res_status.capitalize()
                     else:
                         expires_formatted = "N/A"
 
