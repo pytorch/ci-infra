@@ -8,17 +8,15 @@ nsenter, node affinity for runner nodes).
 
 from __future__ import annotations
 
-import time
-
 import pytest
 from cache_enforcer_helpers import domain_in_variable_block, get_init_failures
 from helpers import (
-    READY_RETRIES,
-    READY_RETRY_DELAY,
+    BACKOFF_ATTEMPTS,
     assert_daemonset_healthy,
     filter_daemonsets,
     filter_pods,
     get_unstable_node_names,
+    retry_with_backoff,
     run_kubectl,
 )
 
@@ -284,40 +282,31 @@ class TestCacheEnforcerInitContainerHealth:
         Tolerates pods on unstable nodes and transient init states
         (PodInitializing, ContainerCreating). Retries with live data.
         """
-        pods = filter_pods(all_pods, namespace=NAMESPACE, labels=POD_LABELS)
-        nodes = all_nodes
+        state = {
+            "pods": filter_pods(all_pods, namespace=NAMESPACE, labels=POD_LABELS),
+            "nodes": all_nodes,
+        }
 
-        if not pods:
-            for _ in range(READY_RETRIES):
-                time.sleep(READY_RETRY_DELAY)
-                fresh = run_kubectl(["get", "pods", "-A"])
-                pods = filter_pods(fresh, namespace=NAMESPACE, labels=POD_LABELS)
-                if pods:
-                    nodes = run_kubectl(["get", "nodes"])
-                    break
+        def check() -> None:
+            pods = state["pods"]
+            assert pods, "no pods yet"  # retry-driven wait for Karpenter scale-up
+            failures = get_init_failures(pods, state["nodes"])
+            assert not failures, (
+                "Cache-enforcer init container failures on stable nodes:\n"
+                + "\n".join(f"  - {f}" for f in failures)
+                + "\n\nThe iptables enforcement script failed. Check pod logs for details."
+            )
 
-        if not pods:
-            pytest.skip("No cache-enforcer pods found (no runner nodes in cluster)")
+        def refresh() -> None:
+            state["pods"] = filter_pods(run_kubectl(["get", "pods", "-A"]), namespace=NAMESPACE, labels=POD_LABELS)
+            state["nodes"] = run_kubectl(["get", "nodes"])
 
-        failures = get_init_failures(pods, nodes)
-        if not failures:
-            return
-
-        # Batch data may be stale or init containers still running — retry
-        for _ in range(READY_RETRIES):
-            time.sleep(READY_RETRY_DELAY)
-            fresh_pods = run_kubectl(["get", "pods", "-A"])
-            fresh_nodes = run_kubectl(["get", "nodes"])
-            pods = filter_pods(fresh_pods, namespace=NAMESPACE, labels=POD_LABELS)
-            failures = get_init_failures(pods, fresh_nodes)
-            if not failures:
-                return
-
-        assert not failures, (
-            "Cache-enforcer init container failures on stable nodes:\n"
-            + "\n".join(f"  - {f}" for f in failures)
-            + "\n\nThe iptables enforcement script failed. Check pod logs for details."
-        )
+        try:
+            retry_with_backoff(check, refresh=refresh)
+        except AssertionError as e:
+            if not state["pods"]:
+                pytest.skip("No cache-enforcer pods found (no runner nodes in cluster)")
+            raise e
 
     def test_pods_running(self, all_pods: dict, all_nodes: dict) -> None:
         """All cache-enforcer pods on stable nodes must be in Running phase.
@@ -325,46 +314,32 @@ class TestCacheEnforcerInitContainerHealth:
         Tolerates pods on unstable nodes. Retries with live data if batch
         data shows no pods (Karpenter may have just scaled up).
         """
-        pods = filter_pods(all_pods, namespace=NAMESPACE, labels=POD_LABELS)
-        nodes = all_nodes
+        state = {
+            "pods": filter_pods(all_pods, namespace=NAMESPACE, labels=POD_LABELS),
+            "nodes": all_nodes,
+        }
 
-        if not pods:
-            for _ in range(READY_RETRIES):
-                time.sleep(READY_RETRY_DELAY)
-                fresh = run_kubectl(["get", "pods", "-A"])
-                pods = filter_pods(fresh, namespace=NAMESPACE, labels=POD_LABELS)
-                if pods:
-                    break
-
-        if not pods:
-            pytest.skip("No cache-enforcer pods found (no runner nodes in cluster)")
-
-        unstable_names = get_unstable_node_names(nodes)
-        not_running = [
-            p["metadata"]["name"]
-            for p in pods
-            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable_names
-        ]
-
-        if not not_running:
-            return
-
-        # Batch data may be stale — retry with live fetches
-        for _ in range(READY_RETRIES):
-            time.sleep(READY_RETRY_DELAY)
-            fresh_pods = run_kubectl(["get", "pods", "-A"])
-            fresh_nodes = run_kubectl(["get", "nodes"])
-            pods = filter_pods(fresh_pods, namespace=NAMESPACE, labels=POD_LABELS)
-            unstable_names = get_unstable_node_names(fresh_nodes)
+        def check() -> None:
+            pods = state["pods"]
+            assert pods, "no pods yet"  # retry-driven wait for Karpenter scale-up
+            unstable_names = get_unstable_node_names(state["nodes"])
             not_running = [
                 p["metadata"]["name"]
                 for p in pods
                 if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in unstable_names
             ]
-            if not not_running:
-                return
+            assert not not_running, (
+                f"Cache-enforcer pods not Running on stable nodes: {not_running} "
+                f"({len(unstable_names)} unstable nodes excluded, after {BACKOFF_ATTEMPTS} attempts)"
+            )
 
-        assert not not_running, (
-            f"Cache-enforcer pods not Running on stable nodes: {not_running} "
-            f"({len(unstable_names)} unstable nodes excluded, after {READY_RETRIES} retries)"
-        )
+        def refresh() -> None:
+            state["pods"] = filter_pods(run_kubectl(["get", "pods", "-A"]), namespace=NAMESPACE, labels=POD_LABELS)
+            state["nodes"] = run_kubectl(["get", "nodes"])
+
+        try:
+            retry_with_backoff(check, refresh=refresh)
+        except AssertionError as e:
+            if not state["pods"]:
+                pytest.skip("No cache-enforcer pods found (no runner nodes in cluster)")
+            raise e
