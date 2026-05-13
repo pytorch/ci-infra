@@ -51,6 +51,8 @@ module "vpc" {
   enable_nat_gateway = true
   single_nat_gateway = var.single_nat_gateway
 
+  pod_cidr_buckets = var.pod_cidr_buckets
+
   tags = merge(local.tags, {
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
   })
