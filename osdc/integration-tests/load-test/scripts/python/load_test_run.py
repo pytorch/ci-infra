@@ -210,7 +210,12 @@ def main() -> None:
         args.root_dir,
         region=region,
     )
-    log.info("  Available runner types: %d (excluded %d for region %s)", len(available), excluded_count, region)
+    log.info(
+        "  Available runner types: %d (excluded %d: region %s + specialized GPUs)",
+        len(available),
+        excluded_count,
+        region,
+    )
 
     if args.label:
         missing = [lbl for lbl, _ in args.label if lbl not in available]

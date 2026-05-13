@@ -119,6 +119,11 @@ PRODUCTION_JOB_COUNTS: dict[str, int] = {
 # GPU type suffixes in OSDC runner labels
 _OSDC_GPU_PATTERN = re.compile(r"-(t4|a10g|l4)(?:-(\d+))?$")
 
+# High-end GPU types excluded from load tests (specialized hardware: hard to get,
+# multi-hour queue waits, low capacity in staging). Suffix may have an optional
+# trailing "-<count>" for multi-GPU defs (e.g. "-a100-4", "-h100-8").
+_LOAD_TEST_EXCLUDED_GPU_PATTERN = re.compile(r"-(a100|h100|b200|h200|mi300|mi325)(?:-\d+)?$")
+
 
 @dataclass
 class RunnerAllocation:
@@ -177,7 +182,10 @@ def get_available_runners(
 ) -> tuple[set[str], int]:
     """Scan runner def YAML files and return available runner labels.
 
-    Returns (labels, excluded_count).
+    Returns (labels, excluded_count). ``excluded_count`` covers both
+    region-based exclusions (fleets unavailable in the target region) and
+    specialized-hardware exclusions (high-end GPU defs matching
+    ``_LOAD_TEST_EXCLUDED_GPU_PATTERN``).
     """
     labels: set[str] = set()
     excluded_count = 0
@@ -195,6 +203,10 @@ def get_available_runners(
             if data and "runner" in data:
                 runner = data["runner"]
                 name = runner["name"]
+
+                if _LOAD_TEST_EXCLUDED_GPU_PATTERN.search(name):
+                    excluded_count += 1
+                    continue
 
                 if region and "instance_type" in runner:
                     fleet = runner["instance_type"].split(".")[0]
