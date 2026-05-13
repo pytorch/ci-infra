@@ -119,6 +119,9 @@ alloy:
       value: "${GCLOUD_BASE_URL}"
     - name: CLUSTER_NAME
       value: "${CNAME}"
+    # Centralized Deployment — generous limits, GOMEMLIMIT at ~85% of cgroup. Mirrors alloy-events tuning.
+    - name: GOMEMLIMIT
+      value: "7000MiB"
 EOF
 
   ALLOY_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" alloy_chart_version 1.6.2)

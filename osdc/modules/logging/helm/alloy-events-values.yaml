@@ -35,11 +35,11 @@ alloy:
 
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
+      cpu: 500m
+      memory: 1Gi
     limits:
-      cpu: 200m
-      memory: 256Mi
+      cpu: "2"
+      memory: 4Gi
 
   clustering:
     enabled: false                # Single replica — no clustering needed
