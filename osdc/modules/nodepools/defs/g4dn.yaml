@@ -5,6 +5,8 @@ fleet:
   name: g4dn
   arch: amd64
   gpu: true
+  # Pod-IP bucket (GPU).
+  bucket: bucket-2
   instances:
     - type: g4dn.metal
       weight: 100

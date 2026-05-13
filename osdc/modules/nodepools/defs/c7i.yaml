@@ -4,6 +4,8 @@ fleet:
   name: c7i
   arch: amd64
   gpu: false
+  # Pod-IP bucket (compute, c-series, ~2 GiB/core ratio).
+  bucket: bucket-1
   instances:
     - type: c7i.48xlarge
       weight: 100
