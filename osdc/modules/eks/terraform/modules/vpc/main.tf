@@ -54,6 +54,50 @@ resource "aws_vpc_ipv4_cidr_block_association" "pod" {
   }
 }
 
+# Pod subnets -- one /16 subnet per (bucket, AZ). Each subnet IS the entire /16
+# from the matching aws_vpc_ipv4_cidr_block_association.pod -- AWS caps VPC
+# CIDRs at /16, so no further carving is possible. Pod subnets carry
+# osdc.io/pod-subnet-* tags ONLY -- they MUST NOT carry karpenter.sh/discovery
+# or kubernetes.io/role/{internal-elb,elb}. Karpenter (which discovers via
+# karpenter.sh/discovery) only sees private_subnet_ids; pod subnets are
+# exposed via a separate pod_subnet_ids output. Subnet/tag boundary is
+# enforced by the unit test in scripts/test_vpc_subnet_tags.py.
+resource "aws_subnet" "pod" {
+  for_each = local.pod_cidr_associations
+
+  vpc_id            = aws_vpc.this.id
+  cidr_block        = each.value.cidr
+  availability_zone = each.value.az
+
+  tags = merge(
+    var.tags,
+    {
+      Name                        = "${var.name}-pod-${each.value.bucket}-${each.value.az}"
+      "osdc.io/pod-subnet-bucket" = each.value.bucket
+      "osdc.io/pod-subnet-az"     = each.value.az
+    }
+  )
+
+  lifecycle {
+    # Defense-in-depth: ensure no caller injects subnet-discovery tags via var.tags.
+    # Pod subnets MUST NOT carry karpenter.sh/discovery (would make Karpenter land
+    # nodes on CGNAT pod CIDRs) or kubernetes.io/role/{internal-elb,elb} (would make
+    # AWS load balancers land on pod CIDRs). The unit test inspects this resource
+    # block source only -- this precondition catches injection at the var.tags
+    # boundary that the test cannot see. See INCREASE_IPV4.md PR 5.
+    precondition {
+      condition = !anytrue([
+        contains(keys(var.tags), "karpenter.sh/discovery"),
+        contains(keys(var.tags), "kubernetes.io/role/internal-elb"),
+        contains(keys(var.tags), "kubernetes.io/role/elb"),
+      ])
+      error_message = "var.tags MUST NOT contain karpenter.sh/discovery, kubernetes.io/role/internal-elb, or kubernetes.io/role/elb -- they would propagate to aws_subnet.pod and break the pod-vs-node-subnet boundary. See INCREASE_IPV4.md PR 5."
+    }
+  }
+
+  depends_on = [aws_vpc_ipv4_cidr_block_association.pod]
+}
+
 # Internet Gateway
 resource "aws_internet_gateway" "this" {
   vpc_id = aws_vpc.this.id
