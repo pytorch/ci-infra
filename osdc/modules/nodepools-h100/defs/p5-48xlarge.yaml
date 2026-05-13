@@ -13,6 +13,6 @@ nodepool:
   topology_manager_scope: pod
   capacity_type: reserved
   capacity_reservation_ids:
-    - cr-0fea9e9472d5e76c6
+    - cr-0c3f05dffb85ed832
   baremetal: true
   user_data_script: scripts/h100-node-setup.sh
