@@ -83,6 +83,32 @@ resource "aws_subnet" "private" {
   depends_on = [aws_vpc.this, aws_internet_gateway.this]
 }
 
+# AWS Subnet CIDR Reservations for VPC CNI Prefix Delegation.
+# Reserves the top /23 (512 IPs / 32 prefix slots) of each primary /18
+# private subnet. PD allocates /28 prefixes from inside the reservation
+# first, falling back to the rest of the subnet only when reserved space
+# is exhausted -- fragmentation protection for high pod-churn workloads.
+# High-end indexing (cidrsubnet position 31 of 32) minimizes collision
+# with existing low-numbered IP allocations.
+locals {
+  pd_prefix_reservations = {
+    for idx, subnet in aws_subnet.private :
+    subnet.availability_zone => {
+      subnet_id  = subnet.id
+      cidr_block = cidrsubnet(var.private_subnets[idx], 5, 31)
+    }
+  }
+}
+
+resource "aws_ec2_subnet_cidr_reservation" "pd_prefix" {
+  for_each = local.pd_prefix_reservations
+
+  cidr_block       = each.value.cidr_block
+  reservation_type = "prefix"
+  subnet_id        = each.value.subnet_id
+  description      = "VPC CNI Prefix Delegation reservation (${each.key})"
+}
+
 # Elastic IPs for NAT Gateways
 resource "aws_eip" "nat" {
   count  = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : length(var.azs)) : 0
