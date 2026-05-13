@@ -11,32 +11,15 @@ matches the established convention in test_cluster_config.py).
 """
 
 import re
+import sys
 from pathlib import Path
 
 VPC_MAIN_TF = Path(__file__).resolve().parent.parent / "modules" / "eks" / "terraform" / "modules" / "vpc" / "main.tf"
 VPC_MAIN_TF_TEXT = VPC_MAIN_TF.read_text()
 
-
-def _resource_block(text: str, resource_type: str, name: str) -> str:
-    """Return the brace-balanced body of a top-level
-    `resource "<type>" "<name>" { ... }` block (including the outer braces).
-    """
-    pattern = re.compile(
-        rf'resource\s+"{re.escape(resource_type)}"\s+"{re.escape(name)}"\s*\{{',
-        re.MULTILINE,
-    )
-    m = pattern.search(text)
-    assert m, f'resource "{resource_type}" "{name}" not found in {VPC_MAIN_TF}'
-    start = m.end() - 1  # position of opening brace
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    raise AssertionError(f"unterminated block for {resource_type}.{name}")
+# Make sibling helper module importable regardless of pytest invocation cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _tf_parse_helpers import resource_block as _resource_block  # noqa: E402
 
 
 def _tags_block(text: str) -> str:
