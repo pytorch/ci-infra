@@ -23,6 +23,37 @@ resource "aws_vpc" "this" {
   )
 }
 
+# Pod CIDR associations -- secondary /16 blocks attached to the VPC for VPC CNI
+# Custom Networking. One /16 per (bucket, AZ) keyed by "${bucket}-${az}". Pure
+# additive -- no subnets carved here (PR 5) and no traffic until Custom
+# Networking is enabled (PR 7).
+locals {
+  pod_cidr_associations = merge([
+    for bucket_name, az_map in var.pod_cidr_buckets : {
+      for az_name, cidr in az_map :
+      "${bucket_name}-${az_name}" => {
+        bucket = bucket_name
+        az     = az_name
+        cidr   = cidr
+      }
+    }
+  ]...)
+}
+
+resource "aws_vpc_ipv4_cidr_block_association" "pod" {
+  for_each = local.pod_cidr_associations
+
+  vpc_id     = aws_vpc.this.id
+  cidr_block = each.value.cidr
+
+  lifecycle {
+    precondition {
+      condition     = contains(var.azs, each.value.az)
+      error_message = "pod_cidr_buckets uses AZ '${each.value.az}' for bucket '${each.value.bucket}' but the cluster's available AZs are: ${join(", ", var.azs)}. Fix the AZ key in clusters.yaml or check that the AWS region actually has that AZ."
+    }
+  }
+}
+
 # Internet Gateway
 resource "aws_internet_gateway" "this" {
   vpc_id = aws_vpc.this.id
