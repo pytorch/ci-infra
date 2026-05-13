@@ -2,6 +2,11 @@
 
 Tests the remote verification helpers (assert_metric_fresh_in_mimir,
 assert_logs_fresh_in_loki) with mocked HTTP responses.
+
+Patches target ``helpers.remote.*`` because that's the module where these
+helpers live and where ``query_mimir`` / ``query_loki`` / ``time.sleep`` are
+looked up at call time. The top-level ``helpers`` package re-exports them but
+patching the re-export does NOT affect the call sites inside ``helpers.remote``.
 """
 
 from __future__ import annotations
@@ -11,10 +16,15 @@ from unittest.mock import patch
 
 import pytest
 from helpers import (
-    REMOTE_RETRIES,
+    BACKOFF_ATTEMPTS,
     assert_logs_fresh_in_loki,
     assert_metric_fresh_in_mimir,
 )
+
+# After the retry refactor, REMOTE_RETRIES is now an alias for
+# BACKOFF_ATTEMPTS — varies by env (6 local / 8 CI). Tests assert against
+# BACKOFF_ATTEMPTS directly so they stay correct in both.
+REMOTE_RETRIES = BACKOFF_ATTEMPTS
 
 # ============================================================================
 # assert_metric_fresh_in_mimir
@@ -31,7 +41,7 @@ class TestAssertMetricFreshInMimir:
             "status": "success",
             "data": {"result": [{"value": [now - 30, "1"]}]},
         }
-        with patch("helpers.query_mimir", return_value=mock_result):
+        with patch("helpers.remote.query_mimir", return_value=mock_result):
             assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
 
     def test_stale_data_retries_then_raises(self) -> None:
@@ -42,8 +52,8 @@ class TestAssertMetricFreshInMimir:
             "data": {"result": [{"value": [now - 900, "1"]}]},
         }
         with (
-            patch("helpers.query_mimir", return_value=mock_result) as mock_query,
-            patch("helpers.time.sleep"),
+            patch("helpers.remote.query_mimir", return_value=mock_result) as mock_query,
+            patch("helpers.remote.time.sleep"),
             pytest.raises(AssertionError, match="stale"),
         ):
             assert_metric_fresh_in_mimir(
@@ -75,7 +85,7 @@ class TestAssertMetricFreshInMimir:
             call_count += 1
             return stale_result if call_count == 1 else fresh_result
 
-        with patch("helpers.query_mimir", side_effect=side_effect), patch("helpers.time.sleep"):
+        with patch("helpers.remote.query_mimir", side_effect=side_effect), patch("helpers.remote.time.sleep"):
             assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
         assert call_count == 2
 
@@ -83,8 +93,8 @@ class TestAssertMetricFreshInMimir:
         """Persistently empty results should retry then raise AssertionError."""
         mock_result = {"status": "success", "data": {"result": []}}
         with (
-            patch("helpers.query_mimir", return_value=mock_result) as mock_query,
-            patch("helpers.time.sleep"),
+            patch("helpers.remote.query_mimir", return_value=mock_result) as mock_query,
+            patch("helpers.remote.time.sleep"),
             pytest.raises(AssertionError, match="No metric series found"),
         ):
             assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
@@ -106,15 +116,15 @@ class TestAssertMetricFreshInMimir:
             call_count += 1
             return empty_result if call_count == 1 else fresh_result
 
-        with patch("helpers.query_mimir", side_effect=side_effect), patch("helpers.time.sleep"):
+        with patch("helpers.remote.query_mimir", side_effect=side_effect), patch("helpers.remote.time.sleep"):
             assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
         assert call_count == 2
 
     def test_network_error_retries_then_skips(self) -> None:
         """All retries failing with network error should pytest.skip."""
-        with patch("helpers.query_mimir", return_value=None) as mock_query:
+        with patch("helpers.remote.query_mimir", return_value=None) as mock_query:
             mock_query.last_error = "Connection refused"
-            with patch("helpers.time.sleep"), pytest.raises(pytest.skip.Exception):
+            with patch("helpers.remote.time.sleep"), pytest.raises(pytest.skip.Exception):
                 assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
             assert mock_query.call_count == REMOTE_RETRIES
 
@@ -135,9 +145,9 @@ class TestAssertMetricFreshInMimir:
                 return None
             return fresh_result
 
-        with patch("helpers.query_mimir", side_effect=side_effect) as mock_query:
+        with patch("helpers.remote.query_mimir", side_effect=side_effect) as mock_query:
             mock_query.last_error = "timeout"
-            with patch("helpers.time.sleep"):
+            with patch("helpers.remote.time.sleep"):
                 assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
         assert call_count == 2
 
@@ -145,7 +155,7 @@ class TestAssertMetricFreshInMimir:
         """Non-success status from Mimir should raise AssertionError."""
         mock_result = {"status": "error", "data": {"result": []}}
         with (
-            patch("helpers.query_mimir", return_value=mock_result),
+            patch("helpers.remote.query_mimir", return_value=mock_result),
             pytest.raises(AssertionError, match="status 'error'"),
         ):
             assert_metric_fresh_in_mimir("http://mimir/api/v1/query", "up{}", "user", "pass", description="test")
@@ -166,7 +176,7 @@ class TestAssertLogsFreshInLoki:
             "status": "success",
             "data": {"result": [{"values": [[now_ns, "log line"]]}]},
         }
-        with patch("helpers.query_loki", return_value=mock_result):
+        with patch("helpers.remote.query_loki", return_value=mock_result):
             assert_logs_fresh_in_loki(
                 "http://loki/loki/api/v1/query_range", '{cluster="test"}', "user", "pass", description="test"
             )
@@ -179,8 +189,8 @@ class TestAssertLogsFreshInLoki:
             "data": {"result": [{"values": [[old_ns, "log line"]]}]},
         }
         with (
-            patch("helpers.query_loki", return_value=mock_result) as mock_query,
-            patch("helpers.time.sleep"),
+            patch("helpers.remote.query_loki", return_value=mock_result) as mock_query,
+            patch("helpers.remote.time.sleep"),
             pytest.raises(AssertionError, match="stale"),
         ):
             assert_logs_fresh_in_loki(
@@ -213,7 +223,7 @@ class TestAssertLogsFreshInLoki:
             call_count += 1
             return stale_result if call_count == 1 else fresh_result
 
-        with patch("helpers.query_loki", side_effect=side_effect), patch("helpers.time.sleep"):
+        with patch("helpers.remote.query_loki", side_effect=side_effect), patch("helpers.remote.time.sleep"):
             assert_logs_fresh_in_loki(
                 "http://loki/loki/api/v1/query_range", '{cluster="test"}', "user", "pass", description="test"
             )
@@ -223,8 +233,8 @@ class TestAssertLogsFreshInLoki:
         """Persistently empty streams should retry then raise AssertionError."""
         mock_result = {"status": "success", "data": {"result": []}}
         with (
-            patch("helpers.query_loki", return_value=mock_result) as mock_query,
-            patch("helpers.time.sleep"),
+            patch("helpers.remote.query_loki", return_value=mock_result) as mock_query,
+            patch("helpers.remote.time.sleep"),
             pytest.raises(AssertionError, match="No log streams found"),
         ):
             assert_logs_fresh_in_loki(
@@ -248,7 +258,7 @@ class TestAssertLogsFreshInLoki:
             call_count += 1
             return empty_result if call_count == 1 else fresh_result
 
-        with patch("helpers.query_loki", side_effect=side_effect), patch("helpers.time.sleep"):
+        with patch("helpers.remote.query_loki", side_effect=side_effect), patch("helpers.remote.time.sleep"):
             assert_logs_fresh_in_loki(
                 "http://loki/loki/api/v1/query_range", '{cluster="test"}', "user", "pass", description="test"
             )
@@ -256,9 +266,9 @@ class TestAssertLogsFreshInLoki:
 
     def test_network_error_retries_then_skips(self) -> None:
         """All retries failing with network error should pytest.skip."""
-        with patch("helpers.query_loki", return_value=None) as mock_query:
+        with patch("helpers.remote.query_loki", return_value=None) as mock_query:
             mock_query.last_error = "Connection refused"
-            with patch("helpers.time.sleep"), pytest.raises(pytest.skip.Exception):
+            with patch("helpers.remote.time.sleep"), pytest.raises(pytest.skip.Exception):
                 assert_logs_fresh_in_loki(
                     "http://loki/loki/api/v1/query_range",
                     '{cluster="test"}',
@@ -285,9 +295,9 @@ class TestAssertLogsFreshInLoki:
                 return None
             return fresh_result
 
-        with patch("helpers.query_loki", side_effect=side_effect) as mock_query:
+        with patch("helpers.remote.query_loki", side_effect=side_effect) as mock_query:
             mock_query.last_error = "timeout"
-            with patch("helpers.time.sleep"):
+            with patch("helpers.remote.time.sleep"):
                 assert_logs_fresh_in_loki(
                     "http://loki/loki/api/v1/query_range",
                     '{cluster="test"}',
@@ -304,8 +314,8 @@ class TestAssertLogsFreshInLoki:
             "data": {"result": [{"values": []}]},
         }
         with (
-            patch("helpers.query_loki", return_value=mock_result) as mock_query,
-            patch("helpers.time.sleep"),
+            patch("helpers.remote.query_loki", return_value=mock_result) as mock_query,
+            patch("helpers.remote.time.sleep"),
             pytest.raises(pytest.skip.Exception),
         ):
             assert_logs_fresh_in_loki(
