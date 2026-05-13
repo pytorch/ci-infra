@@ -58,6 +58,118 @@ const COPY_VERIFY_RETRIES = parseInt(
   10
 )
 
+// ---------------------------------------------------------------------------
+// Exec & WebSocket back-pressure constants.
+//
+// EXEC_TIMEOUT_MS              — per-attempt timeout for cp{To,From}Pod tar
+//                                streams.
+// EXEC_POD_STEP_TIMEOUT_MS     — per-call timeout for execPodStep /
+//                                execPodStepOutput. Without this, a settled
+//                                WebSocket that never delivers a status
+//                                callback hangs forever (the existing retry
+//                                wrappers cannot bail out of an unsettled
+//                                Promise).
+// WS_BACKPRESSURE_HIGH_WATER   — when ws.bufferedAmount exceeds this, pause
+//                                the source stream (tar.pack) so we stop
+//                                feeding the WebSocket. The kc library's
+//                                WebSocket handler does NOT honour
+//                                bufferedAmount and queues unboundedly,
+//                                causing 1 GiB cgroup OOM on slow extraction.
+// WS_BACKPRESSURE_LOW_WATER    — resume the source once buffered drops below
+//                                this. Hysteresis avoids thrashing.
+// WS_BACKPRESSURE_POLL_MS      — poll interval. 50 ms is a balance between
+//                                overhead (~20 timer wakeups/sec) and how
+//                                much extra data we let queue between checks
+//                                — at typical 100 MB/s producer rate, ~5 MB
+//                                may slip past per poll, well under HIGH.
+// ERR_STREAM_MAX_BYTES         — cap the per-call stderr capture buffer. The
+//                                upstream stream-buffers WritableStreamBuffer
+//                                grows without bound; a misbehaving container
+//                                that floods stderr could OOM the runner.
+// ---------------------------------------------------------------------------
+const EXEC_TIMEOUT_MS = 120_000
+const EXEC_POD_STEP_TIMEOUT_MS = 60_000
+const WS_BACKPRESSURE_HIGH_WATER = 200 * 1024 * 1024 // 200 MiB
+const WS_BACKPRESSURE_LOW_WATER = 50 * 1024 * 1024 // 50 MiB
+const WS_BACKPRESSURE_POLL_MS = 50
+const ERR_STREAM_MAX_BYTES = 64 * 1024
+
+// Per kc issue #2532, ws.close() does NOT kill the remote command — only
+// ws.terminate() (socket destroy) does. Wrap with try/catch for the
+// already-torn-down case.
+function safeTerminateWs(ws: WebSocket | null): void {
+  if (!ws) return
+  try {
+    ;(ws as unknown as { terminate(): void }).terminate()
+  } catch {
+    // already torn down
+  }
+}
+
+/**
+ * A Writable that caps how much data it actually buffers. Once the cap is
+ * reached, additional writes are silently dropped (the count is still tracked
+ * so the upstream `getContentsAsString()` reflects the truncated content).
+ *
+ * Used for stderr capture in execCp{To,From}Pod where a misbehaving container
+ * can flood stderr without bound and OOM the runner pod.
+ */
+class CappedWritable extends stream.Writable {
+  private readonly buffer: WritableStreamBuffer
+  private bytesWritten = 0
+  private truncated = false
+  constructor(private readonly maxBytes: number) {
+    super()
+    this.buffer = new WritableStreamBuffer()
+  }
+  _write(
+    chunk: Buffer | string,
+    encoding: string,
+    cb: (err?: Error | null) => void
+  ): void {
+    // Node's Writable always passes Buffer for object-mode-off + non-string
+    // upstream writers (which is our case — kc pipes raw Buffers from the
+    // WebSocket). Coerce defensively for the (theoretical) string path,
+    // wrapping the conversion so a bad encoding cannot escape as an
+    // uncaught throw into our process.on('uncaughtException') handler.
+    let buf: Buffer
+    if (Buffer.isBuffer(chunk)) {
+      buf = chunk
+    } else {
+      try {
+        buf = Buffer.from(chunk, encoding as any)
+      } catch (err) {
+        cb(err as Error)
+        return
+      }
+    }
+    const remaining = this.maxBytes - this.bytesWritten
+    if (remaining <= 0) {
+      // Drop entirely. Mark truncation once for diagnostics.
+      if (!this.truncated) {
+        this.truncated = true
+      }
+      cb()
+      return
+    }
+    const slice = buf.length > remaining ? buf.subarray(0, remaining) : buf
+    this.bytesWritten += slice.length
+    if (slice.length < buf.length) {
+      this.truncated = true
+    }
+    this.buffer.write(slice, cb)
+  }
+  size(): number {
+    return this.bytesWritten
+  }
+  getContentsAsString(encoding = 'utf8'): string {
+    const contents = this.buffer.getContentsAsString(encoding) || ''
+    return this.truncated
+      ? `${contents}\n[... truncated at ${this.maxBytes} bytes]`
+      : contents
+  }
+}
+
 /**
  * Wait for configurable startup taints to be removed from the runner's node.
  *
@@ -449,151 +561,191 @@ export async function execPodStep(
   command: string[],
   podName: string,
   containerName: string,
-  stdin?: stream.Readable
+  stdin?: stream.Readable,
+  timeoutMs?: number
 ): Promise<number> {
   const exec = new k8s.Exec(kc)
+  const effectiveTimeout = timeoutMs ?? EXEC_POD_STEP_TIMEOUT_MS
 
   command = fixArgs(command)
-  return await new Promise(function (resolve, reject) {
-    let settled = false
-    exec
-      .exec(
-        namespace(),
-        podName,
-        containerName,
-        command,
-        process.stdout,
-        process.stderr,
-        stdin ?? null,
-        false /* tty */,
-        resp => {
-          settled = true
-          core.debug(`execPodStep response: ${JSON.stringify(resp)}`)
-          if (resp.status === 'Success') {
-            resolve(0)
-          } else {
-            core.debug(
-              JSON.stringify({
-                message: resp?.message,
-                details: resp?.details
-              })
-            )
-            // Extract exit code from the Failure response. K8s returns exit
-            // codes in details.causes with reason "ExitCode". If found,
-            // resolve with the code (not reject) so callers can propagate it.
-            // Only reject for true infrastructure errors (no exit code).
-            const exitCode = extractExitCode(resp)
-            if (exitCode !== null) {
-              resolve(exitCode)
+  let wsRef: WebSocket | null = null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await new Promise<number>(function (resolve, reject) {
+      let settled = false
+      timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        safeTerminateWs(wsRef)
+        reject(new Error(`execPodStep timed out after ${effectiveTimeout}ms`))
+      }, effectiveTimeout)
+      exec
+        .exec(
+          namespace(),
+          podName,
+          containerName,
+          command,
+          process.stdout,
+          process.stderr,
+          stdin ?? null,
+          false /* tty */,
+          resp => {
+            if (settled) return
+            settled = true
+            core.debug(`execPodStep response: ${JSON.stringify(resp)}`)
+            if (resp.status === 'Success') {
+              resolve(0)
             } else {
-              reject(new Error(resp?.message || 'execPodStep failed'))
+              core.debug(
+                JSON.stringify({
+                  message: resp?.message,
+                  details: resp?.details
+                })
+              )
+              // Extract exit code from the Failure response. K8s returns exit
+              // codes in details.causes with reason "ExitCode". If found,
+              // resolve with the code (not reject) so callers can propagate
+              // it. Only reject for true infrastructure errors (no exit
+              // code).
+              const exitCode = extractExitCode(resp)
+              if (exitCode !== null) {
+                resolve(exitCode)
+              } else {
+                reject(new Error(resp?.message || 'execPodStep failed'))
+              }
             }
           }
-        }
-      )
-      .then(ws => {
-        // Handle WebSocket disconnect without a status callback.
-        // This happens when the container is killed (e.g. cgroup OOM) —
-        // the WebSocket drops before K8s can send a status response.
-        if (ws) {
-          ws.on('close', () => {
-            if (!settled) {
-              settled = true
-              reject(
-                new Error(
-                  'execPodStep: WebSocket closed without status response — container may have been killed'
+        )
+        .then(ws => {
+          wsRef = ws
+          // Handle WebSocket disconnect without a status callback.
+          // This happens when the container is killed (e.g. cgroup OOM) —
+          // the WebSocket drops before K8s can send a status response.
+          if (ws) {
+            ws.on('close', () => {
+              if (!settled) {
+                settled = true
+                reject(
+                  new Error(
+                    'execPodStep: WebSocket closed without status response — container may have been killed'
+                  )
                 )
-              )
-            }
-          })
-          ws.on('error', (err: Error) => {
-            if (!settled) {
-              settled = true
-              reject(
-                new Error(
-                  `execPodStep: WebSocket error without status response: ${err.message}`
+              }
+            })
+            ws.on('error', (err: Error) => {
+              if (!settled) {
+                settled = true
+                reject(
+                  new Error(
+                    `execPodStep: WebSocket error without status response: ${err.message}`
+                  )
                 )
-              )
-            }
-          })
-        }
-      })
-      .catch(e => {
-        if (!settled) {
-          settled = true
-          reject(e)
-        }
-      })
-  })
+              }
+            })
+          }
+        })
+        .catch(e => {
+          if (!settled) {
+            settled = true
+            reject(e)
+          }
+        })
+    })
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 export async function execPodStepOutput(
   command: string[],
   podName: string,
-  containerName: string
+  containerName: string,
+  timeoutMs?: number
 ): Promise<{ exitCode: number; stdout: string }> {
   const exec = new k8s.Exec(kc)
   const stdoutBuffer = new WritableStreamBuffer()
+  const effectiveTimeout = timeoutMs ?? EXEC_POD_STEP_TIMEOUT_MS
 
   command = fixArgs(command)
-  return new Promise(function (resolve, reject) {
-    let settled = false
-    exec
-      .exec(
-        namespace(),
-        podName,
-        containerName,
-        command,
-        stdoutBuffer,
-        process.stderr,
-        null,
-        false /* tty */,
-        resp => {
-          settled = true
-          const stdout = (stdoutBuffer.getContentsAsString('utf8') || '').trim()
-          if (resp.status === 'Success') {
-            resolve({ exitCode: 0, stdout })
-          } else {
-            const exitCode = extractExitCode(resp)
-            if (exitCode !== null) {
-              resolve({ exitCode, stdout })
+  let wsRef: WebSocket | null = null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await new Promise<{ exitCode: number; stdout: string }>(function (
+      resolve,
+      reject
+    ) {
+      let settled = false
+      timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        safeTerminateWs(wsRef)
+        reject(
+          new Error(`execPodStepOutput timed out after ${effectiveTimeout}ms`)
+        )
+      }, effectiveTimeout)
+      exec
+        .exec(
+          namespace(),
+          podName,
+          containerName,
+          command,
+          stdoutBuffer,
+          process.stderr,
+          null,
+          false /* tty */,
+          resp => {
+            if (settled) return
+            settled = true
+            const stdout = (
+              stdoutBuffer.getContentsAsString('utf8') || ''
+            ).trim()
+            if (resp.status === 'Success') {
+              resolve({ exitCode: 0, stdout })
             } else {
-              reject(new Error(resp?.message || 'execPodStepOutput failed'))
+              const exitCode = extractExitCode(resp)
+              if (exitCode !== null) {
+                resolve({ exitCode, stdout })
+              } else {
+                reject(new Error(resp?.message || 'execPodStepOutput failed'))
+              }
             }
           }
-        }
-      )
-      .then(ws => {
-        if (ws) {
-          ws.on('close', () => {
-            if (!settled) {
-              settled = true
-              reject(
-                new Error(
-                  'execPodStepOutput: WebSocket closed without status response — container may have been killed'
+        )
+        .then(ws => {
+          wsRef = ws
+          if (ws) {
+            ws.on('close', () => {
+              if (!settled) {
+                settled = true
+                reject(
+                  new Error(
+                    'execPodStepOutput: WebSocket closed without status response — container may have been killed'
+                  )
                 )
-              )
-            }
-          })
-          ws.on('error', (err: Error) => {
-            if (!settled) {
-              settled = true
-              reject(
-                new Error(
-                  `execPodStepOutput: WebSocket error without status response: ${err.message}`
+              }
+            })
+            ws.on('error', (err: Error) => {
+              if (!settled) {
+                settled = true
+                reject(
+                  new Error(
+                    `execPodStepOutput: WebSocket error without status response: ${err.message}`
+                  )
                 )
-              )
-            }
-          })
-        }
-      })
-      .catch(e => {
-        if (!settled) {
-          settled = true
-          reject(e)
-        }
-      })
-  })
+              }
+            })
+          }
+        })
+        .catch(e => {
+          if (!settled) {
+            settled = true
+            reject(e)
+          }
+        })
+    })
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 export async function execCalculateOutputHashSorted(
@@ -712,11 +864,11 @@ export async function execCpToPod(
           `find ${shlex.quote(containerPath)} -type f -exec chmod u+rw {} \\; 2>/dev/null; ` +
           `find ${shlex.quote(containerPath)} -type d -exec chmod u+rwx {} \\; 2>/dev/null`
       ]
-      const EXEC_TIMEOUT_MS = 120_000
       const readStream = tar.pack(runnerPath)
-      const errStream = new WritableStreamBuffer()
+      const errStream = new CappedWritable(ERR_STREAM_MAX_BYTES)
       let wsRef: WebSocket | null = null
       let execTimer: ReturnType<typeof setTimeout>
+      let backpressureMonitor: ReturnType<typeof setInterval> | undefined
       try {
         await Promise.race([
           new Promise((resolve, reject) => {
@@ -734,11 +886,29 @@ export async function execCpToPod(
                 async status => {
                   if (settled) return
                   settled = true
-                  if (errStream.size()) {
+                  // Only reject when k8s reported a non-Success status. A
+                  // non-empty errStream on Success is just stderr noise (e.g.
+                  // `tar: Removing leading '/'`) — it must not trigger the
+                  // 30-attempt retry storm.
+                  if (status.status !== 'Success') {
+                    const errDetail = errStream.size()
+                      ? errStream.getContentsAsString()
+                      : ''
                     reject(
                       new Error(
-                        `Error from execCpToPod - status: ${status.status}, details: \n ${errStream.getContentsAsString()}`
+                        `Error from execCpToPod - status: ${status.status}, details: \n ${errDetail}`
                       )
+                    )
+                    return
+                  }
+                  if (errStream.size()) {
+                    // Debug-level: tar emits routine warnings to stderr on
+                    // every successful copy (e.g. "tar: Removing leading '/'
+                    // from member names"), so logging at warning would flood
+                    // Loki/Grafana on every prepare_job. Devs can enable
+                    // debug logging if they need to inspect this content.
+                    core.debug(
+                      `execCpToPod stderr (status=Success): ${errStream.getContentsAsString()}`
                     )
                   }
                   resolve(status)
@@ -747,6 +917,57 @@ export async function execCpToPod(
               .then(ws => {
                 wsRef = ws
                 if (ws) {
+                  // Pause/resume the source (tar.pack) when ws.bufferedAmount
+                  // crosses the high/low water marks. The kc WebSocket
+                  // handler (web-socket-handler.js:52-68) does
+                  // `stdin.on('data', d => ws.send(d))` with NO callback /
+                  // NO bufferedAmount check / NO pause — so under cluster
+                  // back-pressure it queues bytes unboundedly in
+                  // ws._sender._queue, OOM-killing the runner pod.
+                  //
+                  // Pausing a Readable that has a 'data' listener stops
+                  // 'data' events per Node's stream contract — kc's
+                  // listener simply doesn't fire while paused. The library
+                  // bug becomes irrelevant.
+                  backpressureMonitor = setInterval(() => {
+                    // Guard against in-flight ticks racing with the finally
+                    // block: clearInterval + readStream.destroy() can land
+                    // between the timer wakeup and our pause/resume call. A
+                    // pause/resume on a destroyed stream throws, and our
+                    // process.on('uncaughtException') handler would turn that
+                    // into process.exit(1) — exactly the silent-kill we
+                    // hardened against.
+                    if (readStream.destroyed) return
+                    const buffered =
+                      (wsRef as unknown as { bufferedAmount?: number })
+                        ?.bufferedAmount ?? 0
+                    try {
+                      if (
+                        buffered > WS_BACKPRESSURE_HIGH_WATER &&
+                        !readStream.isPaused()
+                      ) {
+                        core.debug(
+                          `execCpToPod: pausing source (ws buffered=${buffered})`
+                        )
+                        readStream.pause()
+                      } else if (
+                        buffered < WS_BACKPRESSURE_LOW_WATER &&
+                        readStream.isPaused()
+                      ) {
+                        core.debug(
+                          `execCpToPod: resuming source (ws buffered=${buffered})`
+                        )
+                        readStream.resume()
+                      }
+                    } catch (err) {
+                      // Defense-in-depth: even with the destroyed guard, the
+                      // stream may transition between the check and the call.
+                      core.debug(
+                        `execCpToPod: backpressure poll caught ${err instanceof Error ? err.message : String(err)}`
+                      )
+                    }
+                  }, WS_BACKPRESSURE_POLL_MS)
+                  backpressureMonitor.unref()
                   ws.on('close', () => {
                     if (!settled) {
                       settled = true
@@ -778,19 +999,18 @@ export async function execCpToPod(
           }),
           new Promise((_, reject) => {
             execTimer = setTimeout(() => {
-              reject(new Error('execCpToPod: exec timed out after 120s'))
+              reject(
+                new Error(
+                  `execCpToPod: exec timed out after ${EXEC_TIMEOUT_MS}ms`
+                )
+              )
             }, EXEC_TIMEOUT_MS)
           })
         ])
       } finally {
         clearTimeout(execTimer!)
-        if (wsRef) {
-          try {
-            ;(wsRef as WebSocket).close()
-          } catch {
-            // already closed
-          }
-        }
+        if (backpressureMonitor) clearInterval(backpressureMonitor)
+        safeTerminateWs(wsRef)
         readStream.destroy()
       }
       break
@@ -876,9 +1096,17 @@ export async function execCpFromPod(
         containerPaths.join('/') || '/',
         dirname
       ]
-      const EXEC_TIMEOUT_MS = 120_000
+      // No source-side back-pressure throttle here — unlike execCpToPod, the
+      // data flow is WebSocket -> kc -> writerStream (tar.extract). We can't
+      // pause an inbound WebSocket from a consumer, and kc's
+      // handleStandardStreams ignores stdout.write()'s return value (no
+      // drain wait). The receive-side risk in practice is much smaller:
+      // local fs writes are typically faster than the EKS network path, so
+      // sustained backlog is rare. If receive-side OOM ever shows up, the
+      // fix needs to live inside kc (honour drain) or as a TransformStream
+      // wrapper around writerStream that buffers to disk past a threshold.
       const writerStream = tar.extract(parentRunnerPath)
-      const errStream = new WritableStreamBuffer()
+      const errStream = new CappedWritable(ERR_STREAM_MAX_BYTES)
       let wsRef: WebSocket | null = null
       let execTimer: ReturnType<typeof setTimeout>
       let execSucceeded = false
@@ -899,11 +1127,28 @@ export async function execCpFromPod(
                 async status => {
                   if (settled) return
                   settled = true
-                  if (errStream.size()) {
+                  // Only reject when k8s reported a non-Success status. A
+                  // non-empty errStream on Success is just stderr noise and
+                  // must not trigger the 30-attempt retry storm.
+                  if (status.status !== 'Success') {
+                    const errDetail = errStream.size()
+                      ? errStream.getContentsAsString()
+                      : ''
                     reject(
                       new Error(
-                        `Error from cpFromPod - details: \n ${errStream.getContentsAsString()}`
+                        `Error from cpFromPod - status: ${status.status}, details: \n ${errDetail}`
                       )
+                    )
+                    return
+                  }
+                  if (errStream.size()) {
+                    // Debug-level: tar emits routine warnings to stderr on
+                    // every successful copy, so logging at warning would
+                    // flood Loki/Grafana on every prepare_job. Devs can
+                    // enable debug logging if they need to inspect this
+                    // content.
+                    core.debug(
+                      `execCpFromPod stderr (status=Success): ${errStream.getContentsAsString()}`
                     )
                   }
                   resolve(status)
@@ -943,7 +1188,11 @@ export async function execCpFromPod(
           }),
           new Promise((_, reject) => {
             execTimer = setTimeout(() => {
-              reject(new Error('execCpFromPod: exec timed out after 120s'))
+              reject(
+                new Error(
+                  `execCpFromPod: exec timed out after ${EXEC_TIMEOUT_MS}ms`
+                )
+              )
             }, EXEC_TIMEOUT_MS)
           })
         ])
@@ -951,13 +1200,7 @@ export async function execCpFromPod(
       } finally {
         clearTimeout(execTimer!)
         if (!execSucceeded) {
-          if (wsRef) {
-            try {
-              ;(wsRef as WebSocket).close()
-            } catch {
-              // already closed
-            }
-          }
+          safeTerminateWs(wsRef)
           writerStream.destroy()
         }
       }
@@ -991,13 +1234,7 @@ export async function execCpFromPod(
         })
       }
 
-      if (wsRef) {
-        try {
-          ;(wsRef as WebSocket).close()
-        } catch {
-          // already closed
-        }
-      }
+      safeTerminateWs(wsRef)
 
       break
     } catch (error) {

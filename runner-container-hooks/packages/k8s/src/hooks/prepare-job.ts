@@ -47,6 +47,13 @@ export async function prepareJob(
     throw new Error('Job Container is required.')
   }
 
+  core.info(`[prepare_job] workflow image: ${args.container.image}`)
+  for (const service of args.services || []) {
+    core.info(
+      `[prepare_job] service ${service.contextName} image: ${service.image}`
+    )
+  }
+
   await prunePods()
 
   const extension = readExtensionFromFile()

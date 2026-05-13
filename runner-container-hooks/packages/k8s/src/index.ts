@@ -14,8 +14,10 @@ import {
   RunScriptStepState
 } from './hooks'
 import { isAuthPermissionsOK, namespace, requiredPermissions } from './k8s'
+import { installProcessHandlers } from './safety/process-handlers'
 
 async function run(): Promise<void> {
+  installProcessHandlers()
   try {
     const input = await getInputFromStdin()
 
