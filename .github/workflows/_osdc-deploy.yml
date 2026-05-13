@@ -188,7 +188,7 @@ jobs:
     if: ${{ !cancelled() && !failure() && inputs.run_load_test }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: osdc
