@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #
-# AZ-named ENIConfig deploy script.
+# ENIConfig deploy script.
 # Called from the justfile's deploy-base recipe.
 #
 # Args: $1=cluster-id
 #
-# Renders one ENIConfig per AZ from eniconfig.yaml.tpl, pointing at the
-# matching primary /18 private subnet from the base terraform output
-# `private_subnets_by_az`. Resources are inert until VPC CNI Custom
-# Networking is enabled in a later PR.
+# Applies two sets of ENIConfig CRDs from eniconfig.yaml.tpl:
+#   1. AZ-named ENIConfigs (one per AZ) for base nodes, pointing at the
+#      matching primary /18 private subnet from the base terraform output
+#      `private_subnets_by_az`.
+#   2. Bucket-named ENIConfigs (one per bucket-AZ pair, e.g. bucket-1-us-east-2a)
+#      for workload nodes, pointing at the matching per-(bucket, AZ) /16 pod
+#      subnet from the base terraform output `pod_subnets_by_bucket_az`.
+#
+# Resources are inert until VPC CNI Custom Networking is enabled in a later PR.
 
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,24 +43,52 @@ if ! tofu init -reconfigure \
   cat "$INIT_ERR" >&2
   exit 1
 fi
-SUBNETS_JSON=$(tofu output -json private_subnets_by_az)
+ALL_OUTPUTS_JSON=$(tofu output -json)
 cd - >/dev/null
 
-mapfile -t AZS < <(jq -r 'keys[]' <<<"$SUBNETS_JSON")
+AZ_SUBNETS_JSON=$(jq -c '(.private_subnets_by_az.value // {})' <<<"$ALL_OUTPUTS_JSON")
+BUCKET_SUBNETS_JSON=$(jq -c '(.pod_subnets_by_bucket_az.value // {})' <<<"$ALL_OUTPUTS_JSON")
+
+if ! kubectl get crd eniconfigs.crd.k8s.amazonaws.com >/dev/null 2>&1; then
+  echo "ERROR: ENIConfig CRD (eniconfigs.crd.k8s.amazonaws.com) is not installed in cluster ${CLUSTER}." >&2
+  echo "       This CRD is installed by the VPC CNI EKS addon. Verify the addon is healthy." >&2
+  exit 1
+fi
+
+apply_eniconfig() {
+  local name="$1" subnet_id="$2"
+  echo "  ENIConfig ${name} -> ${subnet_id}"
+  sed \
+    -e "s|__ENICONFIG_NAME__|${name}|g" \
+    -e "s|__SUBNET_ID__|${subnet_id}|g" \
+    "$SCRIPT_DIR/eniconfig.yaml.tpl" \
+    | kubectl_apply_if_changed -f -
+}
+
+mapfile -t AZS < <(jq -r 'keys[]?' <<<"${AZ_SUBNETS_JSON:-{}}")
 if [[ ${#AZS[@]} -eq 0 ]]; then
   echo "ERROR: private_subnets_by_az is empty for cluster ${CLUSTER}" >&2
   exit 1
 fi
 
-echo "Applying ${#AZS[@]} ENIConfig(s) for cluster ${CLUSTER}..."
+echo "Applying ${#AZS[@]} AZ-named ENIConfig(s) for cluster ${CLUSTER}..."
 for az in "${AZS[@]}"; do
-  subnet_id=$(jq -r --arg k "$az" '.[$k]' <<<"$SUBNETS_JSON")
-  echo "  ENIConfig ${az} -> ${subnet_id}"
-  sed \
-    -e "s|__ENICONFIG_NAME__|${az}|g" \
-    -e "s|__SUBNET_ID__|${subnet_id}|g" \
-    "$SCRIPT_DIR/eniconfig.yaml.tpl" \
-    | kubectl_apply_if_changed -f -
+  subnet_id=$(jq -r --arg k "$az" '.[$k]' <<<"$AZ_SUBNETS_JSON")
+  apply_eniconfig "$az" "$subnet_id"
 done
 
-echo "ENIConfigs deployed (${#AZS[@]} AZs)."
+mapfile -t BUCKET_KEYS < <(jq -r 'keys[]?' <<<"${BUCKET_SUBNETS_JSON:-{}}")
+if [[ ${#BUCKET_KEYS[@]} -eq 0 ]]; then
+  echo "ERROR: pod_subnets_by_bucket_az is empty for cluster ${CLUSTER}." >&2
+  echo "       This output is created by PRs 4+5 (per-(bucket, AZ) /16 pod subnets)." >&2
+  echo "       Run 'tofu apply' on modules/eks/terraform for this cluster, then re-run." >&2
+  exit 1
+fi
+
+echo "Applying ${#BUCKET_KEYS[@]} bucket ENIConfig(s) for cluster ${CLUSTER}..."
+for key in "${BUCKET_KEYS[@]}"; do
+  subnet_id=$(jq -r --arg k "$key" '.[$k].subnet_id' <<<"$BUCKET_SUBNETS_JSON")
+  apply_eniconfig "$key" "$subnet_id"
+done
+
+echo "ENIConfigs deployed (${#AZS[@]} AZs, ${#BUCKET_KEYS[@]} buckets)."
