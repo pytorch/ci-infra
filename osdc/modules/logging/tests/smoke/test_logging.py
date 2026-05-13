@@ -12,8 +12,7 @@ import time
 
 import pytest
 from helpers import (
-    READY_RETRIES,
-    READY_RETRY_DELAY,
+    BACKOFF_ATTEMPTS,
     assert_daemonset_healthy,
     assert_deployment_ready,
     assert_logs_fresh_in_loki,
@@ -25,6 +24,7 @@ from helpers import (
     get_unstable_node_names,
     loki_read_url,
     query_loki,
+    retry_with_backoff,
     run_kubectl,
 )
 
@@ -141,55 +141,24 @@ class TestAlloyLogging:
         joining after a recycle), retries with live kubectl fetches.
         """
         alloy_labels = {"app.kubernetes.io/instance": "alloy-logging"}
-        pods = filter_pods(all_pods, namespace=logging_ns, labels=alloy_labels)
-        nodes = all_nodes
+        state = {
+            "pods": filter_pods(all_pods, namespace=logging_ns, labels=alloy_labels),
+            "nodes": all_nodes,
+        }
 
-        if not pods:
-            # Batch data may be stale — retry with live fetches
-            for _ in range(READY_RETRIES):
-                time.sleep(READY_RETRY_DELAY)
-                fresh = run_kubectl(["get", "pods", "-A"])
-                pods = filter_pods(fresh, namespace=logging_ns, labels=alloy_labels)
-                if pods:
-                    break
+        def check() -> None:
+            pods = state["pods"]
+            nodes = state["nodes"]
+            assert len(pods) > 0, f"No alloy-logging pods found (after {BACKOFF_ATTEMPTS} attempts)"
 
-        assert len(pods) > 0, f"No alloy-logging pods found (after {READY_RETRIES} retries)"
-
-        known_node_names = get_all_node_names(nodes)
-        unstable_names = get_unstable_node_names(nodes)
-        recently_stable_names = get_recently_stable_node_names(nodes)
-        disappeared = 0
-        not_running = [
-            p["metadata"]["name"]
-            for p in pods
-            if p["status"].get("phase") != "Running"
-            and p["spec"].get("nodeName") in known_node_names  # skip pods on disappeared nodes
-            and p["spec"].get("nodeName") not in unstable_names
-            and not (p["status"].get("phase") == "Pending" and p["spec"].get("nodeName") in recently_stable_names)
-        ]
-        disappeared = sum(
-            1
-            for p in pods
-            if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in known_node_names
-        )
-
-        if not not_running:
-            return
-
-        # Batch data may be stale — retry with live node + pod data
-        for _ in range(READY_RETRIES):
-            time.sleep(READY_RETRY_DELAY)
-            fresh_pods = run_kubectl(["get", "pods", "-A"])
-            fresh_nodes = run_kubectl(["get", "nodes"])
-            pods = filter_pods(fresh_pods, namespace=logging_ns, labels=alloy_labels)
-            known_node_names = get_all_node_names(fresh_nodes)
-            unstable_names = get_unstable_node_names(fresh_nodes)
-            recently_stable_names = get_recently_stable_node_names(fresh_nodes)
+            known_node_names = get_all_node_names(nodes)
+            unstable_names = get_unstable_node_names(nodes)
+            recently_stable_names = get_recently_stable_node_names(nodes)
             not_running = [
                 p["metadata"]["name"]
                 for p in pods
                 if p["status"].get("phase") != "Running"
-                and p["spec"].get("nodeName") in known_node_names
+                and p["spec"].get("nodeName") in known_node_names  # skip pods on disappeared nodes
                 and p["spec"].get("nodeName") not in unstable_names
                 and not (p["status"].get("phase") == "Pending" and p["spec"].get("nodeName") in recently_stable_names)
             ]
@@ -198,16 +167,19 @@ class TestAlloyLogging:
                 for p in pods
                 if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in known_node_names
             )
-            if not not_running:
-                return
+            assert not not_running, (
+                f"Alloy pods not Running on stable nodes: {not_running} "
+                f"({len(unstable_names)} unstable nodes excluded, "
+                f"{len(recently_stable_names)} recently-stable nodes with Pending pods tolerated, "
+                f"{disappeared} pods on disappeared nodes excluded, "
+                f"after {BACKOFF_ATTEMPTS} attempts)"
+            )
 
-        assert not not_running, (
-            f"Alloy pods not Running on stable nodes: {not_running} "
-            f"({len(unstable_names)} unstable nodes excluded, "
-            f"{len(recently_stable_names)} recently-stable nodes with Pending pods tolerated, "
-            f"{disappeared} pods on disappeared nodes excluded, "
-            f"after {READY_RETRIES} retries)"
-        )
+        def refresh() -> None:
+            state["pods"] = filter_pods(run_kubectl(["get", "pods", "-A"]), namespace=logging_ns, labels=alloy_labels)
+            state["nodes"] = run_kubectl(["get", "nodes"])
+
+        retry_with_backoff(check, refresh=refresh)
 
 
 # ============================================================================
@@ -238,20 +210,18 @@ class TestAlloyEvents:
     def test_events_pod_running(self, all_pods: dict, logging_ns: str) -> None:
         """Verify alloy-events pod is in Running phase."""
         alloy_labels = {"app.kubernetes.io/instance": "alloy-events"}
-        pods = filter_pods(all_pods, namespace=logging_ns, labels=alloy_labels)
+        state = {"pods": filter_pods(all_pods, namespace=logging_ns, labels=alloy_labels)}
 
-        if not pods:
-            for _ in range(READY_RETRIES):
-                time.sleep(READY_RETRY_DELAY)
-                fresh = run_kubectl(["get", "pods", "-A"])
-                pods = filter_pods(fresh, namespace=logging_ns, labels=alloy_labels)
-                if pods:
-                    break
+        def check() -> None:
+            pods = state["pods"]
+            assert len(pods) > 0, f"No alloy-events pods found (after {BACKOFF_ATTEMPTS} attempts)"
+            not_running = [p["metadata"]["name"] for p in pods if p["status"].get("phase") != "Running"]
+            assert not not_running, f"Alloy events pods not Running: {not_running}"
 
-        assert len(pods) > 0, f"No alloy-events pods found (after {READY_RETRIES} retries)"
+        def refresh() -> None:
+            state["pods"] = filter_pods(run_kubectl(["get", "pods", "-A"]), namespace=logging_ns, labels=alloy_labels)
 
-        not_running = [p["metadata"]["name"] for p in pods if p["status"].get("phase") != "Running"]
-        assert not not_running, f"Alloy events pods not Running: {not_running}"
+        retry_with_backoff(check, refresh=refresh)
 
 
 # ============================================================================
