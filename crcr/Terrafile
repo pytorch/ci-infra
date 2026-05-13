@@ -6,5 +6,6 @@ crcr:
   tag: "v20260408-150242"
   assets:
     - "cross-repo-ci-webhook.zip"
+    - "cross-repo-ci-result.zip"
   asset-folders:
     - assets/lambdas-download
