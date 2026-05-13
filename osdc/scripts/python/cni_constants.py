@@ -7,7 +7,7 @@ the same literal value without drift.
 
 Importers today:
 - ``base/kubernetes/tests/smoke/test_base_eniconfigs.py`` (PR 14 smoke check)
-- ``modules/nodepools/scripts/python/generate_nodepools.py`` (future PR 6
+- ``modules/nodepools/scripts/python/generate_nodepools.py`` (future PR 9
   Karpenter NodePool generator — emits ``ENI_CONFIG_LABEL`` on each NodePool)
 
 Also referenced as a string literal (cannot import Python here):
