@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tests" / "smoke"))
 
 from helpers import (
+    BACKOFF_ATTEMPTS,
     _count_unstable_nodes,
     _parse_k8s_timestamp,
     assert_daemonset_healthy,
@@ -100,7 +101,7 @@ class TestCountUnstableNodes:
         assert _count_unstable_nodes({"items": [node]}) == 1
 
     def test_node_too_new(self):
-        # Creation timestamp = 10 seconds ago (< MIN_NODE_AGE_SECONDS=120)
+        # Creation timestamp = 10 seconds ago (< MIN_NODE_AGE_SECONDS=600)
         recent_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 10))
         node = _make_node("n1", creation_ts=recent_ts)
         assert _count_unstable_nodes({"items": [node]}) == 1
@@ -171,23 +172,23 @@ class TestAssertDaemonsetHealthy:
         nodes = _make_nodes_data(unstable_count=2, stable_count=3)
         assert_daemonset_healthy(ds, nodes, namespace="kube-system", name="my-ds")
 
-    @patch("helpers.time.sleep")
-    @patch("helpers.run_kubectl")
+    @patch("helpers.retry.time.sleep")
+    @patch("helpers.k8s_asserts.run_kubectl")
     def test_mismatch_exceeds_unstable_retries_then_fails(self, mock_kubectl, mock_sleep):
         # desired=5, ready=2 → gap=3, unstable=1 → exceeds, enters retry loop
         ds = _make_ds_data("my-ds", "kube-system", 5, 2)
         nodes = _make_nodes_data(unstable_count=1, stable_count=4)
 
-        # Each retry returns the same stale values (ds then nodes)
+        # Each retry refresh re-fetches the DaemonSet then the node list.
+        # Need BACKOFF_ATTEMPTS - 1 refresh cycles (no refresh after the
+        # final failed attempt). Pad generously so we never run out.
         fresh_ds = {"status": {"desiredNumberScheduled": 5, "numberReady": 2}}
         fresh_nodes = _make_nodes_data(unstable_count=1, stable_count=4)
-        mock_kubectl.side_effect = [fresh_ds, fresh_nodes] * 6  # READY_RETRIES iterations
+        mock_kubectl.side_effect = [fresh_ds, fresh_nodes] * (BACKOFF_ATTEMPTS + 1)
 
-        # The function raises AssertionError (note: source has typo "AssertionError",
-        # which is actually a NameError at runtime — catch both)
         import pytest
 
-        with pytest.raises((AssertionError, NameError)):
+        with pytest.raises(AssertionError):
             assert_daemonset_healthy(ds, nodes, namespace="kube-system", name="my-ds")
 
     def test_negative_gap_with_unstable_nodes(self):
