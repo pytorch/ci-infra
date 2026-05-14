@@ -1919,7 +1919,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
             # Create table with enhanced columns for queue info
             # Check if we have cross-region reservations
             _regions = frozenset(r.get("_region", "") for r in reservations if r.get("_region"))
-            _has_multi_region = len(_regions) > 1
+            _has_multi_region = len(_regions) > 1 or "east1" in _regions
 
             table = Table(title="GPU Reservations")
             table.add_column("ID", style="cyan", no_wrap=True)
