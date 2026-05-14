@@ -33,7 +33,7 @@ defaults:
   # https://aws.amazon.com/security/security-bulletins/2026-027-aws/
   base_node_ami_version: "v20260318"
   eks_version: "1.35"
-  single_nat_gateway: false
+  nat_gateway_eip_count: 8       # AWS hard cap per NAT GW
 
   # --- CoreDNS sizing ---
   coredns:
@@ -130,7 +130,7 @@ clusters:
       base_node_count: 2
       base_node_instance_type: m5.4xlarge
       base_node_max_unavailable_percentage: 100  # all-at-once for staging
-      single_nat_gateway: true       # cost optimization for staging
+      nat_gateway_eip_count: 1       # cost optimization for staging
       vpc_cidr: "10.0.0.0/16"
       # Per-(bucket, AZ) secondary VPC CIDRs from 100.96.0.0/12 (CGNAT).
       # Staging uses the upper /12 region (vs production's 100.64.0.0/12)
