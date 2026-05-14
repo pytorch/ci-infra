@@ -69,7 +69,7 @@ Every Karpenter NodePool applies this startup taint via the `startupTaints` fiel
 Runner pods include an init container that polls for a file on the host filesystem before the runner container can start. This file is placed by a DaemonSet.
 
 **DaemonSet**: `runner-hooks-warmer` (`modules/arc-runners/kubernetes/hooks-warmer.yaml`)
-- Downloads patched `runner-container-hooks` v0.8.11 from GitHub releases
+- Downloads patched `runner-container-hooks` v0.8.12-cancel.1 from GitHub releases (huydhn fork pre-release)
 - Extracts to `/mnt/runner-container-hooks/dist/` on host NVMe
 - Validates `dist/index.js` exists after extraction
 - Writes version marker for idempotency

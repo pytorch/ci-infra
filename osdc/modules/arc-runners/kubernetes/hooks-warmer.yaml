@@ -2,10 +2,12 @@
 # Downloads the patched runner-container-hooks zip once per node to NVMe,
 # so runner pods can mount it read-only without per-pod downloads.
 #
-# Fix: find -exec stat {} \; -> find -exec stat {} + (10-100x faster)
-# Fix: exit code propagation — OOM-killed processes now correctly report failure
-# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.11
-# Remove this when upstream merges the fixes into actions/runner-container-hooks
+# Pre-release pinned to huydhn/runner-container-hooks v0.8.12-cancel.1 —
+# adds POST /kill + SIGTERM/SIGINT cleanup callbacks so GHA cancellation
+# is forwarded into the workflow pod and post-cleanup steps don't fail
+# with "RPC /exec failed (409): A job is already running".
+# See upstream PR: https://github.com/jeanschmidt/runner-container-hooks/pull/5
+# Revert to jeanschmidt/runner-container-hooks once that PR is merged + released.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -63,8 +65,8 @@ spec:
             - -c
             - |
               set -eu
-              HOOKS_VERSION="0.8.11"
-              HOOKS_URL="https://github.com/jeanschmidt/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
+              HOOKS_VERSION="0.8.12-cancel.1"
+              HOOKS_URL="https://github.com/huydhn/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
               DEST="/mnt/runner-container-hooks"
               MARKER="$DEST/.version"
 

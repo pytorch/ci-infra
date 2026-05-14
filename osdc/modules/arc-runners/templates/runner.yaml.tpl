@@ -292,7 +292,7 @@ template:
             value: /home/runner/hook-extensions/job-pod.yaml
           # Use OSDC wrapper that validates env vars and surfaces errors
           # clearly, then delegates to patched hooks from DaemonSet.
-          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.11
+          # See: https://github.com/huydhn/runner-container-hooks/releases/tag/v0.8.12-cancel.1
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /home/runner/hook-extensions/wrapper.js
           # PyTorch CI workflows depend on Docker images built in parallel by
@@ -557,6 +557,9 @@ data:
     process.on('SIGTERM', () => forwardSignal('SIGTERM'));
     process.on('SIGINT', () => forwardSignal('SIGINT'));
 
+    // Result shape: { code, signal }. When the child is killed by a signal
+    // Node.js reports code === null and signal !== null; we preserve both so
+    // callers can distinguish cancellation (signal) from script failure (code).
     function spawnReal(stdinData) {
       return new Promise((resolve) => {
         const child = spawn(process.execPath, [REAL_HOOKS], {
@@ -565,16 +568,29 @@ data:
         activeChild = child;
         child.stdin.write(stdinData);
         child.stdin.end();
-        child.on('close', (code) => {
+        child.on('close', (code, signal) => {
           activeChild = null;
-          resolve(code !== null ? code : 1);
+          if (signal) {
+            resolve({ code: null, signal: signal });
+            return;
+          }
+          resolve({ code: code !== null ? code : 1, signal: null });
         });
         child.on('error', (err) => {
           activeChild = null;
           emit('warning', '[OSDC] Hook spawn error: ' + err.message);
-          resolve(1);
+          resolve({ code: 1, signal: null });
         });
       });
+    }
+
+    // Coerce a {code, signal} result into a numeric exit code for the parent.
+    // SIGINT -> 130, SIGTERM -> 143 (POSIX 128+signum convention).
+    function exitCodeFor(result) {
+      if (result.signal === 'SIGINT') return 130;
+      if (result.signal === 'SIGTERM') return 143;
+      if (result.signal) return 128;
+      return result.code;
     }
 
     async function readStdin() {
@@ -588,12 +604,12 @@ data:
       try {
         input = JSON.parse(stdinData);
       } catch (_) {
-        return await spawnReal(stdinData);
+        return exitCodeFor(await spawnReal(stdinData));
       }
 
       const cmd = input.command;
       if (cmd !== 'run_script_step' && cmd !== 'run_container_step') {
-        return await spawnReal(stdinData);
+        return exitCodeFor(await spawnReal(stdinData));
       }
 
       // Feature 2: Validate environment variables
@@ -617,15 +633,41 @@ data:
       }
 
       // Feature 1: Enhanced exit code surfacing
-      const code = await spawnReal(stdinData);
-      if (code !== 0) {
+      //
+      // Three outcomes worth distinguishing in the log:
+      //   1. Cancellation: child was killed by a signal we forwarded from
+      //      GitHub Actions, OR the child handled the signal itself and
+      //      exited with the canonical 128+signum convention. The hook
+      //      (runner-container-hooks v0.8.12-cancel.1+) installs SIGTERM/SIGINT
+      //      handlers that run cleanup and then process.exit(143|130),
+      //      which collapses signal info to a numeric code. We treat those
+      //      two exact codes as cancellation. NOT a script/workflow error.
+      //   2. Script failure: child exited with non-zero code (any other).
+      //   3. Success: nothing to print.
+      const result = await spawnReal(stdinData);
+      const cancelSignal =
+        result.signal ||
+        (result.code === 130 ? 'SIGINT' :
+         result.code === 143 ? 'SIGTERM' : null);
+      if (cancelSignal) {
         emit('error',
-          '[OSDC] Step script exited with code ' + code + '. ' +
+          '[OSDC] Step cancelled by GitHub Actions (received ' + cancelSignal + '). ' +
+          'This typically means matrix fail-fast, a manual cancel, a workflow ' +
+          'concurrency override, or a run-level cancellation — NOT an OSDC ' +
+          'infrastructure failure. Check the workflow-run page for the actual ' +
+          'cause; the in-pod subprocess is terminated by the hook so post-cleanup ' +
+          'steps can run.'
+        );
+        return exitCodeFor(result);
+      }
+      if (result.code !== 0) {
+        emit('error',
+          '[OSDC] Step script exited with code ' + result.code + '. ' +
           'This is a script/workflow error, not an infrastructure issue. ' +
           'Check the step logs above for the actual failure.'
         );
       }
-      return code;
+      return result.code;
     }
 
     // Fail-open: read stdin once, run main, fall back on crash
@@ -635,7 +677,7 @@ data:
       } catch (err) {
         emit('warning', '[OSDC] Wrapper error (fail-open): ' + err.message);
         try {
-          process.exit(await spawnReal(stdinData));
+          process.exit(exitCodeFor(await spawnReal(stdinData)));
         } catch (_) {
           process.exit(1);
         }
