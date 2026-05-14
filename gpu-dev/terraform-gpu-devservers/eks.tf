@@ -158,11 +158,50 @@ resource "aws_eks_addon" "ebs_csi_driver" {
   }
 }
 
+# Look up which AZs support each spot instance type — avoids launching in unsupported AZs
+data "aws_ec2_instance_type_offerings" "spot_az_support" {
+  for_each = {
+    for gpu_type, gpu_config in local.current_config.supported_gpu_types :
+    gpu_type => gpu_config.instance_type
+    if try(gpu_config.use_spot, false) && !try(gpu_config.virtual, false)
+  }
+
+  filter {
+    name   = "instance-type"
+    values = [each.value]
+  }
+
+  location_type = "availability-zone"
+}
+
 locals {
   # Architecture to AMI mapping
   architecture_ami_map = {
     "x86_64" = data.aws_ami.eks_gpu_ami_x86_64.id
     "arm64"  = data.aws_ami.eks_gpu_ami_arm64.id
+  }
+
+  # Map AZ names to subnet keys (primary/secondary/tertiary)
+  az_to_subnet_key = {
+    for key, az in {
+      "primary"   = data.aws_availability_zones.available.names[0]
+      "secondary" = data.aws_availability_zones.available.names[1]
+      "tertiary"  = length(data.aws_availability_zones.available.names) >= 3 ? data.aws_availability_zones.available.names[2] : ""
+    } : az => key if az != ""
+  }
+
+  # For spot ASGs, filter subnets to only AZs that support the instance type.
+  # Falls back to all subnets if the data source returns nothing (new instance type).
+  spot_subnet_ids = {
+    for gpu_type, gpu_config in local.current_config.supported_gpu_types :
+    gpu_type => [
+      for az in try(data.aws_ec2_instance_type_offerings.spot_az_support[gpu_type].locations, []) :
+      lookup(local.az_to_subnet_key, az, "") != ""
+      ? (try(gpu_config.efa_network_cards, 0) > 1
+        ? local.private_subnet_map[local.az_to_subnet_key[az]]
+        : local.public_subnet_map[local.az_to_subnet_key[az]])
+      : null
+    ] if try(gpu_config.use_spot, false) && !try(gpu_config.virtual, false)
   }
 
   # Subnet maps: public (for single-EFA instances) and private (for multi-EFA instances)
@@ -235,12 +274,12 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
   for_each = local.gpu_asg_configs
 
   name = "${var.prefix}-gpu-nodes-${each.key}"
-  # Spot ASGs spread across all AZs for better fulfillment; on-demand/CR ASGs pin to
-  # the configured subnet_az. Multi-EFA instances always use private subnets.
+  # Spot ASGs use only AZs that support the instance type (dynamic lookup).
+  # On-demand/CR ASGs pin to the configured subnet_az.
   vpc_zone_identifier = try(each.value.gpu_config.use_spot, false) ? (
-    each.value.use_private_subnet
-    ? values(local.private_subnet_map)
-    : values(local.public_subnet_map)
+    length(try(local.spot_subnet_ids[each.value.gpu_type], [])) > 0
+    ? [for s in local.spot_subnet_ids[each.value.gpu_type] : s if s != null]
+    : (each.value.use_private_subnet ? values(local.private_subnet_map) : values(local.public_subnet_map))
   ) : [
     each.value.use_private_subnet
     ? local.private_subnet_map[each.value.subnet_az]
