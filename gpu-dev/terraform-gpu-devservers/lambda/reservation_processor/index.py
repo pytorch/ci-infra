@@ -2200,7 +2200,14 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
             logger.info(
                 f"Max {gpu_type.upper()} GPUs on a single node: {max_single_node}")
 
-        if available_gpus >= requested_gpus and max_single_node >= requested_gpus:
+        # For spot CPU types, check if any nodes exist before trying to allocate
+        spot_cpu_no_nodes = (
+            _is_spot_type(gpu_type) and gpu_type.startswith("cpu-")
+            and check_gpu_availability(gpu_type) == 0
+            and max_single_node == 0
+        )
+
+        if available_gpus >= requested_gpus and max_single_node >= requested_gpus and not spot_cpu_no_nodes:
             # Update status to show we're preparing the machine
             reservation_id = reservation_request.get("reservation_id")
             if reservation_id:
@@ -7778,7 +7785,20 @@ def process_scheduled_queue_management():
                 # Must check both total and per-node: K8s can't split GPU requests across nodes
                 type_available_gpus = check_gpu_availability(gpu_type)
                 max_single_node = check_max_gpus_on_single_node(gpu_type)
-                if type_available_gpus >= requested_gpus and max_single_node >= requested_gpus:
+                # For CPU spot types (0 GPUs), check that at least one schedulable node exists
+                cpu_spot_ready = True
+                if gpu_type.startswith("cpu-") and requested_gpus == 0 and _is_spot_type(gpu_type):
+                    cpu_spot_ready = check_schedulable_gpus_for_type(k8s_client, gpu_type) >= 0 and max_single_node >= 0 and type_available_gpus >= 0
+                    try:
+                        v1 = client.CoreV1Api(k8s_client)
+                        nodes = v1.list_node(label_selector=f"GpuType={get_node_gpu_type(gpu_type)}")
+                        cpu_spot_ready = any(
+                            any(c.type == "Ready" and c.status == "True" for c in (n.status.conditions or []))
+                            for n in nodes.items
+                        )
+                    except Exception:
+                        cpu_spot_ready = False
+                if type_available_gpus >= requested_gpus and max_single_node >= requested_gpus and cpu_spot_ready:
                     logger.info(
                         f"Allocating {requested_gpus} {gpu_type.upper()} GPUs for reservation {reservation_id} - {type_available_gpus} available"
                     )
