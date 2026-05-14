@@ -1837,7 +1837,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                         ended = item.get("reservation_ended") or item.get("expired_at") or item.get("created_at", "")
                                         if ended and ended < one_hour_ago:
                                             continue
-                                    item["_region"] = "us-east-1"
+                                    item["_region"] = "east1"
                                     results.append(item)
                             return results
                         except Exception:
@@ -1847,11 +1847,45 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         active_future = executor.submit(fetch_active)
                         failures_future = executor.submit(fetch_recent_failures)
                         east1_future = executor.submit(fetch_east1)
-                        reservations = active_future.result() + failures_future.result() + east1_future.result()
+                        prod_results = active_future.result() + failures_future.result()
+                        for r in prod_results:
+                            if "_region" not in r:
+                                r["_region"] = "prod"
+                        east1_results = east1_future.result()
+                        for r in east1_results:
+                            if "_region" not in r:
+                                r["_region"] = "east1"
+                        reservations = prod_results + east1_results
                 else:
-                    reservations = reservation_mgr.list_reservations(
+                    prod_res = reservation_mgr.list_reservations(
                         user_filter=user_filter, statuses_to_include=statuses_to_include
                     )
+                    for r in prod_res:
+                        if "_region" not in r:
+                            r["_region"] = "prod"
+                    east1_res = fetch_east1() if not status else []
+                    if not east1_res:
+                        try:
+                            east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+                            if east1_env and config.user_config.get("environment") == "prod":
+                                import boto3 as _b3
+                                east1_ddb = _b3.resource("dynamodb", region_name=east1_env["region"])
+                                east1_table = east1_ddb.Table("pytorch-gpu-dev-reservations")
+                                for s in (statuses_to_include or ["active", "preparing", "queued", "pending"]):
+                                    resp = east1_table.query(
+                                        IndexName="StatusIndex",
+                                        KeyConditionExpression="#s = :status",
+                                        ExpressionAttributeNames={"#s": "status"},
+                                        ExpressionAttributeValues={":status": s},
+                                    )
+                                    for item in resp.get("Items", []):
+                                        if user_filter and item.get("user_id") != user_filter:
+                                            continue
+                                        item["_region"] = "east1"
+                                        east1_res.append(item)
+                        except Exception:
+                            pass
+                    reservations = prod_res + east1_res
             except RuntimeError as e:
                 rprint(f"[red]❌ {str(e)}[/red]")
                 return False
@@ -1883,7 +1917,8 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
 
             # Create table with enhanced columns for queue info
             # Check if we have cross-region reservations
-            _has_east1 = any(r.get("_region") == "us-east-1" for r in reservations)
+            _regions = frozenset(r.get("_region", "") for r in reservations if r.get("_region"))
+            _has_multi_region = len(_regions) > 1
 
             table = Table(title="GPU Reservations")
             table.add_column("ID", style="cyan", no_wrap=True)
@@ -1894,7 +1929,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
             table.add_column("Queue Info", style="cyan")
             table.add_column("Created", style="blue")
             table.add_column("Expires/ETA", style="red")
-            if _has_east1:
+            if _has_multi_region:
                 table.add_column("Region", style="dim")
             if details:
                 table.add_column("CLI Ver", style="dim", no_wrap=True)
@@ -2099,9 +2134,12 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         row_data.append(
                             f"[dim]{lambda_version_display}[/dim]" if dim_row else lambda_version_display)
 
-                    if _has_east1:
-                        region = reservation.get("_region", "us-east-2")
-                        row_data.append("[yellow]east1[/yellow]" if region == "us-east-1" else "prod")
+                    if _has_multi_region:
+                        region = reservation.get("_region", "prod")
+                        if region in ("us-east-1", "east1"):
+                            row_data.append("[yellow]east1[/yellow]")
+                        else:
+                            row_data.append("prod")
 
                     table.add_row(*row_data)
 
