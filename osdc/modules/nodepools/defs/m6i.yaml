@@ -4,6 +4,8 @@ fleet:
   name: m6i
   arch: amd64
   gpu: false
+  # Pod-IP bucket (memory/balanced, m/r-series).
+  bucket: bucket-3
   instances:
     - type: m6i.32xlarge
       weight: 100

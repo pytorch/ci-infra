@@ -27,6 +27,36 @@ output "private_subnets_by_az" {
   value       = module.vpc.private_subnets_by_az
 }
 
+output "pod_cidr_associations" {
+  description = "Pod CIDR associations re-exported from the VPC module."
+  value       = module.vpc.pod_cidr_associations
+}
+
+output "pod_subnet_ids" {
+  description = "List of pod subnet IDs (re-exported from VPC module). See VPC module output for boundary semantics -- Karpenter MUST NOT consume this."
+  value       = module.vpc.pod_subnet_ids
+}
+
+output "pod_subnets_by_bucket_az" {
+  description = "Pod subnets keyed by '$${bucket}-$${az}' (re-exported from VPC module). Consumed by downstream modules."
+  value       = module.vpc.pod_subnets_by_bucket_az
+}
+
+output "nat_gateways_by_bucket_az" {
+  description = "NAT GWs keyed by '$${bucket}-$${az}', one per pod subnet (re-exported from VPC module). 12 in production / 8 in staging."
+  value       = module.vpc.nat_gateways_by_bucket_az
+}
+
+output "nat_gateway_eips_by_bucket_az" {
+  description = "NAT GW EIPs keyed by '$${bucket}-$${az}', each value an object with the primary EIP ID and a list of secondary EIP IDs (re-exported from VPC module)."
+  value       = module.vpc.nat_gateway_eips_by_bucket_az
+}
+
+output "pod_route_table_ids_by_bucket_az" {
+  description = "Pod route table IDs keyed by '$${bucket}-$${az}' (re-exported from VPC module). Each pod subnet associates with the matching route table."
+  value       = module.vpc.pod_route_table_ids_by_bucket_az
+}
+
 output "cluster_security_group_id" {
   value = module.eks.cluster_security_group_id
 }

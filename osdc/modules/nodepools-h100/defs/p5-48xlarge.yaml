@@ -6,6 +6,8 @@ nodepool:
   name: p5-48xlarge
   instance_type: p5.48xlarge
   arch: amd64
+  # Pod-IP bucket (GPU).
+  bucket: bucket-2
   node_disk_size: 100
   gpu: true
   has_nvme: true

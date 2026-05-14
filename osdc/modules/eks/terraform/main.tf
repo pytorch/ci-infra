@@ -48,8 +48,10 @@ module "vpc" {
     cidrsubnet(var.vpc_cidr, 8, 194),
   ]
 
-  enable_nat_gateway = true
-  single_nat_gateway = var.single_nat_gateway
+  enable_nat_gateway    = true
+  nat_gateway_eip_count = var.nat_gateway_eip_count
+
+  pod_cidr_buckets = var.pod_cidr_buckets
 
   tags = merge(local.tags, {
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"

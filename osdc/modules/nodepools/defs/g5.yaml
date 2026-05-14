@@ -5,6 +5,8 @@ fleet:
   name: g5
   arch: amd64
   gpu: true
+  # Pod-IP bucket (GPU).
+  bucket: bucket-2
   exclude_regions:
     - us-west-1
   instances:

@@ -11,6 +11,8 @@ nodepool:
   name: p4d-24xlarge
   instance_type: p4d.24xlarge
   arch: amd64
+  # Pod-IP bucket (GPU).
+  bucket: bucket-2
   node_disk_size: 100
   gpu: true
   has_nvme: true

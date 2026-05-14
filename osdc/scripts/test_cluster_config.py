@@ -1,6 +1,7 @@
 """Unit tests for cluster-config.py."""
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -22,10 +23,50 @@ _spec.loader.exec_module(cluster_config)
 # Fixtures
 # ============================================================================
 
+# Reusable valid pod_cidr_buckets fixtures for tests (4 buckets x 2 AZs).
+# Real clusters use 4x3 (production) / 4x2 (staging); 4x2 is enough to
+# exercise validation and tfvar emission paths.
+_VALID_POD_CIDR_BUCKETS_2AZ = {
+    "bucket-1": {
+        "us-west-2a": "100.64.0.0/16",
+        "us-west-2b": "100.65.0.0/16",
+    },
+    "bucket-2": {
+        "us-west-2a": "100.66.0.0/16",
+        "us-west-2b": "100.67.0.0/16",
+    },
+    "bucket-3": {
+        "us-west-2a": "100.68.0.0/16",
+        "us-west-2b": "100.69.0.0/16",
+    },
+    "bucket-4": {
+        "us-west-2a": "100.70.0.0/16",
+        "us-west-2b": "100.71.0.0/16",
+    },
+}
+
+_VALID_POD_CIDR_BUCKETS_PROD = {
+    "bucket-1": {
+        "us-east-1a": "100.96.0.0/16",
+        "us-east-1b": "100.97.0.0/16",
+    },
+    "bucket-2": {
+        "us-east-1a": "100.98.0.0/16",
+        "us-east-1b": "100.99.0.0/16",
+    },
+    "bucket-3": {
+        "us-east-1a": "100.100.0.0/16",
+        "us-east-1b": "100.101.0.0/16",
+    },
+    "bucket-4": {
+        "us-east-1a": "100.102.0.0/16",
+        "us-east-1b": "100.103.0.0/16",
+    },
+}
+
 FAKE_CONFIG = {
     "defaults": {
         "vpc_cidr": "10.0.0.0/16",
-        "single_nat_gateway": False,
         "base_node_count": 3,
         "base_node_instance_type": "m5.xlarge",
         "base_node_max_unavailable_percentage": 33,
@@ -42,7 +83,7 @@ FAKE_CONFIG = {
             "state_bucket": "my-tfstate-staging",
             "base": {
                 "vpc_cidr": "10.1.0.0/16",
-                "single_nat_gateway": True,
+                "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ,
             },
             "modules": ["karpenter", "arc", "arc-runners"],
             "harbor": {
@@ -53,6 +94,9 @@ FAKE_CONFIG = {
         "production": {
             "cluster_name": "my-production",
             "region": "us-east-1",
+            "base": {
+                "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_PROD,
+            },
             "modules": ["karpenter", "arc", "arc-runners", "buildkit", "monitoring"],
         },
     },
@@ -146,21 +190,31 @@ class TestResolve:
 # ============================================================================
 
 
+def _cfg_with_buckets(**overrides):
+    """Build a minimal tfvars-ready cluster config with valid pod_cidr_buckets."""
+    base = overrides.pop("base", {}) or {}
+    base.setdefault("pod_cidr_buckets", _VALID_POD_CIDR_BUCKETS_2AZ)
+    cfg = {
+        "cluster_name": overrides.pop("cluster_name", "test-cluster"),
+        "region": overrides.pop("region", "us-west-2"),
+        "base": base,
+    }
+    cfg.update(overrides)
+    return cfg
+
+
 class TestTfvars:
     """Tests for the tfvars() function."""
 
     def test_all_defaults(self, capsys):
-        cluster_cfg = {
-            "cluster_name": "test-cluster",
-            "region": "us-west-2",
-        }
+        cluster_cfg = _cfg_with_buckets()
         defaults = {}
         cluster_config.tfvars("test", cluster_cfg, defaults)
         out = capsys.readouterr().out.strip()
         assert '-var="cluster_name=test-cluster"' in out
         assert '-var="aws_region=us-west-2"' in out
         assert '-var="vpc_cidr=10.0.0.0/16"' in out
-        assert '-var="single_nat_gateway=false"' in out
+        assert '-var="nat_gateway_eip_count=8"' in out
         assert '-var="base_node_count=3"' in out
         assert '-var="base_node_instance_type=m5.xlarge"' in out
         assert '-var="base_node_max_unavailable_percentage=33"' in out
@@ -170,87 +224,625 @@ class TestTfvars:
         assert '-var="coredns_replicas=6"' in out
 
     def test_coredns_replicas_from_defaults(self, capsys):
-        cluster_cfg = {
-            "cluster_name": "c",
-            "region": "r",
-        }
+        cluster_cfg = _cfg_with_buckets(cluster_name="c", region="r")
         defaults = {"coredns": {"replicas": 4}}
         cluster_config.tfvars("c", cluster_cfg, defaults)
         out = capsys.readouterr().out.strip()
         assert '-var="coredns_replicas=4"' in out
 
     def test_coredns_replicas_cluster_override(self, capsys):
-        cluster_cfg = {
-            "cluster_name": "c",
-            "region": "r",
-            "coredns": {"replicas": 2},
-        }
+        cluster_cfg = _cfg_with_buckets(
+            cluster_name="c",
+            region="r",
+            coredns={"replicas": 2},
+        )
         defaults = {"coredns": {"replicas": 6}}
         cluster_config.tfvars("c", cluster_cfg, defaults)
         out = capsys.readouterr().out.strip()
         assert '-var="coredns_replicas=2"' in out
 
     def test_cluster_overrides(self, capsys):
-        cluster_cfg = {
-            "cluster_name": "prod-cluster",
-            "region": "eu-west-1",
-            "base": {
+        cluster_cfg = _cfg_with_buckets(
+            cluster_name="prod-cluster",
+            region="eu-west-1",
+            base={
                 "vpc_cidr": "10.99.0.0/16",
-                "single_nat_gateway": True,
                 "base_node_count": 6,
                 "base_node_instance_type": "m6i.2xlarge",
                 "base_node_max_unavailable_percentage": 50,
                 "base_node_ami_version": "v20260318",
                 "eks_version": "1.36",
+                "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ,
             },
-        }
+        )
         defaults = {
             "vpc_cidr": "10.0.0.0/16",
-            "single_nat_gateway": False,
             "base_node_count": 3,
         }
         cluster_config.tfvars("prod", cluster_cfg, defaults)
         out = capsys.readouterr().out.strip()
         assert '-var="vpc_cidr=10.99.0.0/16"' in out
-        assert '-var="single_nat_gateway=true"' in out
         assert '-var="base_node_count=6"' in out
         assert '-var="base_node_instance_type=m6i.2xlarge"' in out
         assert '-var="base_node_max_unavailable_percentage=50"' in out
         assert '-var="base_node_ami_version=v20260318"' in out
         assert '-var="eks_version=1.36"' in out
 
-    def test_bool_formatting(self, capsys):
-        """single_nat_gateway bool should be lowercased."""
-        cluster_cfg = {
-            "cluster_name": "c",
-            "region": "r",
-            "base": {"single_nat_gateway": True},
-        }
-        cluster_config.tfvars("c", cluster_cfg, {})
+    def test_nat_gateway_eip_count_emitted_default(self, capsys):
+        """nat_gateway_eip_count defaults to 8 when no override; emitted as int."""
+        cluster_cfg = _cfg_with_buckets()
+        cluster_config.tfvars("test", cluster_cfg, {})
         out = capsys.readouterr().out.strip()
-        assert '-var="single_nat_gateway=true"' in out
-        # Ensure it's not Python-style True
-        assert "True" not in out
+        assert '-var="nat_gateway_eip_count=8"' in out
 
     def test_eks_version_from_defaults(self, capsys):
-        cluster_cfg = {
-            "cluster_name": "c",
-            "region": "r",
-        }
+        cluster_cfg = _cfg_with_buckets(cluster_name="c", region="r")
         defaults = {"eks_version": "1.30"}
         cluster_config.tfvars("c", cluster_cfg, defaults)
         out = capsys.readouterr().out.strip()
         assert '-var="eks_version=1.30"' in out
 
-    def test_no_base_key(self, capsys):
-        """Cluster with no 'base' key should use defaults for everything."""
+    def test_no_base_key_fails(self):
+        """Cluster with no 'base' key fails because pod_cidr_buckets is required."""
         cluster_cfg = {
             "cluster_name": "minimal",
             "region": "ap-southeast-1",
         }
-        cluster_config.tfvars("minimal", cluster_cfg, {"vpc_cidr": "10.50.0.0/16"})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("minimal", cluster_cfg, {"vpc_cidr": "10.50.0.0/16"})
+        assert "pod_cidr_buckets" in str(exc.value)
+        assert "minimal" in str(exc.value)
+
+    def test_pod_cidr_buckets_emitted(self, capsys):
+        """Happy path: pod_cidr_buckets is emitted as a single JSON-encoded -var flag
+        wrapped in single quotes so the inner double quotes survive shell eval.
+        """
+        cluster_cfg = _cfg_with_buckets()
+        cluster_config.tfvars("test", cluster_cfg, {})
         out = capsys.readouterr().out.strip()
-        assert '-var="vpc_cidr=10.50.0.0/16"' in out
+        # Single-quote wrapped, JSON-encoded
+        assert "-var='pod_cidr_buckets=" in out
+        assert '"bucket-1"' in out
+        assert '"100.64.0.0/16"' in out
+        # Confirm the JSON is round-trippable: extract and parse
+        prefix = "-var='pod_cidr_buckets="
+        start = out.index(prefix) + len(prefix)
+        end = out.index("'", start)
+        parsed = json.loads(out[start:end])
+        assert parsed == _VALID_POD_CIDR_BUCKETS_2AZ
+
+    def test_pod_cidr_buckets_missing_fails(self):
+        """Cluster without pod_cidr_buckets raises SystemExit naming the cluster."""
+        cluster_cfg = {
+            "cluster_name": "no-buckets",
+            "region": "us-west-2",
+            "base": {"vpc_cidr": "10.0.0.0/16"},
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("no-buckets", cluster_cfg, {})
+        msg = str(exc.value)
+        assert "pod_cidr_buckets" in msg
+        assert "no-buckets" in msg
+
+    def test_pod_cidr_buckets_empty_dict_fails(self):
+        """Empty pod_cidr_buckets fails the non-empty check."""
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": {}})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "non-empty" in str(exc.value)
+
+    def test_pod_cidr_buckets_invalid_bucket_name(self):
+        """Bucket name like 'bucket-5' or 'cpu-general' fails validation."""
+        bad_buckets = {
+            "bucket-5": {"us-west-2a": "100.64.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "bucket-5" in str(exc.value)
+        assert "bucket name" in str(exc.value)
+
+    def test_pod_cidr_buckets_non_bucket_prefix_name(self):
+        """Bucket name like 'cpu-general' (not bucket-N) fails validation."""
+        bad_buckets = {
+            "cpu-general": {"us-west-2a": "100.64.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "cpu-general" in str(exc.value)
+
+    def test_pod_cidr_buckets_invalid_az_name(self):
+        """AZ key like 'us-east-99' fails validation."""
+        bad_buckets = {
+            "bucket-1": {"us-east-99": "100.64.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "us-east-99" in str(exc.value)
+        assert "AZ" in str(exc.value)
+
+    def test_pod_cidr_buckets_empty_az_name(self):
+        """Empty-string AZ name fails validation."""
+        bad_buckets = {
+            "bucket-1": {"": "100.64.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "AZ" in str(exc.value)
+
+    def test_pod_cidr_buckets_invalid_cidr_outside_cgnat(self):
+        """CIDR outside CGNAT (e.g. 10.0.0.0/16) fails validation."""
+        bad_buckets = {
+            "bucket-1": {"us-west-2a": "10.0.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "10.0.0.0/16" in str(exc.value)
+        assert "CGNAT" in str(exc.value)
+
+    def test_pod_cidr_buckets_invalid_cidr_above_cgnat_range(self):
+        """CIDR with second octet outside 64-127 (e.g. 100.128.0.0/16) fails."""
+        bad_buckets = {
+            "bucket-1": {"us-west-2a": "100.128.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "100.128.0.0/16" in str(exc.value)
+
+    def test_pod_cidr_buckets_invalid_cidr_wrong_size(self):
+        """CIDR with non-/16 prefix (e.g. /24) fails validation."""
+        bad_buckets = {
+            "bucket-1": {"us-west-2a": "100.64.0.0/24"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "100.64.0.0/24" in str(exc.value)
+
+    def test_pod_cidr_buckets_duplicate_cidrs(self):
+        """Two entries with the same CIDR string fails validation."""
+        bad_buckets = {
+            "bucket-1": {
+                "us-west-2a": "100.64.0.0/16",
+                "us-west-2b": "100.65.0.0/16",
+            },
+            "bucket-2": {
+                "us-west-2a": "100.64.0.0/16",  # duplicate of bucket-1/us-west-2a
+                "us-west-2b": "100.66.0.0/16",
+            },
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        msg = str(exc.value)
+        assert "duplicate" in msg
+        assert "100.64.0.0/16" in msg
+
+    def test_pod_cidr_buckets_non_dict_inner(self):
+        """Inner az_map that isn't a dict (e.g. string) fails validation."""
+        bad_buckets = {"bucket-1": "not-a-dict"}
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "bucket-1" in str(exc.value)
+
+    def test_pod_cidr_buckets_non_dict_outer(self):
+        """Outer pod_cidr_buckets that isn't a dict (e.g. list) fails validation."""
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": ["bucket-1"]})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "non-empty mapping" in str(exc.value)
+
+    def test_pod_cidr_buckets_non_string_cidr(self):
+        """Non-string CIDR value (e.g. int) fails validation."""
+        bad_buckets = {"bucket-1": {"us-west-2a": 12345}}
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "12345" in str(exc.value)
+
+
+class TestNatGatewayEipCountValidation:
+    """Tests for _validate_nat_gateway_eip_count — defends against shell-injection
+    via clusters.yaml since the value flows into `eval tofu plan $TFVARS`.
+    """
+
+    def test_int_value_accepted(self, capsys):
+        """Plain int 8 is accepted and emitted unchanged."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": 8, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="nat_gateway_eip_count=8"' in out
+
+    def test_string_int_value_accepted(self, capsys):
+        """YAML string '8' is coerced cleanly to int and emitted as 8."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": "8", "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="nat_gateway_eip_count=8"' in out
+
+    def test_lower_bound_one_accepted(self, capsys):
+        """Lower-bound 1 is accepted (range is inclusive [1, 8])."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": 1, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="nat_gateway_eip_count=1"' in out
+
+    def test_zero_rejected(self):
+        """Zero is below the [1, 8] lower bound."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": 0, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        msg = str(exc.value)
+        assert "1, 8" in msg or "1-8" in msg
+        assert "c" in msg
+
+    def test_nine_rejected(self):
+        """Nine exceeds the AWS hard cap of 8 EIPs per NAT GW."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": 9, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        msg = str(exc.value)
+        assert "1, 8" in msg or "1-8" in msg
+
+    def test_negative_rejected(self):
+        """Negative values are rejected by the range check."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": -1, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "1, 8" in str(exc.value) or "1-8" in str(exc.value)
+
+    def test_string_with_metachars_rejected(self):
+        """A string containing shell metachars cannot be coerced to int — rejected."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": "8; rm -rf /", "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        msg = str(exc.value)
+        assert "integer" in msg
+        # The offending value must appear in the error so operators can find the typo
+        assert "8; rm -rf /" in msg
+
+    def test_quoted_injection_rejected(self):
+        """A string that would inject a second -var flag must be rejected."""
+        injection = '8" -var="cluster_name=evil'
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": injection, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "integer" in str(exc.value)
+
+    def test_float_rejected(self):
+        """Floats are rejected — int('8.5') raises ValueError."""
+        # Note: passing a float literal directly works because int(8.5) silently
+        # truncates. The realistic shell-injection vector is YAML-parsed strings,
+        # so we test the string form which is what int() actually rejects.
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": "8.5", "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "integer" in str(exc.value)
+
+    def test_none_rejected(self):
+        """An explicit None (e.g. `nat_gateway_eip_count: ~` in YAML) is rejected.
+
+        Note: `base.get("nat_gateway_eip_count", 8)` returns 8 if the key is
+        absent; but if the key is present with explicit null, it returns None,
+        which the validator must reject (int(None) raises TypeError).
+        """
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": None, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "integer" in str(exc.value)
+
+    def test_bool_true_rejected(self):
+        """bool is a subclass of int in Python; True must NOT be silently coerced to 1."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": True, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "integer" in str(exc.value)
+
+
+class TestValidatePodCidrBuckets:
+    """Direct tests for the _validate_pod_cidr_buckets helper."""
+
+    def test_valid_passes(self):
+        # Should not raise
+        cluster_config._validate_pod_cidr_buckets("c", _VALID_POD_CIDR_BUCKETS_2AZ)
+
+    def test_valid_3az(self):
+        # 4 x 3 AZs (production-shape)
+        cluster_config._validate_pod_cidr_buckets("c", _VALID_POD_CIDR_BUCKETS_PROD)
+
+    def test_all_four_buckets_valid(self):
+        """All bucket-1 through bucket-4 names are accepted."""
+        buckets = {f"bucket-{i}": {"us-west-2a": f"100.{63 + i}.0.0/16"} for i in range(1, 5)}
+        cluster_config._validate_pod_cidr_buckets("c", buckets)
+
+
+# ============================================================================
+# azs() tests
+# ============================================================================
+
+
+class TestAzsAccessor:
+    """Tests for the azs() accessor — feeds NODEPOOLS_AZS in deploy.sh."""
+
+    def test_3az_symmetric(self, capsys):
+        """4 buckets x 3 AZs (production-shape) — sorted, comma-separated, no spaces."""
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_PROD})
+        cluster_config.azs("prod", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "us-east-1a,us-east-1b"
+        # Production fixture in this file is 2-AZ; verify that for a real 3-AZ
+        # shape (assembled inline) the same sorting / no-space invariant holds.
+        three_az_buckets = {
+            f"bucket-{i}": {
+                "us-east-2a": f"100.{63 + (i - 1) * 3 + 1}.0.0/16",
+                "us-east-2c": f"100.{63 + (i - 1) * 3 + 2}.0.0/16",
+                "us-east-2b": f"100.{63 + (i - 1) * 3 + 3}.0.0/16",
+            }
+            for i in range(1, 5)
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": three_az_buckets})
+        capsys.readouterr()  # drain
+        cluster_config.azs("c", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "us-east-2a,us-east-2b,us-east-2c"
+        # No spaces anywhere in the output (shell-safe for $(...) substitution)
+        assert " " not in out.strip()
+
+    def test_2az_symmetric(self, capsys):
+        """4 buckets x 2 AZs (staging-shape) — sorted, comma-separated, no spaces."""
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ})
+        cluster_config.azs("staging", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "us-west-2a,us-west-2b"
+        assert " " not in out.strip()
+
+    def test_az_keys_sorted_when_yaml_unordered(self, capsys):
+        """AZ keys are sorted regardless of insertion order in the source dict."""
+        unsorted_buckets = {
+            "bucket-1": {"us-west-1c": "100.96.0.0/16", "us-west-1a": "100.97.0.0/16"},
+            "bucket-2": {"us-west-1c": "100.98.0.0/16", "us-west-1a": "100.99.0.0/16"},
+            "bucket-3": {"us-west-1c": "100.100.0.0/16", "us-west-1a": "100.101.0.0/16"},
+            "bucket-4": {"us-west-1c": "100.102.0.0/16", "us-west-1a": "100.103.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": unsorted_buckets})
+        cluster_config.azs("c", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "us-west-1a,us-west-1c"
+
+    def test_missing_pod_cidr_buckets_raises(self):
+        """No base.pod_cidr_buckets — raises SystemExit naming the cluster."""
+        cluster_cfg = {
+            "cluster_name": "no-buckets",
+            "region": "us-west-2",
+            "base": {"vpc_cidr": "10.0.0.0/16"},
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.azs("no-buckets", cluster_cfg)
+        msg = str(exc.value)
+        assert "pod_cidr_buckets" in msg
+        assert "no-buckets" in msg
+
+    def test_missing_base_raises(self):
+        """No base block at all — same missing-buckets error path."""
+        cluster_cfg = {
+            "cluster_name": "minimal",
+            "region": "ap-southeast-1",
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.azs("minimal", cluster_cfg)
+        assert "pod_cidr_buckets" in str(exc.value)
+        assert "minimal" in str(exc.value)
+
+    def test_bucket_missing_az_raises(self):
+        """One bucket missing an AZ that the others have — raises with diff."""
+        asymmetric_buckets = {
+            "bucket-1": {
+                "us-east-2a": "100.64.0.0/16",
+                "us-east-2b": "100.65.0.0/16",
+                "us-east-2c": "100.66.0.0/16",
+            },
+            # bucket-2 is missing us-east-2c
+            "bucket-2": {
+                "us-east-2a": "100.67.0.0/16",
+                "us-east-2b": "100.68.0.0/16",
+            },
+            "bucket-3": {
+                "us-east-2a": "100.69.0.0/16",
+                "us-east-2b": "100.70.0.0/16",
+                "us-east-2c": "100.71.0.0/16",
+            },
+            "bucket-4": {
+                "us-east-2a": "100.72.0.0/16",
+                "us-east-2b": "100.73.0.0/16",
+                "us-east-2c": "100.74.0.0/16",
+            },
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": asymmetric_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.azs("c", cluster_cfg)
+        msg = str(exc.value)
+        assert "bucket-2" in msg
+        assert "us-east-2c" in msg
+        assert "symmetric difference" in msg or "differ" in msg
+
+    def test_bucket_extra_az_raises(self):
+        """One bucket has an extra AZ key the others don't — raises with diff."""
+        asymmetric_buckets = {
+            "bucket-1": {
+                "us-east-2a": "100.64.0.0/16",
+                "us-east-2b": "100.65.0.0/16",
+            },
+            # bucket-2 has an extra AZ that no other bucket has
+            "bucket-2": {
+                "us-east-2a": "100.66.0.0/16",
+                "us-east-2b": "100.67.0.0/16",
+                "us-east-2c": "100.68.0.0/16",
+            },
+            "bucket-3": {
+                "us-east-2a": "100.69.0.0/16",
+                "us-east-2b": "100.70.0.0/16",
+            },
+            "bucket-4": {
+                "us-east-2a": "100.71.0.0/16",
+                "us-east-2b": "100.72.0.0/16",
+            },
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": asymmetric_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.azs("c", cluster_cfg)
+        msg = str(exc.value)
+        assert "bucket-2" in msg
+        assert "us-east-2c" in msg
+        assert "symmetric difference" in msg or "differ" in msg
+
+    def test_output_is_shell_safe(self, capsys):
+        """Output must be a single line, no spaces — safe for shell $(...) substitution.
+
+        Asserts the printed value has exactly one trailing newline (from print)
+        and no embedded whitespace that would break `var=$(cmd)` capture or
+        split() in the downstream Python consumer.
+        """
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ})
+        cluster_config.azs("c", cluster_cfg)
+        raw = capsys.readouterr().out
+        # print() adds exactly one trailing newline
+        assert raw.endswith("\n")
+        # Stripping trailing newline matches stripping all whitespace from end
+        assert raw.rstrip("\n") == raw.rstrip()
+        # No internal whitespace: the value (without trailing newline) has no spaces or tabs
+        value = raw.rstrip("\n")
+        assert " " not in value
+        assert "\t" not in value
+        assert "\n" not in value
+        # Splitting by ',' must produce non-empty AZ tokens (mirrors downstream .split(","))
+        tokens = value.split(",")
+        assert all(tokens)
+        assert tokens == sorted(tokens)
+
+
+# ============================================================================
+# valid_buckets() tests
+# ============================================================================
+
+
+class TestValidBucketsAccessor:
+    """Tests for the valid_buckets() accessor — feeds NODEPOOLS_VALID_BUCKETS in deploy.sh."""
+
+    def test_4az_returns_sorted_list(self, capsys):
+        """4 buckets — sorted, comma-separated, no spaces."""
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_PROD})
+        cluster_config.valid_buckets("prod", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "bucket-1,bucket-2,bucket-3,bucket-4"
+
+    def test_3bucket_returns_sorted_list(self, capsys):
+        """A 3-bucket fixture — sorted, comma-separated, no spaces."""
+        three_bucket = {
+            "bucket-1": {"us-west-2a": "100.64.0.0/16", "us-west-2b": "100.65.0.0/16"},
+            "bucket-2": {"us-west-2a": "100.66.0.0/16", "us-west-2b": "100.67.0.0/16"},
+            "bucket-3": {"us-west-2a": "100.68.0.0/16", "us-west-2b": "100.69.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": three_bucket})
+        cluster_config.valid_buckets("c", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "bucket-1,bucket-2,bucket-3"
+
+    def test_buckets_sorted_when_yaml_unordered(self, capsys):
+        """Bucket names are sorted regardless of insertion order in the source dict."""
+        unordered = {
+            "bucket-3": {"us-west-2a": "100.68.0.0/16", "us-west-2b": "100.69.0.0/16"},
+            "bucket-1": {"us-west-2a": "100.64.0.0/16", "us-west-2b": "100.65.0.0/16"},
+            "bucket-4": {"us-west-2a": "100.70.0.0/16", "us-west-2b": "100.71.0.0/16"},
+            "bucket-2": {"us-west-2a": "100.66.0.0/16", "us-west-2b": "100.67.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": unordered})
+        cluster_config.valid_buckets("c", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "bucket-1,bucket-2,bucket-3,bucket-4"
+
+    def test_missing_pod_cidr_buckets_raises(self):
+        """No base.pod_cidr_buckets — raises SystemExit naming the cluster."""
+        cluster_cfg = {
+            "cluster_name": "no-buckets",
+            "region": "us-west-2",
+            "base": {"vpc_cidr": "10.0.0.0/16"},
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.valid_buckets("no-buckets", cluster_cfg)
+        msg = str(exc.value)
+        assert "pod_cidr_buckets" in msg
+        assert "no-buckets" in msg
+
+    def test_missing_base_raises(self):
+        """No base block at all — same missing-buckets error path."""
+        cluster_cfg = {
+            "cluster_name": "minimal",
+            "region": "ap-southeast-1",
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.valid_buckets("minimal", cluster_cfg)
+        assert "pod_cidr_buckets" in str(exc.value)
+        assert "minimal" in str(exc.value)
+
+    def test_invalid_bucket_name_raises(self):
+        """A malformed bucket name (e.g. bucket-5) is rejected via _validate_pod_cidr_buckets."""
+        bad = {"bucket-5": {"us-west-2a": "100.64.0.0/16"}}
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.valid_buckets("c", cluster_cfg)
+        assert "bucket-5" in str(exc.value)
+
+    def test_output_is_shell_safe(self, capsys):
+        """Output must be a single line, no spaces — safe for shell $(...) substitution.
+
+        Asserts the printed value has exactly one trailing newline (from print)
+        and no embedded whitespace that would break ``var=$(cmd)`` capture or
+        the downstream ``.split(",")`` consumer in the nodepool generator.
+        """
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ})
+        cluster_config.valid_buckets("c", cluster_cfg)
+        raw = capsys.readouterr().out
+        # print() adds exactly one trailing newline
+        assert raw.endswith("\n")
+        # Stripping trailing newline matches stripping all whitespace from end
+        assert raw.rstrip("\n") == raw.rstrip()
+        value = raw.rstrip("\n")
+        # No internal whitespace (spaces, tabs, embedded newlines)
+        assert " " not in value
+        assert "\t" not in value
+        assert "\n" not in value
+        # split(",") must produce non-empty bucket tokens, all sorted
+        tokens = value.split(",")
+        assert all(tokens)
+        assert tokens == sorted(tokens)
 
 
 # ============================================================================
@@ -343,7 +935,7 @@ class TestMain:
         assert '-var="aws_region=us-west-2"' in out
         # Staging overrides vpc_cidr via base
         assert '-var="vpc_cidr=10.1.0.0/16"' in out
-        assert '-var="single_nat_gateway=true"' in out
+        assert '-var="nat_gateway_eip_count=8"' in out
 
     def test_dotpath_resolve(self, capsys):
         code = run_main("staging", "harbor.core_replicas")
@@ -369,12 +961,6 @@ class TestMain:
     def test_bool_field_output(self, capsys):
         """Boolean values should be printed lowercase."""
         code = run_main("staging", "feature_flag")
-        assert code == 0
-        assert capsys.readouterr().out.strip() == "true"
-
-    def test_bool_false_field_output(self, capsys):
-        """Boolean False from defaults should print 'false'."""
-        code = run_main("staging", "base.single_nat_gateway")
         assert code == 0
         assert capsys.readouterr().out.strip() == "true"
 

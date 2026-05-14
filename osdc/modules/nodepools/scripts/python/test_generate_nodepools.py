@@ -1,25 +1,46 @@
 """Unit tests for generate_nodepools.py — Karpenter NodePool generator."""
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import yaml
-from generate_nodepools import (
+
+# cni_constants lives in scripts/python/ at the repo root. Ensure that path is on
+# sys.path so the import works when pytest runs (mirrors the same trick
+# generate_nodepools.py uses internally).
+_SCRIPTS_PYTHON = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
+if _SCRIPTS_PYTHON not in sys.path:
+    sys.path.insert(0, _SCRIPTS_PYTHON)
+
+from cni_constants import ENI_CONFIG_LABEL, bucket_eniconfig_name  # noqa: E402
+from generate_nodepools import (  # noqa: E402
     _build_fleet_nodepool_def,
     _detect_arch,
     _fleet_nodepool_name,
     _get_node_disk_size,
+    _parse_azs,
+    _parse_valid_buckets,
     _read_user_data_script,
     _user_data_script_mime_part,
+    _validate_bucket,
+    compute_pd_max_pods,
     generate_nodepool_yaml,
     main,
+    resolve_max_pods,
 )
 
 # ============================================================================
 # Helpers
 # ============================================================================
+
+
+# Default AZ list used by tests that need to invoke main() — matches a
+# 3-AZ production-shaped cluster.
+DEFAULT_AZS = "us-east-2a,us-east-2b,us-east-2c"
+DEFAULT_AZ = "us-east-2a"
 
 
 def parse_all_yaml(text: str) -> list[dict]:
@@ -34,12 +55,22 @@ def _make_nodepool_def(**overrides) -> dict:
         "instance_type": "m6i.32xlarge",
         "node_disk_size": 200,
         "gpu": False,
+        # Pod-IP bucket (required on every workload nodepool)
+        "bucket": "bucket-1",
     }
     base.update(overrides)
     return base
 
 
 REAL_DEFS_DIR = Path(__file__).parent.parent.parent / "defs"
+
+# All real defs dirs — name-length guard covers all GPU sister modules.
+_MODULES_DIR = Path(__file__).parent.parent.parent.parent
+ALL_REAL_DEFS_DIRS = [
+    _MODULES_DIR / "nodepools" / "defs",
+    _MODULES_DIR / "nodepools-h100" / "defs",
+    _MODULES_DIR / "nodepools-b200" / "defs",
+]
 
 
 def _load_real_def(filename: str) -> dict:
@@ -61,10 +92,17 @@ def _load_real_def(filename: str) -> dict:
     raise ValueError(f"Unknown format in {filename}")
 
 
-def _load_all_real_defs() -> list[dict]:
-    """Load all real def files, expanding fleets into individual nodepool_defs."""
+def _load_all_real_defs(defs_dir: Path | None = None) -> list[dict]:
+    """Load all real def files from ``defs_dir``, expanding fleets into individual nodepool_defs.
+
+    Default ``defs_dir`` is ``modules/nodepools/defs/`` (preserves the original
+    behavior for existing callers). Pass ``modules/nodepools-h100/defs/`` or
+    ``modules/nodepools-b200/defs/`` for sister-GPU-module checks.
+    """
+    if defs_dir is None:
+        defs_dir = REAL_DEFS_DIR
     result = []
-    for f in sorted(REAL_DEFS_DIR.glob("*.yaml")):
+    for f in sorted(defs_dir.glob("*.yaml")):
         with open(f) as fh:
             data = yaml.safe_load(fh)
         if not data:
@@ -754,27 +792,35 @@ class TestRealDefFiles:
     """Round-trip tests using actual def files from modules/nodepools/defs/.
 
     Supports both legacy ``nodepool:`` files and new ``fleet:``/``fleets:`` files.
+    Uses ``DEFAULT_AZ`` for the AZ-pinned variant — a single AZ is enough to
+    exercise the rendering path; the AZ-expansion logic is covered separately
+    in TestAzExpansion.
     """
 
     @pytest.fixture(params=_load_all_real_defs(), ids=lambda d: d["name"])
     def real_def(self, request):
         return request.param
 
+    def test_real_def_has_valid_bucket(self, real_def):
+        """Every real def must declare a valid bucket."""
+        _validate_bucket(real_def.get("bucket"), where=f"real def {real_def['name']!r}")
+
     def test_generates_valid_yaml(self, real_def):
-        output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR)
+        output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR, az=DEFAULT_AZ)
         docs = parse_all_yaml(output)
         assert len(docs) == 2
         assert docs[0]["kind"] == "NodePool"
         assert docs[1]["kind"] == "EC2NodeClass"
 
     def test_name_matches(self, real_def):
-        output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR)
+        output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR, az=DEFAULT_AZ)
         docs = parse_all_yaml(output)
-        assert docs[0]["metadata"]["name"] == real_def["name"]
-        assert docs[1]["metadata"]["name"] == real_def["name"]
+        expected_name = f"{real_def['name']}-{DEFAULT_AZ}"
+        assert docs[0]["metadata"]["name"] == expected_name
+        assert docs[1]["metadata"]["name"] == expected_name
 
     def test_instance_type_in_requirements(self, real_def):
-        output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR)
+        output = generate_nodepool_yaml(real_def, "nodepools", REAL_DEFS_DIR, az=DEFAULT_AZ)
         docs = parse_all_yaml(output)
         np = docs[0]
         reqs = np["spec"]["template"]["spec"]["requirements"]
@@ -812,13 +858,15 @@ class TestMain:
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
             "NODEPOOLS_MODULE_NAME": "test",
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
 
         assert result == 0
         generated = list(output_dir.glob("*.yaml"))
-        assert len(generated) == 2
+        # 2 defs x 3 AZs = 6 generated NodePool/EC2NodeClass pairs
+        assert len(generated) == 6
 
     def test_cleans_output_dir(self, tmp_path):
         defs_dir = self._create_defs(
@@ -834,12 +882,16 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             main()
 
         assert not (output_dir / "stale.yaml").exists()
-        assert (output_dir / "pool-a.yaml").exists()
+        # Output filenames carry the AZ suffix.
+        assert (output_dir / "pool-a-us-east-2a.yaml").exists()
+        assert (output_dir / "pool-a-us-east-2b.yaml").exists()
+        assert (output_dir / "pool-a-us-east-2c.yaml").exists()
 
     def test_no_defs_returns_error(self, tmp_path):
         defs_dir = tmp_path / "empty_defs"
@@ -849,6 +901,7 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
@@ -864,6 +917,7 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
@@ -882,6 +936,7 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
@@ -900,18 +955,21 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             main()
 
-        content = (output_dir / "parseable.yaml").read_text()
-        docs = parse_all_yaml(content)
-        assert len(docs) == 2
-        assert docs[0]["kind"] == "NodePool"
-        assert docs[1]["kind"] == "EC2NodeClass"
+        # Verify every AZ variant parses as the expected pair
+        for az in DEFAULT_AZS.split(","):
+            content = (output_dir / f"parseable-{az}.yaml").read_text()
+            docs = parse_all_yaml(content)
+            assert len(docs) == 2
+            assert docs[0]["kind"] == "NodePool"
+            assert docs[1]["kind"] == "EC2NodeClass"
 
     def test_fleet_format_generates_multiple(self, tmp_path):
-        """A fleet file with 3 instances generates 3 output files."""
+        """A fleet file with 3 instances x 3 AZs generates 9 output files."""
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         fleet_data = {
@@ -919,6 +977,7 @@ class TestMain:
                 "name": "r7a",
                 "arch": "amd64",
                 "gpu": False,
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
                     {"type": "r7a.24xlarge", "weight": 80, "node_disk_size": 2400},
@@ -933,16 +992,20 @@ class TestMain:
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
             "NODEPOOLS_MODULE_NAME": "test",
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        assert generated == ["r7a-24xlarge.yaml", "r7a-48xlarge.yaml", "r7a-8xlarge.yaml"]
+        expected = sorted(
+            f"r7a-{size}-{az}.yaml" for size in ("8xlarge", "24xlarge", "48xlarge") for az in DEFAULT_AZS.split(",")
+        )
+        assert generated == expected
 
     def test_fleet_with_release_generates_extra(self, tmp_path):
-        """Fleet with release entries generates both regular and release outputs."""
+        """Fleet with release entries generates both regular and release outputs (per-AZ)."""
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         fleet_data = {
@@ -950,6 +1013,7 @@ class TestMain:
                 "name": "r7a",
                 "arch": "amd64",
                 "gpu": False,
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
                 ],
@@ -964,22 +1028,27 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        assert generated == ["r7a-48xlarge-release.yaml", "r7a-48xlarge.yaml"]
+        expected = sorted(
+            [f"r7a-48xlarge-{az}.yaml" for az in DEFAULT_AZS.split(",")]
+            + [f"r7a-48xlarge-release-{az}.yaml" for az in DEFAULT_AZS.split(",")]
+        )
+        assert generated == expected
 
-        # Verify release has the runner-class label
-        release_content = (output_dir / "r7a-48xlarge-release.yaml").read_text()
+        # Verify release has the runner-class label (check one AZ)
+        release_content = (output_dir / "r7a-48xlarge-release-us-east-2a.yaml").read_text()
         docs = parse_all_yaml(release_content)
         labels = docs[0]["spec"]["template"]["metadata"]["labels"]
         assert labels.get("osdc.io/runner-class") == "release"
 
     def test_fleets_format_multi_fleet(self, tmp_path):
-        """A fleets file (multi-fleet) generates outputs for all fleets."""
+        """A fleets file (multi-fleet) generates outputs for all fleets, per AZ."""
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         fleet_data = {
@@ -988,6 +1057,7 @@ class TestMain:
                     "name": "fleet-alpha",
                     "arch": "amd64",
                     "gpu": True,
+                    "bucket": "bucket-2",
                     "instances": [
                         {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
                     ],
@@ -996,6 +1066,7 @@ class TestMain:
                     "name": "fleet-beta",
                     "arch": "amd64",
                     "gpu": True,
+                    "bucket": "bucket-2",
                     "instances": [
                         {"type": "g5.12xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
                     ],
@@ -1008,19 +1079,22 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        # Fleet names differ from instance family (g5) so output names use the
-        # fleet name as the prefix to keep multiple fleets disambiguated.
-        assert generated == ["fleet-alpha-8xlarge.yaml", "fleet-beta-12xlarge.yaml"]
+        expected = sorted(
+            [f"fleet-alpha-8xlarge-{az}.yaml" for az in DEFAULT_AZS.split(",")]
+            + [f"fleet-beta-12xlarge-{az}.yaml" for az in DEFAULT_AZS.split(",")]
+        )
+        assert generated == expected
 
-        # Verify fleet names are different
-        g5_8 = parse_all_yaml((output_dir / "fleet-alpha-8xlarge.yaml").read_text())
-        g5_12 = parse_all_yaml((output_dir / "fleet-beta-12xlarge.yaml").read_text())
+        # Verify fleet names are different on a single-AZ sample
+        g5_8 = parse_all_yaml((output_dir / "fleet-alpha-8xlarge-us-east-2a.yaml").read_text())
+        g5_12 = parse_all_yaml((output_dir / "fleet-beta-12xlarge-us-east-2a.yaml").read_text())
         assert g5_8[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "fleet-alpha"
         assert g5_12[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "fleet-beta"
 
@@ -1036,6 +1110,7 @@ class TestMain:
                 "name": "r7a",
                 "arch": "amd64",
                 "gpu": False,
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
                 ],
@@ -1047,13 +1122,18 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        assert generated == ["legacy-pool.yaml", "r7a-48xlarge.yaml"]
+        expected = sorted(
+            [f"legacy-pool-{az}.yaml" for az in DEFAULT_AZS.split(",")]
+            + [f"r7a-48xlarge-{az}.yaml" for az in DEFAULT_AZS.split(",")]
+        )
+        assert generated == expected
 
     def test_fleet_missing_name_key(self, tmp_path):
         """Fleet missing required 'name' key fails with descriptive error."""
@@ -1062,6 +1142,7 @@ class TestMain:
         fleet_data = {
             "fleet": {
                 "arch": "amd64",
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
                 ],
@@ -1073,6 +1154,7 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
@@ -1086,6 +1168,7 @@ class TestMain:
         fleet_data = {
             "fleet": {
                 "name": "r7a",
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
                 ],
@@ -1097,6 +1180,7 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
@@ -1111,6 +1195,7 @@ class TestMain:
             "fleet": {
                 "name": "r7a",
                 "arch": "amd64",
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "r7a.48xlarge", "node_disk_size": 4800},
                 ],
@@ -1122,6 +1207,7 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
@@ -1136,6 +1222,7 @@ class TestMain:
             "fleet": {
                 "name": "z99",
                 "arch": "amd64",
+                "bucket": "bucket-1",
                 "instances": [
                     {"type": "z99.xlarge", "weight": 100, "node_disk_size": 800},
                 ],
@@ -1147,11 +1234,63 @@ class TestMain:
         env = {
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         with patch.dict(os.environ, env, clear=False):
             result = main()
 
         assert result == 1
+
+    def test_output_dir_equals_defs_dir_is_rejected(self, tmp_path):
+        """Setting NODEPOOLS_OUTPUT_DIR == NODEPOOLS_DEFS_DIR must NOT rmtree the defs."""
+        defs_dir = self._create_defs(
+            tmp_path,
+            [_make_nodepool_def(name="keep-me", instance_type="m6i.32xlarge")],
+        )
+        # Sanity: file exists before main() runs
+        original_files = sorted(p.name for p in defs_dir.glob("*.yaml"))
+        assert original_files, "test setup bug: no defs to protect"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            # Misconfiguration: same path as defs_dir → would rmtree defs
+            "NODEPOOLS_OUTPUT_DIR": str(defs_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        # Generator must refuse and return 1
+        assert result == 1
+        # Defs files must STILL exist — that's the whole point of the check
+        surviving = sorted(p.name for p in defs_dir.glob("*.yaml"))
+        assert surviving == original_files, f"defs files were destroyed: before={original_files} after={surviving}"
+
+    def test_output_dir_ancestor_of_defs_dir_is_rejected(self, tmp_path):
+        """Setting NODEPOOLS_OUTPUT_DIR to an ancestor of NODEPOOLS_DEFS_DIR is rejected."""
+        # Layout: tmp_path/parent/defs/  with output_dir = tmp_path/parent
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        defs_dir = self._create_defs(
+            parent,
+            [_make_nodepool_def(name="keep-me", instance_type="m6i.32xlarge")],
+        )
+        original_files = sorted(p.name for p in defs_dir.glob("*.yaml"))
+        assert original_files, "test setup bug: no defs to protect"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(parent),  # ancestor of defs_dir
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 1
+        # defs/ subtree must still exist
+        assert defs_dir.is_dir()
+        surviving = sorted(p.name for p in defs_dir.glob("*.yaml"))
+        assert surviving == original_files
 
 
 # ============================================================================
@@ -1170,6 +1309,7 @@ class TestExcludeRegions:
             "NODEPOOLS_DEFS_DIR": str(defs_dir),
             "NODEPOOLS_OUTPUT_DIR": str(output_dir),
             "NODEPOOLS_MODULE_NAME": "test",
+            "NODEPOOLS_AZS": DEFAULT_AZS,
         }
         if region is not None:
             env["NODEPOOLS_REGION"] = region
@@ -1187,6 +1327,7 @@ class TestExcludeRegions:
                 "name": "g5",
                 "arch": "amd64",
                 "gpu": True,
+                "bucket": "bucket-2",
                 "exclude_regions": ["us-west-1"],
                 "instances": [
                     {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
@@ -1201,6 +1342,7 @@ class TestExcludeRegions:
                 "name": "m6i",
                 "arch": "amd64",
                 "gpu": False,
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
                 ],
@@ -1212,9 +1354,11 @@ class TestExcludeRegions:
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        # g5 fleet is excluded, m6i is rendered
-        assert "g5-8xlarge.yaml" not in generated
-        assert "m6i-32xlarge.yaml" in generated
+        # No g5-* AZ variants
+        assert not any(name.startswith("g5-") for name in generated)
+        # All m6i AZ variants present
+        for az in DEFAULT_AZS.split(","):
+            assert f"m6i-32xlarge-{az}.yaml" in generated
 
     def test_fleet_rendered_for_other_region(self, tmp_path):
         """A fleet with exclude_regions: [us-west-1] is rendered for a us-east-2 cluster."""
@@ -1227,6 +1371,7 @@ class TestExcludeRegions:
                 "name": "g5",
                 "arch": "amd64",
                 "gpu": True,
+                "bucket": "bucket-2",
                 "exclude_regions": ["us-west-1"],
                 "instances": [
                     {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
@@ -1239,7 +1384,8 @@ class TestExcludeRegions:
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        assert generated == ["g5-8xlarge.yaml"]
+        expected = sorted(f"g5-8xlarge-{az}.yaml" for az in DEFAULT_AZS.split(","))
+        assert generated == expected
 
     def test_fleet_without_exclude_regions_always_rendered(self, tmp_path):
         """A fleet with no exclude_regions is rendered for any cluster region."""
@@ -1252,19 +1398,21 @@ class TestExcludeRegions:
                 "name": "m6i",
                 "arch": "amd64",
                 "gpu": False,
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
                 ],
             },
         )
 
+        expected = sorted(f"m6i-32xlarge-{az}.yaml" for az in DEFAULT_AZS.split(","))
         # Same def renders in every region (fresh output dir per iteration)
         for region in ("us-west-1", "us-east-2", "eu-central-1"):
             output_dir_r = tmp_path / f"generated-{region}"
             result = self._run_main(defs_dir, output_dir_r, region=region)
             assert result == 0
             generated = sorted(f.name for f in output_dir_r.glob("*.yaml"))
-            assert generated == ["m6i-32xlarge.yaml"], f"fleet missing for region {region}"
+            assert generated == expected, f"fleet missing for region {region}"
 
     def test_no_region_set_renders_everything(self, tmp_path):
         """When NODEPOOLS_REGION is unset, exclude_regions is a no-op (back-compat)."""
@@ -1277,6 +1425,7 @@ class TestExcludeRegions:
                 "name": "g5",
                 "arch": "amd64",
                 "gpu": True,
+                "bucket": "bucket-2",
                 "exclude_regions": ["us-west-1", "us-east-2"],
                 "instances": [
                     {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
@@ -1289,7 +1438,8 @@ class TestExcludeRegions:
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        assert generated == ["g5-8xlarge.yaml"]
+        expected = sorted(f"g5-8xlarge-{az}.yaml" for az in DEFAULT_AZS.split(","))
+        assert generated == expected
 
     def test_fleet_release_instances_also_excluded(self, tmp_path):
         """When a fleet is excluded, its release instances are excluded too."""
@@ -1302,6 +1452,7 @@ class TestExcludeRegions:
                 "name": "r7a",
                 "arch": "amd64",
                 "gpu": False,
+                "bucket": "bucket-3",
                 "exclude_regions": ["us-west-1"],
                 "instances": [
                     {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
@@ -1319,6 +1470,7 @@ class TestExcludeRegions:
                 "name": "m6i",
                 "arch": "amd64",
                 "gpu": False,
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
                 ],
@@ -1330,8 +1482,8 @@ class TestExcludeRegions:
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        assert "r7a-48xlarge.yaml" not in generated
-        assert "r7a-48xlarge-release.yaml" not in generated
+        # No r7a-* AZ variants of any kind (regular or release)
+        assert not any(name.startswith("r7a-") for name in generated)
 
     def test_legacy_nodepool_excluded_for_matching_region(self, tmp_path):
         """Legacy ``nodepool:`` defs also honor exclude_regions."""
@@ -1344,6 +1496,7 @@ class TestExcludeRegions:
                         "name": "legacy-pool",
                         "instance_type": "m6i.32xlarge",
                         "node_disk_size": 200,
+                        "bucket": "bucket-3",
                         "exclude_regions": ["us-west-1"],
                     }
                 }
@@ -1357,6 +1510,7 @@ class TestExcludeRegions:
                 "name": "m6i",
                 "arch": "amd64",
                 "gpu": False,
+                "bucket": "bucket-3",
                 "instances": [
                     {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
                 ],
@@ -1368,4 +1522,997 @@ class TestExcludeRegions:
 
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
-        assert "legacy-pool.yaml" not in generated
+        # No legacy-pool-* AZ variants
+        assert not any(name.startswith("legacy-pool-") for name in generated)
+
+
+# ============================================================================
+# Prefix-delegation max-pods
+# ============================================================================
+
+
+class TestComputePdMaxPods:
+    """Tests for compute_pd_max_pods — the AWS max-pods-calculator formula."""
+
+    @pytest.mark.parametrize(
+        ("instance_type", "expected"),
+        [
+            ("c7i.48xlarge", 250),  # 14*49*16+2=10978 → cap 250
+            ("c7i.8xlarge", 250),  # 7*29*16+2=3250 → cap 250
+            ("r7i.2xlarge", 110),  # 3*14*16+2=674 → cap 110 (vcpu<=30)
+            ("p5.48xlarge", 250),  # 1*49*16+2=786 → cap 250
+            ("g5.48xlarge", 250),  # 6*49*16+2=4706 → cap 250
+        ],
+    )
+    def test_compute_pd_max_pods_formula(self, instance_type, expected):
+        assert compute_pd_max_pods(instance_type) == expected
+
+    def test_compute_pd_max_pods_no_custom_networking(self):
+        # Big instances stay capped at 250 even without custom networking.
+        assert compute_pd_max_pods("c7i.48xlarge", custom_networking=False) == 250
+        # Small instance still caps at 110 (vcpu<=30).
+        assert compute_pd_max_pods("r7i.2xlarge", custom_networking=False) == 110
+
+
+class TestResolveMaxPods:
+    """Tests for resolve_max_pods — explicit override + default behavior."""
+
+    def test_resolve_max_pods_default_caps_at_110(self):
+        # No explicit max_pods → default cap of 110 even if PD ceiling is higher.
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge")
+        nodepool_def.pop("max_pods", None)
+        assert resolve_max_pods(nodepool_def) == 110
+
+    def test_resolve_max_pods_explicit_below_ceiling(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=200)
+        assert resolve_max_pods(nodepool_def) == 200
+
+    def test_resolve_max_pods_explicit_at_ceiling(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=250)
+        assert resolve_max_pods(nodepool_def) == 250
+
+    def test_resolve_max_pods_explicit_above_ceiling_raises(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=300)
+        with pytest.raises(ValueError, match="exceeds PD ceiling"):
+            resolve_max_pods(nodepool_def)
+
+    def test_resolve_max_pods_explicit_negative_raises(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=0)
+        with pytest.raises(ValueError, match="must be >= 1"):
+            resolve_max_pods(nodepool_def)
+
+    def test_resolve_max_pods_explicit_non_int_raises(self):
+        # str rejected
+        nodepool_def_str = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods="250")
+        with pytest.raises(ValueError, match="must be an int"):
+            resolve_max_pods(nodepool_def_str)
+        # bool rejected (even though bool is technically an int subclass)
+        nodepool_def_bool = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=True)
+        with pytest.raises(ValueError, match="must be an int"):
+            resolve_max_pods(nodepool_def_bool)
+
+
+class TestEc2NodeClassMaxPods:
+    """Tests for the rendered EC2NodeClass kubelet.maxPods block."""
+
+    def _parse(self, text: str) -> list[dict]:
+        return parse_all_yaml(text)
+
+    def test_generated_ec2nodeclass_has_kubelet_max_pods(self):
+        # Default (no explicit max_pods) → 110 for c7i.48xlarge.
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge")
+        nodepool_def.pop("max_pods", None)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        assert ec2["spec"]["kubelet"]["maxPods"] == 110
+
+    def test_generated_ec2nodeclass_has_kubelet_max_pods_explicit(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=250)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        assert ec2["spec"]["kubelet"]["maxPods"] == 250
+
+    def test_user_data_nodeconfig_does_NOT_have_max_pods(self):
+        """Regression guard: maxPods must NOT be set inside the user-data NodeConfig.
+
+        Karpenter sets kubelet keys via EC2NodeClass.spec.kubelet only.  Setting
+        maxPods in two places risks silent disagreement and confuses Karpenter's
+        scheduler math.
+        """
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=250)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        userdata = ec2["spec"]["userData"]
+        assert "maxPods" not in userdata
+
+
+class TestFleetMaxPodsPropagation:
+    """Tests for fleet/per-instance max_pods propagation."""
+
+    def _parse(self, text: str) -> list[dict]:
+        return parse_all_yaml(text)
+
+    def test_fleet_max_pods_propagates_to_instances(self):
+        fleet = {"name": "c7i-runner", "arch": "amd64", "gpu": False, "max_pods": 250}
+        instances = [
+            {"type": "c7i.48xlarge", "weight": 100, "node_disk_size": 3750},
+            {"type": "c7i.24xlarge", "weight": 85, "node_disk_size": 1900},
+        ]
+        for inst in instances:
+            nodepool_def = _build_fleet_nodepool_def(fleet, inst)
+            output = generate_nodepool_yaml(nodepool_def, "nodepools")
+            docs = self._parse(output)
+            ec2 = docs[1]
+            assert ec2["spec"]["kubelet"]["maxPods"] == 250, (
+                f"{inst['type']}: expected 250, got {ec2['spec']['kubelet']['maxPods']}"
+            )
+
+    def test_per_instance_max_pods_overrides_fleet(self):
+        fleet = {"name": "c7i-runner", "arch": "amd64", "gpu": False, "max_pods": 200}
+        # Override only on the 48xlarge entry.
+        inst_override = {"type": "c7i.48xlarge", "weight": 100, "node_disk_size": 3750, "max_pods": 250}
+        inst_default = {"type": "c7i.24xlarge", "weight": 85, "node_disk_size": 1900}
+
+        np_override = _build_fleet_nodepool_def(fleet, inst_override)
+        np_default = _build_fleet_nodepool_def(fleet, inst_default)
+
+        ec2_override = self._parse(generate_nodepool_yaml(np_override, "nodepools"))[1]
+        ec2_default = self._parse(generate_nodepool_yaml(np_default, "nodepools"))[1]
+
+        assert ec2_override["spec"]["kubelet"]["maxPods"] == 250
+        assert ec2_default["spec"]["kubelet"]["maxPods"] == 200
+
+    def test_real_def_c7i_runner_uses_explicit_max_pods(self):
+        """Round-trip: c7i-runner.yaml renders maxPods=250 on every instance."""
+        c7i_runner_defs = [d for d in _load_all_real_defs() if d.get("fleet_name") == "c7i-runner"]
+        assert c7i_runner_defs, "expected c7i-runner instances in real defs"
+        for d in c7i_runner_defs:
+            output = generate_nodepool_yaml(d, "nodepools", REAL_DEFS_DIR, az=DEFAULT_AZ)
+            docs = parse_all_yaml(output)
+            ec2 = docs[1]
+            assert ec2["spec"]["kubelet"]["maxPods"] == 250, (
+                f"{d['name']}: expected 250, got {ec2['spec']['kubelet']['maxPods']}"
+            )
+
+
+# ============================================================================
+# Bucket field validation
+# ============================================================================
+
+
+class TestBucketField:
+    """Tests for the per-def 'bucket' field validation."""
+
+    def _run_main(self, defs_dir: Path, output_dir: Path) -> int:
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_MODULE_NAME": "test",
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            return main()
+
+    def test_validate_bucket_helper_accepts_valid_buckets(self):
+        for valid in ("bucket-1", "bucket-2", "bucket-3", "bucket-4"):
+            _validate_bucket(valid, where="test")  # must not raise
+
+    @pytest.mark.parametrize(
+        "invalid",
+        ["bucket-0", "bucket-5", "bucket-x", "bucket1", "1", "", "bucket-10", "bucket-"],
+    )
+    def test_validate_bucket_helper_rejects_invalid_strings(self, invalid):
+        with pytest.raises(ValueError, match="invalid bucket"):
+            _validate_bucket(invalid, where="test")
+
+    @pytest.mark.parametrize("invalid", [1, ["bucket-1"], {"name": "bucket-1"}, 1.0])
+    def test_validate_bucket_helper_rejects_non_strings(self, invalid):
+        with pytest.raises(ValueError, match="invalid bucket"):
+            _validate_bucket(invalid, where="test")
+
+    def test_validate_bucket_helper_rejects_none_with_missing_message(self):
+        with pytest.raises(ValueError, match="missing required 'bucket' field"):
+            _validate_bucket(None, where="fleet 'foo' in foo.yaml")
+
+    def test_fleet_missing_bucket_raises_via_main(self, tmp_path):
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "no-bucket.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir) == 1
+
+    def test_legacy_nodepool_missing_bucket_raises_via_main(self, tmp_path):
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "legacy.yaml").write_text(
+            yaml.dump(
+                {
+                    "nodepool": {
+                        "name": "legacy-pool",
+                        "instance_type": "m6i.32xlarge",
+                        "node_disk_size": 200,
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir) == 1
+
+    def test_fleets_one_missing_bucket_raises_via_main(self, tmp_path):
+        """In a multi-fleet file, ANY fleet missing bucket aborts the run."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "multi.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleets": [
+                        {
+                            "name": "fleet-good",
+                            "arch": "amd64",
+                            "gpu": True,
+                            "bucket": "bucket-2",
+                            "instances": [
+                                {"type": "g5.8xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
+                            ],
+                        },
+                        {
+                            "name": "fleet-bad",
+                            "arch": "amd64",
+                            "gpu": True,
+                            # bucket missing here
+                            "instances": [
+                                {"type": "g5.12xlarge", "weight": 100, "node_disk_size": 600, "has_nvme": True},
+                            ],
+                        },
+                    ]
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir) == 1
+
+    @pytest.mark.parametrize("bad", ["bucket-0", "bucket-5", "bucket-x", "bucket1"])
+    def test_fleet_invalid_bucket_value_raises_via_main(self, tmp_path, bad):
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "bad.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": bad,
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir) == 1
+
+    @pytest.mark.parametrize("good", ["bucket-1", "bucket-2", "bucket-3", "bucket-4"])
+    def test_fleet_valid_bucket_succeeds(self, tmp_path, good):
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "ok.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": good,
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir) == 0
+
+
+# ============================================================================
+# AZ expansion + bucket label rendering
+# ============================================================================
+
+
+class TestAzExpansion:
+    """Tests for per-AZ NodePool/EC2NodeClass expansion."""
+
+    @pytest.mark.parametrize("azs_csv", ["us-east-2a,us-east-2b", "us-east-2a,us-east-2b,us-east-2c"])
+    def test_emits_one_pair_per_az(self, tmp_path, azs_csv):
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "fleet.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": "bucket-3",
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": azs_csv,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        expected_azs = azs_csv.split(",")
+        expected_files = sorted(f"r7a-48xlarge-{az}.yaml" for az in expected_azs)
+        assert generated == expected_files
+
+    def test_each_variant_has_zone_requirement(self, tmp_path):
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "fleet.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": "bucket-3",
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 0
+
+        for az in DEFAULT_AZS.split(","):
+            content = (output_dir / f"r7a-48xlarge-{az}.yaml").read_text()
+            np = parse_all_yaml(content)[0]
+            reqs = np["spec"]["template"]["spec"]["requirements"]
+            zone_reqs = [r for r in reqs if r["key"] == "topology.kubernetes.io/zone"]
+            assert len(zone_reqs) == 1
+            assert zone_reqs[0]["operator"] == "In"
+            assert zone_reqs[0]["values"] == [az]
+
+    def test_no_cross_az_zone_leaks(self, tmp_path):
+        """Each variant's zone requirement must list ONLY its own AZ."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "fleet.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": "bucket-3",
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 0
+
+        all_azs = DEFAULT_AZS.split(",")
+        for az in all_azs:
+            content = (output_dir / f"r7a-48xlarge-{az}.yaml").read_text()
+            np = parse_all_yaml(content)[0]
+            zone_reqs = [
+                r for r in np["spec"]["template"]["spec"]["requirements"] if r["key"] == "topology.kubernetes.io/zone"
+            ]
+            assert zone_reqs[0]["values"] == [az]
+            for other_az in all_azs:
+                if other_az != az:
+                    assert other_az not in zone_reqs[0]["values"]
+
+    def test_each_variant_name_ends_with_az(self, tmp_path):
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "fleet.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": "bucket-3",
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 0
+
+        for az in DEFAULT_AZS.split(","):
+            content = (output_dir / f"r7a-48xlarge-{az}.yaml").read_text()
+            np, ec2 = parse_all_yaml(content)
+            assert np["metadata"]["name"].endswith(f"-{az}")
+            assert ec2["metadata"]["name"].endswith(f"-{az}")
+            assert np["metadata"]["name"] == ec2["metadata"]["name"]
+            # nodeClassRef must point at the same AZ-suffixed EC2NodeClass
+            assert np["spec"]["template"]["spec"]["nodeClassRef"]["name"] == ec2["metadata"]["name"]
+
+    def test_bucket_label_uses_constant_key(self, tmp_path):
+        """The label KEY must be ENI_CONFIG_LABEL imported from cni_constants."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "fleet.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": "bucket-3",
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 0
+
+        for az in DEFAULT_AZS.split(","):
+            content = (output_dir / f"r7a-48xlarge-{az}.yaml").read_text()
+            np = parse_all_yaml(content)[0]
+            labels = np["spec"]["template"]["metadata"]["labels"]
+            assert ENI_CONFIG_LABEL in labels
+
+    def test_bucket_label_value_from_helper(self, tmp_path):
+        """The label VALUE must be rendered from bucket_eniconfig_name()."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "fleet.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "r7a",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": "bucket-3",
+                        "instances": [
+                            {"type": "r7a.48xlarge", "weight": 100, "node_disk_size": 4800},
+                        ],
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 0
+
+        for az in DEFAULT_AZS.split(","):
+            content = (output_dir / f"r7a-48xlarge-{az}.yaml").read_text()
+            np = parse_all_yaml(content)[0]
+            labels = np["spec"]["template"]["metadata"]["labels"]
+            expected_value = bucket_eniconfig_name("bucket-3", az)
+            assert labels[ENI_CONFIG_LABEL] == expected_value
+
+    def test_bucket_label_for_each_bucket_number(self, tmp_path):
+        """All four bucket numbers render with the matching {n} value."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        for i in (1, 2, 3, 4):
+            (defs_dir / f"f{i}.yaml").write_text(
+                yaml.dump(
+                    {
+                        "fleet": {
+                            "name": f"f{i}",
+                            "arch": "amd64",
+                            "gpu": False,
+                            "bucket": f"bucket-{i}",
+                            "instances": [
+                                {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                            ],
+                        }
+                    }
+                )
+            )
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZ,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 0
+        for i in (1, 2, 3, 4):
+            content = (output_dir / f"f{i}-32xlarge-{DEFAULT_AZ}.yaml").read_text()
+            np = parse_all_yaml(content)[0]
+            labels = np["spec"]["template"]["metadata"]["labels"]
+            assert labels[ENI_CONFIG_LABEL] == bucket_eniconfig_name(f"bucket-{i}", DEFAULT_AZ)
+
+    def test_no_az_no_bucket_label_or_zone_requirement(self):
+        """When az=None: emit no bucket label and no zone requirement."""
+        nodepool_def = _make_nodepool_def()
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        np = parse_all_yaml(output)[0]
+        labels = np["spec"]["template"]["metadata"]["labels"]
+        assert ENI_CONFIG_LABEL not in labels
+        reqs = np["spec"]["template"]["spec"]["requirements"]
+        assert not any(r["key"] == "topology.kubernetes.io/zone" for r in reqs)
+
+    def test_az_pinned_name_in_node_tag(self):
+        """The Name tag on the EC2NodeClass uses the AZ-suffixed name."""
+        nodepool_def = _make_nodepool_def(name="t-pool")
+        output = generate_nodepool_yaml(nodepool_def, "nodepools", az="us-east-2b")
+        ec2 = parse_all_yaml(output)[1]
+        assert ec2["spec"]["tags"]["Name"] == "CLUSTER_NAME_PLACEHOLDER-t-pool-us-east-2b"
+        assert ec2["spec"]["tags"]["NodePool"] == "t-pool-us-east-2b"
+
+
+# ============================================================================
+# NODEPOOLS_AZS env var parsing
+# ============================================================================
+
+
+class TestAzsEnvVar:
+    """Tests for the NODEPOOLS_AZS env var parsing + main() integration."""
+
+    def _make_minimal_defs(self, tmp_path):
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "ok.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleet": {
+                        "name": "m6i",
+                        "arch": "amd64",
+                        "gpu": False,
+                        "bucket": "bucket-3",
+                        "instances": [
+                            {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                        ],
+                    }
+                }
+            )
+        )
+        return defs_dir
+
+    def test_parse_azs_accepts_simple_list(self):
+        assert _parse_azs("us-east-2a,us-east-2b,us-east-2c") == [
+            "us-east-2a",
+            "us-east-2b",
+            "us-east-2c",
+        ]
+
+    def test_parse_azs_strips_whitespace(self):
+        assert _parse_azs(" us-east-2a , us-east-2b ") == ["us-east-2a", "us-east-2b"]
+
+    def test_parse_azs_filters_empty_entries(self):
+        assert _parse_azs("us-east-2a,,us-east-2b,") == ["us-east-2a", "us-east-2b"]
+
+    def test_parse_azs_none_raises(self):
+        with pytest.raises(ValueError, match="NODEPOOLS_AZS is required"):
+            _parse_azs(None)
+
+    def test_parse_azs_empty_raises(self):
+        with pytest.raises(ValueError, match="NODEPOOLS_AZS is required"):
+            _parse_azs("")
+
+    def test_parse_azs_only_commas_raises(self):
+        with pytest.raises(ValueError, match="parsed to empty list"):
+            _parse_azs(",,,")
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["us-east-2", "useast2a", "us-east-2-a", "USEAST2A", "us_east_2a", "us--east-2a"],
+    )
+    def test_parse_azs_invalid_format_raises(self, bad):
+        with pytest.raises(ValueError, match="invalid AZ"):
+            _parse_azs(bad)
+
+    def test_parse_azs_duplicate_raises(self):
+        """Duplicate AZ entries silently overwrite generated files; reject them."""
+        with pytest.raises(ValueError, match=r"duplicate AZ.*us-east-2a"):
+            _parse_azs("us-east-2a,us-east-2a")
+
+    def test_parse_azs_duplicate_among_unique_raises(self):
+        """One duplicate among otherwise unique entries is still rejected."""
+        with pytest.raises(ValueError, match=r"duplicate AZ.*us-east-2b"):
+            _parse_azs("us-east-2a,us-east-2b,us-east-2c,us-east-2b")
+
+    def test_parse_azs_multiple_duplicates_listed(self):
+        """All duplicated AZs appear in the error message."""
+        with pytest.raises(ValueError, match=r"duplicate AZ") as exc_info:
+            _parse_azs("us-east-2a,us-east-2b,us-east-2a,us-east-2b")
+        msg = str(exc_info.value)
+        assert "us-east-2a" in msg
+        assert "us-east-2b" in msg
+
+    def test_main_missing_azs_returns_error(self, tmp_path):
+        defs_dir = self._make_minimal_defs(tmp_path)
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+        }
+        # Explicitly remove NODEPOOLS_AZS in case parent shell has it set
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("NODEPOOLS_AZS", None)
+            assert main() == 1
+
+    def test_main_empty_azs_returns_error(self, tmp_path):
+        defs_dir = self._make_minimal_defs(tmp_path)
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 1
+
+    def test_main_invalid_azs_returns_error(self, tmp_path):
+        defs_dir = self._make_minimal_defs(tmp_path)
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": "us-east-2",  # missing AZ letter
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 1
+
+    def test_main_whitespace_azs_handled(self, tmp_path):
+        """Defensive whitespace stripping in env var works end-to-end."""
+        defs_dir = self._make_minimal_defs(tmp_path)
+        output_dir = tmp_path / "generated"
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": " us-east-2a , us-east-2b ",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assert main() == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["m6i-32xlarge-us-east-2a.yaml", "m6i-32xlarge-us-east-2b.yaml"]
+
+
+# ============================================================================
+# Name length sanity
+# ============================================================================
+
+
+class TestNameLengthGuard:
+    """Tests for the 63-char Kubernetes object name limit guard."""
+
+    def test_short_name_succeeds(self):
+        nodepool_def = _make_nodepool_def(name="short")
+        output = generate_nodepool_yaml(nodepool_def, "nodepools", az="us-east-2a")
+        np = parse_all_yaml(output)[0]
+        assert np["metadata"]["name"] == "short-us-east-2a"
+        assert len(np["metadata"]["name"]) <= 63
+
+    def test_real_def_max_name_length_under_limit(self):
+        """All real-def name + AZ suffix combos must fit in 63 chars across nodepools, nodepools-h100, and nodepools-b200."""
+        for defs_dir in ALL_REAL_DEFS_DIRS:
+            assert defs_dir.is_dir(), f"expected real defs dir at {defs_dir}"
+            for d in _load_all_real_defs(defs_dir):
+                for az in DEFAULT_AZS.split(","):
+                    name = f"{d['name']}-{az}"
+                    assert len(name) <= 63, f"{name!r} (from {defs_dir.parent.name}/defs/) length {len(name)} > 63"
+
+    def test_long_name_raises(self):
+        """A def whose name + AZ suffix exceeds 63 chars MUST raise."""
+        # Pick a base name long enough to push the AZ-suffixed total over 63.
+        base = "x" * 60
+        nodepool_def = _make_nodepool_def(name=base)
+        with pytest.raises(ValueError, match="exceeds Kubernetes DNS-1123 limit"):
+            generate_nodepool_yaml(nodepool_def, "nodepools", az="us-east-2a")
+
+
+# ============================================================================
+# Bucket-coherence cross-check vs cluster's pod_cidr_buckets
+# ============================================================================
+
+
+class TestValidBucketsCheck:
+    """Tests for NODEPOOLS_VALID_BUCKETS coherence checking against per-def buckets.
+
+    Catches the case where a cluster trims its bucket set (e.g. omits bucket-4
+    on a cost-conscious cluster) but a def still references the missing bucket.
+    The generator must fail fast at generation time instead of producing a
+    NodePool whose ENI-config label points at a non-existent ENIConfig CR.
+    """
+
+    def _write_fleet(self, defs_dir: Path, name: str, fleet: dict) -> None:
+        (defs_dir / f"{name}.yaml").write_text(yaml.dump({"fleet": fleet}))
+
+    def _run_main(self, defs_dir, output_dir, valid_buckets_csv=None):
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_AZS": DEFAULT_AZS,
+        }
+        if valid_buckets_csv is not None:
+            env["NODEPOOLS_VALID_BUCKETS"] = valid_buckets_csv
+        with patch.dict(os.environ, env, clear=False):
+            # Make sure prior test runs haven't leaked the var
+            if valid_buckets_csv is None:
+                os.environ.pop("NODEPOOLS_VALID_BUCKETS", None)
+            return main()
+
+    # ----- _parse_valid_buckets unit tests -----
+
+    def test_parse_valid_buckets_none_returns_none(self):
+        assert _parse_valid_buckets(None) is None
+
+    def test_parse_valid_buckets_empty_returns_none(self):
+        assert _parse_valid_buckets("") is None
+
+    def test_parse_valid_buckets_only_commas_returns_none(self):
+        """Defensive: ',,,' parses to no real entries → None (the no-cluster-set fallback path)."""
+        assert _parse_valid_buckets(",,,") is None
+
+    def test_parse_valid_buckets_simple_list(self):
+        assert _parse_valid_buckets("bucket-1,bucket-2,bucket-3,bucket-4") == [
+            "bucket-1",
+            "bucket-2",
+            "bucket-3",
+            "bucket-4",
+        ]
+
+    def test_parse_valid_buckets_strips_whitespace(self):
+        assert _parse_valid_buckets(" bucket-1 , bucket-2 ") == ["bucket-1", "bucket-2"]
+
+    def test_parse_valid_buckets_filters_empty_entries(self):
+        assert _parse_valid_buckets("bucket-1,,bucket-2,") == ["bucket-1", "bucket-2"]
+
+    @pytest.mark.parametrize("bad", ["bucket-x", "bucket-0", "bucket-5", "bucket1", "BUCKET-1"])
+    def test_parse_valid_buckets_invalid_format_raises(self, bad):
+        with pytest.raises(ValueError, match="invalid bucket"):
+            _parse_valid_buckets(bad)
+
+    def test_parse_valid_buckets_one_bad_among_good_raises(self):
+        """A single malformed entry in an otherwise-valid list rejects the whole list."""
+        with pytest.raises(ValueError, match="invalid bucket"):
+            _parse_valid_buckets("bucket-1,bucket-x,bucket-3")
+
+    # ----- _validate_bucket integration tests -----
+
+    def test_validate_bucket_with_valid_set_accepts_member(self):
+        _validate_bucket("bucket-1", where="t", valid_buckets={"bucket-1", "bucket-2"})
+
+    def test_validate_bucket_with_valid_set_rejects_non_member(self):
+        with pytest.raises(ValueError, match="not defined in this cluster's pod_cidr_buckets"):
+            _validate_bucket("bucket-4", where="fleet 'foo' in foo.yaml", valid_buckets={"bucket-1", "bucket-2"})
+
+    def test_validate_bucket_with_none_skips_coherence_check(self):
+        """valid_buckets=None falls back to format-only validation (the path used when no cluster set is wired in)."""
+        # bucket-4 is well-formed and there's no cluster set to compare against → accepted
+        _validate_bucket("bucket-4", where="t", valid_buckets=None)
+
+    def test_validate_bucket_error_lists_valid_set_and_def_name(self):
+        """Error message must name the def AND list the valid bucket set."""
+        with pytest.raises(ValueError, match="not defined in this cluster's pod_cidr_buckets") as exc:
+            _validate_bucket(
+                "bucket-4", where="fleet 'c7i-runner' in c7i-runner.yaml", valid_buckets=["bucket-1", "bucket-2"]
+            )
+        msg = str(exc.value)
+        assert "c7i-runner.yaml" in msg
+        assert "bucket-4" in msg
+        assert "bucket-1" in msg
+        assert "bucket-2" in msg
+
+    # ----- main() integration tests -----
+
+    def test_def_referencing_bucket_outside_cluster_set_aborts(self, tmp_path):
+        """Fleet referencing bucket-4 with NODEPOOLS_VALID_BUCKETS=bucket-1,2,3 → main() returns 1."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "uses-bucket-4",
+            {
+                "name": "uses-bucket-4",
+                "arch": "amd64",
+                "gpu": False,
+                "bucket": "bucket-4",
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir, valid_buckets_csv="bucket-1,bucket-2,bucket-3") == 1
+
+    def test_def_with_bucket_in_cluster_set_succeeds(self, tmp_path):
+        """Fleet referencing bucket-3 with NODEPOOLS_VALID_BUCKETS=bucket-1,2,3 → main() returns 0."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "uses-bucket-3",
+            {
+                "name": "uses-bucket-3",
+                "arch": "amd64",
+                "gpu": False,
+                "bucket": "bucket-3",
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir, valid_buckets_csv="bucket-1,bucket-2,bucket-3") == 0
+
+    def test_unset_env_var_falls_back_to_format_only(self, tmp_path):
+        """No NODEPOOLS_VALID_BUCKETS → format-only validation."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        # Use bucket-4 (a valid format) — without the env var the coherence
+        # check is skipped, so this must still succeed.
+        self._write_fleet(
+            defs_dir,
+            "uses-bucket-4",
+            {
+                "name": "uses-bucket-4",
+                "arch": "amd64",
+                "gpu": False,
+                "bucket": "bucket-4",
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir, valid_buckets_csv=None) == 0
+
+    def test_malformed_env_var_aborts(self, tmp_path):
+        """A malformed entry in NODEPOOLS_VALID_BUCKETS aborts during parse."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "fleet",
+            {
+                "name": "fleet",
+                "arch": "amd64",
+                "gpu": False,
+                "bucket": "bucket-1",
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+        # bucket-x is malformed → _parse_valid_buckets raises → main() returns 1
+        assert self._run_main(defs_dir, output_dir, valid_buckets_csv="bucket-x,bucket-1") == 1
+
+    def test_defensive_whitespace_handled(self, tmp_path):
+        """Whitespace around env-var entries is stripped end-to-end."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        self._write_fleet(
+            defs_dir,
+            "fleet",
+            {
+                "name": "fleet",
+                "arch": "amd64",
+                "gpu": False,
+                "bucket": "bucket-2",
+                "instances": [
+                    {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                ],
+            },
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir, valid_buckets_csv=" bucket-1 , bucket-2 , bucket-3 ") == 0
+
+    def test_legacy_nodepool_referencing_missing_bucket_aborts(self, tmp_path):
+        """Legacy ``nodepool:`` defs are also subject to the coherence check."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "legacy.yaml").write_text(
+            yaml.dump(
+                {
+                    "nodepool": {
+                        "name": "legacy-pool",
+                        "instance_type": "m6i.32xlarge",
+                        "node_disk_size": 200,
+                        "bucket": "bucket-4",
+                    }
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir, valid_buckets_csv="bucket-1,bucket-2,bucket-3") == 1
+
+    def test_fleets_one_referencing_missing_bucket_aborts(self, tmp_path):
+        """In a multi-fleet file, ANY fleet whose bucket isn't in the cluster set aborts the run."""
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        (defs_dir / "multi.yaml").write_text(
+            yaml.dump(
+                {
+                    "fleets": [
+                        {
+                            "name": "fleet-good",
+                            "arch": "amd64",
+                            "gpu": False,
+                            "bucket": "bucket-1",
+                            "instances": [
+                                {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                            ],
+                        },
+                        {
+                            "name": "fleet-bad",
+                            "arch": "amd64",
+                            "gpu": False,
+                            "bucket": "bucket-4",  # not in cluster set below
+                            "instances": [
+                                {"type": "m6i.32xlarge", "weight": 100, "node_disk_size": 200},
+                            ],
+                        },
+                    ]
+                }
+            )
+        )
+        output_dir = tmp_path / "generated"
+        assert self._run_main(defs_dir, output_dir, valid_buckets_csv="bucket-1,bucket-2,bucket-3") == 1

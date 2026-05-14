@@ -32,12 +32,164 @@ _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
-from instance_specs import INSTANCE_SPECS  # noqa: E402
+from cni_constants import (  # noqa: E402
+    AZ_NAME_RE,
+    BUCKET_NAME_RE,
+    ENI_CONFIG_LABEL,
+    bucket_eniconfig_name,
+)
+from instance_specs import INSTANCE_ENI_DATA, INSTANCE_SPECS  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
 NC = "\033[0m"
+
+# Kubelet max-pods caps for prefix-delegation math.
+# Defaults follow AWS's max-pods-calculator.sh: 110 for instances with vCPU<=30,
+# 250 for vCPU>30 (per-AWS recommended cap for IP-dense workloads).
+DEFAULT_MAX_PODS_CAP = 110
+PD_HARD_CEILING = 250
+PREFIXES_PER_SLOT = 16  # Each ENI slot holds one /28 prefix = 16 IPs under PD
+
+# Kubernetes object name length limit (DNS-1123 label).
+_K8S_NAME_MAX = 63
+
+
+def _validate_bucket(bucket, where, valid_buckets=None):
+    """Raise ValueError if bucket is missing, malformed, or not declared by this cluster.
+
+    ``where`` is a string used in the error message to identify the def
+    (e.g. "fleet 'c7i-runner' in c7i-runner.yaml").
+
+    ``valid_buckets`` is the set/list of bucket names declared in the target
+    cluster's ``base.pod_cidr_buckets`` (sourced via ``NODEPOOLS_VALID_BUCKETS``).
+    When provided, a def referencing a bucket not in this set fails fast — this
+    catches the case where a cluster trims its bucket set (e.g. omits bucket-4)
+    but a def still references the missing bucket, which would otherwise emit a
+    NodePool whose ENI-config label points at a non-existent ENIConfig CR.
+    When ``None`` (e.g. unit tests that don't set the env var), validation
+    falls back to format-only and the cluster-coherence check is skipped.
+    """
+    if bucket is None:
+        raise ValueError(f"{where}: missing required 'bucket' field — must be one of bucket-1..bucket-4")
+    if not isinstance(bucket, str) or not BUCKET_NAME_RE.match(bucket):
+        raise ValueError(f"{where}: invalid bucket {bucket!r} — must match 'bucket-N' where N is 1-4")
+    if valid_buckets is not None and bucket not in valid_buckets:
+        raise ValueError(
+            f"{where}: bucket {bucket!r} is not defined in this cluster's pod_cidr_buckets "
+            f"(valid: {sorted(valid_buckets)})"
+        )
+
+
+def _parse_valid_buckets(env_value):
+    """Parse the comma-separated bucket-name list from NODEPOOLS_VALID_BUCKETS.
+
+    Returns ``None`` when the env var is missing or empty so that test contexts
+    that don't set it fall through to format-only bucket validation (preserves
+    the legacy/no-cluster path used by unit tests). When provided, every entry
+    must match ``BUCKET_NAME_RE`` — a malformed entry indicates the upstream
+    cluster-config produced bad data and the run aborts.
+    """
+    if env_value is None or env_value == "":
+        return None
+    parts = [b.strip() for b in env_value.split(",")]
+    parts = [b for b in parts if b]
+    if not parts:
+        return None
+    for bucket in parts:
+        if not BUCKET_NAME_RE.match(bucket):
+            raise ValueError(
+                f"NODEPOOLS_VALID_BUCKETS contains invalid bucket {bucket!r} — must match 'bucket-N' where N is 1-4"
+            )
+    return parts
+
+
+def _parse_azs(env_value):
+    """Parse the comma-separated AZ list from NODEPOOLS_AZS.
+
+    Strips whitespace defensively. Raises ValueError on missing or empty input,
+    on any malformed AZ entry, or on duplicate AZs (which would silently make
+    the generator overwrite its own per-AZ output files).
+    """
+    if env_value is None or env_value == "":
+        raise ValueError("NODEPOOLS_AZS is required — must be a non-empty comma-separated list of AZ names")
+    azs = [az.strip() for az in env_value.split(",")]
+    azs = [az for az in azs if az]
+    if not azs:
+        raise ValueError(f"NODEPOOLS_AZS={env_value!r} parsed to empty list — must contain at least one AZ")
+    for az in azs:
+        if not AZ_NAME_RE.match(az):
+            raise ValueError(
+                f"NODEPOOLS_AZS contains invalid AZ {az!r} — must match canonical AWS AZ format like 'us-east-2a'"
+            )
+    # Reject duplicates — duplicate AZs would silently overwrite generated
+    # files (one (def, AZ) pair per output file) and skew downstream packing.
+    seen = set()
+    duplicates = []
+    for az in azs:
+        if az in seen and az not in duplicates:
+            duplicates.append(az)
+        seen.add(az)
+    if duplicates:
+        raise ValueError(
+            f"NODEPOOLS_AZS contains duplicate AZ(s): {', '.join(duplicates)} — each AZ must appear at most once"
+        )
+    return azs
+
+
+def compute_pd_max_pods(instance_type: str, *, custom_networking: bool = True) -> int:
+    """Return the prefix-delegation-derived kubelet max-pods ceiling for an instance type.
+
+    Mirrors AWS's max-pods-calculator.sh (used by AL2/AL2023 EKS AMIs). The
+    ``(eni_count - 1)`` term reserves the primary ENI for node-only traffic when
+    VPC CNI Custom Networking is on. ``PD_HARD_CEILING=250`` matches AWS's
+    recommended cap for >30 vCPU instances; smaller instances cap at 110.
+
+    Source: github.com/awslabs/amazon-eks-ami nodeadm/internal/kubelet/eni_max_pods.go
+    """
+    if instance_type not in INSTANCE_ENI_DATA:
+        raise ValueError(
+            f"{instance_type} missing from INSTANCE_ENI_DATA in scripts/python/instance_specs.py — "
+            f"add eni_count + ipv4_per_eni from awslabs/amazon-eks-ami nodeadm/internal/kubelet/instance-info.jsonl"
+        )
+    if instance_type not in INSTANCE_SPECS:
+        raise ValueError(f"{instance_type} missing from INSTANCE_SPECS in scripts/python/instance_specs.py")
+    eni = INSTANCE_ENI_DATA[instance_type]
+    spec = INSTANCE_SPECS[instance_type]
+    usable_enis = eni["eni_count"] - (1 if custom_networking else 0)
+    if usable_enis < 1:
+        raise ValueError(
+            f"{instance_type} has eni_count={eni['eni_count']} → usable_enis={usable_enis} "
+            f"with custom_networking={custom_networking}; cannot host pods"
+        )
+    raw = usable_enis * (eni["ipv4_per_eni"] - 1) * PREFIXES_PER_SLOT + 2
+    cap = PD_HARD_CEILING if spec["vcpu"] > 30 else DEFAULT_MAX_PODS_CAP
+    return min(cap, raw)
+
+
+def resolve_max_pods(nodepool_def: dict) -> int:
+    """Resolve the kubelet max-pods value to render on an EC2NodeClass.
+
+    - If def has explicit ``max_pods: <int>``, use it (must be <= PD ceiling).
+    - Otherwise default to ``min(110, pd_ceiling)`` \u2014 conservative cap that
+      keeps general pools off the kubelet 110 wall regardless of instance shape.
+    """
+    instance_type = nodepool_def["instance_type"]
+    name = nodepool_def.get("name", "<unnamed>")
+    pd_ceiling = compute_pd_max_pods(instance_type)
+    explicit = nodepool_def.get("max_pods")
+    if explicit is not None:
+        if isinstance(explicit, bool) or not isinstance(explicit, int):
+            raise ValueError(
+                f"max_pods for pool '{name}' ({instance_type}) must be an int, got {type(explicit).__name__}"
+            )
+        if explicit > pd_ceiling:
+            raise ValueError(f"max_pods={explicit} for pool '{name}' ({instance_type}) exceeds PD ceiling {pd_ceiling}")
+        if explicit < 1:
+            raise ValueError(f"max_pods={explicit} for pool '{name}' ({instance_type}) must be >= 1")
+        return explicit
+    return min(DEFAULT_MAX_PODS_CAP, pd_ceiling)
 
 
 def log_info(msg):
@@ -112,9 +264,25 @@ def _user_data_script_mime_part(indented_script):
 """
 
 
-def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
-    """Generate a combined NodePool + EC2NodeClass YAML string."""
-    name = nodepool_def["name"]
+def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None, az=None):
+    """Generate a combined NodePool + EC2NodeClass YAML string.
+
+    When ``az`` is provided, emits an AZ-pinned variant: NodePool/EC2NodeClass
+    name is suffixed with ``-{az}``, a ``topology.kubernetes.io/zone`` requirement
+    is added, and the per-(bucket, AZ) ENI config label is rendered on the
+    template labels block. The ``bucket`` field on the def is required when
+    ``az`` is provided.
+    """
+    base_name = nodepool_def["name"]
+    if az is not None:
+        name = f"{base_name}-{az}"
+        if len(name) > _K8S_NAME_MAX:
+            raise ValueError(
+                f"Generated NodePool name {name!r} exceeds Kubernetes DNS-1123 limit of {_K8S_NAME_MAX} chars "
+                f"(len={len(name)}); shorten the def name '{base_name}'"
+            )
+    else:
+        name = base_name
     instance_type = nodepool_def["instance_type"]
     arch = _detect_arch(instance_type, nodepool_def.get("arch"))
     is_gpu = nodepool_def.get("gpu", False)
@@ -133,6 +301,11 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     indented_userdata = _read_user_data_script(user_data_script_path, defs_dir) if defs_dir else None
 
     node_disk_size = _get_node_disk_size(nodepool_def)
+
+    # ----- Kubelet max-pods (prefix-delegation aware) -----
+    # Karpenter only honors kubelet keys you set on EC2NodeClass.spec.kubelet.
+    # Set ONLY here — do NOT also set in user-data NodeConfig (avoids drift).
+    max_pods = resolve_max_pods(nodepool_def)
 
     # ----- Capacity block / reservation support -----
     capacity_type = nodepool_def.get("capacity_type", "on-demand")
@@ -240,6 +413,20 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         else ""
     )
 
+    # ----- AZ pinning + bucket ENI-config label -----
+    # Both come together: when generating an AZ-pinned variant we also emit
+    # the per-(bucket, AZ) eni-config label that tells VPC CNI which ENIConfig
+    # CR to use for pod IP allocation on this node.
+    if az is not None:
+        bucket_label_value = bucket_eniconfig_name(nodepool_def["bucket"], az)
+        bucket_label = f'        {ENI_CONFIG_LABEL}: "{bucket_label_value}"\n'
+        zone_requirement = (
+            f'        - key: topology.kubernetes.io/zone\n          operator: In\n          values: ["{az}"]\n'
+        )
+    else:
+        bucket_label = ""
+        zone_requirement = ""
+
     # ----- Build YAML -----
     yaml_content = f"""# Karpenter NodePool + EC2NodeClass: {instance_type}
 # Auto-generated from defs/{name}.yaml — do not edit by hand.
@@ -264,6 +451,7 @@ spec:
       labels:
         workload-type: github-runner
         instance-type: "{instance_type}"
+{bucket_label}\
 {fleet_label}\
 {gpu_labels}\
 {extra_labels_yaml}\
@@ -282,6 +470,7 @@ spec:
           operator: In
           values:
             - {instance_type}
+{zone_requirement}\
 
       nodeClassRef:
         group: karpenter.k8s.aws
@@ -319,6 +508,9 @@ spec:
         karpenter.sh/discovery: "CLUSTER_NAME_PLACEHOLDER"
 
   role: "CLUSTER_NAME_PLACEHOLDER-node-role"
+
+  kubelet:
+    maxPods: {max_pods}
 {"  instanceStorePolicy: RAID0" + chr(10) if has_nvme else ""}\
 {capacity_reservation_block}\
   userData: |
@@ -369,13 +561,23 @@ spec:
     return yaml_content
 
 
-def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name, region=None):
-    """Process a legacy ``nodepool:`` definition. Returns count of generated files."""
+def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name, azs, region=None, valid_buckets=None):
+    """Process a legacy ``nodepool:`` definition. Returns count of generated files.
+
+    Emits one NodePool/EC2NodeClass pair per AZ in ``azs``.
+    """
     name = nodepool_def.get("name")
     instance_type = nodepool_def.get("instance_type")
 
     if not name or not instance_type:
         raise ValueError(f"Invalid {def_file.name}: missing 'name' or 'instance_type'")
+
+    # Bucket is required at the top level for nodepool: defs.
+    _validate_bucket(
+        nodepool_def.get("bucket"),
+        where=f"nodepool '{name}' in {def_file.name}",
+        valid_buckets=valid_buckets,
+    )
 
     if _is_excluded_for_region(nodepool_def, region):
         log_info(f"  {def_file.name}: skipped (excluded in region '{region}')")
@@ -399,10 +601,13 @@ def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name,
     # Auto-derive fleet name for legacy defs so nodes get the node-fleet label/taint
     nodepool_def["fleet_name"] = instance_type.split(".")[0]
 
-    content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
-    out_path = output_dir / f"{name}.yaml"
-    out_path.write_text(content)
-    return 1
+    generated = 0
+    for az in azs:
+        content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir, az=az)
+        out_path = output_dir / f"{name}-{az}.yaml"
+        out_path.write_text(content)
+        generated += 1
+    return generated
 
 
 def _fleet_nodepool_name(fleet_name, instance_type, name_suffix=""):
@@ -425,10 +630,18 @@ def _fleet_nodepool_name(fleet_name, instance_type, name_suffix=""):
     return name
 
 
-def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=None):
-    """Build a nodepool_def dict from a fleet instance entry."""
+def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=None, bucket=None):
+    """Build a nodepool_def dict from a fleet instance entry.
+
+    ``bucket`` is the per-fleet pod-IP bucket name (e.g. ``bucket-1``); it is
+    propagated onto the returned dict so ``generate_nodepool_yaml`` can render
+    the per-(bucket, AZ) ENI-config label. When ``bucket`` is None it falls
+    back to ``fleet_data["bucket"]``.
+    """
     instance_type = inst["type"]
     name = _fleet_nodepool_name(fleet_data["name"], instance_type, name_suffix)
+    if bucket is None:
+        bucket = fleet_data.get("bucket")
 
     nodepool_def = {
         "name": name,
@@ -441,6 +654,8 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
         # Fleet-specific fields
         "fleet_name": fleet_data["name"],
         "weight": inst["weight"],
+        # Pod-IP bucket
+        "bucket": bucket,
         # Per-instance overrides
         "extra_labels": inst.get("extra_labels", {}),
         "capacity_type": inst.get("capacity_type", "on-demand"),
@@ -454,6 +669,14 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
         if val is not None:
             nodepool_def[key] = val
 
+    # max_pods: fleet-level default with per-instance override
+    fleet_default_max_pods = fleet_data.get("max_pods")
+    inst_max_pods = inst.get("max_pods")
+    if inst_max_pods is not None:
+        nodepool_def["max_pods"] = inst_max_pods
+    elif fleet_default_max_pods is not None:
+        nodepool_def["max_pods"] = fleet_default_max_pods
+
     if extra_labels:
         merged = dict(nodepool_def["extra_labels"])
         merged.update(extra_labels)
@@ -462,13 +685,20 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
     return nodepool_def
 
 
-def _validate_fleet(fleet_data, def_file):
+def _validate_fleet(fleet_data, def_file, valid_buckets=None):
     """Validate fleet data structure and instance types against INSTANCE_SPECS."""
     for key in ("name", "arch"):
         if key not in fleet_data:
             raise ValueError(f"Fleet in {def_file.name}: missing required key '{key}'")
 
     fleet_name = fleet_data["name"]
+    # Bucket is required at the fleet root (pod-IP isolation).
+    _validate_bucket(
+        fleet_data.get("bucket"),
+        where=f"fleet '{fleet_name}' in {def_file.name}",
+        valid_buckets=valid_buckets,
+    )
+
     for section in ("instances", "release"):
         for i, inst in enumerate(fleet_data.get(section, [])):
             for key in ("type", "weight", "node_disk_size"):
@@ -496,15 +726,22 @@ def _is_excluded_for_region(fleet_or_pool_def, region):
     return region in (fleet_or_pool_def.get("exclude_regions") or [])
 
 
-def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, region=None):
-    """Process a ``fleet:`` definition. Returns count of generated files."""
-    _validate_fleet(fleet_data, def_file)
+def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, azs, region=None, valid_buckets=None):
+    """Process a ``fleet:`` definition. Returns count of generated files.
+
+    Emits one NodePool/EC2NodeClass pair per (instance, AZ) pair. The fleet's
+    ``bucket`` field (already validated) is propagated onto each per-instance
+    nodepool_def so the generator can render the matching per-(bucket, AZ)
+    ENI-config label.
+    """
+    _validate_fleet(fleet_data, def_file, valid_buckets=valid_buckets)
 
     fleet_name = fleet_data["name"]
     if _is_excluded_for_region(fleet_data, region):
         log_info(f"  Fleet '{fleet_name}': skipped (excluded in region '{region}')")
         return 0
 
+    bucket = fleet_data["bucket"]
     instances = fleet_data.get("instances", [])
     release_instances = fleet_data.get("release", [])
 
@@ -512,11 +749,12 @@ def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, regi
 
     generated = 0
     for inst in instances:
-        nodepool_def = _build_fleet_nodepool_def(fleet_data, inst)
-        content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
-        out_path = output_dir / f"{nodepool_def['name']}.yaml"
-        out_path.write_text(content)
-        generated += 1
+        nodepool_def = _build_fleet_nodepool_def(fleet_data, inst, bucket=bucket)
+        for az in azs:
+            content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir, az=az)
+            out_path = output_dir / f"{nodepool_def['name']}-{az}.yaml"
+            out_path.write_text(content)
+            generated += 1
 
     if release_instances:
         log_info(f"  Fleet '{fleet_name}': {len(release_instances)} release instance(s)")
@@ -526,11 +764,13 @@ def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, regi
                 inst,
                 name_suffix="-release",
                 extra_labels={"osdc.io/runner-class": "release"},
+                bucket=bucket,
             )
-            content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir)
-            out_path = output_dir / f"{nodepool_def['name']}.yaml"
-            out_path.write_text(content)
-            generated += 1
+            for az in azs:
+                content = generate_nodepool_yaml(nodepool_def, module_name, defs_dir, az=az)
+                out_path = output_dir / f"{nodepool_def['name']}-{az}.yaml"
+                out_path.write_text(content)
+                generated += 1
 
     return generated
 
@@ -547,6 +787,37 @@ def main():
     # When unset, exclude_regions is a no-op (backward-compatible).
     region = os.environ.get("NODEPOOLS_REGION", "")
 
+    # AZ list — required: generator emits one NodePool per AZ per def.
+    # Sourced from NODEPOOLS_AZS, populated by deploy.sh from cluster-config.py.
+    try:
+        azs = _parse_azs(os.environ.get("NODEPOOLS_AZS"))
+    except ValueError as e:
+        log_error(str(e))
+        return 1
+
+    # Valid bucket set — optional: when provided by deploy.sh (sourced from
+    # cluster-config.py valid-buckets), refuses any def whose bucket isn't
+    # declared in the target cluster's base.pod_cidr_buckets. When unset
+    # (e.g. unit tests), bucket validation falls back to format-only.
+    try:
+        valid_buckets = _parse_valid_buckets(os.environ.get("NODEPOOLS_VALID_BUCKETS"))
+    except ValueError as e:
+        log_error(str(e))
+        return 1
+
+    # Safety: refuse to wipe defs if NODEPOOLS_OUTPUT_DIR is misconfigured
+    # (e.g. set equal to NODEPOOLS_DEFS_DIR or any ancestor of it). The next
+    # step rmtree's output_dir, which would silently destroy the def files.
+    resolved_defs = defs_dir.resolve()
+    resolved_output = output_dir.resolve()
+    if resolved_output == resolved_defs or resolved_defs.is_relative_to(resolved_output):
+        log_error(
+            f"NODEPOOLS_OUTPUT_DIR ({resolved_output}) equals or is an ancestor of "
+            f"NODEPOOLS_DEFS_DIR ({resolved_defs}); refusing to rmtree to avoid "
+            f"destroying definition files. Set NODEPOOLS_OUTPUT_DIR to a separate path."
+        )
+        return 1
+
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -557,7 +828,7 @@ def main():
         log_error(f"No definition files found in {defs_dir}")
         return 1
 
-    log_info(f"Found {len(def_files)} nodepool definition(s)")
+    log_info(f"Found {len(def_files)} nodepool definition(s); expanding across AZs: {','.join(azs)}")
     if region:
         log_info(f"Target region: {region} (fleets with matching exclude_regions will be skipped)")
 
@@ -575,12 +846,39 @@ def main():
 
             # Determine format: fleet, fleets, or legacy nodepool
             if "fleet" in data:
-                generated += _process_fleet(data["fleet"], def_file, defs_dir, output_dir, module_name, region)
+                generated += _process_fleet(
+                    data["fleet"],
+                    def_file,
+                    defs_dir,
+                    output_dir,
+                    module_name,
+                    azs,
+                    region,
+                    valid_buckets=valid_buckets,
+                )
             elif "fleets" in data:
                 for fleet_data in data["fleets"]:
-                    generated += _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, region)
+                    generated += _process_fleet(
+                        fleet_data,
+                        def_file,
+                        defs_dir,
+                        output_dir,
+                        module_name,
+                        azs,
+                        region,
+                        valid_buckets=valid_buckets,
+                    )
             elif "nodepool" in data:
-                generated += _process_nodepool(data["nodepool"], def_file, defs_dir, output_dir, module_name, region)
+                generated += _process_nodepool(
+                    data["nodepool"],
+                    def_file,
+                    defs_dir,
+                    output_dir,
+                    module_name,
+                    azs,
+                    region,
+                    valid_buckets=valid_buckets,
+                )
             else:
                 log_error(f"Invalid {def_file.name}: missing 'nodepool', 'fleet', or 'fleets' key")
                 skipped.append(def_file.name)
