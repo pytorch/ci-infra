@@ -77,12 +77,12 @@ variable "cluster_admin_role_names" {
 }
 
 variable "pod_cidr_buckets" {
-  description = "Per-(bucket, AZ) secondary /16 CIDR blocks for VPC CNI Custom Networking pod IP allocation. Outer key = bucket name (bucket-1..bucket-4), inner key = AZ name (e.g. us-east-2a), value = /16 CIDR in 100.64.0.0/10 (CGNAT). See INCREASE_IPV4.md PR 4."
+  description = "Per-(bucket, AZ) secondary /16 CIDR blocks for VPC CNI Custom Networking pod IP allocation. Outer key = bucket name (bucket-1..bucket-4), inner key = AZ name (e.g. us-east-2a), value = /16 CIDR in 100.64.0.0/10 (CGNAT)."
   type        = map(map(string))
 
   validation {
     condition     = length(var.pod_cidr_buckets) > 0
-    error_message = "pod_cidr_buckets must be non-empty. See INCREASE_IPV4.md PR 4 for the expected shape."
+    error_message = "pod_cidr_buckets must be non-empty."
   }
 
   validation {
