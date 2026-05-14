@@ -69,6 +69,33 @@ def resolve(cluster_cfg, defaults, dotpath):
     return dval
 
 
+def _validate_nat_gateway_eip_count(cluster_id, value):
+    """Validate nat_gateway_eip_count is an int in 1..8 (AWS hard cap).
+
+    The value is emitted into a tfvars line that's later passed through
+    `eval tofu plan $TFVARS` in the justfile, so a non-int (or a string
+    containing shell metacharacters / quotes / additional `-var` flags)
+    must be rejected here BEFORE it reaches the shell. Mirrors the HCL
+    range validation in the eks module's variables.tf.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise SystemExit(
+            f"cluster {cluster_id}: nat_gateway_eip_count must be an integer (1-8); got {value!r}"
+        ) from None
+    # Reject bool — bool is a subclass of int in Python, so int(True) == 1
+    # would silently succeed. nat_gateway_eip_count is not a flag.
+    if isinstance(value, bool):
+        raise SystemExit(f"cluster {cluster_id}: nat_gateway_eip_count must be an integer (1-8); got {value!r}")
+    if n < 1 or n > 8:
+        raise SystemExit(
+            f"cluster {cluster_id}: nat_gateway_eip_count must be in [1, 8] "
+            f"(AWS hard cap is 8 EIPs per NAT GW); got {n}"
+        )
+    return n
+
+
 def _validate_pod_cidr_buckets(cluster_name, buckets):
     """Validate pod_cidr_buckets shape, names, and CIDR uniqueness.
 
@@ -118,7 +145,7 @@ def tfvars(cluster_id, cluster_cfg, defaults):
         "cluster_name": cluster_cfg["cluster_name"],
         "aws_region": cluster_cfg["region"],
         "vpc_cidr": base.get("vpc_cidr", "10.0.0.0/16"),
-        "single_nat_gateway": str(base.get("single_nat_gateway", False)).lower(),
+        "nat_gateway_eip_count": _validate_nat_gateway_eip_count(cluster_id, base.get("nat_gateway_eip_count", 8)),
         "base_node_count": base.get("base_node_count", 3),
         "base_node_instance_type": base.get("base_node_instance_type", "m5.xlarge"),
         "base_node_max_unavailable_percentage": base.get("base_node_max_unavailable_percentage", 33),

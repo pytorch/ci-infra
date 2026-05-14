@@ -30,10 +30,15 @@ variable "enable_nat_gateway" {
   default     = true
 }
 
-variable "single_nat_gateway" {
-  description = "Use a single NAT gateway for all private subnets"
-  type        = bool
-  default     = false
+variable "nat_gateway_eip_count" {
+  description = "Number of EIPs allocated per NAT Gateway (1-8). AWS hard cap is 8. Default 8 maximizes egress source-IP diversity for anonymous per-IP rate-limit budgets."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.nat_gateway_eip_count >= 1 && var.nat_gateway_eip_count <= 8
+    error_message = "nat_gateway_eip_count must be between 1 and 8 (AWS hard cap per NAT Gateway is 8 EIPs: 1 primary + 7 secondary)."
+  }
 }
 
 variable "enable_dns_hostnames" {
@@ -67,6 +72,11 @@ variable "pod_cidr_buckets" {
   validation {
     condition     = length(var.pod_cidr_buckets) > 0
     error_message = "pod_cidr_buckets must be non-empty."
+  }
+
+  validation {
+    condition     = alltrue([for _, az_map in var.pod_cidr_buckets : length(az_map) > 0])
+    error_message = "Every bucket in pod_cidr_buckets must have at least one AZ entry."
   }
 
   validation {
