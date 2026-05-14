@@ -132,6 +132,22 @@ clusters:
       base_node_max_unavailable_percentage: 100  # all-at-once for staging
       single_nat_gateway: true       # cost optimization for staging
       vpc_cidr: "10.0.0.0/16"
+      # Per-(bucket, AZ) secondary VPC CIDRs from 100.96.0.0/12 (CGNAT).
+      # Staging uses the upper /12 region (vs production's 100.64.0.0/12)
+      # for future federation safety. 4 buckets × 2 AZs = 8 secondary /16s.
+      pod_cidr_buckets:
+        bucket-1:
+          us-west-1a: "100.96.0.0/16"
+          us-west-1c: "100.97.0.0/16"
+        bucket-2:
+          us-west-1a: "100.98.0.0/16"
+          us-west-1c: "100.99.0.0/16"
+        bucket-3:
+          us-west-1a: "100.100.0.0/16"
+          us-west-1c: "100.101.0.0/16"
+        bucket-4:
+          us-west-1a: "100.102.0.0/16"
+          us-west-1c: "100.103.0.0/16"
     coredns:
       replicas: 2
     harbor:
@@ -188,6 +204,28 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
+      # Per-(bucket, AZ) secondary VPC CIDRs from 100.64.0.0/12 (CGNAT).
+      # 4 buckets × 3 AZs = 12 secondary /16s. Each /16 IS one (bucket, AZ)
+      # pod subnet (AWS caps VPC CIDR associations at /16). Buckets group
+      # NodePool families: bucket-1 c7i general, bucket-2 GPU, bucket-3
+      # memory, bucket-4 c7i-runner exclusive.
+      pod_cidr_buckets:
+        bucket-1:
+          us-east-2a: "100.64.0.0/16"
+          us-east-2b: "100.65.0.0/16"
+          us-east-2c: "100.66.0.0/16"
+        bucket-2:
+          us-east-2a: "100.67.0.0/16"
+          us-east-2b: "100.68.0.0/16"
+          us-east-2c: "100.69.0.0/16"
+        bucket-3:
+          us-east-2a: "100.70.0.0/16"
+          us-east-2b: "100.71.0.0/16"
+          us-east-2c: "100.72.0.0/16"
+        bucket-4:
+          us-east-2a: "100.73.0.0/16"
+          us-east-2b: "100.74.0.0/16"
+          us-east-2c: "100.75.0.0/16"
     git_cache:
       central_replicas: 15
       central_cpu_request: "10"
