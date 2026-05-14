@@ -5,8 +5,20 @@ Single source of truth for instance hardware specs used across OSDC scripts:
 - generate_buildkit.py (BuildKit pod sizing)
 - collect_instance_memory.py (live memory collection)
 - simulate_cluster.py (cluster simulation)
+- generate_nodepools.py (Karpenter EC2NodeClass kubelet.maxPods PD math)
 
-When adding a new instance type (runner nodepool or BuildKit node), add it here.
+This file owns THREE dicts that MUST stay in lock-step. When adding a new
+instance type (runner nodepool or BuildKit node), populate ALL THREE:
+
+- ``INSTANCE_SPECS``    — vCPU / memory / GPU / arch (compute facts).
+- ``INSTANCE_ENI_DATA`` — raw AWS ENI shape (``eni_count`` + ``ipv4_per_eni``),
+  populated from upstream
+  ``awslabs/amazon-eks-ami nodeadm/internal/kubelet/instance-info.jsonl``.
+  Required by the nodepools generator's prefix-delegation max-pods math.
+- ``ENI_MAX_PODS``      — legacy non-PD AWS-stock max-pods table used by
+  the cluster simulator and BuildKit pod-sizing math (NOT used by the
+  prefix-delegation generator).
+
 Run ``uv run scripts/python/collect_instance_memory.py`` against a live cluster
 to obtain precise memory_mi values for new entries.
 """
@@ -105,6 +117,87 @@ INSTANCE_SPECS: dict[str, dict] = {
     "c7gd.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "arm64"},
     "m7gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
     "m8gd.16xlarge": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
+}
+
+# ---------------------------------------------------------------------------
+# Per-instance ENI shape — raw AWS facts used for prefix-delegation max-pods math.
+#
+# Fields:
+#   eni_count    — default network card's max ENIs (multi-NIC instances:
+#                  default-card subset only — that's what Karpenter and
+#                  AWS's max-pods calculator both use).
+#   ipv4_per_eni — IPv4 addresses per ENI (this is the per-ENI slot count;
+#                  with prefix delegation each slot holds 16 IPs).
+#
+# Multi-NIC instances (p4d, p5, p6-b200): eni_count is the DEFAULT network
+# card's ENIs only — that's what Karpenter and the AWS max-pods calculator
+# both use.
+#
+# Source: awslabs/amazon-eks-ami nodeadm/internal/kubelet/instance-info.jsonl.
+# Schema docs: nodeadm/internal/kubelet/eni_max_pods.go.
+# ---------------------------------------------------------------------------
+INSTANCE_ENI_DATA: dict[str, dict[str, int]] = {
+    "c7a.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "c7a.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "c7a.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "c7a.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "c7a.48xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "c7i.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "c7i.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "c7i.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "c7i.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "c7i.metal-24xl": {"eni_count": 15, "ipv4_per_eni": 50},
+    "c7i.48xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m6i.32xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m7i.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "m7i.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "m7i.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m7i.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m7i.48xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r5.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "r5.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "r5.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r5.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r7a.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "r7a.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "r7a.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r7a.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r7a.48xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r7i.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "r7i.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r7i.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r7i.48xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m8g.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "m8g.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "m8g.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m8g.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m8g.48xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "r7g.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "g4dn.8xlarge": {"eni_count": 4, "ipv4_per_eni": 15},
+    "g4dn.16xlarge": {"eni_count": 4, "ipv4_per_eni": 15},
+    "g5.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "g5.16xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "g6.8xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "g6.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "g4dn.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "g5.12xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "g5.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "g6.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "g6.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "g4dn.metal": {"eni_count": 15, "ipv4_per_eni": 50},
+    "g5.48xlarge": {"eni_count": 7, "ipv4_per_eni": 50},  # NOT 15 — verified anomaly in upstream
+    "g6.48xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "p4d.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "p5.48xlarge": {"eni_count": 2, "ipv4_per_eni": 50},
+    "p6-b200.48xlarge": {"eni_count": 4, "ipv4_per_eni": 50},
+    "r7i.2xlarge": {"eni_count": 4, "ipv4_per_eni": 15},
+    "r7i.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "r5d.12xlarge": {"eni_count": 8, "ipv4_per_eni": 30},
+    "m8gd.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m6id.24xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "c7gd.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m7gd.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
+    "m8gd.16xlarge": {"eni_count": 15, "ipv4_per_eni": 50},
 }
 
 # ---------------------------------------------------------------------------
