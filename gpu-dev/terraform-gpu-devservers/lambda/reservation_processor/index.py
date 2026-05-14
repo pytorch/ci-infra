@@ -195,6 +195,7 @@ GPU_CONFIG = {
     "b300": {"instance_type": "p6-b300.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 8},
     "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
     "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
+    "cpu-spot": {"instance_type": "c7i.2xlarge", "max_gpus": 0, "cpus": 8, "memory_gb": 16, "efa_count": 0},
 }
 GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 0}
 
@@ -2305,7 +2306,7 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     valid_gpu_types = ["t4", "l4", "a10g", "rtxpro6000", "t4-small", "a100",
                        "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g",
                        "h200", "b200", "b300", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g",
-                       "cpu-arm", "cpu-x86"]
+                       "cpu-arm", "cpu-x86", "cpu-spot"]
     if gpu_type not in valid_gpu_types:
         error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
         logger.error(error_msg)
@@ -6666,6 +6667,7 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
             "p5en.48xlarge": "H200",
             "p6-b200.48xlarge": "B200",
             "p6-b300.48xlarge": "B300",
+            "c7i.2xlarge": "cpu-spot",
         }
 
         gpu_type = gpu_type_mapping.get(instance_type, "Unknown")
