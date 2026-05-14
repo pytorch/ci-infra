@@ -121,6 +121,25 @@ class TestVPCCNIAddonConfiguration:
         missing = set(EXPECTED_ENV) - keys_found
         assert not missing, f"aws_eks_addon.vpc_cni env block missing expected keys {sorted(missing)}."
 
+    def test_no_warm_ip_or_minimum_ip_target_keys(self) -> None:
+        """WARM_IP_TARGET and MINIMUM_IP_TARGET silently override WARM_PREFIX_TARGET
+        in the AWS VPC CNI, leaving prefix delegation provisioning effectively
+        unconfigured. Guard against either key sneaking into the env block.
+
+        See amazon-vpc-cni-k8s README, WARM_PREFIX_TARGET section:
+        https://github.com/aws/amazon-vpc-cni-k8s#warm_prefix_target
+        """
+        forbidden = {"WARM_IP_TARGET", "MINIMUM_IP_TARGET"}
+        keys_found = set(re.findall(r"^\s*([A-Z_][A-Z0-9_]*)\s*=", self.env_block, re.MULTILINE))
+        for key in forbidden:
+            assert key not in keys_found, (
+                f"aws_eks_addon.vpc_cni env block contains forbidden key {key!r}. "
+                f"{key} silently overrides WARM_PREFIX_TARGET in the AWS VPC CNI, "
+                "leaving prefix delegation provisioning effectively unconfigured. "
+                "See amazon-vpc-cni-k8s README, WARM_PREFIX_TARGET section: "
+                "https://github.com/aws/amazon-vpc-cni-k8s#warm_prefix_target"
+            )
+
     def test_no_var_or_local_references_in_env(self) -> None:
         """Defend against a refactor that moves env values to var.* or local.* — that
         would silently bypass the literal-string assertions in this file.
