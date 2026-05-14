@@ -5,12 +5,13 @@ echo "[AMI-BAKER] Starting GPU AMI build..."
 # Install NVIDIA driver (compiles kernel modules — the 13-min step we're eliminating)
 echo "[AMI-BAKER] Installing NVIDIA drivers..."
 echo "options nvidia NVreg_RestrictProfilingToAdminUsers=0" > /etc/modprobe.d/nvprof.conf
+dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/amzn2023/x86_64/cuda-amzn2023.repo
 dnf install -y nvidia-driver nvidia-driver-cuda
 echo "[AMI-BAKER] NVIDIA driver installed"
 
-# Install fabricmanager (won't start without NVSwitch but binary is on disk)
-echo "[AMI-BAKER] Installing fabricmanager..."
-dnf install -y nvidia-fabricmanager nvlsm 2>/dev/null || echo "fabricmanager install warning (non-fatal)"
+# Install fabricmanager + infiniband tools (won't start without NVSwitch but binaries are on disk)
+echo "[AMI-BAKER] Installing fabricmanager and infiniband tools..."
+dnf install -y nvidia-fabricmanager nvlsm infiniband-diags 2>/dev/null || echo "fabricmanager install warning (non-fatal)"
 systemctl enable nvidia-fabricmanager 2>/dev/null || true
 echo "[AMI-BAKER] fabricmanager installed"
 
