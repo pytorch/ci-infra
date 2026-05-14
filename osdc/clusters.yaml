@@ -135,7 +135,6 @@ clusters:
       # Per-(bucket, AZ) secondary VPC CIDRs from 100.96.0.0/12 (CGNAT).
       # Staging uses the upper /12 region (vs production's 100.64.0.0/12)
       # for future federation safety. 4 buckets × 2 AZs = 8 secondary /16s.
-      # See INCREASE_IPV4.md PR 4.
       pod_cidr_buckets:
         bucket-1:
           us-west-1a: "100.96.0.0/16"
@@ -209,7 +208,7 @@ clusters:
       # 4 buckets × 3 AZs = 12 secondary /16s. Each /16 IS one (bucket, AZ)
       # pod subnet (AWS caps VPC CIDR associations at /16). Buckets group
       # NodePool families: bucket-1 c7i general, bucket-2 GPU, bucket-3
-      # memory, bucket-4 c7i-runner exclusive. See INCREASE_IPV4.md PR 4.
+      # memory, bucket-4 c7i-runner exclusive.
       pod_cidr_buckets:
         bucket-1:
           us-east-2a: "100.64.0.0/16"
