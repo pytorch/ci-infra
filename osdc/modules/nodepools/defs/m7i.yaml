@@ -4,6 +4,8 @@ fleet:
   name: m7i
   arch: amd64
   gpu: false
+  # Pod-IP bucket (memory/balanced, m/r-series).
+  bucket: bucket-3
   instances:
     - type: m7i.48xlarge
       weight: 100

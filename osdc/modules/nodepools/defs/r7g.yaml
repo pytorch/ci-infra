@@ -4,6 +4,8 @@ fleet:
   name: r7g
   arch: arm64
   gpu: false
+  # Pod-IP bucket (memory/balanced, m/r-series).
+  bucket: bucket-3
   instances:
     - type: r7g.16xlarge
       weight: 100

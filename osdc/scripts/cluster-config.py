@@ -15,6 +15,12 @@ Usage:
     cluster-config.py arc-staging tfvars
         -> -var="cluster_name=pytorch-arc-staging" -var="aws_region=us-west-1" ...
 
+    # Get sorted, comma-separated AZ list from base.pod_cidr_buckets
+    cluster-config.py arc-staging azs                 -> us-west-1a,us-west-1c
+
+    # Get sorted, comma-separated bucket-name list from base.pod_cidr_buckets
+    cluster-config.py arc-staging valid-buckets       -> bucket-1,bucket-2,bucket-3,bucket-4
+
     # Check if a module is enabled
     cluster-config.py arc-staging has-module arc      -> exits 0 (true) or 1 (false)
 
@@ -30,11 +36,14 @@ from pathlib import Path
 
 import yaml
 
-# Validation patterns for pod_cidr_buckets.
-# Bucket names are bucket-1 through bucket-4 (4-bucket architecture).
-_BUCKET_NAME_RE = re.compile(r"^bucket-[1-4]$")
-# AZ names match AWS canonical format: us-east-2a, eu-west-1c, etc.
-_AZ_NAME_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d[a-z]$")
+# Shared validation patterns live in scripts/python/cni_constants.py so the
+# nodepool generator, the bootstrap script, and this validator agree on the
+# bucket-N and AZ name shapes.
+_scripts_python = str(Path(__file__).resolve().parent / "python")
+if _scripts_python not in sys.path:
+    sys.path.insert(0, _scripts_python)
+from cni_constants import AZ_NAME_RE, BUCKET_NAME_RE  # noqa: E402
+
 # CIDRs MUST be /16 inside CGNAT 100.64.0.0/10 (octet 64-127). Whole /16
 # blocks only — second octet may be 64-127, third/fourth octets must be 0.
 _POD_CIDR_RE = re.compile(r"^100\.((6[4-9])|(7[0-9])|(8[0-9])|(9[0-9])|(1[01][0-9])|(12[0-7]))\.0\.0/16$")
@@ -71,14 +80,14 @@ def _validate_pod_cidr_buckets(cluster_name, buckets):
         raise SystemExit(f"cluster {cluster_name}: base.pod_cidr_buckets must be a non-empty mapping")
     seen_cidrs = {}
     for bucket_name, az_map in buckets.items():
-        if not _BUCKET_NAME_RE.match(str(bucket_name)):
+        if not BUCKET_NAME_RE.match(str(bucket_name)):
             raise SystemExit(
                 f"cluster {cluster_name}: invalid bucket name {bucket_name!r} — must match 'bucket-N' where N is 1-4"
             )
         if not isinstance(az_map, dict) or not az_map:
             raise SystemExit(f"cluster {cluster_name}: bucket {bucket_name!r} must map at least one AZ to a CIDR")
         for az_name, cidr in az_map.items():
-            if not _AZ_NAME_RE.match(str(az_name)):
+            if not AZ_NAME_RE.match(str(az_name)):
                 raise SystemExit(
                     f"cluster {cluster_name}: invalid AZ name {az_name!r} in bucket "
                     f"{bucket_name!r} — must match canonical AWS AZ format like 'us-east-2a'"
@@ -142,13 +151,62 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     print(" ".join(flags))
 
 
+def azs(cluster_id, cluster_cfg):
+    """Print sorted, comma-separated AZ names from base.pod_cidr_buckets.
+
+    Output is shell-safe (no spaces, single line) for `$(...)` substitution
+    into a NODEPOOLS_AZS env var consumed by the nodepool generator.
+    All buckets MUST define the same set of AZ keys; mismatches indicate a
+    configuration bug that would silently produce skewed pod subnets.
+    """
+    pod_cidr_buckets = (cluster_cfg.get("base") or {}).get("pod_cidr_buckets")
+    if pod_cidr_buckets is None:
+        raise SystemExit(f"cluster {cluster_id}: missing required base.pod_cidr_buckets")
+    _validate_pod_cidr_buckets(cluster_id, pod_cidr_buckets)
+
+    # Cross-bucket symmetry check: all buckets MUST define the same AZ key set.
+    az_keys_per_bucket = {bucket: frozenset(az_map.keys()) for bucket, az_map in pod_cidr_buckets.items()}
+    reference_bucket, reference_keys = next(iter(az_keys_per_bucket.items()))
+    for bucket, keys in az_keys_per_bucket.items():
+        if keys != reference_keys:
+            diff = sorted(keys.symmetric_difference(reference_keys))
+            raise SystemExit(
+                f"cluster {cluster_id}: bucket {bucket!r} AZ keys differ from "
+                f"{reference_bucket!r}; symmetric difference: {diff}. "
+                f"All buckets must define the same set of AZs."
+            )
+
+    print(",".join(sorted(reference_keys)))
+
+
+def valid_buckets(cluster_id, cluster_cfg):
+    """Print sorted, comma-separated bucket names from base.pod_cidr_buckets.
+
+    Output is shell-safe (no spaces, single line) for ``$(...)`` substitution
+    into a NODEPOOLS_VALID_BUCKETS env var consumed by the nodepool generator.
+    Used as a coherence cross-check: each nodepool def declares a ``bucket``
+    field and the generator refuses any bucket name not in this set, so a def
+    referencing a bucket the cluster doesn't define fails fast at generation
+    time instead of silently producing a NodePool whose ENI-config label
+    points at a non-existent ENIConfig CR.
+    """
+    pod_cidr_buckets = (cluster_cfg.get("base") or {}).get("pod_cidr_buckets")
+    if pod_cidr_buckets is None:
+        raise SystemExit(f"cluster {cluster_id}: missing required base.pod_cidr_buckets")
+    _validate_pod_cidr_buckets(cluster_id, pod_cidr_buckets)
+    print(",".join(sorted(pod_cidr_buckets.keys())))
+
+
 def main():
     cfg = load_config()
     defaults = cfg.get("defaults", {})
     clusters = cfg.get("clusters", {})
 
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <cluster-id> <field|tfvars|has-module> [value]", file=sys.stderr)
+        print(
+            f"Usage: {sys.argv[0]} <cluster-id> <field|tfvars|has-module|azs|valid-buckets> [value]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if sys.argv[1] == "--list":
@@ -166,6 +224,10 @@ def main():
 
     if cmd == "tfvars":
         tfvars(cluster_id, cluster_cfg, defaults)
+    elif cmd == "azs":
+        azs(cluster_id, cluster_cfg)
+    elif cmd == "valid-buckets":
+        valid_buckets(cluster_id, cluster_cfg)
     elif cmd == "has-module":
         module = sys.argv[3] if len(sys.argv) > 3 else ""
         modules = cluster_cfg.get("modules", [])
