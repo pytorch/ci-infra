@@ -1,17 +1,17 @@
-"""Smoke tests for base MNG eni-config AZ label + AZ-named ENIConfigs.
+"""Smoke tests for VPC CNI Custom Networking ENIConfig CRs.
 
-The base AZ labeling and ENIConfig setup is two coupled changes that must agree end-to-end:
+Two flavors of ENIConfig live side by side:
 
-1. Every base node (EKS Managed Node Group ``base``, labeled
-   ``role=base-infrastructure``) carries a ``ipam.osdc.internal/eni-config``
-   label whose value matches the node's ``topology.kubernetes.io/zone``
-   label. The label is set by a userData shellscript at first boot
-   (see ``base/scripts/bootstrap/eks-base-pre-nodeadm-az-label.sh``).
+1. **AZ-named** (one per AZ, for base nodes). Every base node has an
+   ``ipam.osdc.internal/eni-config`` label set by userData (see
+   ``base/scripts/bootstrap/eks-base-pre-nodeadm-az-label.sh``) whose value
+   matches the node's ``topology.kubernetes.io/zone`` label. There is one
+   ``ENIConfig`` CR per available AZ, named exactly after the AZ string
+   (e.g. ``us-east-2a``).
 
-2. There is one ``ENIConfig`` CR (``crd.k8s.amazonaws.com/v1alpha1``) per
-   available AZ in the cluster, named exactly after the AZ string
-   (e.g. ``us-east-2a``). Each ENIConfig's ``spec.subnet`` is a subnet
-   that lives in the AZ matching the ENIConfig's name.
+2. **Bucket-named** (one per (bucket, AZ) pair, for Karpenter workload
+   nodes). Names are ``bucket-N-AZ`` (e.g. ``bucket-1-us-east-2a``); subnet
+   IDs come from terraform's ``pod_subnets_by_bucket_az`` output.
 
 These resources are inert until VPC CNI Custom Networking is enabled in a
 later PR; this test verifies the prerequisites are in place and self-consistent.
@@ -70,6 +70,22 @@ def all_eniconfigs() -> dict:
             f"Failed to list ENIConfig CRs (CRD missing or RBAC issue): {exc.stderr or exc}. "
             "AZ-named ENIConfig setup requires the ENIConfig CRD installed by the VPC CNI addon."
         )
+
+
+@pytest.fixture(scope="module")
+def pod_cidr_buckets(cluster_config: dict) -> dict:
+    """`pod_cidr_buckets` map from clusters.yaml; skip the test if absent."""
+    base_cfg = cluster_config["cluster"].get("base") or {}
+    buckets = base_cfg.get("pod_cidr_buckets") or {}
+    if not buckets:
+        pytest.skip("This cluster has no pod_cidr_buckets configured")
+    return buckets
+
+
+@pytest.fixture(scope="module")
+def expected_bucket_eniconfig_names(pod_cidr_buckets: dict) -> set[str]:
+    """Set of expected `bucket-N-AZ` ENIConfig CR names derived from `pod_cidr_buckets`."""
+    return {f"{bucket}-{az}" for bucket, az_map in pod_cidr_buckets.items() for az in az_map}
 
 
 # ============================================================================
@@ -226,5 +242,128 @@ class TestBaseENIConfigSubnetAZ:
                 )
         assert not mismatches, (
             "ENIConfig name <-> subnet AZ mismatch (would break pod IP allocation under Custom Networking):\n  "
+            + "\n  ".join(mismatches)
+        )
+
+
+# ============================================================================
+# Part D: bucket-named ENIConfig CRD presence — one per (bucket, AZ) pair
+# ============================================================================
+
+
+class TestBucketENIConfigCRsPresent:
+    """One ENIConfig CR exists per (bucket, AZ) pair from pod_cidr_buckets, named ``bucket-N-AZ``."""
+
+    def test_bucket_eniconfig_per_pair(self, expected_bucket_eniconfig_names: set[str], all_eniconfigs: dict) -> None:
+        """Every (bucket, AZ) pair from ``pod_cidr_buckets`` has a same-named ``ENIConfig`` CR.
+
+        Pod-bucket Custom Networking selects a per-(bucket, AZ) ENIConfig by
+        node label. A missing CR means runner pods landing on that bucket+AZ
+        will fail IP allocation with ``ErrNoENIConfig``.
+        """
+        actual = {
+            ec["metadata"]["name"]
+            for ec in all_eniconfigs.get("items", [])
+            if ec["metadata"]["name"].startswith("bucket-")
+        }
+        missing = expected_bucket_eniconfig_names - actual
+        assert not missing, (
+            f"Missing bucket ENIConfigs: {sorted(missing)}. "
+            f"Existing bucket ENIConfigs: {sorted(actual)}. "
+            "Run base deploy first (eniconfigs creates one CR per (bucket, AZ) pair from pod_cidr_buckets)."
+        )
+
+    def test_bucket_eniconfig_specs_have_subnet(
+        self, expected_bucket_eniconfig_names: set[str], all_eniconfigs: dict
+    ) -> None:
+        """Each bucket-named ENIConfig declares a non-empty ``spec.subnet`` starting with ``subnet-``."""
+        by_name = {ec["metadata"]["name"]: ec for ec in all_eniconfigs.get("items", [])}
+        bad: list[str] = []
+        for name in sorted(expected_bucket_eniconfig_names):
+            ec = by_name.get(name)
+            if ec is None:
+                # Already covered by test_bucket_eniconfig_per_pair
+                continue
+            subnet = ec.get("spec", {}).get("subnet", "")
+            if not subnet or not subnet.startswith("subnet-"):
+                bad.append(f"{name}: spec.subnet={subnet!r}")
+        assert not bad, "Bucket ENIConfig(s) with empty or malformed 'spec.subnet':\n  " + "\n  ".join(bad)
+
+
+# ============================================================================
+# Part E: bucket ENIConfig subnet AZ + CIDR matches clusters.yaml (cross-checked via AWS)
+# ============================================================================
+
+
+class TestBucketENIConfigSubnetAZ:
+    """Each bucket ENIConfig's spec.subnet lives in the matching AZ and has the expected CIDR.
+
+    Catches the silent failure mode where a bucket ENIConfig points at a
+    subnet in the wrong AZ (pods cannot get an IP — ENIs are AZ-bound) or
+    at a subnet whose CIDR drifted from clusters.yaml (pod IP exhaustion
+    won't match what capacity planning predicted).
+    """
+
+    @pytest.mark.aws
+    def test_bucket_eniconfig_subnet_in_matching_az(
+        self,
+        pod_cidr_buckets: dict,
+        cluster_config: dict,
+        all_eniconfigs: dict,
+    ) -> None:
+        region = cluster_config["cluster"].get("region", "us-west-2")
+        by_name = {ec["metadata"]["name"]: ec for ec in all_eniconfigs.get("items", [])}
+
+        # Single batched describe-subnets beats N round-trips and keeps the test fast.
+        to_check: dict[str, tuple[str, str, str]] = {}
+        for bucket, az_map in pod_cidr_buckets.items():
+            for az, expected_cidr in az_map.items():
+                name = f"{bucket}-{az}"
+                ec = by_name.get(name)
+                if ec is None:
+                    continue
+                subnet = ec.get("spec", {}).get("subnet", "")
+                if subnet:
+                    to_check[name] = (az, expected_cidr, subnet)
+
+        if not to_check:
+            pytest.fail(
+                "No bucket ENIConfig subnets to verify — earlier tests should have caught this; "
+                "indicates either no pod_cidr_buckets or no bucket ENIConfig CRs."
+            )
+
+        result = run_aws(
+            [
+                "ec2",
+                "describe-subnets",
+                "--region",
+                region,
+                "--subnet-ids",
+                *(subnet for _, _, subnet in to_check.values()),
+            ],
+            timeout=120,
+        )
+        info_by_subnet = {
+            s["SubnetId"]: (s.get("AvailabilityZone", ""), s.get("CidrBlock", "")) for s in result.get("Subnets", [])
+        }
+
+        mismatches: list[str] = []
+        for name, (expected_az, expected_cidr, subnet_id) in sorted(to_check.items()):
+            info = info_by_subnet.get(subnet_id)
+            if info is None:
+                mismatches.append(f"ENIConfig {name!r}: subnet {subnet_id} not returned by describe-subnets")
+                continue
+            actual_az, actual_cidr = info
+            if actual_az != expected_az:
+                mismatches.append(
+                    f"ENIConfig {name!r}: spec.subnet {subnet_id} lives in AZ {actual_az!r}, expected {expected_az!r}"
+                )
+            if actual_cidr != expected_cidr:
+                mismatches.append(
+                    f"ENIConfig {name!r}: spec.subnet {subnet_id} CIDR {actual_cidr!r}, "
+                    f"expected {expected_cidr!r} (drifted from clusters.yaml pod_cidr_buckets)"
+                )
+        assert not mismatches, (
+            "Bucket ENIConfig <-> subnet AZ/CIDR mismatch (would break pod IP allocation under Custom Networking):\n  "
             + "\n  ".join(mismatches)
         )
