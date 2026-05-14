@@ -3,6 +3,7 @@
 import pytest
 import yaml
 from distribution import (
+    _LOAD_TEST_EXCLUDED_GPU_PATTERN,
     OLD_TO_OSDC_LABEL,
     PRODUCTION_JOB_COUNTS,
     RunnerAllocation,
@@ -12,7 +13,6 @@ from distribution import (
     compute_distribution,
     get_available_runners,
 )
-
 
 # ── classify_runner ──────────────────────────────────────────────────────
 
@@ -234,6 +234,95 @@ class TestGetAvailableRunners:
 
         labels, excluded = get_available_runners(upstream, tmp_path / "root", region="us-west-1")
         assert "l-no-instance" in labels
+
+    def test_excludes_specialized_gpu_a100(self, tmp_path):
+        """Single specialized GPU runner (a100) is excluded; counter increments."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-x86iavx512-44-500-a100-4")
+        self._make_def(runner_defs, "l-x86iavx512-8-16")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        assert "l-x86iavx512-44-500-a100-4" not in labels
+        assert "l-x86iavx512-8-16" in labels
+        assert excluded == 1
+
+    def test_excludes_all_denied_gpu_types(self, tmp_path):
+        """All denied GPU types (a100, h100, b200, h200, mi300, mi325) are excluded."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        denied = [
+            "l-x86iavx512-44-500-a100-4",
+            "l-x86iavx512-44-500-h100-8",
+            "l-x86iavx512-44-500-b200-8",
+            "l-x86iavx512-44-500-h200-8",
+            "l-x86aavx2-44-500-mi300",
+            "l-x86aavx2-44-500-mi325",
+        ]
+        for name in denied:
+            self._make_def(runner_defs, name)
+        self._make_def(runner_defs, "l-x86iavx512-8-16")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        for name in denied:
+            assert name not in labels, f"{name} should have been excluded"
+        assert labels == {"l-x86iavx512-8-16"}
+        assert excluded == len(denied)
+
+    def test_allowed_gpu_types_not_excluded(self, tmp_path):
+        """Allowed GPU types (t4, a10g, l4) are NOT excluded."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        allowed = [
+            "l-x86iavx512-29-115-t4",
+            "l-x86iavx512-45-172-t4-4",
+            "l-x86aavx2-29-113-a10g",
+            "l-x86aavx2-45-167-a10g-4",
+            "l-x86aavx2-29-113-l4",
+            "l-x86aavx2-45-172-l4-4",
+        ]
+        for name in allowed:
+            self._make_def(runner_defs, name)
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        for name in allowed:
+            assert name in labels, f"{name} should be available"
+        assert excluded == 0
+
+    def test_excludes_multi_gpu_suffix_variants(self, tmp_path):
+        """Multi-GPU suffix variants (-a100-2, -a100-8) are excluded."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        variants = [
+            "l-bx86iavx512-88-1000-a100-8",
+            "l-x86iavx512-22-250-a100-2",
+        ]
+        for name in variants:
+            self._make_def(runner_defs, name)
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        for name in variants:
+            assert name not in labels, f"{name} should have been excluded"
+        assert excluded == len(variants)
+
+    def test_pattern_does_not_false_match_cpu_runners(self, tmp_path):
+        """A CPU runner whose name happens to contain digits in similar positions
+        (e.g. l-x86iavx512-94-100) must NOT be excluded."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        cpu_names = [
+            "l-x86iavx512-94-100",
+            "l-x86iavx512-94-192",
+            "l-x86iavx512-46-85",
+        ]
+        for name in cpu_names:
+            self._make_def(runner_defs, name)
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        for name in cpu_names:
+            assert name in labels, f"{name} should NOT have been excluded"
+            assert _LOAD_TEST_EXCLUDED_GPU_PATTERN.search(name) is None
+        assert excluded == 0
 
 
 # ── _load_fleet_exclusions ──────────────────────────────────────────────
