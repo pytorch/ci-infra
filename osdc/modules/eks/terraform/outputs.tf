@@ -28,7 +28,7 @@ output "private_subnets_by_az" {
 }
 
 output "pod_cidr_associations" {
-  description = "Pod CIDR associations re-exported from the VPC module. See INCREASE_IPV4.md PR 4."
+  description = "Pod CIDR associations re-exported from the VPC module."
   value       = module.vpc.pod_cidr_associations
 }
 
@@ -38,7 +38,7 @@ output "pod_subnet_ids" {
 }
 
 output "pod_subnets_by_bucket_az" {
-  description = "Pod subnets keyed by '$${bucket}-$${az}' (re-exported from VPC module). Consumed by PR 6 (bucket ENIConfigs) and PR 10 (per-(bucket, AZ) NAT GWs)."
+  description = "Pod subnets keyed by '$${bucket}-$${az}' (re-exported from VPC module). Consumed by downstream modules."
   value       = module.vpc.pod_subnets_by_bucket_az
 }
 
