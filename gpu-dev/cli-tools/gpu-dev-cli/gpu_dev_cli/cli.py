@@ -3009,7 +3009,7 @@ def _show_availability() -> None:
                 spot_table.add_column("Avail\nNow", style="green")
                 spot_table.add_column("Per\nNode", style="bright_green")
                 spot_table.add_column("Status", style="magenta")
-                spot_table.add_column("Availability", style="dim")
+                spot_table.add_column("Spot Discount", style="dim")
                 _on_demand = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
                 for gt, info in sorted(spot_region_info.items()):
                     avail = info.get("available", 0)
@@ -3019,14 +3019,12 @@ def _show_availability() -> None:
                     si = info.get("spot_info", {}) or {}
                     sp = si.get("spot_price", "") if isinstance(si, dict) else ""
                     if not sp or (isinstance(si, dict) and "No spot data" in str(si.get("spot_signal", ""))):
-                        avail_signal = "[red]Not offered[/red]"
+                        avail_signal = "[green]Available[/green]" if avail > 0 else "[dim]No price data[/dim]"
                     else:
                         try:
                             ratio = float(sp) / _on_demand.get(gt, 50)
                             pct = int((1 - ratio) * 100)
-                            if ratio < 0.4: avail_signal = f"[green]High ({pct}% off)[/green]"
-                            elif ratio < 0.7: avail_signal = f"[yellow]Medium ({pct}% off)[/yellow]"
-                            else: avail_signal = f"[red]Low ({pct}% off)[/red]"
+                            avail_signal = f"[green]{pct}% off on-demand[/green]" if pct > 0 else "[dim]At on-demand price[/dim]"
                         except (ValueError, TypeError):
                             avail_signal = "[yellow]Unknown[/yellow]"
                     spot_table.add_row(f"{gt.upper()} *", avail_display, str(per_node), status, avail_signal)

@@ -194,7 +194,7 @@ def select_gpu_type_interactive(
         st.add_column("Avail\nNow", style="green")
         st.add_column("Per\nNode", style="bright_green")
         st.add_column("Status", style="magenta")
-        st.add_column("Availability", style="dim")
+        st.add_column("Spot Discount", style="dim")
         _on_demand = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
         for gt, info in spot_gpus.items():
             avail = info.get("available", 0)
