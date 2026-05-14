@@ -22,11 +22,22 @@ Usage:
     cluster-config.py --list
 """
 
+import json
 import os
+import re
 import sys
 from pathlib import Path
 
 import yaml
+
+# Validation patterns for pod_cidr_buckets.
+# Bucket names are bucket-1 through bucket-4 (4-bucket architecture).
+_BUCKET_NAME_RE = re.compile(r"^bucket-[1-4]$")
+# AZ names match AWS canonical format: us-east-2a, eu-west-1c, etc.
+_AZ_NAME_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d[a-z]$")
+# CIDRs MUST be /16 inside CGNAT 100.64.0.0/10 (octet 64-127). Whole /16
+# blocks only — second octet may be 64-127, third/fourth octets must be 0.
+_POD_CIDR_RE = re.compile(r"^100\.((6[4-9])|(7[0-9])|(8[0-9])|(9[0-9])|(1[01][0-9])|(12[0-7]))\.0\.0/16$")
 
 CONFIG_PATH = Path(os.environ.get("CLUSTERS_YAML", Path(__file__).resolve().parent.parent / "clusters.yaml"))
 
@@ -47,6 +58,43 @@ def resolve(cluster_cfg, defaults, dotpath):
     if val is not None:
         return val
     return dval
+
+
+def _validate_pod_cidr_buckets(cluster_name, buckets):
+    """Validate pod_cidr_buckets shape, names, and CIDR uniqueness.
+
+    Raises SystemExit with a clear message on the first violation found.
+    Caller is responsible for the missing-key check; this enforces shape
+    and content of a present, dict-typed value.
+    """
+    if not isinstance(buckets, dict) or not buckets:
+        raise SystemExit(f"cluster {cluster_name}: base.pod_cidr_buckets must be a non-empty mapping")
+    seen_cidrs = {}
+    for bucket_name, az_map in buckets.items():
+        if not _BUCKET_NAME_RE.match(str(bucket_name)):
+            raise SystemExit(
+                f"cluster {cluster_name}: invalid bucket name {bucket_name!r} — must match 'bucket-N' where N is 1-4"
+            )
+        if not isinstance(az_map, dict) or not az_map:
+            raise SystemExit(f"cluster {cluster_name}: bucket {bucket_name!r} must map at least one AZ to a CIDR")
+        for az_name, cidr in az_map.items():
+            if not _AZ_NAME_RE.match(str(az_name)):
+                raise SystemExit(
+                    f"cluster {cluster_name}: invalid AZ name {az_name!r} in bucket "
+                    f"{bucket_name!r} — must match canonical AWS AZ format like 'us-east-2a'"
+                )
+            if not isinstance(cidr, str) or not _POD_CIDR_RE.match(cidr):
+                raise SystemExit(
+                    f"cluster {cluster_name}: invalid CIDR {cidr!r} for "
+                    f"({bucket_name}, {az_name}) — must be a /16 inside CGNAT 100.64.0.0/10"
+                )
+            if cidr in seen_cidrs:
+                prev_bucket, prev_az = seen_cidrs[cidr]
+                raise SystemExit(
+                    f"cluster {cluster_name}: duplicate CIDR {cidr} in "
+                    f"({bucket_name}, {az_name}); already used by ({prev_bucket}, {prev_az})"
+                )
+            seen_cidrs[cidr] = (bucket_name, az_name)
 
 
 def tfvars(cluster_id, cluster_cfg, defaults):
@@ -77,6 +125,20 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     if cluster_admin_roles:
         pairs["cluster_admin_role_names"] = ",".join(cluster_admin_roles)
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
+
+    # pod_cidr_buckets is a complex map(map(string)). Required per cluster — no
+    # defaults fallback (CIDRs must be unique per VPC). Emit as JSON-encoded
+    # tfvar wrapped in single quotes so the inner double quotes survive the
+    # shell-eval path in justfile (`eval tofu plan $TFVARS`). Tofu accepts JSON
+    # for complex -var values when properly quoted.
+    pod_cidr_buckets = (cluster_cfg.get("base") or {}).get("pod_cidr_buckets")
+    if pod_cidr_buckets is None:
+        raise SystemExit(f"cluster {cluster_id}: missing required base.pod_cidr_buckets")
+    _validate_pod_cidr_buckets(cluster_id, pod_cidr_buckets)
+    # Use compact separators (no spaces) so `tr ' ' '\n'` in `just info` doesn't
+    # split the JSON value across multiple lines.
+    flags.append(f"-var='pod_cidr_buckets={json.dumps(pod_cidr_buckets, separators=(',', ':'))}'")
+
     print(" ".join(flags))
 
 

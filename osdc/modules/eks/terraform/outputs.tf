@@ -27,6 +27,11 @@ output "private_subnets_by_az" {
   value       = module.vpc.private_subnets_by_az
 }
 
+output "pod_cidr_associations" {
+  description = "Pod CIDR associations re-exported from the VPC module."
+  value       = module.vpc.pod_cidr_associations
+}
+
 output "cluster_security_group_id" {
   value = module.eks.cluster_security_group_id
 }
