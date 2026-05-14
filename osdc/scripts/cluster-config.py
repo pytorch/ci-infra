@@ -15,6 +15,12 @@ Usage:
     cluster-config.py arc-staging tfvars
         -> -var="cluster_name=pytorch-arc-staging" -var="aws_region=us-west-1" ...
 
+    # Get sorted, comma-separated AZ list from base.pod_cidr_buckets
+    cluster-config.py arc-staging azs                 -> us-west-1a,us-west-1c
+
+    # Get sorted, comma-separated bucket-name list from base.pod_cidr_buckets
+    cluster-config.py arc-staging valid-buckets       -> bucket-1,bucket-2,bucket-3,bucket-4
+
     # Check if a module is enabled
     cluster-config.py arc-staging has-module arc      -> exits 0 (true) or 1 (false)
 
@@ -22,11 +28,25 @@ Usage:
     cluster-config.py --list
 """
 
+import json
 import os
+import re
 import sys
 from pathlib import Path
 
 import yaml
+
+# Shared validation patterns live in scripts/python/cni_constants.py so the
+# nodepool generator, the bootstrap script, and this validator agree on the
+# bucket-N and AZ name shapes.
+_scripts_python = str(Path(__file__).resolve().parent / "python")
+if _scripts_python not in sys.path:
+    sys.path.insert(0, _scripts_python)
+from cni_constants import AZ_NAME_RE, BUCKET_NAME_RE  # noqa: E402
+
+# CIDRs MUST be /16 inside CGNAT 100.64.0.0/10 (octet 64-127). Whole /16
+# blocks only — second octet may be 64-127, third/fourth octets must be 0.
+_POD_CIDR_RE = re.compile(r"^100\.((6[4-9])|(7[0-9])|(8[0-9])|(9[0-9])|(1[01][0-9])|(12[0-7]))\.0\.0/16$")
 
 CONFIG_PATH = Path(os.environ.get("CLUSTERS_YAML", Path(__file__).resolve().parent.parent / "clusters.yaml"))
 
@@ -47,6 +67,43 @@ def resolve(cluster_cfg, defaults, dotpath):
     if val is not None:
         return val
     return dval
+
+
+def _validate_pod_cidr_buckets(cluster_name, buckets):
+    """Validate pod_cidr_buckets shape, names, and CIDR uniqueness.
+
+    Raises SystemExit with a clear message on the first violation found.
+    Caller is responsible for the missing-key check; this enforces shape
+    and content of a present, dict-typed value.
+    """
+    if not isinstance(buckets, dict) or not buckets:
+        raise SystemExit(f"cluster {cluster_name}: base.pod_cidr_buckets must be a non-empty mapping")
+    seen_cidrs = {}
+    for bucket_name, az_map in buckets.items():
+        if not BUCKET_NAME_RE.match(str(bucket_name)):
+            raise SystemExit(
+                f"cluster {cluster_name}: invalid bucket name {bucket_name!r} — must match 'bucket-N' where N is 1-4"
+            )
+        if not isinstance(az_map, dict) or not az_map:
+            raise SystemExit(f"cluster {cluster_name}: bucket {bucket_name!r} must map at least one AZ to a CIDR")
+        for az_name, cidr in az_map.items():
+            if not AZ_NAME_RE.match(str(az_name)):
+                raise SystemExit(
+                    f"cluster {cluster_name}: invalid AZ name {az_name!r} in bucket "
+                    f"{bucket_name!r} — must match canonical AWS AZ format like 'us-east-2a'"
+                )
+            if not isinstance(cidr, str) or not _POD_CIDR_RE.match(cidr):
+                raise SystemExit(
+                    f"cluster {cluster_name}: invalid CIDR {cidr!r} for "
+                    f"({bucket_name}, {az_name}) — must be a /16 inside CGNAT 100.64.0.0/10"
+                )
+            if cidr in seen_cidrs:
+                prev_bucket, prev_az = seen_cidrs[cidr]
+                raise SystemExit(
+                    f"cluster {cluster_name}: duplicate CIDR {cidr} in "
+                    f"({bucket_name}, {az_name}); already used by ({prev_bucket}, {prev_az})"
+                )
+            seen_cidrs[cidr] = (bucket_name, az_name)
 
 
 def tfvars(cluster_id, cluster_cfg, defaults):
@@ -77,7 +134,67 @@ def tfvars(cluster_id, cluster_cfg, defaults):
     if cluster_admin_roles:
         pairs["cluster_admin_role_names"] = ",".join(cluster_admin_roles)
     flags = [f'-var="{k}={v}"' for k, v in pairs.items()]
+
+    # pod_cidr_buckets is a complex map(map(string)). Required per cluster — no
+    # defaults fallback (CIDRs must be unique per VPC). Emit as JSON-encoded
+    # tfvar wrapped in single quotes so the inner double quotes survive the
+    # shell-eval path in justfile (`eval tofu plan $TFVARS`). Tofu accepts JSON
+    # for complex -var values when properly quoted.
+    pod_cidr_buckets = (cluster_cfg.get("base") or {}).get("pod_cidr_buckets")
+    if pod_cidr_buckets is None:
+        raise SystemExit(f"cluster {cluster_id}: missing required base.pod_cidr_buckets")
+    _validate_pod_cidr_buckets(cluster_id, pod_cidr_buckets)
+    # Use compact separators (no spaces) so `tr ' ' '\n'` in `just info` doesn't
+    # split the JSON value across multiple lines.
+    flags.append(f"-var='pod_cidr_buckets={json.dumps(pod_cidr_buckets, separators=(',', ':'))}'")
+
     print(" ".join(flags))
+
+
+def azs(cluster_id, cluster_cfg):
+    """Print sorted, comma-separated AZ names from base.pod_cidr_buckets.
+
+    Output is shell-safe (no spaces, single line) for `$(...)` substitution
+    into a NODEPOOLS_AZS env var consumed by the nodepool generator.
+    All buckets MUST define the same set of AZ keys; mismatches indicate a
+    configuration bug that would silently produce skewed pod subnets.
+    """
+    pod_cidr_buckets = (cluster_cfg.get("base") or {}).get("pod_cidr_buckets")
+    if pod_cidr_buckets is None:
+        raise SystemExit(f"cluster {cluster_id}: missing required base.pod_cidr_buckets")
+    _validate_pod_cidr_buckets(cluster_id, pod_cidr_buckets)
+
+    # Cross-bucket symmetry check: all buckets MUST define the same AZ key set.
+    az_keys_per_bucket = {bucket: frozenset(az_map.keys()) for bucket, az_map in pod_cidr_buckets.items()}
+    reference_bucket, reference_keys = next(iter(az_keys_per_bucket.items()))
+    for bucket, keys in az_keys_per_bucket.items():
+        if keys != reference_keys:
+            diff = sorted(keys.symmetric_difference(reference_keys))
+            raise SystemExit(
+                f"cluster {cluster_id}: bucket {bucket!r} AZ keys differ from "
+                f"{reference_bucket!r}; symmetric difference: {diff}. "
+                f"All buckets must define the same set of AZs."
+            )
+
+    print(",".join(sorted(reference_keys)))
+
+
+def valid_buckets(cluster_id, cluster_cfg):
+    """Print sorted, comma-separated bucket names from base.pod_cidr_buckets.
+
+    Output is shell-safe (no spaces, single line) for ``$(...)`` substitution
+    into a NODEPOOLS_VALID_BUCKETS env var consumed by the nodepool generator.
+    Used as a coherence cross-check: each nodepool def declares a ``bucket``
+    field and the generator refuses any bucket name not in this set, so a def
+    referencing a bucket the cluster doesn't define fails fast at generation
+    time instead of silently producing a NodePool whose ENI-config label
+    points at a non-existent ENIConfig CR.
+    """
+    pod_cidr_buckets = (cluster_cfg.get("base") or {}).get("pod_cidr_buckets")
+    if pod_cidr_buckets is None:
+        raise SystemExit(f"cluster {cluster_id}: missing required base.pod_cidr_buckets")
+    _validate_pod_cidr_buckets(cluster_id, pod_cidr_buckets)
+    print(",".join(sorted(pod_cidr_buckets.keys())))
 
 
 def main():
@@ -86,7 +203,10 @@ def main():
     clusters = cfg.get("clusters", {})
 
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <cluster-id> <field|tfvars|has-module> [value]", file=sys.stderr)
+        print(
+            f"Usage: {sys.argv[0]} <cluster-id> <field|tfvars|has-module|azs|valid-buckets> [value]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if sys.argv[1] == "--list":
@@ -104,6 +224,10 @@ def main():
 
     if cmd == "tfvars":
         tfvars(cluster_id, cluster_cfg, defaults)
+    elif cmd == "azs":
+        azs(cluster_id, cluster_cfg)
+    elif cmd == "valid-buckets":
+        valid_buckets(cluster_id, cluster_cfg)
     elif cmd == "has-module":
         module = sys.argv[3] if len(sys.argv) > 3 else ""
         modules = cluster_cfg.get("modules", [])

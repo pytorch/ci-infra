@@ -27,6 +27,21 @@ output "private_subnets_by_az" {
   value       = module.vpc.private_subnets_by_az
 }
 
+output "pod_cidr_associations" {
+  description = "Pod CIDR associations re-exported from the VPC module."
+  value       = module.vpc.pod_cidr_associations
+}
+
+output "pod_subnet_ids" {
+  description = "List of pod subnet IDs (re-exported from VPC module). See VPC module output for boundary semantics -- Karpenter MUST NOT consume this."
+  value       = module.vpc.pod_subnet_ids
+}
+
+output "pod_subnets_by_bucket_az" {
+  description = "Pod subnets keyed by '$${bucket}-$${az}' (re-exported from VPC module). Consumed by downstream modules."
+  value       = module.vpc.pod_subnets_by_bucket_az
+}
+
 output "cluster_security_group_id" {
   value = module.eks.cluster_security_group_id
 }
