@@ -232,6 +232,8 @@ kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
 
 ### 📋 Remaining Tasks
 
+- **Add us-west-1 and us-west-2 spot regions** - Copy prod-east1 setup to west coast. Check spot availability per instance type. us-west-2 should also serve as staging (config test environment). Needs: new workspace configs, subnet/VPC setup, SPOT_GPU_TYPES, CLI config, DNS subdomain delegation.
+- **Spot UX improvements** - Queue position should be #1 for each type (not cross-type FIFO). Status should show "queued (waiting for capacity)" not just "queued". ETA should not show "~Nonemin". Interactive picker should show spot GPU counts from east1 not prod.
 - **FQDN for devservers** - Set up proper domain names for development server access
 - **Automated SSH config per reservation** - ✅ DONE - Each reservation now gets `~/.devgpu/<reservation_id>-sshconfig` file, use with `ssh -F ~/.devgpu/<reservation_id>-sshconfig <pod_name>`
 - **Custom Docker image scaffold** - Create Dockerfile with pre-installed packages (Jupyter, etc.)

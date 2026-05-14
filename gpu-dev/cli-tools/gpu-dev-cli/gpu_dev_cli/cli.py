@@ -1970,13 +1970,12 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         # Use the new helper that shows time + remaining
                         expires_formatted = _format_expires_with_remaining(expires_at)
                     elif res_status in ["queued", "pending"]:
-                        # Show estimated wait time if available
                         estimated_wait = reservation.get(
                             "estimated_wait_minutes", "?")
-                        if estimated_wait != "?" and estimated_wait is not None:
+                        if estimated_wait and estimated_wait not in ("?", "None", None):
                             expires_formatted = f"~{estimated_wait}min"
                         else:
-                            expires_formatted = "Calculating..."
+                            expires_formatted = "Waiting..."
                     elif res_status in ("expired", "failed", "cancelled"):
                         reason = reservation.get("failure_reason", "")
                         ended = reservation.get("reservation_ended") or reservation.get("expired_at", "")
@@ -2003,15 +2002,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     # Format queue info for queued reservations
                     queue_info = ""
                     if res_status in ["queued", "pending"]:
-                        queue_position = reservation.get("queue_position", "?")
-                        estimated_wait = reservation.get(
-                            "estimated_wait_minutes", "?")
-                        if queue_position != "?" and queue_position is not None:
-                            queue_info = f"#{queue_position}"
-                            if estimated_wait != "?" and estimated_wait is not None:
-                                queue_info += f" (~{estimated_wait}min)"
+                        detail = reservation.get("current_detailed_status") or reservation.get("detailed_status") or ""
+                        if "capacity" in detail.lower() or "spot" in detail.lower():
+                            queue_info = "Waiting for spot"
                         else:
-                            queue_info = "Calculating..."
+                            queue_info = "Spot pending"
                     elif res_status == "active":
                         # Show pod IP for multinode, SSH hint for single-node
                         pod_ip = reservation.get("pod_ip", "")
@@ -2317,8 +2312,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
 
                                     queue_info = ""
                                     if res_status in ["queued", "pending"]:
-                                        queue_position = reservation.get("queue_position", "?")
-                                        queue_info = f"#{queue_position}" if queue_position != "?" else "Calculating..."
+                                        detail = reservation.get("current_detailed_status") or reservation.get("detailed_status") or ""
+                                        if "capacity" in detail.lower() or "spot" in detail.lower():
+                                            queue_info = "Waiting for spot"
+                                        else:
+                                            queue_info = "Spot pending"
                                     elif res_status == "active":
                                         queue_info = "Ready"
 
@@ -2351,10 +2349,10 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                         expires_formatted = _format_expires_with_remaining(expires_at)
                                     elif res_status in ["queued", "pending"]:
                                         estimated_wait = reservation.get("estimated_wait_minutes", "?")
-                                        if estimated_wait != "?" and estimated_wait is not None:
+                                        if estimated_wait and estimated_wait not in ("?", "None", None):
                                             expires_formatted = f"~{estimated_wait}min"
                                         else:
-                                            expires_formatted = "Calculating..."
+                                            expires_formatted = "Waiting..."
                                     else:
                                         expires_formatted = "N/A"
 
