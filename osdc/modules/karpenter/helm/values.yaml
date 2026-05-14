@@ -26,6 +26,8 @@ settings:
   clusterName: ""
   clusterEndpoint: ""
   interruptionQueue: ""
+  # Reserve 1 ENI for node-only traffic (required for VPC CNI Custom Networking).
+  reservedENIs: 1
   # Feature gates
   featureGates:
     spotToSpotConsolidation: true
