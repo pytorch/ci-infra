@@ -34,7 +34,7 @@ output "internet_gateway_id" {
 }
 
 output "pod_cidr_associations" {
-  description = "Pod CIDR associations keyed by '$${bucket}-$${az}', each value an object with bucket name, AZ, CIDR, and association ID. Consumed by PR 5 (subnet carving) and PR 10 (NAT GW per (bucket, AZ)) -- keyed shape avoids fragile string-splitting downstream."
+  description = "Pod CIDR associations keyed by '$${bucket}-$${az}', each value an object with bucket name, AZ, CIDR, and association ID. Keyed shape avoids fragile string-splitting downstream."
   value = {
     for key, assoc in aws_vpc_ipv4_cidr_block_association.pod :
     key => {
@@ -52,7 +52,7 @@ output "pod_subnet_ids" {
 }
 
 output "pod_subnets_by_bucket_az" {
-  description = "Map of pod subnets keyed by '$${bucket}-$${az}'. Same key shape as pod_cidr_associations so downstream consumers (PR 6 ENIConfig CRDs, PR 10 NAT GW per (bucket, AZ)) can join 1:1."
+  description = "Map of pod subnets keyed by '$${bucket}-$${az}'. Same key shape as pod_cidr_associations so downstream consumers can join 1:1."
   value = {
     for key, subnet in aws_subnet.pod :
     key => {
