@@ -4274,9 +4274,9 @@ def create_pod(
                 client.V1Container(
                     name="gpu-dev",
                     image=container_image,
-                    # :latest is a moving tag — always re-pull so a new docker image
-                    # rolled out to ECR is picked up by every fresh reservation.
-                    image_pull_policy="Always",
+                    # IfNotPresent: use baked AMI's cached image. Baked AMI rebuilds
+                    # when Docker image changes, so cache is always fresh after tf apply.
+                    image_pull_policy="IfNotPresent",
                     **({
                         "command": ["/bin/bash"],
                         "args": [
