@@ -36,6 +36,7 @@ from cni_constants import (  # noqa: E402
     AZ_NAME_RE,
     BUCKET_NAME_RE,
     ENI_CONFIG_LABEL,
+    RESERVED_ENIS_COUNT,
     bucket_eniconfig_name,
 )
 from instance_specs import INSTANCE_ENI_DATA, INSTANCE_SPECS  # noqa: E402
@@ -142,9 +143,11 @@ def compute_pd_max_pods(instance_type: str, *, custom_networking: bool = True) -
     """Return the prefix-delegation-derived kubelet max-pods ceiling for an instance type.
 
     Mirrors AWS's max-pods-calculator.sh (used by AL2/AL2023 EKS AMIs). The
-    ``(eni_count - 1)`` term reserves the primary ENI for node-only traffic when
-    VPC CNI Custom Networking is on. ``PD_HARD_CEILING=250`` matches AWS's
-    recommended cap for >30 vCPU instances; smaller instances cap at 110.
+    ``(eni_count - RESERVED_ENIS_COUNT)`` term reserves ENIs for node-only traffic
+    when VPC CNI Custom Networking is on; ``RESERVED_ENIS_COUNT`` is the single
+    source of truth shared with Karpenter's ``settings.reservedENIs`` Helm value.
+    ``PD_HARD_CEILING=250`` matches AWS's recommended cap for >30 vCPU instances;
+    smaller instances cap at 110.
 
     Source: github.com/awslabs/amazon-eks-ami nodeadm/internal/kubelet/eni_max_pods.go
     """
@@ -157,7 +160,7 @@ def compute_pd_max_pods(instance_type: str, *, custom_networking: bool = True) -
         raise ValueError(f"{instance_type} missing from INSTANCE_SPECS in scripts/python/instance_specs.py")
     eni = INSTANCE_ENI_DATA[instance_type]
     spec = INSTANCE_SPECS[instance_type]
-    usable_enis = eni["eni_count"] - (1 if custom_networking else 0)
+    usable_enis = eni["eni_count"] - (RESERVED_ENIS_COUNT if custom_networking else 0)
     if usable_enis < 1:
         raise ValueError(
             f"{instance_type} has eni_count={eni['eni_count']} → usable_enis={usable_enis} "

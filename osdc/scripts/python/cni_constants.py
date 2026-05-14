@@ -8,6 +8,9 @@ the same literal value without drift.
 Exports:
 - ``ENI_CONFIG_LABEL`` — per-node label key the VPC CNI reads to pick the
   matching ``ENIConfig`` CR.
+- ``RESERVED_ENIS_COUNT`` — single source of truth for the reserved-ENI count
+  under VPC CNI Custom Networking. MUST equal ``settings.reservedENIs`` in
+  ``modules/karpenter/helm/values.yaml``.
 - ``bucket_eniconfig_name(bucket, az)`` — render the per-(bucket, AZ)
   ``ENIConfig`` CR name from a validated bucket string and AZ. Used by both
   the deploy script for bucket ENIConfig CRs and the NodePool generator so
@@ -42,6 +45,21 @@ import re
 #     value = ``bucket-${N}-${AZ}``)
 # Read by aws-node ipamd via the addon's ``ENI_CONFIG_LABEL_DEF`` env var.
 ENI_CONFIG_LABEL = "ipam.osdc.internal/eni-config"
+
+# Reserved-ENI count under VPC CNI Custom Networking. Single source of truth.
+#
+# MUST equal ``settings.reservedENIs`` in ``modules/karpenter/helm/values.yaml``.
+# Karpenter's scheduler subtracts this many ENIs from each instance's pod-IP
+# capacity (the primary ENI carries node-only traffic and cannot host pods).
+# The NodePool generator subtracts the same count in ``compute_pd_max_pods()``
+# so the kubelet ``maxPods`` ceiling matches Karpenter's scheduling envelope —
+# if these two diverge, the generator emits ceilings that overcommit what the
+# scheduler actually allows, leading to pending pods.
+#
+# The Helm values.yaml cannot import Python; the link is enforced at test time
+# by ``scripts/python/test_karpenter_helm_values.py``, which loads this
+# constant and asserts the YAML matches.
+RESERVED_ENIS_COUNT = 1
 
 # Bucket name pattern. Single source of truth — the bucket-architecture
 # allocates pod IPs into 4 buckets named bucket-1..bucket-4.
