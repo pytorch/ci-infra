@@ -205,7 +205,7 @@ def select_gpu_type_interactive(
             # Availability signal from spot price vs on-demand
             sp = si.get("spot_price", "") if isinstance(si, dict) else ""
             if not sp or (isinstance(si, dict) and "No spot data" in str(si.get("spot_signal", ""))):
-                avail_signal = "[red]Not offered[/red]"
+                avail_signal = "[green]Available[/green]" if avail > 0 else "[dim]No price data[/dim]"
             else:
                 try:
                     ratio = float(sp) / _on_demand.get(gt, 50)
@@ -266,17 +266,21 @@ def select_gpu_type_interactive(
             si_data = info.get("spot_info", {}) or {}
             sp = si_data.get("spot_price", "") if isinstance(si_data, dict) else ""
             # Derive availability signal
+            avail_now = int(info.get("available", 0))
             if not sp or "No spot data" in str(si_data.get("spot_signal", "")):
-                # Not offered — skip from choices
-                continue
-            try:
-                ratio = float(sp) / _on_demand.get(gt, 50)
-                pct = int((1 - ratio) * 100)
-                if ratio < 0.4: signal = f"🟢 High avail ({pct}% off)"
-                elif ratio < 0.7: signal = f"🟡 Medium ({pct}% off)"
-                else: signal = f"🔴 Low ({pct}% off)"
-            except (ValueError, TypeError):
-                signal = "availability unknown"
+                if avail_now > 0:
+                    signal = f"🟢 {avail_now} available now"
+                else:
+                    continue
+            else:
+                try:
+                    ratio = float(sp) / _on_demand.get(gt, 50)
+                    pct = int((1 - ratio) * 100)
+                    if ratio < 0.4: signal = f"🟢 High avail ({pct}% off)"
+                    elif ratio < 0.7: signal = f"🟡 Medium ({pct}% off)"
+                    else: signal = f"🔴 Low ({pct}% off)"
+                except (ValueError, TypeError):
+                    signal = "availability unknown"
             if avail > 0:
                 label = f"✅ {gt.upper()} * ({avail} free, {pn}/node, {signal})"
             else:
