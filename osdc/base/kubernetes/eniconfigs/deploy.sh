@@ -14,7 +14,8 @@ set -euo pipefail
 #      for workload nodes, pointing at the matching per-(bucket, AZ) /16 pod
 #      subnet from the base terraform output `pod_subnets_by_bucket_az`.
 #
-# Resources are inert until VPC CNI Custom Networking is enabled in a later PR.
+# Resources are inert until VPC CNI Custom Networking is enabled
+# (AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG=true on the aws-node DaemonSet).
 
 CLUSTER="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -80,7 +81,7 @@ done
 mapfile -t BUCKET_KEYS < <(jq -r 'keys[]?' <<<"${BUCKET_SUBNETS_JSON:-{}}")
 if [[ ${#BUCKET_KEYS[@]} -eq 0 ]]; then
   echo "ERROR: pod_subnets_by_bucket_az is empty for cluster ${CLUSTER}." >&2
-  echo "       This output is created by PRs 4+5 (per-(bucket, AZ) /16 pod subnets)." >&2
+  echo "       This output is created by the per-(bucket, AZ) /16 pod subnets in modules/eks/terraform/modules/vpc/." >&2
   echo "       Run 'tofu apply' on modules/eks/terraform for this cluster, then re-run." >&2
   exit 1
 fi
