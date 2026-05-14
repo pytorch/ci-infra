@@ -4,6 +4,8 @@ fleet:
   name: r5
   arch: amd64
   gpu: false
+  # Pod-IP bucket (memory/balanced, m/r-series).
+  bucket: bucket-3
   instances:
     - type: r5.24xlarge
       weight: 100

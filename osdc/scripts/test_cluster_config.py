@@ -476,6 +476,267 @@ class TestValidatePodCidrBuckets:
 
 
 # ============================================================================
+# azs() tests
+# ============================================================================
+
+
+class TestAzsAccessor:
+    """Tests for the azs() accessor — feeds NODEPOOLS_AZS in deploy.sh."""
+
+    def test_3az_symmetric(self, capsys):
+        """4 buckets x 3 AZs (production-shape) — sorted, comma-separated, no spaces."""
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_PROD})
+        cluster_config.azs("prod", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "us-east-1a,us-east-1b"
+        # Production fixture in this file is 2-AZ; verify that for a real 3-AZ
+        # shape (assembled inline) the same sorting / no-space invariant holds.
+        three_az_buckets = {
+            f"bucket-{i}": {
+                "us-east-2a": f"100.{63 + (i - 1) * 3 + 1}.0.0/16",
+                "us-east-2c": f"100.{63 + (i - 1) * 3 + 2}.0.0/16",
+                "us-east-2b": f"100.{63 + (i - 1) * 3 + 3}.0.0/16",
+            }
+            for i in range(1, 5)
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": three_az_buckets})
+        capsys.readouterr()  # drain
+        cluster_config.azs("c", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "us-east-2a,us-east-2b,us-east-2c"
+        # No spaces anywhere in the output (shell-safe for $(...) substitution)
+        assert " " not in out.strip()
+
+    def test_2az_symmetric(self, capsys):
+        """4 buckets x 2 AZs (staging-shape) — sorted, comma-separated, no spaces."""
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ})
+        cluster_config.azs("staging", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "us-west-2a,us-west-2b"
+        assert " " not in out.strip()
+
+    def test_az_keys_sorted_when_yaml_unordered(self, capsys):
+        """AZ keys are sorted regardless of insertion order in the source dict."""
+        unsorted_buckets = {
+            "bucket-1": {"us-west-1c": "100.96.0.0/16", "us-west-1a": "100.97.0.0/16"},
+            "bucket-2": {"us-west-1c": "100.98.0.0/16", "us-west-1a": "100.99.0.0/16"},
+            "bucket-3": {"us-west-1c": "100.100.0.0/16", "us-west-1a": "100.101.0.0/16"},
+            "bucket-4": {"us-west-1c": "100.102.0.0/16", "us-west-1a": "100.103.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": unsorted_buckets})
+        cluster_config.azs("c", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "us-west-1a,us-west-1c"
+
+    def test_missing_pod_cidr_buckets_raises(self):
+        """No base.pod_cidr_buckets — raises SystemExit naming the cluster."""
+        cluster_cfg = {
+            "cluster_name": "no-buckets",
+            "region": "us-west-2",
+            "base": {"vpc_cidr": "10.0.0.0/16"},
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.azs("no-buckets", cluster_cfg)
+        msg = str(exc.value)
+        assert "pod_cidr_buckets" in msg
+        assert "no-buckets" in msg
+
+    def test_missing_base_raises(self):
+        """No base block at all — same missing-buckets error path."""
+        cluster_cfg = {
+            "cluster_name": "minimal",
+            "region": "ap-southeast-1",
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.azs("minimal", cluster_cfg)
+        assert "pod_cidr_buckets" in str(exc.value)
+        assert "minimal" in str(exc.value)
+
+    def test_bucket_missing_az_raises(self):
+        """One bucket missing an AZ that the others have — raises with diff."""
+        asymmetric_buckets = {
+            "bucket-1": {
+                "us-east-2a": "100.64.0.0/16",
+                "us-east-2b": "100.65.0.0/16",
+                "us-east-2c": "100.66.0.0/16",
+            },
+            # bucket-2 is missing us-east-2c
+            "bucket-2": {
+                "us-east-2a": "100.67.0.0/16",
+                "us-east-2b": "100.68.0.0/16",
+            },
+            "bucket-3": {
+                "us-east-2a": "100.69.0.0/16",
+                "us-east-2b": "100.70.0.0/16",
+                "us-east-2c": "100.71.0.0/16",
+            },
+            "bucket-4": {
+                "us-east-2a": "100.72.0.0/16",
+                "us-east-2b": "100.73.0.0/16",
+                "us-east-2c": "100.74.0.0/16",
+            },
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": asymmetric_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.azs("c", cluster_cfg)
+        msg = str(exc.value)
+        assert "bucket-2" in msg
+        assert "us-east-2c" in msg
+        assert "symmetric difference" in msg or "differ" in msg
+
+    def test_bucket_extra_az_raises(self):
+        """One bucket has an extra AZ key the others don't — raises with diff."""
+        asymmetric_buckets = {
+            "bucket-1": {
+                "us-east-2a": "100.64.0.0/16",
+                "us-east-2b": "100.65.0.0/16",
+            },
+            # bucket-2 has an extra AZ that no other bucket has
+            "bucket-2": {
+                "us-east-2a": "100.66.0.0/16",
+                "us-east-2b": "100.67.0.0/16",
+                "us-east-2c": "100.68.0.0/16",
+            },
+            "bucket-3": {
+                "us-east-2a": "100.69.0.0/16",
+                "us-east-2b": "100.70.0.0/16",
+            },
+            "bucket-4": {
+                "us-east-2a": "100.71.0.0/16",
+                "us-east-2b": "100.72.0.0/16",
+            },
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": asymmetric_buckets})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.azs("c", cluster_cfg)
+        msg = str(exc.value)
+        assert "bucket-2" in msg
+        assert "us-east-2c" in msg
+        assert "symmetric difference" in msg or "differ" in msg
+
+    def test_output_is_shell_safe(self, capsys):
+        """Output must be a single line, no spaces — safe for shell $(...) substitution.
+
+        Asserts the printed value has exactly one trailing newline (from print)
+        and no embedded whitespace that would break `var=$(cmd)` capture or
+        split() in the downstream Python consumer.
+        """
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ})
+        cluster_config.azs("c", cluster_cfg)
+        raw = capsys.readouterr().out
+        # print() adds exactly one trailing newline
+        assert raw.endswith("\n")
+        # Stripping trailing newline matches stripping all whitespace from end
+        assert raw.rstrip("\n") == raw.rstrip()
+        # No internal whitespace: the value (without trailing newline) has no spaces or tabs
+        value = raw.rstrip("\n")
+        assert " " not in value
+        assert "\t" not in value
+        assert "\n" not in value
+        # Splitting by ',' must produce non-empty AZ tokens (mirrors downstream .split(","))
+        tokens = value.split(",")
+        assert all(tokens)
+        assert tokens == sorted(tokens)
+
+
+# ============================================================================
+# valid_buckets() tests
+# ============================================================================
+
+
+class TestValidBucketsAccessor:
+    """Tests for the valid_buckets() accessor — feeds NODEPOOLS_VALID_BUCKETS in deploy.sh."""
+
+    def test_4az_returns_sorted_list(self, capsys):
+        """4 buckets — sorted, comma-separated, no spaces."""
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_PROD})
+        cluster_config.valid_buckets("prod", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "bucket-1,bucket-2,bucket-3,bucket-4"
+
+    def test_3bucket_returns_sorted_list(self, capsys):
+        """A 3-bucket fixture — sorted, comma-separated, no spaces."""
+        three_bucket = {
+            "bucket-1": {"us-west-2a": "100.64.0.0/16", "us-west-2b": "100.65.0.0/16"},
+            "bucket-2": {"us-west-2a": "100.66.0.0/16", "us-west-2b": "100.67.0.0/16"},
+            "bucket-3": {"us-west-2a": "100.68.0.0/16", "us-west-2b": "100.69.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": three_bucket})
+        cluster_config.valid_buckets("c", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "bucket-1,bucket-2,bucket-3"
+
+    def test_buckets_sorted_when_yaml_unordered(self, capsys):
+        """Bucket names are sorted regardless of insertion order in the source dict."""
+        unordered = {
+            "bucket-3": {"us-west-2a": "100.68.0.0/16", "us-west-2b": "100.69.0.0/16"},
+            "bucket-1": {"us-west-2a": "100.64.0.0/16", "us-west-2b": "100.65.0.0/16"},
+            "bucket-4": {"us-west-2a": "100.70.0.0/16", "us-west-2b": "100.71.0.0/16"},
+            "bucket-2": {"us-west-2a": "100.66.0.0/16", "us-west-2b": "100.67.0.0/16"},
+        }
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": unordered})
+        cluster_config.valid_buckets("c", cluster_cfg)
+        out = capsys.readouterr().out
+        assert out.strip() == "bucket-1,bucket-2,bucket-3,bucket-4"
+
+    def test_missing_pod_cidr_buckets_raises(self):
+        """No base.pod_cidr_buckets — raises SystemExit naming the cluster."""
+        cluster_cfg = {
+            "cluster_name": "no-buckets",
+            "region": "us-west-2",
+            "base": {"vpc_cidr": "10.0.0.0/16"},
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.valid_buckets("no-buckets", cluster_cfg)
+        msg = str(exc.value)
+        assert "pod_cidr_buckets" in msg
+        assert "no-buckets" in msg
+
+    def test_missing_base_raises(self):
+        """No base block at all — same missing-buckets error path."""
+        cluster_cfg = {
+            "cluster_name": "minimal",
+            "region": "ap-southeast-1",
+        }
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.valid_buckets("minimal", cluster_cfg)
+        assert "pod_cidr_buckets" in str(exc.value)
+        assert "minimal" in str(exc.value)
+
+    def test_invalid_bucket_name_raises(self):
+        """A malformed bucket name (e.g. bucket-5) is rejected via _validate_pod_cidr_buckets."""
+        bad = {"bucket-5": {"us-west-2a": "100.64.0.0/16"}}
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": bad})
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.valid_buckets("c", cluster_cfg)
+        assert "bucket-5" in str(exc.value)
+
+    def test_output_is_shell_safe(self, capsys):
+        """Output must be a single line, no spaces — safe for shell $(...) substitution.
+
+        Asserts the printed value has exactly one trailing newline (from print)
+        and no embedded whitespace that would break ``var=$(cmd)`` capture or
+        the downstream ``.split(",")`` consumer in the nodepool generator.
+        """
+        cluster_cfg = _cfg_with_buckets(base={"pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ})
+        cluster_config.valid_buckets("c", cluster_cfg)
+        raw = capsys.readouterr().out
+        # print() adds exactly one trailing newline
+        assert raw.endswith("\n")
+        # Stripping trailing newline matches stripping all whitespace from end
+        assert raw.rstrip("\n") == raw.rstrip()
+        value = raw.rstrip("\n")
+        # No internal whitespace (spaces, tabs, embedded newlines)
+        assert " " not in value
+        assert "\t" not in value
+        assert "\n" not in value
+        # split(",") must produce non-empty bucket tokens, all sorted
+        tokens = value.split(",")
+        assert all(tokens)
+        assert tokens == sorted(tokens)
+
+
+# ============================================================================
 # main() tests
 # ============================================================================
 
@@ -595,10 +856,17 @@ class TestMain:
         assert capsys.readouterr().out.strip() == "true"
 
     def test_bool_false_field_output(self, capsys):
-        """Boolean False from defaults should print 'false'."""
-        code = run_main("staging", "base.single_nat_gateway")
+        """Boolean False from defaults should print 'false'.
+
+        Production cluster has no single_nat_gateway override, so resolve()
+        falls back to defaults.single_nat_gateway=False. Verifies the
+        ``isinstance(val, bool)`` branch in main() lowercases False correctly
+        — a path that was previously not exercised because the prior version
+        of this test queried staging (which overrides to True).
+        """
+        code = run_main("production", "single_nat_gateway")
         assert code == 0
-        assert capsys.readouterr().out.strip() == "true"
+        assert capsys.readouterr().out.strip() == "false"
 
 
 # ============================================================================

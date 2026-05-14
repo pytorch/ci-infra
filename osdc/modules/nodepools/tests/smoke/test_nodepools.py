@@ -26,6 +26,29 @@ pytestmark = [pytest.mark.live]
 REQUIRED_FIELDS = {"name", "instance_type", "arch", "node_disk_size", "gpu"}
 
 
+def _expected_azs(cluster_config: dict) -> list[str]:
+    """Sorted AZ list expected for this cluster's NodePools.
+
+    Source-of-truth matches what ``deploy.sh`` passes to the generator:
+    the AZ keys defined under ``base.pod_cidr_buckets`` in clusters.yaml
+    (see ``scripts/cluster-config.py azs``). The generator emits one
+    NodePool per (def, AZ) pair, so the expected CR set fans out the same way.
+    """
+    base_cfg = cluster_config["cluster"].get("base") or {}
+    buckets = base_cfg.get("pod_cidr_buckets") or {}
+    if not buckets:
+        pytest.skip("This cluster has no pod_cidr_buckets configured (AZ pinning not in effect)")
+    azs: set[str] = set()
+    for az_map in buckets.values():
+        azs.update(az_map.keys())
+    return sorted(azs)
+
+
+def _expand_for_azs(base_names: set[str], azs: list[str]) -> set[str]:
+    """Cartesian-expand base NodePool names with AZ suffixes."""
+    return {f"{name}-{az}" for name in base_names for az in azs}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -154,17 +177,21 @@ class TestNodePoolCRs:
     """Verify Karpenter NodePool CRs exist for each definition."""
 
     def test_nodepools_exist(self, all_nodepools: dict, upstream_dir: Path, cluster_config: dict) -> None:
-        """Each nodepool def has a matching NodePool CR in the cluster.
+        """Each (def, AZ) pair has a matching NodePool CR in the cluster.
 
-        Honors ``exclude_regions`` on fleet/nodepool defs so fleets that the
-        generator correctly skipped for this cluster's region are not asserted
-        to exist as CRs.
+        The generator emits one NodePool per (def, AZ), where AZs come from
+        ``base.pod_cidr_buckets`` in clusters.yaml. The expected CR name set
+        is therefore the cartesian product of base def names and configured
+        AZs. ``exclude_regions`` is honored so fleets that the generator
+        correctly skipped for this cluster's region are not asserted.
         """
         region = cluster_config["cluster"].get("region", "")
         defs = _load_all_defs(upstream_dir, region=region)
+        azs = _expected_azs(cluster_config)
+        expected = _expand_for_azs({d["name"] for d in defs}, azs)
         existing = {np["metadata"]["name"] for np in all_nodepools.get("items", [])}
-        missing = [d["name"] for d in defs if d["name"] not in existing]
-        assert not missing, f"NodePool CRs not found for definitions: {missing}"
+        missing = sorted(expected - existing)
+        assert not missing, f"NodePool CRs not found for (def, AZ) pairs: {missing}"
 
 
 # ============================================================================
@@ -176,19 +203,22 @@ class TestNoStaleNodePools:
     """Verify no orphaned NodePools exist that don't match any definition."""
 
     def test_no_stale_nodepools(self, all_nodepools: dict, upstream_dir: Path, cluster_config: dict) -> None:
-        """All NodePools with the nodepools module label match a known def.
+        """All NodePools with the nodepools module label match a known (def, AZ) pair.
 
-        Honors ``exclude_regions`` so a leftover CR from a previous deploy
-        (when the def did not yet have ``exclude_regions``) is correctly
-        flagged as stale rather than masked as "expected".
+        Every NodePool name is ``<def-name>-<AZ>``. A CR whose suffix doesn't
+        correspond to a configured AZ (e.g. left over from a previous deploy
+        that targeted a different AZ set) is flagged as stale rather than
+        masked as "expected". ``exclude_regions`` is honored so a leftover CR
+        from a region-excluded def is also flagged.
         """
         region = cluster_config["cluster"].get("region", "")
         defs = _load_all_defs(upstream_dir, region=region)
-        expected = {d["name"] for d in defs}
+        azs = _expected_azs(cluster_config)
+        expected = _expand_for_azs({d["name"] for d in defs}, azs)
         managed = [
             np
             for np in all_nodepools.get("items", [])
             if np.get("metadata", {}).get("labels", {}).get("osdc.io/module") == "nodepools"
         ]
-        stale = [np["metadata"]["name"] for np in managed if np["metadata"]["name"] not in expected]
-        assert not stale, f"Stale NodePools (managed but no matching def): {stale}"
+        stale = sorted(np["metadata"]["name"] for np in managed if np["metadata"]["name"] not in expected)
+        assert not stale, f"Stale NodePools (managed but no matching (def, AZ) pair): {stale}"
