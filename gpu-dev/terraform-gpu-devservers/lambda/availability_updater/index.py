@@ -181,12 +181,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                             IndexName="StatusIndex",
                             KeyConditionExpression="#s = :status",
                             ExpressionAttributeNames={"#s": "status"},
-                            ExpressionAttributeValues={":status": status, ":gt_lower": st.lower(), ":gt_upper": st.upper()},
-                            FilterExpression="gpu_type = :gt_lower OR gpu_type = :gt_upper",
-                            Limit=1,
+                            ExpressionAttributeValues={":status": status},
                         )
-                        if resp.get("Items"):
-                            has_active = True
+                        for item in resp.get("Items", []):
+                            gt = (item.get("gpu_type") or "").lower()
+                            if gt == st.lower():
+                                has_active = True
+                                break
+                        if has_active:
                             break
                     if not has_active:
                         resp = autoscaling.describe_auto_scaling_groups(AutoScalingGroupNames=[asg])
