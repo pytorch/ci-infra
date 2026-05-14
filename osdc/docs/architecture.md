@@ -62,7 +62,7 @@ clusters:
     state_bucket: ciforge-tfstate-arc-staging
     base:
       vpc_cidr: "10.0.0.0/16"
-      single_nat_gateway: true
+      nat_gateway_eip_count: 1
       base_node_count: 5
     modules:
       - arc
