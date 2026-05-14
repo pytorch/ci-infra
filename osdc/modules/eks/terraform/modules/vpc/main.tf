@@ -25,8 +25,8 @@ resource "aws_vpc" "this" {
 
 # Pod CIDR associations -- secondary /16 blocks attached to the VPC for VPC CNI
 # Custom Networking. One /16 per (bucket, AZ) keyed by "${bucket}-${az}". Pure
-# additive -- no subnets carved here (PR 5) and no traffic until Custom
-# Networking is enabled (PR 7).
+# additive -- no subnets carved here and no traffic until Custom Networking is
+# enabled.
 locals {
   pod_cidr_associations = merge([
     for bucket_name, az_map in var.pod_cidr_buckets : {

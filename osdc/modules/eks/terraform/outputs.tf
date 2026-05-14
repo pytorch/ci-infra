@@ -28,7 +28,7 @@ output "private_subnets_by_az" {
 }
 
 output "pod_cidr_associations" {
-  description = "Pod CIDR associations re-exported from the VPC module. See INCREASE_IPV4.md PR 4."
+  description = "Pod CIDR associations re-exported from the VPC module."
   value       = module.vpc.pod_cidr_associations
 }
 
