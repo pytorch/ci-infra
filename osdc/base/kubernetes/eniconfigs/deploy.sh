@@ -41,7 +41,11 @@ fi
 SUBNETS_JSON=$(tofu output -json private_subnets_by_az)
 cd - >/dev/null
 
-mapfile -t AZS < <(jq -r 'keys[]' <<<"$SUBNETS_JSON")
+# macOS ships /bin/bash 3.2, where `mapfile` is unavailable. Read the
+# `jq` output line-by-line into the array so the script works on stock
+# bash 3.2 and modern bash alike.
+AZS=()
+while IFS= read -r line; do AZS+=("$line"); done < <(jq -r 'keys[]' <<<"$SUBNETS_JSON")
 if [[ ${#AZS[@]} -eq 0 ]]; then
   echo "ERROR: private_subnets_by_az is empty for cluster ${CLUSTER}" >&2
   exit 1
