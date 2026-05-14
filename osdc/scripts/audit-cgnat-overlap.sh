@@ -2,12 +2,12 @@
 # CGNAT overlap audit for OSDC IPv4 capacity expansion.
 #
 # Audits AWS for any existing TGW/peering/route-table CIDRs that overlap the
-# 100.64.0.0/10 CGNAT range OSDC will use for pod IPs. Any overlap would
-# silently break pod-to-peer connectivity once VPC CNI Custom Networking
-# activates.
+# 100.64.0.0/10 CGNAT range OSDC uses for pod IPs. Any overlap would
+# silently break pod-to-peer connectivity.
 #
-# Run per region. Re-run before the Custom Networking cutover and whenever
-# a new region/account is added.
+# Run per region. Re-run whenever a new region or account is added so
+# overlap with the OSDC pod CIDR space is detected before it can break
+# pod-to-peer routing.
 #
 # Usage:
 #   AWS_PROFILE=<profile> ./audit-cgnat-overlap.sh <region>
