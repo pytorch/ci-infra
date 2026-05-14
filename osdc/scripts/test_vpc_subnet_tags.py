@@ -99,7 +99,7 @@ class TestPodSubnetTags:
         )
 
     def test_pod_subnet_has_var_tags_precondition(self):
-        """A future agent can't quietly remove the var.tags injection guard."""
+        """Regression guard: the var.tags injection precondition must remain on aws_subnet.pod."""
         assert "precondition" in self.block, (
             "aws_subnet.pod must have a lifecycle.precondition guarding against "
             "var.tags injection of forbidden tag keys."
