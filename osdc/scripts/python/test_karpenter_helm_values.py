@@ -8,6 +8,7 @@ scheduler subtracts the primary ENI from each instance's pod-IP capacity.
 from pathlib import Path
 
 import yaml
+from cni_constants import RESERVED_ENIS_COUNT
 
 VALUES_PATH = Path(__file__).parents[2] / "modules" / "karpenter" / "helm" / "values.yaml"
 
@@ -18,9 +19,13 @@ def _load_values() -> dict:
 
 
 class TestKarpenterHelmValues:
-    def test_reserved_enis_set_to_one(self):
+    def test_reserved_enis_matches_constant(self):
         data = _load_values()
-        assert data["settings"]["reservedENIs"] == 1
+        assert data["settings"]["reservedENIs"] == RESERVED_ENIS_COUNT, (
+            f"settings.reservedENIs in Helm values.yaml must equal RESERVED_ENIS_COUNT "
+            f"({RESERVED_ENIS_COUNT}) from cni_constants.py — these are coupled constants. "
+            f"Update both together."
+        )
         # Must be an integer, not a string — the chart maps it to RESERVED_ENIS env var
         # and the controller parses it as int.
         assert isinstance(data["settings"]["reservedENIs"], int)
