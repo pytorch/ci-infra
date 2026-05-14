@@ -79,6 +79,22 @@ def _get_spot_provision_status(gpu_type: str) -> str:
             return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
         instances = groups[0].get("Instances", [])
         if not instances:
+            # Check ASG activity for launch failures (capacity, AZ issues)
+            try:
+                activities = autoscaling_client.describe_scaling_activities(
+                    AutoScalingGroupName=asg_name, MaxRecords=3
+                ).get("Activities", [])
+                for act in activities:
+                    if act.get("StatusCode") == "Failed":
+                        reason = act.get("StatusMessage", "")
+                        if "Insufficient capacity" in reason:
+                            return "Waiting for spot capacity — no instances available in region right now"
+                        if "not supported in your requested Availability Zone" in reason:
+                            continue  # Skip AZ errors, ASG will retry other AZs
+                        if reason:
+                            return f"Spot launch issue: {reason[:80]}"
+            except Exception:
+                pass
             return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
         inst = instances[0]
         state = inst.get("LifecycleState", "")
