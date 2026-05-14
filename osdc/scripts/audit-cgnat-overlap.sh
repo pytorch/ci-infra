@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CGNAT overlap audit for OSDC IPv4 capacity expansion (INCREASE_IPV4.md Phase 0).
+# CGNAT overlap audit for OSDC IPv4 capacity expansion.
 #
 # Audits AWS for any existing TGW/peering/route-table CIDRs that overlap the
 # 100.64.0.0/10 CGNAT range OSDC will use for pod IPs. Any overlap would
 # silently break pod-to-peer connectivity once VPC CNI Custom Networking
-# activates (PR 7).
+# activates.
 #
-# Run per region. Re-run before PR 7 cutover and whenever a new
-# region/account is added.
+# Run per region. Re-run before the Custom Networking cutover and whenever
+# a new region/account is added.
 #
 # Usage:
 #   AWS_PROFILE=<profile> ./audit-cgnat-overlap.sh <region>
