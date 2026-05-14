@@ -81,18 +81,28 @@ def _get_spot_provision_status(gpu_type: str) -> str:
         if not instances:
             # Check ASG activity for launch failures (capacity, AZ issues)
             try:
+                import re
                 activities = autoscaling_client.describe_scaling_activities(
-                    AutoScalingGroupName=asg_name, MaxRecords=3
+                    AutoScalingGroupName=asg_name, MaxRecords=10
                 ).get("Activities", [])
+                failed_azs = set()
+                no_capacity_count = 0
+                unsupported_azs = set()
                 for act in activities:
-                    if act.get("StatusCode") == "Failed":
-                        reason = act.get("StatusMessage", "")
-                        if "Insufficient capacity" in reason:
-                            return "No spot capacity available — ASG retrying (~10s initially, then ~60-120s)"
-                        if "not supported in your requested Availability Zone" in reason:
-                            continue  # Skip AZ errors, ASG will retry other AZs
-                        if reason:
-                            return f"Spot launch issue: {reason[:80]}"
+                    if act.get("StatusCode") != "Failed":
+                        continue
+                    reason = act.get("StatusMessage", "")
+                    az_match = re.search(r'us-east-\d[a-f]', reason)
+                    if "Insufficient capacity" in reason or "no Spot capacity" in reason.lower():
+                        no_capacity_count += 1
+                        if az_match:
+                            failed_azs.add(az_match.group())
+                    elif "not supported" in reason and az_match:
+                        unsupported_azs.add(az_match.group())
+                if no_capacity_count > 0:
+                    tried = len(failed_azs) if failed_azs else "?"
+                    az_list = ", ".join(sorted(failed_azs)) if failed_azs else "all"
+                    return f"No spot capacity in {tried} AZs ({az_list}) — retrying ~60-120s"
             except Exception:
                 pass
             return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
