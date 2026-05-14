@@ -67,7 +67,6 @@ _VALID_POD_CIDR_BUCKETS_PROD = {
 FAKE_CONFIG = {
     "defaults": {
         "vpc_cidr": "10.0.0.0/16",
-        "single_nat_gateway": False,
         "base_node_count": 3,
         "base_node_instance_type": "m5.xlarge",
         "base_node_max_unavailable_percentage": 33,
@@ -84,7 +83,6 @@ FAKE_CONFIG = {
             "state_bucket": "my-tfstate-staging",
             "base": {
                 "vpc_cidr": "10.1.0.0/16",
-                "single_nat_gateway": True,
                 "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ,
             },
             "modules": ["karpenter", "arc", "arc-runners"],
@@ -216,7 +214,7 @@ class TestTfvars:
         assert '-var="cluster_name=test-cluster"' in out
         assert '-var="aws_region=us-west-2"' in out
         assert '-var="vpc_cidr=10.0.0.0/16"' in out
-        assert '-var="single_nat_gateway=false"' in out
+        assert '-var="nat_gateway_eip_count=8"' in out
         assert '-var="base_node_count=3"' in out
         assert '-var="base_node_instance_type=m5.xlarge"' in out
         assert '-var="base_node_max_unavailable_percentage=33"' in out
@@ -249,7 +247,6 @@ class TestTfvars:
             region="eu-west-1",
             base={
                 "vpc_cidr": "10.99.0.0/16",
-                "single_nat_gateway": True,
                 "base_node_count": 6,
                 "base_node_instance_type": "m6i.2xlarge",
                 "base_node_max_unavailable_percentage": 50,
@@ -260,31 +257,23 @@ class TestTfvars:
         )
         defaults = {
             "vpc_cidr": "10.0.0.0/16",
-            "single_nat_gateway": False,
             "base_node_count": 3,
         }
         cluster_config.tfvars("prod", cluster_cfg, defaults)
         out = capsys.readouterr().out.strip()
         assert '-var="vpc_cidr=10.99.0.0/16"' in out
-        assert '-var="single_nat_gateway=true"' in out
         assert '-var="base_node_count=6"' in out
         assert '-var="base_node_instance_type=m6i.2xlarge"' in out
         assert '-var="base_node_max_unavailable_percentage=50"' in out
         assert '-var="base_node_ami_version=v20260318"' in out
         assert '-var="eks_version=1.36"' in out
 
-    def test_bool_formatting(self, capsys):
-        """single_nat_gateway bool should be lowercased."""
-        cluster_cfg = _cfg_with_buckets(
-            cluster_name="c",
-            region="r",
-            base={"single_nat_gateway": True, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ},
-        )
-        cluster_config.tfvars("c", cluster_cfg, {})
+    def test_nat_gateway_eip_count_emitted_default(self, capsys):
+        """nat_gateway_eip_count defaults to 8 when no override; emitted as int."""
+        cluster_cfg = _cfg_with_buckets()
+        cluster_config.tfvars("test", cluster_cfg, {})
         out = capsys.readouterr().out.strip()
-        assert '-var="single_nat_gateway=true"' in out
-        # Ensure it's not Python-style True
-        assert "True" not in out
+        assert '-var="nat_gateway_eip_count=8"' in out
 
     def test_eks_version_from_defaults(self, capsys):
         cluster_cfg = _cfg_with_buckets(cluster_name="c", region="r")
@@ -456,6 +445,126 @@ class TestTfvars:
         with pytest.raises(SystemExit) as exc:
             cluster_config.tfvars("c", cluster_cfg, {})
         assert "12345" in str(exc.value)
+
+
+class TestNatGatewayEipCountValidation:
+    """Tests for _validate_nat_gateway_eip_count — defends against shell-injection
+    via clusters.yaml since the value flows into `eval tofu plan $TFVARS`.
+    """
+
+    def test_int_value_accepted(self, capsys):
+        """Plain int 8 is accepted and emitted unchanged."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": 8, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="nat_gateway_eip_count=8"' in out
+
+    def test_string_int_value_accepted(self, capsys):
+        """YAML string '8' is coerced cleanly to int and emitted as 8."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": "8", "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="nat_gateway_eip_count=8"' in out
+
+    def test_lower_bound_one_accepted(self, capsys):
+        """Lower-bound 1 is accepted (range is inclusive [1, 8])."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": 1, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        cluster_config.tfvars("c", cluster_cfg, {})
+        out = capsys.readouterr().out.strip()
+        assert '-var="nat_gateway_eip_count=1"' in out
+
+    def test_zero_rejected(self):
+        """Zero is below the [1, 8] lower bound."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": 0, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        msg = str(exc.value)
+        assert "1, 8" in msg or "1-8" in msg
+        assert "c" in msg
+
+    def test_nine_rejected(self):
+        """Nine exceeds the AWS hard cap of 8 EIPs per NAT GW."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": 9, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        msg = str(exc.value)
+        assert "1, 8" in msg or "1-8" in msg
+
+    def test_negative_rejected(self):
+        """Negative values are rejected by the range check."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": -1, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "1, 8" in str(exc.value) or "1-8" in str(exc.value)
+
+    def test_string_with_metachars_rejected(self):
+        """A string containing shell metachars cannot be coerced to int — rejected."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": "8; rm -rf /", "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        msg = str(exc.value)
+        assert "integer" in msg
+        # The offending value must appear in the error so operators can find the typo
+        assert "8; rm -rf /" in msg
+
+    def test_quoted_injection_rejected(self):
+        """A string that would inject a second -var flag must be rejected."""
+        injection = '8" -var="cluster_name=evil'
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": injection, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "integer" in str(exc.value)
+
+    def test_float_rejected(self):
+        """Floats are rejected — int('8.5') raises ValueError."""
+        # Note: passing a float literal directly works because int(8.5) silently
+        # truncates. The realistic shell-injection vector is YAML-parsed strings,
+        # so we test the string form which is what int() actually rejects.
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": "8.5", "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "integer" in str(exc.value)
+
+    def test_none_rejected(self):
+        """An explicit None (e.g. `nat_gateway_eip_count: ~` in YAML) is rejected.
+
+        Note: `base.get("nat_gateway_eip_count", 8)` returns 8 if the key is
+        absent; but if the key is present with explicit null, it returns None,
+        which the validator must reject (int(None) raises TypeError).
+        """
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": None, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "integer" in str(exc.value)
+
+    def test_bool_true_rejected(self):
+        """bool is a subclass of int in Python; True must NOT be silently coerced to 1."""
+        cluster_cfg = _cfg_with_buckets(
+            base={"nat_gateway_eip_count": True, "pod_cidr_buckets": _VALID_POD_CIDR_BUCKETS_2AZ}
+        )
+        with pytest.raises(SystemExit) as exc:
+            cluster_config.tfvars("c", cluster_cfg, {})
+        assert "integer" in str(exc.value)
 
 
 class TestValidatePodCidrBuckets:
@@ -826,7 +935,7 @@ class TestMain:
         assert '-var="aws_region=us-west-2"' in out
         # Staging overrides vpc_cidr via base
         assert '-var="vpc_cidr=10.1.0.0/16"' in out
-        assert '-var="single_nat_gateway=true"' in out
+        assert '-var="nat_gateway_eip_count=8"' in out
 
     def test_dotpath_resolve(self, capsys):
         code = run_main("staging", "harbor.core_replicas")
@@ -854,19 +963,6 @@ class TestMain:
         code = run_main("staging", "feature_flag")
         assert code == 0
         assert capsys.readouterr().out.strip() == "true"
-
-    def test_bool_false_field_output(self, capsys):
-        """Boolean False from defaults should print 'false'.
-
-        Production cluster has no single_nat_gateway override, so resolve()
-        falls back to defaults.single_nat_gateway=False. Verifies the
-        ``isinstance(val, bool)`` branch in main() lowercases False correctly
-        — a path that was previously not exercised because the prior version
-        of this test queried staging (which overrides to True).
-        """
-        code = run_main("production", "single_nat_gateway")
-        assert code == 0
-        assert capsys.readouterr().out.strip() == "false"
 
 
 # ============================================================================

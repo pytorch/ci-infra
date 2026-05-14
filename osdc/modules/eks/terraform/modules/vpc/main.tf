@@ -184,38 +184,6 @@ resource "aws_ec2_subnet_cidr_reservation" "pd_prefix" {
   description      = "VPC CNI Prefix Delegation reservation (${each.key})"
 }
 
-# Elastic IPs for NAT Gateways
-resource "aws_eip" "nat" {
-  count  = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : length(var.azs)) : 0
-  domain = "vpc"
-
-  tags = merge(
-    var.tags,
-    {
-      Name = "${var.name}-nat-${count.index + 1}"
-    }
-  )
-
-  depends_on = [aws_internet_gateway.this]
-}
-
-# NAT Gateways
-resource "aws_nat_gateway" "this" {
-  count = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : length(var.azs)) : 0
-
-  allocation_id = aws_eip.nat[count.index].id
-  subnet_id     = aws_subnet.public[count.index].id
-
-  tags = merge(
-    var.tags,
-    {
-      Name = "${var.name}-nat-${count.index + 1}"
-    }
-  )
-
-  depends_on = [aws_internet_gateway.this]
-}
-
 # Public Route Table
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.this.id
@@ -240,31 +208,5 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Private Route Tables
-resource "aws_route_table" "private" {
-  count = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : length(var.azs)) : length(var.azs)
-
-  vpc_id = aws_vpc.this.id
-
-  dynamic "route" {
-    for_each = var.enable_nat_gateway ? [1] : []
-    content {
-      cidr_block     = "0.0.0.0/0"
-      nat_gateway_id = var.single_nat_gateway ? aws_nat_gateway.this[0].id : aws_nat_gateway.this[count.index].id
-    }
-  }
-
-  tags = merge(
-    var.tags,
-    {
-      Name = "${var.name}-private-${count.index + 1}"
-    }
-  )
-}
-
-resource "aws_route_table_association" "private" {
-  count = length(var.private_subnets)
-
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = var.single_nat_gateway ? aws_route_table.private[0].id : aws_route_table.private[count.index].id
-}
+# NAT Gateway / EIP / private + pod route tables live in nat.tf -- per-(bucket,
+# AZ) topology with configurable EIP count per NAT GW.

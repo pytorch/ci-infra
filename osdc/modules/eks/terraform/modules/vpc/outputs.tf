@@ -23,14 +23,33 @@ output "public_subnet_ids" {
   value       = aws_subnet.public[*].id
 }
 
-output "nat_gateway_ids" {
-  description = "List of NAT Gateway IDs"
-  value       = aws_nat_gateway.this[*].id
-}
-
 output "internet_gateway_id" {
   description = "The ID of the Internet Gateway"
   value       = aws_internet_gateway.this.id
+}
+
+output "nat_gateways_by_bucket_az" {
+  description = "Map of NAT Gateway IDs keyed by '$${bucket}-$${az}'. Same key shape as pod_cidr_associations and pod_subnets_by_bucket_az (PR 5) so downstream consumers can join 1:1 without string-splitting."
+  value       = { for k, ng in aws_nat_gateway.this : k => ng.id }
+}
+
+output "nat_gateway_eips_by_bucket_az" {
+  description = "Map of NAT Gateway EIP allocation IDs keyed by '$${bucket}-$${az}'. Each value carries the primary allocation ID and the secondary allocation ID list (slots 2..nat_gateway_eip_count). Same key shape as nat_gateways_by_bucket_az."
+  value = {
+    for k, _ in aws_nat_gateway.this :
+    k => {
+      primary = aws_eip.nat_primary[k].id
+      secondary = [
+        for slot in range(2, var.nat_gateway_eip_count + 1) :
+        aws_eip.nat_secondary["${k}-${slot}"].id
+      ]
+    }
+  }
+}
+
+output "pod_route_table_ids_by_bucket_az" {
+  description = "Map of pod route table IDs keyed by '$${bucket}-$${az}'. Same key shape as pod_subnets_by_bucket_az (PR 5) so downstream consumers can join 1:1."
+  value       = { for k, rt in aws_route_table.pod : k => rt.id }
 }
 
 output "pod_cidr_associations" {
