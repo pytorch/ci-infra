@@ -391,20 +391,22 @@ locals {
         "t4" = {
           instance_type       = "g4dn.12xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 4
           use_placement_group = false
           architecture        = "x86_64"
           efa_network_cards   = 0
+          use_spot            = true
         }
         "l4" = {
           instance_type       = "g6.12xlarge"
           instance_types      = null
-          instance_count      = 1
+          instance_count      = 0
           gpus_per_instance   = 4
           use_placement_group = false
           architecture        = "x86_64"
           efa_network_cards   = 1
+          use_spot            = true
         }
         "cpu-x86" = {
           instance_type       = "c7i.8xlarge"
