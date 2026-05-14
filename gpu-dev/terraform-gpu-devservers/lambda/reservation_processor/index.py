@@ -4274,8 +4274,6 @@ def create_pod(
                 client.V1Container(
                     name="gpu-dev",
                     image=container_image,
-                    # IfNotPresent: use baked AMI's cached image. Baked AMI rebuilds
-                    # when Docker image changes, so cache is always fresh after tf apply.
                     image_pull_policy="IfNotPresent",
                     **({
                         "command": ["/bin/bash"],
