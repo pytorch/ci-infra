@@ -25,8 +25,8 @@ resource "aws_vpc" "this" {
 
 # Pod CIDR associations -- secondary /16 blocks attached to the VPC for VPC CNI
 # Custom Networking. One /16 per (bucket, AZ) keyed by "${bucket}-${az}". Pure
-# additive -- no subnets carved here (PR 5) and no traffic until Custom
-# Networking is enabled (PR 7).
+# additive -- no subnets carved here and no traffic until Custom Networking is
+# enabled.
 locals {
   pod_cidr_associations = merge([
     for bucket_name, az_map in var.pod_cidr_buckets : {
@@ -84,14 +84,14 @@ resource "aws_subnet" "pod" {
     # nodes on CGNAT pod CIDRs) or kubernetes.io/role/{internal-elb,elb} (would make
     # AWS load balancers land on pod CIDRs). The unit test inspects this resource
     # block source only -- this precondition catches injection at the var.tags
-    # boundary that the test cannot see. See INCREASE_IPV4.md PR 5.
+    # boundary that the test cannot see.
     precondition {
       condition = !anytrue([
         contains(keys(var.tags), "karpenter.sh/discovery"),
         contains(keys(var.tags), "kubernetes.io/role/internal-elb"),
         contains(keys(var.tags), "kubernetes.io/role/elb"),
       ])
-      error_message = "var.tags MUST NOT contain karpenter.sh/discovery, kubernetes.io/role/internal-elb, or kubernetes.io/role/elb -- they would propagate to aws_subnet.pod and break the pod-vs-node-subnet boundary. See INCREASE_IPV4.md PR 5."
+      error_message = "var.tags MUST NOT contain karpenter.sh/discovery, kubernetes.io/role/internal-elb, or kubernetes.io/role/elb -- they would propagate to aws_subnet.pod and break the pod-vs-node-subnet boundary."
     }
   }
 

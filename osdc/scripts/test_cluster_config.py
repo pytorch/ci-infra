@@ -334,7 +334,6 @@ class TestTfvars:
         msg = str(exc.value)
         assert "pod_cidr_buckets" in msg
         assert "no-buckets" in msg
-        assert "INCREASE_IPV4.md" in msg
 
     def test_pod_cidr_buckets_empty_dict_fails(self):
         """Empty pod_cidr_buckets fails the non-empty check."""

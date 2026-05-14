@@ -1,4 +1,4 @@
-"""Smoke tests for EKS cluster and AWS infrastructure (incl. PR 7 vpc-cni env)."""
+"""Smoke tests for EKS cluster and AWS infrastructure."""
 
 import subprocess
 
@@ -268,13 +268,13 @@ class TestCoreDNSTopology:
 
 
 # ============================================================================
-# VPC CNI addon env reconciliation (PR 7)
+# VPC CNI addon env reconciliation
 # ============================================================================
 
 
 # Env keys/values the vpc-cni addon must push onto the live aws-node DaemonSet.
 # Source of truth: aws_eks_addon.vpc_cni configuration_values in
-# modules/eks/terraform/modules/eks/main.tf (PR 7). Drift here means EKS
+# modules/eks/terraform/modules/eks/main.tf. Drift here means EKS
 # reconciliation silently dropped an env key (most often a ConfigurationConflict
 # with a hand-edited DaemonSet under PRESERVE).
 EXPECTED_VPC_CNI_ENV: dict[str, str] = {
@@ -286,7 +286,7 @@ EXPECTED_VPC_CNI_ENV: dict[str, str] = {
 
 
 class TestVPCCNIConfig:
-    """The vpc-cni addon's env vars must land on the live aws-node DaemonSet (PR 7).
+    """The vpc-cni addon's env vars must land on the live aws-node DaemonSet.
 
     Catches the silent-failure mode where the addon spec is updated but EKS reconciliation
     quietly drops env keys (e.g., due to PRESERVE conflict on a hand-edited DaemonSet).
@@ -294,7 +294,7 @@ class TestVPCCNIConfig:
 
     @pytest.mark.live
     def test_aws_node_env_vars_present(self) -> None:
-        """Every running aws-node pod must carry all four expected env vars (PR 7).
+        """Every running aws-node pod must carry all four expected env vars.
 
         Iterates ALL running pods to catch partial-rollout drift (some pods reconciled,
         others stale). Single-pod sampling could pick a stale pod and mask drift on
@@ -361,7 +361,7 @@ class TestVPCCNIConfig:
             return
 
         # Surface ConfigurationConflict prominently — that's the specific failure
-        # mode PR 7 introduces if PRESERVE was left in place against a hand-edited
+        # mode that arises if PRESERVE was left in place against a hand-edited
         # DaemonSet — but report ALL issues so unrelated drift isn't masked.
         rendered = [
             f"code={i.get('code', '<no-code>')!r} message={i.get('message', '<no-message>')!r} "
@@ -370,6 +370,5 @@ class TestVPCCNIConfig:
         ]
         pytest.fail(
             f"vpc-cni addon on {cluster_name} reports {len(issues)} health issue(s) — "
-            f"PR 7 env reconciliation likely failed (look for code='ConfigurationConflict'):\n  "
-            + "\n  ".join(rendered)
+            f"Env reconciliation likely failed (look for code='ConfigurationConflict'):\n  " + "\n  ".join(rendered)
         )
