@@ -4,7 +4,7 @@ Defends:
 - Env shape (4 required keys, JSON-string values, no HCL booleans/numbers)
 - ENI_CONFIG_LABEL_DEF stays in sync with scripts/python/cni_constants.py:ENI_CONFIG_LABEL
   AND with base/scripts/bootstrap/eks-base-pre-nodeadm-az-label.sh
-- resolve_conflicts_on_update = "OVERWRITE" (cutover gate)
+- resolve_conflicts_on_update = "OVERWRITE" (forces live aws-node env to match this declaration)
 - configuration_values uses literal jsonencode({...}) (no refactor-to-locals false-pass)
 - addon_version on a major series that supports Custom Networking
 """
@@ -49,7 +49,7 @@ VPC_CNI_ENV_BLOCK = _env_block(VPC_CNI_BLOCK)
 
 
 class TestVPCCNIAddonConfiguration:
-    """The aws_eks_addon.vpc_cni resource is the cutover gate for Custom Networking.
+    """The aws_eks_addon.vpc_cni resource is the source of truth for the live aws-node DaemonSet env (Custom Networking + Prefix Delegation).
 
     Defends env shape, drift between cni_constants.py / bootstrap script / main.tf,
     and the OVERWRITE conflict-resolution mode.
@@ -61,7 +61,7 @@ class TestVPCCNIAddonConfiguration:
     def test_overwrite_conflict_mode(self) -> None:
         assert re.search(r'resolve_conflicts_on_update\s*=\s*"OVERWRITE"', self.block), (
             'aws_eks_addon.vpc_cni must set resolve_conflicts_on_update = "OVERWRITE" to force '
-            "Custom Networking activation during the IPv4 cutover."
+            "Custom Networking activation."
         )
 
     def test_uses_jsonencode_literal(self) -> None:
