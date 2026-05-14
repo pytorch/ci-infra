@@ -81,8 +81,8 @@ def resolve_max_pods(nodepool_def: dict) -> int:
     """Resolve the kubelet max-pods value to render on an EC2NodeClass.
 
     - If def has explicit ``max_pods: <int>``, use it (must be <= PD ceiling).
-    - Otherwise default to ``min(110, pd_ceiling)`` \u2014 conservative for general
-      pools, prevents future fleets from silently hitting the kubelet 110 wall.
+    - Otherwise default to ``min(110, pd_ceiling)`` \u2014 conservative cap that
+      keeps general pools off the kubelet 110 wall regardless of instance shape.
     """
     instance_type = nodepool_def["instance_type"]
     name = nodepool_def.get("name", "<unnamed>")
