@@ -32,3 +32,16 @@ output "internet_gateway_id" {
   description = "The ID of the Internet Gateway"
   value       = aws_internet_gateway.this.id
 }
+
+output "pod_cidr_associations" {
+  description = "Pod CIDR associations keyed by '$${bucket}-$${az}', each value an object with bucket name, AZ, CIDR, and association ID. Keyed shape avoids fragile string-splitting downstream."
+  value = {
+    for key, assoc in aws_vpc_ipv4_cidr_block_association.pod :
+    key => {
+      bucket         = local.pod_cidr_associations[key].bucket
+      az             = local.pod_cidr_associations[key].az
+      cidr_block     = assoc.cidr_block
+      association_id = assoc.id
+    }
+  }
+}
