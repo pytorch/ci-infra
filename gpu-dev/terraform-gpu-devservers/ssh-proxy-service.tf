@@ -17,12 +17,13 @@ resource "aws_ecr_repository" "ssh_proxy" {
 }
 
 # Build and push SSH proxy Docker image
+# Skipped in workspaces that receive images via ECR replication (e.g. prod-east1)
 resource "null_resource" "ssh_proxy_build" {
-  count = local.effective_domain_name != "" ? 1 : 0
+  count = local.effective_domain_name != "" && !local.skip_docker_build ? 1 : 0
 
   triggers = {
-    proxy_code  = filebase64sha256("${path.module}/ssh-proxy/proxy.py")
-    dockerfile  = filebase64sha256("${path.module}/ssh-proxy/Dockerfile")
+    proxy_code   = filebase64sha256("${path.module}/ssh-proxy/proxy.py")
+    dockerfile   = filebase64sha256("${path.module}/ssh-proxy/Dockerfile")
     requirements = filebase64sha256("${path.module}/ssh-proxy/requirements.txt")
   }
 
@@ -194,7 +195,7 @@ resource "aws_ecs_service" "ssh_proxy" {
   name            = "${var.prefix}-ssh-proxy"
   cluster         = aws_ecs_cluster.ssh_proxy[0].id
   task_definition = aws_ecs_task_definition.ssh_proxy[0].arn
-  desired_count   = 2  # Run 2 instances for HA
+  desired_count   = 2 # Run 2 instances for HA
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -203,7 +204,7 @@ resource "aws_ecs_service" "ssh_proxy" {
       length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : []
     )
     security_groups  = [aws_security_group.ssh_proxy[0].id]
-    assign_public_ip = true  # Required for Fargate tasks to reach ECR without NAT
+    assign_public_ip = true # Required for Fargate tasks to reach ECR without NAT
   }
 
   load_balancer {
@@ -263,7 +264,7 @@ resource "aws_lb_target_group" "ssh_proxy_ws" {
   health_check {
     enabled             = true
     path                = "/health"
-    port                = "8080"  # Health check on port 8080
+    port                = "8080" # Health check on port 8080
     healthy_threshold   = 2
     unhealthy_threshold = 3
     timeout             = 5
@@ -283,7 +284,7 @@ resource "aws_lb_target_group" "ssh_proxy_ws" {
 resource "aws_lb_listener_rule" "ssh_proxy" {
   count        = local.effective_domain_name != "" ? 1 : 0
   listener_arn = aws_lb_listener.jupyter_https[0].arn
-  priority     = 1  # High priority
+  priority     = 1 # High priority
 
   action {
     type             = "forward"

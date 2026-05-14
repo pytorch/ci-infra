@@ -154,7 +154,7 @@ resource "kubernetes_daemonset" "efa_device_plugin" {
 
       spec {
         service_account_name = kubernetes_service_account.efa_device_plugin_sa.metadata[0].name
-        host_network        = true
+        host_network         = true
 
         toleration {
           key      = "CriticalAddonsOnly"
@@ -172,8 +172,8 @@ resource "kubernetes_daemonset" "efa_device_plugin" {
         }
 
         container {
-          image = "602401143452.dkr.ecr.us-west-2.amazonaws.com/eks/aws-efa-k8s-device-plugin:v0.3.3"
-          name  = "aws-efa-k8s-device-plugin"
+          image             = "602401143452.dkr.ecr.us-west-2.amazonaws.com/eks/aws-efa-k8s-device-plugin:v0.3.3"
+          name              = "aws-efa-k8s-device-plugin"
           image_pull_policy = "Always"
 
           resources {
@@ -242,15 +242,15 @@ resource "helm_release" "nvidia_gpu_operator" {
     aws_autoscaling_group.gpu_dev_nodes
   ]
 
-  name       = "gpu-operator"
-  repository = "https://helm.ngc.nvidia.com/nvidia"
-  chart      = "gpu-operator"
-  version    = "v25.3.3"
-  namespace  = "gpu-operator"
+  name             = "gpu-operator"
+  repository       = "https://helm.ngc.nvidia.com/nvidia"
+  chart            = "gpu-operator"
+  version          = "v25.3.3"
+  namespace        = "gpu-operator"
   create_namespace = true
 
   # Wait for the operator to be ready
-  wait = true
+  wait    = true
   timeout = 600
 
   set {
@@ -435,8 +435,8 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
         }
         spec = {
           nodeSelector = {
-            NodeType                         = "gpu"
-            "kubernetes.io/arch"            = "amd64"
+            NodeType             = "gpu"
+            "kubernetes.io/arch" = "amd64"
           }
           tolerations = [
             {
@@ -448,7 +448,7 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
           initContainers = [
             {
               name            = "pull-gpu-dev-image"
-              image           = local.latest_image_uri  # Use stable 'latest' tag
+              image           = local.latest_image_uri # Use stable 'latest' tag
               imagePullPolicy = "Always"
               command         = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
             }
@@ -475,7 +475,7 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
   }
 
   depends_on = [
-    null_resource.docker_build_and_push
+    null_resource.docker_build_and_push # count-gated; no-op in replication targets
   ]
 }
 
