@@ -275,8 +275,7 @@ class TestCoreDNSTopology:
 # Env keys/values the vpc-cni addon must push onto the live aws-node DaemonSet.
 # Source of truth: aws_eks_addon.vpc_cni configuration_values in
 # modules/eks/terraform/modules/eks/main.tf. Drift here means EKS
-# reconciliation silently dropped an env key (most often a ConfigurationConflict
-# with a hand-edited DaemonSet under PRESERVE).
+# reconciliation silently dropped an env key.
 EXPECTED_VPC_CNI_ENV: dict[str, str] = {
     "AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG": "true",
     "ENABLE_PREFIX_DELEGATION": "true",

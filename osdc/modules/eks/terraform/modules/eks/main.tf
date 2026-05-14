@@ -169,9 +169,8 @@ resource "aws_eks_addon" "vpc_cni" {
   addon_version = "v1.21.1-eksbuild.3"
 
   # OVERWRITE forces the live aws-node DaemonSet to match this declared spec
-  # regardless of any conflicting hand-edits. Required for the IPv4 capacity
-  # migration cutover to guarantee Custom Networking activation. Reverted
-  # to "PRESERVE" in a separate post-cutover follow-up.
+  # regardless of any conflicting hand-edits. PRESERVE risks silently dropping
+  # env keys via ConfigurationConflict against a hand-edited DaemonSet.
   resolve_conflicts_on_update = "OVERWRITE"
 
   # Keep ENI_CONFIG_LABEL_DEF value in sync with:

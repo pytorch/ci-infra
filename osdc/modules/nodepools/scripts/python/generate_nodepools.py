@@ -172,8 +172,8 @@ def resolve_max_pods(nodepool_def: dict) -> int:
     """Resolve the kubelet max-pods value to render on an EC2NodeClass.
 
     - If def has explicit ``max_pods: <int>``, use it (must be <= PD ceiling).
-    - Otherwise default to ``min(110, pd_ceiling)`` \u2014 conservative for general
-      pools, prevents future fleets from silently hitting the kubelet 110 wall.
+    - Otherwise default to ``min(110, pd_ceiling)`` \u2014 conservative cap that
+      keeps general pools off the kubelet 110 wall regardless of instance shape.
     """
     instance_type = nodepool_def["instance_type"]
     name = nodepool_def.get("name", "<unnamed>")
@@ -572,7 +572,7 @@ def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name,
     if not name or not instance_type:
         raise ValueError(f"Invalid {def_file.name}: missing 'name' or 'instance_type'")
 
-    # Bucket is required at the top level for legacy defs.
+    # Bucket is required at the top level for nodepool: defs.
     _validate_bucket(
         nodepool_def.get("bucket"),
         where=f"nodepool '{name}' in {def_file.name}",
@@ -636,8 +636,7 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
     ``bucket`` is the per-fleet pod-IP bucket name (e.g. ``bucket-1``); it is
     propagated onto the returned dict so ``generate_nodepool_yaml`` can render
     the per-(bucket, AZ) ENI-config label. When ``bucket`` is None it falls
-    back to the bucket already present on ``fleet_data`` (preserves the legacy
-    test/helper API for callers that don't pre-extract it).
+    back to ``fleet_data["bucket"]``.
     """
     instance_type = inst["type"]
     name = _fleet_nodepool_name(fleet_data["name"], instance_type, name_suffix)
