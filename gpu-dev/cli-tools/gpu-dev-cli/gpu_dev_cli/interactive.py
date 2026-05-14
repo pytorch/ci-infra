@@ -52,10 +52,18 @@ def check_interactive_support() -> bool:
 
 def select_gpu_type_interactive(
     availability_info: Dict[str, Dict[str, Any]],
+    _refresh: bool = False,
 ) -> Optional[str]:
     """Interactive GPU type selection with availability table"""
     if not check_interactive_support():
         return None
+
+    if _refresh:
+        from .reservations import ReservationManager
+        from .config import load_config
+        _cfg = load_config()
+        _mgr = ReservationManager(_cfg)
+        availability_info = _mgr.get_gpu_availability() or availability_info
 
     # Hide MIG slice SKUs from the top-level selector — reached via the h100 submenu.
     # Direct `--gpu-type h100-mig-1g` still works for non-interactive scripts.
@@ -287,20 +295,25 @@ def select_gpu_type_interactive(
                 label = f"⚡ {gt.upper()} * ({pn} GPUs/node, {signal})"
             choices.append(questionary.Choice(title=label, value=f"spot:{gt}"))
 
+    choices.append(questionary.Separator("───"))
+    choices.append(questionary.Choice(title="🔄 Refresh availability", value="_refresh"))
+
     console.print()
 
-    # Interactive selection    console.print()
+    # Interactive selection — loop on refresh
+    while True:
+        try:
+            answer = questionary.select(
+                "Select GPU type:", choices=choices, style=custom_style
+            ).ask()
 
-    # Interactive selection
-    try:
-        answer = questionary.select(
-            "Select GPU type:", choices=choices, style=custom_style
-        ).ask()
-
-        return answer
-    except (KeyboardInterrupt, EOFError):
-        console.print("\n[yellow]Selection cancelled.[/yellow]")
-        return None
+            if answer == "_refresh":
+                console.print("[dim]Refreshing...[/dim]")
+                return select_gpu_type_interactive(availability_info, _refresh=True)
+            return answer
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[yellow]Selection cancelled.[/yellow]")
+            return None
 
 
 def _format_eta_seconds(delta_seconds: int) -> str:
