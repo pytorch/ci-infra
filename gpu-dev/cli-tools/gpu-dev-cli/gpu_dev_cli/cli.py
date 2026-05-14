@@ -526,7 +526,7 @@ def main(ctx: click.Context) -> None:
     "--gpu-type",
     "-t",
     type=click.Choice(
-        ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
+        ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100", "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86", "cpu-spot"], case_sensitive=False
     ),
     help="GPU type to reserve. Full GPUs: b200, h200, h100, a100, rtxpro6000, a10g, t4, l4, t4-small. H100 MIG slices: h100-mig-1g (10 GB), h100-mig-2g (20 GB), h100-mig-3g (40 GB). B200 MIG slices (on the mixed B200 node): b200-mig-1g (23 GB), b200-mig-2g (45 GB), b200-mig-3g (90 GB). CPU: cpu-arm, cpu-x86.",
 )
@@ -698,6 +698,7 @@ def reserve(
             "b300": {"max_gpus": 8, "instance_type": "p6-b300.48xlarge"},
             "cpu-arm": {"max_gpus": 0, "instance_type": "c7g.4xlarge"},
             "cpu-x86": {"max_gpus": 0, "instance_type": "c7i.4xlarge"},
+            "cpu-spot": {"max_gpus": 0, "instance_type": "c7i.2xlarge"},
         }
 
         # Early validation of GPU type to extract max_gpus (needed for disk selection)
@@ -1418,7 +1419,7 @@ def reserve(
 
 _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100",
                      "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000",
-                     "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"]
+                     "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86", "cpu-spot"]
 
 
 @main.command(context_settings={"ignore_unknown_options": True})
