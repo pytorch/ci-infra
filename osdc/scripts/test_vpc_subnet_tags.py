@@ -1,6 +1,6 @@
-"""Unit tests for VPC subnet tag mutual-exclusivity (PR 5 of INCREASE_IPV4.md).
+"""Unit tests for VPC subnet tag mutual-exclusivity.
 
-PR 5 introduces `aws_subnet.pod` alongside the existing `aws_subnet.private`.
+`aws_subnet.pod` exists alongside the existing `aws_subnet.private`.
 The two MUST carry disjoint tag sets so Karpenter (which discovers via
 `karpenter.sh/discovery` + `kubernetes.io/role/internal-elb`) only ever lands
 nodes on the existing private subnets and never sees the new CGNAT pod
@@ -53,41 +53,39 @@ class TestPodSubnetTags:
 
     def test_pod_subnet_has_bucket_tag(self):
         assert "osdc.io/pod-subnet-bucket" in self.block, (
-            "aws_subnet.pod missing required tag osdc.io/pod-subnet-bucket. See INCREASE_IPV4.md PR 5."
+            "aws_subnet.pod missing required tag osdc.io/pod-subnet-bucket."
         )
 
     def test_pod_subnet_has_az_tag(self):
-        assert "osdc.io/pod-subnet-az" in self.block, (
-            "aws_subnet.pod missing required tag osdc.io/pod-subnet-az. See INCREASE_IPV4.md PR 5."
-        )
+        assert "osdc.io/pod-subnet-az" in self.block, "aws_subnet.pod missing required tag osdc.io/pod-subnet-az."
 
     def test_pod_subnet_tag_block_has_no_karpenter_discovery(self):
         tags_block = _tags_block(self.block)
         assert "karpenter.sh/discovery" not in tags_block, (
             "aws_subnet.pod tag merge must NOT contain karpenter.sh/discovery -- "
             "Karpenter would land nodes on CGNAT pod subnets, breaking VPC CNI "
-            "Custom Networking. See INCREASE_IPV4.md PR 5."
+            "Custom Networking."
         )
 
     def test_pod_subnet_tag_block_has_no_internal_elb_role(self):
         tags_block = _tags_block(self.block)
         assert "kubernetes.io/role/internal-elb" not in tags_block, (
             "aws_subnet.pod tag merge must NOT contain kubernetes.io/role/internal-elb -- "
-            "internal LBs would land in pod-IP space. See INCREASE_IPV4.md PR 5."
+            "internal LBs would land in pod-IP space."
         )
 
     def test_pod_subnet_tag_block_has_no_elb_role(self):
         tags_block = _tags_block(self.block)
         assert "kubernetes.io/role/elb" not in tags_block, (
             "aws_subnet.pod tag merge must NOT contain kubernetes.io/role/elb -- "
-            "external LBs would land in pod-IP space. See INCREASE_IPV4.md PR 5."
+            "external LBs would land in pod-IP space."
         )
 
     def test_pod_subnet_has_var_tags_precondition(self):
         """A future agent can't quietly remove the var.tags injection guard."""
         assert "precondition" in self.block, (
             "aws_subnet.pod must have a lifecycle.precondition guarding against "
-            "var.tags injection of forbidden tag keys. See INCREASE_IPV4.md PR 5."
+            "var.tags injection of forbidden tag keys."
         )
         for forbidden in (
             "karpenter.sh/discovery",
@@ -95,8 +93,7 @@ class TestPodSubnetTags:
             "kubernetes.io/role/elb",
         ):
             assert forbidden in self.block, (
-                f"aws_subnet.pod precondition must reference {forbidden} so injection via "
-                f"var.tags fails at plan time. See INCREASE_IPV4.md PR 5."
+                f"aws_subnet.pod precondition must reference {forbidden} so injection via var.tags fails at plan time."
             )
 
 
@@ -104,19 +101,17 @@ class TestPrivateSubnetTags:
     """aws_subnet.private MUST NOT carry pod-subnet tags (boundary inverse).
 
     Existing private-subnet tags (karpenter.sh/discovery, kubernetes.io/role/internal-elb)
-    are out of scope for PR 5 and are NOT asserted here.
+    are out of scope and are NOT asserted here.
     """
 
     block = _resource_block(VPC_MAIN_TF_TEXT, "aws_subnet", "private")
 
     def test_private_subnet_has_no_pod_bucket_tag(self):
         assert "osdc.io/pod-subnet-bucket" not in self.block, (
-            "aws_subnet.private must NOT carry osdc.io/pod-subnet-bucket -- "
-            "that tag is reserved for aws_subnet.pod. See INCREASE_IPV4.md PR 5."
+            "aws_subnet.private must NOT carry osdc.io/pod-subnet-bucket -- that tag is reserved for aws_subnet.pod."
         )
 
     def test_private_subnet_has_no_pod_az_tag(self):
         assert "osdc.io/pod-subnet-az" not in self.block, (
-            "aws_subnet.private must NOT carry osdc.io/pod-subnet-az -- "
-            "that tag is reserved for aws_subnet.pod. See INCREASE_IPV4.md PR 5."
+            "aws_subnet.private must NOT carry osdc.io/pod-subnet-az -- that tag is reserved for aws_subnet.pod."
         )

@@ -170,14 +170,14 @@ resource "aws_eks_addon" "vpc_cni" {
 
   # OVERWRITE forces the live aws-node DaemonSet to match this declared spec
   # regardless of any conflicting hand-edits. Required for the IPv4 capacity
-  # migration cutover (PR 7) to guarantee Custom Networking activation. Reverted
-  # to "PRESERVE" in a separate post-cutover follow-up PR per INCREASE_IPV4.md.
+  # migration cutover to guarantee Custom Networking activation. Reverted
+  # to "PRESERVE" in a separate post-cutover follow-up.
   resolve_conflicts_on_update = "OVERWRITE"
 
   # Keep ENI_CONFIG_LABEL_DEF value in sync with:
   #   - scripts/python/cni_constants.py:ENI_CONFIG_LABEL
   #   - base/scripts/bootstrap/eks-base-pre-nodeadm-az-label.sh (label literal)
-  # The PR 7 unit test (scripts/test_vpc_cni_addon.py) cross-checks all three sites.
+  # The unit test (scripts/test_vpc_cni_addon.py) cross-checks all three sites.
   configuration_values = jsonencode({
     env = {
       AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG = "true"
