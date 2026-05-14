@@ -45,3 +45,21 @@ output "pod_cidr_associations" {
     }
   }
 }
+
+output "pod_subnet_ids" {
+  description = "List of pod subnet IDs (one per (bucket, AZ) -- 12 in production, 8 in staging). Karpenter MUST NOT consume this output -- pod subnets are reserved for pod IP allocation under VPC CNI Custom Networking."
+  value       = [for s in aws_subnet.pod : s.id]
+}
+
+output "pod_subnets_by_bucket_az" {
+  description = "Map of pod subnets keyed by '$${bucket}-$${az}'. Same key shape as pod_cidr_associations so downstream consumers can join 1:1."
+  value = {
+    for key, subnet in aws_subnet.pod :
+    key => {
+      bucket     = local.pod_cidr_associations[key].bucket
+      az         = local.pod_cidr_associations[key].az
+      subnet_id  = subnet.id
+      cidr_block = subnet.cidr_block
+    }
+  }
+}
