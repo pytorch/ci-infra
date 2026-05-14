@@ -32,12 +32,73 @@ _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
-from instance_specs import INSTANCE_SPECS  # noqa: E402
+from instance_specs import INSTANCE_ENI_DATA, INSTANCE_SPECS  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
 NC = "\033[0m"
+
+# Kubelet max-pods caps for prefix-delegation math.
+# Defaults follow AWS's max-pods-calculator.sh: 110 for instances with vCPU<=30,
+# 250 for vCPU>30 (per-AWS recommended cap for IP-dense workloads).
+DEFAULT_MAX_PODS_CAP = 110
+PD_HARD_CEILING = 250
+PREFIXES_PER_SLOT = 16  # Each ENI slot holds one /28 prefix = 16 IPs under PD
+
+
+def compute_pd_max_pods(instance_type: str, *, custom_networking: bool = True) -> int:
+    """Return the prefix-delegation-derived kubelet max-pods ceiling for an instance type.
+
+    Mirrors AWS's max-pods-calculator.sh (used by AL2/AL2023 EKS AMIs). The
+    ``(eni_count - 1)`` term reserves the primary ENI for node-only traffic when
+    VPC CNI Custom Networking is on. ``PD_HARD_CEILING=250`` matches AWS's
+    recommended cap for >30 vCPU instances; smaller instances cap at 110.
+
+    Source: github.com/awslabs/amazon-eks-ami nodeadm/internal/kubelet/eni_max_pods.go
+    """
+    if instance_type not in INSTANCE_ENI_DATA:
+        raise ValueError(
+            f"{instance_type} missing from INSTANCE_ENI_DATA in scripts/python/instance_specs.py — "
+            f"add eni_count + ipv4_per_eni from awslabs/amazon-eks-ami nodeadm/internal/kubelet/instance-info.jsonl"
+        )
+    if instance_type not in INSTANCE_SPECS:
+        raise ValueError(f"{instance_type} missing from INSTANCE_SPECS in scripts/python/instance_specs.py")
+    eni = INSTANCE_ENI_DATA[instance_type]
+    spec = INSTANCE_SPECS[instance_type]
+    usable_enis = eni["eni_count"] - (1 if custom_networking else 0)
+    if usable_enis < 1:
+        raise ValueError(
+            f"{instance_type} has eni_count={eni['eni_count']} → usable_enis={usable_enis} "
+            f"with custom_networking={custom_networking}; cannot host pods"
+        )
+    raw = usable_enis * (eni["ipv4_per_eni"] - 1) * PREFIXES_PER_SLOT + 2
+    cap = PD_HARD_CEILING if spec["vcpu"] > 30 else DEFAULT_MAX_PODS_CAP
+    return min(cap, raw)
+
+
+def resolve_max_pods(nodepool_def: dict) -> int:
+    """Resolve the kubelet max-pods value to render on an EC2NodeClass.
+
+    - If def has explicit ``max_pods: <int>``, use it (must be <= PD ceiling).
+    - Otherwise default to ``min(110, pd_ceiling)`` \u2014 conservative cap that
+      keeps general pools off the kubelet 110 wall regardless of instance shape.
+    """
+    instance_type = nodepool_def["instance_type"]
+    name = nodepool_def.get("name", "<unnamed>")
+    pd_ceiling = compute_pd_max_pods(instance_type)
+    explicit = nodepool_def.get("max_pods")
+    if explicit is not None:
+        if isinstance(explicit, bool) or not isinstance(explicit, int):
+            raise ValueError(
+                f"max_pods for pool '{name}' ({instance_type}) must be an int, got {type(explicit).__name__}"
+            )
+        if explicit > pd_ceiling:
+            raise ValueError(f"max_pods={explicit} for pool '{name}' ({instance_type}) exceeds PD ceiling {pd_ceiling}")
+        if explicit < 1:
+            raise ValueError(f"max_pods={explicit} for pool '{name}' ({instance_type}) must be >= 1")
+        return explicit
+    return min(DEFAULT_MAX_PODS_CAP, pd_ceiling)
 
 
 def log_info(msg):
@@ -133,6 +194,11 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     indented_userdata = _read_user_data_script(user_data_script_path, defs_dir) if defs_dir else None
 
     node_disk_size = _get_node_disk_size(nodepool_def)
+
+    # ----- Kubelet max-pods (prefix-delegation aware) -----
+    # Karpenter only honors kubelet keys you set on EC2NodeClass.spec.kubelet.
+    # Set ONLY here — do NOT also set in user-data NodeConfig (avoids drift).
+    max_pods = resolve_max_pods(nodepool_def)
 
     # ----- Capacity block / reservation support -----
     capacity_type = nodepool_def.get("capacity_type", "on-demand")
@@ -319,6 +385,9 @@ spec:
         karpenter.sh/discovery: "CLUSTER_NAME_PLACEHOLDER"
 
   role: "CLUSTER_NAME_PLACEHOLDER-node-role"
+
+  kubelet:
+    maxPods: {max_pods}
 {"  instanceStorePolicy: RAID0" + chr(10) if has_nvme else ""}\
 {capacity_reservation_block}\
   userData: |
@@ -453,6 +522,14 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
         val = inst.get(key)
         if val is not None:
             nodepool_def[key] = val
+
+    # max_pods: fleet-level default with per-instance override
+    fleet_default_max_pods = fleet_data.get("max_pods")
+    inst_max_pods = inst.get("max_pods")
+    if inst_max_pods is not None:
+        nodepool_def["max_pods"] = inst_max_pods
+    elif fleet_default_max_pods is not None:
+        nodepool_def["max_pods"] = fleet_default_max_pods
 
     if extra_labels:
         merged = dict(nodepool_def["extra_labels"])

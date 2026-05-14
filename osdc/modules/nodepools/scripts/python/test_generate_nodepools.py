@@ -13,8 +13,10 @@ from generate_nodepools import (
     _get_node_disk_size,
     _read_user_data_script,
     _user_data_script_mime_part,
+    compute_pd_max_pods,
     generate_nodepool_yaml,
     main,
+    resolve_max_pods,
 )
 
 # ============================================================================
@@ -1369,3 +1371,155 @@ class TestExcludeRegions:
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
         assert "legacy-pool.yaml" not in generated
+
+
+# ============================================================================
+# Prefix-delegation max-pods (PR 8 part C)
+# ============================================================================
+
+
+class TestComputePdMaxPods:
+    """Tests for compute_pd_max_pods — the AWS max-pods-calculator formula."""
+
+    @pytest.mark.parametrize(
+        ("instance_type", "expected"),
+        [
+            ("c7i.48xlarge", 250),  # 14*49*16+2=10978 → cap 250
+            ("c7i.8xlarge", 250),  # 7*29*16+2=3250 → cap 250
+            ("r7i.2xlarge", 110),  # 3*14*16+2=674 → cap 110 (vcpu<=30)
+            ("p5.48xlarge", 250),  # 1*49*16+2=786 → cap 250
+            ("g5.48xlarge", 250),  # 6*49*16+2=4706 → cap 250
+        ],
+    )
+    def test_compute_pd_max_pods_formula(self, instance_type, expected):
+        assert compute_pd_max_pods(instance_type) == expected
+
+    def test_compute_pd_max_pods_no_custom_networking(self):
+        # Big instances stay capped at 250 even without custom networking.
+        assert compute_pd_max_pods("c7i.48xlarge", custom_networking=False) == 250
+        # Small instance still caps at 110 (vcpu<=30).
+        assert compute_pd_max_pods("r7i.2xlarge", custom_networking=False) == 110
+
+
+class TestResolveMaxPods:
+    """Tests for resolve_max_pods — explicit override + default behavior."""
+
+    def test_resolve_max_pods_default_caps_at_110(self):
+        # No explicit max_pods → default cap of 110 even if PD ceiling is higher.
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge")
+        nodepool_def.pop("max_pods", None)
+        assert resolve_max_pods(nodepool_def) == 110
+
+    def test_resolve_max_pods_explicit_below_ceiling(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=200)
+        assert resolve_max_pods(nodepool_def) == 200
+
+    def test_resolve_max_pods_explicit_at_ceiling(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=250)
+        assert resolve_max_pods(nodepool_def) == 250
+
+    def test_resolve_max_pods_explicit_above_ceiling_raises(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=300)
+        with pytest.raises(ValueError, match="exceeds PD ceiling"):
+            resolve_max_pods(nodepool_def)
+
+    def test_resolve_max_pods_explicit_negative_raises(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=0)
+        with pytest.raises(ValueError, match="must be >= 1"):
+            resolve_max_pods(nodepool_def)
+
+    def test_resolve_max_pods_explicit_non_int_raises(self):
+        # str rejected
+        nodepool_def_str = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods="250")
+        with pytest.raises(ValueError, match="must be an int"):
+            resolve_max_pods(nodepool_def_str)
+        # bool rejected (even though bool is technically an int subclass)
+        nodepool_def_bool = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=True)
+        with pytest.raises(ValueError, match="must be an int"):
+            resolve_max_pods(nodepool_def_bool)
+
+
+class TestEc2NodeClassMaxPods:
+    """Tests for the rendered EC2NodeClass kubelet.maxPods block."""
+
+    def _parse(self, text: str) -> list[dict]:
+        return parse_all_yaml(text)
+
+    def test_generated_ec2nodeclass_has_kubelet_max_pods(self):
+        # Default (no explicit max_pods) → 110 for c7i.48xlarge.
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge")
+        nodepool_def.pop("max_pods", None)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        assert ec2["spec"]["kubelet"]["maxPods"] == 110
+
+    def test_generated_ec2nodeclass_has_kubelet_max_pods_explicit(self):
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=250)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        assert ec2["spec"]["kubelet"]["maxPods"] == 250
+
+    def test_user_data_nodeconfig_does_NOT_have_max_pods(self):
+        """Regression guard: maxPods must NOT be set inside the user-data NodeConfig.
+
+        Karpenter sets kubelet keys via EC2NodeClass.spec.kubelet only.  Setting
+        maxPods in two places risks silent disagreement and confuses Karpenter's
+        scheduler math.
+        """
+        nodepool_def = _make_nodepool_def(instance_type="c7i.48xlarge", max_pods=250)
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        userdata = ec2["spec"]["userData"]
+        assert "maxPods" not in userdata
+
+
+class TestFleetMaxPodsPropagation:
+    """Tests for fleet/per-instance max_pods propagation."""
+
+    def _parse(self, text: str) -> list[dict]:
+        return parse_all_yaml(text)
+
+    def test_fleet_max_pods_propagates_to_instances(self):
+        fleet = {"name": "c7i-runner", "arch": "amd64", "gpu": False, "max_pods": 250}
+        instances = [
+            {"type": "c7i.48xlarge", "weight": 100, "node_disk_size": 3750},
+            {"type": "c7i.24xlarge", "weight": 85, "node_disk_size": 1900},
+        ]
+        for inst in instances:
+            nodepool_def = _build_fleet_nodepool_def(fleet, inst)
+            output = generate_nodepool_yaml(nodepool_def, "nodepools")
+            docs = self._parse(output)
+            ec2 = docs[1]
+            assert ec2["spec"]["kubelet"]["maxPods"] == 250, (
+                f"{inst['type']}: expected 250, got {ec2['spec']['kubelet']['maxPods']}"
+            )
+
+    def test_per_instance_max_pods_overrides_fleet(self):
+        fleet = {"name": "c7i-runner", "arch": "amd64", "gpu": False, "max_pods": 200}
+        # Override only on the 48xlarge entry.
+        inst_override = {"type": "c7i.48xlarge", "weight": 100, "node_disk_size": 3750, "max_pods": 250}
+        inst_default = {"type": "c7i.24xlarge", "weight": 85, "node_disk_size": 1900}
+
+        np_override = _build_fleet_nodepool_def(fleet, inst_override)
+        np_default = _build_fleet_nodepool_def(fleet, inst_default)
+
+        ec2_override = self._parse(generate_nodepool_yaml(np_override, "nodepools"))[1]
+        ec2_default = self._parse(generate_nodepool_yaml(np_default, "nodepools"))[1]
+
+        assert ec2_override["spec"]["kubelet"]["maxPods"] == 250
+        assert ec2_default["spec"]["kubelet"]["maxPods"] == 200
+
+    def test_real_def_c7i_runner_uses_explicit_max_pods(self):
+        """Round-trip: c7i-runner.yaml renders maxPods=250 on every instance."""
+        c7i_runner_defs = [d for d in _load_all_real_defs() if d.get("fleet_name") == "c7i-runner"]
+        assert c7i_runner_defs, "expected c7i-runner instances in real defs"
+        for d in c7i_runner_defs:
+            output = generate_nodepool_yaml(d, "nodepools", REAL_DEFS_DIR)
+            docs = parse_all_yaml(output)
+            ec2 = docs[1]
+            assert ec2["spec"]["kubelet"]["maxPods"] == 250, (
+                f"{d['name']}: expected 250, got {ec2['spec']['kubelet']['maxPods']}"
+            )
