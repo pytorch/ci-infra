@@ -77,7 +77,8 @@ def _get_spot_provision_status(gpu_type: str) -> str:
         groups = resp.get("AutoScalingGroups", [])
         if not groups:
             return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
-        instances = groups[0].get("Instances", [])
+        instances = [i for i in groups[0].get("Instances", [])
+                     if i.get("LifecycleState") not in ("Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")]
         if not instances:
             # Check ASG activity for launch failures (capacity, AZ issues)
             try:
