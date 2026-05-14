@@ -5,8 +5,6 @@ These tests deliberately use regex+string-balance parsing rather than a true HCL
 - Small surface area, easy to reason about
 - Intentionally fragile to refactors (`local.x` substitutions, heredocs) so that
   test failures surface the refactor explicitly
-
-If parsing needs grow, switch to `python-hcl2` and rewrite these helpers.
 """
 
 from __future__ import annotations

@@ -29,7 +29,7 @@ output "internet_gateway_id" {
 }
 
 output "nat_gateways_by_bucket_az" {
-  description = "Map of NAT Gateway IDs keyed by '$${bucket}-$${az}'. Same key shape as pod_cidr_associations and pod_subnets_by_bucket_az (PR 5) so downstream consumers can join 1:1 without string-splitting."
+  description = "Map of NAT Gateway IDs keyed by '$${bucket}-$${az}'. Same key shape as pod_cidr_associations and pod_subnets_by_bucket_az so downstream consumers can join 1:1 without string-splitting."
   value       = { for k, ng in aws_nat_gateway.this : k => ng.id }
 }
 
@@ -48,7 +48,7 @@ output "nat_gateway_eips_by_bucket_az" {
 }
 
 output "pod_route_table_ids_by_bucket_az" {
-  description = "Map of pod route table IDs keyed by '$${bucket}-$${az}'. Same key shape as pod_subnets_by_bucket_az (PR 5) so downstream consumers can join 1:1."
+  description = "Map of pod route table IDs keyed by '$${bucket}-$${az}'. Same key shape as pod_subnets_by_bucket_az so downstream consumers can join 1:1."
   value       = { for k, rt in aws_route_table.pod : k => rt.id }
 }
 

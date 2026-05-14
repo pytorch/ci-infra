@@ -64,8 +64,7 @@ def _make_nodepool_def(**overrides) -> dict:
 
 REAL_DEFS_DIR = Path(__file__).parent.parent.parent / "defs"
 
-# All real defs dirs — name-length guard MUST cover GPU sister modules so a
-# future long-named GPU def doesn't slip past CI.
+# All real defs dirs — name-length guard covers all GPU sister modules.
 _MODULES_DIR = Path(__file__).parent.parent.parent.parent
 ALL_REAL_DEFS_DIRS = [
     _MODULES_DIR / "nodepools" / "defs",
@@ -889,7 +888,7 @@ class TestMain:
             main()
 
         assert not (output_dir / "stale.yaml").exists()
-        # AZ-suffixed names replace the legacy bare name
+        # Output filenames carry the AZ suffix.
         assert (output_dir / "pool-a-us-east-2a.yaml").exists()
         assert (output_dir / "pool-a-us-east-2b.yaml").exists()
         assert (output_dir / "pool-a-us-east-2c.yaml").exists()
@@ -2089,7 +2088,7 @@ class TestAzExpansion:
             assert labels[ENI_CONFIG_LABEL] == bucket_eniconfig_name(f"bucket-{i}", DEFAULT_AZ)
 
     def test_no_az_no_bucket_label_or_zone_requirement(self):
-        """Backward-compat path: az=None means no bucket label, no zone requirement."""
+        """When az=None: emit no bucket label and no zone requirement."""
         nodepool_def = _make_nodepool_def()
         output = generate_nodepool_yaml(nodepool_def, "nodepools")
         np = parse_all_yaml(output)[0]
@@ -2251,11 +2250,7 @@ class TestNameLengthGuard:
         assert len(np["metadata"]["name"]) <= 63
 
     def test_real_def_max_name_length_under_limit(self):
-        """All real-def name + AZ suffix combos must fit in 63 chars.
-
-        Covers all 3 nodepools modules — nodepools, nodepools-h100, nodepools-b200 —
-        so a future long-named GPU def is caught by CI before deploy.
-        """
+        """All real-def name + AZ suffix combos must fit in 63 chars across nodepools, nodepools-h100, and nodepools-b200."""
         for defs_dir in ALL_REAL_DEFS_DIRS:
             assert defs_dir.is_dir(), f"expected real defs dir at {defs_dir}"
             for d in _load_all_real_defs(defs_dir):
@@ -2312,7 +2307,7 @@ class TestValidBucketsCheck:
         assert _parse_valid_buckets("") is None
 
     def test_parse_valid_buckets_only_commas_returns_none(self):
-        """Defensive: ',,,' parses to no real entries → None (legacy fallback)."""
+        """Defensive: ',,,' parses to no real entries → None (the no-cluster-set fallback path)."""
         assert _parse_valid_buckets(",,,") is None
 
     def test_parse_valid_buckets_simple_list(self):
@@ -2349,7 +2344,7 @@ class TestValidBucketsCheck:
             _validate_bucket("bucket-4", where="fleet 'foo' in foo.yaml", valid_buckets={"bucket-1", "bucket-2"})
 
     def test_validate_bucket_with_none_skips_coherence_check(self):
-        """valid_buckets=None falls back to format-only (legacy/test-friendly behavior)."""
+        """valid_buckets=None falls back to format-only validation (the path used when no cluster set is wired in)."""
         # bucket-4 is well-formed and there's no cluster set to compare against → accepted
         _validate_bucket("bucket-4", where="t", valid_buckets=None)
 
@@ -2408,11 +2403,11 @@ class TestValidBucketsCheck:
         assert self._run_main(defs_dir, output_dir, valid_buckets_csv="bucket-1,bucket-2,bucket-3") == 0
 
     def test_unset_env_var_falls_back_to_format_only(self, tmp_path):
-        """No NODEPOOLS_VALID_BUCKETS → format-only validation (legacy/test-friendly)."""
+        """No NODEPOOLS_VALID_BUCKETS → format-only validation."""
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         # Use bucket-4 (a valid format) — without the env var the coherence
-        # check is skipped, so this MUST succeed (preserves backward-compat).
+        # check is skipped, so this must still succeed.
         self._write_fleet(
             defs_dir,
             "uses-bucket-4",

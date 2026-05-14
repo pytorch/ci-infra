@@ -1,10 +1,7 @@
-"""Unit tests for the per-(bucket, AZ) NAT Gateway / EIP / route table topology.
+"""Unit tests for the per-(bucket, AZ) NAT Gateway / EIP / route table topology in modules/eks/terraform/modules/vpc/nat.tf.
 
-Defends the VPC NAT refactor that replaces the old per-AZ shared NAT GW
-(toggled by `var.single_nat_gateway`) with per-(bucket, AZ) NAT GWs sourced
-from `local.pod_cidr_associations`. Each NAT GW gets 1 primary EIP plus
-N-1 secondary EIPs (configurable via `var.nat_gateway_eip_count`, default 8,
-AWS hard cap 8).
+Each NAT GW gets 1 primary EIP plus N-1 secondary EIPs (configurable via
+`var.nat_gateway_eip_count`, default 8, AWS hard cap 8).
 
 Topology end state (production: 4 buckets x 3 AZs):
 - 12 NAT GWs (one per bucket-AZ pair)
@@ -65,8 +62,7 @@ def _variable_block(text: str, name: str) -> str:
     `variable "<name>" { ... }` block (including the outer braces).
 
     Local helper -- not added to _tf_parse_helpers because no other test
-    currently parses variable blocks. If a second consumer appears, promote
-    this to the shared module.
+    currently parses variable blocks.
     """
     pattern = re.compile(
         rf'variable\s+"{re.escape(name)}"\s*\{{',
@@ -125,12 +121,7 @@ def _dynamic_route_block(block: str) -> str:
 
 
 class TestNATFileExists:
-    """nat.tf must exist at the canonical path and declare all 7 NAT-topology resources.
-
-    The split out of vpc/main.tf is mandated by the 400-line file budget and to
-    keep NAT topology cohesive. Without the file, downstream tests in this module
-    cannot meaningfully run.
-    """
+    """nat.tf must exist at the canonical path and declare all 7 NAT-topology resources."""
 
     def test_nat_tf_file_exists(self) -> None:
         assert VPC_NAT_TF.exists(), (
@@ -423,12 +414,10 @@ class TestPodRouteTableAssociation:
         )
 
 
-class TestPrivateRouteTableRefactor:
-    """aws_route_table.private -- refactored from count-based to for_each over var.azs.
+class TestPrivateRouteTable:
+    """aws_route_table.private — one private RT per AZ (for_each over var.azs).
 
-    The private RT for nodes routes through a single bucket's NAT GW per AZ
-    (the default_node_egress_bucket = sorted-first bucket). Was previously
-    per-AZ shared with single_nat_gateway toggle.
+    Each AZ's RT routes 0.0.0.0/0 through the default_node_egress_bucket's NAT GW for that AZ.
     """
 
     block = resource_block(VPC_NAT_TF_TEXT, "aws_route_table", "private") if VPC_NAT_TF_TEXT else ""
@@ -444,9 +433,8 @@ class TestPrivateRouteTableRefactor:
         # mentioning count.index doesn't false-positive.
         scrubbed = _strip_hcl_comments(self.block)
         assert "count.index" not in scrubbed, (
-            "aws_route_table.private must NOT use count.index -- the refactor moved this to "
-            "for_each = toset(var.azs). count-indexed RTs cause destroy+recreate churn on AZ-list "
-            "changes."
+            "aws_route_table.private must use for_each = toset(var.azs), not count. count-indexed "
+            "RTs cause destroy+recreate churn on AZ-list changes."
         )
 
     def test_no_count_attribute_at_top_level(self) -> None:
@@ -454,8 +442,7 @@ class TestPrivateRouteTableRefactor:
         # Search for `count` as a field assignment (not preceded by var. or local. etc.).
         scrubbed = _strip_hcl_comments(self.block)
         assert not re.search(r"^\s*count\s*=", scrubbed, re.MULTILINE), (
-            "aws_route_table.private must NOT declare a top-level `count = ...` -- the refactor "
-            "moved this to for_each = toset(var.azs)."
+            "aws_route_table.private must use for_each = toset(var.azs), not a top-level count."
         )
 
     def test_dynamic_route_block_gated_by_enable_nat_gateway(self) -> None:
@@ -484,42 +471,32 @@ class TestPrivateRouteTableRefactor:
     def test_no_single_nat_gateway_reference(self) -> None:
         scrubbed = _strip_hcl_comments(self.block)
         assert "var.single_nat_gateway" not in scrubbed, (
-            "aws_route_table.private must NOT reference var.single_nat_gateway -- the variable is "
-            "removed by this refactor."
+            "aws_route_table.private must NOT reference var.single_nat_gateway — that variable does not exist on this module."
         )
         assert "single_nat_gateway" not in scrubbed, (
             "aws_route_table.private must NOT reference single_nat_gateway in any form."
         )
 
 
-class TestSingleNATGatewayRemoved:
-    """`var.single_nat_gateway` and the bare `single_nat_gateway` token must be
-    fully removed from the VPC submodule.
-
-    Defends against half-completed refactors where the variable is dropped from
-    one file but lingering references in another file would silently break.
-    Comments are stripped before scanning so explanatory comments don't
-    interfere -- but the variable name must not appear in code or in any tag /
-    field assignment.
+class TestNoSingleNATGatewayReferences:
+    """`var.single_nat_gateway` and the bare `single_nat_gateway` token must
+    not appear in the VPC submodule (variable, references, or tag/field
+    assignments). Comments are stripped before scanning so explanatory text
+    doesn't interfere.
     """
 
     def _scrub(self, text: str) -> str:
         return _strip_hcl_comments(text)
 
-    def test_variable_declaration_removed_from_vpc_variables(self) -> None:
+    def test_no_single_nat_gateway_variable_in_vpc_variables(self) -> None:
         scrubbed = self._scrub(VPC_VARS_TF_TEXT)
         assert "single_nat_gateway" not in scrubbed, (
-            "modules/eks/terraform/modules/vpc/variables.tf must not declare or reference "
-            "single_nat_gateway -- this variable was replaced by per-(bucket, AZ) NAT topology + "
-            "var.nat_gateway_eip_count."
+            "single_nat_gateway must not appear in vpc/variables.tf — that variable does not exist on this module."
         )
 
     def test_no_reference_in_vpc_main(self) -> None:
         scrubbed = self._scrub(VPC_MAIN_TF_TEXT)
-        assert "single_nat_gateway" not in scrubbed, (
-            "modules/eks/terraform/modules/vpc/main.tf must not reference single_nat_gateway -- "
-            "the old toggle is replaced by per-(bucket, AZ) NAT topology."
-        )
+        assert "single_nat_gateway" not in scrubbed, "single_nat_gateway must not appear in vpc/main.tf."
 
     def test_no_reference_in_vpc_nat(self) -> None:
         if not VPC_NAT_TF_TEXT:
@@ -527,10 +504,7 @@ class TestSingleNATGatewayRemoved:
             # not via a misleading "no references" pass here.
             return
         scrubbed = self._scrub(VPC_NAT_TF_TEXT)
-        assert "single_nat_gateway" not in scrubbed, (
-            "modules/eks/terraform/modules/vpc/nat.tf must not reference single_nat_gateway -- "
-            "the old toggle has no place in the refactored topology."
-        )
+        assert "single_nat_gateway" not in scrubbed, "single_nat_gateway must not appear in vpc/nat.tf."
 
 
 class TestNATGatewayEIPCountValidation:

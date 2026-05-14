@@ -275,8 +275,7 @@ class TestCoreDNSTopology:
 # Env keys/values the vpc-cni addon must push onto the live aws-node DaemonSet.
 # Source of truth: aws_eks_addon.vpc_cni configuration_values in
 # modules/eks/terraform/modules/eks/main.tf. Drift here means EKS
-# reconciliation silently dropped an env key (most often a ConfigurationConflict
-# with a hand-edited DaemonSet under PRESERVE).
+# reconciliation silently dropped an env key.
 EXPECTED_VPC_CNI_ENV: dict[str, str] = {
     "AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG": "true",
     "ENABLE_PREFIX_DELEGATION": "true",
@@ -517,7 +516,7 @@ class TestNATGatewayTopology:
 
     Read-only AWS API checks against the live VPC. Drift here means terraform
     apply did not actually shape the topology that ``clusters.yaml`` and the VPC
-    submodule promise — typically because of a botched cutover, manual
+    submodule promise — typically because of a botched apply, manual
     intervention in the AWS console, or a stale state file.
     """
 
@@ -567,8 +566,8 @@ class TestNATGatewayTopology:
             ngw_id = ng.get("NatGatewayId", "<unknown>")
             tag_az = _tag_value(ng.get("Tags", []), "osdc.io/nat-az")
             if tag_az is None:
-                # Untagged NAT GW (legacy / unmanaged) — covered by count test;
-                # skipping here keeps this test focused on AZ consistency.
+                # Untagged NAT GW (not managed by this terraform) — covered by count
+                # test; skipping here keeps this test focused on AZ consistency.
                 continue
             subnet_id = ng.get("SubnetId")
             actual_az = subnet_az_by_id.get(subnet_id)
@@ -619,7 +618,7 @@ class TestNATGatewayTopology:
         """
         nat_by_id = {ng.get("NatGatewayId"): ng for ng in vpc_nat_gateways}
         pod_subnets = [s for s in vpc_subnets if _tag_value(s.get("Tags", []), "osdc.io/pod-subnet-bucket")]
-        assert pod_subnets, "no subnets carry the osdc.io/pod-subnet-bucket tag — PR 5 not applied?"
+        assert pod_subnets, "no subnets carry the osdc.io/pod-subnet-bucket tag — pod subnets module not applied?"
 
         problems: list[str] = []
         for s in pod_subnets:
@@ -677,7 +676,7 @@ class TestNATGatewayTopology:
 
         Filters: subnet has the ``Name`` tag matching ``*-private-<az>`` AND
         does NOT carry ``osdc.io/pod-subnet-bucket`` (which would mark it as a
-        pod subnet introduced by PR 5).
+        pod subnet).
         """
         nat_by_id = {ng.get("NatGatewayId"): ng for ng in vpc_nat_gateways}
         private_subnets = [
