@@ -165,6 +165,15 @@ Runs on ALL nodes (no nodeSelector, tolerates everything). Idempotent via `/var/
 | `node-compactor.osdc.io/consolidating=true` | Runtime (dynamic) | `NoSchedule` | Applied by node-compactor | node-compactor controller (protected by `min_node_age`: 900s) |
 | `CriticalAddonsOnly=true` | Permanent | `NoSchedule` | Base infrastructure nodes (EKS-managed) | Never |
 
+## NodePool Labels & Requirements
+
+In addition to taints, the generator stamps each Karpenter NodePool with the following label and zone requirement so VPC CNI Custom Networking selects the right pod-IP subnet per node:
+
+| Key | Where applied | Value | Purpose |
+|-----|---------------|-------|---------|
+| `ipam.osdc.internal/eni-config` | Permanent label on every workload node (NodePool `template.metadata.labels`) | `bucket-N-AZ` (e.g. `bucket-1-us-east-2a`) | VPC CNI ipamd reads this to select the matching ENIConfig CRD and allocate pod IPs from the correct per-(bucket, AZ) /16 CGNAT subnet. |
+| `topology.kubernetes.io/zone` | NodePool requirement (`spec.template.spec.requirements`) | `In: [<AZ>]` (e.g. `["us-east-2a"]`) | Pins each NodePool variant to a single AZ. The generator emits one NodePool per (def, AZ) pair so the eni-config label and the actual node AZ are guaranteed consistent. |
+
 ## Toleration Pattern
 
 All DaemonSets targeting runner and buildkit nodes use a consistent toleration set covering `instance-type`, `node-fleet` (runner NodePools) and `workload/buildkit-*` (BuildKit NodePools) taints:

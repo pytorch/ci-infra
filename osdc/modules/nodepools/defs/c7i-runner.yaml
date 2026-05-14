@@ -4,6 +4,8 @@ fleet:
   name: c7i-runner
   arch: amd64
   gpu: false
+  # Pod-IP bucket (runner exclusive — IP-burn isolation, 100-250 pods/node).
+  bucket: bucket-4
   # Runner pool packs up to 250 pods/node — opt out of the 110 default cap.
   max_pods: 250
   instances:

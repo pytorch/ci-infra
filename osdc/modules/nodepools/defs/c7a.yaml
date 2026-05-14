@@ -4,6 +4,8 @@ fleet:
   name: c7a
   arch: amd64
   gpu: false
+  # Pod-IP bucket (compute, c-series, ~2 GiB/core ratio).
+  bucket: bucket-1
   exclude_regions:
     - us-west-1
   instances:
