@@ -48,7 +48,7 @@ resource "aws_lambda_function" "availability_updater" {
       EKS_CLUSTER_NAME    = aws_eks_cluster.gpu_dev_cluster.name
       REGION              = local.current_config.aws_region
       SPOT_GPU_TYPES      = lookup({
-        "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000"
+        "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000,cpu-spot"
       }, terraform.workspace, "")
       ASG_NAME_PREFIX     = "${var.prefix}-gpu-nodes"
     }

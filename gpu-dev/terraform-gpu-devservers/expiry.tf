@@ -25,7 +25,7 @@ resource "aws_lambda_function" "reservation_expiry" {
       SSH_DOMAIN_MAPPINGS_TABLE          = local.effective_domain_name != "" ? aws_dynamodb_table.ssh_domain_mappings.name : ""
       DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
       SPOT_GPU_TYPES                     = lookup({
-        "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000"
+        "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000,cpu-spot"
       }, terraform.workspace, "")
     }
   }

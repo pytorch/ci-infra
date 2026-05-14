@@ -232,6 +232,7 @@ locals {
     "a100"     = "a100"
     "cpu-arm"  = "cpu-arm"
     "cpu-x86"  = "cpu-x86"
+    "cpu-spot" = "cpu-spot"
     "t4-small" = "t4-small"
   }
 

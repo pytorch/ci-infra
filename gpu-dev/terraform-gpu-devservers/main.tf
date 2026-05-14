@@ -427,6 +427,16 @@ locals {
           architecture        = "x86_64"
           efa_network_cards   = 0
         }
+        "cpu-spot" = {
+          instance_type       = "c7i.2xlarge"
+          instance_types      = null
+          instance_count      = 0
+          gpus_per_instance   = 0
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 0
+          use_spot            = true
+        }
       }
     }
   }
@@ -497,6 +507,7 @@ locals {
       l4         = "primary"
       rtxpro6000 = "primary"
       "cpu-x86"  = "primary"
+      "cpu-spot" = "primary"
     }
     default = {
       # Test environment - T4 nodes in multiple AZs for testing

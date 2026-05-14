@@ -191,7 +191,7 @@ resource "aws_lambda_function" "reservation_processor" {
       # Empty = no spot types (on-demand / reserved). Set per-workspace.
       ASG_NAME_PREFIX                    = "${var.prefix}-gpu-nodes"
       SPOT_GPU_TYPES                     = lookup({
-        "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000"
+        "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000,cpu-spot"
       }, terraform.workspace, "")
       DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
       OPERATIONS_TABLE                   = aws_dynamodb_table.operations.name
