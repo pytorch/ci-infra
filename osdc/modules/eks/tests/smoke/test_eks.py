@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 import yaml
+from cni_constants import ENI_CONFIG_LABEL
 from helpers import get_unstable_node_names, pod_is_on_unstable_node, run_aws, run_kubectl
 
 pytestmark = [pytest.mark.live, pytest.mark.aws]
@@ -264,3 +265,109 @@ class TestCoreDNSTopology:
             assert max_unavail == 1, (
                 f"CoreDNS PDB {pdb['metadata']['name']} has maxUnavailable={max_unavail}, expected 1"
             )
+
+
+# ============================================================================
+# VPC CNI addon env reconciliation
+# ============================================================================
+
+
+# Env keys/values the vpc-cni addon must push onto the live aws-node DaemonSet.
+# Source of truth: aws_eks_addon.vpc_cni configuration_values in
+# modules/eks/terraform/modules/eks/main.tf. Drift here means EKS
+# reconciliation silently dropped an env key.
+EXPECTED_VPC_CNI_ENV: dict[str, str] = {
+    "AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG": "true",
+    "ENABLE_PREFIX_DELEGATION": "true",
+    "ENI_CONFIG_LABEL_DEF": ENI_CONFIG_LABEL,
+    "WARM_PREFIX_TARGET": "1",
+}
+
+
+class TestVPCCNIConfig:
+    """The vpc-cni addon's env vars must land on the live aws-node DaemonSet.
+
+    Catches the silent-failure mode where the addon spec is updated but EKS reconciliation
+    quietly drops env keys (e.g., due to PRESERVE conflict on a hand-edited DaemonSet).
+    """
+
+    @pytest.mark.live
+    def test_aws_node_env_vars_present(self) -> None:
+        """Every running aws-node pod must carry all four expected env vars.
+
+        Iterates ALL running pods to catch partial-rollout drift (some pods reconciled,
+        others stale). Single-pod sampling could pick a stale pod and mask drift on
+        the others.
+        """
+        pods_result = run_kubectl(["get", "pods", "-l", "k8s-app=aws-node"], namespace="kube-system")
+        pods = pods_result.get("items", [])
+        assert pods, "no aws-node pods found in kube-system (vpc-cni addon not installed?)"
+
+        running = [p for p in pods if p.get("status", {}).get("phase") == "Running"]
+        if not running:
+            pytest.fail(
+                f"no running aws-node pods found in kube-system "
+                f"(observed {len(pods)} pods, none with status.phase=='Running')"
+            )
+
+        problems: list[str] = []
+        for pod in running:
+            pod_name = pod.get("metadata", {}).get("name", "<unknown>")
+            node_name = pod.get("spec", {}).get("nodeName", "<unknown>")
+            containers = pod.get("spec", {}).get("containers", [])
+            aws_node_containers = [c for c in containers if c.get("name") == "aws-node"]
+            if not aws_node_containers:
+                problems.append(f"{pod_name} (node={node_name}): no container named 'aws-node'")
+                continue
+
+            env_list = aws_node_containers[0].get("env", []) or []
+            env_by_name = {e.get("name"): e.get("value") for e in env_list if "name" in e}
+
+            for key, expected in EXPECTED_VPC_CNI_ENV.items():
+                if key not in env_by_name:
+                    problems.append(f"{pod_name} (node={node_name}): {key} missing (expected {expected!r})")
+                    continue
+                actual = env_by_name[key]
+                if actual != expected:
+                    problems.append(f"{pod_name} (node={node_name}): {key} = {actual!r}, expected {expected!r}")
+
+        assert not problems, (
+            f"vpc-cni addon env reconciliation incomplete on {len(running)} aws-node pod(s):\n  "
+            + "\n  ".join(problems)
+        )
+
+    @pytest.mark.live
+    @pytest.mark.aws
+    def test_addon_health_issues_empty(self, cluster_config) -> None:
+        """aws eks describe-addon must report zero ConfigurationConflict issues."""
+        cluster_name = cluster_config["cluster"]["cluster_name"]
+        region = cluster_config["cluster"].get("region", "us-west-2")
+        result = run_aws(
+            [
+                "eks",
+                "describe-addon",
+                "--cluster-name",
+                cluster_name,
+                "--addon-name",
+                "vpc-cni",
+                "--region",
+                region,
+            ],
+            timeout=120,
+        )
+        issues = result.get("addon", {}).get("health", {}).get("issues", []) or []
+        if not issues:
+            return
+
+        # Surface ConfigurationConflict prominently — that's the specific failure
+        # mode that arises if PRESERVE was left in place against a hand-edited
+        # DaemonSet — but report ALL issues so unrelated drift isn't masked.
+        rendered = [
+            f"code={i.get('code', '<no-code>')!r} message={i.get('message', '<no-message>')!r} "
+            f"resourceIds={i.get('resourceIds', [])}"
+            for i in issues
+        ]
+        pytest.fail(
+            f"vpc-cni addon on {cluster_name} reports {len(issues)} health issue(s) — "
+            f"Env reconciliation likely failed (look for code='ConfigurationConflict'):\n  " + "\n  ".join(rendered)
+        )
