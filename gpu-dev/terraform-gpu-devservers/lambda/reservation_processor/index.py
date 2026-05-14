@@ -88,7 +88,7 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                     if act.get("StatusCode") == "Failed":
                         reason = act.get("StatusMessage", "")
                         if "Insufficient capacity" in reason:
-                            return "Waiting for spot capacity — no instances available in region right now"
+                            return "No spot capacity available — retrying every ~60s"
                         if "not supported in your requested Availability Zone" in reason:
                             continue  # Skip AZ errors, ASG will retry other AZs
                         if reason:
