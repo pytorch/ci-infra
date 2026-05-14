@@ -18,9 +18,14 @@ systemctl stop nodeadm-run.service || true
 # Required for ncu/nsys GPU profiling tools
 echo "options nvidia NVreg_RestrictProfilingToAdminUsers=0" > /etc/modprobe.d/nvprof.conf
 
-# Install NVIDIA driver
-dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/amzn2023/x86_64/cuda-amzn2023.repo
-dnf install -y nvidia-driver nvidia-driver-cuda
+# Skip driver install if baked AMI already has them (saves ~13 min)
+if rpm -q nvidia-driver &>/dev/null; then
+    echo "NVIDIA driver already installed (baked AMI) — skipping dnf install"
+else
+    echo "Installing NVIDIA driver from scratch..."
+    dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/amzn2023/x86_64/cuda-amzn2023.repo
+    dnf install -y nvidia-driver nvidia-driver-cuda
+fi
 
 # EFA driver update + efa-nv-peermem for GPU Direct RDMA (GDR)
 # EFA 2.17.3+ adds P2P support for NVIDIA 580 open drivers
@@ -64,11 +69,15 @@ if [[ "${gpu_type}" == "a100" || "${gpu_type}" == "b200" || "${gpu_type}" == "b3
     echo "Installing fabric manager for multi-GPU system: ${gpu_type}"
 
     # Install InfiniBand tools - EFA hardware is already present and configured
-    echo "Installing InfiniBand diagnostic tools for fabric manager..."
-    dnf install -y infiniband-diags
+    if ! rpm -q infiniband-diags &>/dev/null; then
+        echo "Installing InfiniBand diagnostic tools for fabric manager..."
+        dnf install -y infiniband-diags
+    fi
 
     # Install fabric manager and NVLink Subnet Manager
-    dnf install -y nvidia-fabricmanager nvlsm
+    if ! rpm -q nvidia-fabricmanager &>/dev/null; then
+        dnf install -y nvidia-fabricmanager nvlsm
+    fi
 
     # Fix PATH issue - create symlink for ibstat in /usr/bin where fabric manager expects it
     ln -sf /usr/sbin/ibstat /usr/bin/ibstat || echo "ibstat symlink creation failed"

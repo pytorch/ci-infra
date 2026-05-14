@@ -19,13 +19,31 @@ locals {
     image_uri = local.latest_image_uri
   }))
 
-  # Use baked AMI when available, fall back to standard.
-  gpu_ami_id = length(data.aws_ami_ids.gpu_baked.ids) > 0 ? data.aws_ami_ids.gpu_baked.ids[0] : data.aws_ami.eks_gpu_ami_x86_64.id
+  # Use baked AMI when available (checked AFTER baker runs), fall back to standard.
+  gpu_ami_id = length(data.aws_ami_ids.gpu_baked_resolved.ids) > 0 ? data.aws_ami_ids.gpu_baked_resolved.ids[0] : data.aws_ami.eks_gpu_ami_x86_64.id
 }
 
-# Look up existing baked AMI — uses aws_ami_ids which returns [] instead of erroring
+# Pre-build check: does the baked AMI already exist? Controls whether baker runs.
 data "aws_ami_ids" "gpu_baked" {
   owners = ["self"]
+
+  filter {
+    name   = "name"
+    values = [local.ami_baker_name]
+  }
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
+
+  sort_ascending = false
+}
+
+# Post-build lookup: re-reads AFTER the baker finishes, so a freshly built AMI
+# is picked up in the same apply (no second apply needed).
+data "aws_ami_ids" "gpu_baked_resolved" {
+  depends_on = [null_resource.ami_baker]
+  owners     = ["self"]
 
   filter {
     name   = "name"

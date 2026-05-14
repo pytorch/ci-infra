@@ -1,6 +1,6 @@
 # Custom PyTorch GPU Development Server Image
-# Based on pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel
-FROM pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel
+# Based on pytorch/pytorch:2.12.0-cuda13.2-cudnn9-devel
+FROM pytorch/pytorch:2.12.0-cuda13.2-cudnn9-devel
 
 # Set environment variables for non-interactive installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -42,22 +42,22 @@ RUN for attempt in 1 2 3; do \
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
 
-# Install CUDA 12.9, 13.0, 13.1, 13.2 alongside base CUDA 12.8
+# Install older CUDA toolkits alongside base CUDA 13.2
 # Base image already has NVIDIA repo configured, no need for cuda-keyring
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        cuda-toolkit-12-8 \
         cuda-toolkit-12-9 \
         cuda-toolkit-13-0 \
         cuda-toolkit-13-1 \
-        cuda-toolkit-13-2 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# CUDA 12.8 is the default (PyTorch compiled against it)
+# CUDA 13.2 is the default (PyTorch 2.12 compiled against it)
 # All versions available at /usr/local/cuda-{12.8,12.9,13.0,13.1,13.2}/
-# Switch with: export CUDA_HOME=/usr/local/cuda-13.2
-ENV CUDA_HOME=/usr/local/cuda-12.8
-ENV PATH=/usr/local/cuda-12.8/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}
+# Switch with: export CUDA_HOME=/usr/local/cuda-12.8
+ENV CUDA_HOME=/usr/local/cuda-13.2
+ENV PATH=/usr/local/cuda-13.2/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:${LD_LIBRARY_PATH}
 
 # Install EFA stack (prebuilt libfabric + OpenMPI + aws-ofi-nccl with GPU/RDMA support)
 # Uses AWS EFA installer which bundles tested, compatible versions of all components
