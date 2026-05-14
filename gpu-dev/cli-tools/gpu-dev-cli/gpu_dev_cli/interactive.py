@@ -63,7 +63,7 @@ def select_gpu_type_interactive(
         from .config import load_config
         _cfg = load_config()
         _mgr = ReservationManager(_cfg)
-        availability_info = _mgr.get_gpu_availability() or availability_info
+        availability_info = _mgr.get_gpu_availability_by_type() or availability_info
 
     # Hide MIG slice SKUs from the top-level selector — reached via the h100 submenu.
     # Direct `--gpu-type h100-mig-1g` still works for non-interactive scripts.
