@@ -408,6 +408,16 @@ locals {
           efa_network_cards   = 1
           use_spot            = true
         }
+        "rtxpro6000" = {
+          instance_type       = "g7e.24xlarge"
+          instance_types      = null
+          instance_count      = 0
+          gpus_per_instance   = 4
+          use_placement_group = false
+          architecture        = "x86_64"
+          efa_network_cards   = 2
+          use_spot            = true
+        }
         "cpu-x86" = {
           instance_type       = "c7i.8xlarge"
           instance_types      = null
@@ -485,6 +495,7 @@ locals {
       a100       = "primary"
       t4         = "primary"
       l4         = "primary"
+      rtxpro6000 = "primary"
       "cpu-x86"  = "primary"
     }
     default = {
