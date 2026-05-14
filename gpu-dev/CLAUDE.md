@@ -183,6 +183,55 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:909
 kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
 ```
 
+## Multi-Region Single-State Refactor (Research Notes, May 2026)
+
+**Goal:** One `tf apply` manages all regions. No more `tf-all`, no double Docker builds, no double AMI bakes.
+
+**Approach:** Module-per-region pattern.
+```hcl
+# root main.tf
+module "us_east_2" {
+  source    = "./modules/region"
+  region    = "us-east-2"
+  gpu_types = { h100 = {...}, b200 = {...}, ... }
+  spot_types = []
+  providers = { aws = aws.us_east_2 }
+}
+module "us_east_1" {
+  source    = "./modules/region"
+  region    = "us-east-1"
+  gpu_types = { b300 = {...}, t4 = {...}, ... }
+  spot_types = ["b300", "b200", "h100", ...]
+  providers = { aws = aws.us_east_1 }
+}
+```
+
+**What goes in the module:** VPC, subnets, EKS cluster, ASGs, launch templates, Lambda functions, DDB tables, EFS, monitoring, DNS. Basically everything in the current root except provider config and shared resources.
+
+**What stays at root:** Provider blocks with aliases, ECR replication config, AMI copy (`aws_ami_copy` from primary to secondary regions), global IAM roles if any, CLI config.
+
+**AMI sharing:** Build baked AMI in us-east-2 (primary), `aws_ami_copy` to other regions. One build, replicated. The `ami_baker` stays in root, outputs AMI ID, each module receives it as a variable.
+
+**Docker sharing:** ECR replication already set up. Docker builds once in primary region, auto-replicates.
+
+**Migration plan (since nobody uses east1 yet):**
+1. `tofu workspace select prod-east1 && tofu destroy` — clean slate
+2. Move all resources into `modules/region/`
+3. Create provider aliases in root
+4. Import prod (us-east-2) resources into new module state: `tofu import module.us_east_2.aws_vpc.gpu_dev_vpc vpc-xxx`
+5. Add us-east-1 module — fresh create, no import needed
+6. Delete workspace: `tofu workspace delete prod-east1`
+
+**Risks:**
+- Import step for prod is tedious (~50+ resources) but mechanical
+- Lambda zip paths need to be relative to module, not root
+- EKS auth (aws-auth ConfigMap) is per-cluster — each module manages its own
+- CLI needs to know which region to query — already handled by config
+
+**Estimated effort:** 1 dedicated session (~4-6 hours). Most time on the module extraction + prod import.
+
+**Prerequisite for:** Adding us-west-1, us-west-2, or any future region (becomes one module block each).
+
 ## Recent Fixes (Oct 27, 2025)
 
 **NVIDIA Profiling Bootstrap Configuration (Oct 27, 2025):**
@@ -232,8 +281,9 @@ kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
 
 ### 📋 Remaining Tasks
 
-- **Add us-west-1 and us-west-2 spot regions** - Copy prod-east1 setup to west coast. Check spot availability per instance type. us-west-2 should also serve as staging (config test environment). Needs: new workspace configs, subnet/VPC setup, SPOT_GPU_TYPES, CLI config, DNS subdomain delegation.
-- **Spot UX improvements** - Queue position should be #1 for each type (not cross-type FIFO). Status should show "queued (waiting for capacity)" not just "queued". ETA should not show "~Nonemin". Interactive picker should show spot GPU counts from east1 not prod.
+- **Merge multi-region into single tf state** - HIGH PRIORITY. Kill prod-east1 workspace, refactor into module-per-region in one state. See research notes below. Enables: one `tf apply`, shared AMI (aws_ami_copy), shared Docker (ECR replication already set up), no double builds. Prerequisite for adding west regions.
+- **Add us-west-1 and us-west-2 spot regions** - BLOCKED on single-state refactor. After refactor, adding a region = adding one module block.
+- **Spot UX improvements** - Queue position should be #1 for each type (not cross-type FIFO). Status should show "queued (waiting for capacity)" not just "queued". Interactive picker should show spot GPU counts from east1 not prod.
 - **FQDN for devservers** - Set up proper domain names for development server access
 - **Automated SSH config per reservation** - ✅ DONE - Each reservation now gets `~/.devgpu/<reservation_id>-sshconfig` file, use with `ssh -F ~/.devgpu/<reservation_id>-sshconfig <pod_name>`
 - **Custom Docker image scaffold** - Create Dockerfile with pre-installed packages (Jupyter, etc.)
