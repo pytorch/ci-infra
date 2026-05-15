@@ -12,7 +12,10 @@ nodepool:
   topology_manager_policy: single-numa-node
   topology_manager_scope: pod
   capacity_type: reserved
+  # Two reserved p6-b200.48xlarge nodes (8 GPUs each = 16 GPUs total).
+  # arc-runners-b200/defs/*.yaml max_runners are sized assuming this count.
   capacity_reservation_ids:
-    - cr-0c366fb8339a10f69
+    - cr-02cf82c9a0f7fa8c0
+    - cr-06ec9d6c14b9d9981
   baremetal: true
   user_data_script: scripts/b200-node-setup.sh
