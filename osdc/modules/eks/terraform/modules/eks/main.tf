@@ -180,7 +180,7 @@ resource "aws_eks_addon" "vpc_cni" {
   # IPv6 mode: ENABLE_PREFIX_DELEGATION is mandatory (each node gets a /80
   # IPv6 prefix carved into pod IPs). WARM_PREFIX_TARGET=1 keeps a single
   # spare prefix warm per node — sufficient because each prefix yields
-  # 2^48 addresses. ENABLE_IPV6 must also be set on the aws-vpc-cni-init
+  # 2^48 addresses. ENABLE_IPv6 must also be set on the aws-vpc-cni-init
   # init container — per AWS docs the init container needs the same flag
   # to set kernel sysctls correctly for IPv6 pod networking.
   # ENABLE_V4_EGRESS enables pod IPv4 SNAT for outbound traffic to IPv4-only
