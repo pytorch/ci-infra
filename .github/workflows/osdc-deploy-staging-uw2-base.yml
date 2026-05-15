@@ -1,18 +1,17 @@
-name: "OSDC: Deploy arc-staging-uw2 base (one-off)"
+name: "OSDC: Deploy arc-staging-uw2 (one-off)"
 
-# One-off workflow to bootstrap state storage and deploy base infra
-# (VPC, EKS, Harbor S3, base k8s resources) for the arc-staging-uw2 cluster.
+# One-off workflow to bring up the arc-staging-uw2 cluster end-to-end.
 #
-# This is the CI equivalent of running locally:
+# CI equivalent of running locally:
 #   just bootstrap arc-staging-uw2
-#   just deploy-base arc-staging-uw2
+#   just deploy    arc-staging-uw2     # base + all modules
 #
-# Module deploy is intentionally NOT included — modules go in a follow-up
-# workflow once base is healthy and the GitHub App secret has been planted
-# into the arc-runners namespace (manual step).
+# Pre-requisite (manual, one-time): the pytorch-arc-staging GitHub App
+# Secret must already exist in the arc-runners namespace. arc-runners
+# helm install references it by name and will fail otherwise.
 #
-# Trigger manually from the Actions tab. Delete this file once the
-# feasibility test (see osdc/docs/prod-cluster-ha-us-west-1.md) is complete.
+# Delete this file once the feasibility test (see
+# osdc/docs/prod-cluster-ha-us-west-1.md) is complete.
 
 on:
   workflow_dispatch:
@@ -95,8 +94,13 @@ jobs:
         if: ${{ !inputs.skip_bootstrap }}
         run: just bootstrap arc-staging-uw2
 
-      - name: Deploy base infrastructure
-        run: just deploy-base arc-staging-uw2
+      # `just deploy` runs deploy-base (idempotent re-check) then every module
+       # in the cluster's `modules:` list. After base is already up, this is
+      # effectively the module-deploy phase. Requires the pytorch-arc-staging
+      # GitHub App Secret to exist in the arc-runners namespace before
+      # arc-runners installs — planted manually as a one-off prerequisite.
+      - name: Deploy cluster (base + modules)
+        run: just deploy arc-staging-uw2
         env:
           OSDC_CONFIRM: "yes"
 
