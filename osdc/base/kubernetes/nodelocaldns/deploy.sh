@@ -12,12 +12,13 @@ set -euo pipefail
 # kubelet only injects for Services existing at pod-create time).
 #
 # The __KUBE_DNS_CLUSTER_IP__ placeholder is sed-substituted with the
-# live kube-dns Service ClusterIP. This works for both IPv4 (e.g.
-# 10.100.0.10) and IPv6 (e.g. fd30:3087:b6c2::a) cluster service CIDRs
-# — the substitution is a plain string replace, and the Corefile uses
-# the value only in `bind` directives (which accept bare IPv6 addresses
-# without brackets) and the DaemonSet args use `-localip` (comma-
-# separated, also no brackets required).
+# live kube-dns Service ClusterIP. The script validates the resolved
+# kube-dns ClusterIP is IPv6 (OSDC clusters are IPv6-only). Fails fast
+# if IPv4 is detected — the Corefile binds the IPv6 ULA fd00::10 and
+# mixing address families would CrashLoopBackOff the DaemonSet pods.
+# The Corefile uses the value only in `bind` directives (which accept
+# bare IPv6 addresses without brackets) and the DaemonSet args use
+# `-localip` (comma-separated, also no brackets required).
 
 # shellcheck disable=SC2034  # CLUSTER is part of the deploy.sh interface
 CLUSTER="$1"

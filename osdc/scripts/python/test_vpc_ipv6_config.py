@@ -116,26 +116,26 @@ class TestVPCCNIAddonIPv6:
 
     def test_main_container_enables_ipv6(self, eks_main_tf):
         block = _extract_resource_block(eks_main_tf, "aws_eks_addon", "vpc_cni")
-        assert re.search(r'ENABLE_IPV6\s*=\s*"true"', block), 'aws_eks_addon.vpc_cni env must set ENABLE_IPV6 = "true"'
-        assert re.search(r'ENABLE_IPV4\s*=\s*"false"', block), (
-            'aws_eks_addon.vpc_cni env must set ENABLE_IPV4 = "false"'
+        assert re.search(r'ENABLE_IPv6\s*=\s*"true"', block), 'aws_eks_addon.vpc_cni env must set ENABLE_IPv6 = "true"'
+        assert re.search(r'ENABLE_IPv4\s*=\s*"false"', block), (
+            'aws_eks_addon.vpc_cni env must set ENABLE_IPv4 = "false"'
         )
 
     def test_init_container_enables_ipv6(self, eks_main_tf):
-        # Per AWS docs, ENABLE_IPV6 must be set on BOTH the main aws-node
+        # Per AWS docs, ENABLE_IPv6 must be set on BOTH the main aws-node
         # container and the aws-vpc-cni-init init container — the init
         # container sets kernel sysctls and needs the same flag. We look
-        # for an `init = { env = { ... ENABLE_IPV6 = "true" ... } }` shape.
+        # for an `init = { env = { ... ENABLE_IPv6 = "true" ... } }` shape.
         block = _extract_resource_block(eks_main_tf, "aws_eks_addon", "vpc_cni")
         init_match = re.search(r"init\s*=\s*\{(.*?)\}\s*\}", block, re.DOTALL)
         assert init_match, (
             "aws_eks_addon.vpc_cni configuration_values must define an "
-            'init = { env = { ENABLE_IPV6 = "true" } } block for the '
+            'init = { env = { ENABLE_IPv6 = "true" } } block for the '
             "aws-vpc-cni-init init container"
         )
         init_body = init_match.group(0)
-        assert re.search(r'ENABLE_IPV6\s*=\s*"true"', init_body), (
-            'aws_eks_addon.vpc_cni init.env must set ENABLE_IPV6 = "true"'
+        assert re.search(r'ENABLE_IPv6\s*=\s*"true"', init_body), (
+            'aws_eks_addon.vpc_cni init.env must set ENABLE_IPv6 = "true"'
         )
 
     def test_v4_egress_is_explicit_true(self, eks_main_tf):

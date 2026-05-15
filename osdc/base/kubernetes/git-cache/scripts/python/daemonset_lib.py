@@ -5,6 +5,7 @@ embedded in daemonset-configmap.yaml. The ConfigMap script is the runtime
 copy; this file exists solely to enable unit testing.
 """
 
+import hashlib
 import socket
 import threading
 import time
@@ -139,21 +140,22 @@ def _bracket_if_ipv6(addr: str) -> str:
 
 
 def _replica_hash(addr: str) -> float:
-    """Stable per-address hash for the selected_replica gauge.
+    """Compute a stable per-replica gauge value, IPv4 octet packed or sha256-derived for IPv6.
 
     For IPv4 the value matches the historical octet-packed integer so
     existing dashboards keep working. For IPv6 (or anything else with a
-    colon) we fall back to a stable Python hash of the address; the
-    absolute value is meaningless, only "did it change" matters for
-    operators reading the gauge.
+    colon) we derive a stable value from sha256 of the address. Python's
+    builtin hash() is PYTHONHASHSEED-randomized per process, so it would
+    cause the gauge to jump on every pod restart — sha256 is stable.
     """
-    if ":" not in addr and addr.count(".") == 3:
+    parts = addr.split(".")
+    if len(parts) == 4:
         try:
-            parts = addr.split(".")
-            return float(sum(int(p) * (256 ** (3 - i)) for i, p in enumerate(parts)))
-        except ValueError:
+            return float(int(parts[0]) * 256**3 + int(parts[1]) * 256**2 + int(parts[2]) * 256 + int(parts[3]))
+        except (ValueError, IndexError):
             pass
-    return float(abs(hash(addr)) % (2**31))
+    # IPv6 or unparseable — stable sha256-derived value
+    return float(int(hashlib.sha256(addr.encode()).hexdigest()[:8], 16))
 
 
 def wait_for_central(host: str, port: int, timeout: int = 600) -> float:

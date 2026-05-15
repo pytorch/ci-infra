@@ -52,7 +52,7 @@ TAG=$(find "$COMPACTOR_DIR/docker" "$COMPACTOR_DIR/scripts/python" \
   \( -name '*.py' -o -name 'Dockerfile' -o -name 'pyproject.toml' \) \
   ! -name 'test_*' -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)
 
-IMAGE="[::1]:30002/osdc/node-compactor"
+IMAGE="harbor:30002/osdc/node-compactor"
 
 # --- Connect to Harbor ---
 HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \

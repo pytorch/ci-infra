@@ -23,6 +23,26 @@ data:
     echo "Date: $(date)"
 
     # =========================================================================
+    # Write /etc/hosts entry: <NODE_IP> harbor
+    # =========================================================================
+    # Containerd hosts.toml mirror entries below address Harbor as
+    # `harbor:30002`. Resolution must be per-node because kube-proxy in
+    # IPv6-only mode opens NodePort listeners on `[::]:30002` but does NOT
+    # route traffic destined for `::1` to them. The node's own primary IP
+    # IS routable. NODE_IP is supplied via the Downward API
+    # (`status.hostIP`) on the init container.
+    HOSTS_MARKER="# managed-by: osdc-harbor-mirror"
+    if [ -n "${NODE_IP:-}" ]; then
+      # Idempotent rewrite: drop any prior managed entry, append fresh one.
+      sed -i "/${HOSTS_MARKER}/d" /etc/hosts
+      echo "${NODE_IP} harbor ${HOSTS_MARKER}" >>/etc/hosts
+      echo "Wrote /etc/hosts entry: ${NODE_IP} harbor"
+    else
+      echo "ERROR: NODE_IP env var not set; cannot configure /etc/hosts" >&2
+      exit 1
+    fi
+
+    # =========================================================================
     # Check if already configured
     # =========================================================================
     MARKER_FILE="/var/lib/registry-mirror-config/.configured"
@@ -69,7 +89,7 @@ data:
     cat > /etc/containerd/certs.d/docker.io/hosts.toml <<TOML
     server = "https://docker.io"
 
-    [host."http://[::1]:${HARBOR_PORT}/v2/dockerhub-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/dockerhub-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -83,7 +103,7 @@ data:
     cat > /etc/containerd/certs.d/ghcr.io/hosts.toml <<TOML
     server = "https://ghcr.io"
 
-    [host."http://[::1]:${HARBOR_PORT}/v2/ghcr-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/ghcr-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -97,7 +117,7 @@ data:
     cat > /etc/containerd/certs.d/public.ecr.aws/hosts.toml <<TOML
     server = "https://public.ecr.aws"
 
-    [host."http://[::1]:${HARBOR_PORT}/v2/ecr-public-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/ecr-public-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -111,7 +131,7 @@ data:
     cat > /etc/containerd/certs.d/nvcr.io/hosts.toml <<TOML
     server = "https://nvcr.io"
 
-    [host."http://[::1]:${HARBOR_PORT}/v2/nvcr-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/nvcr-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -125,7 +145,7 @@ data:
     cat > /etc/containerd/certs.d/registry.k8s.io/hosts.toml <<TOML
     server = "https://registry.k8s.io"
 
-    [host."http://[::1]:${HARBOR_PORT}/v2/k8s-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/k8s-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -139,7 +159,7 @@ data:
     cat > /etc/containerd/certs.d/quay.io/hosts.toml <<TOML
     server = "https://quay.io"
 
-    [host."http://[::1]:${HARBOR_PORT}/v2/quay-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/quay-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -153,7 +173,7 @@ data:
     # =========================================================================
     echo ""
     echo "=== Registry Mirror Configuration Complete ==="
-    echo "Harbor endpoint: http://[::1]:${HARBOR_PORT}"
+    echo "Harbor endpoint: http://harbor:${HARBOR_PORT}"
     echo "Configured mirrors for: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io"
     echo ""
     echo "Note: containerd 1.6+ dynamically watches certs.d/ - no restart needed"
@@ -211,6 +231,10 @@ spec:
           env:
             - name: HARBOR_PORT
               value: "30002"
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
 
           securityContext:
             privileged: true
@@ -223,6 +247,8 @@ spec:
               mountPath: /etc/containerd
             - name: var-lib-registry-mirror-config
               mountPath: /var/lib/registry-mirror-config
+            - name: etc-hosts
+              mountPath: /etc/hosts
 
       containers:
         - name: sleep
@@ -252,6 +278,11 @@ spec:
           hostPath:
             path: /var/lib/registry-mirror-config
             type: DirectoryOrCreate
+
+        - name: etc-hosts
+          hostPath:
+            path: /etc/hosts
+            type: File
 
 ---
 apiVersion: v1

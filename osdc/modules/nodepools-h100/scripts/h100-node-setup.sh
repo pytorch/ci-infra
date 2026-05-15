@@ -2,6 +2,33 @@
 set -euo pipefail
 
 # ---- Registry mirror configuration (Harbor pull-through cache) ----
+# Resolve this node's primary IPv6 address from IMDS, then write a
+# `<NODE_IPV6> harbor` entry to /etc/hosts so containerd can address
+# Harbor as `harbor:30002`. Kube-proxy in IPv6-only mode opens NodePort
+# listeners on `[::]:30002` but does NOT route traffic destined for `::1`
+# to them. The node's primary IPv6 IS routable.
+echo "Post-bootstrap: Resolving node IPv6 from IMDS..."
+NODE_IPV6=""
+IMDS_BASE="http://169.254.169.254"
+IMDS_TOKEN_TTL_SECONDS=21600
+TOKEN=$(curl -fsS --connect-timeout 2 --max-time 5 -X PUT \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: ${IMDS_TOKEN_TTL_SECONDS}" \
+  "${IMDS_BASE}/latest/api/token" || true)
+if [[ -n "$TOKEN" ]]; then
+  NODE_IPV6=$(curl -fsS --connect-timeout 2 --max-time 5 \
+    -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+    "${IMDS_BASE}/latest/meta-data/ipv6" || true)
+fi
+
+HOSTS_MARKER="# managed-by: osdc-harbor-mirror"
+if [[ -n "$NODE_IPV6" ]]; then
+  sed -i "/${HOSTS_MARKER}/d" /etc/hosts
+  echo "${NODE_IPV6} harbor ${HOSTS_MARKER}" >>/etc/hosts
+  echo "Wrote /etc/hosts entry: ${NODE_IPV6} harbor"
+else
+  echo "WARNING: Could not resolve node IPv6 from IMDS; /etc/hosts not updated" >&2
+fi
+
 echo "Post-bootstrap: Configuring registry mirrors..."
 HARBOR_PORT=30002
 
@@ -21,7 +48,7 @@ for registry_project in \
   cat >"/etc/containerd/certs.d/$registry/hosts.toml" <<MIRRORS
 server = "$upstream"
 
-[host."http://[::1]:$HARBOR_PORT/v2/$project"]
+[host."http://harbor:$HARBOR_PORT/v2/$project"]
   capabilities = ["pull", "resolve"]
   skip_verify = true
   override_path = true

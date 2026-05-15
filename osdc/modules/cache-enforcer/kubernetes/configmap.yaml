@@ -1,7 +1,7 @@
 # Cache Enforcer — iptables configuration script.
 # Blocks direct outbound access to external package and container image
 # registries, forcing runner processes to use internal caches:
-#   - Harbor pull-through cache ([::1]:30002) for container images
+#   - Harbor pull-through cache (harbor:30002) for container images
 #   - pypi-cache DaemonSet (localhost:8080) for Python packages
 #
 # Mechanism: xt_string matches domain names in TLS ClientHello SNI fields
@@ -38,7 +38,7 @@ data:
     echo ""
 
     # =========================================================================
-    # Blocked domains — container registries (forced through Harbor [::1]:30002)
+    # Blocked domains — container registries (forced through Harbor harbor:30002)
     # =========================================================================
     REGISTRY_DOMAINS="
     docker.io
@@ -128,7 +128,7 @@ data:
     # Summary
     # =========================================================================
     echo "=== Cache Enforcer Complete ==="
-    echo "Blocked registries (use Harbor at [::1]:30002):"
+    echo "Blocked registries (use Harbor at harbor:30002):"
     for domain in $REGISTRY_DOMAINS; do
       [ -z "$domain" ] && continue
       echo "  - $domain"

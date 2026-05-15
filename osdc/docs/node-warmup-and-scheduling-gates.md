@@ -127,7 +127,7 @@ Exposes `nvidia.com/gpu` resources to the Kubernetes scheduler. Without this Dae
 
 **File**: `base/kubernetes/registry-mirror-config.yaml`
 
-Configures containerd's `certs.d/` on every node to route image pulls through Harbor's proxy cache at `localhost:30002`. Covers six registries: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io. Uses a marker file for idempotency. If Harbor is unavailable, containerd falls through to upstream registries automatically.
+Configures containerd's `certs.d/` on every node to route image pulls through Harbor's proxy cache at `harbor:30002`. Covers six registries: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io. Uses a marker file for idempotency. If Harbor is unavailable, containerd falls through to upstream registries automatically.
 
 Runs on ALL nodes (no nodeSelector, tolerates everything).
 

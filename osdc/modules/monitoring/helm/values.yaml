@@ -89,10 +89,13 @@ prometheus-node-exporter:
     monitor:
       interval: 60s
       metricRelabelings:
-        # Keep memory metrics only — drop everything else (including per-core CPU)
+        # Keep memory + conntrack metrics; drop everything else (including per-core CPU).
+        # Conntrack metrics power network-pressure-alerts (NodeConntrackHigh{Warn,Critical}) —
+        # critical under IPv6-only EKS where pod-IPv4-internet egress goes through VPC CNI's
+        # SNAT path, which is conntrack-heavy.
         - action: keep
           sourceLabels: [__name__]
-          regex: "node_memory_MemAvailable_bytes|node_memory_MemTotal_bytes"
+          regex: "node_memory_MemAvailable_bytes|node_memory_MemTotal_bytes|node_nf_conntrack_entries|node_nf_conntrack_entries_limit"
 
 # --- kube-state-metrics ---
 kube-state-metrics:

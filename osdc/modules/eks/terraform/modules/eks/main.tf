@@ -189,17 +189,18 @@ resource "aws_eks_addon" "vpc_cni" {
   # silently disable egress. NOTE: AWS NetworkPolicies do NOT apply to the
   # IPv4-egress secondary interface — this is a known AWS limitation. See
   # https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html
+  # Note: ENABLE_IPv6 / ENABLE_IPv4 use lowercase 'v' to match upstream VPC CNI source code (envEnableIPv6 = "ENABLE_IPv6"). Do not normalize to all-caps.
   configuration_values = jsonencode({
     env = {
-      ENABLE_IPV6              = "true"
-      ENABLE_IPV4              = "false"
+      ENABLE_IPv6              = "true"
+      ENABLE_IPv4              = "false"
       ENABLE_V4_EGRESS         = "true"
       ENABLE_PREFIX_DELEGATION = "true"
       WARM_PREFIX_TARGET       = "1"
     }
     init = {
       env = {
-        ENABLE_IPV6 = "true"
+        ENABLE_IPv6 = "true"
       }
     }
   })
@@ -412,6 +413,7 @@ resource "aws_eks_node_group" "base" {
     aws_iam_role_policy_attachment.cni_policy,
     aws_iam_role_policy_attachment.ecr_policy,
     aws_iam_role_policy_attachment.ssm_policy,
+    aws_iam_role_policy.node_cni_ipv6,
   ]
 }
 

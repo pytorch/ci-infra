@@ -387,8 +387,6 @@ class TestReplicaHash:
         assert _replica_hash("fd00::5") == _replica_hash("fd00::5")
 
     def test_ipv6_distinct_addresses_distinct_hashes(self):
-        # Not strictly guaranteed by hash() but extremely likely; if this
-        # ever flakes we can switch to a deterministic hash.
         assert _replica_hash("fd00::5") != _replica_hash("fd00::6")
 
     def test_unparseable_ipv4_falls_back_to_hash(self):
@@ -397,6 +395,40 @@ class TestReplicaHash:
         value = _replica_hash("a.b.c.d")
         assert isinstance(value, float)
         assert value >= 0
+
+    def test_ipv6_stable_across_processes(self):
+        """sha256-derived hash must produce the same value in a fresh
+        Python process. Python's builtin hash() is PYTHONHASHSEED-randomized
+        per process — using it would cause the gauge to jump on every pod
+        restart."""
+        import subprocess
+        import sys
+
+        addr = "fd00::abcd:1234"
+        in_process = _replica_hash(addr)
+
+        script = (
+            "import sys; sys.path.insert(0, "
+            f"{str(Path(__file__).resolve().parent)!r}); "
+            "from daemonset_lib import _replica_hash; "
+            f"print(_replica_hash({addr!r}))"
+        )
+        # Run the subprocess with a fresh PYTHONHASHSEED to prove that
+        # the result is hash-seed-independent (sha256, not Python hash()).
+        env_overrides = {"PYTHONHASHSEED": "random"}
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**__import__("os").environ, **env_overrides},
+        )
+        out_of_process = float(result.stdout.strip())
+        assert in_process == out_of_process, (
+            f"_replica_hash({addr!r}) differs across processes: "
+            f"in-process={in_process}, subprocess={out_of_process}. "
+            "This means the hash is not stable — Prometheus gauge will jump on pod restart."
+        )
 
 
 # ============================================================================

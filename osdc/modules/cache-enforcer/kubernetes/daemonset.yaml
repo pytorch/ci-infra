@@ -1,7 +1,7 @@
 # Cache Enforcer DaemonSet
 # Installs iptables rules on runner nodes to block direct outbound access to
 # external container registries and PyPI, forcing traffic through internal
-# caches (Harbor at [::1]:30002, pypi-cache at localhost:8080).
+# caches (Harbor at harbor:30002, pypi-cache at localhost:8080).
 #
 # Runs only on runner nodes (workload-type: github-runner). The existing
 # git-cache-not-ready startup taint ensures iptables rules are in place

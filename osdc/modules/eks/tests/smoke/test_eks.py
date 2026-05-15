@@ -174,7 +174,7 @@ class TestEKSIPv6Config:
         )
 
     def test_aws_node_init_container_has_enable_ipv6(self):
-        # Per AWS docs, ENABLE_IPV6 must be set on BOTH the main aws-node
+        # Per AWS docs, ENABLE_IPv6 must be set on BOTH the main aws-node
         # container and the aws-vpc-cni-init init container — the init
         # container sets kernel sysctls and needs the same flag. This test
         # reads the live aws-node DaemonSet pod spec (vs the addon
@@ -188,8 +188,8 @@ class TestEKSIPv6Config:
             f"aws-node DaemonSet is missing the aws-vpc-cni-init init container. Init containers found: {init_names}"
         )
         env_pairs = {e.get("name"): e.get("value") for e in cni_init.get("env", [])}
-        assert env_pairs.get("ENABLE_IPV6") == "true", (
-            f"aws-vpc-cni-init init container env ENABLE_IPV6={env_pairs.get('ENABLE_IPV6')!r}, expected 'true'. "
+        assert env_pairs.get("ENABLE_IPv6") == "true", (
+            f"aws-vpc-cni-init init container env ENABLE_IPv6={env_pairs.get('ENABLE_IPv6')!r}, expected 'true'. "
             f"Full env: {env_pairs}"
         )
 

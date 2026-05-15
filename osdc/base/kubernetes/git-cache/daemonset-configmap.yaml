@@ -23,6 +23,7 @@ data:
     and replaced with a symlink.
     """
 
+    import hashlib
     import json
     import logging
     import os
@@ -254,22 +255,23 @@ data:
 
 
     def _replica_hash(addr: str) -> float:
-        """Stable per-address hash for the selected_replica gauge.
+        """Compute a stable per-replica gauge value, IPv4 octet packed or sha256-derived for IPv6.
 
         For IPv4 the value matches the historical octet-packed integer so
         existing dashboards keep working. For IPv6 (or anything else with
-        a colon) we fall back to a stable Python hash of the address; the
-        absolute value is meaningless, only "did it change" matters for
-        operators reading the gauge.
+        a colon) we derive a stable value from sha256 of the address.
+        Python's builtin hash() is PYTHONHASHSEED-randomized per process,
+        so it would cause the gauge to jump on every pod restart — sha256
+        is stable.
         """
-        if ":" not in addr and addr.count(".") == 3:
+        parts = addr.split(".")
+        if len(parts) == 4:
             try:
-                parts = addr.split(".")
-                return float(sum(int(p) * (256 ** (3 - i)) for i, p in enumerate(parts)))
-            except ValueError:
+                return float(int(parts[0]) * 256**3 + int(parts[1]) * 256**2 + int(parts[2]) * 256 + int(parts[3]))
+            except (ValueError, IndexError):
                 pass
-        # IPv6 or unparseable: use a stable non-negative hash.
-        return float(abs(hash(addr)) % (2 ** 31))
+        # IPv6 or unparseable — stable sha256-derived value
+        return float(int(hashlib.sha256(addr.encode()).hexdigest()[:8], 16))
 
 
     def get_least_loaded_replica(replicas: list[str]) -> str | None:
@@ -329,7 +331,7 @@ data:
                     time.monotonic() - t0,
                 )
                 return
-            except (socket.timeout, ConnectionRefusedError, OSError):
+            except (TimeoutError, ConnectionRefusedError, OSError):
                 time.sleep(5)
         metrics.set("git_cache_node_central_wait_seconds", time.monotonic() - t0)
         log.error("Central pod not ready after %ds, proceeding anyway", timeout)

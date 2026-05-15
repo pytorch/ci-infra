@@ -31,7 +31,7 @@ trap cleanup EXIT
 # v2: multi-arch (amd64 + arm64). Bump version to invalidate old single-arch images.
 TAG=$(printf 'v2\n' | cat - "$JANITOR_DIR/docker/Dockerfile" | sha256sum | cut -c1-12)
 
-IMAGE="[::1]:30002/osdc/image-cache-janitor"
+IMAGE="harbor:30002/osdc/image-cache-janitor"
 
 # --- Connect to Harbor ---
 HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \
