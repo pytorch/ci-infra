@@ -27,9 +27,18 @@ on:
         required: false
         type: boolean
         default: false
+  # Auto-run on PRs that touch this workflow, clusters.yaml, or the plan doc.
+  # bootstrap + deploy-base are idempotent (tofu detects no-op once base is up),
+  # so the first push provisions the cluster (~25min) and subsequent pushes
+  # are quick re-applies. Remove this trigger once Phase 0 is signed off.
+  pull_request:
+    paths:
+      - ".github/workflows/osdc-deploy-staging-uw2-base.yml"
+      - "osdc/clusters.yaml"
+      - "osdc/docs/prod-cluster-ha-us-west-1.md"
 
 concurrency:
-  group: osdc-deploy-arc-staging-uw2-base
+  group: osdc-deploy-arc-staging-uw2-base-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
