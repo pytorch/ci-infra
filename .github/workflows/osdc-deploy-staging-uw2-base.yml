@@ -84,6 +84,13 @@ jobs:
           aws-region: us-west-2
           role-duration-seconds: 7200
 
+      # Register QEMU binfmt handlers so `docker build --platform linux/arm64`
+      # works on an amd64 runner. Required for the first deploy of a brand-new
+      # cluster, when Harbor has no cached images and deploy-base has to build
+      # arm64 variants (image-cache-janitor, node-compactor) from scratch.
+      - name: Set up QEMU for cross-arch builds
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
       - name: Bootstrap state storage
         if: ${{ !inputs.skip_bootstrap }}
         run: just bootstrap arc-staging-uw2
