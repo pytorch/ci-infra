@@ -31,26 +31,33 @@ kubeEtcd:
   enabled: false
 
 # --- kubelet + cadvisor ServiceMonitor ---
+# DISABLED on IPv6-only EKS. Prometheus Operator's kubelet endpoint
+# controller picks node.status.addresses[0], which on dual-stack nodes
+# is the IPv4 InternalIP — Alloy (IPv6-only pod) cannot reach it.
+# See docs/observability.md ("Disabled scrapers (IPv6 migration)").
+# TODO(ipv6): re-enable after shipping a custom IPv6-aware kubelet
+# ServiceMonitor under kubernetes/monitors/servicemonitors/, then
+# uncomment the serviceMonitor filter block below.
 kubelet:
-  enabled: true
-  serviceMonitor:
-    interval: 60s
-    # Disable /metrics/probes scraping — generates ~1440 high-cardinality
-    # prober_probe_duration_seconds_bucket series with no alerting value
-    probes: false
-    # cadvisor: keep only pod-level memory metrics (per pod/container series)
-    # - container_memory_working_set_bytes: active memory used by pod; K8s uses this for OOM kill decisions
-    # - container_memory_rss: physical memory (no cache); useful for spotting memory leaks
-    # NOTE: these generate one series per container, so high pod churn (e.g. runners) increases cardinality
-    cAdvisorMetricRelabelings:
-      - action: keep
-        sourceLabels: [__name__]
-        regex: "container_memory_working_set_bytes|container_memory_rss"
-    # kubelet: keep only running pod/container counts
-    metricRelabelings:
-      - action: keep
-        sourceLabels: [__name__]
-        regex: "kubelet_running_(pods|containers)|kubelet_node_name"
+  enabled: false
+  # serviceMonitor:
+  #   interval: 60s
+  #   # Disable /metrics/probes scraping — generates ~1440 high-cardinality
+  #   # prober_probe_duration_seconds_bucket series with no alerting value
+  #   probes: false
+  #   # cadvisor: keep only pod-level memory metrics (per pod/container series)
+  #   # - container_memory_working_set_bytes: active memory used by pod; K8s uses this for OOM kill decisions
+  #   # - container_memory_rss: physical memory (no cache); useful for spotting memory leaks
+  #   # NOTE: these generate one series per container, so high pod churn (e.g. runners) increases cardinality
+  #   cAdvisorMetricRelabelings:
+  #     - action: keep
+  #       sourceLabels: [__name__]
+  #       regex: "container_memory_working_set_bytes|container_memory_rss"
+  #   # kubelet: keep only running pod/container counts
+  #   metricRelabelings:
+  #     - action: keep
+  #       sourceLabels: [__name__]
+  #       regex: "kubelet_running_(pods|containers)|kubelet_node_name"
 
 # --- Grafana (DISABLED — use Grafana Cloud) ---
 grafana:
