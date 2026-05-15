@@ -157,7 +157,7 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_ENABLED` | `false` | `true` | Enable the capacity monitor goroutine |
 | `CAPACITY_AWARE_PROACTIVE_CAPACITY` | `0` | `{{PROACTIVE_CAPACITY}}` (from runner def, forced to `0` for staging clusters) | Number of placeholder pairs to maintain ahead of demand. Hard cap of `1000` (clamped); warning logged above `100`. |
 | `CAPACITY_AWARE_MAX_BURST_CAPACITY` | `0` | `{{MAX_BURST_CAPACITY}}` (from runner def) | Caps the maximum total placeholder pairs (running + pending) the provisioner will create per cycle. `0` means unlimited. Used to prevent burst node provisioning from overloading downstream services (git-cache, Harbor, pypi-cache) |
-| `CAPACITY_AWARE_RECALCULATE_INTERVAL` | `30s` | `30s` | Fallback reconciliation interval (event-driven is primary) |
+| `CAPACITY_AWARE_RECALCULATE_INTERVAL` | `60s` (jeanschmidt.10+), `30s` (earlier charts) | _(unset — uses code default)_ | Provisioner reconciliation interval. From jeanschmidt.10 the listener also adds startup jitter in `[0, interval)` so 50 listeners desync after a rollout. |
 | `CAPACITY_AWARE_REPORT_INTERVAL` | `5s` | _(unset — uses code default)_ | How often the monitor reports state via `X-ScaleSetMaxCapacity` |
 | `CAPACITY_AWARE_PLACEHOLDER_TIMEOUT` | `5m` | `20m` | How long a placeholder can stay Pending before being deleted |
 | `CAPACITY_AWARE_WORKFLOW_CPU` | _(empty)_ | `{{VCPU}}` (from runner def) | Workflow placeholder CPU request |
@@ -231,7 +231,7 @@ just load-test arc-staging --label l-x86iamx-8-16:400 --label l-x86iavx512-29-11
 # Check listener startup logs for "Capacity monitor enabled" and "Starting capacity monitor"
 kubectl logs -n arc-systems <listener-pod> | head -20
 
-# Check reconciliation logs (every 30s)
+# Check reconciliation logs (every RECALCULATE_INTERVAL — 30s on jeanschmidt.9, 60s on jeanschmidt.10+)
 kubectl logs -n arc-systems <listener-pod> | grep "capacity reconciled"
 
 # Test HUD API directly

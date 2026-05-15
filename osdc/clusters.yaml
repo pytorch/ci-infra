@@ -151,6 +151,15 @@ clusters:
       controller_cpu_limit: "1"
       controller_memory_request: "1Gi"
       controller_memory_limit: "1Gi"
+      # TEST OVERRIDE: staging-only pin to the PR build that adds runnerLabels
+      # + provisioner jitter (jeanschmidt/actions-runner-controller#5). Bump
+      # `image_tag` when you push a new build to Harbor; chart_version stays
+      # on jeanschmidt.9 because the chart contents are unchanged — only the
+      # controller/listener image differs. Revert this block (and the same
+      # cluster-id selection in osdc/docs/arc-fork-build-deploy.md if you
+      # updated it) once the upstream chart bumps to jeanschmidt.10+.
+      image_repository: "harbor.harbor-system.svc.cluster.local/osdc/gha-runner-scale-set-controller"
+      image_tag: "0.14.1-capacity.runnerLabels.1"
     node_compactor:
       dry_run: true
     nodepools:
