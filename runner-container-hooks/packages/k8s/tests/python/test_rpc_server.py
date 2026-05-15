@@ -351,6 +351,99 @@ class TestExecEndpoint:
         assert rpc_mod._job_status == "idle"
 
 
+class TestKillEndpoint:
+    def test_missing_token(self, server):
+        # Inline auth check happens BEFORE the body is read, so we don't need
+        # to send anything beyond the POST.
+        status, _, _ = _req(server, "/kill", "POST")
+        assert status == 403
+
+    def test_wrong_token(self, rpc_mod, server):
+        rpc_mod._auth_token = "correct"
+        status, _, _ = _req(
+            server, "/kill", "POST",
+            headers={"X-Auth-Token": "wrong"},
+        )
+        assert status == 403
+
+    def test_idle_returns_status_snapshot(self, rpc_mod, server):
+        # No job has ever run on this fixture's server — /kill must be a
+        # safe no-op that returns the current (idle) state, not error.
+        rpc_mod._auth_token = "tok"
+        status, data = _json(server, "/kill", method="POST",
+                             headers={"X-Auth-Token": "tok"})
+        assert status == 200
+        assert data == {"id": None, "status": "idle", "exit_code": None}
+
+    def test_completed_returns_completed_snapshot(self, rpc_mod, server):
+        # A previously-completed job: /kill is idempotent — no process to
+        # kill, status snapshot returned unchanged.
+        rpc_mod._auth_token = "tok"
+        rpc_mod._job_id = "j1"
+        rpc_mod._job_status = "completed"
+        rpc_mod._exit_code = 0
+        status, data = _json(server, "/kill", method="POST",
+                             headers={"X-Auth-Token": "tok"})
+        assert status == 200
+        assert data == {"id": "j1", "status": "completed", "exit_code": 0}
+
+    def test_running_invokes_kill_process(self, rpc_mod, server):
+        # A live job — /kill must call _kill_process(), and the returned
+        # snapshot reflects the post-kill state (status='failed' after
+        # _kill_process resets it).
+        rpc_mod._auth_token = "tok"
+        rpc_mod._job_id = "j-live"
+        rpc_mod._job_status = "running"
+        rpc_mod._exit_code = None
+        proc = MagicMock(pid=42)
+        proc.poll.return_value = None
+        rpc_mod._process = proc
+        with (
+            patch.object(rpc_mod.os, "killpg"),
+            patch.object(rpc_mod.os, "getpgid", return_value=42),
+        ):
+            status, data = _json(server, "/kill", method="POST",
+                                 headers={"X-Auth-Token": "tok"})
+        assert status == 200
+        # _kill_process sets exit_code=-1 / status='failed' when nothing
+        # else has reported the exit yet.
+        assert data == {"id": "j-live", "status": "failed", "exit_code": -1}
+
+    def test_running_is_resilient_to_kill_failures(self, rpc_mod, server):
+        # If killpg raises (e.g. the process group is already gone),
+        # _kill_process swallows it and the endpoint still returns 200.
+        rpc_mod._auth_token = "tok"
+        rpc_mod._job_id = "j-stuck"
+        rpc_mod._job_status = "running"
+        proc = MagicMock(pid=99)
+        proc.poll.return_value = None
+        rpc_mod._process = proc
+        with (
+            patch.object(rpc_mod.os, "killpg", side_effect=OSError),
+            patch.object(rpc_mod.os, "getpgid", return_value=99),
+        ):
+            status, data = _json(server, "/kill", method="POST",
+                                 headers={"X-Auth-Token": "tok"})
+        assert status == 200
+        # killpg failed before reaching the state-mutation block, so the
+        # snapshot still reflects the pre-kill state.
+        assert data["status"] == "running"
+
+    def test_callable_twice_in_a_row(self, rpc_mod, server):
+        # Two /kill calls in succession: second is a no-op because there's
+        # no live process anymore.
+        rpc_mod._auth_token = "tok"
+        rpc_mod._job_id = "j-once"
+        rpc_mod._job_status = "completed"
+        rpc_mod._exit_code = 0
+        status1, _ = _json(server, "/kill", method="POST",
+                           headers={"X-Auth-Token": "tok"})
+        status2, _ = _json(server, "/kill", method="POST",
+                           headers={"X-Auth-Token": "tok"})
+        assert status1 == 200
+        assert status2 == 200
+
+
 class TestStatusEndpoint:
     def test_requires_auth(self, server):
         status, _, _ = _req(server, "/status")

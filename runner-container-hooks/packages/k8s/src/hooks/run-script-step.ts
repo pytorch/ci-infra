@@ -3,7 +3,8 @@ import * as fs from 'fs'
 import * as core from '@actions/core'
 import { RunScriptStepArgs } from 'hooklib'
 import { execCpFromPod, execCpToPod, execPodStepWithRetry } from '../k8s'
-import { rpcPodStep } from '../k8s/rpc'
+import { killRpcJob, rpcPodStep } from '../k8s/rpc'
+import { registerCleanup, unregisterCleanup } from '../safety/process-handlers'
 import { writeRunScript } from '../k8s/utils'
 import { JOB_CONTAINER_NAME } from './constants'
 import { dirname } from 'path'
@@ -92,6 +93,15 @@ export async function runScriptStep(
 
   // Execute the entrypoint script — propagate exit code to the caller
   // so the runner can mark the step as failed when the user's script fails.
+  //
+  // On cancellation (SIGTERM/SIGINT to the hook), forward /kill into the
+  // pod so the in-pod subprocess exits with us. Without this, the subprocess
+  // outlives the cancelled hook and the next post-cleanup step's /exec gets
+  // 409 "A job is already running", spamming the log with misleading errors.
+  const killOnCancel = async (): Promise<void> => {
+    await killRpcJob(state.rpcPodIp, state.rpcPort, state.rpcToken)
+  }
+  registerCleanup(killOnCancel)
   let exitCode: number
   try {
     exitCode = await rpcPodStep(
@@ -107,6 +117,7 @@ export async function runScriptStep(
     const message = (err as any)?.response?.body?.message || err
     throw new Error(`failed to run script step: ${message}`)
   } finally {
+    unregisterCleanup(killOnCancel)
     try {
       fs.rmSync(runnerPath, { force: true })
     } catch (removeErr) {

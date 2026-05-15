@@ -30,6 +30,20 @@ jobs:
           npm run lint
           git diff --exit-code -- . ':!packages/k8s/tests/test-kind.yaml'
 
+  python-tests:
+    name: Python RPC Server Tests
+    runs-on: ubuntu-latest
+    needs: format-and-lint
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pytest
+        run: python -m pip install --upgrade pip && pip install pytest
+      - name: Run Python tests
+        run: python -m pytest -v packages/k8s/tests/python
+
   docker-tests:
     name: Docker Hook Tests
     runs-on: ubuntu-latest

@@ -73,6 +73,20 @@ function getInstall(): () => void {
   return require('../../src/safety/process-handlers').installProcessHandlers
 }
 
+/**
+ * Re-acquire the full process-handlers module, including registerCleanup /
+ * unregisterCleanup. Used by tests that need to manipulate the cleanup
+ * registry after install.
+ */
+function getMod(): {
+  installProcessHandlers: () => void
+  registerCleanup: (fn: () => Promise<void> | void) => void
+  unregisterCleanup: (fn: () => Promise<void> | void) => void
+} {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('../../src/safety/process-handlers')
+}
+
 // --------------------------------------------------------------------------
 // Tests
 // --------------------------------------------------------------------------
@@ -146,13 +160,111 @@ describe('installProcessHandlers', () => {
     }
   })
 
-  it('SIGTERM handler exits with code 143', () => {
+  it('SIGTERM handler exits with code 143', async () => {
     const { captured, restore } = captureProcessOn()
     try {
       getInstall()()
       const sigterm = captured.find(h => h.event === 'SIGTERM')
       expect(sigterm).toBeDefined()
       sigterm!.cb()
+      // handler is async (awaits cleanup callbacks); let microtasks settle.
+      await new Promise(resolve => setImmediate(resolve))
+      expect(exitSpy).toHaveBeenCalledWith(143)
+    } finally {
+      restore()
+    }
+  })
+
+  it('SIGINT handler exits with code 130', async () => {
+    const { captured, restore } = captureProcessOn()
+    try {
+      getInstall()()
+      const sigint = captured.find(h => h.event === 'SIGINT')
+      expect(sigint).toBeDefined()
+      sigint!.cb()
+      await new Promise(resolve => setImmediate(resolve))
+      expect(exitSpy).toHaveBeenCalledWith(130)
+    } finally {
+      restore()
+    }
+  })
+
+  it('SIGTERM handler runs registered cleanup callbacks before exit', async () => {
+    const { captured, restore } = captureProcessOn()
+    try {
+      const mod = getMod()
+      mod.installProcessHandlers()
+      const sigterm = captured.find(h => h.event === 'SIGTERM')
+      expect(sigterm).toBeDefined()
+
+      const cleanup = jest.fn().mockResolvedValue(undefined)
+      mod.registerCleanup(cleanup)
+
+      sigterm!.cb()
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(cleanup).toHaveBeenCalledTimes(1)
+      expect(exitSpy).toHaveBeenCalledWith(143)
+    } finally {
+      restore()
+    }
+  })
+
+  it('SIGTERM handler does not re-run cleanup callbacks on re-signal', async () => {
+    const { captured, restore } = captureProcessOn()
+    try {
+      const mod = getMod()
+      mod.installProcessHandlers()
+      const sigterm = captured.find(h => h.event === 'SIGTERM')
+
+      const cleanup = jest.fn().mockResolvedValue(undefined)
+      mod.registerCleanup(cleanup)
+
+      sigterm!.cb()
+      sigterm!.cb()
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(cleanup).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+    }
+  })
+
+  it('SIGTERM handler tolerates cleanup callback errors and still exits', async () => {
+    const { captured, restore } = captureProcessOn()
+    try {
+      const mod = getMod()
+      mod.installProcessHandlers()
+      const sigterm = captured.find(h => h.event === 'SIGTERM')
+
+      const cleanup = jest.fn().mockRejectedValue(new Error('cleanup-bad'))
+      mod.registerCleanup(cleanup)
+
+      sigterm!.cb()
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(cleanup).toHaveBeenCalledTimes(1)
+      expect(exitSpy).toHaveBeenCalledWith(143)
+    } finally {
+      restore()
+    }
+  })
+
+  it('unregisterCleanup removes the callback', async () => {
+    const { captured, restore } = captureProcessOn()
+    try {
+      const mod = getMod()
+      mod.installProcessHandlers()
+      const sigterm = captured.find(h => h.event === 'SIGTERM')
+
+      const cleanup = jest.fn().mockResolvedValue(undefined)
+      mod.registerCleanup(cleanup)
+      mod.unregisterCleanup(cleanup)
+
+      sigterm!.cb()
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(cleanup).not.toHaveBeenCalled()
       expect(exitSpy).toHaveBeenCalledWith(143)
     } finally {
       restore()

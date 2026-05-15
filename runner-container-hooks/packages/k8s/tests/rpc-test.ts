@@ -43,7 +43,7 @@ jest.mock('crypto', () => {
   }
 })
 
-import { deployRpcServer, rpcPodStep } from '../src/k8s/rpc'
+import { deployRpcServer, killRpcJob, rpcPodStep } from '../src/k8s/rpc'
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -918,10 +918,30 @@ describe('rpcPodStep', () => {
     ).rejects.toThrow('RPC /exec failed (403)')
   })
 
-  it('should throw immediately on /exec 409', async () => {
-    fetchMock.mockResolvedValueOnce(
-      fakeResponse(409, 'A job is already running')
+  it('should surface cancellation-state context on /exec 409 "A job is already running"', async () => {
+    // 409 with the canonical body → hook fetches /status for diagnostic
+    // context, then throws a cancellation-aware error.
+    fetchMock
+      .mockResolvedValueOnce(
+        fakeResponse(409, { error: 'A job is already running' })
+      )
+      .mockResolvedValueOnce(
+        fakeResponse(200, {
+          id: 'prior-uuid',
+          status: 'running',
+          exit_code: null
+        })
+      )
+
+    await expect(
+      rpcPodStep(POD_IP, PORT, SCRIPT_PATH, TOKEN, POD_NAME, CONTAINER_NAME)
+    ).rejects.toThrow(
+      /Step cannot start: workflow pod still has a prior step in flight[\s\S]*id=prior-uuid[\s\S]*status=running[\s\S]*cancels a step/
     )
+  })
+
+  it('should fall through to generic 409 message when body does not match', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse(409, 'some other 409 reason'))
 
     await expect(
       rpcPodStep(POD_IP, PORT, SCRIPT_PATH, TOKEN, POD_NAME, CONTAINER_NAME)
@@ -1832,5 +1852,50 @@ describe('rpcPodStep', () => {
     await expect(
       rpcPodStep(POD_IP, PORT, SCRIPT_PATH, TOKEN, POD_NAME, CONTAINER_NAME)
     ).rejects.toThrow('container exited unexpectedly')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// killRpcJob
+// ---------------------------------------------------------------------------
+
+describe('killRpcJob', () => {
+  const POD_IP = '10.0.0.1'
+  const PORT = 8080
+  const TOKEN = 'test-token-abc'
+
+  let fetchMock: jest.Mock
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    fetchMock = jest.fn()
+    global.fetch = fetchMock as any
+  })
+
+  it('POSTs /kill with the auth token', async () => {
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse(200, { id: 'x', status: 'failed', exit_code: -1 })
+    )
+
+    await killRpcJob(POD_IP, PORT, TOKEN)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, opts] = fetchMock.mock.calls[0]
+    expect(url).toContain('/kill')
+    expect(opts.method).toBe('POST')
+    expect(opts.headers['X-Auth-Token']).toBe(TOKEN)
+  })
+
+  it('swallows network errors (best-effort)', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('connection refused'))
+
+    // Must not throw — caller is about to exit and can't handle errors.
+    await expect(killRpcJob(POD_IP, PORT, TOKEN)).resolves.toBeUndefined()
+  })
+
+  it('swallows non-2xx responses (best-effort)', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse(500, 'oops'))
+
+    await expect(killRpcJob(POD_IP, PORT, TOKEN)).resolves.toBeUndefined()
   })
 })

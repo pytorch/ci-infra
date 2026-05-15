@@ -10,7 +10,10 @@ import {
 import { RPC_SERVER_SCRIPT } from './rpc-server-script'
 
 interface RpcStatusResponse {
-  id: string
+  // null when no job has run yet (server is in initial 'idle' state). The
+  // Python server sets _job_id = None at startup and only assigns a value
+  // when /exec accepts a job.
+  id: string | null
   status: 'idle' | 'running' | 'completed' | 'failed'
   exit_code: number | null
 }
@@ -22,6 +25,7 @@ const MAX_DEPLOY_ATTEMPTS = 3
 const HEARTBEAT_GRACE_MS = 60000
 const LOG_POLL_INTERVAL_MS = 200
 const FETCH_TIMEOUT_MS = 10000
+const KILL_TIMEOUT_MS = 5000
 const PORT_FILE = '/tmp/rpc-server.port'
 const PORT_DISCOVER_TIMEOUT_MS = 5000
 const PORT_DISCOVER_POLL_MS = 200
@@ -367,6 +371,41 @@ export async function rpcPodStep(
 
     if (execResp.status >= 400 && execResp.status < 500) {
       const body = await execResp.text().catch(() => '')
+
+      if (
+        execResp.status === 409 &&
+        body.includes('A job is already running')
+      ) {
+        // The RPC server still has a prior job in 'running' state. This
+        // almost always means the prior step was cancelled by GitHub Actions
+        // (matrix fail-fast, manual cancel, workflow concurrency override,
+        // or run-level cancellation) but the in-pod subprocess kept running
+        // — the cancel signal only reached the hook process. Subsequent
+        // post-cleanup steps cannot start until that prior subprocess exits.
+        // The hook's SIGTERM/SIGINT handler is supposed to /kill it; seeing
+        // 409 here means that path didn't fire (e.g. SIGKILL, hook crash).
+        let stuckCtx = ''
+        try {
+          const statusResp = await fetch(rpcUrl(podIp, port, '/status'), {
+            headers: { 'X-Auth-Token': token },
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+          })
+          if (statusResp.ok) {
+            const s = (await statusResp.json()) as RpcStatusResponse
+            stuckCtx = ` (prior job id=${s.id ?? '?'}, status=${s.status ?? '?'})`
+          }
+        } catch {
+          // Best-effort diagnostic; ignore failures
+        }
+        throw new Error(
+          `Step cannot start: workflow pod still has a prior step in flight${stuckCtx}. ` +
+            `This is the expected state after GitHub Actions cancels a step ` +
+            `(matrix fail-fast, manual cancel, or workflow concurrency override) ` +
+            `while its subprocess was still running inside the pod. Check earlier ` +
+            `in the job log (or the workflow-run page) for the actual cancellation.`
+        )
+      }
+
       throw new Error(`RPC /exec failed (${execResp.status}): ${body}`)
     }
 
@@ -498,6 +537,33 @@ export async function rpcPodStep(
     return exitCode
   } finally {
     clearInterval(heartbeatInterval)
+  }
+}
+
+/**
+ * Tell the in-pod RPC server to terminate the currently running job.
+ *
+ * Called from the hook's SIGTERM/SIGINT handler when GitHub Actions cancels
+ * the step. Without this, the user's subprocess (e.g. pytest) keeps running
+ * in the workflow pod and post-cleanup steps fail with 409 "A job is already
+ * running" until something else (heartbeat watchdog, pod eviction) kills it.
+ *
+ * Always best-effort: never throws, swallows network errors, and uses a tight
+ * timeout because the process is about to exit.
+ */
+export async function killRpcJob(
+  podIp: string,
+  port: number,
+  token: string
+): Promise<void> {
+  try {
+    await fetch(rpcUrl(podIp, port, '/kill'), {
+      method: 'POST',
+      headers: { 'X-Auth-Token': token },
+      signal: AbortSignal.timeout(KILL_TIMEOUT_MS)
+    })
+  } catch (err) {
+    core.debug(`Failed to send /kill on cancellation: ${err}`)
   }
 }
 
