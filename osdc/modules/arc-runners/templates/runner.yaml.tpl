@@ -292,7 +292,7 @@ template:
             value: /home/runner/hook-extensions/job-pod.yaml
           # Use OSDC wrapper that validates env vars and surfaces errors
           # clearly, then delegates to patched hooks from DaemonSet.
-          # See: https://github.com/huydhn/runner-container-hooks/releases/tag/v0.8.12-cancel.1
+          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.12
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /home/runner/hook-extensions/wrapper.js
           # PyTorch CI workflows depend on Docker images built in parallel by
@@ -638,7 +638,7 @@ data:
       //   1. Cancellation: child was killed by a signal we forwarded from
       //      GitHub Actions, OR the child handled the signal itself and
       //      exited with the canonical 128+signum convention. The hook
-      //      (runner-container-hooks v0.8.12-cancel.1+) installs SIGTERM/SIGINT
+      //      (runner-container-hooks v0.8.12+) installs SIGTERM/SIGINT
       //      handlers that run cleanup and then process.exit(143|130),
       //      which collapses signal info to a numeric code. We treat those
       //      two exact codes as cancellation. NOT a script/workflow error.
