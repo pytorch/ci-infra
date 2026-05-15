@@ -96,6 +96,14 @@ jobs:
           aws-region: us-west-1
           role-duration-seconds: 7200
 
+      # Register QEMU binfmt handlers so `docker build --platform linux/arm64`
+      # works on an amd64 runner. The base deploy builds image-cache-janitor
+      # (and node-compactor) for both archs; whenever the content-addressed
+      # tag changes (Dockerfile edit, etc.) the build branch runs and needs
+      # cross-arch emulation.
+      - name: Set up QEMU for cross-arch builds
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
       - name: Deploy ${{ inputs.cluster }}
         run: just deploy "${{ inputs.cluster }}"
         env:
