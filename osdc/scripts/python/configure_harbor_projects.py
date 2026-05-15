@@ -73,7 +73,7 @@ REGISTRIES = [
     },
 ]
 
-DEFAULT_HARBOR_URL = "http://localhost:30002"
+DEFAULT_HARBOR_URL = "http://[::1]:30002"
 DEFAULT_ADMIN_PASSWORD = None
 
 

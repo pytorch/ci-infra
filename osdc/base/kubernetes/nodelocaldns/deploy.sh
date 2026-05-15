@@ -10,6 +10,14 @@ set -euo pipefail
 # kube-dns-upstream Service to exist BEFORE the DaemonSet pods are
 # scheduled (the binary reads KUBE_DNS_UPSTREAM_SERVICE_HOST, which
 # kubelet only injects for Services existing at pod-create time).
+#
+# The __KUBE_DNS_CLUSTER_IP__ placeholder is sed-substituted with the
+# live kube-dns Service ClusterIP. This works for both IPv4 (e.g.
+# 10.100.0.10) and IPv6 (e.g. fd30:3087:b6c2::a) cluster service CIDRs
+# — the substitution is a plain string replace, and the Corefile uses
+# the value only in `bind` directives (which accept bare IPv6 addresses
+# without brackets) and the DaemonSet args use `-localip` (comma-
+# separated, also no brackets required).
 
 # shellcheck disable=SC2034  # CLUSTER is part of the deploy.sh interface
 CLUSTER="$1"
@@ -33,11 +41,19 @@ cleanup() {
 trap cleanup EXIT
 
 # --- Step 1: Precondition — verify kube-dns-upstream Service is ours (or absent) ---
+# Track two distinct conditions:
+#   UPSTREAM_FIRST_DEPLOY      — never had this Service in this cluster before
+#   UPSTREAM_SERVICE_FRESHLY_CREATED — Service did not exist at the start of THIS run
+# Either condition forces a DaemonSet rollout because kubelet only injects
+# KUBE_DNS_UPSTREAM_SERVICE_HOST/PORT into pods that are created AFTER the
+# Service exists. An out-of-band Service deletion + redeploy must also restart.
 echo "→ NodeLocal DNSCache: checking kube-dns-upstream Service precondition..."
 UPSTREAM_FIRST_DEPLOY=true
+UPSTREAM_SERVICE_FRESHLY_CREATED=true
 EXISTING_SELECTOR=""
 if kubectl get svc kube-dns-upstream -n kube-system &>/dev/null; then
   UPSTREAM_FIRST_DEPLOY=false
+  UPSTREAM_SERVICE_FRESHLY_CREATED=false
   EXISTING_SELECTOR=$(kubectl get svc kube-dns-upstream -n kube-system \
     -o jsonpath='{.spec.selector.k8s-app}' 2>/dev/null)
   if [[ "$EXISTING_SELECTOR" != "kube-dns" ]]; then
@@ -61,6 +77,17 @@ if [[ ! "${KUBE_DNS_CLUSTER_IP}" =~ ^[0-9a-fA-F:.]+$ ]]; then
   echo "ERROR: KUBE_DNS_CLUSTER_IP value is not a valid IPv4/IPv6 address: ${KUBE_DNS_CLUSTER_IP}" >&2
   exit 1
 fi
+# NLD enforces same address family on -localip and the upstream forward target;
+# mixing families causes pod CrashLoopBackOff. Fail fast in deploy.sh instead of
+# letting NLD discover the mismatch at startup.
+case "$KUBE_DNS_CLUSTER_IP" in
+  *:*) ;; # IPv6, OK
+  *)
+    echo "ERROR: kube-dns ClusterIP '$KUBE_DNS_CLUSTER_IP' is IPv4. NodeLocalDNSCache is configured for IPv6-only EKS." >&2
+    echo "If running on a legacy IPv4 cluster, this NLD config is incompatible." >&2
+    exit 1
+    ;;
+esac
 echo "  kube-dns ClusterIP: $KUBE_DNS_CLUSTER_IP"
 
 # --- Step 3: Render manifests via kustomize, then sed-substitute placeholders ---
@@ -109,15 +136,17 @@ echo "→ NodeLocal DNSCache: applying ConfigMap, ServiceAccount, DaemonSet..."
 kubectl_apply_if_changed -f "$REST_FILE"
 
 # --- Step 7: Idempotency safety net ---
-# Only restart on first-time deploy: the DaemonSet pods created above (or
-# any pre-existing ones from an earlier failed install) won't have the
-# KUBE_DNS_UPSTREAM_SERVICE_HOST env var unless the Service existed before
-# they were scheduled. On steady-state re-runs, env is already populated.
-if [[ "$UPSTREAM_FIRST_DEPLOY" == "true" ]]; then
-  echo "→ NodeLocal DNSCache: first-time deploy — rolling DaemonSet to inject upstream Service env..."
+# Restart the DaemonSet whenever the upstream Service was absent at the start
+# of THIS run, even if NLD itself is not a first-time deploy. The DaemonSet
+# pods (existing or freshly applied) won't have KUBE_DNS_UPSTREAM_SERVICE_HOST
+# unless the Service existed before kubelet snapshotted their env at create
+# time. This covers both the first install and out-of-band Service deletions
+# followed by a redeploy. On steady-state re-runs, env is already populated.
+if [[ "$UPSTREAM_FIRST_DEPLOY" == "true" || "$UPSTREAM_SERVICE_FRESHLY_CREATED" == "true" ]]; then
+  echo "→ NodeLocal DNSCache: upstream Service was created in this run — rolling DaemonSet to inject env..."
   kubectl rollout restart ds node-local-dns -n kube-system
 else
-  echo "→ NodeLocal DNSCache: not a first-time deploy — skipping rollout restart."
+  echo "→ NodeLocal DNSCache: upstream Service pre-existed — skipping rollout restart."
 fi
 
 echo "NodeLocal DNSCache deployed."

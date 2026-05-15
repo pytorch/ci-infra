@@ -21,7 +21,7 @@ for registry_project in \
   cat >"/etc/containerd/certs.d/$registry/hosts.toml" <<MIRRORS
 server = "$upstream"
 
-[host."http://localhost:$HARBOR_PORT/v2/$project"]
+[host."http://[::1]:$HARBOR_PORT/v2/$project"]
   capabilities = ["pull", "resolve"]
   skip_verify = true
   override_path = true

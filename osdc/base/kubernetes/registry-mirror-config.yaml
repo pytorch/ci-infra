@@ -69,7 +69,7 @@ data:
     cat > /etc/containerd/certs.d/docker.io/hosts.toml <<TOML
     server = "https://docker.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/dockerhub-cache"]
+    [host."http://[::1]:${HARBOR_PORT}/v2/dockerhub-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -83,7 +83,7 @@ data:
     cat > /etc/containerd/certs.d/ghcr.io/hosts.toml <<TOML
     server = "https://ghcr.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/ghcr-cache"]
+    [host."http://[::1]:${HARBOR_PORT}/v2/ghcr-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -97,7 +97,7 @@ data:
     cat > /etc/containerd/certs.d/public.ecr.aws/hosts.toml <<TOML
     server = "https://public.ecr.aws"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/ecr-public-cache"]
+    [host."http://[::1]:${HARBOR_PORT}/v2/ecr-public-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -111,7 +111,7 @@ data:
     cat > /etc/containerd/certs.d/nvcr.io/hosts.toml <<TOML
     server = "https://nvcr.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/nvcr-cache"]
+    [host."http://[::1]:${HARBOR_PORT}/v2/nvcr-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -125,7 +125,7 @@ data:
     cat > /etc/containerd/certs.d/registry.k8s.io/hosts.toml <<TOML
     server = "https://registry.k8s.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/k8s-cache"]
+    [host."http://[::1]:${HARBOR_PORT}/v2/k8s-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -139,7 +139,7 @@ data:
     cat > /etc/containerd/certs.d/quay.io/hosts.toml <<TOML
     server = "https://quay.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/quay-cache"]
+    [host."http://[::1]:${HARBOR_PORT}/v2/quay-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -153,7 +153,7 @@ data:
     # =========================================================================
     echo ""
     echo "=== Registry Mirror Configuration Complete ==="
-    echo "Harbor endpoint: http://localhost:${HARBOR_PORT}"
+    echo "Harbor endpoint: http://[::1]:${HARBOR_PORT}"
     echo "Configured mirrors for: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io"
     echo ""
     echo "Note: containerd 1.6+ dynamically watches certs.d/ - no restart needed"

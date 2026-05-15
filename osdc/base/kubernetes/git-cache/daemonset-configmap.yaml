@@ -81,6 +81,18 @@ data:
     # Prometheus metrics server (stdlib only, no pip dependencies)
     # ---------------------------------------------------------------------------
 
+    class DualStackHTTPServer(HTTPServer):
+        # Bind ::0 with IPV6_V6ONLY=0 so the socket accepts both IPv6 and
+        # IPv4-mapped IPv6 connections (single socket serves both families).
+        # Required because runner pods on IPv6-only EKS have no IPv4 address
+        # but PodMonitor scrapes can originate from either family.
+        address_family = socket.AF_INET6
+
+        def server_bind(self) -> None:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            super().server_bind()
+
+
     class MetricsServer:
         """Thread-safe Prometheus metrics with an HTTP endpoint on /metrics."""
 
@@ -171,7 +183,7 @@ data:
                     # Silence per-request access logs
                     pass
 
-            server = HTTPServer(("0.0.0.0", METRICS_PORT), Handler)
+            server = DualStackHTTPServer(("::", METRICS_PORT), Handler)
             t = threading.Thread(target=server.serve_forever, daemon=True)
             t.start()
             log.info("Metrics server listening on :%d/metrics", METRICS_PORT)
@@ -202,12 +214,22 @@ data:
             log.info("Cache size: %.1f MiB", size / (1024 * 1024))
 
 
+    def _bracket_if_ipv6(addr: str) -> str:
+        """Wrap IPv6 literals in brackets for URL composition."""
+        return f"[{addr}]" if ":" in addr else addr
+
+
     def discover_replicas() -> list[str]:
-        """Resolve headless service DNS to get all central pod IPs."""
+        """Resolve headless service DNS to get all central pod IPs.
+
+        Uses AF_UNSPEC so the headless Service can return either A (IPv4)
+        or AAAA (IPv6) records — required on IPv6-only EKS where pods only
+        have IPv6 addresses.
+        """
         try:
             results = socket.getaddrinfo(
                 HEADLESS_SVC, CENTRAL_METRICS_PORT,
-                socket.AF_INET, socket.SOCK_STREAM,
+                socket.AF_UNSPEC, socket.SOCK_STREAM,
             )
             ips = list({r[4][0] for r in results})
             if ips:
@@ -231,6 +253,25 @@ data:
         return None
 
 
+    def _replica_hash(addr: str) -> float:
+        """Stable per-address hash for the selected_replica gauge.
+
+        For IPv4 the value matches the historical octet-packed integer so
+        existing dashboards keep working. For IPv6 (or anything else with
+        a colon) we fall back to a stable Python hash of the address; the
+        absolute value is meaningless, only "did it change" matters for
+        operators reading the gauge.
+        """
+        if ":" not in addr and addr.count(".") == 3:
+            try:
+                parts = addr.split(".")
+                return float(sum(int(p) * (256 ** (3 - i)) for i, p in enumerate(parts)))
+            except ValueError:
+                pass
+        # IPv6 or unparseable: use a stable non-negative hash.
+        return float(abs(hash(addr)) % (2 ** 31))
+
+
     def get_least_loaded_replica(replicas: list[str]) -> str | None:
         """Query each replica's metrics and return the IP with fewest active connections."""
         if not replicas:
@@ -241,7 +282,7 @@ data:
 
         for ip in replicas:
             try:
-                url = f"http://{ip}:{CENTRAL_METRICS_PORT}/metrics"
+                url = f"http://{_bracket_if_ipv6(ip)}:{CENTRAL_METRICS_PORT}/metrics"
                 req = urllib.request.Request(url)
                 with urllib.request.urlopen(req, timeout=3) as resp:
                     text = resp.read().decode("utf-8", errors="replace")
@@ -255,10 +296,7 @@ data:
 
         if best_ip is not None:
             log.info("Selected replica %s (connections: %s)", best_ip, best_count)
-            # Store a hash for the metric (IP as integer for Prometheus gauge)
-            ip_parts = best_ip.split(".")
-            ip_hash = sum(int(p) * (256 ** (3 - i)) for i, p in enumerate(ip_parts))
-            metrics.set("git_cache_node_selected_replica", float(ip_hash))
+            metrics.set("git_cache_node_selected_replica", _replica_hash(best_ip))
         return best_ip
 
 
@@ -371,7 +409,7 @@ data:
         if replicas:
             best = get_least_loaded_replica(replicas)
             if best:
-                source = f"rsync://{best}/git-cache/"
+                source = f"rsync://{_bracket_if_ipv6(best)}/git-cache/"
                 log.info("Using least-loaded replica: %s", best)
             else:
                 log.info("Replica selection failed, falling back to ClusterIP service")

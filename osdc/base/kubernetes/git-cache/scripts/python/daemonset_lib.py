@@ -133,6 +133,29 @@ def _dir_size_bytes(path: Path) -> int:
     return total
 
 
+def _bracket_if_ipv6(addr: str) -> str:
+    """Wrap IPv6 literals in brackets for URL composition."""
+    return f"[{addr}]" if ":" in addr else addr
+
+
+def _replica_hash(addr: str) -> float:
+    """Stable per-address hash for the selected_replica gauge.
+
+    For IPv4 the value matches the historical octet-packed integer so
+    existing dashboards keep working. For IPv6 (or anything else with a
+    colon) we fall back to a stable Python hash of the address; the
+    absolute value is meaningless, only "did it change" matters for
+    operators reading the gauge.
+    """
+    if ":" not in addr and addr.count(".") == 3:
+        try:
+            parts = addr.split(".")
+            return float(sum(int(p) * (256 ** (3 - i)) for i, p in enumerate(parts)))
+        except ValueError:
+            pass
+    return float(abs(hash(addr)) % (2**31))
+
+
 def wait_for_central(host: str, port: int, timeout: int = 600) -> float:
     """Wait for the central pod's rsyncd to accept TCP connections.
 
