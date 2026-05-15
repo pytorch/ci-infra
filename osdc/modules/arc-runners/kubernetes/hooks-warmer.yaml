@@ -2,8 +2,6 @@
 # Downloads the patched runner-container-hooks zip once per node to NVMe,
 # so runner pods can mount it read-only without per-pod downloads.
 #
-# Fix: find -exec stat {} \; -> find -exec stat {} + (10-100x faster)
-# Fix: exit code propagation — OOM-killed processes now correctly report failure
 # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.13
 # Remove this when upstream merges the fixes into actions/runner-container-hooks
 apiVersion: apps/v1
