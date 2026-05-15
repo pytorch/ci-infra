@@ -50,7 +50,7 @@ describe('rpc-server.py /kill endpoint', () => {
       let buf = ''
       serverProcess!.stdout!.on('data', (chunk: Buffer) => {
         buf += chunk.toString()
-        const m = buf.match(/RPC server listening on 0\.0\.0\.0:(\d+)/)
+        const m = buf.match(/RPC server listening on \[::\]:(\d+)/)
         if (m) {
           clearTimeout(timer)
           resolve(parseInt(m[1], 10))

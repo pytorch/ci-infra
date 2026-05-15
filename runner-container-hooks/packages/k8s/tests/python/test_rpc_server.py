@@ -673,7 +673,7 @@ class TestMain:
             patch.object(rpc_mod.os, "makedirs") as mock_mkdirs,
             patch.object(rpc_mod.signal, "signal") as mock_sig,
             patch.object(rpc_mod.threading, "Thread") as mock_thr,
-            patch.object(rpc_mod, "ThreadingHTTPServer") as mock_cls,
+            patch.object(rpc_mod, "DualStackHTTPServer") as mock_cls,
         ):
             mock_cls.return_value = MagicMock()
             mock_cls.return_value.serve_forever.side_effect = RuntimeError("x")
@@ -682,7 +682,7 @@ class TestMain:
             mock_mkdirs.assert_called_once()
             assert mock_sig.call_count == 2
             mock_thr.return_value.start.assert_called_once()
-            mock_cls.assert_called_once_with(("0.0.0.0", 8080), rpc_mod.Handler)
+            mock_cls.assert_called_once_with(("::", 8080), rpc_mod.Handler)
             assert rpc_mod._auth_token == "secret"
 
     def test_custom_port(self, rpc_mod):
@@ -691,13 +691,13 @@ class TestMain:
             patch.object(rpc_mod.os, "makedirs"),
             patch.object(rpc_mod.signal, "signal"),
             patch.object(rpc_mod.threading, "Thread"),
-            patch.object(rpc_mod, "ThreadingHTTPServer") as mock_cls,
+            patch.object(rpc_mod, "DualStackHTTPServer") as mock_cls,
         ):
             mock_cls.return_value = MagicMock()
             mock_cls.return_value.serve_forever.side_effect = RuntimeError("x")
             with pytest.raises(RuntimeError):
                 rpc_mod.main()
-            mock_cls.assert_called_once_with(("0.0.0.0", 9999), rpc_mod.Handler)
+            mock_cls.assert_called_once_with(("::", 9999), rpc_mod.Handler)
 
     def test_missing_token_exits(self, rpc_mod):
         with (

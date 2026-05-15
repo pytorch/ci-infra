@@ -46,3 +46,4 @@ def server(rpc_mod):
     t.start()
     yield f"http://127.0.0.1:{port}"
     srv.shutdown()
+

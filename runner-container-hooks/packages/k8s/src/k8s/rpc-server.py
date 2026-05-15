@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -309,6 +310,15 @@ def _signal_handler(signum, frame):
     _kill_process()
     sys.exit(0)
 
+
+class DualStackHTTPServer(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8080)
@@ -326,7 +336,7 @@ def main():
     watchdog = threading.Thread(target=_heartbeat_watchdog, daemon=True)
     watchdog.start()
 
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    server = DualStackHTTPServer(("::", args.port), Handler)
     actual_port = server.server_address[1]
 
     # Write the actual bound port so the deployer can discover it.
@@ -334,7 +344,7 @@ def main():
     with open(PORT_FILE, "w") as f:
         f.write(str(actual_port))
 
-    print(f"RPC server listening on 0.0.0.0:{actual_port}")
+    print(f"RPC server listening on [::]:{actual_port}")
     server.serve_forever()
 
 

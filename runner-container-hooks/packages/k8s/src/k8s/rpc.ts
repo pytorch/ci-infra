@@ -33,7 +33,8 @@ const DIAGNOSTIC_TIMEOUT_MS = 15000
 const DIAGNOSTIC_EXEC_TIMEOUT_MS = 10000
 
 function rpcUrl(podIp: string, port: number, path: string): string {
-  return `http://${podIp}:${port}${path}`
+  const host = podIp.includes(':') ? `[${podIp}]` : podIp
+  return `http://${host}:${port}${path}`
 }
 
 async function healthCheck(
@@ -46,7 +47,7 @@ async function healthCheck(
       [
         'sh',
         '-c',
-        `python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${port}/health')"`
+        `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:${port}/health')"`
       ],
       podName,
       containerName
