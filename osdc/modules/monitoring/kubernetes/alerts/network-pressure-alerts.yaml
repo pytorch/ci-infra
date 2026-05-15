@@ -33,3 +33,20 @@ spec:
               Node {{ $labels.node }} conntrack table is {{ $value | humanizePercentage }} full.
               New connections will start failing imminently. Increase `nf_conntrack_max` sysctl
               OR drain the node. See docs/ipv6-cluster-recreation.md for tuning guidance.
+
+        - alert: NodeConntrackMetricMissing
+          # Detect silent loss of node-exporter scraping. Without this, the
+          # NodeConntrackHigh{Warn,Critical} alerts above would never fire if
+          # node-exporter scraping breaks (e.g. IPv6 endpoint regression),
+          # and the operator would only learn from empty dashboards.
+          expr: absent(node_nf_conntrack_entries)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "node_nf_conntrack_entries metric is missing — conntrack alerts inert"
+            description: |
+              The node-exporter conntrack metric has been absent for 10m. Either
+              all nodes are down (unlikely) or node-exporter scraping is broken.
+              The NodeConntrackHigh alerts cannot fire while this is true.
+              Verify Alloy → node-exporter scrape: `up{job=~".*node-exporter.*"}`.

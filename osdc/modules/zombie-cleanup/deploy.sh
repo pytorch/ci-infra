@@ -47,7 +47,7 @@ fi
 PENDING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pending_max_age_hours "24")
 RUNNING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.running_max_age_hours "12")
 DRY_RUN=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.dry_run "false")
-PUSHGATEWAY_URL=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pushgateway_url "http://prometheus-pushgateway.monitoring:9091")
+PUSHGATEWAY_URL=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pushgateway_url "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091")
 
 # --- Compute content-based image tag ---
 TAG=$(find "$MODULE_DIR/docker" "$MODULE_DIR/scripts/python" \

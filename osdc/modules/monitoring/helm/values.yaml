@@ -67,6 +67,12 @@ nodeExporter:
 
 # --- node-exporter subchart overrides ---
 prometheus-node-exporter:
+  # Bind to the node's primary IP via Downward API status.hostIP instead of
+  # 0.0.0.0. On IPv6-only EKS the chart default (0.0.0.0:9100) is IPv4-only
+  # and leaves Alloy (IPv6-only pod) unable to scrape — silently dropping
+  # node_nf_conntrack_entries (which powers network-pressure-alerts) and
+  # all node memory metrics.
+  listenOnAllInterfaces: false
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:

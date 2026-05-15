@@ -36,6 +36,9 @@ data:
       hold nx 5s
       hold other 5s
       accepted_payload_size 8192
+      # IPv6-only EKS: services emit only AAAA. Make IPv6 preference explicit
+      # so HAProxy never logs benign A-family resolution warnings.
+      resolve-prefer ipv6
 
     # Stats endpoint for debugging distribution
     frontend stats

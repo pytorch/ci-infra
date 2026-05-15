@@ -36,15 +36,20 @@ if [[ -n "$TOKEN" ]]; then
 fi
 
 HOSTS_MARKER="# managed-by: osdc-harbor-mirror"
+# Fail the script (and cloud-init) if we can't get a routable IPv6 — without
+# the /etc/hosts entry, containerd will fail every Harbor-mirrored pull.
+# Better to fail provisioning so Karpenter reaps and replaces the node.
 if [[ -z "$NODE_IPV6" ]]; then
-  echo "WARNING: [h100-node-setup] Could not resolve node IPv6 from IMDS; /etc/hosts not updated" >&2
-elif [[ ! "$NODE_IPV6" =~ ^[0-9a-fA-F:]+$ ]]; then
-  echo "WARNING: [h100-node-setup] IMDS returned non-IPv6 value '$NODE_IPV6'; /etc/hosts not updated" >&2
-else
-  sed -i "/${HOSTS_MARKER}/d" /etc/hosts
-  echo "${NODE_IPV6} harbor ${HOSTS_MARKER}" >>/etc/hosts
-  echo "Wrote /etc/hosts entry: ${NODE_IPV6} harbor"
+  echo "ERROR: [h100-node-setup] Could not resolve node IPv6 from IMDS; failing fast so Karpenter retries" >&2
+  exit 1
 fi
+if [[ ! "$NODE_IPV6" =~ ^[0-9a-fA-F:]+$ ]]; then
+  echo "ERROR: [h100-node-setup] IMDS returned non-IPv6 value '$NODE_IPV6'; failing fast" >&2
+  exit 1
+fi
+sed -i "/${HOSTS_MARKER}/d" /etc/hosts
+echo "${NODE_IPV6} harbor ${HOSTS_MARKER}" >>/etc/hosts
+echo "Wrote /etc/hosts entry: ${NODE_IPV6} harbor"
 
 echo "Post-bootstrap: Configuring registry mirrors..."
 HARBOR_PORT=30002
