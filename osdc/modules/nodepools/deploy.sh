@@ -37,6 +37,11 @@ CPU_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.cpu_consol
 BAREMETAL_CONSOLIDATE_AFTER=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" nodepools.baremetal_consolidate_after "")
 COMPACTOR_ENABLED=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.enabled "false")
 
+# Cluster-level capacity_reservation_ids override, namespaced per module name
+# (e.g. `nodepools-h100.capacity_reservation_ids`). Empty if unset → generator
+# falls back to the value in each def file.
+CAPACITY_RESERVATION_IDS_OVERRIDE=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" "${MODULE_NAME}.capacity_reservation_ids" "")
+
 # --- Step 1: Generate NodePools from definitions ---
 echo "Generating Karpenter NodePools from definitions..."
 NODEPOOLS_DEFS_DIR="$DEFS_DIR" \
@@ -49,6 +54,7 @@ NODEPOOLS_DEFS_DIR="$DEFS_DIR" \
   NODEPOOLS_CPU_CONSOLIDATE_AFTER="$CPU_CONSOLIDATE_AFTER" \
   NODEPOOLS_BAREMETAL_CONSOLIDATE_AFTER="$BAREMETAL_CONSOLIDATE_AFTER" \
   NODEPOOLS_COMPACTOR_ENABLED="$COMPACTOR_ENABLED" \
+  NODEPOOLS_CAPACITY_RESERVATION_IDS_OVERRIDE="$CAPACITY_RESERVATION_IDS_OVERRIDE" \
   uv run "$MODULE_DIR/scripts/python/generate_nodepools.py"
 
 # --- Step 2: Apply NodePools (parallel) ---
