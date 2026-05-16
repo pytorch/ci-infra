@@ -12,7 +12,8 @@ nodepool:
   topology_manager_policy: single-numa-node
   topology_manager_scope: pod
   capacity_type: reserved
-  capacity_reservation_ids:
-    - cr-0c3f05dffb85ed832
+  # capacity_reservation_ids are cluster-specific (different reservations in
+  # us-east-2 vs us-west-1) and live under clusters.<id>.nodepools-h100 in
+  # clusters.yaml. The generator merges them in at deploy time.
   baremetal: true
   user_data_script: scripts/h100-node-setup.sh
