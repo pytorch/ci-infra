@@ -182,6 +182,14 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")
 
+    # Cluster-level runner_group override (e.g. multi-region prod assigns a
+    # per-region runner group so two clusters can share scale-set names without
+    # collision). When set, wins over the def file's value. The repo-scope
+    # guard below still applies.
+    cluster_runner_group = cluster_config.get("runner_group")
+    if cluster_runner_group:
+        runner_group = cluster_runner_group
+
     # Runner groups are an org-level GitHub concept. Repo-scoped githubConfigUrl
     # (e.g. github.com/org/repo) can't resolve runner groups — force "default".
     if runner_group != "default" and "github.com/" in github_url:
