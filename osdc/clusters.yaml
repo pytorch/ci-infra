@@ -223,15 +223,9 @@ clusters:
       runner_name_prefix: "mt-"
       runner_group: "arc-cbr-prod-uw1"   # distinct from us-east-2's "default" — see doc
     nodepools-h100:
-      # us-west-1 H100 capacity reservations (p5.48xlarge, 8× H100 each):
-      #   cr-04d3d1d84e127a562 — 2 nodes (16 H100 GPUs)
-      #   cr-09a53051589034fb8 — 4 nodes (32 H100 GPUs)
-      # Total: 6 nodes, 48 H100 GPUs.
-      # Generator change to honor this override is pending — see
-      # docs/prod-cluster-ha-us-west-1.md "Phase 1 prerequisite 2".
-      capacity_reservation_ids:
-        - cr-04d3d1d84e127a562
-        - cr-09a53051589034fb8
+      # TODO: fill in us-west-1 H100 capacity reservation IDs before deploy.
+      # Generator change to honor this override is also pending.
+      capacity_reservation_ids: []
     pypi_cache:
       replicas: 10
     modules:
