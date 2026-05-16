@@ -1,12 +1,23 @@
 name: "OSDC: Deploy production"
 
-# Manual rollout for arc-cbr-production. Protected by the `osdc-production` GitHub
+# Manual rollout for any prod cluster. Protected by the `osdc-production` GitHub
 # environment (configure required reviewers in repo Settings → Environments) —
 # the prod IAM role additionally trusts only tokens with
 # `environment:osdc-production` in the sub claim, so IAM enforces the gate too.
+#
+# Concurrency is scoped per-cluster so a us-east-2 deploy doesn't block a
+# us-west-1 deploy and vice versa.
 on:
   workflow_dispatch:
     inputs:
+      cluster:
+        description: "Which prod cluster to deploy"
+        required: true
+        type: choice
+        default: arc-cbr-production
+        options:
+          - arc-cbr-production
+          - arc-cbr-production-uw1
       taint_nodes:
         description: "Taint ARC runner nodes before deploy (graceful refresh)"
         required: false
@@ -24,7 +35,7 @@ on:
         default: false
 
 concurrency:
-  group: osdc-deploy-arc-cbr-production
+  group: osdc-deploy-${{ inputs.cluster }}
   cancel-in-progress: false
 
 permissions:
@@ -35,7 +46,7 @@ jobs:
   deploy:
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
-      cluster: arc-cbr-production
+      cluster: ${{ inputs.cluster }}
       environment: osdc-production
       taint_nodes: ${{ inputs.taint_nodes }}
       restart_listeners: ${{ inputs.restart_listeners }}

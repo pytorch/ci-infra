@@ -128,6 +128,10 @@ def main():
                 sys.exit(1)
         elif isinstance(val, bool):
             print(str(val).lower())
+        elif isinstance(val, list):
+            # Comma-separated for shell consumption (used by nodepools deploy.sh
+            # to pass per-cluster capacity_reservation_ids into the generator).
+            print(",".join(str(v) for v in val))
         else:
             print(val)
 
