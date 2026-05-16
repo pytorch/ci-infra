@@ -1,4 +1,4 @@
-name: "OSDC: Plan (arc-cbr-production)"
+name: "OSDC: Plan (prod)"
 
 on:
   pull_request:
@@ -22,7 +22,15 @@ defaults:
 
 jobs:
   plan:
-    name: tofu plan (arc-cbr-production)
+    name: tofu plan (${{ matrix.cluster }})
+    strategy:
+      # One cluster's plan failure shouldn't cancel the other — reviewers want
+      # to see both diffs even if one is broken.
+      fail-fast: false
+      matrix:
+        cluster:
+          - arc-cbr-production
+          - arc-cbr-production-uw1
     # OIDC doesn't work for fork PRs — skip rather than surface a confusing failure.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -57,7 +65,7 @@ jobs:
           TF_IN_AUTOMATION: "1"
         run: |
           set -o pipefail
-          just plan arc-cbr-production 2>&1 | tee plan.txt
+          just plan ${{ matrix.cluster }} 2>&1 | tee plan.txt
 
       - name: Post plan to PR
         env:
@@ -65,7 +73,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           PLAN_OUTCOME: ${{ steps.plan.outcome }}
-          MARKER: "<!-- osdc-plan-prod -->"
+          CLUSTER: ${{ matrix.cluster }}
+          # Per-cluster marker so the two matrix jobs each maintain their own
+          # comment instead of overwriting each other.
+          MARKER: "<!-- osdc-plan-prod-${{ matrix.cluster }} -->"
         run: |
           set -euo pipefail
           # GitHub issue comment body limit is 65536 chars; leave headroom.
@@ -82,7 +93,7 @@ jobs:
           fi
           {
               echo "$MARKER"
-              echo "### tofu plan — arc-cbr-production"
+              echo "### tofu plan — ${CLUSTER}"
               echo ""
               echo "$STATUS · commit \`${GITHUB_SHA::8}\` · [run log](${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
               echo ""
