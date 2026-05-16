@@ -945,6 +945,56 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all((output_dir / "rel-repo.yaml").read_text()))
         assert docs[0]["runnerGroup"] == "default"
 
+    def test_runner_group_cluster_override_wins(self, tmp_path):
+        """Cluster-level runner_group overrides the def file's value."""
+        # Def file says "release-runners"...
+        def_file = make_def_file(tmp_path, "ovr-def", "m6i.32xlarge", 4, 16, runner_group="release-runners")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        # ...but the cluster config says "arc-cbr-prod-uw1" — cluster wins.
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "runner_group": "arc-cbr-prod-uw1",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "ovr-def.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "arc-cbr-prod-uw1"
+
+    def test_runner_group_cluster_override_no_def_value(self, tmp_path):
+        """Cluster-level runner_group applies even when the def doesn't set one."""
+        def_file = make_def_file(tmp_path, "ovr-nodef", "m6i.32xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "runner_group": "arc-cbr-prod-uw1",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "ovr-nodef.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "arc-cbr-prod-uw1"
+
+    def test_runner_group_cluster_override_repo_scope_guard_still_wins(self, tmp_path):
+        """Repo-scoped URL still forces 'default' even when cluster sets a custom group."""
+        def_file = make_def_file(tmp_path, "ovr-repo", "m6i.32xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch/pytorch-canary",  # repo-scoped
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "runner_group": "arc-staging-uw2",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "ovr-repo.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "default"
+
     def test_runner_class_release(self, tmp_path):
         """Release runners get required runner-class affinity on the workflow pod;
         runner-class isolation does not apply to the runner pod (it lives on the
