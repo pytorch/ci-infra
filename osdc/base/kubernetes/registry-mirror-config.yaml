@@ -228,7 +228,16 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      # This DaemonSet only runs an init container (writes /etc/hosts +
+      # containerd certs.d) then sleeps — it is config-only, not part of
+      # the request path. A `maxUnavailable: 1` setting causes the entire
+      # rollout to gate on any single stuck Terminating pod (e.g. on a
+      # Karpenter-disrupted node where kubelet can't ack the termination),
+      # leaving the rest of the fleet without the new config indefinitely.
+      # 50% keeps half the fleet on the old config while a rollout proceeds
+      # so a bad script revision can still be caught before it lands on
+      # every node, but a single unreachable node can no longer block it.
+      maxUnavailable: "50%"
 
   template:
     metadata:
