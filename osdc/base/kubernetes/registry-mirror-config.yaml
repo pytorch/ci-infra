@@ -34,8 +34,16 @@ data:
     HOSTS_MARKER="# managed-by: osdc-harbor-mirror"
     if [ -n "${NODE_IP:-}" ]; then
       # Idempotent rewrite: drop any prior managed entry, append fresh one.
-      sed -i "/${HOSTS_MARKER}/d" /etc/hosts
-      echo "${NODE_IP} harbor ${HOSTS_MARKER}" >>/etc/hosts
+      # NOTE: /etc/hosts is a kubelet bind-mounted file, NOT a regular file —
+      # `sed -i` and any rename(2)-based in-place editor fails with EBUSY
+      # because the kernel won't let us swap out a bind-mounted inode.
+      # Instead: rewrite into a tmpfile then `cat > /etc/hosts` (which uses
+      # O_TRUNC + write, preserving the inode the bind-mount points at).
+      HOSTS_TMP=$(mktemp)
+      grep -v "${HOSTS_MARKER}" /etc/hosts > "$HOSTS_TMP" || true
+      echo "${NODE_IP} harbor ${HOSTS_MARKER}" >> "$HOSTS_TMP"
+      cat "$HOSTS_TMP" > /etc/hosts
+      rm -f "$HOSTS_TMP"
       echo "Wrote /etc/hosts entry: ${NODE_IP} harbor"
     else
       echo "ERROR: NODE_IP env var not set; cannot configure /etc/hosts" >&2
@@ -54,7 +62,7 @@ data:
       echo "Verifying current configuration..."
 
       all_checks_pass=true
-      for registry in docker.io ghcr.io public.ecr.aws nvcr.io registry.k8s.io quay.io; do
+      for registry in docker.io ghcr.io public.ecr.aws nvcr.io registry.k8s.io quay.io "harbor:${HARBOR_PORT}"; do
         if [ ! -f "/etc/containerd/certs.d/${registry}/hosts.toml" ]; then
           echo "  Missing hosts.toml for ${registry} - will reconfigure"
           all_checks_pass=false
@@ -169,12 +177,32 @@ data:
     TOML
 
     # =========================================================================
+    # Direct Harbor registry (for images pushed to Harbor as `harbor:30002/...`)
+    # =========================================================================
+    # Workloads like node-compactor / image-cache-janitor / runner-base pull
+    # images by their Harbor-native reference (`harbor:30002/osdc/...`). Without
+    # a hosts.toml for the `harbor:<port>` hostname, containerd defaults to
+    # HTTPS, but Harbor's NodePort only serves plaintext HTTP — pull fails with
+    # `http: server gave HTTP response to HTTPS client`. Spell it out here so
+    # containerd uses plain HTTP for this registry.
+    echo "[harbor] Configuring direct harbor:${HARBOR_PORT} registry (plain HTTP)..."
+    mkdir -p "/etc/containerd/certs.d/harbor:${HARBOR_PORT}"
+    cat > "/etc/containerd/certs.d/harbor:${HARBOR_PORT}/hosts.toml" <<TOML
+    server = "http://harbor:${HARBOR_PORT}"
+
+    [host."http://harbor:${HARBOR_PORT}"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+    TOML
+
+    # =========================================================================
     # Summary
     # =========================================================================
     echo ""
     echo "=== Registry Mirror Configuration Complete ==="
     echo "Harbor endpoint: http://harbor:${HARBOR_PORT}"
     echo "Configured mirrors for: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io"
+    echo "Configured direct registry: harbor:${HARBOR_PORT}"
     echo ""
     echo "Note: containerd 1.6+ dynamically watches certs.d/ - no restart needed"
 

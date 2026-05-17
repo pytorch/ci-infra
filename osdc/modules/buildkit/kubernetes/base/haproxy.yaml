@@ -36,9 +36,6 @@ data:
       hold nx 5s
       hold other 5s
       accepted_payload_size 8192
-      # IPv6-only EKS: services emit only AAAA. Make IPv6 preference explicit
-      # so HAProxy never logs benign A-family resolution warnings.
-      resolve-prefer ipv6
 
     # Stats endpoint for debugging distribution
     frontend stats
@@ -68,17 +65,21 @@ data:
       bind :::1234 v4v6
       default_backend bk_all
 
+    # IPv6-only EKS: backend pods only emit AAAA. `resolve-prefer ipv6` is a
+    # server-line keyword (not valid inside the `resolvers` section) so it goes
+    # on each server-template — keeps HAProxy from logging benign A-family
+    # resolution warnings.
     backend bk_arm64
       balance leastconn
-      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
 
     backend bk_amd64
       balance leastconn
-      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
 
     backend bk_all
       balance leastconn
-      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
 
 ---
 apiVersion: apps/v1
