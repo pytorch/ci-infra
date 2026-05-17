@@ -997,17 +997,6 @@ heal-arc cluster name='':
         REREG_OK+=("$ars")
     done
 
-    LISTENER_DEL=0
-    for listener in $(jq -r '.listener_drift[]' < "$REPORT_PATH"); do
-        echo "  Listener $listener: deleting (controller will recreate)..."
-        if kubectl delete autoscalinglistener -n arc-systems "$listener" --ignore-not-found >/dev/null 2>&1; then
-            LISTENER_DEL=$((LISTENER_DEL + 1))
-        else
-            echo "  Listener $listener: FAILED to delete"
-            FAILED=$((FAILED + 1))
-        fi
-    done
-
     # Build cascade list: ers_drift always cascades; ers_cascade_from_ars only
     # cascades for ARSes that successfully re-registered (to avoid wiping ERSes
     # that would just get recreated with the same stale ID).
@@ -1017,6 +1006,65 @@ heal-arc cluster name='':
     else
         OK_FILTER='[]'
     fi
+
+    # Resolve the ERSes that will be deleted in this run. AutoscalingListener
+    # and EphemeralRunnerSet are a coupled pair — the listener's
+    # spec.ephemeralRunnerSetName is set ONCE at creation and does NOT track
+    # ERS renames. Whenever we delete an ERS, its parent ARS's listener MUST
+    # also be deleted so the controller recreates them together with consistent
+    # name references; otherwise the recreated listener pod crashloops trying
+    # to patch the dead ERS name.
+    ERS_TO_DELETE=$(jq -r --argjson ok "$OK_FILTER" '
+        ((.ers_drift // []) + ((.ers_cascade_from_ars // []) | map(select(.ars as $a | $ok | index($a))) | map(.ers)))
+        | unique | .[]' < "$REPORT_PATH")
+
+    # Map ERS names to their parent ARS names so we can cascade listener deletes
+    # for any ARS whose ERS is about to be deleted.
+    ERS_PARENT_ARS=$(jq -r '
+        ((.ers_cascade_from_ars // []) + ((.ers_problems // []) | map({ers: .ers, ars: .ars})))
+        | map({key: .ers, value: .ars}) | from_entries' < "$REPORT_PATH")
+
+    # Compute the full set of listeners to delete:
+    # - existing listener_drift (id-mismatch, pod-not-ready, etc.)
+    # - new listener_orphan_drift (references a nonexistent ERS)
+    # - listeners for any ARS whose ERS is about to be deleted (cascade)
+    # - listeners for any ARS that is being re-registered
+    LISTENER_TO_DELETE=$(jq -r \
+        --argjson ok "$OK_FILTER" \
+        --argjson ers_parents "$ERS_PARENT_ARS" \
+        --arg ers_list "$ERS_TO_DELETE" '
+        ($ers_list | split("\n") | map(select(length > 0))) as $ers_del
+        | ($ers_del | map($ers_parents[.]) | map(select(. != null and . != ""))) as $ars_from_ers_del
+        | (
+            (.listener_drift // [])
+            + (.listener_orphan_drift // [])
+            + (((.listener_problems // []) + (.listener_orphan_problems // []))
+                | map(select(.ars as $a | ($ars_from_ers_del + $ok) | index($a)))
+                | map(.listener)
+                | map(select(. != null)))
+          )
+        | unique | .[]' < "$REPORT_PATH")
+
+    # Delete listeners FIRST. They take less time than ERS deletes and removing
+    # them up front prevents the existing listener pod from crashlooping (and
+    # racing the controller) while the new ERS is being created. The controller
+    # will recreate both listener and ERS together with consistent references.
+    LISTENER_DEL=0
+    while IFS= read -r listener; do
+        [ -z "$listener" ] && continue
+        echo "  Listener $listener: deleting (controller will recreate)..."
+        if kubectl delete autoscalinglistener -n arc-systems "$listener" --ignore-not-found >/dev/null 2>&1; then
+            LISTENER_DEL=$((LISTENER_DEL + 1))
+        else
+            echo "  Listener $listener: FAILED to delete"
+            FAILED=$((FAILED + 1))
+        fi
+        # Pace deletes — without this, deleting dozens of listeners at once
+        # caused the listener node to exhaust AWS CNI IP allocations as the
+        # controller raced to recreate all pods simultaneously.
+        sleep 0.5
+    done <<< "$LISTENER_TO_DELETE"
+
     ERS_DEL=0
     while IFS= read -r ers; do
         [ -z "$ers" ] && continue
@@ -1027,13 +1075,39 @@ heal-arc cluster name='':
             echo "  ERS $ers: FAILED to delete"
             FAILED=$((FAILED + 1))
         fi
-    done < <(jq -r --argjson ok "$OK_FILTER" '
-        ((.ers_drift // []) + ((.ers_cascade_from_ars // []) | map(select(.ars as $a | $ok | index($a))) | map(.ers)))
-        | unique | .[]' < "$REPORT_PATH")
+        # Same rationale as the listener loop — pace ERS deletes so the
+        # controller's cascade recreation does not stampede the node.
+        sleep 0.5
+    done <<< "$ERS_TO_DELETE"
 
     HEALED=$((REREG_COUNT + LISTENER_DEL + ERS_DEL))
     echo ""
     echo "  Healed: $HEALED component(s) | Failed: $FAILED"
+
+    # Verify the recovery actually converged. Sleep briefly to let the
+    # controller create new listeners/ERSes, then re-run the drift report.
+    # One check after a reasonable settle period — do not wait forever.
+    if [ "$FAILED" -eq 0 ] && [ "$HEALED" -gt 0 ]; then
+        echo ""
+        echo "  Verifying recovery (sleeping 30s for controller to settle)..."
+        sleep 30
+        VERIFY_PATH=$(just _arc-drift-report "$NAME")
+        VERIFY_DRIFT=$(jq -r '.drift_count // 0' < "$VERIFY_PATH" 2>/dev/null || echo "")
+        if [ -z "$VERIFY_DRIFT" ] || ! [[ "$VERIFY_DRIFT" =~ ^[0-9]+$ ]]; then
+            echo "  Verification: could not read drift_count from post-recovery report"
+            rm -f "$VERIFY_PATH"
+            FAILED=$((FAILED + 1))
+        elif [ "$VERIFY_DRIFT" -eq 0 ]; then
+            echo "  Verification: recovery complete (no drift remaining)."
+            rm -f "$VERIFY_PATH"
+        else
+            echo "  Verification: $VERIFY_DRIFT component(s) still drifted after recovery."
+            just _arc-drift-print "$VERIFY_PATH" "$CNAME"
+            rm -f "$VERIFY_PATH"
+            FAILED=$((FAILED + 1))
+        fi
+    fi
+
     echo ""
     echo "  Watch progress:"
     echo "    kubectl get autoscalinglisteners -n arc-systems -w"
@@ -1166,12 +1240,31 @@ _arc-drift-report name='':
             | { ers: $e.metadata.name, ars: $owner.name }
           ] as $ers_cascade
 
+        # Build the set of existing ERS names for orphan lookup.
+        | (($ers.items // []) | map(.metadata.name)) as $ers_names
+
+        # Listeners whose spec.ephemeralRunnerSetName references an ERS that
+        # no longer exists. The listener spec is set ONCE at creation; ARS
+        # re-registration creates a NEW ERS with a fresh random suffix, but the
+        # old listener spec still points at the old (now-deleted) ERS name. The
+        # listener pod then crashloops trying to patch the dead ERS. Recovery:
+        # delete the listener so the controller recreates it with the current
+        # ERS name embedded.
+        | [ ($listeners.items // [])[]
+            | . as $l
+            | ($l.spec.ephemeralRunnerSetName // "") as $target
+            | select($target != "" and (($ers_names | index($target)) | not))
+            | { listener: $l.metadata.name, ars: ($l.spec.autoscalingRunnerSetName // ""), stale_ers: $target }
+          ] as $listener_orphan_problems
+
         | {
             controller_drift: $controller_drift,
             ars_drift: $ars_missing_id,
             ars_listener_missing: $ars_listener_missing,
             listener_drift: ($listener_problems | map(select(.listener != null)) | map(.listener)),
             listener_problems: $listener_problems,
+            listener_orphan_drift: ($listener_orphan_problems | map(.listener)),
+            listener_orphan_problems: $listener_orphan_problems,
             ers_drift: ($ers_problems | map(.ers)),
             ers_problems: $ers_problems,
             ers_cascade_from_ars: $ers_cascade,
@@ -1179,6 +1272,7 @@ _arc-drift-report name='':
                 (if $controller_drift then 1 else 0 end)
                 + ($ars_missing_id | length)
                 + ($listener_problems | length)
+                + ($listener_orphan_problems | length)
                 + ($ers_problems | length)
             )
           }
@@ -1217,6 +1311,13 @@ _arc-drift-print report_path cname:
         echo "    (none)"
     else
         jq -r '.listener_problems[] | "    - ARS \(.ars): \(.reason)"' < "$REPORT_PATH"
+    fi
+    echo ""
+    echo "  Listener orphan (references nonexistent ERS):"
+    if [ "$(jq -r '.listener_orphan_problems | length' < "$REPORT_PATH")" -eq 0 ]; then
+        echo "    (none)"
+    else
+        jq -r '.listener_orphan_problems[] | "    - \(.listener): refers to ERS \(.stale_ers) (does not exist)"' < "$REPORT_PATH"
     fi
     echo ""
     echo "  ERS drift (cached runnerScaleSetId mismatches parent ARS):"
