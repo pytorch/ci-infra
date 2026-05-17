@@ -1,10 +1,16 @@
 """Smoke tests for EKS cluster and AWS infrastructure."""
 
+import ipaddress
 import subprocess
 
 import pytest
 import yaml
 from helpers import get_unstable_node_names, pod_is_on_unstable_node, run_aws, run_kubectl
+
+# AWS allocates EKS IPv6 service CIDRs from the RFC 4193 locally-assigned ULA
+# range fd00::/8. The exact /48 ID is randomly assigned per cluster, so the
+# only stable invariant we can assert is that the prefix falls inside fd00::/8.
+_AWS_IPV6_ULA_RANGE = ipaddress.IPv6Network("fd00::/8")
 
 pytestmark = [pytest.mark.live, pytest.mark.aws]
 
@@ -146,8 +152,9 @@ class TestEKSIPv6Config:
 
     EKS ipFamily is immutable post-creation, so this is the safety net that
     catches a regression from a destroy/recreate that lands the cluster back
-    in dual-stack/IPv4 mode. Service CIDR is auto-assigned from fd00:ec2::/108
-    by EKS — not customizable.
+    in dual-stack/IPv4 mode. Service CIDR is auto-assigned by EKS from the
+    RFC 4193 locally-assigned ULA range (fd00::/8); the /48 ID is random per
+    cluster, so only the ULA-range invariant is asserted.
     """
 
     def test_ip_family_is_ipv6(self, eks_cluster_info, cluster_config):
@@ -160,16 +167,26 @@ class TestEKSIPv6Config:
         cluster_name = cluster_config["cluster"]["cluster_name"]
         net_cfg = eks_cluster_info["cluster"].get("kubernetesNetworkConfig", {})
         service_cidr = net_cfg.get("serviceIpv6Cidr", "")
-        assert service_cidr.lower().startswith("fd00:ec2:"), (
+        try:
+            network = ipaddress.IPv6Network(service_cidr)
+        except ValueError as exc:
+            pytest.fail(
+                f"EKS cluster {cluster_name} serviceIpv6Cidr={service_cidr!r} is not a valid IPv6 network: {exc}"
+            )
+        assert network.subnet_of(_AWS_IPV6_ULA_RANGE), (
             f"EKS cluster {cluster_name} serviceIpv6Cidr is {service_cidr!r}, "
-            f"expected to start with fd00:ec2: (AWS-allocated ULA)."
+            f"expected a subnet of {_AWS_IPV6_ULA_RANGE} (RFC 4193 locally-assigned ULA)."
         )
 
     def test_kube_dns_clusterip_is_ipv6(self):
         svc = run_kubectl(["get", "service", "kube-dns"], namespace="kube-system")
         cluster_ip = svc.get("spec", {}).get("clusterIP", "")
-        assert cluster_ip.lower().startswith("fd00:ec2:"), (
-            f"kube-dns ClusterIP is {cluster_ip!r}, expected an fd00:ec2:* IPv6 address. "
+        try:
+            address = ipaddress.IPv6Address(cluster_ip)
+        except ValueError as exc:
+            pytest.fail(f"kube-dns ClusterIP {cluster_ip!r} is not a valid IPv6 address: {exc}")
+        assert address in _AWS_IPV6_ULA_RANGE, (
+            f"kube-dns ClusterIP is {cluster_ip!r}, expected an address inside {_AWS_IPV6_ULA_RANGE}. "
             f"This is the canonical signal that the cluster's Service CIDR is IPv6."
         )
 
