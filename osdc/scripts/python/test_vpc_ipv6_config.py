@@ -106,36 +106,52 @@ def _extract_resource_block(text: str, resource_type: str, resource_name: str) -
 
 
 class TestVPCCNIAddonIPv6:
-    """aws_eks_addon.vpc_cni configuration_values must enable IPv6 on both
-    the main aws-node container and the aws-vpc-cni-init init container.
+    """aws_eks_addon.vpc_cni configuration_values must NOT pass the legacy
+    ENABLE_IPv6 / ENABLE_IPv4 env vars (they are not in the addon JSON schema —
+    addon-create fails with InvalidParameterException) and MUST keep the
+    prefix-delegation / V4-egress pins that the IPv6 deployment depends on.
+
+    IPv6 vs IPv4 mode is selected by the EKS cluster's
+    kubernetes_network_config.ip_family — the addon reads it from the cluster
+    and configures the aws-node daemonset accordingly.
 
     The configuration_values is a jsonencode(HCL-object) — instead of parsing
-    HCL into JSON (fragile), we assert the key/value text appears in the
-    aws_eks_addon.vpc_cni resource block.
+    HCL into JSON (fragile), we assert the key/value text appears (or does NOT
+    appear) in the aws_eks_addon.vpc_cni resource block.
     """
 
-    def test_main_container_enables_ipv6(self, eks_main_tf):
+    def test_legacy_enable_ipv6_env_vars_not_present(self, eks_main_tf):
+        # Regression guard. These keys are NOT in the v1.21+ addon JSON
+        # schema and cause CreateAddon to fail with:
+        #   InvalidParameterException: ConfigurationValue ... is not defined in the schema
+        # The regex matches the HCL assignment form (`ENABLE_IPv6 = ...`) so
+        # comments that merely mention the key by name don't trigger the guard.
         block = _extract_resource_block(eks_main_tf, "aws_eks_addon", "vpc_cni")
-        assert re.search(r'ENABLE_IPv6\s*=\s*"true"', block), 'aws_eks_addon.vpc_cni env must set ENABLE_IPv6 = "true"'
-        assert re.search(r'ENABLE_IPv4\s*=\s*"false"', block), (
-            'aws_eks_addon.vpc_cni env must set ENABLE_IPv4 = "false"'
+        assert not re.search(r"^\s*ENABLE_IPv6\s*=", block, re.MULTILINE), (
+            "aws_eks_addon.vpc_cni configuration_values must NOT assign ENABLE_IPv6 — it is not in the addon JSON schema. "
+            "IPv6 mode is selected by the cluster's kubernetes_network_config.ip_family."
+        )
+        assert not re.search(r"^\s*ENABLE_IPv4\s*=", block, re.MULTILINE), (
+            "aws_eks_addon.vpc_cni configuration_values must NOT assign ENABLE_IPv4 — it is not in the addon JSON schema."
         )
 
-    def test_init_container_enables_ipv6(self, eks_main_tf):
-        # Per AWS docs, ENABLE_IPv6 must be set on BOTH the main aws-node
-        # container and the aws-vpc-cni-init init container — the init
-        # container sets kernel sysctls and needs the same flag. We look
-        # for an `init = { env = { ... ENABLE_IPv6 = "true" ... } }` shape.
+    def test_no_init_env_block(self, eks_main_tf):
+        # The init.env block previously carried ENABLE_IPv6 = "true". Removed
+        # for the same reason — the init.env schema only accepts
+        # DISABLE_TCP_EARLY_DEMUX / ENABLE_V6_EGRESS.
         block = _extract_resource_block(eks_main_tf, "aws_eks_addon", "vpc_cni")
-        init_match = re.search(r"init\s*=\s*\{(.*?)\}\s*\}", block, re.DOTALL)
-        assert init_match, (
-            "aws_eks_addon.vpc_cni configuration_values must define an "
-            'init = { env = { ENABLE_IPv6 = "true" } } block for the '
-            "aws-vpc-cni-init init container"
+        assert not re.search(r"\binit\s*=\s*\{", block), (
+            "aws_eks_addon.vpc_cni configuration_values must not declare an init = { ... } block "
+            "carrying ENABLE_IPv6 — the addon schema rejects it."
         )
-        init_body = init_match.group(0)
-        assert re.search(r'ENABLE_IPv6\s*=\s*"true"', init_body), (
-            'aws_eks_addon.vpc_cni init.env must set ENABLE_IPv6 = "true"'
+
+    def test_prefix_delegation_explicit(self, eks_main_tf):
+        # Prefix delegation is mandatory under IPv6 mode (each node gets a /80
+        # carved into pod IPs). Pinned explicitly so a schema/default change
+        # cannot silently break pod IP allocation.
+        block = _extract_resource_block(eks_main_tf, "aws_eks_addon", "vpc_cni")
+        assert re.search(r'ENABLE_PREFIX_DELEGATION\s*=\s*"true"', block), (
+            'aws_eks_addon.vpc_cni env must explicitly set ENABLE_PREFIX_DELEGATION = "true"'
         )
 
     def test_v4_egress_is_explicit_true(self, eks_main_tf):

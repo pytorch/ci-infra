@@ -180,28 +180,23 @@ resource "aws_eks_addon" "vpc_cni" {
   # IPv6 mode: ENABLE_PREFIX_DELEGATION is mandatory (each node gets a /80
   # IPv6 prefix carved into pod IPs). WARM_PREFIX_TARGET=1 keeps a single
   # spare prefix warm per node — sufficient because each prefix yields
-  # 2^48 addresses. ENABLE_IPv6 must also be set on the aws-vpc-cni-init
-  # init container — per AWS docs the init container needs the same flag
-  # to set kernel sysctls correctly for IPv6 pod networking.
+  # 2^48 addresses.
   # ENABLE_V4_EGRESS enables pod IPv4 SNAT for outbound traffic to IPv4-only
   # services (github.com, ghcr.io, nvcr.io, public.ecr.aws). Default is true
   # since aws-vpc-cni v1.15.1, but pinned explicitly so a default flip cannot
   # silently disable egress. NOTE: AWS NetworkPolicies do NOT apply to the
   # IPv4-egress secondary interface — this is a known AWS limitation. See
   # https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html
-  # Note: ENABLE_IPv6 / ENABLE_IPv4 use lowercase 'v' to match upstream VPC CNI source code (envEnableIPv6 = "ENABLE_IPv6"). Do not normalize to all-caps.
+  # IPv6 vs IPv4 mode is selected by the cluster's kubernetes_network_config.ip_family —
+  # the addon reads it from the cluster and configures the daemonset accordingly. The
+  # legacy ENABLE_IPv6 / ENABLE_IPv4 env vars are not in the addon ConfigurationValues
+  # JSON schema (verified against v1.21.1-eksbuild.3); passing them fails with
+  # InvalidParameterException at addon-create time.
   configuration_values = jsonencode({
     env = {
-      ENABLE_IPv6              = "true"
-      ENABLE_IPv4              = "false"
       ENABLE_V4_EGRESS         = "true"
       ENABLE_PREFIX_DELEGATION = "true"
       WARM_PREFIX_TARGET       = "1"
-    }
-    init = {
-      env = {
-        ENABLE_IPv6 = "true"
-      }
     }
   })
 
