@@ -228,3 +228,106 @@ if ((${#STALE_RELEASES[@]} > 0)); then
     echo "No orphaned Helm history secrets found."
   fi
 fi
+
+# --- Step 6: Detect stale AutoscalingListeners ---
+LISTENER_CHECK="${ARC_LISTENER_CHECK:-enabled}"
+case "$LISTENER_CHECK" in
+  skip | SKIP | no | NO | false | FALSE)
+    echo "  → Skipping stale listener check (ARC_LISTENER_CHECK=skip)"
+    ;;
+  *)
+    LISTENER_TIMEOUT="${ARC_LISTENER_CHECK_TIMEOUT:-60}"
+    LISTENER_SELECTOR="app.kubernetes.io/component=runner-scale-set-listener"
+    LISTENER_NS="arc-systems"
+
+    if ! kubectl get pods -n "$LISTENER_NS" -l "$LISTENER_SELECTOR" \
+      -o name >/dev/null 2>&1; then
+      echo "  → Listener check skipped (kubectl error)"
+    else
+      _initial=$(kubectl get pods -n "$LISTENER_NS" -l "$LISTENER_SELECTOR" \
+        -o name 2>/dev/null || true)
+      if [[ -z "$_initial" ]]; then
+        echo "  → Listener check: no listeners deployed yet."
+      else
+        echo "  → Waiting up to ${LISTENER_TIMEOUT}s for listener pods to settle..."
+
+        _elapsed=0
+        while ((_elapsed < LISTENER_TIMEOUT)); do
+          _all_settled=true
+          while IFS=$'\t' read -r _phase _restart; do
+            [[ -z "$_phase" ]] && continue
+            if [[ "$_phase" != "Running" ]] && ((_restart < 2)); then
+              _all_settled=false
+              break
+            fi
+          done < <(kubectl get pods -n "$LISTENER_NS" -l "$LISTENER_SELECTOR" \
+            -o jsonpath='{range .items[*]}{.status.phase}{"\t"}{.status.containerStatuses[0].restartCount}{"\n"}{end}' \
+            2>/dev/null || true)
+
+          if $_all_settled; then
+            break
+          fi
+          sleep 5
+          _elapsed=$((_elapsed + 5))
+        done
+
+        STALE_LISTENERS=()
+        STALE_ARS=()
+
+        while IFS=$'\t' read -r _pod _phase _restart _ars; do
+          [[ -z "$_pod" ]] && continue
+          _restart="${_restart:-0}"
+          if [[ "$_phase" != "Running" ]] || ((_restart >= 2)); then
+            _logs=$(kubectl logs -n "$LISTENER_NS" "$_pod" --previous --tail=200 2>/dev/null || true)
+            if [[ -z "$_logs" ]]; then
+              _logs=$(kubectl logs -n "$LISTENER_NS" "$_pod" --tail=200 2>/dev/null || true)
+            fi
+            if echo "$_logs" | grep -q "RunnerScaleSetNotFoundException"; then
+              _ars_name="$_ars"
+              if [[ -z "$_ars_name" ]]; then
+                _ars_name="${_pod%-*-listener}"
+              fi
+              STALE_LISTENERS+=("$_pod")
+              STALE_ARS+=("$_ars_name")
+            fi
+          fi
+        done < <(kubectl get pods -n "$LISTENER_NS" -l "$LISTENER_SELECTOR" \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.status.containerStatuses[0].restartCount}{"\t"}{.metadata.labels.actions\.github\.com/scale-set-name}{"\n"}{end}' \
+          2>/dev/null || true)
+
+        if ((${#STALE_LISTENERS[@]} == 0)); then
+          echo "  → Listener check: no stale scale sets detected."
+        else
+          N=${#STALE_LISTENERS[@]}
+          echo ""
+          echo "#######################################################################"
+          echo "#"
+          echo "#  WARNING: STALE AUTOSCALINGLISTENERS DETECTED"
+          echo "#"
+          echo "#  ${N} listener(s) are crash-looping with RunnerScaleSetNotFoundException."
+          echo "#  The runner scale set has been deleted on the GitHub side (or the"
+          echo "#  GitHub App lost access to the repo). The ARC controller will NOT"
+          echo "#  auto-recover — the listener will keep crash-looping with the stale"
+          echo "#  scale set ID until you re-register."
+          echo "#"
+          echo "#  Affected:"
+          for _i in "${!STALE_LISTENERS[@]}"; do
+            echo "#    - ${STALE_LISTENERS[$_i]}  →  ARS: ${STALE_ARS[$_i]}"
+          done
+          echo "#"
+          echo "#  Before healing, verify the GitHub App still has access to the repo:"
+          echo "#    gh api /repos/<org>/<repo> | jq '.archived, .name'"
+          echo "#"
+          echo "#  To heal a single ARS:"
+          echo "#    just heal-listeners ${CLUSTER} <ars-name>"
+          echo "#"
+          echo "#  To heal ALL crash-looping listeners on this cluster:"
+          echo "#    just heal-listeners ${CLUSTER}"
+          echo "#"
+          echo "#######################################################################"
+          echo ""
+        fi
+      fi
+    fi
+    ;;
+esac

@@ -255,3 +255,74 @@ The `capacity/` package is entirely ours -- no upstream merge conflicts possible
 - `Dockerfile` — `LABEL org.opencontainers.image.source` rewritten to point at the fork
 - `charts/*/Chart.yaml` — `version` and `appVersion` bumped to `<upstream>-jeanschmidt.<N>` on every fork publish
 - Various other commits across feature branches (e.g., "Drop runner-class from runner placeholders", "Split runner/workflow placeholder fleets", "Require runner-class in workflow affinity") that touch additional files outside `capacity/`
+
+## Stale Listener Recovery
+
+### Symptom
+
+- Listener pods (named `<runner-name>-<hash>-listener`) in `arc-systems` stuck in `CrashLoopBackOff`
+- Pod logs end with `Application returned an error: failed to create actions message session client ... 404 Not Found ... RunnerScaleSetNotFoundException`
+- The post-deploy check in `modules/arc-runners/deploy.sh` prints a WARNING banner naming the affected AutoscalingRunnerSets
+
+### Root cause
+
+The scale-set ID stamped on the AutoscalingRunnerSet annotation `runner-scale-set-id` no longer exists on GitHub's broker. The controller does not verify the annotation against the broker — it trusts any syntactically valid ID. Restarting the listener pod or the controller does not help; only re-registration does.
+
+Common triggers:
+
+- GitHub App installation lost access to the repo (permission rotation, scope change)
+- Repo was renamed, archived, or moved
+- An admin manually deleted scale sets via the GitHub UI or API
+- Broker-side key rotation that invalidated existing scale-set IDs
+
+### Before healing — verify the GitHub App still has access
+
+```bash
+gh api /repos/<org>/<repo> | jq '{name, archived, full_name}'
+gh api /app/installations | jq '.[] | select(.id == <installation-id>)'
+```
+
+If the App lost access, fix that first — `CreateRunnerScaleSet` will also 404 and healing will not work.
+
+### Recovery
+
+Heal a single ARS (smallest blast radius — start here to validate):
+
+```bash
+just heal-listeners <cluster> <ars-name>
+```
+
+Heal all crash-looping listeners on a cluster (use for broad events like broker-key rotation):
+
+```bash
+just heal-listeners <cluster>
+```
+
+The recipe:
+
+1. Removes the `runner-scale-set-id` annotation from the target AutoscalingRunnerSet(s) in `arc-runners`
+2. Deletes the corresponding AutoscalingListener(s) from `arc-systems` to force a clean reconcile
+3. The controller then calls `CreateRunnerScaleSet`, receives a fresh scale-set ID, stamps it on the ARS, and spins up a new listener pod
+
+### Watching recovery
+
+```bash
+kubectl get autoscalinglisteners -n arc-systems -w
+```
+
+New listener pods should reach `Running` within 30-60s. Verify the new scale-set ID:
+
+```bash
+kubectl get autoscalingrunnersets -n arc-runners -o json \
+  | jq '.items[] | {name: .metadata.name, scaleSetId: .metadata.annotations["runner-scale-set-id"]}'
+```
+
+### Opting out of the post-deploy check
+
+For rapid iteration where the check is noise:
+
+```bash
+ARC_LISTENER_CHECK=skip just deploy-module <cluster> arc-runners
+```
+
+The wait window is configurable via `ARC_LISTENER_CHECK_TIMEOUT` (seconds, default 60). The check polls every 5s and breaks early once every listener is either Running steady or has restartCount >= 2.

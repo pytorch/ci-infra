@@ -876,6 +876,92 @@ resume-runners cluster:
     fi
     exit "$EXIT_CODE"
 
+# Re-register AutoscalingRunnerSets with the GitHub broker (recovers from RunnerScaleSetNotFoundException)
+heal-listeners cluster name='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    NAME="{{name}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    just kubeconfig "$CLUSTER"
+
+    if [ -n "$NAME" ]; then
+        if ! kubectl get autoscalingrunnerset -n arc-runners "$NAME" >/dev/null 2>&1; then
+            echo "Error: AutoscalingRunnerSet '$NAME' not found in arc-runners on cluster $CNAME."
+            exit 1
+        fi
+        TARGETS="$NAME"
+    else
+        TARGETS=$(kubectl get autoscalingrunnersets -n arc-runners -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+    fi
+
+    if [ -z "$TARGETS" ]; then
+        echo "  No AutoscalingRunnerSets found in arc-runners — nothing to heal."
+        exit 0
+    fi
+
+    COUNT=$(echo "$TARGETS" | wc -w | tr -d ' ')
+
+    OSDC_CONFIRM="${OSDC_CONFIRM:-ask}"
+    case "$OSDC_CONFIRM" in
+        yes | true) ;;
+        no | false)
+            echo "Warning: OSDC_CONFIRM=$OSDC_CONFIRM — aborting without making changes."
+            exit 1
+            ;;
+        *)
+            read -r -p "  Heal $COUNT listener(s) on cluster $CNAME? This will re-register scale sets with the GitHub broker. [y/N] " REPLY
+            if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+                echo "  Aborted."
+                exit 1
+            fi
+            ;;
+    esac
+
+    HEALED=0
+    SKIPPED=0
+    FAILED=0
+    for ars in $TARGETS; do
+        CURRENT_ID=$(kubectl get autoscalingrunnerset -n arc-runners "$ars" \
+            -o jsonpath="{.metadata.annotations['runner-scale-set-id']}" 2>/dev/null || true)
+        if [ -z "$CURRENT_ID" ]; then
+            echo "  $ars — no scale-set-id annotation, skipping"
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        fi
+        echo "  $ars — removing scale-set-id annotation (was $CURRENT_ID)..."
+        if ! kubectl annotate autoscalingrunnerset -n arc-runners "$ars" runner-scale-set-id- >/dev/null 2>&1; then
+            echo "  $ars — FAILED to remove annotation"
+            FAILED=$((FAILED + 1))
+            continue
+        fi
+        if kubectl delete autoscalinglistener -n arc-systems \
+            -l "actions.github.com/scale-set-name=$ars,actions.github.com/scale-set-namespace=arc-runners" \
+            --ignore-not-found >/dev/null 2>&1; then
+            HEALED=$((HEALED + 1))
+        else
+            echo "  $ars — FAILED to delete listener"
+            FAILED=$((FAILED + 1))
+        fi
+    done
+
+    echo ""
+    echo "  Healed: $HEALED | Skipped: $SKIPPED | Failed: $FAILED"
+    echo ""
+    echo "  The ARC controller will now reconcile each ARS:"
+    echo "    1. Call CreateRunnerScaleSet against the GitHub broker"
+    echo "    2. Stamp the new scale-set-id annotation on the ARS"
+    echo "    3. Create a fresh AutoscalingListener pod with the new ID"
+    echo ""
+    echo "  Watch progress:"
+    echo "    kubectl get autoscalinglisteners -n arc-systems -w"
+    echo ""
+    exit $([ $FAILED -eq 0 ] && echo 0 || echo 1)
+
 # ============================================================================
 # INTERNAL: Base sub-deploys
 # ============================================================================
