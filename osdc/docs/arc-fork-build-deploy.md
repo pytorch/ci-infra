@@ -286,23 +286,32 @@ If the App lost access, fix that first — `CreateRunnerScaleSet` will also 404 
 
 ### Recovery
 
+First, check for drift without touching the cluster (exits non-zero if anything is drifted — safe to run from CI/cron):
+
+```bash
+just heal-arc-check <cluster>
+```
+
 Heal a single ARS (smallest blast radius — start here to validate):
 
 ```bash
-just heal-listeners <cluster> <ars-name>
+just heal-arc <cluster> <ars-name>
 ```
 
-Heal all crash-looping listeners on a cluster (use for broad events like broker-key rotation):
+Heal everything that is drifted on a cluster (use for broad events like broker-key rotation):
 
 ```bash
-just heal-listeners <cluster>
+just heal-arc <cluster>
 ```
 
-The recipe:
+`heal-arc` detects four categories of drift and recovers each in order:
 
-1. Removes the `runner-scale-set-id` annotation from the target AutoscalingRunnerSet(s) in `arc-runners`
-2. Deletes the corresponding AutoscalingListener(s) from `arc-systems` to force a clean reconcile
-3. The controller then calls `CreateRunnerScaleSet`, receives a fresh scale-set ID, stamps it on the ARS, and spins up a new listener pod
+1. **Controller drift** — `arc-gha-rs-controller` Deployment in `arc-systems` is missing or has fewer ready replicas than desired. Recovery: `kubectl rollout restart` + `rollout status` with a 5-minute timeout. If the controller cannot recover, the recipe aborts (no downstream reconcile is possible).
+2. **ARS drift** — the `runner-scale-set-id` annotation is missing on an AutoscalingRunnerSet. Recovery: keep the annotation cleared and delete the matching AutoscalingListener; the controller then calls `CreateRunnerScaleSet` against the GitHub broker, stamps the fresh ID, and creates a new listener pod. All descendant EphemeralRunnerSets are queued for cascade-deletion (they will hold the old ID after re-registration).
+3. **Listener drift** — the AutoscalingListener is missing, its `spec.runnerScaleSetId` does not match the ARS canonical ID, or its pod is not Running/Ready (CrashLoopBackOff, ImagePullBackOff, etc.). Recovery: delete the listener; the controller recreates it using the current ARS annotation.
+4. **ERS drift** — `EphemeralRunnerSet.spec.ephemeralRunnerSpec.runnerScaleSetId` does not match the parent ARS canonical ID. Recovery: delete the EphemeralRunnerSet (cascade-deletes its EphemeralRunners); the parent ARS controller creates a fresh ERS with the current ID.
+
+The `OSDC_CONFIRM=yes|no|ask` gate applies to `heal-arc` (default `ask`). `heal-arc-check` never prompts.
 
 ### Watching recovery
 

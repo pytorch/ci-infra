@@ -876,8 +876,10 @@ resume-runners cluster:
     fi
     exit "$EXIT_CODE"
 
-# Re-register AutoscalingRunnerSets with the GitHub broker (recovers from RunnerScaleSetNotFoundException)
-heal-listeners cluster name='':
+# Detect ARC scale-set-id drift (read-only); exits 1 if any drift found
+# Note: controller drift is always evaluated globally (not scoped by `name`),
+# since a broken controller affects every ARS regardless of which one was named.
+heal-arc-check cluster name='':
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
@@ -888,23 +890,42 @@ heal-listeners cluster name='':
     NAME="{{name}}"
     CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
     just kubeconfig "$CLUSTER"
-
-    if [ -n "$NAME" ]; then
-        if ! kubectl get autoscalingrunnerset -n arc-runners "$NAME" >/dev/null 2>&1; then
-            echo "Error: AutoscalingRunnerSet '$NAME' not found in arc-runners on cluster $CNAME."
-            exit 1
-        fi
-        TARGETS="$NAME"
-    else
-        TARGETS=$(kubectl get autoscalingrunnersets -n arc-runners -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+    REPORT_PATH=$(just _arc-drift-report "$NAME")
+    trap 'rm -f "$REPORT_PATH"' EXIT
+    just _arc-drift-print "$REPORT_PATH" "$CNAME"
+    DRIFT=$(jq -r '.drift_count // 0' < "$REPORT_PATH" 2>/dev/null || echo "")
+    if [ -z "$DRIFT" ] || ! [[ "$DRIFT" =~ ^[0-9]+$ ]]; then
+        echo "Error: could not read drift_count from report" >&2
+        exit 2
     fi
+    [ "$DRIFT" -eq 0 ] && exit 0 || exit 1
 
-    if [ -z "$TARGETS" ]; then
-        echo "  No AutoscalingRunnerSets found in arc-runners — nothing to heal."
+# Detect + recover ARC scale-set-id drift (controller restart, re-register, listener/ERS reset)
+# Note: controller drift is always evaluated globally (not scoped by `name`),
+# since a broken controller affects every ARS regardless of which one was named.
+heal-arc cluster name='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    NAME="{{name}}"
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    just kubeconfig "$CLUSTER"
+    REPORT_PATH=$(just _arc-drift-report "$NAME")
+    trap 'rm -f "$REPORT_PATH"' EXIT
+    just _arc-drift-print "$REPORT_PATH" "$CNAME"
+    DRIFT=$(jq -r '.drift_count // 0' < "$REPORT_PATH" 2>/dev/null || echo "")
+    if [ -z "$DRIFT" ] || ! [[ "$DRIFT" =~ ^[0-9]+$ ]]; then
+        echo "Error: could not read drift_count from report" >&2
+        exit 2
+    fi
+    if [ "$DRIFT" -eq 0 ]; then
+        echo "  Nothing to heal."
         exit 0
     fi
-
-    COUNT=$(echo "$TARGETS" | wc -w | tr -d ' ')
 
     OSDC_CONFIRM="${OSDC_CONFIRM:-ask}"
     case "$OSDC_CONFIRM" in
@@ -914,7 +935,7 @@ heal-listeners cluster name='':
             exit 1
             ;;
         *)
-            read -r -p "  Heal $COUNT listener(s) on cluster $CNAME? This will re-register scale sets with the GitHub broker. [y/N] " REPLY
+            read -r -p "  Heal $DRIFT drifted component(s) on cluster $CNAME? [y/N] " REPLY
             if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
                 echo "  Aborted."
                 exit 1
@@ -922,45 +943,301 @@ heal-listeners cluster name='':
             ;;
     esac
 
-    HEALED=0
-    SKIPPED=0
     FAILED=0
-    for ars in $TARGETS; do
-        CURRENT_ID=$(kubectl get autoscalingrunnerset -n arc-runners "$ars" \
-            -o jsonpath="{.metadata.annotations['runner-scale-set-id']}" 2>/dev/null || true)
-        if [ -z "$CURRENT_ID" ]; then
-            echo "  $ars — no scale-set-id annotation, skipping"
-            SKIPPED=$((SKIPPED + 1))
-            continue
+    if [ "$(jq -r '.controller_drift' < "$REPORT_PATH")" = "true" ]; then
+        echo "  Controller: restarting arc-gha-rs-controller deployment..."
+        if ! kubectl rollout restart deployment/arc-gha-rs-controller -n arc-systems >/dev/null 2>&1; then
+            echo "  Controller: FAILED to issue rollout restart — aborting (nothing downstream will reconcile)."
+            exit 1
         fi
-        echo "  $ars — removing scale-set-id annotation (was $CURRENT_ID)..."
+        if ! kubectl rollout status deployment/arc-gha-rs-controller -n arc-systems --timeout=5m; then
+            echo "  Controller: rollout did not become ready within 5m — aborting."
+            exit 1
+        fi
+        echo "  Controller: ready."
+    fi
+
+    # ars_rereg = ARSes that need annotation clear + re-registration.
+    # Includes both: ARSes missing the annotation, AND ARSes whose listener went
+    # missing (forcing the controller to fully reconcile the scale set).
+    ARS_REREG=$(jq -r '(.ars_drift + .ars_listener_missing) | unique | .[]' < "$REPORT_PATH")
+    REREG_COUNT=0
+    REREG_OK=()
+    for ars in $ARS_REREG; do
+        echo "  ARS $ars: clearing scale-set-id annotation + deleting listener..."
+        OLD_ID=$(kubectl get autoscalingrunnerset -n arc-runners "$ars" \
+            -o jsonpath="{.metadata.annotations['runner-scale-set-id']}" 2>/dev/null || true)
         if ! kubectl annotate autoscalingrunnerset -n arc-runners "$ars" runner-scale-set-id- >/dev/null 2>&1; then
-            echo "  $ars — FAILED to remove annotation"
+            echo "  ARS $ars: FAILED to clear annotation"
             FAILED=$((FAILED + 1))
             continue
         fi
-        if kubectl delete autoscalinglistener -n arc-systems \
+        kubectl delete autoscalinglistener -n arc-systems \
             -l "actions.github.com/scale-set-name=$ars,actions.github.com/scale-set-namespace=arc-runners" \
-            --ignore-not-found >/dev/null 2>&1; then
-            HEALED=$((HEALED + 1))
+            --ignore-not-found >/dev/null 2>&1 || true
+        REREG_COUNT=$((REREG_COUNT + 1))
+
+        # Poll for the controller to stamp a new (different) ID before any
+        # ERS cascade — otherwise the recreated ERSes would inherit the OLD
+        # ID from the still-stale ARS template.
+        NEW_ID=""
+        for _ in $(seq 1 30); do
+            NEW_ID=$(kubectl get autoscalingrunnerset -n arc-runners "$ars" \
+                -o jsonpath="{.metadata.annotations['runner-scale-set-id']}" 2>/dev/null || true)
+            if [ -n "$NEW_ID" ] && [ "$NEW_ID" != "$OLD_ID" ]; then
+                break
+            fi
+            sleep 2
+        done
+        if [ -z "$NEW_ID" ] || [ "$NEW_ID" = "$OLD_ID" ]; then
+            echo "  ARS $ars: controller did not stamp a new ID after 60s; skipping ERS cascade"
+            FAILED=$((FAILED + 1))
+            continue
+        fi
+        REREG_OK+=("$ars")
+    done
+
+    LISTENER_DEL=0
+    for listener in $(jq -r '.listener_drift[]' < "$REPORT_PATH"); do
+        echo "  Listener $listener: deleting (controller will recreate)..."
+        if kubectl delete autoscalinglistener -n arc-systems "$listener" --ignore-not-found >/dev/null 2>&1; then
+            LISTENER_DEL=$((LISTENER_DEL + 1))
         else
-            echo "  $ars — FAILED to delete listener"
+            echo "  Listener $listener: FAILED to delete"
             FAILED=$((FAILED + 1))
         fi
     done
 
+    # Build cascade list: ers_drift always cascades; ers_cascade_from_ars only
+    # cascades for ARSes that successfully re-registered (to avoid wiping ERSes
+    # that would just get recreated with the same stale ID).
+    OK_FILTER=""
+    if [ "${#REREG_OK[@]}" -gt 0 ]; then
+        OK_FILTER=$(printf '%s\n' "${REREG_OK[@]}" | jq -R . | jq -s .)
+    else
+        OK_FILTER='[]'
+    fi
+    ERS_DEL=0
+    while IFS= read -r ers; do
+        [ -z "$ers" ] && continue
+        echo "  ERS $ers: deleting (cascade-deletes EphemeralRunners)..."
+        if kubectl delete ephemeralrunnerset -n arc-runners "$ers" --ignore-not-found >/dev/null 2>&1; then
+            ERS_DEL=$((ERS_DEL + 1))
+        else
+            echo "  ERS $ers: FAILED to delete"
+            FAILED=$((FAILED + 1))
+        fi
+    done < <(jq -r --argjson ok "$OK_FILTER" '
+        ((.ers_drift // []) + ((.ers_cascade_from_ars // []) | map(select(.ars as $a | $ok | index($a))) | map(.ers)))
+        | unique | .[]' < "$REPORT_PATH")
+
+    HEALED=$((REREG_COUNT + LISTENER_DEL + ERS_DEL))
     echo ""
-    echo "  Healed: $HEALED | Skipped: $SKIPPED | Failed: $FAILED"
-    echo ""
-    echo "  The ARC controller will now reconcile each ARS:"
-    echo "    1. Call CreateRunnerScaleSet against the GitHub broker"
-    echo "    2. Stamp the new scale-set-id annotation on the ARS"
-    echo "    3. Create a fresh AutoscalingListener pod with the new ID"
+    echo "  Healed: $HEALED component(s) | Failed: $FAILED"
     echo ""
     echo "  Watch progress:"
     echo "    kubectl get autoscalinglisteners -n arc-systems -w"
+    echo "    kubectl get ephemeralrunnersets -n arc-runners -w"
     echo ""
-    exit $([ $FAILED -eq 0 ] && echo 0 || echo 1)
+    [ "$FAILED" -eq 0 ] && exit 0 || exit 1
+
+# Build ARC drift report as JSON (internal helper for heal-arc / heal-arc-check).
+# Writes the report to a tempfile under /tmp and echoes ONLY the path on stdout.
+# Caller is responsible for deleting the tempfile.
+_arc-drift-report name='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NAME="{{name}}"
+
+    # Stage kubectl outputs in tempfiles — combined JSON exceeds ARG_MAX on
+    # large clusters (~1.25MB ARS blob alone on arc-staging), so --argjson is
+    # not viable. --slurpfile takes a file path instead.
+    WORK=$(mktemp -d)
+    trap 'rm -rf "$WORK"' EXIT
+    CTRL_F="$WORK/ctrl.json"
+    ARS_F="$WORK/ars.json"
+    LISTENERS_F="$WORK/listeners.json"
+    PODS_F="$WORK/pods.json"
+    ERS_F="$WORK/ers.json"
+
+    # Controller: query by deployment name (not label) — same source-of-truth
+    # for both detection and recovery. --ignore-not-found returns empty body
+    # rather than an error if the deployment is absent.
+    kubectl get deployment -n arc-systems arc-gha-rs-controller -o json --ignore-not-found 2>/dev/null > "$CTRL_F" || true
+    # Wrap the single-deployment response in a List shape ({items: [...]})
+    # so downstream jq can treat it uniformly with the other queries.
+    if [ ! -s "$CTRL_F" ]; then
+        echo '{"items":[]}' > "$CTRL_F"
+    elif ! jq -e '.items' < "$CTRL_F" >/dev/null 2>&1; then
+        jq '{items: [.]}' < "$CTRL_F" > "$CTRL_F.tmp" && mv "$CTRL_F.tmp" "$CTRL_F"
+    fi
+
+    kubectl get autoscalingrunnersets -n arc-runners -o json 2>/dev/null > "$ARS_F" || echo '{"items":[]}' > "$ARS_F"
+    if [ -n "$NAME" ]; then
+        jq --arg n "$NAME" '.items |= map(select(.metadata.name == $n))' < "$ARS_F" > "$ARS_F.tmp" \
+            && mv "$ARS_F.tmp" "$ARS_F"
+    fi
+    kubectl get autoscalinglisteners -n arc-systems -o json 2>/dev/null > "$LISTENERS_F" || echo '{"items":[]}' > "$LISTENERS_F"
+    # Listener pods: queried unfiltered, looked up by NAME (== AutoscalingListener
+    # resource name, per ARC's resourcebuilder.go). Avoids guessing labels.
+    kubectl get pods -n arc-systems -o json 2>/dev/null > "$PODS_F" || echo '{"items":[]}' > "$PODS_F"
+    kubectl get ephemeralrunnersets -n arc-runners -o json 2>/dev/null > "$ERS_F" || echo '{"items":[]}' > "$ERS_F"
+
+    REPORT_PATH=$(mktemp -t heal-arc-report.XXXXXX.json)
+
+    jq -n \
+        --slurpfile ctrl "$CTRL_F" \
+        --slurpfile ars "$ARS_F" \
+        --slurpfile listeners "$LISTENERS_F" \
+        --slurpfile pods "$PODS_F" \
+        --slurpfile ers "$ERS_F" '
+        ($ctrl[0]) as $ctrl
+        | ($ars[0]) as $ars
+        | ($listeners[0]) as $listeners
+        | ($pods[0]) as $pods
+        | ($ers[0]) as $ers
+
+        # Build a name -> pod index once so per-listener lookups are O(1).
+        | (($pods.items // []) | map({key: .metadata.name, value: .}) | from_entries) as $pod_by_name
+
+        | def pod_status($name):
+            ($pod_by_name[$name] // null)
+            | if . == null then "Missing"
+              elif (.status.phase != "Running") then .status.phase
+              elif (([.status.containerStatuses[]? | select(.ready == true)] | length) == 0) then "NotReady"
+              else "Ready" end;
+
+        ($ctrl.items // []) as $cdeps
+        | (if ($cdeps | length) == 0 then true
+           else ($cdeps | any((.status.readyReplicas // 0) < (.spec.replicas // 0))) end) as $controller_drift
+
+        | ($ars.items // []) as $arsl
+        | [ $arsl[] | select((.metadata.annotations["runner-scale-set-id"] // "") == "") | .metadata.name ] as $ars_missing_id
+
+        | [ $arsl[] | select((.metadata.annotations["runner-scale-set-id"] // "") != "")
+            | . as $a
+            | (.metadata.annotations["runner-scale-set-id"] | tonumber) as $cid
+            | ($listeners.items // []) | map(select(
+                .spec.autoscalingRunnerSetName == $a.metadata.name
+                and .spec.autoscalingRunnerSetNamespace == "arc-runners"
+              )) | first as $l
+            | if $l == null then { ars: $a.metadata.name, listener: null, reason: "missing" }
+              elif ($l.spec.runnerScaleSetId != $cid) then
+                { ars: $a.metadata.name, listener: $l.metadata.name, reason: ("id-mismatch (\($l.spec.runnerScaleSetId) != \($cid))") }
+              else (pod_status($l.metadata.name)) as $st
+                | if $st == "Ready" then empty
+                  else { ars: $a.metadata.name, listener: $l.metadata.name, reason: ("pod-\($st)") } end
+              end
+          ] as $listener_problems
+
+        # ARSes whose listener resource is entirely missing — these need the
+        # parent ARS re-registered (annotation clear), not just a listener delete.
+        | [ $listener_problems[] | select(.listener == null) | .ars ] as $ars_listener_missing
+
+        | [ $ers.items[]
+            | . as $e
+            | ((.metadata.ownerReferences // []) | map(select(.kind == "AutoscalingRunnerSet")) | first) as $owner
+            | if $owner == null then empty
+              else $arsl | map(select(.metadata.name == $owner.name)) | first as $owning_ars
+                | if $owning_ars == null then empty
+                  else ($owning_ars.metadata.annotations["runner-scale-set-id"] // "") as $cidstr
+                    | if $cidstr == "" then empty
+                      else ($cidstr | tonumber) as $cid
+                        # Skip ERSes whose runnerScaleSetId is unset — they are
+                        # in-flight being created, not stale.
+                        | if $e.spec.ephemeralRunnerSpec.runnerScaleSetId == null then empty
+                          elif $e.spec.ephemeralRunnerSpec.runnerScaleSetId != $cid then
+                            { ers: $e.metadata.name, ars: $owner.name, expected: $cid, actual: $e.spec.ephemeralRunnerSpec.runnerScaleSetId }
+                          else empty end
+                      end
+                  end
+              end
+          ] as $ers_problems
+
+        # ERSes whose parent ARS will be re-registered (annotation cleared) —
+        # they need to be cascade-deleted after re-registration completes,
+        # because the new ID will not propagate to existing ERS templates.
+        # Pairs are (ers, ars) so the heal loop can filter by which ARSes
+        # actually re-registered successfully.
+        | [ $ers.items[]
+            | . as $e
+            | ((.metadata.ownerReferences // []) | map(select(.kind == "AutoscalingRunnerSet")) | first) as $owner
+            | select($owner != null and (($ars_missing_id + $ars_listener_missing) | index($owner.name)))
+            | { ers: $e.metadata.name, ars: $owner.name }
+          ] as $ers_cascade
+
+        | {
+            controller_drift: $controller_drift,
+            ars_drift: $ars_missing_id,
+            ars_listener_missing: $ars_listener_missing,
+            listener_drift: ($listener_problems | map(select(.listener != null)) | map(.listener)),
+            listener_problems: $listener_problems,
+            ers_drift: ($ers_problems | map(.ers)),
+            ers_problems: $ers_problems,
+            ers_cascade_from_ars: $ers_cascade,
+            drift_count: (
+                (if $controller_drift then 1 else 0 end)
+                + ($ars_missing_id | length)
+                + ($listener_problems | length)
+                + ($ers_problems | length)
+            )
+          }
+        ' > "$REPORT_PATH"
+
+    echo "$REPORT_PATH"
+
+# Pretty-print ARC drift report (internal helper for heal-arc / heal-arc-check).
+# Takes the path to the report tempfile (not the JSON itself) to keep arg sizes small.
+_arc-drift-print report_path cname:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REPORT_PATH="{{report_path}}"
+    CNAME="{{cname}}"
+    if [ ! -s "$REPORT_PATH" ]; then
+        echo "Error: report file is empty or missing: $REPORT_PATH" >&2
+        exit 2
+    fi
+    echo "ARC drift report for cluster $CNAME:"
+    echo ""
+    if [ "$(jq -r '.controller_drift' < "$REPORT_PATH")" = "true" ]; then
+        echo "  Controller (arc-gha-rs-controller): DRIFT (not ready or missing)"
+    else
+        echo "  Controller (arc-gha-rs-controller): OK"
+    fi
+    echo ""
+    echo "  ARS missing scale-set-id annotation:"
+    if [ "$(jq -r '.ars_drift | length' < "$REPORT_PATH")" -eq 0 ]; then
+        echo "    (none)"
+    else
+        jq -r '.ars_drift[] | "    - \(.)"' < "$REPORT_PATH"
+    fi
+    echo ""
+    echo "  Listener drift (missing / id-mismatch / pod-not-ready):"
+    if [ "$(jq -r '.listener_problems | length' < "$REPORT_PATH")" -eq 0 ]; then
+        echo "    (none)"
+    else
+        jq -r '.listener_problems[] | "    - ARS \(.ars): \(.reason)"' < "$REPORT_PATH"
+    fi
+    echo ""
+    echo "  ERS drift (cached runnerScaleSetId mismatches parent ARS):"
+    if [ "$(jq -r '.ers_problems | length' < "$REPORT_PATH")" -eq 0 ]; then
+        echo "    (none)"
+    else
+        jq -r '.ers_problems[] | "    - \(.ers): expected \(.expected), actual \(.actual) (parent ARS: \(.ars))"' < "$REPORT_PATH"
+    fi
+    CASCADE=$(jq -r '.ers_cascade_from_ars | length' < "$REPORT_PATH")
+    if [ "$CASCADE" -gt 0 ]; then
+        echo ""
+        echo "  ERS cascade-delete queued (parent ARS needs re-registration):"
+        jq -r '.ers_cascade_from_ars[] | "    - \(.ers) (ARS: \(.ars))"' < "$REPORT_PATH"
+    fi
+    echo ""
+    DRIFT=$(jq -r '.drift_count' < "$REPORT_PATH")
+    if [ "$DRIFT" -eq 0 ]; then
+        echo "  Summary: no drift detected."
+    else
+        echo "  Summary: $DRIFT component(s) drifted."
+    fi
 
 # ============================================================================
 # INTERNAL: Base sub-deploys
