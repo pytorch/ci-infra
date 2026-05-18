@@ -1,6 +1,5 @@
 # Karpenter NodePool fleet: t4g
-# AWS Graviton2 — burstable, ARM64, ~4 GiB/core ratio.
-# Hosts the small linux.arm64.2xlarge[.ephemeral] labels (one job per node).
+# AWS Graviton2 — burstable, ARM64, ~4 GiB/core ratio
 fleet:
   name: t4g
   arch: arm64

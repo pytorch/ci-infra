@@ -1,6 +1,5 @@
 # ARC runner definition: l-arm64g2-6-32
-# Instance type: t4g.2xlarge (AWS Graviton2, 8 vCPU / 32 GiB)
-# Backs linux.arm64.2xlarge[.ephemeral]. One job per node.
+# Instance type: t4g.2xlarge (pool: t4g)
 runner:
   name: l-arm64g2-6-32
   instance_type: t4g.2xlarge

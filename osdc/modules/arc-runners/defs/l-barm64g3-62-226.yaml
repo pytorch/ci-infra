@@ -1,5 +1,5 @@
 # ARC runner definition: l-barm64g3-62-226
-# Instance type: m7g.metal (true bare-metal — AWS Graviton3, 64 vCPU / 256 GiB)
+# Instance type: m7g.metal (dedicated node — bare-metal runner)
 # Used for: inductor CPU perf benchmarks (needs bare-metal for noise isolation)
 runner:
   name: l-barm64g3-62-226
