@@ -11,9 +11,10 @@ terraform {
 
 # VPC
 resource "aws_vpc" "this" {
-  cidr_block           = var.cidr
-  enable_dns_hostnames = var.enable_dns_hostnames
-  enable_dns_support   = var.enable_dns_support
+  cidr_block                       = var.cidr
+  assign_generated_ipv6_cidr_block = true
+  enable_dns_hostnames             = var.enable_dns_hostnames
+  enable_dns_support               = var.enable_dns_support
 
   tags = merge(
     var.tags,
@@ -35,14 +36,28 @@ resource "aws_internet_gateway" "this" {
   )
 }
 
+# Egress-Only Internet Gateway (IPv6 outbound from private subnets)
+resource "aws_egress_only_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
+
+  tags = merge(
+    var.tags,
+    {
+      Name = var.name
+    }
+  )
+}
+
 # Public Subnets
 resource "aws_subnet" "public" {
   count = length(var.public_subnets)
 
-  vpc_id                  = aws_vpc.this.id
-  cidr_block              = var.public_subnets[count.index]
-  availability_zone       = var.azs[count.index]
-  map_public_ip_on_launch = true
+  vpc_id                          = aws_vpc.this.id
+  cidr_block                      = var.public_subnets[count.index]
+  ipv6_cidr_block                 = cidrsubnet(aws_vpc.this.ipv6_cidr_block, 8, count.index + 100)
+  assign_ipv6_address_on_creation = true
+  availability_zone               = var.azs[count.index]
+  map_public_ip_on_launch         = true
 
   tags = merge(
     var.tags,
@@ -60,9 +75,11 @@ resource "aws_subnet" "public" {
 resource "aws_subnet" "private" {
   count = length(var.private_subnets)
 
-  vpc_id            = aws_vpc.this.id
-  cidr_block        = var.private_subnets[count.index]
-  availability_zone = var.azs[count.index]
+  vpc_id                          = aws_vpc.this.id
+  cidr_block                      = var.private_subnets[count.index]
+  ipv6_cidr_block                 = cidrsubnet(aws_vpc.this.ipv6_cidr_block, 8, count.index)
+  assign_ipv6_address_on_creation = true
+  availability_zone               = var.azs[count.index]
 
   tags = merge(
     var.tags,
@@ -124,6 +141,11 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.this.id
   }
 
+  route {
+    ipv6_cidr_block = "::/0"
+    gateway_id      = aws_internet_gateway.this.id
+  }
+
   tags = merge(
     var.tags,
     {
@@ -151,6 +173,11 @@ resource "aws_route_table" "private" {
       cidr_block     = "0.0.0.0/0"
       nat_gateway_id = var.single_nat_gateway ? aws_nat_gateway.this[0].id : aws_nat_gateway.this[count.index].id
     }
+  }
+
+  route {
+    ipv6_cidr_block        = "::/0"
+    egress_only_gateway_id = aws_egress_only_internet_gateway.this.id
   }
 
   tags = merge(

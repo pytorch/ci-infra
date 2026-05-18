@@ -123,9 +123,9 @@ resource "aws_iam_role_policy_attachment" "efs_csi_driver" {
 # --- EFS CSI Driver EKS Addon ---
 
 resource "aws_eks_addon" "efs_csi_driver" {
-  cluster_name = var.cluster_name
-  addon_name   = "aws-efs-csi-driver"
-  # Omit addon_version to use AWS-recommended default version
+  cluster_name                = var.cluster_name
+  addon_name                  = "aws-efs-csi-driver"
+  addon_version               = "v3.2.0-eksbuild.1"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "PRESERVE"
 
