@@ -43,7 +43,10 @@ variable "cluster_endpoint_public_access" {
 }
 
 variable "cluster_endpoint_public_access_cidrs" {
-  description = "List of CIDR blocks that can access the public API server endpoint"
+  # EKS public API endpoint is IPv4-only — even on IPv6-only clusters the
+  # control-plane public endpoint cannot serve IPv6 clients. Adding ::/0 is
+  # meaningless and rejected by EKS. IPv4-only CIDRs only.
+  description = "List of IPv4 CIDR blocks that can access the public API server endpoint (EKS public endpoint is IPv4-only)"
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }

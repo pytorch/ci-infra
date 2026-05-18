@@ -43,9 +43,13 @@ Each pod runs three containers:
   the only port exposed via Service. Runs as caching reverse proxy and njs index
   merger.
 - **pypiserver** (`pypiserver/pypiserver:v2.4.1`) on localhost port 8081 with
-  `--backend cached-dir`. Serves locally-built wheels from the per-slug EFS
-  wheelhouse subdirectory. The `cached-dir` backend rescans on directory mtime
-  change, so wheels added by `wheel-syncer` become servable without restart.
+  `--backend simple-dir`. Serves locally-built wheels from the per-slug EFS
+  wheelhouse subdirectory. Every `/simple/<pkg>/` request does a fresh
+  `os.listdir` of the wheelhouse — required because `cached-dir`'s inotify-based
+  invalidation does not observe NFS writes by other clients (e.g. `wheel-syncer`
+  in a separate pod), so its in-memory index would freeze on first scan. Nginx
+  caches the `/simple/<pkg>/` response for 30 minutes upstream, so the per-request
+  listdir cost is negligible.
 - **nginx-prometheus-exporter** (`docker.io/nginx/nginx-prometheus-exporter:1.4.1`)
   on port 9113 scraping `/stub_status` for monitoring.
 
@@ -255,8 +259,8 @@ End-to-end flow when a CI job triggers a source build:
 4. The external builder consumes `wants/*.txt` + `needbuild.txt`, builds the
    wheels, uploads them to `s3://pytorch-pypi-wheel-cache/{slug}/`.
 5. wheel-syncer downloads new wheels to `/data/wheelhouse/{slug}/` on EFS via
-   atomic rename. pypiserver's `cached-dir` backend picks them up on its next
-   directory rescan.
+   atomic rename. pypiserver's `simple-dir` backend picks them up on the next
+   `/simple/<pkg>/` request (fresh `os.listdir` per request).
 6. Next time a job requests `foo` via `/simple/foo/`, the merge handler sees
    the local wheel, includes it (and prefers it on filename collision).
 
