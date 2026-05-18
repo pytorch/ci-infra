@@ -11,6 +11,9 @@ metadata:
     k8s-app: node-local-dns
     app.kubernetes.io/managed-by: osdc-base
 spec:
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+    - IPv6
   clusterIP: None
   selector:
     k8s-app: node-local-dns

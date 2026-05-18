@@ -69,7 +69,7 @@ Every Karpenter NodePool applies this startup taint via the `startupTaints` fiel
 Runner pods include an init container that polls for a file on the host filesystem before the runner container can start. This file is placed by a DaemonSet.
 
 **DaemonSet**: `runner-hooks-warmer` (`modules/arc-runners/kubernetes/hooks-warmer.yaml`)
-- Downloads patched `runner-container-hooks` v0.8.12 from GitHub releases
+- Downloads patched `runner-container-hooks` v0.8.13 from GitHub releases
 - Extracts to `/mnt/runner-container-hooks/dist/` on host NVMe
 - Validates `dist/index.js` exists after extraction
 - Writes version marker for idempotency
@@ -111,7 +111,7 @@ These DaemonSets also run on new nodes but do not block runner scheduling:
 
 Per-node CoreDNS cache running as a DaemonSet on **every** node. Reduces cluster-wide DNS load and lowers per-pod resolution latency. Pod spec uses `priorityClassName: system-node-critical` so it lands early and won't be evicted under kubelet pressure. Resource footprint is `25m` CPU / `100Mi` memory requests, no limits (memory limit risks OOMKill → orphan iptables → cluster-wide DNS degradation).
 
-**Why no startup taint blocks workloads on NLD readiness**: NLD operates in iptables-mode. The kubelet's `--cluster-dns` value is **unchanged** — pods continue resolving via the kube-dns Service ClusterIP. NLD installs NOTRACK iptables rules on a dummy `nodelocaldns` interface that binds both `169.254.20.10` and the kube-dns Service ClusterIP. While the NLD pod is not yet ready (or fails), DNS queries fall through gracefully to cluster CoreDNS via the unchanged kube-dns Service Endpoints. There is no scheduling deadlock to protect against, so no startup taint is needed.
+**Why no startup taint blocks workloads on NLD readiness**: NLD operates in iptables-mode. The kubelet's `--cluster-dns` value is **unchanged** — pods continue resolving via the kube-dns Service ClusterIP. NLD installs NOTRACK iptables rules on a dummy `nodelocaldns` interface that binds both `fd00::10` (IPv6 ULA) and the kube-dns Service ClusterIP. While the NLD pod is not yet ready (or fails), DNS queries fall through gracefully to cluster CoreDNS via the unchanged kube-dns Service Endpoints. There is no scheduling deadlock to protect against, so no startup taint is needed.
 
 **Cold-pull race on fresh Karpenter nodes**: The image (`registry.k8s.io/dns/k8s-dns-node-cache:1.26.8`, ~50MB) is lazy-pulled via the Harbor proxy cache — it is **not** pre-mirrored to ECR. On a brand-new node, NLD typically sees ~30-60s of `ImagePullBackOff` until `registry-mirror-config` writes containerd's `hosts.toml` and the proxy-cache pull succeeds. During that window, pods on the node continue to use cluster CoreDNS via the unchanged kube-dns Service — no pod-visible failure, just no per-node cache yet.
 
@@ -127,7 +127,7 @@ Exposes `nvidia.com/gpu` resources to the Kubernetes scheduler. Without this Dae
 
 **File**: `base/kubernetes/registry-mirror-config.yaml`
 
-Configures containerd's `certs.d/` on every node to route image pulls through Harbor's proxy cache at `localhost:30002`. Covers six registries: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io. Uses a marker file for idempotency. If Harbor is unavailable, containerd falls through to upstream registries automatically.
+Configures containerd's `certs.d/` on every node to route image pulls through Harbor's proxy cache at `harbor:30002`. Covers six registries: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io. Uses a marker file for idempotency. If Harbor is unavailable, containerd falls through to upstream registries automatically.
 
 Runs on ALL nodes (no nodeSelector, tolerates everything).
 

@@ -41,6 +41,11 @@ alloy:
   # runtime override file because it includes per-cluster secrets and config.
   # Helm array overrides replace entirely, so all env vars must be in one place.
 
+  # Bind dual-stack so the kubelet readinessProbe (which targets the pod's
+  # IPv6 address on IPv6-only EKS) can reach the HTTP server. Chart default
+  # is 0.0.0.0 which is IPv4-only and leaves the DaemonSet stuck NotReady.
+  listenAddr: "[::]"
+
   mounts:
     varlog: true                 # /var/log for pod logs
     dockercontainers: false      # containerd, not Docker
