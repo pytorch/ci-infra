@@ -272,7 +272,7 @@ class TestGenerateDeploymentYaml:
             args = container["args"]
             assert "--debugaddr" in args, "buildkitd must have --debugaddr for Prometheus metrics"
             idx = args.index("--debugaddr")
-            assert args[idx + 1] == "0.0.0.0:9090"
+            assert args[idx + 1] == "[::]:9090"
 
     def test_metrics_port_declared(self):
         output = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)

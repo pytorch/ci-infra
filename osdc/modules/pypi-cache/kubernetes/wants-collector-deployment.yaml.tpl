@@ -87,6 +87,12 @@ spec:
               value: "/pip-packages"
             - name: PYTHONUNBUFFERED
               value: "1"
+            # Use AWS dualstack endpoints (s3.dualstack.<region>.amazonaws.com,
+            # sts.dualstack.<region>.amazonaws.com) so boto3 reaches them over
+            # IPv6 from the IPv6-only pod. boto3 default endpoints are
+            # IPv4-only and rely on V4-egress NAT.
+            - name: AWS_USE_DUALSTACK_ENDPOINT
+              value: "true"
 
           securityContext:
             allowPrivilegeEscalation: false
