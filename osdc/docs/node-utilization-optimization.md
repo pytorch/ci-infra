@@ -203,6 +203,13 @@ The only way to push these above 85% is to use instances where `N × runner_size
 
 **Not covered by this analysis** (added later): the dedicated **release runner class** (`rel-l-x86iavx512-8-64`, `rel-l-arm64g4-16-62`) introduced in commit `903d1d4`, and the A100 / H100 GPU runners (see GPU Nodepools table for instance details).
 
+**ARM64 silicon refinement** (post-snapshot, PR #591): the Phase 2 decision to run all small ARM64 runners on `m8g.48xlarge` silently substituted Graviton4 for the Graviton2/3 silicon the EC2 labels promised, and the bare-metal `l-barm64g4-62-226` runs on a virtualized `m8g.16xlarge` dedicated node rather than true AWS bare-metal (see pytorch/pytorch#184284). Backings were corrected to match the EC2-promised silicon:
+- `l-arm64g2-6-32` → `t4g.2xlarge` (Graviton2, 1 pod/node)
+- `l-arm64g3-16-62` → `m7g.8xlarge` (Graviton3, 2 pods/node — `.8xlarge` needed because the 62Gi pod doesn't fit on `m7g.4xlarge` after kubelet overhead)
+- `l-barm64g3-62-226` (new pool) → `m7g.metal` (true Graviton3 bare-metal); replaces `l-barm64g4-62-226` as the backing for `linux.arm64.m7g.metal`
+
+This trades the heavy `m8g.48xlarge` bin-packing for honest silicon — per-pod cost on `l-arm64g3-16-62` rises ~30-50% at peak burst, and the standing bare-metal pool carries a fixed cost. See PR #591 for the full rationale.
+
 ### Phase 3: Retire Old Nodepools (DONE — merged into Phase 2)
 No ARC runners use r5.24xlarge anymore. The nodepool is retained solely for RE job-assigner workloads. r7g.16xlarge kept for the single memory-heavy ARM64 runner. Karpenter will drain underutilized r5 nodes naturally after redeployment.
 
