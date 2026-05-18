@@ -2568,10 +2568,21 @@ def cancel(
             with Live(
                 Spinner("dots", text="📡 Cancelling reservations..."), console=console
             ) as live:
+                # Build east1 reservation manager for cross-region cancellations
+                east1_mgr = None
+                east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+                if east1_env:
+                    import os as _os
+                    _east1_config = Config()
+                    _east1_config.aws_region = east1_env["region"]
+                    east1_mgr = ReservationManager(_east1_config)
+
                 for reservation in reservations:
                     res_id = reservation.get("reservation_id", "")
                     if res_id:
-                        success = reservation_mgr.cancel_reservation(
+                        # Use east1 manager for east1 reservations
+                        mgr = east1_mgr if reservation.get("_region") in ("east1", "us-east-1") and east1_mgr else reservation_mgr
+                        success = mgr.cancel_reservation(
                             res_id, user_info["user_id"]
                         )
                         if success:
