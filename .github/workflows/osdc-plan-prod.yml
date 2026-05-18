@@ -22,20 +22,12 @@ defaults:
 
 jobs:
   plan:
-    name: tofu plan (${{ matrix.cluster }})
-    strategy:
-      # One cluster's plan failure shouldn't cancel the other — reviewers want
-      # to see both diffs even if one is broken.
-      fail-fast: false
-      matrix:
-        cluster:
-          - arc-cbr-production
-          - arc-cbr-production-uw1
+    name: tofu plan (prod)
     # OIDC doesn't work for fork PRs — skip rather than surface a confusing failure.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     environment: osdc-staging
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -58,69 +50,66 @@ jobs:
           aws-region: us-west-2
           role-duration-seconds: 3600
 
-      - name: Run tofu plan
-        id: plan
-        continue-on-error: true
-        env:
-          TF_IN_AUTOMATION: "1"
-        run: |
-          set -o pipefail
-          just plan ${{ matrix.cluster }} 2>&1 | tee plan.txt
-
-      - name: Post plan to PR
+      - name: Plan and post per cluster
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          PLAN_OUTCOME: ${{ steps.plan.outcome }}
-          CLUSTER: ${{ matrix.cluster }}
-          # Per-cluster marker so the two matrix jobs each maintain their own
-          # comment instead of overwriting each other.
-          MARKER: "<!-- osdc-plan-prod-${{ matrix.cluster }} -->"
+          TF_IN_AUTOMATION: "1"
         run: |
           set -euo pipefail
-          # GitHub issue comment body limit is 65536 chars; leave headroom.
-          MAX=60000
-          if [ "$(wc -c < plan.txt)" -gt "$MAX" ]; then
-              head -c "$MAX" plan.txt > plan-trimmed.txt
-              printf '\n... (truncated — see workflow logs for full plan)\n' >> plan-trimmed.txt
-              mv plan-trimmed.txt plan.txt
-          fi
-          if [ "$PLAN_OUTCOME" = "success" ]; then
-              STATUS="✅ Plan succeeded"
-          else
-              STATUS="❌ Plan failed"
-          fi
-          {
-              echo "$MARKER"
-              echo "### tofu plan — ${CLUSTER}"
-              echo ""
-              echo "$STATUS · commit \`${GITHUB_SHA::8}\` · [run log](${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
-              echo ""
-              echo '<details><summary>Plan output</summary>'
-              echo ""
-              echo '```'
-              cat plan.txt
-              echo '```'
-              echo ""
-              echo '</details>'
-          } > body.md
+          FAILED=()
+          for CLUSTER in arc-cbr-production arc-cbr-production-uw1; do
+              echo "::group::tofu plan ${CLUSTER}"
+              if just plan "${CLUSTER}" 2>&1 | tee plan.txt; then
+                  STATUS="✅ Plan succeeded"
+              else
+                  STATUS="❌ Plan failed"
+                  FAILED+=("$CLUSTER")
+              fi
+              echo "::endgroup::"
 
-          EXISTING=$(gh api "/repos/${REPO}/issues/${PR_NUMBER}/comments" \
-              --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" | head -n1)
-          BODY_JSON=$(jq -Rs '{body: .}' body.md)
-          if [ -n "$EXISTING" ]; then
-              echo "Updating existing comment $EXISTING"
-              echo "$BODY_JSON" | gh api --method PATCH --input - \
-                  "/repos/${REPO}/issues/comments/${EXISTING}" >/dev/null
-          else
-              echo "Creating new comment"
-              echo "$BODY_JSON" | gh api --method POST --input - \
-                  "/repos/${REPO}/issues/${PR_NUMBER}/comments" >/dev/null
-          fi
+              # GitHub issue comment body limit is 65536 chars; leave headroom.
+              MAX=60000
+              if [ "$(wc -c < plan.txt)" -gt "$MAX" ]; then
+                  head -c "$MAX" plan.txt > plan-trimmed.txt
+                  printf '\n... (truncated — see workflow logs for full plan)\n' >> plan-trimmed.txt
+                  mv plan-trimmed.txt plan.txt
+              fi
 
-      - name: Fail the job if plan failed
-        if: steps.plan.outcome != 'success'
-        run: |
-          echo "tofu plan failed — see the plan step logs and the PR comment for details."
-          exit 1
+              # Per-cluster marker so each cluster's comment stays separate.
+              MARKER="<!-- osdc-plan-prod-${CLUSTER} -->"
+              {
+                  echo "$MARKER"
+                  echo "### tofu plan — ${CLUSTER}"
+                  echo ""
+                  echo "$STATUS · commit \`${GITHUB_SHA::8}\` · [run log](${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
+                  echo ""
+                  echo '<details><summary>Plan output</summary>'
+                  echo ""
+                  echo '```'
+                  cat plan.txt
+                  echo '```'
+                  echo ""
+                  echo '</details>'
+              } > body.md
+
+              EXISTING=$(gh api "/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                  --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" | head -n1)
+              BODY_JSON=$(jq -Rs '{body: .}' body.md)
+              if [ -n "$EXISTING" ]; then
+                  echo "Updating existing comment $EXISTING"
+                  echo "$BODY_JSON" | gh api --method PATCH --input - \
+                      "/repos/${REPO}/issues/comments/${EXISTING}" >/dev/null
+              else
+                  echo "Creating new comment"
+                  echo "$BODY_JSON" | gh api --method POST --input - \
+                      "/repos/${REPO}/issues/${PR_NUMBER}/comments" >/dev/null
+              fi
+          done
+
+          if [ "${#FAILED[@]}" -gt 0 ]; then
+              echo ""
+              echo "::error::tofu plan failed for: ${FAILED[*]}"
+              exit 1
+          fi
