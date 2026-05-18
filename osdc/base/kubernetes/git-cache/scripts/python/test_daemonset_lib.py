@@ -1,13 +1,16 @@
 """Unit tests for daemonset_lib — extracted testable functions from daemonset.py."""
 
 import ast
+import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
 from daemonset_lib import (
     MetricsServer,
+    _bracket_if_ipv6,
     _dir_size_bytes,
+    _replica_hash,
     active_slot,
     migrate_old_cache,
     set_current,
@@ -322,6 +325,175 @@ class TestMigrateOldCache:
         current = active_slot(tmp_path)
         slot_a = tmp_path / "git-cache-a"
         assert current == slot_a.resolve()
+
+
+# ============================================================================
+# IPv6 helper tests
+# ============================================================================
+
+
+class TestBracketIfIPv6:
+    """Tests for _bracket_if_ipv6 — URL composition helper."""
+
+    def test_ipv4_unchanged(self):
+        assert _bracket_if_ipv6("10.0.0.5") == "10.0.0.5"
+
+    def test_ipv4_loopback_unchanged(self):
+        assert _bracket_if_ipv6("127.0.0.1") == "127.0.0.1"
+
+    def test_ipv6_full_bracketed(self):
+        assert _bracket_if_ipv6("fd00::abcd:1234") == "[fd00::abcd:1234]"
+
+    def test_ipv6_loopback_bracketed(self):
+        assert _bracket_if_ipv6("::1") == "[::1]"
+
+    def test_ipv6_link_local_bracketed(self):
+        assert _bracket_if_ipv6("fe80::1") == "[fe80::1]"
+
+    def test_round_trip_url_ipv4(self):
+        url = f"http://{_bracket_if_ipv6('10.0.0.5')}:9101/metrics"
+        assert url == "http://10.0.0.5:9101/metrics"
+
+    def test_round_trip_url_ipv6(self):
+        url = f"http://{_bracket_if_ipv6('fd00::5')}:9101/metrics"
+        assert url == "http://[fd00::5]:9101/metrics"
+
+    def test_round_trip_rsync_ipv4(self):
+        src = f"rsync://{_bracket_if_ipv6('10.0.0.5')}/git-cache/"
+        assert src == "rsync://10.0.0.5/git-cache/"
+
+    def test_round_trip_rsync_ipv6(self):
+        src = f"rsync://{_bracket_if_ipv6('fd00::5')}/git-cache/"
+        assert src == "rsync://[fd00::5]/git-cache/"
+
+
+class TestReplicaHash:
+    """Tests for _replica_hash — selected_replica metric value."""
+
+    def test_ipv4_packed_octets(self):
+        # 10.0.0.5 -> 10*256^3 + 0 + 0 + 5 = 167772165
+        assert _replica_hash("10.0.0.5") == 167772165.0
+
+    def test_ipv4_distinct_addresses_distinct_hashes(self):
+        assert _replica_hash("10.0.0.1") != _replica_hash("10.0.0.2")
+
+    def test_ipv6_does_not_crash(self):
+        # The historical IPv4 path would raise ValueError on "fd00::5".split(".")
+        value = _replica_hash("fd00::5")
+        assert isinstance(value, float)
+        assert value >= 0
+
+    def test_ipv6_stable_across_calls(self):
+        assert _replica_hash("fd00::5") == _replica_hash("fd00::5")
+
+    def test_ipv6_distinct_addresses_distinct_hashes(self):
+        assert _replica_hash("fd00::5") != _replica_hash("fd00::6")
+
+    def test_unparseable_ipv4_falls_back_to_hash(self):
+        # Four dot-separated parts but non-numeric: triggers the ValueError
+        # fallback path rather than crashing.
+        value = _replica_hash("a.b.c.d")
+        assert isinstance(value, float)
+        assert value >= 0
+
+    def test_ipv6_stable_across_processes(self):
+        """sha256-derived hash must produce the same value in a fresh
+        Python process. Python's builtin hash() is PYTHONHASHSEED-randomized
+        per process — using it would cause the gauge to jump on every pod
+        restart."""
+        import subprocess
+        import sys
+
+        addr = "fd00::abcd:1234"
+        in_process = _replica_hash(addr)
+
+        script = (
+            "import sys; sys.path.insert(0, "
+            f"{str(Path(__file__).resolve().parent)!r}); "
+            "from daemonset_lib import _replica_hash; "
+            f"print(_replica_hash({addr!r}))"
+        )
+        # Run the subprocess with a fresh PYTHONHASHSEED to prove that
+        # the result is hash-seed-independent (sha256, not Python hash()).
+        env_overrides = {"PYTHONHASHSEED": "random"}
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**__import__("os").environ, **env_overrides},
+        )
+        out_of_process = float(result.stdout.strip())
+        assert in_process == out_of_process, (
+            f"_replica_hash({addr!r}) differs across processes: "
+            f"in-process={in_process}, subprocess={out_of_process}. "
+            "This means the hash is not stable — Prometheus gauge will jump on pod restart."
+        )
+
+
+# ============================================================================
+# discover_replicas IPv6 mock test
+# ============================================================================
+#
+# discover_replicas lives in the ConfigMap script (uses module globals like
+# HEADLESS_SVC and CENTRAL_METRICS_PORT). We exercise the AF_UNSPEC + IPv6
+# parsing logic by extracting the embedded script, executing it as a module
+# with mocked socket.getaddrinfo, and asserting the IPs are returned.
+
+
+class TestDiscoverReplicasIPv6:
+    """Tests that discover_replicas (in the embedded ConfigMap script)
+    handles IPv6 AAAA records returned via AF_UNSPEC."""
+
+    @staticmethod
+    def _load_module():
+        """Import the embedded daemonset.py from the ConfigMap as a module."""
+        import importlib.util
+        import tempfile
+
+        cm_path = Path(__file__).resolve().parent.parent.parent / "daemonset-configmap.yaml"
+        cm = yaml.safe_load(cm_path.read_text())
+        script = cm["data"]["daemonset.py"]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(script)
+            tmp_path = f.name
+        spec = importlib.util.spec_from_file_location("daemonset_cm", tmp_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_discover_replicas_returns_ipv6_addresses(self):
+        module = self._load_module()
+        # AAAA addrinfo tuples: (family, type, proto, canonname, sockaddr)
+        # IPv6 sockaddr is (host, port, flowinfo, scopeid)
+        fake_results = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("fd00::1", 9101, 0, 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("fd00::2", 9101, 0, 0)),
+        ]
+        with patch.object(module.socket, "getaddrinfo", return_value=fake_results) as mock_gai:
+            ips = module.discover_replicas()
+
+        # AF_UNSPEC must be requested so AAAA records are returned on
+        # IPv6-only EKS where there are no A records to fall back to.
+        args, _ = mock_gai.call_args
+        assert socket.AF_UNSPEC in args, f"discover_replicas must use AF_UNSPEC, got args={args}"
+        assert sorted(ips) == ["fd00::1", "fd00::2"]
+
+    def test_discover_replicas_returns_ipv4_addresses(self):
+        module = self._load_module()
+        fake_results = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.1", 9101)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 9101)),
+        ]
+        with patch.object(module.socket, "getaddrinfo", return_value=fake_results):
+            ips = module.discover_replicas()
+        assert sorted(ips) == ["10.0.0.1", "10.0.0.2"]
+
+    def test_discover_replicas_dns_failure_returns_empty(self):
+        module = self._load_module()
+        with patch.object(module.socket, "getaddrinfo", side_effect=socket.gaierror("nope")):
+            ips = module.discover_replicas()
+        assert ips == []
 
 
 # ============================================================================
