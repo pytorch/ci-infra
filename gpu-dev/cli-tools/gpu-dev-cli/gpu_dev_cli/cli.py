@@ -3301,20 +3301,29 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
 
                 live.start()
 
-            # If the selected reservation is from east1, switch to east1 reservation_mgr
-            _sel = next((r for r in (locals().get("reservations") or []) if r.get("reservation_id", "").startswith(reservation_id)), None)
-            if _sel and _sel.get("_region") == "us-east-1":
-                import os as _os
-                east1_cfg = Config.ENVIRONMENTS.get("prod-east1", {})
-                _os.environ["AWS_DEFAULT_REGION"] = east1_cfg["region"]
-                _east1_config = Config()
-                _east1_config.aws_region = east1_cfg["region"]
-                reservation_mgr = ReservationManager(_east1_config)
-
-            # Get connection info
+            # Try current region first, then cross-region if not found
             connection_info = reservation_mgr.get_connection_info(
                 reservation_id, user_info["user_id"]
             )
+
+            # If not found, try the other region
+            if not connection_info:
+                import os as _os
+                current_env = config.user_config.get("environment", "prod")
+                other_envs = {"prod": "prod-east1", "prod-east1": "prod"}
+                other_env_name = other_envs.get(current_env)
+                if other_env_name:
+                    other_env = Config.ENVIRONMENTS.get(other_env_name, {})
+                    if other_env:
+                        _os.environ["AWS_DEFAULT_REGION"] = other_env["region"]
+                        _other_config = Config()
+                        _other_config.aws_region = other_env["region"]
+                        other_mgr = ReservationManager(_other_config)
+                        connection_info = other_mgr.get_connection_info(
+                            reservation_id, user_info["user_id"]
+                        )
+                        if connection_info:
+                            reservation_mgr = other_mgr
 
         live.stop()
 
