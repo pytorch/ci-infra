@@ -359,6 +359,52 @@ class TestGenerateNodepoolYaml:
         ec2 = docs[1]
         assert "capacityReservationSelectorTerms" not in ec2["spec"]
 
+    @patch.dict(
+        os.environ,
+        {"NODEPOOLS_CAPACITY_RESERVATION_IDS_OVERRIDE": "cr-from-cluster-1,cr-from-cluster-2"},
+        clear=False,
+    )
+    def test_capacity_reservation_ids_cluster_override_wins(self):
+        """Cluster-level override replaces the def's capacity_reservation_ids."""
+        nodepool_def = _make_nodepool_def(
+            capacity_type="capacity-block",
+            capacity_reservation_ids=["cr-from-def"],  # should be ignored
+        )
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        terms = ec2["spec"]["capacityReservationSelectorTerms"]
+        ids = [t["id"] for t in terms]
+        assert ids == ["cr-from-cluster-1", "cr-from-cluster-2"]
+        assert "cr-from-def" not in ids
+
+    @patch.dict(
+        os.environ,
+        {"NODEPOOLS_CAPACITY_RESERVATION_IDS_OVERRIDE": "cr-only-from-cluster"},
+        clear=False,
+    )
+    def test_capacity_reservation_ids_cluster_override_with_no_def_value(self):
+        """Cluster-level override applies even when the def has no reservations."""
+        nodepool_def = _make_nodepool_def(capacity_type="capacity-block")
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        terms = ec2["spec"]["capacityReservationSelectorTerms"]
+        assert [t["id"] for t in terms] == ["cr-only-from-cluster"]
+
+    @patch.dict(os.environ, {"NODEPOOLS_CAPACITY_RESERVATION_IDS_OVERRIDE": ""}, clear=False)
+    def test_capacity_reservation_ids_empty_override_keeps_def_value(self):
+        """Empty override env var doesn't clobber the def's value."""
+        nodepool_def = _make_nodepool_def(
+            capacity_type="capacity-block",
+            capacity_reservation_ids=["cr-from-def"],
+        )
+        output = generate_nodepool_yaml(nodepool_def, "nodepools")
+        docs = self._parse(output)
+        ec2 = docs[1]
+        terms = ec2["spec"]["capacityReservationSelectorTerms"]
+        assert [t["id"] for t in terms] == ["cr-from-def"]
+
     @patch.dict(os.environ, {"NODEPOOLS_COMPACTOR_ENABLED": "true"}, clear=False)
     def test_compactor_enabled_sets_when_empty(self):
         nodepool_def = _make_nodepool_def()
