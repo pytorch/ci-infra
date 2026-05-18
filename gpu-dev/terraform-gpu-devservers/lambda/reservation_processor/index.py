@@ -5817,10 +5817,10 @@ def create_jupyter_service(k8s_client, pod_name: str, jupyter_port: int):
         raise
 
 
-def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 840):
+def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 1800):
     """Wait for pod to be ready.
 
-    Default timeout is 840s (14 min) to accommodate large Docker image pulls
+    Default timeout is 1800s (30 min) to accommodate large disk chown + Docker image pulls
     while staying within the Lambda's 900s (15 min) execution limit.
     The remaining 60s buffer allows for Lambda overhead and cleanup.
     """
