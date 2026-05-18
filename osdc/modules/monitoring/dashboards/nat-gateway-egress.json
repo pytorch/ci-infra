@@ -1,0 +1,339 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0"},
+    {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},
+    {"type": "panel", "id": "stat", "name": "Stat", "version": ""},
+    {"type": "panel", "id": "text", "name": "Text", "version": ""}
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "NAT Gateway egress bytes per NAT GW. Watch during the IPv6 cutover soak window — pod-to-IPv4-internet egress (image pulls from ghcr.io / nvcr.io / public.ecr.aws and any IPv6-less destination) routes through the IPv4 NAT GW. Spike > 2x pre-cutover baseline indicates an unexpected IPv4-only destination set; investigate via VPC flow logs. TODO(observability-gap): NAT GW metrics come from CloudWatch (`AWS/NATGateway` namespace, e.g. `BytesOutToDestination`). OSDC's monitoring stack does not yet ship a CloudWatch exporter (e.g. `cloudwatch-exporter` / YACE). Until one is wired up, the panels below render no data — the dashboard is staged so panels light up automatically once the exporter lands.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": ["osdc"],
+      "targetBlank": true,
+      "title": "OSDC Dashboards",
+      "type": "dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "type": "text",
+      "title": "Observability gap (read first)",
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "options": {
+        "mode": "markdown",
+        "code": {"language": "plaintext", "showLineNumbers": false, "showMiniMap": false},
+        "content": "**This dashboard renders no data until a CloudWatch exporter is deployed.**\n\nNAT Gateway metrics live in CloudWatch (`AWS/NATGateway` namespace), not in Mimir. OSDC's monitoring stack does not yet ship `cloudwatch-exporter` or YACE. The panels below reference `aws_natgateway_bytes_out_to_destination` (the canonical Prometheus name produced by `prometheus/cloudwatch_exporter`) — once the exporter is wired up, this dashboard activates automatically.\n\n**Until then**, watch NAT GW egress directly in the AWS console: `CloudWatch → Metrics → AWS/NATGateway → NatGatewayId, Per-NAT GW`. The IPv6 cutover runbook (`docs/ipv6-cluster-recreation.md`) documents the > 2x baseline threshold under \"Soak window\"."
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "id": 2,
+      "title": "NAT Gateway Egress (per NAT GW)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Bytes out to destination per NAT GW. Sum across all NAT GWs in the cluster's VPC. Spike > 2x baseline during the IPv6 soak window means IPv6 pods are hitting unexpected IPv4-only destinations — investigate via VPC flow logs.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 6},
+      "id": 3,
+      "options": {
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "rate(aws_natgateway_bytes_out_to_destination_sum{cluster=\"$cluster\"}[5m])",
+          "legendFormat": "{{nat_gateway_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "NAT GW Bytes Out To Destination (per NAT GW, rate over 5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Total bytes out across all NAT GWs in the cluster's VPC, summed. Baseline this against pre-cutover IPv4 numbers; sustained > 2x is the alert threshold per docs/ipv6-cluster-recreation.md.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "id": 4,
+      "options": {
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(aws_natgateway_bytes_out_to_destination_sum{cluster=\"$cluster\"}[5m]))",
+          "legendFormat": "Total NAT GW egress",
+          "refId": "A"
+        }
+      ],
+      "title": "NAT GW Total Bytes Out (cluster-wide, rate over 5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Active connections per NAT GW. Pairs with conntrack-table-fill alerts on the node side — NAT GW connection count tracks pod-to-IPv4-internet flow count.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "id": 5,
+      "options": {
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "aws_natgateway_active_connection_count_average{cluster=\"$cluster\"}",
+          "legendFormat": "{{nat_gateway_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "NAT GW Active Connections (per NAT GW)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+      "id": 6,
+      "title": "Per-Node Conntrack Pressure (cross-reference)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Per-node conntrack table fill ratio. Top consumers indicate nodes most at risk of `nf_conntrack: table full, dropping packet`. Powered by the `network-pressure-alerts` PrometheusRule (NodeConntrackHighWarn at 0.80, NodeConntrackHighCritical at 0.95).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "line"}
+          },
+          "mappings": [],
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.80},
+              {"color": "red", "value": 0.95}
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 23},
+      "id": 7,
+      "options": {
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "topk(20, node_nf_conntrack_entries{cluster=\"$cluster\"} / node_nf_conntrack_entries_limit{cluster=\"$cluster\"})",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Top 20 Nodes by Conntrack Table Fill",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["osdc", "ipv6", "network", "nat-gateway"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": true, "text": "grafanacloud-pytorchci-prom", "value": "grafanacloud-pytorchci-prom"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data Source",
+        "multi": false,
+        "name": "datasource",
+        "options": [
+          {"selected": true, "text": "grafanacloud-pytorchci-prom", "value": "grafanacloud-pytorchci-prom"}
+        ],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {"selected": true, "text": "pytorch-arc-cbr-production", "value": "pytorch-arc-cbr-production"},
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "definition": "label_values(up, cluster)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Cluster",
+        "multi": false,
+        "name": "cluster",
+        "options": [],
+        "query": {"qryType": 1, "query": "label_values(up, cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "OSDC: NAT Gateway Egress & Conntrack Pressure",
+  "uid": "osdc-nat-gateway-egress",
+  "version": 1,
+  "weekStart": ""
+}

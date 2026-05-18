@@ -356,8 +356,11 @@ def main() -> int:
         cfg.taint_key,
     )
 
-    # Expose Prometheus metrics on :8080/metrics
-    start_http_server(8080)
+    # Expose Prometheus metrics on :8080/metrics. Bind ::0 so the socket
+    # accepts both IPv6 and IPv4-mapped IPv6 connections — the pod has
+    # only an IPv6 address on IPv6-only EKS but ServiceMonitor scrapes
+    # may originate from either family.
+    start_http_server(8080, addr="::")
     log.info("Prometheus metrics server started on :8080")
 
     m.config_info.info(
