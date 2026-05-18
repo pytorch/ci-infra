@@ -82,6 +82,14 @@ resource "aws_eks_cluster" "this" {
     public_access_cidrs     = var.cluster_endpoint_public_access_cidrs
   }
 
+  # IPv6-only pod networking. Service CIDR is auto-assigned by EKS to a ULA
+  # in fd00:ec2::/108 — not customizable. Pod IPs come from a /80 IPv6 prefix
+  # per node via VPC CNI prefix delegation. ipFamily is immutable after
+  # cluster creation.
+  kubernetes_network_config {
+    ip_family = "ipv6"
+  }
+
   # Encrypt Kubernetes secrets at rest using KMS envelope encryption
   dynamic "encryption_config" {
     for_each = var.enable_secrets_encryption ? [1] : []
@@ -168,6 +176,29 @@ resource "aws_eks_addon" "vpc_cni" {
   addon_name                  = "vpc-cni"
   addon_version               = "v1.21.1-eksbuild.3"
   resolve_conflicts_on_update = "PRESERVE"
+
+  # IPv6 mode: ENABLE_PREFIX_DELEGATION is mandatory (each node gets a /80
+  # IPv6 prefix carved into pod IPs). WARM_PREFIX_TARGET=1 keeps a single
+  # spare prefix warm per node — sufficient because each prefix yields
+  # 2^48 addresses.
+  # ENABLE_V4_EGRESS enables pod IPv4 SNAT for outbound traffic to IPv4-only
+  # services (github.com, ghcr.io, nvcr.io, public.ecr.aws). Default is true
+  # since aws-vpc-cni v1.15.1, but pinned explicitly so a default flip cannot
+  # silently disable egress. NOTE: AWS NetworkPolicies do NOT apply to the
+  # IPv4-egress secondary interface — this is a known AWS limitation. See
+  # https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html
+  # IPv6 vs IPv4 mode is selected by the cluster's kubernetes_network_config.ip_family —
+  # the addon reads it from the cluster and configures the daemonset accordingly. The
+  # legacy ENABLE_IPv6 / ENABLE_IPv4 env vars are not in the addon ConfigurationValues
+  # JSON schema (verified against v1.21.1-eksbuild.3); passing them fails with
+  # InvalidParameterException at addon-create time.
+  configuration_values = jsonencode({
+    env = {
+      ENABLE_V4_EGRESS         = "true"
+      ENABLE_PREFIX_DELEGATION = "true"
+      WARM_PREFIX_TARGET       = "1"
+    }
+  })
 
   tags = var.tags
 }
@@ -377,6 +408,7 @@ resource "aws_eks_node_group" "base" {
     aws_iam_role_policy_attachment.cni_policy,
     aws_iam_role_policy_attachment.ecr_policy,
     aws_iam_role_policy_attachment.ssm_policy,
+    aws_iam_role_policy.node_cni_ipv6,
   ]
 }
 
@@ -391,7 +423,7 @@ resource "aws_launch_template" "base" {
     cluster_name          = aws_eks_cluster.this.name
     cluster_endpoint      = aws_eks_cluster.this.endpoint
     cluster_ca_data       = aws_eks_cluster.this.certificate_authority[0].data
-    service_cidr          = aws_eks_cluster.this.kubernetes_network_config[0].service_ipv4_cidr
+    service_cidr          = aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr
     pre_nodeadm_script    = file("${path.root}/../../../base/scripts/bootstrap/eks-base-pre-nodeadm-az-label.sh")
     post_bootstrap_script = file("${path.root}/../../../base/scripts/bootstrap/eks-base-bootstrap.sh")
   }))
@@ -411,6 +443,7 @@ resource "aws_launch_template" "base" {
 
   metadata_options {
     http_endpoint               = "enabled"
+    http_protocol_ipv6          = "enabled"
     http_tokens                 = "required"
     http_put_response_hop_limit = 1
   }
@@ -427,6 +460,13 @@ resource "aws_launch_template" "base" {
   }
 
   tags = var.tags
+
+  lifecycle {
+    precondition {
+      condition     = aws_eks_cluster.this.kubernetes_network_config[0].service_ipv6_cidr != ""
+      error_message = "EKS cluster service_ipv6_cidr is empty — cluster IPv6 networking not yet initialized. Re-run apply."
+    }
+  }
 }
 
 # EKS Node IAM Role
@@ -457,6 +497,41 @@ resource "aws_iam_role_policy_attachment" "node_policy" {
 resource "aws_iam_role_policy_attachment" "cni_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
   role       = aws_iam_role.node.name
+}
+
+# IPv6-mode permissions for the VPC CNI plugin. AmazonEKS_CNI_Policy covers
+# IPv4 ENI/secondary-IP management; IPv6 needs AssignIpv6Addresses and
+# CreateTags on ENIs. UnassignIpv6Addresses is intentionally omitted —
+# the canonical AWS IPv6 IAM doc does not list it; IPv6 unassignment is
+# implicit on ENI detach. See:
+# https://docs.aws.amazon.com/eks/latest/userguide/cni-iam-role.html
+# Describe* duplicates AmazonEKS_CNI_Policy by design (IAM merges the
+# union — no conflict).
+resource "aws_iam_role_policy" "node_cni_ipv6" {
+  name = "${var.cluster_name}-node-cni-ipv6"
+  role = aws_iam_role.node.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:AssignIpv6Addresses",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeTags",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "ec2:CreateTags"
+        Resource = "arn:aws:ec2:*:*:network-interface/*"
+      },
+    ]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "ecr_policy" {

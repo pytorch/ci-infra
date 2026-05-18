@@ -64,6 +64,9 @@ class TestParseImageReference:
     def test_localhost_returns_none(self):
         assert parse_image_reference("localhost:30002/osdc/image:tag") is None
 
+    def test_harbor_hostname_returns_none(self):
+        assert parse_image_reference("harbor:30002/osdc/image:tag") is None
+
     def test_no_tag(self):
         assert parse_image_reference("grafana/alloy") == ("docker.io", "grafana/alloy")
 
