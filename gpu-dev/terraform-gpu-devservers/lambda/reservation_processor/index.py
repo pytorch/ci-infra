@@ -5674,9 +5674,13 @@ EOF
             # with the AWS_ROLE_SESSION_NAME env var below this lets users run
             # `gpu-dev submit` from inside their dev pod with no manual aws sso login.
             service_account_name="gpu-dev-pod-sa",
-            # No fsGroup — avoids recursive chown on large persistent disks (15+ min).
-            # IRSA token is made readable by the startup script instead (chmod in container).
-            security_context=client.V1PodSecurityContext(),
+            # fs_group=1081 makes the IRSA projected token readable by dev user.
+            # OnRootMismatch: skips recursive chown if root dir GID already matches.
+            # Old disks (pre May 11 2026) will chown once on first mount, then instant.
+            security_context=client.V1PodSecurityContext(
+                fs_group=1081,
+                fs_group_change_policy="OnRootMismatch",
+            ),
             # EFA requires host network namespace for RDMA access to efa0 interface
             **({
                 "host_network": True,
@@ -5698,6 +5702,60 @@ EOF
             labels={"app": "gpu-dev-pod", "reservation": pod_name},
             annotations=annotations if annotations else None,
         )
+
+        # Fix root dir GID before creating the real pod (prevents 15+ min fsGroup chown).
+        # Old disks (pre May 11 2026) have root GID != 1081. The fixer pod mounts
+        # the volume WITHOUT fsGroup, sets root dir GID in <2s, then the real pod's
+        # fsGroup + OnRootMismatch sees GID matches and skips recursive chown.
+        if persistent_volume_id:
+            fixer_name = f"{pod_name}-gid-fix"
+            try:
+                fixer_spec = client.V1PodSpec(
+                    restart_policy="Never",
+                    node_selector=pod_spec.node_selector,
+                    tolerations=pod_spec.tolerations,
+                    containers=[client.V1Container(
+                        name="gid-fix",
+                        image="alpine:3.21",
+                        image_pull_policy="IfNotPresent",
+                        command=["/bin/sh", "-c",
+                                 "stat -c '%g' /mnt/disk | grep -q '^1081$' && echo 'GID already 1081' || (chgrp 1081 /mnt/disk && echo 'GID set to 1081')"],
+                        volume_mounts=[client.V1VolumeMount(name="dev-home", mount_path="/mnt/disk")],
+                    )],
+                    volumes=[client.V1Volume(
+                        name="dev-home",
+                        aws_elastic_block_store=client.V1AWSElasticBlockStoreVolumeSource(
+                            volume_id=persistent_volume_id, fs_type="ext4"),
+                    )],
+                )
+                fixer_pod = client.V1Pod(
+                    metadata=client.V1ObjectMeta(
+                        name=fixer_name, namespace="gpu-dev",
+                        labels={"app": "gpu-dev-gid-fix"}),
+                    spec=fixer_spec,
+                )
+                v1.create_namespaced_pod(namespace="gpu-dev", body=fixer_pod)
+                logger.info(f"Created GID fixer pod {fixer_name}")
+                import time as _time
+                for _ in range(60):
+                    _time.sleep(1)
+                    try:
+                        fixer_status = v1.read_namespaced_pod_status(fixer_name, "gpu-dev")
+                        if fixer_status.status.phase in ("Succeeded", "Failed"):
+                            break
+                    except Exception:
+                        break
+                try:
+                    v1.delete_namespaced_pod(fixer_name, "gpu-dev")
+                except Exception:
+                    pass
+                logger.info(f"GID fixer pod {fixer_name} completed")
+            except Exception as fixer_err:
+                logger.warning(f"GID fixer pod failed (non-fatal, will fall back to slow chown): {fixer_err}")
+                try:
+                    v1.delete_namespaced_pod(fixer_name, "gpu-dev")
+                except Exception:
+                    pass
 
         # Create pod
         record_trace_event(trace_data, "k8s_pod_create_start")
