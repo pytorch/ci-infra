@@ -75,6 +75,7 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
+          version: "2026.5.11"
           install: true
           working_directory: osdc
 
@@ -124,6 +125,7 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
+          version: "2026.5.11"
           install: true
           working_directory: osdc
 
@@ -159,6 +161,7 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
+          version: "2026.5.11"
           install: true
           working_directory: osdc
 
@@ -201,6 +204,7 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
+          version: "2026.5.11"
           install: true
           working_directory: osdc
 
@@ -238,6 +242,7 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
+          version: "2026.5.11"
           install: true
           working_directory: osdc
 
@@ -273,6 +278,7 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
+          version: "2026.5.11"
           install: true
           working_directory: osdc
 
