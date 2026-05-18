@@ -12,6 +12,9 @@ metadata:
     k8s-app: kube-dns
     app.kubernetes.io/managed-by: osdc-base
 spec:
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+    - IPv6
   selector:
     k8s-app: kube-dns
   ports:

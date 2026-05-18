@@ -10,7 +10,7 @@ OSDC (Open Source Dev Cloud) is a modular platform for deploying Kubernetes-base
 
 Every cluster gets the same base infrastructure:
 
-- **VPC** — public/private subnets, NAT gateways, route tables
+- **VPC** — dual-stack (IPv4 + IPv6) public/private subnets, NAT gateways for IPv4, Egress-Only Internet Gateway for IPv6 outbound from private subnets, route tables
 - **EKS** — managed Kubernetes cluster with OIDC, addons (vpc-cni, coredns, kube-proxy, ebs-csi), fixed-size base node group
 - **Harbor** — S3 bucket, IAM roles/user for pull-through container image cache
 - **Base k8s resources** — gp3 StorageClass, NVIDIA device plugin, node performance tuning DaemonSet, git-cache (two-tier: central StatefulSet + rsync DaemonSet), Harbor namespace, image-cache-janitor (prunes stale image content from node disks), NodeLocal DNSCache (per-node CoreDNS DaemonSet that intercepts pod DNS via iptables-mode NOTRACK)

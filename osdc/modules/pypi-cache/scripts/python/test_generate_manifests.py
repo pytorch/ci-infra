@@ -479,13 +479,13 @@ class TestGenerateDeployments:
 
     # --- pypiserver command/args ---
 
-    def test_command_contains_backend_cached_dir(self):
+    def test_command_contains_backend_simple_dir(self):
         config = _default_config()
         result = generate_deployments(config, TEMPLATE_DIR / "deployment.yaml.tpl")
         docs = self._parse_docs(result)
         for doc in docs:
             args = doc["spec"]["template"]["spec"]["containers"][1]["args"][0]
-            assert "--backend cached-dir" in args
+            assert "--backend simple-dir" in args
 
     def test_command_contains_server_gunicorn(self):
         config = _default_config()
