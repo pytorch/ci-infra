@@ -897,20 +897,12 @@ def reserve(
 
         else:
             # Non-interactive mode - use defaults and validate
-            # Route --spot to east1 when on prod
-            if spot and config.user_config.get("environment") == "prod":
-                import os as _os
+            # Route --spot to east1 when on prod (env vars override config region)
+            if spot and load_config().user_config.get("environment") == "prod":
                 east1_cfg = Config.ENVIRONMENTS.get("prod-east1", {})
                 if east1_cfg:
-                    _os.environ["AWS_DEFAULT_REGION"] = east1_cfg["region"]
-                    config = Config()
-                    config.aws_region = east1_cfg["region"]
-                    reservation_mgr = ReservationManager(config)
-                    try:
-                        user_info = authenticate_user(config)
-                    except RuntimeError as e:
-                        rprint(f"[red]❌ {str(e)}[/red]")
-                        return
+                    import os as _os
+                    _os.environ["AWS_REGION"] = east1_cfg["region"]
 
             if gpu_type is None:
                 gpu_type = "a100"

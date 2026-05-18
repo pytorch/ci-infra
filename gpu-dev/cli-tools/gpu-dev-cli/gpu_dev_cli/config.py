@@ -42,13 +42,14 @@ class Config:
         # Load unified config (handles migration from legacy files)
         self.user_config = self._load_config()
 
-        # Get region from config, then AWS env vars, or default
-        if self.user_config.get("region"):
+        # Get region: env vars take priority (for spot routing), then config, then default
+        env_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+        if env_region and env_region != self.user_config.get("region"):
+            self.aws_region = env_region
+        elif self.user_config.get("region"):
             self.aws_region = self.user_config["region"]
         else:
-            self.aws_region = os.getenv(
-                "AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-2")
-            )
+            self.aws_region = "us-east-2"
 
         os.environ["AWS_DEFAULT_REGION"] = self.aws_region
 
