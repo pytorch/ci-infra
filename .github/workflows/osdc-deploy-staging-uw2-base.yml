@@ -1,0 +1,108 @@
+name: "OSDC: Deploy arc-staging-uw2 (one-off)"
+
+# One-off workflow to bring up the arc-staging-uw2 cluster end-to-end.
+#
+# CI equivalent of running locally:
+#   just bootstrap arc-staging-uw2
+#   just deploy    arc-staging-uw2     # base + all modules
+#
+# Pre-requisite (manual, one-time): the pytorch-arc-staging GitHub App
+# Secret must already exist in the arc-runners namespace. arc-runners
+# helm install references it by name and will fail otherwise.
+#
+# Delete this file once the feasibility test (see
+# osdc/docs/prod-cluster-ha-us-west-1.md) is complete.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_bootstrap:
+        description: "Skip 'just bootstrap' (use if state bucket already exists)"
+        required: false
+        type: boolean
+        default: false
+      skip_lint_test:
+        description: "Skip 'just lint' and 'just test' pre-flight (firefighting only)"
+        required: false
+        type: boolean
+        default: false
+  # Auto-run on PRs that touch this workflow, clusters.yaml, or the plan doc.
+  # bootstrap + deploy-base are idempotent (tofu detects no-op once base is up),
+  # so the first push provisions the cluster (~25min) and subsequent pushes
+  # are quick re-applies. Remove this trigger once Phase 0 is signed off.
+  pull_request:
+    paths:
+      - ".github/workflows/osdc-deploy-staging-uw2-base.yml"
+      - "osdc/clusters.yaml"
+      - "osdc/docs/prod-cluster-ha-us-west-1.md"
+
+concurrency:
+  group: osdc-deploy-arc-staging-uw2-base-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-base:
+    name: Bootstrap + deploy-base arc-staging-uw2
+    runs-on: ubuntu-latest
+    environment: osdc-staging
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Lint
+        if: ${{ !inputs.skip_lint_test }}
+        run: just lint
+
+      - name: Test
+        if: ${{ !inputs.skip_lint_test }}
+        run: just test
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          aws-region: us-west-2
+          role-duration-seconds: 7200
+
+      # Register QEMU binfmt handlers so `docker build --platform linux/arm64`
+      # works on an amd64 runner. Required for the first deploy of a brand-new
+      # cluster, when Harbor has no cached images and deploy-base has to build
+      # arm64 variants (image-cache-janitor, node-compactor) from scratch.
+      - name: Set up QEMU for cross-arch builds
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Bootstrap state storage
+        if: ${{ !inputs.skip_bootstrap }}
+        run: just bootstrap arc-staging-uw2
+
+      # `just deploy` runs deploy-base (idempotent re-check) then every module
+       # in the cluster's `modules:` list. After base is already up, this is
+      # effectively the module-deploy phase. Requires the pytorch-arc-staging
+      # GitHub App Secret to exist in the arc-runners namespace before
+      # arc-runners installs — planted manually as a one-off prerequisite.
+      - name: Deploy cluster (base + modules)
+        run: just deploy arc-staging-uw2
+        env:
+          OSDC_CONFIRM: "yes"
+
+      - name: Show post-deploy cluster info
+        run: just show arc-staging-uw2
