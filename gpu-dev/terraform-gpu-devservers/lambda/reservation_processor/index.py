@@ -4282,6 +4282,11 @@ def create_pod(
                             f"""
                         echo "[STARTUP] Starting GPU development container with pre-installed environment..."
 
+                        # Make IRSA token readable by dev user (replaces fsGroup which caused 15+ min chown on large disks)
+                        if [ -f /var/run/secrets/eks.amazonaws.com/serviceaccount/token ]; then
+                            chmod 644 /var/run/secrets/eks.amazonaws.com/serviceaccount/token 2>/dev/null || true
+                        fi
+
                         # Debug environment variables
                         echo "[STARTUP] Environment variables:"
                         echo "[STARTUP] - CREATE_SH_ENV=$CREATE_SH_ENV"
@@ -5669,13 +5674,9 @@ EOF
             # with the AWS_ROLE_SESSION_NAME env var below this lets users run
             # `gpu-dev submit` from inside their dev pod with no manual aws sso login.
             service_account_name="gpu-dev-pod-sa",
-            # fs_group=1081 makes the IRSA-projected token (default 0600 root:root)
-            # readable by the dev user. Without it boto3-as-dev falls through to IMDS
-            # and gets the node's IAM role, which doesn't have DDB/SQS permissions.
-            security_context=client.V1PodSecurityContext(
-                fs_group=1081,
-                fs_group_change_policy="OnRootMismatch",
-            ),
+            # No fsGroup — avoids recursive chown on large persistent disks (15+ min).
+            # IRSA token is made readable by the startup script instead (chmod in container).
+            security_context=client.V1PodSecurityContext(),
             # EFA requires host network namespace for RDMA access to efa0 interface
             **({
                 "host_network": True,
