@@ -1,8 +1,8 @@
 # ARC runner definition: l-arm64g2-6-32
-# Instance type: m8g.48xlarge (pool: arm-cpu)
+# Instance type: t4g.2xlarge (pool: t4g)
 runner:
   name: l-arm64g2-6-32
-  instance_type: m8g.48xlarge
+  instance_type: t4g.2xlarge
   disk_size: 256
   vcpu: 6
   memory: 29Gi
