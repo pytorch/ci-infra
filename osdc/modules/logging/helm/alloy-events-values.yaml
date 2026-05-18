@@ -29,6 +29,11 @@ rbac:
   create: true
 
 alloy:
+  # Bind dual-stack so the kubelet readinessProbe (which targets the pod's
+  # IPv6 address on IPv6-only EKS) can reach the HTTP server. Chart default
+  # is 0.0.0.0 which is IPv4-only and leaves the Deployment stuck NotReady.
+  listenAddr: "[::]"
+
   mounts:
     varlog: false
     dockercontainers: false

@@ -163,9 +163,9 @@ spec:
             - --addr
             - unix:///run/buildkit/buildkitd.sock
             - --addr
-            - tcp://0.0.0.0:1234
+            - tcp://[::]:1234
             - --debugaddr
-            - 0.0.0.0:9090
+            - '[::]:9090'
             - --config
             - /etc/buildkit/buildkitd.toml
             - --root
@@ -402,7 +402,7 @@ spec:
 
   metadataOptions:
     httpEndpoint: enabled
-    httpProtocolIPv6: disabled
+    httpProtocolIPv6: enabled
     httpPutResponseHopLimit: 1
     httpTokens: required
 
