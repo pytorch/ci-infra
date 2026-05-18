@@ -1,5 +1,10 @@
 # Karpenter NodePool fleet: m7g
-# AWS Graviton3 — balanced, ARM64, bare-metal (for inductor CPU perf benchmarks)
+# AWS Graviton3 — balanced, ARM64.
+# Hosts both the bin-packed l-arm64g3-16-62 label (on m7g.8xlarge) and the
+# bare-metal l-barm64g3-62-226 label for inductor CPU perf benchmarks (on
+# m7g.metal). Bare-metal exclusivity is achieved by the high resource
+# request (62 vCPU / 226 GiB) nearly maxing out the m7g.metal node, leaving
+# no room for additional pods.
 fleet:
   name: m7g
   arch: arm64
@@ -8,3 +13,7 @@ fleet:
     - type: m7g.metal
       weight: 100
       node_disk_size: 1000
+      baremetal: true
+    - type: m7g.8xlarge
+      weight: 50
+      node_disk_size: 500
