@@ -1,5 +1,7 @@
 # Runner Load Distribution (pytorch/pytorch)
 
+**Data as of 2026-03-18 (load tables) / 2026-03-24 (fleet simulation). Not refreshed since.** See the staleness note below for what is missing from this snapshot.
+
 Job counts and peak concurrency by runner type over the last 30 days. Source: `default.workflow_job` ClickHouse table, queried 2026-03-18.
 
 > **Staleness note:** The load tables below are a point-in-time snapshot from 2026-03-18. They do **not** reflect changes made since then, including:
@@ -141,8 +143,10 @@ Job counts and peak concurrency by runner type over the last 30 days. Source: `d
 |---|---|---|
 | l-x86iamx-8-16 | 89 | 15 |
 | l-x86iavx512-2-4 | 18 | 3 |
-| l-x86iavx512-16-64-t4 | 9 | 2 |
+| l-x86iavx512-16-64-t4 [^1] | 9 | 2 |
 | l-x86iavx512-8-16 | 9 | 2 |
+
+[^1]: `l-x86iavx512-16-64-t4` was removed in the right-sizing PR #402 (commit `fcc4df1`, 2026-03-19) and no longer exists in `modules/arc-runners/defs/`. Listed here because it received traffic during the 2026-03-18 snapshot window.
 
 ---
 
