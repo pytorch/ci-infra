@@ -8,6 +8,11 @@ output "vpc_cidr_block" {
   value       = aws_vpc.this.cidr_block
 }
 
+output "vpc_ipv6_cidr_block" {
+  description = "The IPv6 CIDR block of the VPC"
+  value       = aws_vpc.this.ipv6_cidr_block
+}
+
 output "private_subnet_ids" {
   description = "List of IDs of private subnets"
   value       = aws_subnet.private[*].id
@@ -31,4 +36,9 @@ output "nat_gateway_ids" {
 output "internet_gateway_id" {
   description = "The ID of the Internet Gateway"
   value       = aws_internet_gateway.this.id
+}
+
+output "egress_only_internet_gateway_id" {
+  description = "The ID of the Egress-Only Internet Gateway (IPv6 outbound from private subnets)"
+  value       = aws_egress_only_internet_gateway.this.id
 }

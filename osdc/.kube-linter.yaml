@@ -24,6 +24,7 @@ checks:
     - "host-pid"
     # Node-tuning mounts / and /sys to configure CPU governor and sysfs
     - "sensitive-host-mounts"
+    - "liveness-port"
     # Privileged containers and DCGM exporter: dropping NET_RAW is meaningless or incompatible
     - "drop-net-raw-capability"
     # BuildKit pod services reference generated Deployments not in the static kustomization
