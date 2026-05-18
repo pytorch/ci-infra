@@ -74,8 +74,13 @@ kubectl annotate sa pypi-wheel-syncer -n "$NAMESPACE" \
 # Look up kube-dns ClusterIP for nginx resolver directive.
 # Different EKS clusters use different service CIDRs, so this
 # must be discovered at deploy time rather than hardcoded.
-DNS_RESOLVER=$(kubectl get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')
-echo "[pypi-cache] kube-dns ClusterIP: ${DNS_RESOLVER}"
+# IPv6 ClusterIPs must be wrapped in brackets for nginx resolver syntax.
+KUBE_DNS_IP=$(kubectl get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')
+case "$KUBE_DNS_IP" in
+  *:*) DNS_RESOLVER="[$KUBE_DNS_IP]" ;;
+  *) DNS_RESOLVER="$KUBE_DNS_IP" ;;
+esac
+echo "[pypi-cache] kube-dns ClusterIP: ${KUBE_DNS_IP} (resolver: ${DNS_RESOLVER})"
 
 # Compute nginx max cache size from instance specs (NVMe or emptyDir fallback)
 NGINX_MAX_CACHE_SIZE=$(uv run "$MODULE_DIR/scripts/python/generate_manifests.py" \

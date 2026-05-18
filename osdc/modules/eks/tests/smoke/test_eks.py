@@ -1,10 +1,16 @@
 """Smoke tests for EKS cluster and AWS infrastructure."""
 
+import ipaddress
 import subprocess
 
 import pytest
 import yaml
 from helpers import get_unstable_node_names, pod_is_on_unstable_node, run_aws, run_kubectl
+
+# AWS allocates EKS IPv6 service CIDRs from the RFC 4193 locally-assigned ULA
+# range fd00::/8. The exact /48 ID is randomly assigned per cluster, so the
+# only stable invariant we can assert is that the prefix falls inside fd00::/8.
+_AWS_IPV6_ULA_RANGE = ipaddress.IPv6Network("fd00::/8")
 
 pytestmark = [pytest.mark.live, pytest.mark.aws]
 
@@ -133,6 +139,91 @@ class TestEKSAddons:
             f"Addon {addon_name} status is {status} and pods are unhealthy on stable nodes: "
             f"{not_running} ({len(unstable_nodes)} unstable nodes, "
             f"{len(excluded)} pods on unstable/missing hosts excluded)"
+        )
+
+
+# ============================================================================
+# IPv6 Cluster Networking
+# ============================================================================
+
+
+class TestEKSIPv6Config:
+    """Verify the cluster is provisioned in IPv6-only mode.
+
+    EKS ipFamily is immutable post-creation, so this is the safety net that
+    catches a regression from a destroy/recreate that lands the cluster back
+    in dual-stack/IPv4 mode. Service CIDR is auto-assigned by EKS from the
+    RFC 4193 locally-assigned ULA range (fd00::/8); the /48 ID is random per
+    cluster, so only the ULA-range invariant is asserted.
+    """
+
+    def test_ip_family_is_ipv6(self, eks_cluster_info, cluster_config):
+        cluster_name = cluster_config["cluster"]["cluster_name"]
+        net_cfg = eks_cluster_info["cluster"].get("kubernetesNetworkConfig", {})
+        ip_family = net_cfg.get("ipFamily")
+        assert ip_family == "ipv6", f"EKS cluster {cluster_name} ipFamily is {ip_family!r}, expected 'ipv6'"
+
+    def test_service_cidr_is_ula_ipv6(self, eks_cluster_info, cluster_config):
+        cluster_name = cluster_config["cluster"]["cluster_name"]
+        net_cfg = eks_cluster_info["cluster"].get("kubernetesNetworkConfig", {})
+        service_cidr = net_cfg.get("serviceIpv6Cidr", "")
+        try:
+            network = ipaddress.IPv6Network(service_cidr)
+        except ValueError as exc:
+            pytest.fail(
+                f"EKS cluster {cluster_name} serviceIpv6Cidr={service_cidr!r} is not a valid IPv6 network: {exc}"
+            )
+        assert network.subnet_of(_AWS_IPV6_ULA_RANGE), (
+            f"EKS cluster {cluster_name} serviceIpv6Cidr is {service_cidr!r}, "
+            f"expected a subnet of {_AWS_IPV6_ULA_RANGE} (RFC 4193 locally-assigned ULA)."
+        )
+
+    def test_kube_dns_clusterip_is_ipv6(self):
+        svc = run_kubectl(["get", "service", "kube-dns"], namespace="kube-system")
+        cluster_ip = svc.get("spec", {}).get("clusterIP", "")
+        try:
+            address = ipaddress.IPv6Address(cluster_ip)
+        except ValueError as exc:
+            pytest.fail(f"kube-dns ClusterIP {cluster_ip!r} is not a valid IPv6 address: {exc}")
+        assert address in _AWS_IPV6_ULA_RANGE, (
+            f"kube-dns ClusterIP is {cluster_ip!r}, expected an address inside {_AWS_IPV6_ULA_RANGE}. "
+            f"This is the canonical signal that the cluster's Service CIDR is IPv6."
+        )
+
+    def test_aws_node_init_container_has_enable_ipv6(self):
+        # Per AWS docs, ENABLE_IPv6 must be set on BOTH the main aws-node
+        # container and the aws-vpc-cni-init init container — the init
+        # container sets kernel sysctls and needs the same flag. This test
+        # reads the live aws-node DaemonSet pod spec (vs the addon
+        # configuration_values) so a regression at the addon-rollout layer
+        # is caught.
+        ds = run_kubectl(["get", "daemonset", "aws-node"], namespace="kube-system")
+        init_containers = ds.get("spec", {}).get("template", {}).get("spec", {}).get("initContainers", [])
+        init_names = [c.get("name") for c in init_containers]
+        cni_init = next((c for c in init_containers if c.get("name") == "aws-vpc-cni-init"), None)
+        assert cni_init is not None, (
+            f"aws-node DaemonSet is missing the aws-vpc-cni-init init container. Init containers found: {init_names}"
+        )
+        env_pairs = {e.get("name"): e.get("value") for e in cni_init.get("env", [])}
+        assert env_pairs.get("ENABLE_IPv6") == "true", (
+            f"aws-vpc-cni-init init container env ENABLE_IPv6={env_pairs.get('ENABLE_IPv6')!r}, expected 'true'. "
+            f"Full env: {env_pairs}"
+        )
+
+    def test_aws_node_main_container_has_v4_egress(self):
+        # ENABLE_V4_EGRESS default is true since aws-vpc-cni v1.15.1, but
+        # the addon configuration_values pins it explicitly. Verify the live
+        # DaemonSet reflects that — IPv4 egress is what lets pods reach
+        # IPv4-only services (github.com, ghcr.io, nvcr.io, public.ecr.aws).
+        ds = run_kubectl(["get", "daemonset", "aws-node"], namespace="kube-system")
+        containers = ds.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+        aws_node = next((c for c in containers if c.get("name") == "aws-node"), None)
+        assert aws_node is not None, (
+            f"aws-node DaemonSet missing main aws-node container. Containers: {[c.get('name') for c in containers]}"
+        )
+        env_pairs = {e.get("name"): e.get("value") for e in aws_node.get("env", [])}
+        assert env_pairs.get("ENABLE_V4_EGRESS") == "true", (
+            f"aws-node main container env ENABLE_V4_EGRESS={env_pairs.get('ENABLE_V4_EGRESS')!r}, expected 'true'."
         )
 
 

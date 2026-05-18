@@ -1491,6 +1491,7 @@ _deploy-harbor cluster:
             --set exporter.image.repository="${ECR_HARBOR}/harbor-exporter" \
             --set persistence.imageChartStorage.s3.bucket="${HARBOR_BUCKET}" \
             --set persistence.imageChartStorage.s3.region="${AWS_REGION}" \
+            --set persistence.imageChartStorage.s3.regionendpoint="https://s3.dualstack.${AWS_REGION}.amazonaws.com" \
             --set persistence.imageChartStorage.s3.existingSecret=harbor-s3-credentials \
             --set registry.serviceAccountName=harbor-registry \
             --set registry.automountServiceAccountToken=true \
@@ -1532,7 +1533,7 @@ _deploy-harbor cluster:
     # DB may still hold the old default. Always attempt migration — it's
     # idempotent (401 = already migrated, 200 = just migrated).
     echo "Ensuring Harbor admin password is up to date..."
-    kubectl port-forward -n harbor-system svc/harbor 8090:80 &
+    kubectl port-forward --address 127.0.0.1 -n harbor-system svc/harbor 8090:80 &
     PW_PF_PID=$!
     PW_MAX_RETRIES=12
     for pw_attempt in $(seq 1 $PW_MAX_RETRIES); do
@@ -1602,7 +1603,7 @@ _configure-harbor-projects:
     fi
 
     # Port-forward to Harbor for API access
-    kubectl port-forward -n harbor-system svc/harbor 8080:80 &
+    kubectl port-forward --address 127.0.0.1 -n harbor-system svc/harbor 8080:80 &
     PF_PID=$!
     trap "kill $PF_PID 2>/dev/null || true" EXIT
     HP_MAX_RETRIES=12
