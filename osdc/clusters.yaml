@@ -178,23 +178,6 @@ clusters:
       - monitoring
       - logging
 
-  # arc-cbr-production-uw1: second prod cluster for HA + scale-out.
-  # See docs/prod-cluster-ha-us-west-1.md for the full design.
-  #
-  # Active/active with arc-cbr-production (us-east-2). Both clusters advertise
-  # the same mt-* runner labels but register in different runner groups so
-  # GitHub matches `runs-on` across both and routes by capacity:
-  #   - us-east-2: default group (existing)
-  #   - us-west-1: arc-cbr-prod-uw1 group (new, created at the pytorch org)
-  #
-  # Prerequisites before this cluster can be deployed:
-  #   1. Create the `arc-cbr-prod-uw1` runner group at the pytorch org.
-  #   2. Generator change to honor cluster-level `runner_group` override.
-  #   3. Generator change to honor cluster-level `capacity_reservation_ids`
-  #      override for nodepools-h100 (the def file hardcodes us-east-2 IDs).
-  #   4. Collect H100 capacity reservation IDs in us-west-1 and fill in below.
-  #
-  # B200 is intentionally omitted (no capacity reservation in us-west-1).
   arc-cbr-production-uw1:
     cluster_name: pytorch-arc-cbr-production-uw1
     region: us-west-1
