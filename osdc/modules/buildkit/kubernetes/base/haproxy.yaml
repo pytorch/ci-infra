@@ -28,7 +28,7 @@ data:
       option tcplog
 
     resolvers k8s
-      nameserver dns __DNS_SERVER__:53
+      nameserver dns __DNS_SERVER__
       resolve_retries 3
       timeout resolve 1s
       timeout retry 1s
@@ -39,7 +39,7 @@ data:
 
     # Stats endpoint for debugging distribution
     frontend stats
-      bind *:8404
+      bind :::8404 v4v6
       mode http
       stats enable
       stats uri /stats
@@ -47,35 +47,39 @@ data:
 
     # Prometheus metrics endpoint (scraped by Alloy via ServiceMonitor)
     frontend prometheus
-      bind *:9404
+      bind :::9404 v4v6
       mode http
       http-request use-service prometheus-exporter if { path /metrics }
 
     # Per-arch frontends: existing Services map port 1234 → these targetPorts
     frontend ft_arm64
-      bind *:2234
+      bind :::2234 v4v6
       default_backend bk_arm64
 
     frontend ft_amd64
-      bind *:3234
+      bind :::3234 v4v6
       default_backend bk_amd64
 
     # Combined frontend: round-robin-then-leastconn across all arches
     frontend ft_all
-      bind *:1234
+      bind :::1234 v4v6
       default_backend bk_all
 
+    # IPv6-only EKS: backend pods only emit AAAA. `resolve-prefer ipv6` is a
+    # server-line keyword (not valid inside the `resolvers` section) so it goes
+    # on each server-template — keeps HAProxy from logging benign A-family
+    # resolution warnings.
     backend bk_arm64
       balance leastconn
-      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
 
     backend bk_amd64
       balance leastconn
-      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
 
     backend bk_all
       balance leastconn
-      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none
+      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
 
 ---
 apiVersion: apps/v1
@@ -109,7 +113,11 @@ spec:
           args:
             - |
               DNS_IP=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
-              sed "s/__DNS_SERVER__/$DNS_IP/" /usr/local/etc/haproxy/haproxy.cfg.tpl > /tmp/haproxy.cfg
+              case "$DNS_IP" in
+                *:*) RESOLVER="[$DNS_IP]:53" ;;
+                *) RESOLVER="$DNS_IP:53" ;;
+              esac
+              sed "s|__DNS_SERVER__|$RESOLVER|" /usr/local/etc/haproxy/haproxy.cfg.tpl > /tmp/haproxy.cfg
               exec haproxy -f /tmp/haproxy.cfg
 
           ports:

@@ -76,7 +76,7 @@ helm list -A
 
 ## Adding a new cluster
 
-1. Pick a cluster ID, region, VPC CIDR, and decide which modules. Module names must match a directory under `modules/` — see the existing `arc-staging` and `arc-cbr-production` entries in `clusters.yaml` for full, working examples. Minimal skeleton:
+1. Pick a cluster ID, region, VPC CIDR, and decide which modules. The VPC CIDR sizes only the IPv4 footprint (nodes, NAT, ENI primary IPs) — pod IPs come from an AWS-allocated /56 IPv6 block, so a `/16` is more than enough even for very large fleets. Module names must match a directory under `modules/` — see the existing `arc-staging` and `arc-cbr-production` entries in `clusters.yaml` for full, working examples. Minimal skeleton:
 
    ```yaml
    # clusters.yaml
@@ -105,6 +105,10 @@ helm list -A
    ```bash
    just deploy my-new-cluster
    ```
+
+## Cluster lifecycle
+
+For destroying and recreating an existing cluster (e.g. for the IPv4 → IPv6 migration, since EKS `ip_family` is immutable post-creation), see [`ipv6-cluster-recreation.md`](ipv6-cluster-recreation.md).
 
 ## Adding a new module
 

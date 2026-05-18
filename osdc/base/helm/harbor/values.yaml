@@ -40,7 +40,7 @@ expose:
   tls:
     enabled: false
 
-externalURL: http://localhost:30002
+externalURL: http://harbor:30002
 
 # ============================================================================
 # Persistence (S3 for registry, EBS for database/redis)

@@ -128,7 +128,7 @@ __INIT_NVME_BLOCK__
             - >-
               pypi-server run
               -p __INTERNAL_PORT__
-              --backend cached-dir
+              --backend simple-dir
               --server gunicorn
               --disable-fallback
               --health-endpoint /health
@@ -175,7 +175,7 @@ __INIT_NVME_BLOCK__
         - name: nginx-exporter
           image: docker.io/nginx/nginx-prometheus-exporter:1.4.1
           args:
-            - "--nginx.scrape-uri=http://127.0.0.1:8080/stub_status"
+            - "--nginx.scrape-uri=http://[::1]:8080/stub_status"
           ports:
             - name: metrics
               containerPort: 9113

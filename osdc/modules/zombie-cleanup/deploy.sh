@@ -47,14 +47,14 @@ fi
 PENDING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pending_max_age_hours "24")
 RUNNING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.running_max_age_hours "12")
 DRY_RUN=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.dry_run "false")
-PUSHGATEWAY_URL=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pushgateway_url "http://prometheus-pushgateway.monitoring:9091")
+PUSHGATEWAY_URL=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pushgateway_url "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091")
 
 # --- Compute content-based image tag ---
 TAG=$(find "$MODULE_DIR/docker" "$MODULE_DIR/scripts/python" \
   \( -name '*.py' -o -name 'Dockerfile' -o -name 'pyproject.toml' \) \
   ! -name 'test_*' -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)
 
-IMAGE="localhost:30002/osdc/zombie-cleanup"
+IMAGE="harbor:30002/osdc/zombie-cleanup"
 
 # --- Connect to Harbor ---
 HARBOR_ADMIN_PW=$(kubectl get secret harbor-admin-password -n harbor-system \
