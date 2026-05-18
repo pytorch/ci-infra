@@ -7489,10 +7489,16 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                             f"SSH daemon confirmed running in logs for {pod_name} (background monitoring)")
 
             # Background monitoring can transition to "active" when container is ready
-            if current_status == "active":
-                high_level_status = "active"  # Always maintain active status
+            # CRITICAL: never downgrade from active → preparing. Check DDB, not just local state.
+            try:
+                _res_table = dynamodb.Table(RESERVATIONS_TABLE)
+                _ddb_status = _res_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {}).get("status", "")
+            except Exception:
+                _ddb_status = current_status
+            if _ddb_status == "active" or current_status == "active":
+                high_level_status = "active"
                 logger.info(
-                    f"Reservation {reservation_id} already active - maintaining status")
+                    f"Reservation {reservation_id} already active (ddb={_ddb_status}) - maintaining status")
             elif container_is_ready and not has_errors:
                 # Check if connection info is already set (or not needed for preserve_entrypoint)
                 try:
