@@ -9,7 +9,7 @@
 #   cluster CoreDNS reduces conntrack churn and improves head-of-line behavior.
 # - .:53 (catch-all) forwards to /etc/resolv.conf so external lookups bypass
 #   cluster CoreDNS entirely (upstream default).
-# - health 169.254.20.10:8080 is declared ONLY on cluster.local:53. The health
+# - health [fd00::10]:8080 is declared ONLY on cluster.local:53. The health
 #   plugin opens a singleton listener; declaring it in a second server block
 #   would race for the same address and risk "address already in use" at
 #   CoreDNS startup. Matches upstream nodelocaldns.yaml.
@@ -31,19 +31,19 @@ data:
         }
         reload
         loop
-        bind 169.254.20.10 __KUBE_DNS_CLUSTER_IP__
+        bind fd00::10 __KUBE_DNS_CLUSTER_IP__
         forward . __PILLAR__CLUSTER__DNS__ {
             force_tcp
         }
         prometheus :9253
-        health 169.254.20.10:8080
+        health [fd00::10]:8080
     }
     in-addr.arpa:53 {
         errors
         cache 30
         reload
         loop
-        bind 169.254.20.10 __KUBE_DNS_CLUSTER_IP__
+        bind fd00::10 __KUBE_DNS_CLUSTER_IP__
         forward . __PILLAR__CLUSTER__DNS__ {
             force_tcp
         }
@@ -54,7 +54,7 @@ data:
         cache 30
         reload
         loop
-        bind 169.254.20.10 __KUBE_DNS_CLUSTER_IP__
+        bind fd00::10 __KUBE_DNS_CLUSTER_IP__
         forward . __PILLAR__CLUSTER__DNS__ {
             force_tcp
         }
@@ -65,7 +65,7 @@ data:
         cache 30
         reload
         loop
-        bind 169.254.20.10 __KUBE_DNS_CLUSTER_IP__
+        bind fd00::10 __KUBE_DNS_CLUSTER_IP__
         forward . /etc/resolv.conf
         prometheus :9253
     }

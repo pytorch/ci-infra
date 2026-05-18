@@ -95,7 +95,22 @@ The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 Plus kube-prometheus-stack built-in targets:
 - **node-exporter** — DaemonSet on ALL nodes (tolerates all taints), 60s interval; heavily filtered (see "Layer 2" below — only `node_memory_MemAvailable_bytes` and `node_memory_MemTotal_bytes` are kept)
 - **kube-state-metrics** — Deployment on base-infrastructure nodes
-- **kubelet ServiceMonitor** — built-in scrape of `/metrics` and cAdvisor at 60s interval; `/metrics/probes` is disabled. Heavily filtered: kubelet keeps only `kubelet_running_(pods|containers)|kubelet_node_name`; cAdvisor keeps only `container_memory_working_set_bytes|container_memory_rss`
+
+The built-in kubelet ServiceMonitor is currently disabled — see [Disabled scrapers (IPv6 migration)](#disabled-scrapers-ipv6-migration).
+
+### Disabled scrapers (IPv6 migration)
+
+The kubelet ServiceMonitor (`/metrics` + cAdvisor) is **disabled** in `modules/monitoring/helm/values.yaml` (`kubelet.enabled: false`).
+
+**Why**: Prometheus Operator manages the kubelet Endpoints object directly (unlike a normal ServiceMonitor that reads the Service's auto-built EndpointSlice), and its address picker (`pkg/kubelet/controller.go`) returns the first `NodeInternalIP` from `node.status.addresses`. On EKS dual-stack nodes the IPv4 InternalIP is listed first, so the Endpoints contain IPv4 addresses exclusively. Alloy runs in IPv6-only pods and cannot reach those endpoints — every scrape times out and the series silently disappear from Mimir.
+
+**What this drops** (until re-enabled):
+- `container_memory_working_set_bytes` / `container_memory_rss` (cAdvisor)
+- `kubelet_running_pods` / `kubelet_running_containers`
+
+These power the "Pods Per Node" / "Containers Per Node" panels in `dashboards/cluster-health.json` and the per-pod memory series consumed by the `cost_control` Alloy rule's control-plane scoping.
+
+**TODO (re-enable)**: Ship a custom IPv6-aware kubelet ServiceMonitor under `modules/monitoring/kubernetes/monitors/servicemonitors/`. The clean path is `kubernetes_sd_configs role: node` plus a relabel on `__meta_kubernetes_node_address_InternalIP` to select the IPv6 entry, then flip `kubelet.enabled: true` (and uncomment the filter block) in `helm/values.yaml`.
 
 ### Cost-control filtering (three layers)
 
@@ -127,8 +142,6 @@ Per-source `keep` whitelists or targeted `drop` rules — most filtering lives h
 | `apiserver` ServiceMonitor | `keep`: `apiserver_request_total\|apiserver_request_terminations_total` only |
 | `coredns` PodMonitor | `drop`: `go_.*`, `process_.*`, `coredns_dns_request_duration_seconds_bucket\|coredns_forward_request_duration_seconds_bucket` |
 | `pypi-cache` ServiceMonitor | `keep`: `nginx_up\|nginx_http_requests_total\|nginx_connections_active` only |
-| kubelet (built-in) | `keep`: `kubelet_running_(pods\|containers)\|kubelet_node_name` |
-| cAdvisor (built-in via kubelet) | `keep`: `container_memory_working_set_bytes\|container_memory_rss` only — `/metrics/probes` is disabled |
 | node-exporter (built-in) | `keep`: `node_memory_MemAvailable_bytes\|node_memory_MemTotal_bytes` only — drops everything else including all CPU, disk I/O, filesystem, network, and load metrics |
 | DCGM ServiceMonitor | label drops: `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id` |
 

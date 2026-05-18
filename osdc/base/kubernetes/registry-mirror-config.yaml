@@ -23,6 +23,34 @@ data:
     echo "Date: $(date)"
 
     # =========================================================================
+    # Write /etc/hosts entry: <NODE_IP> harbor
+    # =========================================================================
+    # Containerd hosts.toml mirror entries below address Harbor as
+    # `harbor:30002`. Resolution must be per-node because kube-proxy in
+    # IPv6-only mode opens NodePort listeners on `[::]:30002` but does NOT
+    # route traffic destined for `::1` to them. The node's own primary IP
+    # IS routable. NODE_IP is supplied via the Downward API
+    # (`status.hostIP`) on the init container.
+    HOSTS_MARKER="# managed-by: osdc-harbor-mirror"
+    if [ -n "${NODE_IP:-}" ]; then
+      # Idempotent rewrite: drop any prior managed entry, append fresh one.
+      # NOTE: /etc/hosts is a kubelet bind-mounted file, NOT a regular file —
+      # `sed -i` and any rename(2)-based in-place editor fails with EBUSY
+      # because the kernel won't let us swap out a bind-mounted inode.
+      # Instead: rewrite into a tmpfile then `cat > /etc/hosts` (which uses
+      # O_TRUNC + write, preserving the inode the bind-mount points at).
+      HOSTS_TMP=$(mktemp)
+      grep -v "${HOSTS_MARKER}" /etc/hosts > "$HOSTS_TMP" || true
+      echo "${NODE_IP} harbor ${HOSTS_MARKER}" >> "$HOSTS_TMP"
+      cat "$HOSTS_TMP" > /etc/hosts
+      rm -f "$HOSTS_TMP"
+      echo "Wrote /etc/hosts entry: ${NODE_IP} harbor"
+    else
+      echo "ERROR: NODE_IP env var not set; cannot configure /etc/hosts" >&2
+      exit 1
+    fi
+
+    # =========================================================================
     # Check if already configured
     # =========================================================================
     MARKER_FILE="/var/lib/registry-mirror-config/.configured"
@@ -34,7 +62,7 @@ data:
       echo "Verifying current configuration..."
 
       all_checks_pass=true
-      for registry in docker.io ghcr.io public.ecr.aws nvcr.io registry.k8s.io quay.io; do
+      for registry in docker.io ghcr.io public.ecr.aws nvcr.io registry.k8s.io quay.io "harbor:${HARBOR_PORT}"; do
         if [ ! -f "/etc/containerd/certs.d/${registry}/hosts.toml" ]; then
           echo "  Missing hosts.toml for ${registry} - will reconfigure"
           all_checks_pass=false
@@ -69,7 +97,7 @@ data:
     cat > /etc/containerd/certs.d/docker.io/hosts.toml <<TOML
     server = "https://docker.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/dockerhub-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/dockerhub-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -83,7 +111,7 @@ data:
     cat > /etc/containerd/certs.d/ghcr.io/hosts.toml <<TOML
     server = "https://ghcr.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/ghcr-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/ghcr-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -97,7 +125,7 @@ data:
     cat > /etc/containerd/certs.d/public.ecr.aws/hosts.toml <<TOML
     server = "https://public.ecr.aws"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/ecr-public-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/ecr-public-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -111,7 +139,7 @@ data:
     cat > /etc/containerd/certs.d/nvcr.io/hosts.toml <<TOML
     server = "https://nvcr.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/nvcr-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/nvcr-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -125,7 +153,7 @@ data:
     cat > /etc/containerd/certs.d/registry.k8s.io/hosts.toml <<TOML
     server = "https://registry.k8s.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/k8s-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/k8s-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -139,7 +167,7 @@ data:
     cat > /etc/containerd/certs.d/quay.io/hosts.toml <<TOML
     server = "https://quay.io"
 
-    [host."http://localhost:${HARBOR_PORT}/v2/quay-cache"]
+    [host."http://harbor:${HARBOR_PORT}/v2/quay-cache"]
       capabilities = ["pull", "resolve"]
       skip_verify = true
       override_path = true
@@ -149,12 +177,32 @@ data:
     TOML
 
     # =========================================================================
+    # Direct Harbor registry (for images pushed to Harbor as `harbor:30002/...`)
+    # =========================================================================
+    # Workloads like node-compactor / image-cache-janitor / runner-base pull
+    # images by their Harbor-native reference (`harbor:30002/osdc/...`). Without
+    # a hosts.toml for the `harbor:<port>` hostname, containerd defaults to
+    # HTTPS, but Harbor's NodePort only serves plaintext HTTP — pull fails with
+    # `http: server gave HTTP response to HTTPS client`. Spell it out here so
+    # containerd uses plain HTTP for this registry.
+    echo "[harbor] Configuring direct harbor:${HARBOR_PORT} registry (plain HTTP)..."
+    mkdir -p "/etc/containerd/certs.d/harbor:${HARBOR_PORT}"
+    cat > "/etc/containerd/certs.d/harbor:${HARBOR_PORT}/hosts.toml" <<TOML
+    server = "http://harbor:${HARBOR_PORT}"
+
+    [host."http://harbor:${HARBOR_PORT}"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+    TOML
+
+    # =========================================================================
     # Summary
     # =========================================================================
     echo ""
     echo "=== Registry Mirror Configuration Complete ==="
-    echo "Harbor endpoint: http://localhost:${HARBOR_PORT}"
+    echo "Harbor endpoint: http://harbor:${HARBOR_PORT}"
     echo "Configured mirrors for: docker.io, ghcr.io, public.ecr.aws, nvcr.io, registry.k8s.io, quay.io"
+    echo "Configured direct registry: harbor:${HARBOR_PORT}"
     echo ""
     echo "Note: containerd 1.6+ dynamically watches certs.d/ - no restart needed"
 
@@ -180,7 +228,16 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      # This DaemonSet only runs an init container (writes /etc/hosts +
+      # containerd certs.d) then sleeps — it is config-only, not part of
+      # the request path. A `maxUnavailable: 1` setting causes the entire
+      # rollout to gate on any single stuck Terminating pod (e.g. on a
+      # Karpenter-disrupted node where kubelet can't ack the termination),
+      # leaving the rest of the fleet without the new config indefinitely.
+      # 50% keeps half the fleet on the old config while a rollout proceeds
+      # so a bad script revision can still be caught before it lands on
+      # every node, but a single unreachable node can no longer block it.
+      maxUnavailable: "50%"
 
   template:
     metadata:
@@ -211,6 +268,10 @@ spec:
           env:
             - name: HARBOR_PORT
               value: "30002"
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
 
           securityContext:
             privileged: true
@@ -223,6 +284,8 @@ spec:
               mountPath: /etc/containerd
             - name: var-lib-registry-mirror-config
               mountPath: /var/lib/registry-mirror-config
+            - name: etc-hosts
+              mountPath: /etc/hosts
 
       containers:
         - name: sleep
@@ -252,6 +315,11 @@ spec:
           hostPath:
             path: /var/lib/registry-mirror-config
             type: DirectoryOrCreate
+
+        - name: etc-hosts
+          hostPath:
+            path: /etc/hosts
+            type: File
 
 ---
 apiVersion: v1
