@@ -59,7 +59,7 @@ spec:
 
   metadataOptions:
     httpEndpoint: enabled
-    httpProtocolIPv6: disabled
+    httpProtocolIPv6: enabled
     httpPutResponseHopLimit: 1
     httpTokens: required
 

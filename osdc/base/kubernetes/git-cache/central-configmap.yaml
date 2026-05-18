@@ -33,6 +33,7 @@ data:
     import logging
     import os
     import shutil
+    import socket
     import subprocess
     import sys
     import threading
@@ -47,6 +48,19 @@ data:
         stream=sys.stdout,
     )
     log = logging.getLogger("central")
+
+
+    class DualStackHTTPServer(HTTPServer):
+        # Bind ::0 with IPV6_V6ONLY=0 so the socket accepts both IPv6 and
+        # IPv4-mapped IPv6 connections (single socket serves both families).
+        # Required because the central pod on IPv6-only EKS has no IPv4
+        # address but DaemonSet metric scrapers may originate from either
+        # family.
+        address_family = socket.AF_INET6
+
+        def server_bind(self) -> None:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            super().server_bind()
 
 
     class MetricsServer:
@@ -212,7 +226,7 @@ data:
                     # Suppress default access logs to avoid noise
                     pass
 
-            httpd = HTTPServer(("", self.METRICS_PORT), Handler)
+            httpd = DualStackHTTPServer(("::", self.METRICS_PORT), Handler)
             thread = threading.Thread(target=httpd.serve_forever, daemon=True)
             thread.start()
             log.info("Metrics server started on port %d", self.METRICS_PORT)

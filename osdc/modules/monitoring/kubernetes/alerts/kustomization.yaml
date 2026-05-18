@@ -9,3 +9,4 @@ resources:
   - zombie-cleanup-alerts.yaml
   - harbor-cache-recovery-alerts.yaml
   - nodelocaldns-alerts.yaml
+  - network-pressure-alerts.yaml
