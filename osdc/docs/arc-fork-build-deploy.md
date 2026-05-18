@@ -255,3 +255,88 @@ The `capacity/` package is entirely ours -- no upstream merge conflicts possible
 - `Dockerfile` — `LABEL org.opencontainers.image.source` rewritten to point at the fork
 - `charts/*/Chart.yaml` — `version` and `appVersion` bumped to `<upstream>-jeanschmidt.<N>` on every fork publish
 - Various other commits across feature branches (e.g., "Drop runner-class from runner placeholders", "Split runner/workflow placeholder fleets", "Require runner-class in workflow affinity") that touch additional files outside `capacity/`
+
+## Stale Listener Recovery
+
+### Symptom
+
+- Listener pods (named `<runner-name>-<hash>-listener`) in `arc-systems` stuck in `CrashLoopBackOff`
+- Pod logs end with `Application returned an error: failed to create actions message session client ... 404 Not Found ... RunnerScaleSetNotFoundException`
+- The post-deploy check in `modules/arc-runners/deploy.sh` prints a WARNING banner naming the affected AutoscalingRunnerSets
+
+### Root cause
+
+The scale-set ID stamped on the AutoscalingRunnerSet annotation `runner-scale-set-id` no longer exists on GitHub's broker. The controller does not verify the annotation against the broker — it trusts any syntactically valid ID. Restarting the listener pod or the controller does not help; only re-registration does.
+
+Common triggers:
+
+- GitHub App installation lost access to the repo (permission rotation, scope change)
+- Repo was renamed, archived, or moved
+- An admin manually deleted scale sets via the GitHub UI or API
+- Broker-side key rotation that invalidated existing scale-set IDs
+
+### Before healing — verify the GitHub App still has access
+
+```bash
+gh api /repos/<org>/<repo> | jq '{name, archived, full_name}'
+gh api /app/installations | jq '.[] | select(.id == <installation-id>)'
+```
+
+If the App lost access, fix that first — `CreateRunnerScaleSet` will also 404 and healing will not work.
+
+### Recovery
+
+First, check for drift without touching the cluster (exits non-zero if anything is drifted — safe to run from CI/cron):
+
+```bash
+just heal-arc-check <cluster>
+```
+
+Heal a single ARS (smallest blast radius — start here to validate):
+
+```bash
+just heal-arc <cluster> <ars-name>
+```
+
+Heal everything that is drifted on a cluster (use for broad events like broker-key rotation):
+
+```bash
+just heal-arc <cluster>
+```
+
+`heal-arc` detects five categories of drift and recovers each in order:
+
+1. **Controller drift** — `arc-gha-rs-controller` Deployment in `arc-systems` is missing or has fewer ready replicas than desired. Recovery: `kubectl rollout restart` + `rollout status` with a 5-minute timeout. If the controller cannot recover, the recipe aborts (no downstream reconcile is possible).
+2. **ARS drift** — the `runner-scale-set-id` annotation is missing on an AutoscalingRunnerSet. Recovery: keep the annotation cleared and delete the matching AutoscalingListener; the controller then calls `CreateRunnerScaleSet` against the GitHub broker, stamps the fresh ID, and creates a new listener pod. All descendant EphemeralRunnerSets are queued for cascade-deletion (they will hold the old ID after re-registration).
+3. **Listener drift** — the AutoscalingListener is missing, its `spec.runnerScaleSetId` does not match the ARS canonical ID, or its pod is not Running/Ready (CrashLoopBackOff, ImagePullBackOff, etc.). Recovery: delete the listener; the controller recreates it using the current ARS annotation.
+4. **Listener orphan drift** — the AutoscalingListener's `spec.ephemeralRunnerSetName` references an EphemeralRunnerSet that no longer exists. The listener spec is set ONCE at creation and does NOT track ERS renames, so any time an ERS is deleted and the controller recreates it with a fresh random suffix, the existing listener still embeds the old (now-dead) ERS name in its config secret and crashloops trying to patch the nonexistent ERS. Recovery: delete the listener; the controller recreates it with the current ERS name embedded.
+5. **ERS drift** — `EphemeralRunnerSet.spec.ephemeralRunnerSpec.runnerScaleSetId` does not match the parent ARS canonical ID. Recovery: delete the EphemeralRunnerSet (cascade-deletes its EphemeralRunners); the parent ARS controller creates a fresh ERS with the current ID.
+
+**Listener/ERS cascade:** `AutoscalingListener` and `EphemeralRunnerSet` are a coupled pair — any time an ERS is deleted (whether for `ers_drift` or as part of the `ers_cascade_from_ars` queue), the parent ARS's listener is ALSO queued for deletion so the controller can recreate them together with consistent name references. Listeners are deleted first (faster than ERS deletes, and avoids the existing listener pod crashlooping while the new ERS is being created). Deletes are paced with a short inter-delete sleep to keep the controller's reconcile burst from exhausting AWS CNI IP allocations on the listener node.
+
+After recovery, `heal-arc` sleeps briefly to let the controller settle, then re-runs the drift report once. If drift_count is zero the recovery is reported complete; otherwise the remaining drift is printed and the recipe exits non-zero.
+
+The `OSDC_CONFIRM=yes|no|ask` gate applies to `heal-arc` (default `ask`). `heal-arc-check` never prompts.
+
+### Watching recovery
+
+```bash
+kubectl get autoscalinglisteners -n arc-systems -w
+```
+
+New listener pods should reach `Running` within 30-60s. Verify the new scale-set ID:
+
+```bash
+kubectl get autoscalingrunnersets -n arc-runners -o json \
+  | jq '.items[] | {name: .metadata.name, scaleSetId: .metadata.annotations["runner-scale-set-id"]}'
+```
+
+### Opting out of the post-deploy check
+
+For rapid iteration where the check is noise:
+
+```bash
+ARC_LISTENER_CHECK=skip just deploy-module <cluster> arc-runners
+```
+
+The wait window is configurable via `ARC_LISTENER_CHECK_TIMEOUT` (seconds, default 60). The check polls every 5s and breaks early once every listener is either Running steady or has restartCount >= 2.
