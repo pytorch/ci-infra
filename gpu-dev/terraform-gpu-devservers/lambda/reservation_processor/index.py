@@ -5719,7 +5719,7 @@ EOF
                         image="alpine:3.21",
                         image_pull_policy="IfNotPresent",
                         command=["/bin/sh", "-c",
-                                 "stat -c '%g' /mnt/disk | grep -q '^1081$' && echo 'GID already 1081' || (chgrp 1081 /mnt/disk && echo 'GID set to 1081')"],
+                                 "chgrp 1081 /mnt/disk && chmod g+s /mnt/disk && echo 'GID=1081 setgid=set'"],
                         volume_mounts=[client.V1VolumeMount(name="dev-home", mount_path="/mnt/disk")],
                     )],
                     volumes=[client.V1Volume(
