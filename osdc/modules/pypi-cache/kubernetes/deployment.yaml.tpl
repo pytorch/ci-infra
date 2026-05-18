@@ -128,7 +128,7 @@ __INIT_NVME_BLOCK__
             - >-
               pypi-server run
               -p __INTERNAL_PORT__
-              --backend cached-dir
+              --backend simple-dir
               --server gunicorn
               --disable-fallback
               --health-endpoint /health
