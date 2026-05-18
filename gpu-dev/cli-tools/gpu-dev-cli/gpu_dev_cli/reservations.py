@@ -826,8 +826,20 @@ class ReservationManager:
             ]
 
             if len(matching_reservations) == 0:
-                return None
-            elif len(matching_reservations) > 1:
+                # Not found by user_id — try direct lookup (for added users viewing other's reservations)
+                try:
+                    from boto3.dynamodb.conditions import Key
+                    scan_resp = self.reservations_table.scan(
+                        FilterExpression="begins_with(reservation_id, :rid)",
+                        ExpressionAttributeValues={":rid": reservation_id},
+                        Limit=10,
+                    )
+                    matching_reservations = scan_resp.get("Items", [])
+                except Exception:
+                    pass
+                if not matching_reservations:
+                    return None
+            if len(matching_reservations) > 1:
                 return None  # Ambiguous - need longer prefix
 
             reservation = matching_reservations[0]
