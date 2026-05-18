@@ -138,6 +138,10 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     capacity_type = nodepool_def.get("capacity_type", "on-demand")
     capacity_reservation_ids = nodepool_def.get("capacity_reservation_ids", [])
 
+    cluster_cr_override = os.environ.get("NODEPOOLS_CAPACITY_RESERVATION_IDS_OVERRIDE", "")
+    if cluster_cr_override:
+        capacity_reservation_ids = [s for s in cluster_cr_override.split(",") if s]
+
     # ----- Node compactor opt-in -----
     # NodePools labeled osdc.io/node-compactor are managed by the compactor
     # controller, which handles consolidation via NoSchedule taints instead
