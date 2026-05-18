@@ -3873,7 +3873,7 @@ def set(key: str, value: str) -> None:
 
 
 @config.command()
-@click.argument("env_name", type=click.Choice(["test", "prod", "prod-east1"]))
+@click.argument("env_name", type=click.Choice(["test", "prod"]))
 def environment(env_name: str) -> None:
     """Set the environment
 
@@ -3885,7 +3885,7 @@ def environment(env_name: str) -> None:
     \b
     Examples:
         gpu-dev config environment prod        # Production (us-east-2)
-        gpu-dev config environment prod-east1  # Spot-only us-east-1
+        gpu-dev config environment prod         # Production (spot accessible via interactive picker)
         gpu-dev config environment test        # Test (us-west-1)
 
     Environment configurations:
