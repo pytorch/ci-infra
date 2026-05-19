@@ -14,13 +14,17 @@
 
 ## Helm Chart
 
-Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image and publishes the chart to GHCR.
+Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image (multi-arch `linux/amd64` + `linux/arm64`) and publishes the chart to GHCR.
 
 - **OCI registry**: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
 - **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.10`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
-- **Image tags**: `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (set during workflow dispatch — pass `release_tag_name=0.14.1-jeanschmidt.10` to match the chart)
+- **Image tags**: the workflow publishes two tags per build:
+  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.10` to match the chart)
+  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>-<short_sha>` (immutable tag with the source commit baked in, useful for pinning and debugging)
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
+
+**Exact-match enforcement on `release_tag_name`**: the workflow's first step runs `hack/check-gh-chart-versions.sh ${{ inputs.release_tag_name }}` and rejects the build unless `release_tag_name` matches **all four** chart fields exactly — `version` and `appVersion` of both `gha-runner-scale-set-controller` and `gha-runner-scale-set`. Partial matches (e.g., just major.minor) fail at build time. The major.minor allowance described in "Controller Version Check" below is a runtime-only behavior of `IsVersionAllowed`, not a build-time relaxation.
 
 ## Using the Local Chart (dev workflow)
 
@@ -92,22 +96,26 @@ docker buildx build \
   --platform linux/amd64 \
   --build-arg VERSION=0.14.1 \
   --build-arg COMMIT_SHA=$(git rev-parse HEAD) \
-  -t localhost:30002/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1 \
+  -t localhost:8081/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1 \
   -f Dockerfile \
   --load .
 
 # Save to tarball for crane push (faster than docker push over port-forward)
-docker save localhost:30002/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1 -o /tmp/arc-controller.tar
+docker save localhost:8081/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1 -o /tmp/arc-controller.tar
 
-# Port-forward to Harbor (if not already running)
-kubectl port-forward -n harbor-system svc/harbor 30002:80 &
+# Port-forward to Harbor (if not already running).
+# Port 8081 matches the project convention used by every other deploy.sh
+# (modules/arc, modules/harbor-cache-recovery, base/node-compactor, etc.) —
+# pick the same port so concurrent port-forwards from `just deploy-module`
+# do not collide.
+kubectl port-forward -n harbor-system svc/harbor 8081:80 &
 
 # Authenticate crane with Harbor
 HARBOR_PASS=$(kubectl get secret -n harbor-system harbor-admin-password -o jsonpath='{.data.password}' | base64 -d)
-mise exec -- crane auth login localhost:30002 -u admin -p "$HARBOR_PASS" --insecure
+mise exec -- crane auth login localhost:8081 -u admin -p "$HARBOR_PASS" --insecure
 
 # Push via crane (much faster than docker push — deduplicates existing blobs)
-mise exec -- crane push --insecure /tmp/arc-controller.tar localhost:30002/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1
+mise exec -- crane push --insecure /tmp/arc-controller.tar localhost:8081/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1
 ```
 
 **Tagging**: always use the `<chart_version>-capacity.<N>` format. Bump `<N>` for every new build — `IfNotPresent` pull policy means the same tag won't be re-pulled. Never use a static mutable tag like `latest` or `proactive-capacity` in production. Never use a `v` prefix on `VERSION` — the controller's semver parser does not strip it and will fail the version check.
@@ -167,7 +175,8 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_RUNNER_CPU` | `750m` | `750m` | Runner placeholder CPU request — **must match the runner container's actual CPU request/limit** |
 | `CAPACITY_AWARE_RUNNER_MEMORY` | `512Mi` | `1Gi` | Runner placeholder memory request — **must match the runner container's actual memory request/limit**. The template value (`1Gi`) is the operative value; the code default (`512Mi`) would under-reserve and defeat the topology guarantee. |
 | `CAPACITY_AWARE_NODE_FLEET` | _(empty)_ | `{{NODE_FLEET}}` (from runner def) | Node fleet for placeholder-workflow scheduling (workflow pool, per-scale-set) |
-| `CAPACITY_AWARE_RUNNER_NODE_FLEET` | _(empty)_ | `c7i-runner` | **Required when `CAPACITY_AWARE_ENABLED=true`** — the dedicated runner-pool fleet for placeholder-runner scheduling. `Validate()` returns an error if missing. Cluster-wide value (currently `c7i-runner`). See "Dedicated Runner NodePool" in `PROACTIVE_CAPACITY.md`. |
+| `CAPACITY_AWARE_RUNNER_NODE_FLEET` | _(empty)_ | `c7i-runner` | **Required when `CAPACITY_AWARE_ENABLED=true`** — the cluster-wide runner-pool fleet for placeholder-runner scheduling (currently `c7i-runner`). `Validate()` returns an error if missing. Distinct from `CAPACITY_AWARE_NODE_FLEET` above: runner placeholders always land on the cluster-wide runner pool, while workflow placeholders land on the per-scale-set workflow pool. |
+| `CAPACITY_AWARE_HUD_FAILURE_MULTIPLIER` | `3` | _(unset — uses code default)_ | When the HUD API is unreachable, the capacity monitor over-provisions placeholders to `ProactiveCapacity * multiplier`. Outer caps (`MaxRunners` headroom, `MaxBurstCapacity`) bound the absolute blast radius. Clamped to a minimum of `1`. |
 | `CAPACITY_AWARE_RUNNER_CLASS` | _(empty)_ | `{{RUNNER_CLASS}}` (from runner def) | Runner class for placeholder node selector |
 | `CAPACITY_AWARE_HUD_API_URL` | _(built-in default URL)_ | hardcoded PyTorch HUD `queued_jobs_aggregate` URL | HUD endpoint for queued job counts |
 | `CAPACITY_AWARE_HUD_API_TOKEN` | _(empty)_ | from K8s secret `pytorch-hud-token` (optional mount) | PyTorch HUD API token for queued job counts |
@@ -186,11 +195,11 @@ The template mounts this as optional (`optional: true`), so missing the secret d
 
 ## Adding maxRunners to a Runner Definition
 
-Add `max_runners: <value>` to the runner def YAML. Most existing defs also set `proactive_capacity` and `max_burst_capacity` — copy those too unless you specifically want to opt out of proactive capacity. Example:
+Add `max_runners: <value>` to the runner def YAML. Most existing defs also set `proactive_capacity` and `max_burst_capacity` — copy those too unless you specifically want to opt out of proactive capacity. Example (fictitious def, for illustration only):
 
 ```yaml
 runner:
-  name: l-x86iavx512-8-16
+  name: l-x86example-8-16
   instance_type: c7a.48xlarge
   vcpu: 8
   memory: 16Gi
@@ -203,7 +212,12 @@ runner:
 
 This flows through the template as `maxRunners:` in the generated Helm values (the chart's standard scaling field — `gha_max_runners` at `runner.yaml.tpl:73` is an unrelated Prometheus metric). The capacity monitor reads `config.MaxRunners` (set from the listener config) and uses it as the ceiling for `X-ScaleSetMaxCapacity`. Without `max_runners`, the value is empty/unlimited.
 
-H100 (`modules/arc-runners-h100/defs/`) and B200 (`modules/arc-runners-b200/defs/`) runners all set `max_runners` (1, 2, 4, or 8 depending on GPU split). CPU/T4/A10G/L4/A100 runner defs currently do not set `max_runners`.
+H100 (`modules/arc-runners-h100/defs/`) and B200 (`modules/arc-runners-b200/defs/`) runners all set `max_runners`, computed as `(reserved GPUs / GPUs per runner)`:
+
+- H100 has 1 reserved 8-GPU node (8 total GPUs). Per-split values: `8 / 4 / 2 / 1` for 1× / 2× / 4× / 8× splits.
+- B200 has 2 reserved 8-GPU nodes (16 total GPUs). Per-split values: `16 / 8 / 4 / 2` for 1× / 2× / 4× / 8× splits.
+
+CPU/T4/A10G/L4/A100 runner defs currently do not set `max_runners`.
 
 ## Load Testing the Capacity Monitor
 
@@ -244,7 +258,7 @@ If the capacity monitor is NOT starting despite `CAPACITY_AWARE_ENABLED=true`, t
 
 On ARC upgrades:
 1. Check if `cmd/ghalistener/main.go` changed (the entry point wiring -- our changes are in the capacity monitor errgroup block)
-2. Check if `github.com/actions/scaleset` changed (specifically `listener.SetMaxRunners()` and `listener.Config`)
+2. Check if `github.com/actions/scaleset/listener` changed (specifically `listener.SetMaxRunners()` and `listener.Config` — that sub-package is the API surface we depend on)
 3. Rebase the fork's `master` branch onto upstream master
 4. Rebuild and push the image to Harbor
 

@@ -70,6 +70,7 @@ Reference documentation in `docs/`:
 | `docs/observability.md` | Three-Alloy observability architecture — monitoring + logging pipelines to Grafana Cloud |
 | `docs/observability-estimates.md` | Per-unit cost estimates for metrics cardinality and log volume (Grafana Cloud billing) |
 | `docs/operations.md` | Operational prerequisites — AWS CLI, mise, working directory setup for cluster management |
+| `docs/ipv6-cluster-recreation.md` | Operator runbook for destroying and recreating an OSDC cluster as IPv6-only (accepted data losses: Harbor S3, EFS pypi-cache) |
 | `docs/loki_query.md` | CLI queries against Grafana Cloud Loki when kubectl logs is unavailable |
 | `docs/mimir_query.md` | CLI queries against Grafana Cloud Mimir (Prometheus metrics, no in-cluster Prometheus) |
 | `docs/runner_naming_convention.md` | Runner label format and the ~42 character name limit (ARC/K8s/Cilium constraints) |

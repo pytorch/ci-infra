@@ -77,11 +77,12 @@ Three log sources flow into the same Loki tenant: **pod logs**, **system journal
 | `cluster` | all | `pytorch-arc-cbr-production` | Cluster name from clusters.yaml (external label on the writer) |
 | `namespace` | pod logs | `arc-runners`, `kube-system`, `harbor-system` | Kubernetes namespace |
 | `container` | pod logs | `runner`, `coredns`, `kube-proxy` | Container name |
-| `app` | pod logs | `coredns`, `karpenter`, `harbor` | From `app.kubernetes.io/name` pod label |
-| `level` | pod + journal logs | `error`, `warn`, `info`, `debug`, `fatal` | Normalized log level (lowercase) |
+| `app` | pod logs | `karpenter`, `harbor`, `pypi-cache` | From `app.kubernetes.io/name` pod label only — pods labeled only with `k8s-app` (EKS-managed CoreDNS, kube-proxy, NodeLocal DNS) do NOT have this label; filter by `container=` instead |
+| `level` | pod + journal logs | `error`, `warn`, `info`, `fatal` | Normalized log level (lowercase). `debug` lines are dropped at ingestion (DEBUG/TRACE text-drop in pod pipeline, priority-7 drop in journal pipeline) so `level="debug"` returns few or no results |
 | `unit` | journal logs | `kubelet.service`, `containerd.service`, `kernel`, `nvidia-fabricmanager.service`, `nvidia-persistenced.service` | Systemd unit |
 | `kind` | k8s events | `Pod`, `Node`, `Deployment` | Event involved-object kind |
 | `type` | k8s events | `Normal`, `Warning` | Event type |
+| `namespace` | k8s events | `kube-system`, `arc-runners`, `harbor-system` | Namespace of the involved object (set automatically by `loki.source.kubernetes_events`) |
 
 ### Structured Metadata (go after `{}` with pipe `|` syntax)
 
@@ -186,11 +187,13 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
 
 ### NodeLocal DNSCache logs
 
+NodeLocal DNSCache pods are labeled `k8s-app: node-local-dns` only (no `app.kubernetes.io/name`), so filter by container name instead:
+
 ```bash
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="kube-system", app="node-local-dns"}' \
+    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="kube-system", container="node-cache"}' \
     --data-urlencode "limit=50" \
     --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -256,7 +259,7 @@ To include timestamps:
 
 ## Notes on what's collected
 
-- **Pod logs** are collected from every node by the Alloy DaemonSet (`loki.source.file` reading CRI logs from `/var/log/pods/`). Pods in the `logging` namespace are excluded to prevent feedback loops; pods in `Succeeded` or `Failed` phase are dropped at discovery; lines matching `DEBUG`/`TRACE` levels and lines longer than 16KB are dropped; per-pod rate limit is 1000 lines/s sustained / 5000 burst.
+- **Pod logs** are collected from every node by the Alloy DaemonSet (`loki.source.file` reading CRI logs from `/var/log/pods/`). Pods in the `logging` namespace are excluded to prevent feedback loops; pods in `Succeeded` or `Failed` phase are dropped at discovery; lines matching `DEBUG`/`TRACE` levels and lines longer than 16KB are dropped; lines containing `kube-probe/` are dropped (HTTP readiness/liveness probe noise from any pod with HTTP access logging); per-pod rate limit is 1000 lines/s sustained / 5000 burst.
 - **Journal logs** are collected for `kubelet.service`, `containerd.service`, `kernel`, `nvidia-fabricmanager.service`, and `nvidia-persistenced.service` only. Debug-priority entries (syslog priority 7) are dropped.
 - **Kubernetes events** are collected by a separate Alloy Deployment (`alloy-events`, single replica) via the K8s Events API. Events from the `logging` namespace are dropped.
 - Some module pipelines apply additional sampling (e.g. `arc-runners` non-error logs are sampled at 10%, `buildkit` non-error logs at 50%, `harbor-system` non-error logs are throttled to 100 lines/s burst 500).
