@@ -40,20 +40,8 @@ else
   echo "[AMI-BAKER] No ECR token — skipping image cache"
 fi
 
-# Pre-pull GPU Operator DaemonSet images (saves ~10 min on cold boot)
-# These are the images GPU Operator v25.3.3 schedules on every GPU node
-echo "[AMI-BAKER] Pre-pulling GPU Operator images..."
-for IMG in \
-  nvcr.io/nvidia/k8s/container-toolkit:v1.17.8-ubuntu20.04 \
-  nvcr.io/nvidia/k8s-device-plugin:v0.17.4 \
-  nvcr.io/nvidia/cloud-native/dcgm:4.3.1-1-ubuntu22.04 \
-  nvcr.io/nvidia/k8s/dcgm-exporter:4.3.1-4.4.0-ubuntu22.04 \
-  nvcr.io/nvidia/cloud-native/k8s-mig-manager:v0.12.3-ubuntu20.04 \
-  docker.io/alpine:3.21; do
-  echo "[AMI-BAKER] Pulling $IMG..."
-  ctr -n k8s.io images pull "$IMG" 2>&1 || echo "[AMI-BAKER] Failed to pull $IMG (non-fatal)"
-done
-echo "[AMI-BAKER] GPU Operator images cached"
+# GPU Operator images are pre-pulled in user-data (after nodeadm), not here.
+# Baker's containerd lacks the registry config that nodeadm sets up.
 
 # Signal completion
 echo "[AMI-BAKER] Build complete" > /tmp/ami-baker-done

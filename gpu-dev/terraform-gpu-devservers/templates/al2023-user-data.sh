@@ -185,6 +185,15 @@ ECR_IMAGE="${container_image}"
     sleep 2
   done
   crictl pull "$ECR_IMAGE" 2>&1 || echo "Image pre-pull failed"
+  # Pre-pull GPU Operator images (saves ~10 min waiting for DaemonSet pod startup)
+  for IMG in \
+    nvcr.io/nvidia/k8s/container-toolkit:v1.17.8-ubuntu20.04 \
+    nvcr.io/nvidia/k8s-device-plugin:v0.17.4 \
+    nvcr.io/nvidia/cloud-native/dcgm:4.3.1-1-ubuntu22.04 \
+    nvcr.io/nvidia/k8s/dcgm-exporter:4.3.1-4.4.0-ubuntu22.04 \
+    nvcr.io/nvidia/cloud-native/k8s-mig-manager:v0.12.3-ubuntu20.04; do
+    crictl pull "$IMG" 2>&1 || echo "GPU Operator image pull failed: $IMG"
+  done
 ) &
 echo "*/30 * * * * ECR_LOGIN=\$(aws ecr get-login-password --region ${region}) && echo \$ECR_LOGIN | crictl pull --creds AWS:\$ECR_LOGIN $ECR_IMAGE 2>&1 | logger -t gpu-dev-image-pull" | crontab -
 
