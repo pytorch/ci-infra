@@ -2,12 +2,25 @@
 
 ## Prerequisites
 
-- AWS CLI configured with appropriate credentials
+- AWS CLI configured with credentials for an IAM principal mapped to one of the roles in the target cluster's `access_config.cluster_admin_role_names` (e.g. `osdc_gha_staging` for `arc-staging`, `osdc_gha_prod` for `arc-cbr-production`). How those credentials are acquired (SSO, role assumption, static keys) is left to the operator's organization — the project does not prescribe a profile or login flow.
 - `mise` installed ([mise.jdx.dev](https://mise.jdx.dev))
 - `just` installed (not managed by `mise` — install separately)
 - Working directory: `osdc/`
 
 `mise` auto-installs all other tools (tofu, kubectl, helm, crane, awscli, packer, `uv`, plus linters) on first run. Run `just setup` once to create the Python virtualenv (`uv sync`) used by `cluster-config.py` and other helpers.
+
+`mise` also exports `AWS_REGION=us-west-2` for every shell rooted at the project. This is the state-bucket region (state and the lock table always live in `us-west-2`) and the default for `aws` calls; override `AWS_REGION` explicitly when running ad-hoc `aws` commands against another cluster's region (e.g. `arc-cbr-production` lives in `us-east-2`).
+
+### Corporate proxy (Meta and similar)
+
+In environments behind an HTTP proxy that does not whitelist `*.eks.amazonaws.com`, `aws eks ...`, `kubectl`, and `helm` calls will hang or time out. Extend the bypass list:
+
+```bash
+export NO_PROXY="${NO_PROXY:-},.eks.amazonaws.com"
+export no_proxy="${no_proxy:-},.eks.amazonaws.com"
+```
+
+Every `just` recipe that touches the EKS API inlines this bypass for you. The export above is only needed when invoking `aws`, `kubectl`, or `helm` directly — for example during the read-only debugging session below.
 
 ## First-time setup
 
@@ -50,19 +63,68 @@ The full per-cluster module list lives in `clusters.yaml` under `clusters.<id>.m
 
 ## Day-to-day operations
 
+For the module contract (directory layout, deploy phases, adding a new module) see [`modules.md`](modules.md).
+
 ### Deploy a specific module
 
 ```bash
 just deploy-module arc-staging nodepools
 just deploy-module arc-staging arc-runners
+
+# Force a Helm upgrade even when the release looks unchanged
+just deploy-module arc-staging arc force
+```
+
+### Preview changes without applying
+
+`just plan <cluster>` runs `tofu plan` for the base and every terraform-backed module. Read-only: no apply, no Kubernetes side effects, safe to run from CI on PRs.
+
+```bash
+just plan arc-staging
 ```
 
 ### Inspect cluster state
 
 ```bash
-just show arc-staging        # shows config, modules, tofu vars
+just show arc-staging        # config, modules, tofu vars
 just list                    # all clusters and their modules
 ```
+
+### Inspect what was deployed
+
+The deploy commands write an audit log into ConfigMaps in the `osdc-system` namespace.
+
+```bash
+just deploy-history arc-staging              # list of deploy entries (oldest → newest)
+just deploy-status arc-staging               # current versions + recent history (all)
+just deploy-status arc-staging arc-runners   # narrow to a single module/command
+```
+
+### Post-deploy validation
+
+```bash
+just smoke arc-staging              # pytest-based smoke suite (per-module)
+just integration-test arc-staging   # full integration suite
+just load-test arc-staging          # synthetic load
+just workload-test arc-staging      # production workload replay
+```
+
+`just deploy` itself prompts to run smoke at the end (skipped when `OSDC_SMOKE=no`).
+
+### Graceful runner refresh
+
+To roll new runner configurations or AMIs without aborting in-flight CI jobs:
+
+```bash
+just drain-runners arc-staging      # patch maxRunners=0, taint nodes, wait for in-flight pods
+just resume-runners arc-staging     # restore maxRunners from def files, remove the taint
+```
+
+`drain-runners` waits up to `OSDC_DRAIN_TIMEOUT_SECS` (default `3600`) for runner pods to finish before declaring stragglers. The default 1h matches typical PyTorch suite duration — raise it for longer test windows.
+
+`taint-nodes` / `untaint-nodes` add or remove the `deploy.osdc.io/refresh-pending=true:NoSchedule` taint on every node labelled `workload-type=github-runner` — useful when you want to mark nodes stale without also draining the AutoscalingRunnerSets.
+
+`recycle-nodes` deletes all Karpenter `NodeClaims`, forcing Karpenter to reprovision on demand. Use after AMI/userData changes when you do not need to preserve in-flight jobs. Staging runs this automatically at the end of `just deploy` (driven by `recycle_karpenter_nodes: true` in `clusters.yaml`).
 
 ### Read-only debugging
 
@@ -73,6 +135,17 @@ kubectl get nodepools                                # requires the karpenter mo
 kubectl get autoscalingrunnersets -n arc-runners
 helm list -A
 ```
+
+### Environment variables for `just deploy`
+
+Set these to suppress the interactive prompts in `just deploy` — required for CI/automation use:
+
+| Variable | Values | Default | Effect |
+|----------|--------|---------|--------|
+| `OSDC_CONFIRM` | `yes` / `no` / `ask` | `ask` | Confirm before applying the full deploy and each tofu plan. `no` cancels immediately. |
+| `OSDC_TAINT_NODES` | `yes` / `no` / `ask` | `ask` | Taint ARC runner nodes after the deploy completes (skipped when nodes are being recycled). |
+| `OSDC_SMOKE` | `yes` / `no` / `ask` | `ask` | Run `just smoke <cluster>` after the deploy. |
+| `OSDC_DRAIN_TIMEOUT_SECS` | seconds | `3600` | How long `just drain-runners` waits for in-flight runner pods before listing stragglers. |
 
 ## Adding a new cluster
 
