@@ -612,6 +612,73 @@ class TestGenerateRunner:
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
 
+    def test_pause_runners_forces_max_runners_zero_when_def_unset(self, tmp_path):
+        """pause_runners=true forces maxRunners: 0 even when the def omits max_runners."""
+        def_file = make_def_file(tmp_path, "elastic-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "pause_runners": True,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "elastic-runner.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+    def test_pause_runners_overrides_def_max_runners(self, tmp_path):
+        """pause_runners=true overrides a def-level max_runners value."""
+        def_file = make_def_file(tmp_path, "fixed-runner", "p6-b200.48xlarge", 22, 225, gpu=1, max_runners=8)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "pause_runners": True,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "fixed-runner.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+    def test_pause_runners_false_preserves_def_value(self, tmp_path):
+        """pause_runners=false preserves the def's max_runners value."""
+        def_file = make_def_file(tmp_path, "kept-runner", "c7i.24xlarge", 4, 16, max_runners=8)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "pause_runners": False,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "kept-runner.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 8
+
+    def test_pause_runners_unset_preserves_unbounded(self, tmp_path):
+        """pause_runners unset leaves the RSS unbounded when the def also omits max_runners."""
+        def_file = make_def_file(tmp_path, "elastic-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "elastic-runner.yaml").read_text()))
+        assert "maxRunners" not in docs[0]
+
     def test_proactive_capacity_default_zero(self, tmp_path):
         """proactive_capacity defaults to 0 when not in the runner def."""
         def_file = make_def_file(tmp_path, "cap-runner", "c7i.24xlarge", 4, 16)
@@ -1553,6 +1620,57 @@ class TestMain:
         docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
+
+    def test_pause_runners_forces_max_runners_zero(self, tmp_path, monkeypatch):
+        """main() honors cluster-level pause_runners=true by forcing maxRunners: 0."""
+        paused_config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/prod-org",
+                    "github_secret_name": "prod-secret",
+                    "runner_name_prefix": "prod-",
+                },
+            },
+            "clusters": {
+                "arc-prod": {
+                    "cluster_name": "production",
+                    "region": "us-east-1",
+                    "modules": ["arc-runners"],
+                    "pause_runners": True,
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/prod-org",
+                        "github_secret_name": "prod-secret",
+                        "runner_name_prefix": "prod-",
+                    },
+                },
+            },
+        }
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(paused_config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "capped-runner", "c7i.24xlarge", 4, 16, max_runners=8)
+        make_def_file(defs_dir, "elastic-runner", "c7i.24xlarge", 4, 16)
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "arc-prod"]):
+            assert main() == 0
+
+        capped_docs = list(yaml.safe_load_all((output_dir / "capped-runner.yaml").read_text()))
+        assert capped_docs[0]["maxRunners"] == 0
+
+        elastic_docs = list(yaml.safe_load_all((output_dir / "elastic-runner.yaml").read_text()))
+        assert elastic_docs[0]["maxRunners"] == 0
 
     def test_missing_template_exits_1(self, tmp_path, monkeypatch):
         p = tmp_path / "clusters.yaml"
