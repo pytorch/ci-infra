@@ -182,6 +182,9 @@ clusters:
     cluster_name: pytorch-arc-cbr-production-uw1
     region: us-west-1
     state_bucket: ciforge-tfstate-arc-cbr-prod-uw1
+    # Keep all scale sets at maxRunners: 0 until the cluster is validated.
+    # Remove once the cluster is ready to accept jobs.
+    pause_runners: true
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
       cluster_admin_role_names:
