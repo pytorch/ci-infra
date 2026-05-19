@@ -2,18 +2,21 @@ Runner labels encode hardware capabilities directly in the name, so a workflow a
 
 ## Why the Names Are So Compact
 
-Runner labels must stay under **~42 characters**. This limit comes from three stacking constraints in how ARC (Actions Runner Controller) uses the scale set name:
+Runner labels stay under **~42 characters** to leave headroom under several stacking constraints in how ARC (Actions Runner Controller) derives names from the scale set name:
 
-1. **ARC Helm chart** enforces a **45-character** maximum on scale set names. With ARC, the scale set name *is* the `runs-on` label — you cannot add extra labels to target ARC runners.
-2. **Kubernetes label values** are capped at **63 characters**. ARC derives resource names by appending suffixes (e.g. `-gha-rs-no-permission`, 21 chars) to the scale set name. 45 + 18 (fullname infix) = 63, exactly at the K8s ceiling.
-3. **Cilium/Istio CNI** plugins create `CiliumIdentity` resources using the ServiceAccount name as a label value. Derived SA names from a 45-char scale set name can reach ~66 chars, exceeding the 63-char limit. Keeping names at **~42 characters** avoids this entirely.
-This is why every field is abbreviated (`l` not `linux`, `avx512` not `avx-512`, no units on vCPU/memory). The longest label from our current runner catalog is 33 characters (`c-mt-l-bx86iavx512-88-1000-a100-8`) — well within the ceiling.
+1. **ARC Helm chart** enforces a **45-character** maximum on scale set names. With ARC, the scale set name *is* the `runs-on` label — you cannot add extra labels to target ARC runners. See `charts/gha-runner-scale-set/templates/autoscalingrunnerset.yaml` lines 6-8 in the [actions-runner-controller fork](https://github.com/jeanschmidt/actions-runner-controller).
+2. **Kubernetes label values** are capped at **63 characters**. The ARC chart derives resource names as `{scale-set-name}-gha-rs` (7-char infix) plus a per-resource suffix; the longest suffix is `-no-permission` (14 chars), giving a derived ServiceAccount name of `{scale-set-name}-gha-rs-no-permission` — 21 chars added in total. A 45-char scale-set name therefore produces a 66-char derived name, which the chart truncates to 63 via `trunc 63 | trimSuffix "-"` (see `_helpers.tpl` lines 22-25 and 83-85). Truncation works for the chart's internal references but breaks any downstream consumer that mirrors the un-truncated derived name as a label value.
+3. **Future CNI-based network policy** (planned migration to Cilium for `toFQDNs` enforcement in cache-enforcer) would create `CiliumIdentity` resources using the ServiceAccount name as a label value, re-exposing the 63-char cap. OSDC does not run Cilium today, so this is not a today-blocking limit; the ~42-character target is headroom that keeps the option open without renaming runners later.
+
+Every field is abbreviated (`l` not `linux`, `avx512` not `avx-512`, no units on vCPU/memory). The longest label in any deployed cluster is 33 characters: `c-mt-l-bx86iavx512-88-1000-a100-8` on staging (which uses the `c-mt-` canary prefix). Production (`mt-` prefix) tops out at 31 characters (`mt-l-bx86iavx512-88-1000-a100-8`). Both are well within the ceiling.
 
 Reference: [actions/actions-runner-controller#2697](https://github.com/actions/actions-runner-controller/issues/2697)
 
 ## Format
 
 `[c-]{provider}-[rel-]{os}-[b]{arch}{vendor}{features}-{vcpu}-{memory}[-{gpu_type}[-{gpu_count}]]`
+
+Defs live in `modules/arc-runners/defs/` (CPU runners + A100 GPU + release defs), `modules/arc-runners-h100/defs/` (H100 GPU), and `modules/arc-runners-b200/defs/` (B200 GPU). The naming convention is identical across all three modules — the split is operational (per-module capacity reservation handling), not semantic.
 
 ## Fields
 
@@ -206,7 +209,7 @@ Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI wor
 | linux.arm64.m8g.4xlarge | m8g.4xlarge | mt-l-arm64g4-16-62 |
 | linux.arm64.m8g.4xlarge.ephemeral | m8g.4xlarge | mt-l-arm64g4-16-62 |
 | linux.arm64.r7g.12xlarge.memory | r7g.16xlarge | mt-l-arm64g3-61-463 |
-| linux.arm64.m7g.metal | m8g.16xlarge | mt-l-barm64g4-62-226 |
+| linux.arm64.m7g.metal | m7g.metal | mt-l-barm64g3-62-226 |
 
 ## Many-to-One: Old Labels That Collapse Into a Single New Label
 
