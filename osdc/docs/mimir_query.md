@@ -8,7 +8,7 @@ The OSDC clusters ship metrics to Grafana Cloud Mimir via Grafana Alloy. There i
 
 - `kubectl` access to the target cluster (managed by mise in the `osdc/` directory)
 - `jq` for parsing responses
-- The `grafana-cloud-read-credentials` secret must exist in the `monitoring` namespace
+- The `grafana-cloud-read-credentials` secret must exist in the `monitoring` namespace (see "Creating the read-credentials secret" below)
 
 ## Step 1 — Extract Credentials
 
@@ -30,7 +30,20 @@ MIMIR_URL="https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
 
 **Note**: There are two secrets — `grafana-cloud-credentials` (write, used by Alloy) and `grafana-cloud-read-credentials` (read, for queries). Always use the **read** secret for queries.
 
-The Mimir URL comes from `clusters.yaml` under `monitoring.grafana_cloud_mimir_read_url`.
+The Mimir URL comes from `clusters.yaml` under `monitoring.grafana_cloud_read_url`.
+
+### Creating the read-credentials secret
+
+The write-side `grafana-cloud-credentials` secret is documented in `docs/observability.md` ("Credential setup (monitoring)"). The read-side secret is created the same way but with a read-scope API key:
+
+```bash
+kubectl create secret generic grafana-cloud-read-credentials \
+  -n monitoring \
+  --from-literal=username='<GRAFANA_CLOUD_METRICS_USER_ID>' \
+  --from-literal=password='<API_KEY_WITH_METRICS_READ_SCOPE>'
+```
+
+Neither secret is created by `deploy.sh` — both are operator-provided per cluster.
 
 ## Step 2 — Query
 
@@ -94,32 +107,37 @@ These are the scrape jobs configured in the cluster. **Most jobs apply tight `ke
 
 Target counts vary continuously with cluster size and are not listed here — query `count(up{cluster="...", job="<job>"})` for live counts.
 
-| Job | Description | Filter notes |
-|-----|-------------|--------------|
-| `node-exporter` | Node-level memory metrics only | Only `node_memory_MemAvailable_bytes` and `node_memory_MemTotal_bytes` are kept; CPU/disk/network are dropped at scrape |
-| `kubelet` | Running pod/container counts only | Only `kubelet_running_(pods\|containers)` and `kubelet_node_name` are kept |
-| `kubelet` (cAdvisor port) | Pod-level memory only | Only `container_memory_working_set_bytes` and `container_memory_rss` are kept; CPU/network/filesystem dropped. Alloy further restricts to control-plane namespaces (`arc-systems\|karpenter\|harbor-system\|monitoring\|logging\|buildkit`) |
-| `kube-state-metrics` | Filtered KSM allowlist | Keeps `kube_pod_info`, `kube_pod_container_status_*`, `kube_pod_status_reason`, `kube_deployment_status_*`, daemonset/namespace/node/statefulset/pv/hpa/job metrics |
-| `apiserver` | API server health | Only `apiserver_request_total` and `apiserver_request_terminations_total` are kept |
-| `coredns` | DNS resolution metrics | All `coredns_*` except buckets, plus `go_*`/`process_*` dropped |
-| `monitoring/nodelocaldns` | Per-node NodeLocal DNSCache (NLD) DaemonSet metrics; scrapes both ports `9253` (CoreDNS plugin) and `9353` (binary `coredns_nodecache_setup_errors_total`) at 60s | All `coredns_*` except `coredns_*_request_duration_seconds_bucket`, plus `go_*`/`process_*` dropped |
-| `karpenter` | Autoscaler counters and capacity | Only `karpenter_nodeclaims_created_total`, `karpenter_nodes_created_total`, `karpenter_nodes_terminated_total`, `karpenter_nodepools_usage`, `karpenter_nodepools_limit`, `karpenter_nodes_allocatable`, `karpenter_interruption_received_messages_total` |
-| `git-cache-central-metrics` | Git cache central service metrics | No filter — all `git_cache_central_*` flow through |
-| Git cache daemonset | Per-node git cache metrics (PodMonitor) | No filter — all `git_cache_node_*` flow through |
-| `arc-listeners` | ARC runner-scale-set listener metrics (PodMonitor) | Keeps `gha_assigned_jobs`, `gha_completed_jobs_total`, `gha_started_jobs_total`, `gha_running_jobs`, `gha_job_*_duration_seconds_(sum\|count)`, `gha_capacity_*` |
-| `arc-controller` | ARC controller metrics | See ServiceMonitor for filter |
-| `harbor` | Harbor registry exporter | All metrics except `go_*`/`process_*`/`promhttp_*` |
-| `buildkit` / `buildkit-haproxy` | BuildKit pods + LB metrics | See ServiceMonitors for filter |
-| `node-compactor` | Node consolidation/compactor metrics | No filter |
-| `pushgateway` | Prometheus Pushgateway (ad-hoc job metrics) | No filter |
-| `pypi-cache` | PyPI cache nginx metrics | Only `nginx_up`, `nginx_http_requests_total`, `nginx_connections_active` |
-| `dcgm-exporter` | NVIDIA GPU metrics (only on GPU nodes) | See ServiceMonitor for filter |
+> **Kubelet / cAdvisor metrics are unavailable.** Under IPv6-only EKS, the kubelet ServiceMonitor (`kubelet.enabled: false` in `modules/monitoring/helm/values.yaml`) is disabled — Prometheus Operator's kubelet Endpoints picker returns the IPv4 NodeInternalIP, which Alloy (IPv6-only pod) cannot reach. **All of `kubelet_running_pods`, `kubelet_running_containers`, `container_memory_working_set_bytes`, and `container_memory_rss` return empty in current clusters.** See `docs/observability.md` ("Disabled scrapers (IPv6 migration)") for the re-enable plan. Until a custom IPv6-aware kubelet ServiceMonitor ships, treat any query against these metric names as broken-by-design — not as a Mimir failure.
+
+The table below lists the **ServiceMonitor / PodMonitor name** alongside the **actual `job=` label** that appears in Mimir. They differ because ServiceMonitors inherit the `job` label from the target *Service* name, not the monitor name.
+
+| Monitor name | Actual `job=` label | Description | Filter notes |
+|--------------|---------------------|-------------|--------------|
+| `node-exporter` (built-in) | `node-exporter` | Node-level memory + conntrack only | Only `node_memory_MemAvailable_bytes`, `node_memory_MemTotal_bytes`, `node_nf_conntrack_entries`, and `node_nf_conntrack_entries_limit` are kept; CPU/disk/network are dropped at scrape. Conntrack metrics power `NodeConntrackHigh{Warn,Critical}` alerts (critical under IPv6-only EKS where pod-IPv4-internet egress hits VPC CNI SNAT). |
+| `kubelet` (built-in) | — (DISABLED) | Would emit `kubelet_running_(pods\|containers)` and `kubelet_node_name` | ServiceMonitor disabled on IPv6-only EKS — queries return empty. |
+| `kubelet` cAdvisor (built-in) | — (DISABLED) | Would emit `container_memory_working_set_bytes` and `container_memory_rss` | ServiceMonitor disabled on IPv6-only EKS — queries return empty. (Alloy's `cost_control` two-step replace+drop targeting these metrics is still configured but has no source data to filter.) |
+| `kube-state-metrics` (built-in) | `kube-state-metrics` | Filtered KSM allowlist | Keeps `kube_pod_info`, `kube_pod_container_status_*` (both `last_terminated_reason` AND `terminated_reason` — the non-`last_` variant fires for Job/CronJob containers with `restartPolicy: Never`), `kube_pod_status_reason`, `kube_deployment_status_*`, daemonset/namespace/node/statefulset/pv/hpa/job metrics. `Completed` reason and exit code `0` are dropped from both terminated variants. |
+| `apiserver` | `kubernetes` | API server health | Only `apiserver_request_total` and `apiserver_request_terminations_total` are kept |
+| `coredns` PodMonitor | `monitoring/coredns` | DNS resolution metrics | All `coredns_*` except buckets, plus `go_*`/`process_*` dropped |
+| `nodelocaldns` PodMonitor | `monitoring/nodelocaldns` | Per-node NodeLocal DNSCache (NLD) DaemonSet metrics; scrapes both ports `9253` (CoreDNS plugin) and `9353` (binary `coredns_nodecache_setup_errors_total`) at 60s | All `coredns_*` except `coredns_*_request_duration_seconds_bucket`, plus `go_*`/`process_*` dropped |
+| `karpenter` | `karpenter` | Autoscaler counters and capacity | Only `karpenter_nodeclaims_created_total`, `karpenter_nodes_created_total`, `karpenter_nodes_terminated_total`, `karpenter_nodepools_usage`, `karpenter_nodepools_limit`, `karpenter_nodes_allocatable`, `karpenter_interruption_received_messages_total` |
+| `git-cache-central` | `git-cache-central-metrics` | Git cache central service metrics | No filter — all `git_cache_central_*` flow through |
+| `git-cache-daemonset` PodMonitor | `monitoring/git-cache-daemonset` | Per-node git cache metrics | No filter — all `git_cache_node_*` flow through |
+| `arc-listeners` PodMonitor | `monitoring/arc-listeners` | ARC runner-scale-set listener metrics | Keeps `gha_assigned_jobs`, `gha_completed_jobs_total`, `gha_started_jobs_total`, `gha_running_jobs`, `gha_job_*_duration_seconds_(sum\|count)`, `gha_capacity_*` |
+| `arc-controller` | (varies — Service name depends on ARC chart version) | ARC controller metrics | Keeps `gha_controller_.*` and `controller_runtime_reconcile_errors_total` only |
+| `harbor` | (varies — Harbor exporter emits per-component job labels: `core`, `registry`, `jobservice`, etc.) | Harbor registry exporter | All metrics except `go_*`/`process_*`/`promhttp_*` |
+| `buildkit` | `buildkitd-pods` | BuildKit pod metrics | Drops `go_*`, `process_*`, `promhttp_*`, `target_info`, AND `.*_bucket` (all histogram buckets). For latency, use `rate(metric_sum)/rate(metric_count)` — `histogram_quantile(...)` will not work. |
+| `buildkit-haproxy` | `buildkitd-lb-metrics` | BuildKit LB metrics | (See ServiceMonitor for filter) |
+| `node-compactor` | `node-compactor` | Node consolidation/compactor metrics | No filter |
+| `pushgateway` | `pushgateway` | Prometheus Pushgateway (ad-hoc job metrics) | No filter; `honorLabels: true` — pushed metrics' `job`/`instance` labels are preserved instead of overwritten by scrape target |
+| `pypi-cache` | (one job per Service per CUDA slug — e.g. `pypi-cache-cpu`, `pypi-cache-cu126`, `pypi-cache-cu128`, `pypi-cache-cu130` per `clusters.yaml` `cuda_versions`) | PyPI cache nginx metrics | Only `nginx_up`, `nginx_http_requests_total`, `nginx_connections_active` |
+| `dcgm-exporter` | `dcgm-exporter` | NVIDIA GPU metrics (only on GPU nodes) | All `DCGM_FI_*` metrics flow through (no metric drops); label drops only: `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id` |
 
 In addition, the `kube-prometheus-stack-operator` job exists but Alloy's `cost_control` drops every `prometheus_operator_*` metric (and `go_*`/`process_*`/`promhttp_*`), so only the `up` metric is queryable in practice.
 
 Job naming follows two conventions:
 
-- **ServiceMonitors**: the `job` label is the target Service name (e.g. `karpenter`, `kubernetes` for the API server, `buildkitd-pods`).
+- **ServiceMonitors**: the `job` label is the target Service name (e.g. `karpenter`, `kubernetes` for the API server, `buildkitd-pods` for BuildKit). This is why the "Monitor name" and "Actual `job=` label" columns above often differ.
 - **PodMonitors**: the `job` label is `<namespace>/<podmonitor-name>` (e.g. `monitoring/arc-listeners`, `monitoring/coredns`, `monitoring/git-cache-daemonset`).
 
 Confirm exact job names by running `count(up{cluster="..."}) by (job)`.
@@ -134,7 +152,7 @@ All metrics include `cluster="pytorch-arc-cbr-production"` (set by Alloy as an e
 | `pod` | `runner-xyz-abc` | Pod name |
 | `container` | `runner`, `git-cache` | Container name |
 | `node` | `ip-10-4-154-0.us-east-2.compute.internal` | Node hostname (use `kube_pod_info` to map pod → node) |
-| `instance` | `10.4.154.0:9100` | Scrape target address |
+| `instance` | `[fd00:ec2::xxx]:9100` | Scrape target address. **IPv6 under IPv6-only EKS** — node-exporter binds the node's IPv6 hostIP via Downward API (`listenOnAllInterfaces: false`). |
 | `job` | `node-exporter`, `karpenter` | Scrape job name |
 | `nodepool` | `c7i-12xlarge`, `g5-48xlarge` | **Only present on Karpenter and node-compactor metrics**, NOT a global label |
 
@@ -161,7 +179,7 @@ sum(node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"})
 count(up{cluster="pytorch-arc-cbr-production"}) by (job)
 ```
 
-> **Note**: CPU, disk, and network metrics from `node_exporter` are dropped at scrape (only `node_memory_MemAvailable_bytes` and `node_memory_MemTotal_bytes` are kept). For per-pod CPU you need a different source (e.g. KSM pod resource metrics) — `node_cpu_seconds_total`, `node_filesystem_*`, and `node_network_*` will return empty.
+> **Note**: CPU, disk, and most network metrics from `node_exporter` are dropped at scrape. Only `node_memory_MemAvailable_bytes`, `node_memory_MemTotal_bytes`, `node_nf_conntrack_entries`, and `node_nf_conntrack_entries_limit` are kept. For per-pod CPU you need a different source (e.g. KSM pod resource metrics) — `node_cpu_seconds_total`, `node_filesystem_*`, and `node_network_*` will return empty.
 
 ### Node Metrics
 
@@ -172,12 +190,14 @@ node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"}
 # Memory usage per node (%)
 100 * (1 - node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"} / node_memory_MemTotal_bytes{cluster="pytorch-arc-cbr-production"})
 
-# Running pod count per node
-kubelet_running_pods{cluster="pytorch-arc-cbr-production"}
+# Conntrack table utilization per node (%)
+100 * node_nf_conntrack_entries{cluster="pytorch-arc-cbr-production"} / node_nf_conntrack_entries_limit{cluster="pytorch-arc-cbr-production"}
 
-# Running container count per node
-kubelet_running_containers{cluster="pytorch-arc-cbr-production"}
+# Nodes with conntrack pressure (matches NodeConntrackHigh alert threshold)
+node_nf_conntrack_entries{cluster="pytorch-arc-cbr-production"} / node_nf_conntrack_entries_limit{cluster="pytorch-arc-cbr-production"} > 0.80
 ```
+
+> **Kubelet metrics unavailable**: `kubelet_running_pods` and `kubelet_running_containers` return empty in current clusters — the kubelet ServiceMonitor is disabled under IPv6-only EKS. See the warning at the top of "Available Scrape Jobs".
 
 ### Pod / Container Health
 
@@ -197,13 +217,9 @@ kube_pod_container_status_last_terminated_exitcode{cluster="pytorch-arc-cbr-prod
 
 # Pod status reasons (Evicted, NodeLost, UnexpectedAdmissionError — routine reasons are dropped)
 kube_pod_status_reason{cluster="pytorch-arc-cbr-production"} == 1
-
-# Container memory (working set) — control-plane namespaces only
-# (Alloy drops container_memory_working_set_bytes for non-control-plane namespaces)
-container_memory_working_set_bytes{cluster="pytorch-arc-cbr-production", namespace="monitoring"}
 ```
 
-> **Note**: `kube_pod_status_phase` is NOT in the KSM keep allowlist — phase-based queries return nothing. Use `kube_pod_info` joined with `kube_pod_container_status_*` instead. Container CPU (`container_cpu_usage_seconds_total`) is dropped at scrape — only the two memory metrics survive cAdvisor filtering.
+> **Note**: `kube_pod_status_phase` is NOT in the KSM keep allowlist — phase-based queries return nothing. Use `kube_pod_info` joined with `kube_pod_container_status_*` instead. `container_memory_working_set_bytes`, `container_memory_rss`, and `container_cpu_usage_seconds_total` all return empty in current clusters — the kubelet/cAdvisor ServiceMonitor is disabled under IPv6-only EKS. The Alloy `cost_control` two-step replace+drop pattern that previously scoped cAdvisor memory to control-plane namespaces is still configured but has no source data to filter; queries against these metrics will be empty until a custom IPv6-aware kubelet ServiceMonitor ships.
 
 ### Karpenter (Autoscaling)
 
@@ -293,6 +309,8 @@ Per-node DaemonSet — each pod emits CoreDNS plugin metrics on port `9253` (zon
 
 > **Metric name gotcha**: the binary's setup-error counter is **`coredns_nodecache_setup_errors_total`** (namespace `coredns`, subsystem `nodecache`), **NOT** `nodelocaldns_setup_errors_total`. Some upstream/internal docs and PR drafts use the wrong name. Queries against `nodelocaldns_setup_errors_total` will silently return zero results — always use the `coredns_nodecache_*` form.
 
+> **Two CoreDNS request-count metric names exist** and the choice depends on which CoreDNS you're querying. NLD ships `k8s-dns-node-cache:1.26.8` which embeds an older CoreDNS that emits the legacy **`coredns_dns_request_count_total`**. The cluster CoreDNS (AWS-managed addon) is newer and emits **`coredns_dns_requests_total`** (used in the Control Plane section above and in `dashboards/cluster-health.json`). Do not "normalize" these to a single name — each is correct for its source.
+
 ```promql
 # Cluster-wide NLD QPS across all zones (one pod per node)
 sum(rate(coredns_dns_request_count_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m]))
@@ -334,6 +352,24 @@ rate(nginx_http_requests_total{cluster="pytorch-arc-cbr-production"}[5m])
 
 # Active connections
 nginx_connections_active{cluster="pytorch-arc-cbr-production"}
+```
+
+### GPU (DCGM)
+
+The DCGM ServiceMonitor doesn't drop any metric names — only labels (`UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id`) — so the full `DCGM_FI_*` set is queryable on GPU nodes:
+
+```promql
+# GPU temperature per GPU (Celsius) — used by GPUTemperatureCritical alert (>95C for 5m)
+DCGM_FI_DEV_GPU_TEMP{cluster="pytorch-arc-cbr-production"}
+
+# GPU utilization per GPU (%)
+DCGM_FI_DEV_GPU_UTIL{cluster="pytorch-arc-cbr-production"}
+
+# Uncorrectable (double-bit) ECC errors — used by GPUDoublebitECCError alert
+DCGM_FI_DEV_ECC_DBE_VOL_TOTAL{cluster="pytorch-arc-cbr-production"}
+
+# XID critical errors (48/79/94/95) — used by GPUXIDCriticalError alert
+DCGM_FI_DEV_XID_ERRORS{cluster="pytorch-arc-cbr-production"}
 ```
 
 ### Bad Node Detection (Join Pattern)
