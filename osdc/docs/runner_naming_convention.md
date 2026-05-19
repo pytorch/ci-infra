@@ -209,7 +209,7 @@ Additional AMX runners (no direct old-label mapping; provisioned for OSDC CI wor
 | linux.arm64.m8g.4xlarge | m8g.4xlarge | mt-l-arm64g4-16-62 |
 | linux.arm64.m8g.4xlarge.ephemeral | m8g.4xlarge | mt-l-arm64g4-16-62 |
 | linux.arm64.r7g.12xlarge.memory | r7g.16xlarge | mt-l-arm64g3-61-463 |
-| linux.arm64.m7g.metal | m8g.16xlarge | mt-l-barm64g4-62-226 |
+| linux.arm64.m7g.metal | m7g.metal | mt-l-barm64g3-62-226 |
 
 ## Many-to-One: Old Labels That Collapse Into a Single New Label
 
