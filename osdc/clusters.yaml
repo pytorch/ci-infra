@@ -206,9 +206,15 @@ clusters:
       runner_name_prefix: "mt-"
       runner_group: "arc-cbr-prod-uw1"   # distinct from us-east-2's "default" — see doc
     nodepools-h100:
-      # TODO: fill in us-west-1 H100 capacity reservation IDs before deploy.
-      # Generator change to honor this override is also pending.
-      capacity_reservation_ids: []
+      # us-west-1 H100 capacity reservations (p5.48xlarge, 8× H100 each):
+      #   cr-04d3d1d84e127a562 — 2 nodes (16 H100 GPUs)
+      #   cr-09a53051589034fb8 — 4 nodes (32 H100 GPUs)
+      # Total: 6 nodes, 48 H100 GPUs.
+      # Generator change to honor this override is pending — see
+      # docs/prod-cluster-ha-us-west-1.md "Phase 1 prerequisite 2".
+      capacity_reservation_ids:
+        - cr-04d3d1d84e127a562
+        - cr-09a53051589034fb8
     pypi_cache:
       replicas: 10
     modules:
@@ -252,6 +258,17 @@ clusters:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-cbr-production
       runner_name_prefix: "mt-"
+    nodepools-h100:
+      # us-east-2 H100 capacity reservation (p5.48xlarge, 8× H100).
+      capacity_reservation_ids:
+        - cr-0c3f05dffb85ed832
+    nodepools-b200:
+      # us-east-2 B200 capacity reservations (p6-b200.48xlarge, 8× B200 each).
+      # Two reserved nodes total = 16 B200 GPUs. arc-runners-b200/defs/*.yaml
+      # max_runners are sized assuming this count.
+      capacity_reservation_ids:
+        - cr-02cf82c9a0f7fa8c0
+        - cr-06ec9d6c14b9d9981
     pypi_cache:
       replicas: 10
     modules:
