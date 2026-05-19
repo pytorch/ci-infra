@@ -163,6 +163,9 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         log_error(f"Invalid definition file {def_file}: max_runners must be a positive integer, got {max_runners!r}")
         return False
 
+    if cluster_config.get("pause_runners"):
+        max_runners = 0
+
     if max_burst_capacity is not None and (not isinstance(max_burst_capacity, int) or max_burst_capacity < 0):
         log_error(
             f"Invalid definition file {def_file}: max_burst_capacity must be a non-negative integer, "
@@ -340,6 +343,10 @@ def main():
 
     # Staging clusters: force proactive_capacity to 0 regardless of runner def value
     cluster_config["force_proactive_capacity_zero"] = "staging" in cluster_id
+
+    cluster_config["pause_runners"] = bool(cluster_cfg.get("pause_runners"))
+    if cluster_config["pause_runners"]:
+        log_warning(f"pause_runners=true for cluster '{cluster_id}' — all scale sets will render with maxRunners: 0")
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():
