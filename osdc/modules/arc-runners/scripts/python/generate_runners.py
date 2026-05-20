@@ -107,6 +107,42 @@ def load_clusters_yaml(repo_root):
         return yaml.safe_load(f)
 
 
+def load_excluded_instance_types(nodepools_defs_dir, region):
+    """Return the set of instance_types whose backing nodepool/fleet excludes ``region``.
+
+    Reads ``modules/nodepools/defs/*.yaml`` — handles both the multi-instance
+    ``fleet:`` format and the legacy single-instance ``nodepool:`` format. An
+    instance_type is considered excluded when its containing def lists
+    ``region`` in ``exclude_regions``. Defs without ``exclude_regions`` (or
+    without ``region`` in the list) contribute nothing.
+
+    Returning an empty set when ``region`` is falsy or the dir is missing keeps
+    the caller backward-compatible: existing scripts that do not pass a region
+    behave exactly as before.
+    """
+    excluded: set[str] = set()
+    if not region or not nodepools_defs_dir.is_dir():
+        return excluded
+    for def_file in sorted(nodepools_defs_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(def_file.read_text()) or {}
+        except yaml.YAMLError:
+            continue
+        fleet = data.get("fleet")
+        nodepool = data.get("nodepool")
+        if isinstance(fleet, dict) and region in (fleet.get("exclude_regions") or []):
+            for inst in fleet.get("instances") or []:
+                if isinstance(inst, dict) and (t := inst.get("type")):
+                    excluded.add(t)
+        elif (
+            isinstance(nodepool, dict)
+            and region in (nodepool.get("exclude_regions") or [])
+            and (t := nodepool.get("instance_type"))
+        ):
+            excluded.add(t)
+    return excluded
+
+
 def get_cluster_config(clusters_yaml, cluster_id):
     """Get cluster config with defaults applied."""
     defaults = clusters_yaml.get("defaults", {})
@@ -165,6 +201,18 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     if cluster_config.get("pause_runners"):
         max_runners = 0
+
+    # Region-exclusion guard: if the backing nodepool/fleet excludes the
+    # cluster's region (no underlying capacity), force advertised capacity to
+    # zero so GitHub does not route jobs that would pend forever.
+    if instance_type in (cluster_config.get("excluded_instance_types") or set()):
+        log_warning(
+            f"{runner_name}: instance_type {instance_type} excluded in region "
+            f"{cluster_config.get('region', '?')} via modules/nodepools/defs/ "
+            f"— forcing max_runners=0, proactive_capacity=0"
+        )
+        max_runners = 0
+        proactive_capacity = 0
 
     if max_burst_capacity is not None and (not isinstance(max_burst_capacity, int) or max_burst_capacity < 0):
         log_error(
@@ -355,6 +403,23 @@ def main():
     cluster_config["pause_runners"] = bool(cluster_cfg.get("pause_runners"))
     if cluster_config["pause_runners"]:
         log_warning(f"pause_runners=true for cluster '{cluster_id}' — all scale sets will render with maxRunners: 0")
+
+    # Mirror the nodepools generator's exclude_regions handling: zero out
+    # advertised capacity for any runner whose instance_type is in a fleet/
+    # nodepool def that excludes this cluster's region.
+    region = cluster_cfg.get("region", "")
+    nodepools_defs_dir = (
+        Path(os.environ["NODEPOOLS_DEFS_DIR"])
+        if "NODEPOOLS_DEFS_DIR" in os.environ
+        else repo_root / "modules" / "nodepools" / "defs"
+    )
+    cluster_config["region"] = region
+    cluster_config["excluded_instance_types"] = load_excluded_instance_types(nodepools_defs_dir, region)
+    if cluster_config["excluded_instance_types"]:
+        log_info(
+            f"Region {region}: nodepool exclude_regions hits {len(cluster_config['excluded_instance_types'])} "
+            f"instance type(s); matching runners will render with maxRunners: 0"
+        )
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():

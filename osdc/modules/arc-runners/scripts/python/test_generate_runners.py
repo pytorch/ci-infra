@@ -12,6 +12,7 @@ from generate_runners import (
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
+    load_excluded_instance_types,
     main,
     normalize_name,
     parse_memory_bytes,
@@ -326,6 +327,121 @@ class TestLoadClustersYaml:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             load_clusters_yaml(tmp_path)
+
+
+# ============================================================================
+# load_excluded_instance_types
+# ============================================================================
+
+
+class TestLoadExcludedInstanceTypes:
+    def _write_def(self, dirpath, name, content):
+        p = dirpath / f"{name}.yaml"
+        p.write_text(yaml.dump(content, default_flow_style=False))
+
+    def test_fleet_format_excludes_all_listed_instances(self, tmp_path):
+        """A fleet def with exclude_regions returns every instance type it declares."""
+        self._write_def(
+            tmp_path,
+            "g5",
+            {
+                "fleet": {
+                    "name": "g5",
+                    "exclude_regions": ["us-west-1"],
+                    "instances": [{"type": "g5.48xlarge"}, {"type": "g5.12xlarge"}],
+                }
+            },
+        )
+        assert load_excluded_instance_types(tmp_path, "us-west-1") == {"g5.48xlarge", "g5.12xlarge"}
+
+    def test_legacy_nodepool_format(self, tmp_path):
+        """A legacy single-instance nodepool def returns its instance_type."""
+        self._write_def(
+            tmp_path,
+            "p4d-24xlarge",
+            {
+                "nodepool": {
+                    "name": "p4d-24xlarge",
+                    "instance_type": "p4d.24xlarge",
+                    "exclude_regions": ["us-west-1"],
+                }
+            },
+        )
+        assert load_excluded_instance_types(tmp_path, "us-west-1") == {"p4d.24xlarge"}
+
+    def test_non_matching_region_returns_empty(self, tmp_path):
+        """An exclude_regions list that does not contain the target region contributes nothing."""
+        self._write_def(
+            tmp_path,
+            "g5",
+            {
+                "fleet": {
+                    "name": "g5",
+                    "exclude_regions": ["us-west-1"],
+                    "instances": [{"type": "g5.48xlarge"}],
+                }
+            },
+        )
+        assert load_excluded_instance_types(tmp_path, "us-east-2") == set()
+
+    def test_no_exclude_regions_returns_empty(self, tmp_path):
+        """A def without exclude_regions contributes nothing."""
+        self._write_def(
+            tmp_path,
+            "c7i",
+            {"fleet": {"name": "c7i", "instances": [{"type": "c7i.24xlarge"}]}},
+        )
+        assert load_excluded_instance_types(tmp_path, "us-west-1") == set()
+
+    def test_empty_region_returns_empty(self, tmp_path):
+        """A falsy region short-circuits to an empty set (backward-compatible)."""
+        self._write_def(
+            tmp_path,
+            "g5",
+            {
+                "fleet": {
+                    "name": "g5",
+                    "exclude_regions": ["us-west-1"],
+                    "instances": [{"type": "g5.48xlarge"}],
+                }
+            },
+        )
+        assert load_excluded_instance_types(tmp_path, "") == set()
+
+    def test_missing_dir_returns_empty(self, tmp_path):
+        """A missing nodepools defs dir returns an empty set rather than raising."""
+        assert load_excluded_instance_types(tmp_path / "absent", "us-west-1") == set()
+
+    def test_multiple_defs_merge(self, tmp_path):
+        """Excluded instance types from multiple defs are unioned."""
+        self._write_def(
+            tmp_path,
+            "g5",
+            {
+                "fleet": {
+                    "name": "g5",
+                    "exclude_regions": ["us-west-1"],
+                    "instances": [{"type": "g5.48xlarge"}],
+                }
+            },
+        )
+        self._write_def(
+            tmp_path,
+            "p4d-24xlarge",
+            {
+                "nodepool": {
+                    "name": "p4d-24xlarge",
+                    "instance_type": "p4d.24xlarge",
+                    "exclude_regions": ["us-west-1"],
+                }
+            },
+        )
+        self._write_def(
+            tmp_path,
+            "c7i",
+            {"fleet": {"name": "c7i", "instances": [{"type": "c7i.24xlarge"}]}},
+        )
+        assert load_excluded_instance_types(tmp_path, "us-west-1") == {"g5.48xlarge", "p4d.24xlarge"}
 
 
 # ============================================================================
@@ -662,6 +778,68 @@ class TestGenerateRunner:
 
         docs = list(yaml.safe_load_all((output_dir / "kept-runner.yaml").read_text()))
         assert docs[0]["maxRunners"] == 8
+
+    def test_region_excluded_instance_forces_max_runners_zero(self, tmp_path):
+        """Runners whose instance_type matches a nodepool exclude_regions entry render with maxRunners: 0."""
+        def_file = make_def_file(
+            tmp_path, "uw1-a10g", "g5.48xlarge", 189, 704, gpu=8, proactive_capacity=5, max_burst_capacity=30
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "region": "us-west-1",
+            "excluded_instance_types": {"g5.48xlarge", "g5.12xlarge"},
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "uw1-a10g.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_region_excluded_instance_overrides_def_max_runners(self, tmp_path):
+        """A def-level max_runners is overridden when the instance_type is region-excluded."""
+        def_file = make_def_file(tmp_path, "uw1-fixed", "p4d.24xlarge", 88, 1000, gpu=8, max_runners=4)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "region": "us-west-1",
+            "excluded_instance_types": {"p4d.24xlarge"},
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "uw1-fixed.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+    def test_region_not_excluded_preserves_capacity(self, tmp_path):
+        """When the instance_type is not in the excluded set, capacity is unchanged."""
+        def_file = make_def_file(
+            tmp_path, "ue2-a10g", "g5.48xlarge", 189, 704, gpu=8, proactive_capacity=5, max_burst_capacity=30
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "region": "us-east-2",
+            "excluded_instance_types": set(),
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "ue2-a10g.yaml").read_text()))
+        assert "maxRunners" not in docs[0]
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "5"
 
     def test_pause_runners_unset_preserves_unbounded(self, tmp_path):
         """pause_runners unset leaves the RSS unbounded when the def also omits max_runners."""

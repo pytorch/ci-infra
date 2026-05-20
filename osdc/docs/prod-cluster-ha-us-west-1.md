@@ -36,8 +36,10 @@ this design wouldn't work on staging (which is repo-scoped at
    AWS console; B200 is omitted because there's no B200 capacity in
    us-west-1.
 3. **us-west-1 service-quota raises** for the vCPU families this cluster
-   uses (c7i, m7i, r7i, m7g, m8g, g4dn, g5, g6, p5). File early —
-   GPU families can have long lead times.
+   uses (c7i, m7i, r7i, m7g, m8g, g4dn, p5). File early — GPU families
+   can have long lead times. `g5`, `g6`, `c7a`, `r7a`, and `p4d` are
+   not offered in us-west-1; the matching scale sets render with
+   `maxRunners: 0` automatically (see [Region-excluded runners](#region-excluded-runners)).
 4. **PyPI wheel S3 feeder reachable from us-west-1.** Verify or add
    replication.
 
@@ -142,9 +144,26 @@ prod traffic in the failover case, not just steady-state share.
 - **Monitoring/logging** — Grafana Cloud tenant is shared; clusters
   distinguished by `cluster_name` label.
 
+## Region-excluded runners
+
+us-west-1 lacks several instance families AWS offers in us-east-2:
+`g5` (A10G), `g6` (L4), `p4d` (A100), `c7a`, and `r7a`. The matching
+nodepool defs in `modules/nodepools/defs/` carry `exclude_regions: [us-west-1]`,
+so no NodePool is rendered.
+
+The arc-runners generator reads the same `exclude_regions` lists and
+forces `maxRunners: 0` and `proactive_capacity: 0` for any runner whose
+`instance_type` is in an excluded def. This keeps the scale set present
+(so the runner group still exists on GitHub) but prevents jobs from
+being routed to a cluster that cannot schedule them. To add or remove
+a region exclusion, edit the relevant nodepool def — the runner side
+follows automatically.
+
 ## Not in scope
 
 - B200 in us-west-1 (no capacity reservation available).
+- A10G / L4 / A100 / AMD-CPU runners in us-west-1 (AWS does not offer
+  these instance families in the region — see above).
 - Cross-region Harbor / PyPI / git-cache sharing — failure-domain
   isolation is the design intent.
 - Workflow changes in `pytorch/pytorch`. The whole point of the
