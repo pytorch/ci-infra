@@ -38,9 +38,12 @@ jobs:
               - '!osdc/**/test_*.py'
               - '!osdc/**/*_test.py'
               - '!osdc/**/tests/**'
+              - '.github/workflows/_osdc-deploy.yml'
+              - '.github/workflows/osdc-auto-update-deploy-prod.yml'
               - '.github/workflows/osdc-deploy-prod.yml'
               - '.github/workflows/osdc-pre-merge.yml'
-              - '.github/workflows/_osdc-deploy.yml'
+              - '.github/workflows/osdc-renovate-autoapprove.yml'
+              - '.github/workflows/osdc-renovate.yml'
 
   # ------------------------------------------------------------------
   # Deploy arc-staging + smoke / compactor / integration validation.

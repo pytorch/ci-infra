@@ -168,6 +168,10 @@ deploy-status cluster name='':
         -o json \
     | python3 "{{SCRIPTS}}/deploy-status.py" "${ARGS[@]}"
 
+# Print the AWS region for a cluster (single source of truth: clusters.yaml)
+region cluster:
+    @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; uv run {{CFG}} {{cluster}} region
+
 # Update kubeconfig for a cluster (aws eks update-kubeconfig)
 kubeconfig cluster:
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \

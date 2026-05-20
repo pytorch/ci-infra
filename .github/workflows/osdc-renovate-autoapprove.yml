@@ -14,6 +14,17 @@ name: "OSDC: Auto-approve Renovate runner-image PRs"
 # executing untrusted PR content. The job-level `if:` rejects fork PRs and
 # requires the runner-image branch prefix + label; the first step verifies
 # the PR author matches the configured Renovate bot identity.
+#
+# Required OSDC_APPROVER_TOKEN scope (fine-grained PAT, REQUIRED):
+#   - Repository permissions:
+#       - Contents: Read                 (read PR diff)
+#       - Pull requests: Read and write  (submit approving review, enqueue)
+#       - Metadata: Read                 (always required)
+#   - DO NOT grant: Workflows, Administration, Actions, Secrets, or any
+#     organization permissions.
+#   - MUST be a DIFFERENT identity than RENOVATE_TOKEN — GitHub forbids
+#     self-approval, so the approver cannot be the PR author.
+#   - Owner: a dedicated bot account, NOT a human's PAT.
 on:
   pull_request_target:
     types: [opened, reopened, ready_for_review, labeled]
@@ -49,6 +60,83 @@ jobs:
             exit 1
           fi
           echo "Author check passed: $PR_AUTHOR"
+
+      # Defense-in-depth: even if RENOVATE_TOKEN is compromised, refuse to
+      # auto-approve unless the PR diff matches the expected single-line
+      # runner_image_tag bump. Intentionally redundant with the same guard
+      # in osdc-auto-update-deploy-prod.yml (post-merge) — if the metadata
+      # gates leak (compromised token producing a PR with the right author,
+      # branch, label), this stops auto-approval from rubber-stamping
+      # arbitrary content. Uses the read-only GITHUB_TOKEN so we don't
+      # widen the approver token's blast radius for diff inspection.
+      - name: Validate PR diff content
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          FILES_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate)
+          NUM_FILES=$(echo "$FILES_JSON" | jq 'length')
+          if [ "$NUM_FILES" != "1" ]; then
+            echo "::error::Expected exactly 1 file changed in PR #$PR_NUMBER; got $NUM_FILES. Refusing to auto-approve."
+            exit 1
+          fi
+
+          FILE_PATH=$(echo "$FILES_JSON" | jq -r '.[0].filename')
+          if [ "$FILE_PATH" != "osdc/clusters.yaml" ]; then
+            echo "::error::Expected only osdc/clusters.yaml to change; got $FILE_PATH. Refusing to auto-approve."
+            exit 1
+          fi
+
+          PATCH=$(echo "$FILES_JSON" | jq -r '.[0].patch')
+          # Extract changed lines (skip diff hunk headers --- and +++)
+          ADDED=$(echo "$PATCH" | grep -E '^\+[^+]' || true)
+          REMOVED=$(echo "$PATCH" | grep -E '^-[^-]' || true)
+          ADDED_COUNT=$(printf '%s' "$ADDED" | grep -c '^' || true)
+          REMOVED_COUNT=$(printf '%s' "$REMOVED" | grep -c '^' || true)
+          if [ "$ADDED_COUNT" != "1" ] || [ "$REMOVED_COUNT" != "1" ]; then
+            echo "::error::Expected exactly 1 line added + 1 line removed; got +$ADDED_COUNT/-$REMOVED_COUNT. Refusing to auto-approve."
+            echo "Patch:"
+            echo "$PATCH"
+            exit 1
+          fi
+
+          # Strict pattern: leading whitespace + runner_image_tag: "X.Y.Z" + optional trailing comment
+          PATTERN='^    runner_image_tag:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*(#.*)?$'
+          NEW_LINE="${ADDED#+}"
+          OLD_LINE="${REMOVED#-}"
+          if ! echo "$NEW_LINE" | grep -qE "$PATTERN"; then
+            echo "::error::New line does not match runner_image_tag semver pattern. Refusing to auto-approve."
+            echo "New line: $NEW_LINE"
+            exit 1
+          fi
+          if ! echo "$OLD_LINE" | grep -qE "$PATTERN"; then
+            echo "::error::Old line does not match runner_image_tag semver pattern. Refusing to auto-approve."
+            echo "Old line: $OLD_LINE"
+            exit 1
+          fi
+
+          # Monotonicity: reject downgrades (defense against compromised RENOVATE_TOKEN
+          # rolling back to a known-vulnerable runner version).
+          OLD_VER=$(printf '%s' "$OLD_LINE" | sed -nE 's/^    runner_image_tag:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p')
+          NEW_VER=$(printf '%s' "$NEW_LINE" | sed -nE 's/^    runner_image_tag:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p')
+          if [ -z "$OLD_VER" ] || [ -z "$NEW_VER" ]; then
+            echo "::error::Failed to extract version strings (old='$OLD_VER' new='$NEW_VER'). Refusing to auto-approve."
+            exit 1
+          fi
+          if [ "$OLD_VER" = "$NEW_VER" ]; then
+            echo "::error::No version change ($OLD_VER -> $NEW_VER). Refusing to auto-approve."
+            exit 1
+          fi
+          HIGHEST=$(printf '%s\n%s\n' "$NEW_VER" "$OLD_VER" | sort -V | tail -1)
+          if [ "$HIGHEST" != "$NEW_VER" ]; then
+            echo "::error::Downgrade detected ($OLD_VER -> $NEW_VER). Refusing to auto-approve."
+            exit 1
+          fi
+          echo "Version bump validated: $OLD_VER -> $NEW_VER"
+          echo "Diff validation passed — single-line runner_image_tag bump confirmed."
 
       - name: Approve PR
         env:

@@ -6,6 +6,17 @@ name: "OSDC: Renovate (runner image)"
 # the merge queue, which triggers osdc-pre-merge.yml for full staging
 # validation. After merge, osdc-auto-update-deploy-prod.yml deploys to both
 # prod clusters sequentially.
+#
+# Required RENOVATE_TOKEN scope (fine-grained PAT, REQUIRED):
+#   - Repository permissions:
+#       - Contents: Read and write       (push renovate-runner/* branches)
+#       - Pull requests: Read and write  (open PRs)
+#       - Metadata: Read                 (always required)
+#   - DO NOT grant: Workflows (would allow self-modification of these
+#     workflows), Administration, Actions, Secrets, or any organization
+#     permissions. A token with Workflows scope can bypass every
+#     defense-in-depth check below.
+#   - Owner: a dedicated bot account, NOT a human's PAT.
 on:
   schedule:
     # Mon + Thu, 14:00 UTC. 3-4 day cadence absorbs GitHub cron drift.

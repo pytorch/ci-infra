@@ -161,102 +161,40 @@ jobs:
           echo "Diff validation passed — single-line runner_image_tag bump confirmed."
           echo "should_deploy=true" >> "$GITHUB_OUTPUT"
 
+  # IMPORTANT: `runner_image_tag` (the value Renovate bumps in clusters.yaml)
+  # is consumed ONLY by modules/arc-runners/scripts/python/generate_runners.py,
+  # which is invoked by modules/arc-runners/deploy.sh and re-used by the
+  # arc-runners-{b200,h100} delegate modules. If a future module also reads
+  # `runner_image_tag`, add it to the `modules:` list below or the auto-update
+  # will leave that module stale after a bump.
   deploy_uw1:
     needs: check-trigger
     if: needs.check-trigger.outputs.should_deploy == 'true'
-    runs-on: ubuntu-latest
-    environment: osdc-production
-    timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: osdc
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install just
-        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-
-      - name: Install mise
-        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
-        with:
-          version: "2026.5.11"
-          install: true
-          working_directory: osdc
-
-      - name: Install Python dependencies
-        run: uv sync
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
-          role-duration-seconds: 7200
-
-      - name: Deploy arc-runners (uw1)
-        run: just deploy-module arc-cbr-production-uw1 arc-runners
-        env:
-          OSDC_CONFIRM: "yes"
-
-      - name: Deploy arc-runners-b200 (uw1)
-        run: just deploy-module arc-cbr-production-uw1 arc-runners-b200
-        env:
-          OSDC_CONFIRM: "yes"
-
-      - name: Deploy arc-runners-h100 (uw1)
-        run: just deploy-module arc-cbr-production-uw1 arc-runners-h100
-        env:
-          OSDC_CONFIRM: "yes"
-
-      - name: Smoke test (uw1)
-        run: just smoke arc-cbr-production-uw1
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: arc-cbr-production-uw1
+      environment: osdc-production
+      modules: "arc-runners,arc-runners-h100"
+      run_smoke: true
+      run_integration: false
+      run_compactor: false
+      run_janitor: false
+      run_load_test: false
+      skip_lint_test: true
+    secrets: inherit
 
   deploy_ue2:
     needs: deploy_uw1
     if: ${{ !cancelled() && needs.deploy_uw1.result == 'success' }}
-    runs-on: ubuntu-latest
-    environment: osdc-production
-    timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: osdc
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install just
-        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
-
-      - name: Install mise
-        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
-        with:
-          version: "2026.5.11"
-          install: true
-          working_directory: osdc
-
-      - name: Install Python dependencies
-        run: uv sync
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
-          role-duration-seconds: 7200
-
-      - name: Deploy arc-runners (ue2)
-        run: just deploy-module arc-cbr-production arc-runners
-        env:
-          OSDC_CONFIRM: "yes"
-
-      - name: Deploy arc-runners-b200 (ue2)
-        run: just deploy-module arc-cbr-production arc-runners-b200
-        env:
-          OSDC_CONFIRM: "yes"
-
-      - name: Deploy arc-runners-h100 (ue2)
-        run: just deploy-module arc-cbr-production arc-runners-h100
-        env:
-          OSDC_CONFIRM: "yes"
-
-      - name: Smoke test (ue2)
-        run: just smoke arc-cbr-production
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: arc-cbr-production
+      environment: osdc-production
+      modules: "arc-runners,arc-runners-b200,arc-runners-h100"
+      run_smoke: true
+      run_integration: false
+      run_compactor: false
+      run_janitor: false
+      run_load_test: false
+      skip_lint_test: true
+    secrets: inherit
