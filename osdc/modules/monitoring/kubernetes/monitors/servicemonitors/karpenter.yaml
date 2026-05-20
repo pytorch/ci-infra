@@ -20,4 +20,4 @@ spec:
         # Drops all histogram buckets and low-value gauges (~400-500 series saved)
         - action: keep
           sourceLabels: [__name__]
-          regex: "karpenter_nodeclaims_created_total|karpenter_nodes_created_total|karpenter_nodes_terminated_total|karpenter_nodepools_usage|karpenter_nodepools_limit|karpenter_nodes_allocatable|karpenter_interruption_received_messages_total"
+          regex: "karpenter_nodeclaims_created_total|karpenter_nodes_created_total|karpenter_nodes_terminated_total|karpenter_nodepools_usage|karpenter_nodepools_limit|karpenter_nodes_allocatable|karpenter_interruption_received_messages_total|karpenter_cloudprovider_errors_total|controller_runtime_reconcile_errors_total"
