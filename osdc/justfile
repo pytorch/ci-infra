@@ -1999,7 +1999,7 @@ simulate-cluster *args:
 
 # Publish Grafana dashboards to Grafana Cloud
 # Requires GRAFANA_API_TOKEN env var (service account token with dashboard write permission)
-publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0aqt8u800e":
+publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0aqt8u800e" outdated_folder_uid="fvlk8m":
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
@@ -2012,6 +2012,7 @@ publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0
 
     GRAFANA_URL="{{grafana_url}}"
     FOLDER_UID="{{folder_uid}}"
+    OUTDATED_FOLDER_UID="{{outdated_folder_uid}}"
     API="${GRAFANA_URL}/api/dashboards/db"
 
     # Collect dashboard JSON files from upstream and consumer modules
@@ -2030,7 +2031,8 @@ publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0
     OK=0
     FAIL=0
 
-    for dir in "${DASHBOARD_DIRS[@]}"; do
+    publish_dir() {
+      local dir=$1 folder=$2
       for file in "$dir"/*.json; do
         [[ -f "$file" ]] || continue
         TOTAL=$((TOTAL + 1))
@@ -2039,7 +2041,7 @@ publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0
         # Wrap dashboard model in the Grafana API payload:
         # - set id to null (Grafana assigns it)
         # - preserve uid for idempotent upserts
-        payload=$(jq '{dashboard: (. | .id = null), folderUid: "'"$FOLDER_UID"'", overwrite: true}' "$file")
+        payload=$(jq '{dashboard: (. | .id = null), folderUid: "'"$folder"'", overwrite: true}' "$file")
 
         echo -n "Publishing ${name}... "
         HTTP_CODE=$(curl -s -o /tmp/grafana-publish-response.json -w '%{http_code}' \
@@ -2058,6 +2060,11 @@ publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0
           FAIL=$((FAIL + 1))
         fi
       done
+    }
+
+    for dir in "${DASHBOARD_DIRS[@]}"; do
+      publish_dir "$dir" "$FOLDER_UID"
+      [[ -d "$dir/outdated" ]] && publish_dir "$dir/outdated" "$OUTDATED_FOLDER_UID"
     done
 
     rm -f /tmp/grafana-publish-response.json
