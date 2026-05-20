@@ -1999,7 +1999,7 @@ simulate-cluster *args:
 
 # Publish Grafana dashboards to Grafana Cloud
 # Requires GRAFANA_API_TOKEN env var (service account token with dashboard write permission)
-publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0aqt8u800e" outdated_folder_uid="fvlk8m":
+publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0aqt8u800e" outdated_folder_uid="fvlk8m" filter="":
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
@@ -2013,6 +2013,7 @@ publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0
     GRAFANA_URL="{{grafana_url}}"
     FOLDER_UID="{{folder_uid}}"
     OUTDATED_FOLDER_UID="{{outdated_folder_uid}}"
+    FILTER="{{filter}}"
     API="${GRAFANA_URL}/api/dashboards/db"
 
     # Collect dashboard JSON files from upstream and consumer modules
@@ -2037,6 +2038,9 @@ publish-dashboards grafana_url="https://pytorchci.grafana.net" folder_uid="bfif0
         [[ -f "$file" ]] || continue
         TOTAL=$((TOTAL + 1))
         name=$(basename "$file" .json)
+        if [[ -n "$FILTER" && "$name" != *"$FILTER"* ]]; then
+          continue
+        fi
 
         # Wrap dashboard model in the Grafana API payload:
         # - set id to null (Grafana assigns it)
