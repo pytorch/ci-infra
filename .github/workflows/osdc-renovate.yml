@@ -1,0 +1,58 @@
+name: "OSDC: Renovate (runner image)"
+
+# Scheduled bi-weekly check for new actions/runner releases. Opens a PR when
+# a release is at least 5 days old (see osdc/renovate.json minimumReleaseAge).
+# The PR is auto-approved by osdc-renovate-autoapprove.yml and routed through
+# the merge queue, which triggers osdc-pre-merge.yml for full staging
+# validation. After merge, osdc-auto-update-deploy-prod.yml deploys to both
+# prod clusters sequentially.
+on:
+  schedule:
+    # Mon + Thu, 14:00 UTC. 3-4 day cadence absorbs GitHub cron drift.
+    - cron: "0 14 * * 1,4"
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "Dry run (log only, no PR)"
+        required: false
+        type: boolean
+        default: false
+      logLevel:
+        description: "Log level"
+        required: false
+        type: choice
+        default: info
+        options:
+          - info
+          - debug
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osdc-renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: renovatebot/github-action@693b9ef15eec82123529a37c782242f091365961 # v46.1.14
+        with:
+          configurationFile: osdc/renovate.json
+          token: ${{ secrets.RENOVATE_TOKEN }}
+        env:
+          LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+          RENOVATE_DRY_RUN: ${{ (inputs.dryRun && 'full') || '' }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_PLATFORM: github
+          # NOTE: The downstream auto-approve and auto-deploy workflows compare
+          # pull_request.user.login against vars.OSDC_RENOVATE_BOT_LOGIN. That
+          # login is the GitHub identity of RENOVATE_TOKEN (the PAT owner's
+          # username) — NOT the local part of the email below. If you set
+          # OSDC_RENOVATE_BOT_LOGIN to the email's local part, every auto-update
+          # PR will fail the author check.
+          RENOVATE_GIT_AUTHOR: "OSDC Renovate <osdc-renovate@users.noreply.github.com>"

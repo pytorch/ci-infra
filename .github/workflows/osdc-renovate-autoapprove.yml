@@ -1,0 +1,77 @@
+name: "OSDC: Auto-approve Renovate runner-image PRs"
+
+# Renovate opens runner-image bump PRs with branch prefix `renovate-runner/`
+# and label `auto-runner-update`. The branch ruleset on main requires 1
+# approving review, and GitHub forbids self-approval — so a SEPARATE identity
+# (OSDC_APPROVER_TOKEN, a PAT from a different bot/user than RENOVATE_TOKEN)
+# approves the PR and adds it to the merge queue. The merge queue triggers
+# osdc-pre-merge.yml which runs full staging deploy + smoke + integration +
+# load test. If green, the PR squash-merges to main; if red, the PR is
+# ejected and no merge happens.
+#
+# Uses pull_request_target so we have access to OSDC_APPROVER_TOKEN. We do
+# NOT checkout PR code — only call the GitHub API — so there is no risk of
+# executing untrusted PR content. The job-level `if:` rejects fork PRs and
+# requires the runner-image branch prefix + label; the first step verifies
+# the PR author matches the configured Renovate bot identity.
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osdc-renovate-approve-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  approve-and-queue:
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'renovate-runner/') &&
+      contains(github.event.pull_request.labels.*.name, 'auto-runner-update')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify PR author matches expected Renovate bot
+        env:
+          EXPECTED_BOT: ${{ vars.OSDC_RENOVATE_BOT_LOGIN }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPECTED_BOT" ]; then
+            echo "::error::Repo variable OSDC_RENOVATE_BOT_LOGIN must be set to the exact login of the Renovate bot identity (e.g. 'osdc-renovate-bot')."
+            exit 1
+          fi
+          if [ "$PR_AUTHOR" != "$EXPECTED_BOT" ]; then
+            echo "::error::PR author '$PR_AUTHOR' does not match expected Renovate bot '$EXPECTED_BOT' — refusing to auto-approve."
+            exit 1
+          fi
+          echo "Author check passed: $PR_AUTHOR"
+
+      - name: Approve PR
+        env:
+          GH_TOKEN: ${{ secrets.OSDC_APPROVER_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh pr review --approve \
+            --body "Auto-approved by OSDC auto-approver: runner-image bump PR from Renovate." \
+            "$PR_NUMBER" \
+            --repo "$REPO"
+
+      - name: Add to merge queue (auto-merge)
+        env:
+          GH_TOKEN: ${{ secrets.OSDC_APPROVER_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # --auto: GitHub waits for required checks + merge queue, then
+          # squash-merges. With merge queue configured on main, this enqueues
+          # the PR; osdc-pre-merge.yml runs in the queue context.
+          gh pr merge --squash --auto \
+            "$PR_NUMBER" \
+            --repo "$REPO"
