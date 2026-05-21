@@ -82,7 +82,7 @@ defaults:
     gpu_disruption_budget: "20%"
     cpu_disruption_budget: "20%"
   buildkit:
-    replicas_per_arch: 5
+    replicas_per_arch: 12
   monitoring:
     grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
     grafana_cloud_read_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
