@@ -196,10 +196,6 @@ clusters:
       central_memory_limit: "50Gi"
     node_compactor:
       min_node_age_seconds: 900
-    buildkit:
-      arm64_instance_type: c7gd.16xlarge
-      amd64_instance_type: m6id.24xlarge
-      pods_per_node: 2
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-cbr-production
@@ -224,7 +220,6 @@ clusters:
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
       - arc-runners
       - arc-runners-h100
-      - buildkit
       - pypi-cache
       - cache-enforcer
       - zombie-cleanup
