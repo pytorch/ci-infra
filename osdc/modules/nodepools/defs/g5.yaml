@@ -1,6 +1,10 @@
 # NUMA note: restricted topology policy may reject mixed GPU packing; monitor for TopologyAffinityError
-# Karpenter NodePool fleet: g5 (NVIDIA A10G)
+# Karpenter NodePool fleet: g5 (NVIDIA A10G), 1-GPU and 4-GPU SKUs
 # GPU compute — single fleet, scheduling by nvidia.com/gpu resource requests
+#
+# g5.48xlarge (8-GPU) is intentionally NOT part of this fleet — it has its
+# own def (g5-48xlarge.yaml) with a distinct node-fleet label so 1/4-GPU
+# pods can't fragment 8-GPU nodes.
 fleet:
   name: g5
   arch: amd64
@@ -8,10 +12,6 @@ fleet:
   exclude_regions:
     - us-west-1
   instances:
-    - type: g5.48xlarge
-      weight: 100
-      node_disk_size: 600
-      has_nvme: true
     - type: g5.12xlarge
       weight: 90
       node_disk_size: 600

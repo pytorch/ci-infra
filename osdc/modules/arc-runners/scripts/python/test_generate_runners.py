@@ -13,6 +13,7 @@ from generate_runners import (
     get_cluster_config,
     load_clusters_yaml,
     load_excluded_instance_types,
+    load_instance_to_fleet_map,
     main,
     normalize_name,
     parse_memory_bytes,
@@ -258,11 +259,21 @@ class TestDeriveFleetName:
     def test_derive_fleet_name_cpu(self):
         assert derive_fleet_name("r7a.48xlarge") == "r7a"
 
-    def test_derive_fleet_name_gpu(self):
+    def test_derive_fleet_name_fallback_gpu(self):
+        # No fleet map -> falls back to the instance family.
         assert derive_fleet_name("g5.8xlarge") == "g5"
-
-    def test_derive_fleet_name_gpu_multi(self):
         assert derive_fleet_name("g5.48xlarge") == "g5"
+
+    def test_derive_fleet_name_uses_map(self):
+        # When nodepool defs split an instance into its own fleet
+        # (e.g. g5.48xlarge in g5-48xlarge.yaml), the map drives the result.
+        fleet_map = {"g5.8xlarge": "g5", "g5.48xlarge": "g5-48xlarge"}
+        assert derive_fleet_name("g5.8xlarge", fleet_map) == "g5"
+        assert derive_fleet_name("g5.48xlarge", fleet_map) == "g5-48xlarge"
+
+    def test_derive_fleet_name_map_miss_falls_back(self):
+        # Instances not in the map still get the family-name default.
+        assert derive_fleet_name("c7i.16xlarge", {"g5.48xlarge": "g5-48xlarge"}) == "c7i"
 
     def test_derive_fleet_name_b200(self):
         assert derive_fleet_name("p6-b200.48xlarge") == "p6-b200"
@@ -411,6 +422,84 @@ class TestLoadExcludedInstanceTypes:
     def test_missing_dir_returns_empty(self, tmp_path):
         """A missing nodepools defs dir returns an empty set rather than raising."""
         assert load_excluded_instance_types(tmp_path / "absent", "us-west-1") == set()
+
+
+# ============================================================================
+# load_instance_to_fleet_map
+# ============================================================================
+
+
+class TestLoadInstanceToFleetMap:
+    def _write_def(self, dirpath, name, content):
+        p = dirpath / f"{name}.yaml"
+        p.write_text(yaml.dump(content, default_flow_style=False))
+
+    def test_fleet_format_maps_each_instance_to_fleet_name(self, tmp_path):
+        self._write_def(
+            tmp_path,
+            "g5",
+            {"fleet": {"name": "g5", "instances": [{"type": "g5.8xlarge"}, {"type": "g5.12xlarge"}]}},
+        )
+        assert load_instance_to_fleet_map(tmp_path) == {"g5.8xlarge": "g5", "g5.12xlarge": "g5"}
+
+    def test_split_fleet_overrides_unified_when_in_separate_file(self, tmp_path):
+        # Mirrors the g5/g5-48xlarge split: g5.48xlarge lives in its own file
+        # with a distinct fleet name, while the rest stay on the unified g5 fleet.
+        self._write_def(
+            tmp_path,
+            "g5",
+            {"fleet": {"name": "g5", "instances": [{"type": "g5.8xlarge"}, {"type": "g5.12xlarge"}]}},
+        )
+        self._write_def(
+            tmp_path,
+            "g5-48xlarge",
+            {"fleet": {"name": "g5-48xlarge", "instances": [{"type": "g5.48xlarge"}]}},
+        )
+        m = load_instance_to_fleet_map(tmp_path)
+        assert m["g5.8xlarge"] == "g5"
+        assert m["g5.12xlarge"] == "g5"
+        assert m["g5.48xlarge"] == "g5-48xlarge"
+
+    def test_fleets_format(self, tmp_path):
+        self._write_def(
+            tmp_path,
+            "gpu",
+            {
+                "fleets": [
+                    {"name": "g5", "instances": [{"type": "g5.8xlarge"}]},
+                    {"name": "g5-48xlarge", "instances": [{"type": "g5.48xlarge"}]},
+                ]
+            },
+        )
+        assert load_instance_to_fleet_map(tmp_path) == {
+            "g5.8xlarge": "g5",
+            "g5.48xlarge": "g5-48xlarge",
+        }
+
+    def test_legacy_nodepool_uses_family(self, tmp_path):
+        self._write_def(
+            tmp_path,
+            "p4d-24xlarge",
+            {"nodepool": {"name": "p4d-24xlarge", "instance_type": "p4d.24xlarge"}},
+        )
+        assert load_instance_to_fleet_map(tmp_path) == {"p4d.24xlarge": "p4d"}
+
+    def test_release_section_included(self, tmp_path):
+        self._write_def(
+            tmp_path,
+            "m8g",
+            {
+                "fleet": {
+                    "name": "m8g",
+                    "instances": [{"type": "m8g.48xlarge"}],
+                    "release": [{"type": "m8g.metal"}],
+                }
+            },
+        )
+        assert load_instance_to_fleet_map(tmp_path) == {"m8g.48xlarge": "m8g", "m8g.metal": "m8g"}
+
+    def test_missing_dir_returns_empty(self, tmp_path):
+        assert load_instance_to_fleet_map(tmp_path / "absent") == {}
 
     def test_multiple_defs_merge(self, tmp_path):
         """Excluded instance types from multiple defs are unioned."""

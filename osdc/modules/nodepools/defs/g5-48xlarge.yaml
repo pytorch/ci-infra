@@ -1,0 +1,22 @@
+# Karpenter NodePool fleet: g5-48xlarge (NVIDIA A10G, 8-GPU)
+#
+# g5.48xlarge is split out of the unified `g5` fleet so it carries a
+# distinct node-fleet label/taint. This prevents 1-GPU and 4-GPU workflow
+# pods (which tolerate `node-fleet=g5`) from landing on 8-GPU nodes and
+# fragmenting them — which previously starved the 8-GPU runner
+# (mt-l-x86aavx2-189-704-a10g-8 dropped to 3 active runners with 29
+# placeholder-workflows Pending on 2026-05-20).
+#
+# Only the 8-GPU runner def (l-x86aavx2-189-704-a10g-8.yaml) resolves to
+# this fleet via the g5.48xlarge special-case in derive_fleet_name().
+fleet:
+  name: g5-48xlarge
+  arch: amd64
+  gpu: true
+  exclude_regions:
+    - us-west-1
+  instances:
+    - type: g5.48xlarge
+      weight: 100
+      node_disk_size: 600
+      has_nvme: true

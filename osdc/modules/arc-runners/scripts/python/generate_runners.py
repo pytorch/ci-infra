@@ -54,14 +54,21 @@ def normalize_name(name):
     return name.replace(".", "-").replace("_", "-")
 
 
-def derive_fleet_name(instance_type):
-    """Derive the node-fleet name from an instance type.
+def derive_fleet_name(instance_type, fleet_map=None):
+    """Derive the node-fleet name for an instance type.
 
-    Returns the instance family (everything before the dot).  GPU scheduling
-    is handled by nvidia.com/gpu resource requests, not fleet-level isolation,
-    so GPU and CPU instances use the same derivation: family name only.
+    Consults ``fleet_map`` (instance_type -> fleet_name, populated from
+    modules/nodepools/defs/*.yaml) first, so a runner whose instance_type
+    sits in a split-out fleet (e.g. g5.48xlarge in g5-48xlarge.yaml) picks
+    up that fleet's label automatically — no per-instance hardcoding here.
+
+    Falls back to the instance family (everything before the dot) when the
+    map is empty or missing the instance, matching the historical default
+    used before per-SKU fleets existed (r7a, g5, c7i, p6-b200, …).
     """
-    return instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
+    if fleet_map and instance_type in fleet_map:
+        return fleet_map[instance_type]
+    return instance_type.split(".")[0]
 
 
 # Kubernetes resource quantity suffixes → multiplier (bytes)
@@ -105,6 +112,49 @@ def load_clusters_yaml(repo_root):
     config_path = repo_root / "clusters.yaml"
     with open(config_path) as f:
         return yaml.safe_load(f)
+
+
+def load_instance_to_fleet_map(nodepools_defs_dir):
+    """Build an ``instance_type -> fleet_name`` map from nodepool defs.
+
+    Reads ``modules/nodepools/defs/*.yaml`` so the runner generator stays
+    consistent with the NodePool generator without duplicating per-SKU
+    fleet assignments here. Handles all three def formats:
+
+      - ``fleet:``    — single fleet, multiple instances share the fleet name.
+      - ``fleets:``   — multiple fleets in one file, each with its own
+                        instances list.
+      - ``nodepool:`` — legacy single-instance; auto-derives fleet name from
+                        the instance family, mirroring generate_nodepools.py.
+
+    Returns an empty dict when the defs dir is missing — callers fall back
+    to the family-name default in ``derive_fleet_name``.
+    """
+    mapping: dict[str, str] = {}
+    if not nodepools_defs_dir.is_dir():
+        return mapping
+
+    def _record(fleet_data):
+        name = fleet_data.get("name") if isinstance(fleet_data, dict) else None
+        if not name:
+            return
+        for section in ("instances", "release"):
+            for inst in fleet_data.get(section) or []:
+                if isinstance(inst, dict) and (t := inst.get("type")):
+                    mapping[t] = name
+
+    for def_file in sorted(nodepools_defs_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(def_file.read_text()) or {}
+        except yaml.YAMLError:
+            continue
+        if isinstance(fleet := data.get("fleet"), dict):
+            _record(fleet)
+        for f in data.get("fleets") or []:
+            _record(f)
+        if isinstance(nodepool := data.get("nodepool"), dict) and (t := nodepool.get("instance_type")):
+            mapping.setdefault(t, t.split(".")[0])
+    return mapping
 
 
 def load_excluded_instance_types(nodepools_defs_dir, region):
@@ -228,7 +278,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
             f"Consider raising max_burst_capacity."
         )
 
-    node_fleet = derive_fleet_name(instance_type)
+    node_fleet = derive_fleet_name(instance_type, cluster_config.get("instance_to_fleet"))
 
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")
@@ -415,6 +465,7 @@ def main():
     )
     cluster_config["region"] = region
     cluster_config["excluded_instance_types"] = load_excluded_instance_types(nodepools_defs_dir, region)
+    cluster_config["instance_to_fleet"] = load_instance_to_fleet_map(nodepools_defs_dir)
     if cluster_config["excluded_instance_types"]:
         log_info(
             f"Region {region}: nodepool exclude_regions hits {len(cluster_config['excluded_instance_types'])} "

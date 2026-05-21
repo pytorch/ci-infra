@@ -419,11 +419,14 @@ def _fleet_nodepool_name(fleet_name, instance_type, name_suffix=""):
     instance types still produce unique NodePool names.
     """
     instance_family = instance_type.split(".")[0]
-    if fleet_name == instance_family:
-        name = instance_type.replace(".", "-")
-    else:
-        instance_size = instance_type.split(".", 1)[1].replace(".", "-")
-        name = f"{fleet_name}-{instance_size}"
+    instance_size = instance_type.split(".", 1)[1].replace(".", "-")
+    canonical = f"{instance_family}-{instance_size}"
+    # Use the canonical "<family>-<size>" name when the fleet name is the
+    # family ("g5" + g5.48xlarge -> g5-48xlarge) or already encodes
+    # family+size ("g5-48xlarge" + g5.48xlarge -> g5-48xlarge, not
+    # g5-48xlarge-48xlarge). Otherwise fall back to "<fleet>-<size>"
+    # (e.g. "c7i-runner" + c7i.8xlarge -> c7i-runner-8xlarge).
+    name = canonical if fleet_name in (instance_family, canonical) else f"{fleet_name}-{instance_size}"
     if name_suffix:
         name = f"{name}{name_suffix}"
     return name
