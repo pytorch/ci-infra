@@ -8092,6 +8092,17 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                         logger.info(
                             f"Cleaned up pod resources for cancelled reservation {full_reservation_id}")
 
+                        # Force-detach EBS volume (CSI driver sometimes leaves it attached)
+                        ebs_vol = reservation.get("ebs_volume_id")
+                        if ebs_vol:
+                            try:
+                                vol_state = ec2_client.describe_volumes(VolumeIds=[ebs_vol])["Volumes"][0]["State"]
+                                if vol_state == "in-use":
+                                    logger.info(f"Force-detaching orphaned volume {ebs_vol}")
+                                    ec2_client.detach_volume(VolumeId=ebs_vol, Force=True)
+                            except Exception as detach_err:
+                                logger.warning(f"Volume detach failed for {ebs_vol}: {detach_err}")
+
                     except Exception as cleanup_error:
                         logger.error(
                             f"Error cleaning up pod {pod_name}: {cleanup_error}")
