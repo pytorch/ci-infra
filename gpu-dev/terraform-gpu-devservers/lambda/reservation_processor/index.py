@@ -8736,6 +8736,24 @@ def process_clear_disk_lock_action(record: dict[str, Any]) -> bool:
 
     mark_disk_in_use(user_id, disk_name, False)
     logger.info(f"Cleared stale lock on disk '{disk_name}' for user '{user_id}'")
+
+    # Also force-detach any orphaned EBS volumes for this disk
+    try:
+        volumes = ec2_client.describe_volumes(
+            Filters=[
+                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "tag:disk_name", "Values": [disk_name]},
+                {"Name": "status", "Values": ["in-use"]},
+            ]
+        ).get("Volumes", [])
+        for vol in volumes:
+            vol_id = vol["VolumeId"]
+            logger.info(f"Force-detaching orphaned volume {vol_id} for disk '{disk_name}'")
+            ec2_client.detach_volume(VolumeId=vol_id, Force=True)
+            logger.info(f"Detached volume {vol_id}")
+    except Exception as detach_err:
+        logger.warning(f"Failed to detach orphaned volumes for disk '{disk_name}': {detach_err}")
+
     return True
 
 

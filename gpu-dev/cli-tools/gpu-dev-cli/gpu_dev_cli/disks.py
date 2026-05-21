@@ -355,8 +355,21 @@ def unlock_disk(disk_name: str, user_id: str, config: Config) -> bool:
         return False
 
     if not disk['in_use']:
-        print(f"Disk '{disk_name}' is not locked")
-        return False
+        # DDB says not locked — but check if EBS volume is still physically attached
+        try:
+            ec2 = config.session.client('ec2', region_name=config.aws_region)
+            vols = ec2.describe_volumes(Filters=[
+                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "tag:disk_name", "Values": [disk_name]},
+                {"Name": "status", "Values": ["in-use"]},
+            ]).get("Volumes", [])
+            if not vols:
+                print(f"Disk '{disk_name}' is not locked")
+                return False
+            print(f"Disk '{disk_name}' DDB lock is clear but EBS volume is still attached — sending force-detach request")
+        except Exception:
+            print(f"Disk '{disk_name}' is not locked")
+            return False
 
     operation_id = str(uuid.uuid4())
 
