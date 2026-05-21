@@ -472,9 +472,9 @@ locals {
       h100 = [
         { key = "cr0", id = "cr-0a3f49b96fe03ca04", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
         { key = "cr1", id = null, instance_count = 2 },                   # H100 on-demand (2 instances)
-        { key = "cr2", id = "cr-044bc72b0a6b56062", instance_count = 4 }, # H100 reservation us-east-2a (4 instances)
+        { key = "cr2", id = "cr-044bc72b0a6b56062", instance_count = 3 }, # H100 reservation us-east-2a (3 regular instances)
         { key = "cr3", id = "cr-0211ea1e8d3a3c79e", instance_count = 0, mig_profile = "all-balanced" }, # H100 reservation us-east-2c (EXPIRED CR - disabled)
-        { key = "cr4", id = null, instance_count = 1, mig_profile = "all-balanced" }, # H100 on-demand MIG node
+        { key = "cr4", id = "cr-044bc72b0a6b56062", instance_count = 1, mig_profile = "all-balanced" }, # H100 reservation us-east-2a (1 MIG instance, auto-labeled)
       ]
       h200 = [
         { key = "cr0", id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 capacity block (may be expired - keep to prevent ASG destroy)
