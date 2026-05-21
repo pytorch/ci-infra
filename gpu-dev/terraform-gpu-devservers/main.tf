@@ -473,7 +473,8 @@ locals {
         { key = "cr0", id = "cr-0a3f49b96fe03ca04", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
         { key = "cr1", id = null, instance_count = 2 },                   # H100 on-demand (2 instances)
         { key = "cr2", id = "cr-044bc72b0a6b56062", instance_count = 4 }, # H100 reservation us-east-2a (4 instances)
-        { key = "cr3", id = "cr-0211ea1e8d3a3c79e", instance_count = 1, mig_profile = "all-balanced" }, # H100 reservation us-east-2c (1 instance, MIG-dedicated, all-balanced: 2x1g.10gb + 1x2g.20gb + 1x3g.40gb per GPU)
+        { key = "cr3", id = "cr-0211ea1e8d3a3c79e", instance_count = 0, mig_profile = "all-balanced" }, # H100 reservation us-east-2c (EXPIRED CR - disabled)
+        { key = "cr4", id = null, instance_count = 1, mig_profile = "all-balanced" }, # H100 on-demand MIG node
       ]
       h200 = [
         { key = "cr0", id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 capacity block (may be expired - keep to prevent ASG destroy)
@@ -485,7 +486,8 @@ locals {
         { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 0 }, # B200 reservation us-east-2a (disabled - CR freed)
         { key = "cr1", id = "cr-08e7fee0b8dc3de5e", instance_count = 3 }, # B200 reservation (3 instances)
         { key = "cr2", id = null, instance_count = 2 },                   # B200 on-demand (2 instances)
-        { key = "cr3", id = "cr-0f5f6bb30a8fe3c68", instance_count = 2 }, # B200 reservation us-east-2b (2 instances)
+        { key = "cr3", id = "cr-0f5f6bb30a8fe3c68", instance_count = 1 }, # B200 reservation us-east-2b (1 regular instance)
+        { key = "cr4", id = "cr-0f5f6bb30a8fe3c68", instance_count = 1, mig_profile = "b200-6full-2mig-balanced" }, # B200 reservation us-east-2b (1 MIG instance: 6 full + 2 MIG GPUs)
       ]
       # T4 and L4 don't have capacity reservations - managed via supported_gpu_types fallback
     }
