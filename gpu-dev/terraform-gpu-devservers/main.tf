@@ -486,8 +486,9 @@ locals {
         { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 0 }, # B200 reservation us-east-2a (disabled - CR freed)
         { key = "cr1", id = "cr-08e7fee0b8dc3de5e", instance_count = 3 }, # B200 reservation (3 instances)
         { key = "cr2", id = null, instance_count = 2 },                   # B200 on-demand (2 instances)
-        { key = "cr3", id = "cr-0f5f6bb30a8fe3c68", instance_count = 1 }, # B200 reservation us-east-2b (1 regular instance)
-        { key = "cr4", id = "cr-0f5f6bb30a8fe3c68", instance_count = 1, mig_profile = "b200-6full-2mig-balanced" }, # B200 reservation us-east-2b (1 MIG instance: 6 full + 2 MIG GPUs)
+        { key = "cr3", id = "cr-0f5f6bb30a8fe3c68", instance_count = 2 }, # B200 reservation us-east-2b (2 instances — 1 will be MIG-labeled after recycle)
+        # B200 MIG: after recycling the NotReady node, manually label it with:
+        # kubectl label node <node-name> nvidia.com/mig.config=b200-6full-2mig-balanced
       ]
       # T4 and L4 don't have capacity reservations - managed via supported_gpu_types fallback
     }
