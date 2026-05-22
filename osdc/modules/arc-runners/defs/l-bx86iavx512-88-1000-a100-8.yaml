@@ -3,6 +3,7 @@
 runner:
   name: l-bx86iavx512-88-1000-a100-8
   instance_type: p4d.24xlarge
+  node_fleet: p4d-large
   disk_size: 200
   vcpu: 88
   memory: 1000Gi
