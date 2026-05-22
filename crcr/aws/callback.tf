@@ -1,15 +1,15 @@
 locals {
-  result_zip = abspath("../assets/lambdas-download/cross-repo-ci-result.zip")
+  callback_zip = abspath("../assets/lambdas-download/cross-repo-ci-callback.zip")
 }
 
-resource "aws_lambda_function" "result" {
-  function_name = "crcr-result-${var.environment}"
+resource "aws_lambda_function" "callback" {
+  function_name = "crcr-callback-${var.environment}"
   role          = aws_iam_role.lambda.arn
 
   runtime          = "python3.13"
   handler          = "callback.lambda_function.lambda_handler"
-  filename         = local.result_zip
-  source_code_hash = filebase64sha256(local.result_zip)
+  filename         = local.callback_zip
+  source_code_hash = filebase64sha256(local.callback_zip)
 
   timeout                        = 60
   memory_size                    = 512
@@ -35,26 +35,26 @@ resource "aws_lambda_function" "result" {
   }
 }
 
-resource "aws_cloudwatch_log_group" "result" {
-  name              = "/aws/lambda/${aws_lambda_function.result.function_name}"
+resource "aws_cloudwatch_log_group" "callback" {
+  name              = "/aws/lambda/${aws_lambda_function.callback.function_name}"
   retention_in_days = 90
   tags              = local.tags
 }
 
-resource "aws_lambda_function_url" "result" {
-  function_name      = aws_lambda_function.result.function_name
+resource "aws_lambda_function_url" "callback" {
+  function_name      = aws_lambda_function.callback.function_name
   authorization_type = "NONE"
 }
 
-resource "aws_lambda_permission" "result_function_url_invoke" {
-  function_name          = aws_lambda_function.result.function_name
+resource "aws_lambda_permission" "callback_function_url_invoke" {
+  function_name          = aws_lambda_function.callback.function_name
   action                 = "lambda:InvokeFunctionUrl"
   principal              = "*"
   function_url_auth_type = "NONE"
 }
 
-resource "aws_lambda_permission" "result_function_invoke" {
-  function_name            = aws_lambda_function.result.function_name
+resource "aws_lambda_permission" "callback_function_invoke" {
+  function_name            = aws_lambda_function.callback.function_name
   action                   = "lambda:InvokeFunction"
   principal                = "*"
   invoked_via_function_url = true

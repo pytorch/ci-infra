@@ -44,7 +44,7 @@ crcr/
     ├── iam.tf                      # Lambda execution role and policies
     ├── secrets.tf                  # Secrets Manager secret and version
     ├── elasticache.tf              # Redis replication group
-    ├── result.tf                   # Result callback lambda function and public function URL
+    ├── callback.tf                 # Result callback lambda function and public function URL
     └── webhook.tf                  # Webhook lambda function and public function URL
 ```
 

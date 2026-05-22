@@ -3,9 +3,9 @@ output "webhook_function_url" {
   description = "GitHub App webhook URL; configure the GitHub App webhook as <url>/github/webhook"
 }
 
-output "result_function_url" {
-  value       = aws_lambda_function_url.result.function_url
-  description = "Result callback URL; downstream workflows post results to <url>/github/result"
+output "callback_function_url" {
+  value       = aws_lambda_function_url.callback.function_url
+  description = "Result callback URL; downstream workflows post results to <url>/github/callback"
 }
 
 output "redis_endpoint" {
