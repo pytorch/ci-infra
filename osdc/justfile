@@ -349,7 +349,7 @@ deploy-base cluster:
     # Suspend ERR trap — tofu plan returns exit code 2 for "changes detected"
     trap - ERR
     set +e
-    eval tofu plan $TFVARS -out=tfplan -detailed-exitcode
+    eval tofu plan -lock-timeout=15m $TFVARS -out=tfplan -detailed-exitcode
     PLAN_EXIT=$?
     set -e
     trap 'deploy_log_finish cmd "$CLUSTER" "deploy-base" "$DEPLOY_LOG_START" failed' ERR
@@ -375,7 +375,7 @@ deploy-base cluster:
                 exit 1
             fi
         fi
-        tofu apply tfplan
+        tofu apply -lock-timeout=15m tfplan
         rm -f tfplan
     else
         rm -f tfplan
@@ -490,7 +490,7 @@ deploy-module cluster module force="":
         # Suspend ERR trap — tofu plan returns exit code 2 for "changes detected"
         trap - ERR
         set +e
-        tofu plan \
+        tofu plan -lock-timeout=15m \
             -var="cluster_name=${CNAME}" \
             -var="aws_region=${REGION}" \
             -var="state_bucket=${BUCKET}" \
@@ -504,7 +504,7 @@ deploy-module cluster module force="":
             echo "  No changes. Skipping apply."
             rm -f tfplan
         elif [[ $PLAN_EXIT -eq 2 ]]; then
-            tofu apply tfplan
+            tofu apply -lock-timeout=15m tfplan
             rm -f tfplan
         else
             rm -f tfplan
@@ -564,7 +564,7 @@ plan cluster:
         -backend-config="key=${CLUSTER}/base/terraform.tfstate" \
         -backend-config="region=${STATE_REGION}" \
         -backend-config="dynamodb_table=ciforge-terraform-locks" >/dev/null
-    eval tofu plan -input=false -no-color $TFVARS
+    eval tofu plan -lock-timeout=15m -input=false -no-color $TFVARS
 
     for MODULE in $(uv run {{CFG}} "$CLUSTER" modules); do
         if [[ -d "{{ROOT}}/modules/$MODULE" ]]; then
@@ -584,7 +584,7 @@ plan cluster:
             -backend-config="key=${CLUSTER}/${MODULE}/terraform.tfstate" \
             -backend-config="region=${STATE_REGION}" \
             -backend-config="dynamodb_table=ciforge-terraform-locks" >/dev/null
-        tofu plan -input=false -no-color \
+        tofu plan -lock-timeout=15m -input=false -no-color \
             -var="cluster_name=${CNAME}" \
             -var="aws_region=${REGION}" \
             -var="state_bucket=${BUCKET}" \

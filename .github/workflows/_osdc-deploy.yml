@@ -68,6 +68,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: 60
+    # Serialize all tofu state-mutating work per cluster. Shared with
+    # _osdc-plan.yml so plan and deploy against the same cluster never
+    # race on the DynamoDB state lock.
+    concurrency:
+      group: osdc-tofu-${{ inputs.cluster }}
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: osdc
