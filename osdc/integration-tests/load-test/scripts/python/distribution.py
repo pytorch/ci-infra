@@ -7,10 +7,20 @@ proportional job allocations for load testing.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+# fleet_naming lives in scripts/python/ at the repo root. Add it to sys.path
+# so the import works both when run directly (load_test_run.py) and when run
+# via pytest (pyproject.toml testpaths also adds it).
+_SCRIPTS_PYTHON = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
+if _SCRIPTS_PYTHON not in sys.path:  # pragma: no cover
+    sys.path.insert(0, _SCRIPTS_PYTHON)
+
+from fleet_naming import derive_fleet_name, validate_node_fleet  # noqa: E402
 
 # Maps old runner labels -> OSDC runner def names (without provider prefix).
 # Source: docs/runner_naming_convention.md (Old Label -> New Label Mapping)
@@ -208,7 +218,12 @@ def get_available_runners(
                     continue
 
                 if region and "instance_type" in runner:
-                    fleet = runner["instance_type"].split(".")[0]
+                    node_fleet = runner.get("node_fleet")
+                    if node_fleet is not None:
+                        ok, err = validate_node_fleet(node_fleet)
+                        if not ok:
+                            raise ValueError(f"Runner {name!r}: node_fleet {err}")
+                    fleet = derive_fleet_name(runner["instance_type"], override=node_fleet)
                     excluded_regions = fleet_exclusions.get(fleet, [])
                     if region in excluded_regions:
                         excluded_count += 1
