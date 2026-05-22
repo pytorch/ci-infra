@@ -3,6 +3,7 @@
 runner:
   name: l-x86iavx512-94-768
   instance_type: r7a.48xlarge
+  node_fleet: r7a-large
   disk_size: 800
   vcpu: 94
   memory: 740Gi

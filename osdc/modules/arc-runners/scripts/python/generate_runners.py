@@ -23,12 +23,14 @@ from pathlib import Path
 
 import yaml
 
-# instance_specs lives in scripts/python/ at the repo root.  Add it to
-# sys.path so the import works both when run directly (deploy.sh) and
-# when run via pytest (pyproject.toml testpaths also adds it).
+# instance_specs and fleet_naming live in scripts/python/ at the repo root.
+# Add it to sys.path so the import works both when run directly (deploy.sh)
+# and when run via pytest (pyproject.toml testpaths also adds it).
 _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
+
+from fleet_naming import derive_fleet_name  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -52,16 +54,6 @@ def log_error(msg):
 def normalize_name(name):
     """Normalize runner name for K8s resources (replace dots and underscores with dashes)."""
     return name.replace(".", "-").replace("_", "-")
-
-
-def derive_fleet_name(instance_type):
-    """Derive the node-fleet name from an instance type.
-
-    Returns the instance family (everything before the dot).  GPU scheduling
-    is handled by nvidia.com/gpu resource requests, not fleet-level isolation,
-    so GPU and CPU instances use the same derivation: family name only.
-    """
-    return instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
 
 
 # Kubernetes resource quantity suffixes → multiplier (bytes)
@@ -188,6 +180,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     max_runners = runner.get("max_runners")
     proactive_capacity = runner.get("proactive_capacity", 0)
     max_burst_capacity = runner.get("max_burst_capacity", 0)
+    node_fleet_override = runner.get("node_fleet")
     if cluster_config.get("force_proactive_capacity_zero"):
         proactive_capacity = 0
 
@@ -228,7 +221,11 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
             f"Consider raising max_burst_capacity."
         )
 
-    node_fleet = derive_fleet_name(instance_type)
+    try:
+        node_fleet = derive_fleet_name(instance_type, override=node_fleet_override)
+    except ValueError as e:
+        log_error(f"Invalid definition file {def_file}: {e}")
+        return False
 
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")
