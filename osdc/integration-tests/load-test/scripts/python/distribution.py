@@ -20,7 +20,7 @@ _SCRIPTS_PYTHON = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _SCRIPTS_PYTHON not in sys.path:  # pragma: no cover
     sys.path.insert(0, _SCRIPTS_PYTHON)
 
-from fleet_naming import derive_fleet_name, validate_node_fleet  # noqa: E402
+from fleet_naming import derive_fleet_name  # noqa: E402
 
 # Maps old runner labels -> OSDC runner def names (without provider prefix).
 # Source: docs/runner_naming_convention.md (Old Label -> New Label Mapping)
@@ -219,11 +219,10 @@ def get_available_runners(
 
                 if region and "instance_type" in runner:
                     node_fleet = runner.get("node_fleet")
-                    if node_fleet is not None:
-                        ok, err = validate_node_fleet(node_fleet)
-                        if not ok:
-                            raise ValueError(f"Runner {name!r}: node_fleet {err}")
-                    fleet = derive_fleet_name(runner["instance_type"], override=node_fleet)
+                    try:
+                        fleet = derive_fleet_name(runner["instance_type"], override=node_fleet)
+                    except ValueError as e:
+                        raise ValueError(f"Runner {name!r}: {e}") from e
                     excluded_regions = fleet_exclusions.get(fleet, [])
                     if region in excluded_regions:
                         excluded_count += 1
