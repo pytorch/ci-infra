@@ -31,6 +31,8 @@ if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
 from fleet_naming import derive_fleet_name  # noqa: E402
+from nodepool_defs import load_excluded_instance_types  # noqa: E402
+from runner_fleet_validator import validate_cluster_runner_fleets  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -99,42 +101,6 @@ def load_clusters_yaml(repo_root):
         return yaml.safe_load(f)
 
 
-def load_excluded_instance_types(nodepools_defs_dir, region):
-    """Return the set of instance_types whose backing nodepool/fleet excludes ``region``.
-
-    Reads ``modules/nodepools/defs/*.yaml`` — handles both the multi-instance
-    ``fleet:`` format and the legacy single-instance ``nodepool:`` format. An
-    instance_type is considered excluded when its containing def lists
-    ``region`` in ``exclude_regions``. Defs without ``exclude_regions`` (or
-    without ``region`` in the list) contribute nothing.
-
-    Returning an empty set when ``region`` is falsy or the dir is missing keeps
-    the caller backward-compatible: existing scripts that do not pass a region
-    behave exactly as before.
-    """
-    excluded: set[str] = set()
-    if not region or not nodepools_defs_dir.is_dir():
-        return excluded
-    for def_file in sorted(nodepools_defs_dir.glob("*.yaml")):
-        try:
-            data = yaml.safe_load(def_file.read_text()) or {}
-        except yaml.YAMLError:
-            continue
-        fleet = data.get("fleet")
-        nodepool = data.get("nodepool")
-        if isinstance(fleet, dict) and region in (fleet.get("exclude_regions") or []):
-            for inst in fleet.get("instances") or []:
-                if isinstance(inst, dict) and (t := inst.get("type")):
-                    excluded.add(t)
-        elif (
-            isinstance(nodepool, dict)
-            and region in (nodepool.get("exclude_regions") or [])
-            and (t := nodepool.get("instance_type"))
-        ):
-            excluded.add(t)
-    return excluded
-
-
 def get_cluster_config(clusters_yaml, cluster_id):
     """Get cluster config with defaults applied."""
     defaults = clusters_yaml.get("defaults", {})
@@ -145,6 +111,18 @@ def get_cluster_config(clusters_yaml, cluster_id):
 
     cluster_cfg = clusters[cluster_id]
     return cluster_cfg, defaults
+
+
+def _resolve_consumer_root(upstream_dir):
+    env_root = os.environ.get("OSDC_ROOT", "")
+    if not env_root:
+        return None
+    candidate = Path(env_root).resolve()
+    if not candidate.is_dir():
+        return None
+    if candidate == upstream_dir.resolve():
+        return None
+    return candidate
 
 
 def resolve_value(cluster_cfg, defaults, dotpath):
@@ -417,6 +395,21 @@ def main():
             f"Region {region}: nodepool exclude_regions hits {len(cluster_config['excluded_instance_types'])} "
             f"instance type(s); matching runners will render with maxRunners: 0"
         )
+
+    # Hard-fail before touching the output dir: a runner pointing at a fleet no
+    # NodePool defines would pend forever at apply time, and wiping generated/
+    # before validation would destroy the previous (good) render on failure.
+    consumer_root = _resolve_consumer_root(repo_root)
+    fleet_errors = validate_cluster_runner_fleets(
+        cluster_id,
+        clusters_yaml,
+        upstream_dir=repo_root,
+        consumer_root=consumer_root,
+    )
+    if fleet_errors:
+        for err in fleet_errors:
+            log_error(err)
+        sys.exit(1)
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():
