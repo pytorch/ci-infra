@@ -43,10 +43,14 @@ def validate_node_fleet(value):
 def derive_fleet_name(instance_type, override=None):
     """Derive the node-fleet name from an instance type, or honor an explicit override.
 
-    When ``override`` is a non-empty string, it is returned verbatim — callers must
-    have validated it via ``validate_node_fleet`` upstream. Otherwise the instance
-    family (everything before the first dot) is returned.
+    When ``override`` is not None, it is validated via :func:`validate_node_fleet`
+    and returned verbatim if valid; a ``ValueError`` is raised otherwise. When
+    ``override`` is None, the instance family (everything before the first dot)
+    is returned.
     """
-    if override:
+    if override is not None:
+        ok, err = validate_node_fleet(override)
+        if not ok:
+            raise ValueError(f"node_fleet override invalid ({err}): got {override!r}")
         return override
     return instance_type.split(".")[0]
