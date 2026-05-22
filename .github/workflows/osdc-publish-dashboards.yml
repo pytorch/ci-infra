@@ -7,10 +7,6 @@ on:
     paths:
       - "osdc/modules/monitoring/dashboards/**"
       - ".github/workflows/osdc-publish-dashboards.yml"
-  pull_request:
-    paths:
-      - "osdc/modules/monitoring/dashboards/**"
-      - ".github/workflows/osdc-publish-dashboards.yml"
 
 permissions:
   contents: read
