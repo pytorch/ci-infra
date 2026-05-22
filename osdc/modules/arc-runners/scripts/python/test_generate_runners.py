@@ -201,6 +201,7 @@ def make_def_file(
     max_runners=None,
     proactive_capacity=None,
     max_burst_capacity=None,
+    node_fleet=None,
 ):
     """Write a runner def YAML and return the path."""
     runner = {
@@ -221,6 +222,8 @@ def make_def_file(
         runner["proactive_capacity"] = proactive_capacity
     if max_burst_capacity is not None:
         runner["max_burst_capacity"] = max_burst_capacity
+    if node_fleet is not None:
+        runner["node_fleet"] = node_fleet
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -272,6 +275,18 @@ class TestDeriveFleetName:
 
     def test_derive_fleet_name_unknown(self):
         assert derive_fleet_name("z99.xlarge") == "z99"
+
+    def test_derive_fleet_name_override_overrides_family(self):
+        assert derive_fleet_name("g5.48xlarge", override="g5-48xlarge") == "g5-48xlarge"
+
+    def test_derive_fleet_name_override_none_falls_back(self):
+        assert derive_fleet_name("g5.48xlarge", override=None) == "g5"
+
+    def test_derive_fleet_name_override_empty_string_falls_back(self):
+        # derive_fleet_name itself treats only truthy overrides as authoritative; empty
+        # strings fall back to the instance family. Upstream validation in
+        # generate_runner rejects empty strings before they ever reach this function.
+        assert derive_fleet_name("g5.48xlarge", override="") == "g5"
 
 
 # ============================================================================
@@ -977,6 +992,115 @@ class TestGenerateRunner:
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
 
+    def test_invalid_node_fleet_non_string(self, tmp_path, capsys):
+        """node_fleet must be a string, not an int."""
+        def_file = make_def_file(tmp_path, "bad-fleet-int", "c7i.24xlarge", 4, 16, node_fleet=123)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-int" in combined
+
+    def test_invalid_node_fleet_empty_string(self, tmp_path, capsys):
+        """node_fleet must be non-empty."""
+        def_file = make_def_file(tmp_path, "bad-fleet-empty", "c7i.24xlarge", 4, 16, node_fleet="")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-empty" in combined
+
+    def test_invalid_node_fleet_whitespace(self, tmp_path, capsys):
+        """node_fleet must have no leading/trailing whitespace."""
+        def_file = make_def_file(tmp_path, "bad-fleet-ws", "c7i.24xlarge", 4, 16, node_fleet="  g5-48xlarge  ")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-ws" in combined
+
+    def test_invalid_node_fleet_embedded_newline(self, tmp_path, capsys):
+        """node_fleet must not contain embedded newlines (YAML injection vector)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-nl", "c7i.24xlarge", 4, 16, node_fleet="g5\nevil")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-nl" in combined
+
+    def test_invalid_node_fleet_embedded_quote(self, tmp_path, capsys):
+        """node_fleet must not contain embedded quotes (YAML injection vector)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-q", "c7i.24xlarge", 4, 16, node_fleet='g5"evil')
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-q" in combined
+
+    def test_invalid_node_fleet_uppercase(self, tmp_path, capsys):
+        """node_fleet must be lowercase (DNS-1123 label)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-uc", "c7i.24xlarge", 4, 16, node_fleet="G5-48xlarge")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-uc" in combined
+
+    def test_invalid_node_fleet_too_long(self, tmp_path, capsys):
+        """node_fleet must be at most 63 chars (DNS-1123 label limit)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-long", "c7i.24xlarge", 4, 16, node_fleet="a" * 64)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-long" in combined
+
+    def test_invalid_node_fleet_slash(self, tmp_path, capsys):
+        """node_fleet must not contain slashes (DNS-1123 label)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-slash", "c7i.24xlarge", 4, 16, node_fleet="g5/48")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-slash" in combined
+
+    def test_invalid_node_fleet_reserved_c7i_runner(self, tmp_path, capsys):
+        """node_fleet must not be 'c7i-runner' (reserved for runner control-plane pool)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-reserved", "c7i.24xlarge", 4, 16, node_fleet="c7i-runner")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-reserved" in combined
+        assert "reserved" in combined
+
     def test_max_burst_capacity_zero_allowed(self, tmp_path):
         """max_burst_capacity: 0 is valid (means uncapped / disabled)."""
         def_file = make_def_file(tmp_path, "zero-burst", "c7i.24xlarge", 4, 16, max_burst_capacity=0)
@@ -1405,6 +1529,19 @@ RUNNER_VARIANTS = [
         },
         id="release",
     ),
+    pytest.param(
+        {
+            "name": "override-runner",
+            "instance_type": "g5.48xlarge",
+            "vcpu": 189,
+            "memory": 704,
+            "gpu": 8,
+            "disk_size": 600,
+            "node_fleet": "g5-48xlarge",
+            "expected_workflow_fleet": "g5-48xlarge",
+        },
+        id="override",
+    ),
 ]
 
 GPU_VARIANT = RUNNER_VARIANTS[1]
@@ -1425,6 +1562,8 @@ def _render_real(real_template, tmp_path, variant):
         def_kwargs["runner_group"] = variant["runner_group"]
     if "runner_class" in variant:
         def_kwargs["runner_class"] = variant["runner_class"]
+    if "node_fleet" in variant:
+        def_kwargs["node_fleet"] = variant["node_fleet"]
     def_file = make_def_file(**def_kwargs)
     output_dir = tmp_path / "out"
     output_dir.mkdir()
