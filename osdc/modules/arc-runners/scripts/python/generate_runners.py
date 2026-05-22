@@ -30,9 +30,7 @@ _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
-from fleet_naming import derive_fleet_name, validate_node_fleet  # noqa: E402
-
-__all__ = ["derive_fleet_name"]
+from fleet_naming import derive_fleet_name  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -216,12 +214,6 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         )
         return False
 
-    if node_fleet_override is not None:
-        ok, err = validate_node_fleet(node_fleet_override)
-        if not ok:
-            log_error(f"Invalid definition file {def_file}: node_fleet ({err}): got {node_fleet_override!r}")
-            return False
-
     if max_burst_capacity > 0 and proactive_capacity > 0 and max_burst_capacity < proactive_capacity:
         log_warning(
             f"In {def_file}: max_burst_capacity ({max_burst_capacity}) < proactive_capacity ({proactive_capacity}); "
@@ -229,7 +221,11 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
             f"Consider raising max_burst_capacity."
         )
 
-    node_fleet = derive_fleet_name(instance_type, override=node_fleet_override)
+    try:
+        node_fleet = derive_fleet_name(instance_type, override=node_fleet_override)
+    except ValueError as e:
+        log_error(f"Invalid definition file {def_file}: {e}")
+        return False
 
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")

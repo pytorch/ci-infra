@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from fleet_naming import derive_fleet_name
 from generate_runners import (
-    derive_fleet_name,
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
@@ -282,11 +282,9 @@ class TestDeriveFleetName:
     def test_derive_fleet_name_override_none_falls_back(self):
         assert derive_fleet_name("g5.48xlarge", override=None) == "g5"
 
-    def test_derive_fleet_name_override_empty_string_falls_back(self):
-        # derive_fleet_name itself treats only truthy overrides as authoritative; empty
-        # strings fall back to the instance family. Upstream validation in
-        # generate_runner rejects empty strings before they ever reach this function.
-        assert derive_fleet_name("g5.48xlarge", override="") == "g5"
+    def test_derive_fleet_name_override_empty_string_raises(self):
+        with pytest.raises(ValueError, match="node_fleet override invalid"):
+            derive_fleet_name("g5.48xlarge", override="")
 
 
 # ============================================================================
