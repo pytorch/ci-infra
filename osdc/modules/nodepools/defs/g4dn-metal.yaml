@@ -1,8 +1,8 @@
 # NUMA note: restricted topology policy may reject mixed GPU packing; monitor for TopologyAffinityError
-# Karpenter NodePool fleet: g4dn-large — dedicated pool for the 8-GPU T4 runner.
-# Name-only subset of g4dn; separation is enforced by the node-fleet=g4dn-large taint.
+# Karpenter NodePool fleet: g4dn-metal — dedicated pool for the 8-GPU T4 runner.
+# Name-only subset of g4dn; separation is enforced by the node-fleet=g4dn-metal taint.
 fleet:
-  name: g4dn-large
+  name: g4dn-metal
   arch: amd64
   gpu: true
   instances:

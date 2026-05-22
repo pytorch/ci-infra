@@ -4,7 +4,7 @@
 runner:
   name: l-bx86iavx512-94-344-t4-8
   instance_type: g4dn.metal
-  node_fleet: g4dn-large
+  node_fleet: g4dn-metal
   disk_size: 150
   vcpu: 94
   memory: 344Gi

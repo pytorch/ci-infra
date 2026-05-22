@@ -66,10 +66,9 @@ def parse_cpu_millicores(value: str | int | float) -> int:
     Examples: "100m" -> 100, "2" -> 2000, 0.5 -> 500
     """
     s = str(value)
-    result = int(s[:-1]) if s.endswith("m") else int(float(s) * 1000)
-    if result < 0:
-        raise ValueError("negative cpu value")
-    return result
+    if s.endswith("m"):
+        return int(s[:-1])
+    return int(float(s) * 1000)
 
 
 def parse_memory_mib(value: str | int | float) -> int:

@@ -43,17 +43,17 @@ class TestDeriveFleetName:
     def test_override_none_falls_back_to_family(self):
         assert derive_fleet_name("g5.48xlarge", override=None) == "g5"
 
-    def test_override_empty_string_falls_back_to_family(self):
-        assert derive_fleet_name("g5.48xlarge", override="") == "g5"
+    @pytest.mark.parametrize(
+        "override",
+        ["", 0, False, []],
+    )
+    def test_override_invalid_value_raises(self, override):
+        with pytest.raises(ValueError, match="node_fleet override invalid"):
+            derive_fleet_name("g5.48xlarge", override=override)
 
-    def test_override_zero_int_falls_back_to_family(self):
-        assert derive_fleet_name("g5.48xlarge", override=0) == "g5"
-
-    def test_override_false_falls_back_to_family(self):
-        assert derive_fleet_name("g5.48xlarge", override=False) == "g5"
-
-    def test_override_empty_list_falls_back_to_family(self):
-        assert derive_fleet_name("g5.48xlarge", override=[]) == "g5"
+    def test_override_reserved_raises(self):
+        with pytest.raises(ValueError, match="reserved"):
+            derive_fleet_name("c7i.24xlarge", override="c7i-runner")
 
 
 # ============================================================================
