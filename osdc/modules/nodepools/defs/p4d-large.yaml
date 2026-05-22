@@ -1,0 +1,16 @@
+# Karpenter NodePool fleet: p4d-large — dedicated pool for the 8-GPU A100 runner.
+# Name-only subset of p4d-24xlarge; separation is enforced by the node-fleet=p4d-large taint.
+fleet:
+  name: p4d-large
+  arch: amd64
+  gpu: true
+  exclude_regions:
+    - us-west-1
+  instances:
+    - type: p4d.24xlarge
+      weight: 100
+      node_disk_size: 100
+      has_nvme: true
+      baremetal: true
+      topology_manager_policy: single-numa-node
+      topology_manager_scope: pod
