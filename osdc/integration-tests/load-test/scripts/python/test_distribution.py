@@ -3,6 +3,7 @@
 import pytest
 import yaml
 from distribution import (
+    _LOAD_TEST_EXCLUDED_ARM_PATTERN,
     _LOAD_TEST_EXCLUDED_GPU_PATTERN,
     OLD_TO_OSDC_LABEL,
     PRODUCTION_JOB_COUNTS,
@@ -323,6 +324,38 @@ class TestGetAvailableRunners:
             assert name in labels, f"{name} should NOT have been excluded"
             assert _LOAD_TEST_EXCLUDED_GPU_PATTERN.search(name) is None
         assert excluded == 0
+
+    def test_excludes_arm64g2_runner(self, tmp_path):
+        """g2 (Graviton 2) runners are excluded from load tests."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-arm64g2-6-32")
+        self._make_def(runner_defs, "l-arm64g3-16-62")
+        self._make_def(runner_defs, "l-arm64g4-16-62")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        assert "l-arm64g2-6-32" not in labels
+        assert "l-arm64g3-16-62" in labels
+        assert "l-arm64g4-16-62" in labels
+        assert excluded == 1
+
+    def test_excludes_arm64g2_baremetal_variant(self, tmp_path):
+        """Hypothetical baremetal g2 runner (l-barm64g2-*) is also excluded."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-barm64g2-12-32")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        assert "l-barm64g2-12-32" not in labels
+        assert excluded == 1
+
+    def test_arm_pattern_does_not_match_g3_g4(self):
+        """The g2 exclusion pattern must NOT match g3 or g4 runners."""
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-arm64g3-16-62") is None
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-arm64g4-16-62") is None
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-barm64g4-62-226") is None
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-arm64g2-6-32") is not None
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-barm64g2-12-32") is not None
 
 
 # ── _load_fleet_exclusions ──────────────────────────────────────────────

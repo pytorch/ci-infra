@@ -17,9 +17,9 @@
 Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image (multi-arch `linux/amd64` + `linux/arm64`) and publishes the chart to GHCR.
 
 - **OCI registry**: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.10`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
+- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.11`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
 - **Image tags**: the workflow publishes two tags per build:
-  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.10` to match the chart)
+  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.11` to match the chart)
   - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>-<short_sha>` (immutable tag with the source commit baked in, useful for pinning and debugging)
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
@@ -137,14 +137,14 @@ This runs `modules/arc/deploy.sh`, which:
 3. **Applies RBAC** from `modules/arc/kubernetes/capacity-monitor-rbac.yaml`
 4. **Helm upgrade** of the fork chart:
    - Chart: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.10`)
+   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.11`)
    - Image: defaults to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<chart_version>`. Override with `arc.image_repository` / `arc.image_tag` in `clusters.yaml` for local Harbor builds.
 
 Other deploy.sh config knobs (all from `clusters.yaml`):
 
 | Key | Default | What |
 |-----|---------|------|
-| `arc.chart_version` | `0.14.1-jeanschmidt.10` | Helm chart version (fork) |
+| `arc.chart_version` | `0.14.1-jeanschmidt.11` | Helm chart version (fork) |
 | `arc.image_repository` | `ghcr.io/jeanschmidt/gha-runner-scale-set-controller` | Controller image repo (override for local Harbor builds) |
 | `arc.image_tag` | _(chart_version)_ | Controller image tag (override for local Harbor builds) |
 | `arc.replica_count` | `2` | Controller replicas |
@@ -235,7 +235,7 @@ To exercise multiple runner types in parallel (e.g., CPU + GPU), repeat `--label
 just load-test arc-staging --label l-x86iamx-8-16:400 --label l-x86iavx512-29-115-t4:200
 ```
 
-**GPU labels in us-west-1**: g5 (A10G) and g6 (L4) fleets have `exclude_regions: [us-west-1]`. Only g4dn (T4) is available — pick from `l-x86iavx512-29-115-t4` (1×T4), `l-x86iavx512-45-172-t4-4` (4×T4), or `l-bx86iavx512-94-344-t4-8` (8×T4, bare-metal).
+**GPU labels in us-west-1**: g5 (A10G) and g6 (L4) fleets have `exclude_regions: [us-west-1]`. Only g4dn (T4) is available — pick from `l-x86iavx512-29-115-t4` (1×T4), `l-x86iavx512-45-172-t4-4` (4×T4), or `l-bx86iavx512-94-344-t4-8` (8×T4, bare-metal). Scale sets for excluded instance types still deploy but render with `maxRunners: 0`, so picking one of them in `--label` is a no-op.
 
 `--label` and `--jobs` are mutually exclusive. Without `--label`, `--jobs N` distributes proportionally across all available runner types.
 
