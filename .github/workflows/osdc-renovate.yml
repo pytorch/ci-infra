@@ -7,16 +7,28 @@ name: "OSDC: Renovate (runner image)"
 # validation. After merge, osdc-auto-update-deploy-prod.yml deploys to both
 # prod clusters sequentially.
 #
-# Required RENOVATE_TOKEN scope (fine-grained PAT, REQUIRED):
-#   - Repository permissions:
-#       - Contents: Read and write       (push renovate-runner/* branches)
-#       - Pull requests: Read and write  (open PRs)
-#       - Metadata: Read                 (always required)
-#   - DO NOT grant: Workflows (would allow self-modification of these
-#     workflows), Administration, Actions, Secrets, or any organization
-#     permissions. A token with Workflows scope can bypass every
-#     defense-in-depth check below.
-#   - Owner: a dedicated bot account, NOT a human's PAT.
+# UPDATEBOT_TOKEN is the shared `pytorchupdatebot` PAT maintained by the
+# pytorch/test-infra team (also used by
+# pytorch/test-infra/.github/actions/update-commit-hash). Reusing it avoids
+# minting a new bot account that would have to sign the Meta CLA before its
+# commits could land. The token likely has broader org-wide scope than this
+# workflow strictly requires — that scope is outside our control.
+#
+# The token is read from the dedicated `osdc-renovate` GitHub Environment so
+# only opted-in jobs in this repo can read it. The Environment must NOT have
+# required reviewers or a wait timer (the auto-update pipeline runs
+# unattended on the happy path); deployment-branch policy should restrict
+# to `main`.
+#
+# If UPDATEBOT_TOKEN is ever revoked or replaced with a dedicated PAT for
+# this workflow, the minimum required scopes are:
+#   - Contents: Read and write       (push renovate-runner/* branches)
+#   - Pull requests: Read and write  (open PRs)
+#   - Metadata: Read                 (always required)
+#   - And emphatically NOT: Workflows (would allow self-modification of
+#     these workflows), Administration, Actions, Secrets, or any
+#     organization permissions. A token with Workflows scope can bypass
+#     every defense-in-depth check below.
 on:
   schedule:
     # Mon + Thu, 14:00 UTC. 3-4 day cadence absorbs GitHub cron drift.
@@ -47,6 +59,7 @@ concurrency:
 jobs:
   renovate:
     runs-on: ubuntu-latest
+    environment: osdc-renovate
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -54,16 +67,14 @@ jobs:
       - uses: renovatebot/github-action@693b9ef15eec82123529a37c782242f091365961 # v46.1.14
         with:
           configurationFile: osdc/renovate.json
-          token: ${{ secrets.RENOVATE_TOKEN }}
+          token: ${{ secrets.UPDATEBOT_TOKEN }}
         env:
           LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
           RENOVATE_DRY_RUN: ${{ (inputs.dryRun && 'full') || '' }}
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_PLATFORM: github
           # NOTE: The downstream auto-approve and auto-deploy workflows compare
-          # pull_request.user.login against vars.OSDC_RENOVATE_BOT_LOGIN. That
-          # login is the GitHub identity of RENOVATE_TOKEN (the PAT owner's
-          # username) — NOT the local part of the email below. If you set
-          # OSDC_RENOVATE_BOT_LOGIN to the email's local part, every auto-update
-          # PR will fail the author check.
-          RENOVATE_GIT_AUTHOR: "OSDC Renovate <osdc-renovate@users.noreply.github.com>"
+          # pull_request.user.login against vars.OSDC_RENOVATE_BOT_LOGIN, which
+          # must be set to "pytorchupdatebot" (the GitHub login that owns
+          # UPDATEBOT_TOKEN). The email's local part is unrelated to that check.
+          RENOVATE_GIT_AUTHOR: "PyTorch UpdateBot <pytorchupdatebot@users.noreply.github.com>"

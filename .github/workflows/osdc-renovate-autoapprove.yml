@@ -1,67 +1,168 @@
 name: "OSDC: Auto-approve Renovate runner-image PRs"
 
-# Renovate opens runner-image bump PRs with branch prefix `renovate-runner/`
-# and label `auto-runner-update`. The branch ruleset on main requires 1
-# approving review, and GitHub forbids self-approval — so a SEPARATE identity
-# (OSDC_APPROVER_TOKEN, a PAT from a different bot/user than RENOVATE_TOKEN)
-# approves the PR and adds it to the merge queue. The merge queue triggers
-# osdc-pre-merge.yml which runs full staging deploy + smoke + integration +
-# load test. If green, the PR squash-merges to main; if red, the PR is
-# ejected and no merge happens.
+# Triggered by `workflow_run` after `osdc-renovate` completes. Runs in the
+# base-repo context (same secret access pull_request_target would give), so
+# GH_PYTORCHBOT_TOKEN from the `osdc-renovate` Environment is accessible.
 #
-# Uses pull_request_target so we have access to OSDC_APPROVER_TOKEN. We do
-# NOT checkout PR code — only call the GitHub API — so there is no risk of
-# executing untrusted PR content. The job-level `if:` rejects fork PRs and
-# requires the runner-image branch prefix + label; the first step verifies
-# the PR author matches the configured Renovate bot identity.
+# We do NOT touch PR-author-controlled content:
+#   - `discover` queries the API for open PRs matching the Renovate label
+#     and branch prefix and splits them by age.
+#   - `approve` operates only on the diff (a single line in
+#     osdc/clusters.yaml) — never on the PR body, title, or workflow file.
+#   - `close_stale` operates on metadata only.
 #
-# Required OSDC_APPROVER_TOKEN scope (fine-grained PAT, REQUIRED):
-#   - Repository permissions:
-#       - Contents: Read                 (read PR diff)
-#       - Pull requests: Read and write  (submit approving review, enqueue)
-#       - Metadata: Read                 (always required)
-#   - DO NOT grant: Workflows, Administration, Actions, Secrets, or any
-#     organization permissions.
-#   - MUST be a DIFFERENT identity than RENOVATE_TOKEN — GitHub forbids
-#     self-approval, so the approver cannot be the PR author.
-#   - Owner: a dedicated bot account, NOT a human's PAT.
+# Branch ruleset on main requires 1 approving review and forbids
+# self-approval, so a SEPARATE identity approves the PR and adds it to the
+# merge queue: `osdc-renovate.yml` opens PRs as `pytorchupdatebot` (via
+# UPDATEBOT_TOKEN), this workflow approves them as `pytorchbot` (via
+# GH_PYTORCHBOT_TOKEN). The merge queue triggers osdc-pre-merge.yml which
+# runs full staging deploy + smoke + integration + load test. If green, the
+# PR squash-merges to main; if red, the PR is ejected and no merge happens.
+#
+# Auto-close behaviors operators should know about:
+#   - Diff-validation failure (wrong file, wrong line count, bad regex,
+#     downgrade, no-version-change): PR is closed with an explanatory
+#     comment. Renovate will reopen on the next run when a new eligible
+#     version is available.
+#   - Open >7 days: PR is closed with a comment. Renovate will reopen on
+#     the next run if the version is still relevant. To pause without
+#     auto-closure, remove the `auto-runner-update` label.
+#   - Author check failure (PR author != configured Renovate bot): job
+#     fails loudly, PR left open for human investigation (could be a
+#     mislabeling).
+#
+# GH_PYTORCHBOT_TOKEN is the shared `pytorchbot` PAT maintained by the
+# pytorch/test-infra team (also used by pytorch/pytorch's nightly approval
+# flow). Reusing it avoids minting a new bot account that would have to
+# sign the Meta CLA before its commits could land. The token likely has
+# broader org-wide scope than this workflow strictly requires — that scope
+# is outside our control.
+#
+# The token is read from the dedicated `osdc-renovate` GitHub Environment
+# (the same one used by `osdc-renovate.yml`) so only opted-in jobs in this
+# repo can read it. The Environment must NOT have required reviewers or a
+# wait timer (the auto-approve job runs unattended); deployment-branch
+# policy should restrict to `main`. `pytorchbot` MUST remain a different
+# identity than `pytorchupdatebot` — GitHub forbids self-approval, so the
+# approver cannot be the PR author.
+#
+# If GH_PYTORCHBOT_TOKEN is ever revoked or replaced with a dedicated PAT
+# for this workflow, the minimum required scopes are:
+#   - Contents: Read                 (read PR diff)
+#   - Pull requests: Read and write  (review, enqueue, close, comment)
+#   - Metadata: Read                 (always required)
+#   - And emphatically NOT: Workflows, Administration, Actions, Secrets,
+#     or any organization permissions.
 on:
-  pull_request_target:
-    types: [opened, reopened, ready_for_review, labeled]
+  workflow_run:
+    workflows: ["OSDC: Renovate (runner image)"]
+    types: [completed]
 
 permissions:
   contents: read
+  pull-requests: read
+  actions: read
 
 concurrency:
-  group: osdc-renovate-approve-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  # Constant group serializes re-runs of osdc-renovate so the second autoapprove
+  # waits for the first to finish, avoiding double `gh pr merge --auto` calls.
+  group: osdc-renovate-approve
+  cancel-in-progress: false
 
 jobs:
-  approve-and-queue:
+  discover:
+    # Gate: only act on legit scheduled / dispatch renovate runs from main
+    # in the base repo. Blocks fork-spoofing and PR-triggered renovate runs.
     if: |
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'renovate-runner/') &&
-      contains(github.event.pull_request.labels.*.name, 'auto-runner-update')
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.event != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      approve_matrix: ${{ steps.split.outputs.approve_matrix }}
+      close_matrix: ${{ steps.split.outputs.close_matrix }}
+      approve_count: ${{ steps.split.outputs.approve_count }}
+      close_count: ${{ steps.split.outputs.close_count }}
     steps:
-      - name: Verify PR author matches expected Renovate bot
+      - name: Verify OSDC_RENOVATE_BOT_LOGIN is configured
         env:
           EXPECTED_BOT: ${{ vars.OSDC_RENOVATE_BOT_LOGIN }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
           if [ -z "$EXPECTED_BOT" ]; then
-            echo "::error::Repo variable OSDC_RENOVATE_BOT_LOGIN must be set to the exact login of the Renovate bot identity (e.g. 'osdc-renovate-bot')."
+            echo "::error::Repo variable OSDC_RENOVATE_BOT_LOGIN must be set to the GitHub login of the PR-opening bot (e.g. 'pytorchupdatebot' — the identity that owns UPDATEBOT_TOKEN)."
             exit 1
           fi
-          if [ "$PR_AUTHOR" != "$EXPECTED_BOT" ]; then
-            echo "::error::PR author '$PR_AUTHOR' does not match expected Renovate bot '$EXPECTED_BOT' — refusing to auto-approve."
-            exit 1
-          fi
-          echo "Author check passed: $PR_AUTHOR"
+          echo "Bot login configured: $EXPECTED_BOT"
 
-      # Defense-in-depth: even if RENOVATE_TOKEN is compromised, refuse to
+      - name: List open Renovate runner-image PRs and split by age
+        id: split
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STALE_DAYS: "7"
+        run: |
+          set -euo pipefail
+
+          # GitHub's `head:` search qualifier is exact-branch-only, so we
+          # request the branch name and filter in jq instead.
+          RAW=$(gh pr list \
+            --repo "$REPO" \
+            --state open \
+            --label auto-runner-update \
+            --json number,updatedAt,headRefName \
+            --limit 100)
+          PRS=$(echo "$RAW" | jq -c '[.[] | select(.headRefName | startswith("renovate-runner/"))]')
+
+          NOW=$(date -u +%s)
+          STALE_CUTOFF=$((NOW - STALE_DAYS * 86400))
+
+          # Use updatedAt (not createdAt) so PRs Renovate keeps rebasing don't
+          # get closed under us just because the original open is old.
+          # fromdate handles RFC3339 with optional fractional seconds.
+          APPROVE=$(echo "$PRS" | jq -c --argjson cutoff "$STALE_CUTOFF" '
+            [.[] | select((.updatedAt | fromdate) >= $cutoff) | {pr: .number}]
+          ')
+          CLOSE=$(echo "$PRS" | jq -c --argjson cutoff "$STALE_CUTOFF" '
+            [.[] | select((.updatedAt | fromdate) <  $cutoff) | {pr: .number}]
+          ')
+          APPROVE_COUNT=$(echo "$APPROVE" | jq 'length')
+          CLOSE_COUNT=$(echo "$CLOSE" | jq 'length')
+
+          echo "Found $APPROVE_COUNT PR(s) to validate/approve and $CLOSE_COUNT stale PR(s) to close."
+          echo "approve_matrix={\"include\":$APPROVE}" >> "$GITHUB_OUTPUT"
+          echo "close_matrix={\"include\":$CLOSE}"     >> "$GITHUB_OUTPUT"
+          echo "approve_count=$APPROVE_COUNT"          >> "$GITHUB_OUTPUT"
+          echo "close_count=$CLOSE_COUNT"              >> "$GITHUB_OUTPUT"
+
+  approve:
+    needs: discover
+    if: needs.discover.outputs.approve_count != '0'
+    runs-on: ubuntu-latest
+    environment: osdc-renovate
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.approve_matrix) }}
+    steps:
+      - name: Verify PR author matches expected Renovate bot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_BOT: ${{ vars.OSDC_RENOVATE_BOT_LOGIN }}
+          PR_NUMBER: ${{ matrix.pr }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PR_AUTHOR=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author --jq '.author.login')
+          if [ "$PR_AUTHOR" != "$EXPECTED_BOT" ]; then
+            echo "::error::PR #$PR_NUMBER author '$PR_AUTHOR' does not match expected Renovate bot '$EXPECTED_BOT' — refusing to auto-approve. PR left open for investigation."
+            exit 1
+          fi
+          echo "Author check passed for PR #$PR_NUMBER: $PR_AUTHOR"
+
+      # Defense-in-depth: even if UPDATEBOT_TOKEN is compromised, refuse to
       # auto-approve unless the PR diff matches the expected single-line
       # runner_image_tag bump. Intentionally redundant with the same guard
       # in osdc-auto-update-deploy-prod.yml (post-merge) — if the metadata
@@ -69,97 +170,180 @@ jobs:
       # branch, label), this stops auto-approval from rubber-stamping
       # arbitrary content. Uses the read-only GITHUB_TOKEN so we don't
       # widen the approver token's blast radius for diff inspection.
-      - name: Validate PR diff content
+      #
+      # On deterministic failures (wrong file, wrong line count, regex
+      # mismatch, downgrade, no version change) we set decision=close-<reason>
+      # so a downstream step posts a comment and closes the PR. Renovate
+      # reopens on the next run when a new eligible version is available.
+      # Transient failures (e.g. gh API errors) propagate as job failures
+      # and leave the PR open.
+      - name: Validate PR diff and decide
+        id: validate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ matrix.pr }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
           FILES_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate)
+          HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          if [ -z "$HEAD_SHA" ] || [ "$HEAD_SHA" = "null" ]; then
+            echo "::error::Failed to read PR #$PR_NUMBER head.sha for SHA pinning."
+            exit 1
+          fi
           NUM_FILES=$(echo "$FILES_JSON" | jq 'length')
           if [ "$NUM_FILES" != "1" ]; then
-            echo "::error::Expected exactly 1 file changed in PR #$PR_NUMBER; got $NUM_FILES. Refusing to auto-approve."
-            exit 1
+            echo "decision=close-wrong-file-count" >> "$GITHUB_OUTPUT"
+            echo "reason=expected exactly 1 file changed; got $NUM_FILES" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           FILE_PATH=$(echo "$FILES_JSON" | jq -r '.[0].filename')
           if [ "$FILE_PATH" != "osdc/clusters.yaml" ]; then
-            echo "::error::Expected only osdc/clusters.yaml to change; got $FILE_PATH. Refusing to auto-approve."
-            exit 1
+            echo "decision=close-wrong-file" >> "$GITHUB_OUTPUT"
+            echo "reason=expected only osdc/clusters.yaml to change; got $FILE_PATH" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           PATCH=$(echo "$FILES_JSON" | jq -r '.[0].patch')
-          # Extract changed lines (skip diff hunk headers --- and +++)
+          if [ "$PATCH" = "null" ] || [ -z "$PATCH" ]; then
+            echo "decision=close-no-patch" >> "$GITHUB_OUTPUT"
+            echo "reason=GitHub returned no patch for this file (likely binary, rename-only, or oversized)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ADDED=$(echo "$PATCH" | grep -E '^\+[^+]' || true)
           REMOVED=$(echo "$PATCH" | grep -E '^-[^-]' || true)
           ADDED_COUNT=$(printf '%s' "$ADDED" | grep -c '^' || true)
           REMOVED_COUNT=$(printf '%s' "$REMOVED" | grep -c '^' || true)
           if [ "$ADDED_COUNT" != "1" ] || [ "$REMOVED_COUNT" != "1" ]; then
-            echo "::error::Expected exactly 1 line added + 1 line removed; got +$ADDED_COUNT/-$REMOVED_COUNT. Refusing to auto-approve."
-            echo "Patch:"
-            echo "$PATCH"
-            exit 1
+            echo "decision=close-multi-line" >> "$GITHUB_OUTPUT"
+            echo "reason=expected exactly 1 line added + 1 line removed; got +$ADDED_COUNT/-$REMOVED_COUNT" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          # Strict pattern: leading whitespace + runner_image_tag: "X.Y.Z" + optional trailing comment
           PATTERN='^    runner_image_tag:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*(#.*)?$'
           NEW_LINE="${ADDED#+}"
           OLD_LINE="${REMOVED#-}"
           if ! echo "$NEW_LINE" | grep -qE "$PATTERN"; then
-            echo "::error::New line does not match runner_image_tag semver pattern. Refusing to auto-approve."
-            echo "New line: $NEW_LINE"
-            exit 1
+            echo "decision=close-bad-pattern" >> "$GITHUB_OUTPUT"
+            echo "reason=new line does not match runner_image_tag semver pattern: $NEW_LINE" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if ! echo "$OLD_LINE" | grep -qE "$PATTERN"; then
-            echo "::error::Old line does not match runner_image_tag semver pattern. Refusing to auto-approve."
-            echo "Old line: $OLD_LINE"
-            exit 1
+            echo "decision=close-bad-pattern" >> "$GITHUB_OUTPUT"
+            echo "reason=old line does not match runner_image_tag semver pattern: $OLD_LINE" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          # Monotonicity: reject downgrades (defense against compromised RENOVATE_TOKEN
-          # rolling back to a known-vulnerable runner version).
           OLD_VER=$(printf '%s' "$OLD_LINE" | sed -nE 's/^    runner_image_tag:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p')
           NEW_VER=$(printf '%s' "$NEW_LINE" | sed -nE 's/^    runner_image_tag:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p')
           if [ -z "$OLD_VER" ] || [ -z "$NEW_VER" ]; then
-            echo "::error::Failed to extract version strings (old='$OLD_VER' new='$NEW_VER'). Refusing to auto-approve."
-            exit 1
+            echo "decision=close-bad-pattern" >> "$GITHUB_OUTPUT"
+            echo "reason=failed to extract version strings (old='$OLD_VER' new='$NEW_VER')" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [ "$OLD_VER" = "$NEW_VER" ]; then
-            echo "::error::No version change ($OLD_VER -> $NEW_VER). Refusing to auto-approve."
-            exit 1
+            echo "decision=close-no-change" >> "$GITHUB_OUTPUT"
+            echo "reason=no version change ($OLD_VER -> $NEW_VER)" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           HIGHEST=$(printf '%s\n%s\n' "$NEW_VER" "$OLD_VER" | sort -V | tail -1)
           if [ "$HIGHEST" != "$NEW_VER" ]; then
-            echo "::error::Downgrade detected ($OLD_VER -> $NEW_VER). Refusing to auto-approve."
-            exit 1
+            echo "decision=close-downgrade" >> "$GITHUB_OUTPUT"
+            echo "reason=downgrade detected ($OLD_VER -> $NEW_VER)" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "Version bump validated: $OLD_VER -> $NEW_VER"
-          echo "Diff validation passed — single-line runner_image_tag bump confirmed."
+
+          echo "Diff validation passed for PR #$PR_NUMBER: $OLD_VER -> $NEW_VER"
+          echo "decision=approve" >> "$GITHUB_OUTPUT"
+          echo "reason=$OLD_VER -> $NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Approve PR
+        if: steps.validate.outputs.decision == 'approve'
         env:
-          GH_TOKEN: ${{ secrets.OSDC_APPROVER_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
+          PR_NUMBER: ${{ matrix.pr }}
           REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.validate.outputs.head_sha }}
         run: |
           set -euo pipefail
-          gh pr review --approve \
-            --body "Auto-approved by OSDC auto-approver: runner-image bump PR from Renovate." \
+          # gh pr review has no SHA-pin flag, so we hit the REST API
+          # directly and pass commit_id. If the PR head moves between
+          # validate and review (force-push race), GitHub rejects the
+          # review with 422 — preventing approval of unvalidated content.
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            -f event=APPROVE \
+            -f commit_id="$HEAD_SHA" \
+            -f body="Auto-approved by OSDC auto-approver: runner-image bump PR from Renovate (validated at $HEAD_SHA)."
+
+      - name: Add to merge queue (auto-merge)
+        if: steps.validate.outputs.decision == 'approve'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
+          PR_NUMBER: ${{ matrix.pr }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.validate.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # --match-head-commit pins the auto-merge to the SHA we validated;
+          # if a force-push lands before the merge queue picks the PR up,
+          # auto-merge is invalidated rather than enqueuing unvalidated code.
+          gh pr merge --squash --auto \
+            --match-head-commit "$HEAD_SHA" \
             "$PR_NUMBER" \
             --repo "$REPO"
 
-      - name: Add to merge queue (auto-merge)
+      - name: Close PR on validation failure
+        if: startsWith(steps.validate.outputs.decision, 'close-')
         env:
-          GH_TOKEN: ${{ secrets.OSDC_APPROVER_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
+          PR_NUMBER: ${{ matrix.pr }}
+          REPO: ${{ github.repository }}
+          DECISION: ${{ steps.validate.outputs.decision }}
+          REASON: ${{ steps.validate.outputs.reason }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+            "Auto-closed: diff validation failed (\`$DECISION\`): $REASON. If a fix is needed, a new PR will be opened by Renovate on the next run when an eligible version is available."
+          gh pr close "$PR_NUMBER" --repo "$REPO"
+
+  close_stale:
+    needs: discover
+    if: needs.discover.outputs.close_count != '0'
+    runs-on: ubuntu-latest
+    environment: osdc-renovate
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.close_matrix) }}
+    steps:
+      - name: Verify PR author matches expected Renovate bot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_BOT: ${{ vars.OSDC_RENOVATE_BOT_LOGIN }}
+          PR_NUMBER: ${{ matrix.pr }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # --auto: GitHub waits for required checks + merge queue, then
-          # squash-merges. With merge queue configured on main, this enqueues
-          # the PR; osdc-pre-merge.yml runs in the queue context.
-          gh pr merge --squash --auto \
-            "$PR_NUMBER" \
-            --repo "$REPO"
+          PR_AUTHOR=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author --jq '.author.login')
+          if [ "$PR_AUTHOR" != "$EXPECTED_BOT" ]; then
+            echo "::error::PR #$PR_NUMBER author '$PR_AUTHOR' does not match expected Renovate bot '$EXPECTED_BOT' — refusing to auto-close. PR left open for investigation."
+            exit 1
+          fi
+          echo "Author check passed for PR #$PR_NUMBER: $PR_AUTHOR"
+
+      - name: Close stale Renovate PR
+        env:
+          GH_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
+          PR_NUMBER: ${{ matrix.pr }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+            "Auto-closed: PR has been open for >7 days without merging. Renovate will reopen on the next run if the version is still relevant. To pause without auto-closure, remove the \`auto-runner-update\` label."
+          gh pr close "$PR_NUMBER" --repo "$REPO"
