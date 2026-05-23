@@ -10,13 +10,20 @@ permissions:
   contents: read
   actions: write
 
+# Workflow-level concurrency. Serializes the ENTIRE battery (fast + slow)
+# per workflow invocation against arc-staging. cancel-in-progress: false
+# so a later run waits for the prior run's slow jobs to finish before
+# deploy/smoke/integration even start — protects test fixtures from
+# interleaving.
 concurrency:
-  group: osdc-pre-merge
+  group: osdc-staging
   cancel-in-progress: false
 
 jobs:
   # ------------------------------------------------------------------
-  # Path filter: skip expensive jobs when no OSDC files changed
+  # Path filter: skip expensive jobs when no OSDC files changed.
+  # The marker job (pre-merge-ok) still runs and reports green so the
+  # merge queue's required check resolves.
   # ------------------------------------------------------------------
   changes:
     runs-on: ubuntu-latest
@@ -41,13 +48,13 @@ jobs:
               - '.github/workflows/osdc-deploy-prod.yml'
               - '.github/workflows/osdc-pre-merge.yml'
               - '.github/workflows/_osdc-deploy.yml'
+              - '.github/workflows/_osdc-slow-tests.yml'
 
   # ------------------------------------------------------------------
-  # Deploy arc-staging + smoke / compactor / integration validation.
-  # All jobs live in the reusable workflow so staging and prod stay
-  # in sync.
+  # Fast set: deploy + smoke + integration. Gates the merge queue
+  # via the pre-merge-ok marker job below.
   # ------------------------------------------------------------------
-  deploy:
+  deploy-fast:
     needs: changes
     if: needs.changes.outputs.osdc == 'true'
     uses: ./.github/workflows/_osdc-deploy.yml
@@ -58,9 +65,62 @@ jobs:
       environment: osdc-staging
       taint_nodes: true
       restart_listeners: true
-      run_janitor: true
-      run_load_test: true
     # secrets: inherit is required for the reusable workflow to pick up
     # osdc-staging environment secrets (META_AWS_ACC_ID, META_AWS_DEPLOY_ROLE,
     # CANARY_GITHUB_TOKEN). Without it, secrets.* resolves to empty strings.
     secrets: inherit
+
+  # ------------------------------------------------------------------
+  # Slow set: load-test + compactor + janitor. Informational only —
+  # NOT a merge queue gate. Runs after the fast set succeeds on the
+  # same already-deployed staging cluster. The workflow-level
+  # concurrency group ensures no other workflow touches staging
+  # until these finish.
+  # ------------------------------------------------------------------
+  slow-tests:
+    needs: deploy-fast
+    if: needs.changes.outputs.osdc == 'true' && needs.deploy-fast.result == 'success'
+    uses: ./.github/workflows/_osdc-slow-tests.yml
+    with:
+      cluster: arc-staging
+      environment: osdc-staging
+    secrets: inherit
+
+  # ------------------------------------------------------------------
+  # Marker job: the SOLE required status check on the merge queue.
+  # Reports green when either:
+  #   (a) no osdc changes (path filter excluded), OR
+  #   (b) deploy-fast succeeded.
+  # slow-tests result is NOT considered — they're informational.
+  # if: always() is required so this job still runs (and reports) when
+  # deploy-fast is skipped by the path filter; otherwise the required
+  # check never reports and the merge queue times out.
+  # ------------------------------------------------------------------
+  pre-merge-ok:
+    needs: [changes, deploy-fast]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Evaluate gate
+        run: |
+          set -euo pipefail
+          changes_result="${{ needs.changes.result }}"
+          deploy_result="${{ needs.deploy-fast.result }}"
+          osdc="${{ needs.changes.outputs.osdc }}"
+
+          if [[ "$changes_result" != "success" ]]; then
+            echo "::error::changes job did not succeed (result: $changes_result). Cannot evaluate gate."
+            exit 1
+          fi
+
+          if [[ "$osdc" != "true" ]]; then
+            echo "No osdc changes — gate passes trivially."
+            exit 0
+          fi
+          if [[ "$deploy_result" == "success" ]]; then
+            echo "Fast jobs passed (deploy + smoke + integration)."
+            exit 0
+          fi
+          echo "::error::deploy-fast result was '$deploy_result' (expected 'success')."
+          exit 1
