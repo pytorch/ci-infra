@@ -177,7 +177,7 @@ jobs:
       # osdc-auto-update-deploy-prod.yml) call osdc/scripts/validate-runner-bump.sh
       # so the regex, line-count, and monotonicity rules cannot drift apart.
       - name: Checkout repo (for validate-runner-bump.sh)
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
 
