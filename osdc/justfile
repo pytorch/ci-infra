@@ -172,6 +172,10 @@ deploy-status cluster name='':
 region cluster:
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; uv run {{CFG}} {{cluster}} region
 
+# Print the enabled modules that consume runner_image_tag (comma-separated)
+runner-image-modules cluster:
+    @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; uv run {{CFG}} {{cluster}} runner-image-modules
+
 # Update kubeconfig for a cluster (aws eks update-kubeconfig)
 kubeconfig cluster:
     @export CLUSTERS_YAML="{{CLUSTERS_YAML}}"; \

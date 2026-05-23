@@ -40,7 +40,22 @@ jobs:
     timeout-minutes: 5
     outputs:
       should_deploy: ${{ steps.gate.outputs.should_deploy }}
+      uw1_modules: ${{ steps.modules.outputs.uw1_modules }}
+      ue2_modules: ${{ steps.modules.outputs.ue2_modules }}
     steps:
+      - name: Checkout repo (for validate-runner-bump.sh and cluster-config.py)
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # cluster-config.py declares its runtime + deps via PEP-723 inline
+      # metadata, which only `uv run` understands. Direct `python3` on
+      # ubuntu-latest lacks PyYAML and the script ImportErrors.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+
       - id: gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,85 +111,52 @@ jobs:
           fi
 
           # Diff-content validation: defense-in-depth against compromised RENOVATE_TOKEN.
-          # Even if all metadata gates pass, only deploy if the actual diff is a
-          # single-line runner_image_tag bump matching strict semver.
-          COMMIT_JSON=$(gh api "repos/$REPO/commits/$SHA")
-          NUM_FILES=$(echo "$COMMIT_JSON" | jq '.files | length')
-          if [ "$NUM_FILES" != "1" ]; then
-            echo "::error::Expected exactly 1 file changed in $SHA; got $NUM_FILES. Refusing to deploy."
-            exit 1
-          fi
+          # Shared with osdc-renovate-autoapprove.yml via osdc/scripts/validate-runner-bump.sh
+          # so the regex, line-count, and monotonicity rules cannot drift apart.
+          PATCH_JSON=$(gh api "repos/$REPO/commits/$SHA")
+          export PATCH_JSON
+          osdc/scripts/validate-runner-bump.sh > /tmp/validate.out
+          DECISION=$(grep '^decision=' /tmp/validate.out | head -1 | cut -d= -f2-)
+          REASON=$(grep '^reason='   /tmp/validate.out | head -1 | cut -d= -f2-)
 
-          FILE_PATH=$(echo "$COMMIT_JSON" | jq -r '.files[0].filename')
-          if [ "$FILE_PATH" != "osdc/clusters.yaml" ]; then
-            echo "::error::Expected only osdc/clusters.yaml to change; got $FILE_PATH. Refusing to deploy."
+          if [ "$DECISION" != "approve" ]; then
+            echo "::error::Diff validation rejected $SHA: $DECISION — $REASON. Refusing to deploy."
             exit 1
           fi
-
-          PATCH=$(echo "$COMMIT_JSON" | jq -r '.files[0].patch')
-          # Extract changed lines (skip diff hunk headers --- and +++)
-          ADDED=$(echo "$PATCH" | grep -E '^\+[^+]' || true)
-          REMOVED=$(echo "$PATCH" | grep -E '^-[^-]' || true)
-          ADDED_COUNT=$(printf '%s' "$ADDED" | grep -c '^' || true)
-          REMOVED_COUNT=$(printf '%s' "$REMOVED" | grep -c '^' || true)
-          if [ "$ADDED_COUNT" != "1" ] || [ "$REMOVED_COUNT" != "1" ]; then
-            echo "::error::Expected exactly 1 line added + 1 line removed; got +$ADDED_COUNT/-$REMOVED_COUNT. Refusing to deploy."
-            echo "Patch:"
-            echo "$PATCH"
-            exit 1
-          fi
-
-          # Strict pattern: leading whitespace + runner_image_tag: "X.Y.Z" + optional trailing comment
-          PATTERN='^    runner_image_tag:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*(#.*)?$'
-          NEW_LINE="${ADDED#+}"
-          OLD_LINE="${REMOVED#-}"
-          if ! echo "$NEW_LINE" | grep -qE "$PATTERN"; then
-            echo "::error::New line does not match runner_image_tag semver pattern. Refusing to deploy."
-            echo "New line: $NEW_LINE"
-            exit 1
-          fi
-          if ! echo "$OLD_LINE" | grep -qE "$PATTERN"; then
-            echo "::error::Old line does not match runner_image_tag semver pattern. Refusing to deploy."
-            echo "Old line: $OLD_LINE"
-            exit 1
-          fi
-
-          # Monotonicity: reject downgrades (defense against compromised RENOVATE_TOKEN
-          # rolling back to a known-vulnerable runner version).
-          OLD_VER=$(printf '%s' "$OLD_LINE" | sed -nE 's/^    runner_image_tag:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p')
-          NEW_VER=$(printf '%s' "$NEW_LINE" | sed -nE 's/^    runner_image_tag:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p')
-          if [ -z "$OLD_VER" ] || [ -z "$NEW_VER" ]; then
-            echo "::error::Failed to extract version strings (old='$OLD_VER' new='$NEW_VER'). Refusing to deploy."
-            exit 1
-          fi
-          if [ "$OLD_VER" = "$NEW_VER" ]; then
-            echo "::error::No version change ($OLD_VER -> $NEW_VER). Refusing to deploy."
-            exit 1
-          fi
-          HIGHEST=$(printf '%s\n%s\n' "$NEW_VER" "$OLD_VER" | sort -V | tail -1)
-          if [ "$HIGHEST" != "$NEW_VER" ]; then
-            echo "::error::Downgrade detected ($OLD_VER -> $NEW_VER). Refusing to deploy."
-            exit 1
-          fi
-          echo "Version bump validated: $OLD_VER -> $NEW_VER"
-
-          echo "Diff validation passed — single-line runner_image_tag bump confirmed."
+          echo "Version bump validated: $REASON"
           echo "should_deploy=true" >> "$GITHUB_OUTPUT"
 
-  # IMPORTANT: `runner_image_tag` (the value Renovate bumps in clusters.yaml)
-  # is consumed ONLY by modules/arc-runners/scripts/python/generate_runners.py,
-  # which is invoked by modules/arc-runners/deploy.sh and re-used by the
-  # arc-runners-{b200,h100} delegate modules. If a future module also reads
-  # `runner_image_tag`, add it to the `modules:` list below or the auto-update
-  # will leave that module stale after a bump.
+      - id: modules
+        if: steps.gate.outputs.should_deploy == 'true'
+        env:
+          CLUSTERS_YAML: ${{ github.workspace }}/osdc/clusters.yaml
+        run: |
+          set -euo pipefail
+          UW1=$(uv run osdc/scripts/cluster-config.py arc-cbr-production-uw1 runner-image-modules)
+          UE2=$(uv run osdc/scripts/cluster-config.py arc-cbr-production     runner-image-modules)
+          echo "uw1 runner-image modules: ${UW1:-<none>}"
+          echo "ue2 runner-image modules: ${UE2:-<none>}"
+          {
+            echo "uw1_modules=$UW1"
+            echo "ue2_modules=$UE2"
+          } >> "$GITHUB_OUTPUT"
+
+  # `runner_image_tag` (the value Renovate bumps in clusters.yaml) is consumed
+  # ONLY by modules/arc-runners/scripts/python/generate_runners.py, which is
+  # also re-used by arc-runners-{b200,h100} delegate modules. The set of
+  # consumer module names lives in osdc/scripts/cluster-config.py
+  # (RUNNER_IMAGE_CONSUMER_MODULES) and the per-cluster slice is computed
+  # above (steps.modules). Cluster IDs and uw1->ue2 ordering stay hardcoded
+  # because the sequencing is intentional (uw1 absorbs failures first), not
+  # data-driven.
   deploy_uw1:
     needs: check-trigger
-    if: needs.check-trigger.outputs.should_deploy == 'true'
+    if: needs.check-trigger.outputs.should_deploy == 'true' && needs.check-trigger.outputs.uw1_modules != ''
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
       cluster: arc-cbr-production-uw1
       environment: osdc-production
-      modules: "arc-runners,arc-runners-h100"
+      modules: ${{ needs.check-trigger.outputs.uw1_modules }}
       run_smoke: true
       run_integration: false
       run_compactor: false
@@ -184,13 +166,13 @@ jobs:
     secrets: inherit
 
   deploy_ue2:
-    needs: deploy_uw1
-    if: ${{ !cancelled() && needs.deploy_uw1.result == 'success' }}
+    needs: [check-trigger, deploy_uw1]
+    if: ${{ !cancelled() && needs.deploy_uw1.result == 'success' && needs.check-trigger.outputs.ue2_modules != '' }}
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
       cluster: arc-cbr-production
       environment: osdc-production
-      modules: "arc-runners,arc-runners-b200,arc-runners-h100"
+      modules: ${{ needs.check-trigger.outputs.ue2_modules }}
       run_smoke: true
       run_integration: false
       run_compactor: false

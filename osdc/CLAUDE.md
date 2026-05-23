@@ -79,3 +79,4 @@ Reference documentation in `docs/`:
 | `docs/node-warmup-and-scheduling-gates.md` | Full node initialization sequence — taints, DaemonSets, init containers before job scheduling |
 | `docs/arc-fork-build-deploy.md` | ARC fork (jeanschmidt/actions-runner-controller) build/release workflow and chart publishing |
 | `docs/pypi-package-cache.md` | PyPI wheel cache architecture, slug naming, S3 layout, runner integration |
+| `docs/runner-image-autoupdate.md` | Renovate-driven runner-image auto-update pipeline — prerequisites, pause/dispatch, auto-close reasons, stale close, secret rotation, cross-cluster recovery |

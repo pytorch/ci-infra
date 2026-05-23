@@ -101,16 +101,13 @@ jobs:
         if: ${{ !inputs.skip_lint_test }}
         run: just test
 
-      - name: Determine AWS region
-        id: region
-        run: echo "region=$(just region "${{ inputs.cluster }}")" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: ${{ steps.region.outputs.region }}
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       # Register QEMU binfmt handlers so `docker build --platform linux/arm64`
       # works on an amd64 runner. The base deploy builds image-cache-janitor
@@ -128,8 +125,7 @@ jobs:
           else
             IFS=',' read -ra MODULE_LIST <<< "${MODULES}"
             for module in "${MODULE_LIST[@]}"; do
-              module="${module# }"
-              module="${module% }"
+              module="$(echo "$module" | tr -d '[:space:]')"
               [ -z "${module}" ] && continue
               just deploy-module "${CLUSTER}" "${module}"
             done
@@ -169,16 +165,13 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
-      - name: Determine AWS region
-        id: region
-        run: echo "region=$(just region "${{ inputs.cluster }}")" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: ${{ steps.region.outputs.region }}
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       - name: Run smoke tests
         run: just smoke "${{ inputs.cluster }}"
@@ -214,16 +207,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
 
-      - name: Determine AWS region
-        id: region
-        run: echo "region=$(just region "${{ inputs.cluster }}")" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: ${{ steps.region.outputs.region }}
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       - name: Run integration tests
         run: just integration-test "${{ inputs.cluster }}" --skip-drain --skip-smoke --skip-compactor
@@ -256,16 +246,13 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
-      - name: Determine AWS region
-        id: region
-        run: echo "region=$(just region "${{ inputs.cluster }}")" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: ${{ steps.region.outputs.region }}
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       - name: Run load tests
         run: just load-test "${{ inputs.cluster }}"
@@ -298,16 +285,13 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
-      - name: Determine AWS region
-        id: region
-        run: echo "region=$(just region "${{ inputs.cluster }}")" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: ${{ steps.region.outputs.region }}
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       - name: Run compactor e2e tests
         run: just test-compactor "${{ inputs.cluster }}"
@@ -338,16 +322,13 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
-      - name: Determine AWS region
-        id: region
-        run: echo "region=$(just region "${{ inputs.cluster }}")" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: ${{ steps.region.outputs.region }}
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       - name: Run janitor e2e tests
         run: just test-janitor "${{ inputs.cluster }}"

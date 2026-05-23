@@ -132,10 +132,12 @@ jobs:
           CLOSE_COUNT=$(echo "$CLOSE" | jq 'length')
 
           echo "Found $APPROVE_COUNT PR(s) to validate/approve and $CLOSE_COUNT stale PR(s) to close."
-          echo "approve_matrix={\"include\":$APPROVE}" >> "$GITHUB_OUTPUT"
-          echo "close_matrix={\"include\":$CLOSE}"     >> "$GITHUB_OUTPUT"
-          echo "approve_count=$APPROVE_COUNT"          >> "$GITHUB_OUTPUT"
-          echo "close_count=$CLOSE_COUNT"              >> "$GITHUB_OUTPUT"
+          {
+            echo "approve_matrix={\"include\":$APPROVE}"
+            echo "close_matrix={\"include\":$CLOSE}"
+            echo "approve_count=$APPROVE_COUNT"
+            echo "close_count=$CLOSE_COUNT"
+          } >> "$GITHUB_OUTPUT"
 
   approve:
     needs: discover
@@ -171,12 +173,14 @@ jobs:
       # arbitrary content. Uses the read-only GITHUB_TOKEN so we don't
       # widen the approver token's blast radius for diff inspection.
       #
-      # On deterministic failures (wrong file, wrong line count, regex
-      # mismatch, downgrade, no version change) we set decision=close-<reason>
-      # so a downstream step posts a comment and closes the PR. Renovate
-      # reopens on the next run when a new eligible version is available.
-      # Transient failures (e.g. gh API errors) propagate as job failures
-      # and leave the PR open.
+      # Both enforcement points (this step and the post-merge gate in
+      # osdc-auto-update-deploy-prod.yml) call osdc/scripts/validate-runner-bump.sh
+      # so the regex, line-count, and monotonicity rules cannot drift apart.
+      - name: Checkout repo (for validate-runner-bump.sh)
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
       - name: Validate PR diff and decide
         id: validate
         env:
@@ -186,79 +190,32 @@ jobs:
         run: |
           set -euo pipefail
 
-          FILES_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate)
           HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
           if [ -z "$HEAD_SHA" ] || [ "$HEAD_SHA" = "null" ]; then
             echo "::error::Failed to read PR #$PR_NUMBER head.sha for SHA pinning."
             exit 1
           fi
-          NUM_FILES=$(echo "$FILES_JSON" | jq 'length')
-          if [ "$NUM_FILES" != "1" ]; then
-            echo "decision=close-wrong-file-count" >> "$GITHUB_OUTPUT"
-            echo "reason=expected exactly 1 file changed; got $NUM_FILES" >> "$GITHUB_OUTPUT"
-            exit 0
+
+          PATCH_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate)
+          export PATCH_JSON
+
+          osdc/scripts/validate-runner-bump.sh > /tmp/validate.out
+          DECISION=$(grep '^decision=' /tmp/validate.out | head -1 | cut -d= -f2-)
+          REASON=$(grep '^reason='   /tmp/validate.out | head -1 | cut -d= -f2-)
+          OLD_VER=$(grep '^old_ver=' /tmp/validate.out | head -1 | cut -d= -f2- || true)
+          NEW_VER=$(grep '^new_ver=' /tmp/validate.out | head -1 | cut -d= -f2- || true)
+
+          if [ "$DECISION" = "approve" ]; then
+            echo "Diff validation passed for PR #$PR_NUMBER: $OLD_VER -> $NEW_VER"
+          else
+            echo "Diff validation rejected PR #$PR_NUMBER: $DECISION — $REASON"
           fi
 
-          FILE_PATH=$(echo "$FILES_JSON" | jq -r '.[0].filename')
-          if [ "$FILE_PATH" != "osdc/clusters.yaml" ]; then
-            echo "decision=close-wrong-file" >> "$GITHUB_OUTPUT"
-            echo "reason=expected only osdc/clusters.yaml to change; got $FILE_PATH" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          PATCH=$(echo "$FILES_JSON" | jq -r '.[0].patch')
-          if [ "$PATCH" = "null" ] || [ -z "$PATCH" ]; then
-            echo "decision=close-no-patch" >> "$GITHUB_OUTPUT"
-            echo "reason=GitHub returned no patch for this file (likely binary, rename-only, or oversized)" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          ADDED=$(echo "$PATCH" | grep -E '^\+[^+]' || true)
-          REMOVED=$(echo "$PATCH" | grep -E '^-[^-]' || true)
-          ADDED_COUNT=$(printf '%s' "$ADDED" | grep -c '^' || true)
-          REMOVED_COUNT=$(printf '%s' "$REMOVED" | grep -c '^' || true)
-          if [ "$ADDED_COUNT" != "1" ] || [ "$REMOVED_COUNT" != "1" ]; then
-            echo "decision=close-multi-line" >> "$GITHUB_OUTPUT"
-            echo "reason=expected exactly 1 line added + 1 line removed; got +$ADDED_COUNT/-$REMOVED_COUNT" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          PATTERN='^    runner_image_tag:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*(#.*)?$'
-          NEW_LINE="${ADDED#+}"
-          OLD_LINE="${REMOVED#-}"
-          if ! echo "$NEW_LINE" | grep -qE "$PATTERN"; then
-            echo "decision=close-bad-pattern" >> "$GITHUB_OUTPUT"
-            echo "reason=new line does not match runner_image_tag semver pattern: $NEW_LINE" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if ! echo "$OLD_LINE" | grep -qE "$PATTERN"; then
-            echo "decision=close-bad-pattern" >> "$GITHUB_OUTPUT"
-            echo "reason=old line does not match runner_image_tag semver pattern: $OLD_LINE" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          OLD_VER=$(printf '%s' "$OLD_LINE" | sed -nE 's/^    runner_image_tag:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p')
-          NEW_VER=$(printf '%s' "$NEW_LINE" | sed -nE 's/^    runner_image_tag:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p')
-          if [ -z "$OLD_VER" ] || [ -z "$NEW_VER" ]; then
-            echo "decision=close-bad-pattern" >> "$GITHUB_OUTPUT"
-            echo "reason=failed to extract version strings (old='$OLD_VER' new='$NEW_VER')" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$OLD_VER" = "$NEW_VER" ]; then
-            echo "decision=close-no-change" >> "$GITHUB_OUTPUT"
-            echo "reason=no version change ($OLD_VER -> $NEW_VER)" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          HIGHEST=$(printf '%s\n%s\n' "$NEW_VER" "$OLD_VER" | sort -V | tail -1)
-          if [ "$HIGHEST" != "$NEW_VER" ]; then
-            echo "decision=close-downgrade" >> "$GITHUB_OUTPUT"
-            echo "reason=downgrade detected ($OLD_VER -> $NEW_VER)" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "Diff validation passed for PR #$PR_NUMBER: $OLD_VER -> $NEW_VER"
-          echo "decision=approve" >> "$GITHUB_OUTPUT"
-          echo "reason=$OLD_VER -> $NEW_VER" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          {
+            echo "decision=$DECISION"
+            echo "reason=$REASON"
+            echo "head_sha=$HEAD_SHA"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Approve PR
         if: steps.validate.outputs.decision == 'approve'

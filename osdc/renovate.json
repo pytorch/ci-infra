@@ -13,7 +13,7 @@
       "customType": "regex",
       "managerFilePatterns": ["/^osdc/clusters\\.yaml$/"],
       "matchStrings": [
-        "runner_image_tag:\\s*[\"'](?<currentValue>[^\"']+)[\"']"
+        "# renovate: keep marker[^\\n]*\\n\\s*runner_image_tag:\\s*[\"'](?<currentValue>[^\"']+)[\"']"
       ],
       "depNameTemplate": "ghcr.io/actions/actions-runner",
       "packageNameTemplate": "ghcr.io/actions/actions-runner",
