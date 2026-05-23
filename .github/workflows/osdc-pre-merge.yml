@@ -78,7 +78,7 @@ jobs:
   # until these finish.
   # ------------------------------------------------------------------
   slow-tests:
-    needs: deploy-fast
+    needs: [changes, deploy-fast]
     if: needs.changes.outputs.osdc == 'true' && needs.deploy-fast.result == 'success'
     uses: ./.github/workflows/_osdc-slow-tests.yml
     with:
