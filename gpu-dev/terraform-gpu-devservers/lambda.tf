@@ -163,6 +163,7 @@ resource "aws_lambda_function" "reservation_processor" {
   timeout          = 900 # 15 minutes for K8s operations
   memory_size      = 2048 # 2GB memory to prevent out-of-memory crashes
   source_code_hash = null_resource.reservation_processor_build.triggers.code_hash
+  publish          = true
 
   environment {
     variables = merge({
@@ -185,8 +186,8 @@ resource "aws_lambda_function" "reservation_processor" {
       HOSTED_ZONE_ID                     = local.effective_domain_name != "" ? local.hosted_zone_id : ""
       SSH_DOMAIN_MAPPINGS_TABLE          = local.effective_domain_name != "" ? aws_dynamodb_table.ssh_domain_mappings.name : ""
       SSL_CERTIFICATE_ARN                = local.effective_domain_name != "" ? aws_acm_certificate.wildcard[0].arn : ""
-      LAMBDA_VERSION                     = "0.5.31"
-      MIN_CLI_VERSION                    = "0.5.31"
+      LAMBDA_VERSION                     = "0.6.0"
+      MIN_CLI_VERSION                    = "0.6.0"
       # Comma-separated GPU types that require --spot flag, or "all" for every type.
       # Empty = no spot types (on-demand / reserved). Set per-workspace.
       ASG_NAME_PREFIX                    = "${var.prefix}-gpu-nodes"
@@ -272,10 +273,23 @@ resource "null_resource" "reservation_processor_build" {
 }
 
 
-# Lambda event source mapping for SQS
+# Published version + alias for provisioned concurrency (can't use $LATEST)
+resource "aws_lambda_alias" "reservation_processor_live" {
+  name             = "live"
+  function_name    = aws_lambda_function.reservation_processor.function_name
+  function_version = aws_lambda_function.reservation_processor.version
+}
+
+resource "aws_lambda_provisioned_concurrency_config" "reservation_processor" {
+  function_name                  = aws_lambda_function.reservation_processor.function_name
+  qualifier                      = aws_lambda_alias.reservation_processor_live.name
+  provisioned_concurrent_executions = 2
+}
+
+# Lambda event source mapping for SQS — use alias so warm instances handle requests
 resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   event_source_arn = aws_sqs_queue.gpu_reservation_queue.arn
-  function_name    = aws_lambda_function.reservation_processor.arn
+  function_name    = aws_lambda_alias.reservation_processor_live.arn
   batch_size       = 1
 }
 
@@ -309,4 +323,14 @@ resource "aws_lambda_permission" "allow_cloudwatch_processor" {
   function_name = aws_lambda_function.reservation_processor.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.reservation_processor_schedule.arn
+}
+
+# Permission for SQS to invoke the alias (not $LATEST)
+resource "aws_lambda_permission" "allow_sqs_alias" {
+  statement_id  = "AllowExecutionFromSQSAlias"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.reservation_processor.function_name
+  qualifier     = aws_lambda_alias.reservation_processor_live.name
+  principal     = "sqs.amazonaws.com"
+  source_arn    = aws_sqs_queue.gpu_reservation_queue.arn
 }

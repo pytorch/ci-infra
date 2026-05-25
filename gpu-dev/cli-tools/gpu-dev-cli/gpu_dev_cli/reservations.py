@@ -1701,6 +1701,7 @@ class ReservationManager:
                 initial_text = f"📡 Starting multinode reservation..." if is_multinode else "🔄 Sending reservation request..."
                 spinner = Spinner("dots", text=initial_text)
                 live.update(spinner)
+                poll_delay = 0.5  # start fast, back off over time
 
                 while (
                     (timeout_seconds is None or time.time() -
@@ -1761,7 +1762,7 @@ class ReservationManager:
                                     if not is_multinode:
                                         spinner.text = "📡 Waiting for reservation status update..."
                                         live.update(spinner)
-                                        time.sleep(2)
+                                        time.sleep(0.5)
                                         continue
                                     else:
                                         node_details.append({
@@ -2293,8 +2294,9 @@ class ReservationManager:
 
                             return None
 
-                        # Continue polling
-                        time.sleep(3)
+                        # Poll with backoff: 0.5s → 1s → 1.5s → 2s → 3s (cap)
+                        time.sleep(poll_delay)
+                        poll_delay = min(poll_delay + 0.5, 3.0)
 
                     except Exception as e:
                         console.print(

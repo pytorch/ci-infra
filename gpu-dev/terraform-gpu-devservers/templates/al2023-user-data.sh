@@ -119,6 +119,58 @@ nvidia-smi -pm 1 || echo "Could not enable persistent mode (device files still c
 # Install basic monitoring tools
 yum install -y htop wget
 
+# ── Mount local NVMe instance store for containerd image cache ──
+# GPU instances (p5, p6, g4dn, g6, g7e) have fast local NVMe SSDs that sit idle.
+# Moving containerd's root here makes image pulls instant from cache and avoids
+# EBS IOPS contention with user workloads.
+NVME_MOUNT="/mnt/nvme"
+NVME_DEVS=()
+for dev in /dev/nvme*n1; do
+    [ -b "$dev" ] || continue
+    # Instance store NVMe has model "Amazon EC2 NVMe Instance Storage"
+    # EBS NVMe has model "Amazon Elastic Block Store"
+    DEV_NAME=$(basename "$dev")
+    MODEL=$(cat /sys/block/$${DEV_NAME}/device/model 2>/dev/null | tr -d ' ')
+    if echo "$MODEL" | grep -qi "Instance"; then
+        NVME_DEVS+=("$dev")
+    fi
+done
+
+if [ $${#NVME_DEVS[@]} -gt 0 ]; then
+    echo "Found $${#NVME_DEVS[@]} local NVMe device(s): $${NVME_DEVS[*]}"
+    mkdir -p "$NVME_MOUNT"
+
+    if [ $${#NVME_DEVS[@]} -eq 1 ]; then
+        mkfs.xfs -f "$${NVME_DEVS[0]}"
+        mount "$${NVME_DEVS[0]}" "$NVME_MOUNT"
+    else
+        # RAID0 across all NVMe devices for maximum throughput
+        dnf install -y mdadm 2>/dev/null || yum install -y mdadm 2>/dev/null
+        mdadm --create /dev/md0 --level=0 --raid-devices=$${#NVME_DEVS[@]} "$${NVME_DEVS[@]}" --force --run
+        mkfs.xfs -f /dev/md0
+        mount /dev/md0 "$NVME_MOUNT"
+    fi
+
+    # Move baked AMI's containerd cache to NVMe, then bind-mount
+    # Stop containerd first to avoid corrupting boltdb during copy
+    systemctl stop containerd 2>/dev/null || true
+    mkdir -p "$NVME_MOUNT/containerd"
+    if [ -d /var/lib/containerd ] && [ "$(ls -A /var/lib/containerd 2>/dev/null)" ]; then
+        echo "Copying baked containerd cache to NVMe..."
+        cp -a /var/lib/containerd/* "$NVME_MOUNT/containerd/" 2>/dev/null || true
+    fi
+    mkdir -p /var/lib/containerd
+    mount --bind "$NVME_MOUNT/containerd" /var/lib/containerd
+    # nodeadm will restart containerd with proper config
+
+    NVME_SIZE=$(df -h "$NVME_MOUNT" | awk 'NR==2{print $2}')
+    echo "NVMe mounted at $NVME_MOUNT ($NVME_SIZE) — containerd image cache on local SSD"
+    NVME_LABEL=",nvme-cache=true"
+else
+    echo "No local NVMe instance store found — using EBS root for containerd"
+    NVME_LABEL=""
+fi
+
 # Configure and run nodeadm for EKS cluster joining
 # Get the base64 certificate data from AWS
 CA_DATA=$(aws eks describe-cluster --region ${region} --name ${cluster_name} --query 'cluster.certificateAuthority.data' --output text)
@@ -145,7 +197,7 @@ spec:
         cpu: "2"
         memory: "4Gi"
     flags:
-      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false${profiling_dedicated ? ",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false" : ""}${mig_profile != "" ? ",nvidia.com/mig.config=${mig_profile}" : ""}
+      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false${profiling_dedicated ? ",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false" : ""}${mig_profile != "" ? ",nvidia.com/mig.config=${mig_profile}" : ""}$NVME_LABEL
 EOF
 
 # Configure EFA if hardware present (BEFORE nodeadm so kubelet sees hugepages)
@@ -184,7 +236,17 @@ ECR_IMAGE="${container_image}"
     crictl version &>/dev/null && break
     sleep 2
   done
-  crictl pull "$ECR_IMAGE" 2>&1 || echo "Image pre-pull failed"
+  # Check if baked AMI image survived nodeadm restart
+  CACHED=$(crictl images -o json 2>/dev/null | python3 -c "import sys,json; imgs=json.load(sys.stdin).get('images',[]); print('yes' if any('gpu-dev-image' in str(i.get('repoTags',[])) for i in imgs) else 'no')" 2>/dev/null || echo "no")
+  echo "PRE-PULL: Baked AMI image cached=$CACHED"
+  if [ "$CACHED" = "yes" ]; then
+    echo "PRE-PULL: Using cached image from baked AMI"
+  else
+    echo "PRE-PULL: Pulling image fresh..."
+    crictl pull "$ECR_IMAGE" 2>&1 || echo "Image pre-pull failed"
+  fi
+  # Pre-pull init container image (used by every pod for SSH key setup)
+  crictl pull docker.io/library/alpine:3.21 2>&1 || echo "Alpine pre-pull failed"
   # Pre-pull GPU Operator images (saves ~10 min waiting for DaemonSet pod startup)
   for IMG in \
     nvcr.io/nvidia/k8s/container-toolkit:v1.17.8-ubuntu20.04 \

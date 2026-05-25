@@ -428,7 +428,7 @@ locals {
           efa_network_cards   = 0
         }
         "cpu-spot" = {
-          instance_type       = "c7i.2xlarge"
+          instance_type       = "c6id.2xlarge"
           instance_types      = null
           instance_count      = 0
           gpus_per_instance   = 0
