@@ -33,4 +33,7 @@ usage = '''
 flag "--folder <folder>" help="Grafana folder UID" required=#true
 '''
 depends = [{ task = "validate", args = ["--folder", "{{usage.folder}}"] }]
-run = "gcx resources push -p generated"
+run = '''
+gcx resources push -p generated
+echo "\n✅ Published: https://pytorchci.grafana.net/dashboards/f/{{usage.folder}}\n"
+'''
