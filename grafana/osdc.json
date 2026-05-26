@@ -976,10 +976,10 @@
             "transformations": []
           }
         },
-        "description": "Count of unique GitHub Actions workflow jobs picked up by OSDC production runners for the selected repositories and clusters.",
+        "description": "Count of unique GitHub Actions workflow jobs picked up by OSDC production runners for the selected repositories and clusters, aggregated in 5-minute buckets.",
         "id": 7,
         "links": [],
-        "title": "Jobs Submitted to OSDC Runners [cluster, repository]",
+        "title": "Jobs Submitted to OSDC Runners, per 5min [cluster, repository]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
