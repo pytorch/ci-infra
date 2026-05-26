@@ -272,20 +272,29 @@ class Sandbox:
 
     # ── Logs ──
 
-    def logs(self) -> list[dict[str, str]]:
+    def logs(self, filter: str | None = None) -> list[dict[str, str]]:
         """Get the status history / processing log for this reservation.
 
         Returns all status transitions with timestamps — shows exactly what
         happened during reservation setup (disk creation, pod scheduling,
         SSH readiness, errors, etc.).
 
+        Args:
+            filter: Optional text to filter on (case-insensitive).
+                E.g. ``"error"``, ``"disk"``, ``"SSH"``.
+
         Returns:
             List of ``{"timestamp": "...", "message": "..."}`` dicts.
 
         Example::
 
+            # All logs
             for entry in sandbox.logs():
                 print(f"[{entry['timestamp']}] {entry['message']}")
+
+            # Only errors
+            for entry in sandbox.logs("error"):
+                print(entry['message'])
         """
         from .._backend.aws import _get_session, _PREFIX
         session = _get_session()
@@ -299,13 +308,17 @@ class Sandbox:
                 ProjectionExpression="status_history",
             )
             history = resp.get("Item", {}).get("status_history", [])
-            return [
+            entries = [
                 {
                     "timestamp": str(entry.get("timestamp", "")),
                     "message": str(entry.get("message", "")),
                 }
                 for entry in history
             ]
+            if filter:
+                f_lower = filter.lower()
+                entries = [e for e in entries if f_lower in e["message"].lower()]
+            return entries
         except Exception:
             return []
 
