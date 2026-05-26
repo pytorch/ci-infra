@@ -28,7 +28,7 @@ _PREFIX = "pytorch-gpu-dev"
 
 
 _CRED_CACHE_PATH = Path.home() / ".config" / "gpu-dev" / "aws-cred-cache.json"
-_CRED_CACHE_TTL = 28800  # 8 hours
+_CRED_CACHE_TTL = 2700  # 45 min (SSO session tokens typically last 1h)
 
 # Module-level session cache — reused across AwsBackend instances in the same process
 _cached_session: boto3.Session | None = None
@@ -88,18 +88,28 @@ class AwsBackend:
 
     def __init__(self, config: GpuDevConfig) -> None:
         self._config = config
-        region = config.region or _ENVIRONMENTS.get(config.environment, {}).get("region", "us-east-2")
+        self._region = config.region or _ENVIRONMENTS.get(config.environment, {}).get("region", "us-east-2")
+        self._init_clients()
+
+    def _init_clients(self) -> None:
         session = _get_session()
-
         self._session = session
-        self._region = region
-        self._ddb = session.resource("dynamodb", region_name=region)
-        self._sqs = session.client("sqs", region_name=region)
-        self._sts = session.client("sts", region_name=region)
-
+        self._ddb = session.resource("dynamodb", region_name=self._region)
+        self._sqs = session.client("sqs", region_name=self._region)
+        self._sts = session.client("sts", region_name=self._region)
         self._reservations = self._ddb.Table(f"{_PREFIX}-reservations")
         self._availability = self._ddb.Table(f"{_PREFIX}-gpu-availability")
         self._disks = self._ddb.Table(f"{_PREFIX}-disks")
+
+    def _refresh_on_expired(self) -> None:
+        """Clear cached session and reinitialize clients."""
+        global _cached_session
+        _cached_session = None
+        try:
+            _CRED_CACHE_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+        self._init_clients()
         self._queue_url: str | None = None
 
     def _get_queue_url(self) -> str:
@@ -109,9 +119,21 @@ class AwsBackend:
             )["QueueUrl"]
         return self._queue_url
 
+    def _call(self, fn: "Callable[[], Any]") -> Any:
+        """Call fn, auto-refresh credentials on ExpiredTokenException."""
+        try:
+            return fn()
+        except botocore.exceptions.ClientError as e:
+            if e.response.get("Error", {}).get("Code") in (
+                "ExpiredTokenException", "ExpiredToken", "RequestExpired",
+            ):
+                self._refresh_on_expired()
+                return fn()
+            raise
+
     def authenticate(self) -> dict[str, str]:
         try:
-            identity = self._sts.get_caller_identity()
+            identity = self._call(self._sts.get_caller_identity)
             arn = identity["Arn"]
             user_id = arn.split("/")[-1]
             return {
