@@ -23,6 +23,8 @@ from .name_generator import sanitize_name
 def _spot_stage_number(status: str) -> tuple:
     """Map a spot provisioning status message to a numbered step (N, total)."""
     s = status.lower()
+    if "no spot capacity" in s or "no capacity" in s:
+        return 1, 7  # stuck at step 1, but message itself says why
     if "requested" in s or "waiting for aws" in s or "allocate capacity" in s:
         return 1, 7
     if "allocated" in s or "launching" in s or "booting" in s:
@@ -442,6 +444,7 @@ class ReservationManager:
         node_labels: Optional[Dict[str, str]] = None,
         trace: bool = False,
         spot: bool = False,
+        fast_cache: bool = False,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
@@ -523,6 +526,9 @@ class ReservationManager:
 
             if spot:
                 message["spot"] = True
+
+            if fast_cache:
+                message["fast_cache"] = True
 
             # Add trace flag and CLI start timestamp
             if trace:
@@ -801,20 +807,21 @@ class ReservationManager:
         For multi-node reservations, returns info for all nodes in the group.
         """
         try:
-            # Query by user first (efficient), then filter by reservation_id prefix
+            # Short ID prefix — query UserIndex with server-side filter
             response = self.reservations_table.query(
                 IndexName="UserIndex",
                 KeyConditionExpression="user_id = :user_id",
-                ExpressionAttributeValues={":user_id": user_id},
+                FilterExpression="begins_with(reservation_id, :rid)",
+                ExpressionAttributeValues={":user_id": user_id, ":rid": reservation_id},
             )
             all_reservations = response.get("Items", [])
 
-            # Handle pagination for UserIndex query
             while "LastEvaluatedKey" in response:
                 response = self.reservations_table.query(
                     IndexName="UserIndex",
                     KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
+                    FilterExpression="begins_with(reservation_id, :rid)",
+                    ExpressionAttributeValues={":user_id": user_id, ":rid": reservation_id},
                     ExclusiveStartKey=response["LastEvaluatedKey"]
                 )
                 all_reservations.extend(response.get("Items", []))
@@ -1078,9 +1085,16 @@ class ReservationManager:
                 )
                 all_items.extend(response.get("Items", []))
 
+            # Fetch queue lengths for all GPU types in parallel
+            from concurrent.futures import ThreadPoolExecutor
+            gpu_types_list = [item["gpu_type"] for item in all_items]
+            with ThreadPoolExecutor(max_workers=10) as ex:
+                queue_futures = {gt: ex.submit(self._get_queue_length_for_gpu_type, gt) for gt in gpu_types_list}
+                queue_lengths = {gt: f.result() for gt, f in queue_futures.items()}
+
             for item in all_items:
                 gpu_type = item["gpu_type"]
-                queue_length = self._get_queue_length_for_gpu_type(gpu_type)
+                queue_length = queue_lengths.get(gpu_type, 0)
                 estimated_wait = queue_length * 15 if queue_length > 0 else 0
 
                 # size_etas is a DDB Map of {size_str: epoch_seconds (Decimal)} — pass through
@@ -1210,7 +1224,6 @@ class ReservationManager:
         try:
             total_count = 0
 
-            # Count queued reservations for this GPU type
             for status in ["queued", "pending"]:
                 try:
                     response = self.reservations_table.query(
@@ -1221,10 +1234,10 @@ class ReservationManager:
                             ":status": status,
                             ":gpu_type": gpu_type,
                         },
+                        Select="COUNT",
                     )
-                    total_count += len(response.get("Items", []))
+                    total_count += response.get("Count", 0)
 
-                    # Handle pagination for StatusGpuTypeIndex query
                     while "LastEvaluatedKey" in response:
                         response = self.reservations_table.query(
                             IndexName="StatusGpuTypeIndex",
@@ -1234,9 +1247,10 @@ class ReservationManager:
                                 ":status": status,
                                 ":gpu_type": gpu_type,
                             },
+                            Select="COUNT",
                             ExclusiveStartKey=response["LastEvaluatedKey"]
                         )
-                        total_count += len(response.get("Items", []))
+                        total_count += response.get("Count", 0)
                 except Exception as query_error:
                     # Fallback to scanning if the composite index doesn't exist yet
                     console.print(
@@ -1904,9 +1918,12 @@ class ReservationManager:
                                 detailed = first_queued.get("current_detailed_status", "")
                                 # Spot stages come through current_detailed_status — show as
                                 # numbered steps so users see progress and don't give up.
-                                if detailed and ("spot" in detailed.lower() or "node" in detailed.lower() or "instance" in detailed.lower()):
+                                if detailed and ("spot" in detailed.lower() or "node" in detailed.lower() or "instance" in detailed.lower() or "capacity" in detailed.lower()):
                                     step, total = _spot_stage_number(detailed)
-                                    message = f"⏳ Step {step}/{total}: {detailed}"
+                                    if "no spot capacity" in detailed.lower() or "no capacity" in detailed.lower():
+                                        message = f"⚠️  {detailed}"
+                                    else:
+                                        message = f"⏳ Step {step}/{total}: {detailed}"
                                 elif is_multinode:
                                     total_gpus = sum(
                                         node["gpu_count"] for node in node_details if node["reservation"])

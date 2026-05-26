@@ -13,7 +13,7 @@ from rich.spinner import Spinner
 # SSH validation result is cached locally for 24h. New keys pushed to GitHub still take effect
 # at reservation time (pods fetch live keys via init container) — caching only skips the
 # pre-flight "are you who you say you are" check.
-_SSH_CACHE_TTL_SECONDS = 24 * 60 * 60
+_SSH_CACHE_TTL_SECONDS = 14 * 24 * 60 * 60
 _SSH_CACHE_PATH = Path(os.path.expanduser("~/.config/gpu-dev/ssh-validation-cache.json"))
 
 # Cache for authenticate_user. STS GetCallerIdentity is stable per AWS profile and slow under SSO

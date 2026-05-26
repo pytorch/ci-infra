@@ -387,88 +387,84 @@ resource "helm_release" "nvidia_gpu_operator" {
 # DaemonSet to pre-pull GPU dev container image on all GPU nodes
 # This ensures first user on new node doesn't wait for slow image pull
 # After rebuilding image, trigger re-pull with: kubectl rollout restart daemonset gpu-dev-image-prepuller -n kube-system
-resource "kubernetes_manifest" "image_prepuller_daemonset" {
-  # force_conflicts needed because ecr.tf runs "kubectl rollout restart" after each image push,
-  # which adds an annotation owned by kubectl-rollout that would otherwise conflict with terraform
-  field_manager {
-    force_conflicts = true
+resource "kubernetes_daemonset" "image_prepuller" {
+  metadata {
+    name      = "gpu-dev-image-prepuller"
+    namespace = "kube-system"
+    labels = {
+      app = "image-prepuller"
+    }
   }
 
-  # Tell provider these fields are server-managed and shouldn't cause drift errors
-  computed_fields = [
-    "metadata.annotations[\"deprecated.daemonset.template.generation\"]",
-    "metadata.annotations[\"kubectl.kubernetes.io/restartedAt\"]",
-  ]
-
-  manifest = {
-    apiVersion = "apps/v1"
-    kind       = "DaemonSet"
-    metadata = {
-      name      = "gpu-dev-image-prepuller"
-      namespace = "kube-system"
-      labels = {
+  spec {
+    selector {
+      match_labels = {
         app = "image-prepuller"
       }
     }
-    spec = {
-      selector = {
-        matchLabels = {
+
+    strategy {
+      type = "RollingUpdate"
+      rolling_update {
+        max_unavailable = "100%"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
           app = "image-prepuller"
         }
       }
-      # The prepuller does nothing but pull an image + sit in a pause container.
-      # Default maxUnavailable=1 makes a 32GB image roll out across 26 nodes take
-      # ~2.5h, so user pods landing on un-updated nodes still pull from ECR fresh.
-      # Parallel is safe here — restarting the prepuller doesn't disrupt anything,
-      # and the kubelet's image cache is independent of the prepuller pod's lifecycle.
-      updateStrategy = {
-        type = "RollingUpdate"
-        rollingUpdate = {
-          maxUnavailable = "100%"
+
+      spec {
+        node_selector = {
+          NodeType             = "gpu"
+          "kubernetes.io/arch" = "amd64"
         }
-      }
-      template = {
-        metadata = {
-          labels = {
-            app = "image-prepuller"
+
+        toleration {
+          key      = "nvidia.com/gpu"
+          operator = "Exists"
+          effect   = "NoSchedule"
+        }
+
+        init_container {
+          name              = "pull-gpu-dev-image"
+          image             = local.latest_image_uri
+          image_pull_policy = "Always"
+          command           = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
+        }
+
+        container {
+          name    = "pause"
+          image   = "alpine:3.21"
+          command = ["sleep", "infinity"]
+
+          resources {
+            requests = {
+              cpu    = "10m"
+              memory = "10Mi"
+            }
+            limits = {
+              cpu    = "10m"
+              memory = "10Mi"
+            }
+          }
+
+          volume_mount {
+            name       = "nvme-cache"
+            mount_path = "/mnt/nvme/user-cache"
+            read_only  = true
           }
         }
-        spec = {
-          nodeSelector = {
-            NodeType             = "gpu"
-            "kubernetes.io/arch" = "amd64"
+
+        volume {
+          name = "nvme-cache"
+          host_path {
+            path = "/mnt/nvme/user-cache"
+            type = "DirectoryOrCreate"
           }
-          tolerations = [
-            {
-              key      = "nvidia.com/gpu"
-              operator = "Exists"
-              effect   = "NoSchedule"
-            }
-          ]
-          initContainers = [
-            {
-              name            = "pull-gpu-dev-image"
-              image           = local.latest_image_uri # Use stable 'latest' tag
-              imagePullPolicy = "Always"
-              command         = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
-            }
-          ]
-          containers = [
-            {
-              name  = "pause"
-              image = "registry.k8s.io/pause:3.10"
-              resources = {
-                requests = {
-                  cpu    = "10m"
-                  memory = "10Mi"
-                }
-                limits = {
-                  cpu    = "10m"
-                  memory = "10Mi"
-                }
-              }
-            }
-          ]
         }
       }
     }

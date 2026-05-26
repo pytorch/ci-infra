@@ -163,8 +163,12 @@ if [ $${#NVME_DEVS[@]} -gt 0 ]; then
     mount --bind "$NVME_MOUNT/containerd" /var/lib/containerd
     # nodeadm will restart containerd with proper config
 
+    # User workspace cache — fast restore from local NVMe instead of EBS snapshot
+    mkdir -p "$NVME_MOUNT/user-cache"
+    chmod 755 "$NVME_MOUNT/user-cache"
+
     NVME_SIZE=$(df -h "$NVME_MOUNT" | awk 'NR==2{print $2}')
-    echo "NVMe mounted at $NVME_MOUNT ($NVME_SIZE) — containerd image cache on local SSD"
+    echo "NVMe mounted at $NVME_MOUNT ($NVME_SIZE) — containerd + user-cache on local SSD"
     NVME_LABEL=",nvme-cache=true"
 else
     echo "No local NVMe instance store found — using EBS root for containerd"

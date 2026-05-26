@@ -608,6 +608,8 @@ def main(ctx: click.Context) -> None:
 )
 @click.option("--spot", is_flag=True, default=False,
               help="Acknowledge spot instance (~1/3 cost, may be preempted with 2-min notice). Required for spot-only types.")
+@click.option("--fast-cache", is_flag=True, default=False, hidden=True,
+              help="Use NVMe local cache for faster session restore (experimental).")
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -629,6 +631,7 @@ def reserve(
     disk: Optional[str],
     node_label: tuple,
     spot: bool = False,
+    fast_cache: bool = False,
 ) -> None:
     """Reserve GPU development server(s)
 
@@ -746,7 +749,10 @@ def reserve(
                     else:
                         f_ssh = ex.submit(validate_ssh_key_matches_github_user, config, None)
                         ssh_result = None
-                    f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
+                    # Only fetch availability if we need the interactive picker
+                    need_interactive = gpu_type is None
+                    if need_interactive:
+                        f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
 
                     # Surface auth failure first (most actionable).
                     try:
@@ -758,7 +764,7 @@ def reserve(
 
                     if ssh_result is None:
                         ssh_result = f_ssh.result()
-                    availability_info = f_avail.result()
+                    availability_info = f_avail.result() if need_interactive else None
 
             # Surface SSH validation failure with the same UX as before.
             if not ssh_result.get("valid"):
@@ -1108,10 +1114,12 @@ def reserve(
                     rprint(f"[red]❌ {str(e)}[/red]")
                     return
 
-                # Validate SSH key matches configured GitHub username
-                live.update(Spinner("dots", text="🔐 Validating SSH key..."))
+                # Validate SSH key matches configured GitHub username (cached, ~0ms)
                 if not _validate_ssh_key_or_exit(config, live):
                     return
+
+                live.update(Spinner("dots", text="📡 Preparing reservation..."))
+                reservation_mgr = ReservationManager(config)
 
                 # Track if user explicitly requests no persistent disk
                 explicit_no_disk = explicit_no_disk_from_param
@@ -1223,11 +1231,6 @@ def reserve(
                                 rprint(f"[red]❌ Disk '{disk}' is already in use[/red]")
                                 rprint(f"[yellow]Use a different disk or wait for the reservation to end[/yellow]")
                                 return
-
-                live.update(
-                    Spinner("dots", text="📡 Setting up reservation manager...")
-                )
-                reservation_mgr = ReservationManager(config)
 
             # Submit reservation request
             live.update(
@@ -1364,6 +1367,7 @@ def reserve(
                     spot=spot,
                     node_labels=node_labels if node_labels else None,
                     trace=trace,
+                    fast_cache=fast_cache,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 
@@ -2887,35 +2891,41 @@ def _show_availability() -> None:
         ) as live:
             config = load_config()
 
-            # Authenticate using AWS credentials
+            # Authenticate and fetch availability (both regions in parallel)
             try:
                 user_info = authenticate_user(config)
                 reservation_mgr = ReservationManager(config)
-                availability_info = reservation_mgr.get_gpu_availability_by_type()
+
+                from concurrent.futures import ThreadPoolExecutor
+                _env_name = config.user_config.get("environment", "prod")
+                _east1_spot_types = frozenset(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
+
+                def _fetch_east1_spot():
+                    if _env_name != "prod" or not _east1_spot_types:
+                        return {}
+                    east1_r = Config.ENVIRONMENTS["prod-east1"]["region"]
+                    east1_table = config.session.resource("dynamodb", region_name=east1_r).Table("pytorch-gpu-dev-gpu-availability")
+                    result = {}
+                    for item in east1_table.scan().get("Items", []):
+                        gt = item.get("gpu_type", "")
+                        if gt in _east1_spot_types:
+                            result[gt] = {
+                                "available": int(item.get("available_gpus", 0)),
+                                "total": int(item.get("total_gpus", 0)),
+                                "max_reservable": int(item.get("max_reservable", 0)),
+                                "spot_info": item.get("spot_info", {}),
+                            }
+                    return result
+
+                with ThreadPoolExecutor(max_workers=2) as ex:
+                    f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
+                    f_spot = ex.submit(_fetch_east1_spot)
+                    availability_info = f_avail.result()
+                    spot_region_info = f_spot.result()
             except RuntimeError as e:
                 live.stop()
                 rprint(f"[red]❌ {str(e)}[/red]")
                 return
-
-        # Cross-region: fetch spot availability from prod-east1
-        spot_region_info = {}
-        _env_name = config.user_config.get("environment", "prod")
-        _east1_spot_types = frozenset(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
-        if _env_name == "prod" and _east1_spot_types:
-            try:
-                import boto3 as _b3
-                east1_r = Config.ENVIRONMENTS["prod-east1"]["region"]
-                for item in _b3.resource("dynamodb", region_name=east1_r).Table("pytorch-gpu-dev-gpu-availability").scan().get("Items", []):
-                    gt = item.get("gpu_type", "")
-                    if gt in _east1_spot_types:
-                        spot_region_info[gt] = {
-                            "available": int(item.get("available_gpus", 0)),
-                            "total": int(item.get("total_gpus", 0)),
-                            "max_reservable": int(item.get("max_reservable", 0)),
-                            "spot_info": item.get("spot_info", {}),
-                        }
-            except Exception:
-                pass
 
         if availability_info:
             # GPU architecture mapping (for display)
@@ -3273,8 +3283,19 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
     For VS Code Remote or manual SSH, use 'gpu-dev show' to see full SSH command.
     """
     import subprocess
+    from pathlib import Path
 
     try:
+        # Fast path: if reservation ID given, check local SSH config first (no network)
+        if reservation_id:
+            ssh_config_dir = Path.home() / ".gpu-dev"
+            matches = list(ssh_config_dir.glob(f"{reservation_id}*-sshconfig")) if ssh_config_dir.exists() else []
+            if matches:
+                pod_name = f"gpu-dev-{reservation_id[:8]}"
+                rprint(f"[cyan]Connecting to {pod_name}...[/cyan]\n")
+                os.execvp("ssh", ["ssh", pod_name])
+                return
+
         with Live(
             Spinner("dots", text="📡 Fetching reservation details..."), console=console
         ) as live:

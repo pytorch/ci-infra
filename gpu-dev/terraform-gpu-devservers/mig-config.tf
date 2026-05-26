@@ -36,7 +36,8 @@ locals {
   # Workspace-scoped defaults so the resource is a no-op in non-prod and no apply ever tries to
   # label a node that doesn't exist.
   default_b200_mig_node_by_workspace = {
-    prod = "ip-10-0-67-125.us-east-2.compute.internal"
+    # B200 MIG now handled by cr4 ASG with auto mig_profile label
+    prod = ""
   }
   b200_mig_node_effective = (
     var.b200_mig_node_name != ""
