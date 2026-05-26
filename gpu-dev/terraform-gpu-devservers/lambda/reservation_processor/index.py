@@ -101,8 +101,8 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                     elif "not supported" in reason and az_match:
                         unsupported_azs.add(az_match.group())
                 if no_capacity_count > 0:
-                    az_list = ", ".join(sorted(failed_azs)) if failed_azs else "multiple AZs"
-                    return f"No spot capacity ({az_list}) — tried {no_capacity_count}x, retrying every ~60s"
+                    az_list = ", ".join(sorted(failed_azs)) if failed_azs else "all checked AZs"
+                    return f"No spot capacity in {az_list} — retrying every ~60s"
             except Exception as e:
                 logger.warning(f"Failed to check ASG scaling activities for {asg_name}: {e}")
             return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
@@ -8025,11 +8025,10 @@ def process_scheduled_queue_management():
                     # sees step progression (Step 1→2→3...). For non-spot, only on
                     # the first pending→queued transition.
                     if _is_spot_type(gpu_type):
-                        status_message = _get_spot_provision_status(gpu_type)
                         update_reservation_status(
                             reservation_id,
                             "queued",
-                            status_message,
+                            spot_status,
                         )
                     elif current_status == "pending":
                         if type_available_gpus == 0:
