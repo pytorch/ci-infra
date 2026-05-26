@@ -105,6 +105,7 @@ class AwsBackend:
         self._reservations = self._ddb.Table(f"{_PREFIX}-reservations")
         self._availability = self._ddb.Table(f"{_PREFIX}-gpu-availability")
         self._disks = self._ddb.Table(f"{_PREFIX}-disks")
+        self._queue_url: str | None = None
 
     def _refresh_on_expired(self) -> None:
         """Clear cached session and reinitialize clients."""
