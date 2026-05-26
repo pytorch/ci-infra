@@ -9087,10 +9087,38 @@ def process_clone_disk_action(record: dict[str, Any]) -> bool:
         ]
 
         if not active_snapshots:
-            error_msg = f"No snapshots found for source disk '{source_disk}'. Use the disk in a reservation first."
-            logger.error(error_msg)
-            write_operation_result(operation_id, "failed", error_msg)
-            return True
+            # No snapshot yet — try live snapshot from in-use volume
+            vol_filters = [
+                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "tag:disk_name", "Values": [source_disk]},
+                {"Name": "status", "Values": ["in-use", "available"]},
+            ]
+            vols = ec2_client.describe_volumes(Filters=vol_filters).get("Volumes", [])
+            if not vols:
+                error_msg = f"No snapshots or volumes found for source disk '{source_disk}'."
+                logger.error(error_msg)
+                write_operation_result(operation_id, "failed", error_msg)
+                return True
+            vol_id = vols[0]["VolumeId"]
+            logger.info(f"No snapshot found — creating live snapshot from volume {vol_id}")
+            snap = ec2_client.create_snapshot(
+                VolumeId=vol_id,
+                Description=f"gpu-dev live clone snapshot for {user_id} (disk: {source_disk})",
+                TagSpecifications=[{
+                    "ResourceType": "snapshot",
+                    "Tags": [
+                        {"Key": "gpu-dev-user", "Value": user_id},
+                        {"Key": "disk_name", "Value": source_disk},
+                        {"Key": "Name", "Value": f"gpu-dev-{source_disk}-live-clone"},
+                    ],
+                }],
+            )
+            snap_id = snap["SnapshotId"]
+            logger.info(f"Live snapshot {snap_id} initiated, waiting for completion...")
+            waiter = ec2_client.get_waiter("snapshot_completed")
+            waiter.wait(SnapshotIds=[snap_id], WaiterConfig={"Delay": 10, "MaxAttempts": 90})
+            active_snapshots = [snap]
+            logger.info(f"Live snapshot {snap_id} completed")
 
         source_snapshot = max(active_snapshots, key=lambda s: s['StartTime'])
         source_snapshot_id = source_snapshot['SnapshotId']
