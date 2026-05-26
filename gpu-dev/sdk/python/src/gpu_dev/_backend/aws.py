@@ -7,9 +7,11 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import boto3
+import botocore.exceptions
 import botocore.exceptions
 
 from ..common.config import GpuDevConfig
@@ -25,18 +27,69 @@ _ENVIRONMENTS: dict[str, dict[str, str]] = {
 _PREFIX = "pytorch-gpu-dev"
 
 
+_CRED_CACHE_PATH = Path.home() / ".config" / "gpu-dev" / "aws-cred-cache.json"
+_CRED_CACHE_TTL = 28800  # 8 hours
+
+# Module-level session cache — reused across AwsBackend instances in the same process
+_cached_session: boto3.Session | None = None
+
+
+def _get_session() -> boto3.Session:
+    """Get a boto3 session with disk-cached credentials (saves ~900ms SSO resolution)."""
+    global _cached_session
+    if _cached_session is not None:
+        return _cached_session
+
+    # Try disk-cached credentials
+    try:
+        if _CRED_CACHE_PATH.exists():
+            cached = json.loads(_CRED_CACHE_PATH.read_text())
+            if time.time() < cached.get("expires", 0):
+                _cached_session = boto3.Session(
+                    aws_access_key_id=cached["access_key"],
+                    aws_secret_access_key=cached["secret_key"],
+                    aws_session_token=cached["token"],
+                )
+                return _cached_session
+    except Exception:
+        pass
+
+    # Resolve from SSO/profile (slow path)
+    try:
+        session = boto3.Session(profile_name="gpu-dev")
+        creds = session.get_credentials()
+        if not creds:
+            raise Exception("no credentials")
+    except Exception:
+        session = boto3.Session()
+        creds = session.get_credentials()
+
+    # Cache to disk
+    try:
+        frozen = creds.get_frozen_credentials()
+        if frozen.token:
+            _CRED_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _CRED_CACHE_PATH.write_text(json.dumps({
+                "access_key": frozen.access_key,
+                "secret_key": frozen.secret_key,
+                "token": frozen.token,
+                "expires": time.time() + _CRED_CACHE_TTL,
+            }))
+            _CRED_CACHE_PATH.chmod(0o600)
+    except Exception:
+        pass
+
+    _cached_session = session
+    return session
+
+
 class AwsBackend:
     """Backend implementation using DynamoDB + SQS."""
 
     def __init__(self, config: GpuDevConfig) -> None:
         self._config = config
         region = config.region or _ENVIRONMENTS.get(config.environment, {}).get("region", "us-east-2")
-
-        try:
-            session = boto3.Session(profile_name="gpu-dev")
-            session.get_credentials()
-        except Exception:
-            session = boto3.Session()
+        session = _get_session()
 
         self._session = session
         self._region = region
@@ -123,24 +176,27 @@ class AwsBackend:
     ) -> list[ReservationInfo]:
         if not user_id:
             return []
-        resp = self._reservations.query(
-            IndexName="UserIndex",
-            KeyConditionExpression="user_id = :uid",
-            ExpressionAttributeValues={":uid": user_id},
-        )
+
+        query_kwargs: dict[str, Any] = {
+            "IndexName": "UserIndex",
+            "KeyConditionExpression": "user_id = :uid",
+            "ExpressionAttributeValues": {":uid": user_id},
+        }
+
+        # Server-side filter by status to avoid scanning hundreds of old reservations
+        if statuses:
+            placeholders = {f":s{i}": s for i, s in enumerate(statuses)}
+            query_kwargs["FilterExpression"] = f"#status IN ({', '.join(placeholders.keys())})"
+            query_kwargs["ExpressionAttributeNames"] = {"#status": "status"}
+            query_kwargs["ExpressionAttributeValues"].update(placeholders)
+
+        resp = self._reservations.query(**query_kwargs)
         items = resp.get("Items", [])
         while "LastEvaluatedKey" in resp:
-            resp = self._reservations.query(
-                IndexName="UserIndex",
-                KeyConditionExpression="user_id = :uid",
-                ExpressionAttributeValues={":uid": user_id},
-                ExclusiveStartKey=resp["LastEvaluatedKey"],
-            )
+            resp = self._reservations.query(**query_kwargs, ExclusiveStartKey=resp["LastEvaluatedKey"])
             items.extend(resp.get("Items", []))
 
         results = [self._item_to_info(item) for item in items]
-        if statuses:
-            results = [r for r in results if r.status.value in statuses]
         return sorted(results, key=lambda r: r.created_at or "", reverse=True)
 
     def cancel_reservation(self, reservation_id: str, user_id: str) -> bool:

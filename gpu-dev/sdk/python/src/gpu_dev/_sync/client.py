@@ -50,6 +50,7 @@ class GpuDev:
     def __init__(self, config: GpuDevConfig | None = None) -> None:
         self._config = config or GpuDevConfig.from_file()
         self._backend: Backend = AwsBackend(self._config)
+        self._other_backend: Backend | None = None
         self._user_info: dict[str, str] | None = None
 
     def _auth(self) -> dict[str, str]:
@@ -185,28 +186,31 @@ class GpuDev:
         """
         user_info = self._auth()
         statuses = status or ["active", "pending", "queued", "preparing"]
-        infos = self._backend.list_reservations(user_info["user_id"], statuses)
-        sandboxes = [Sandbox(info, self._backend, user_info["user_id"]) for info in infos]
 
-        # Cross-region: also check the other region for spot/queued reservations
-        try:
-            from .._backend.aws import AwsBackend, _ENVIRONMENTS
-            current_env = self._config.environment
-            other_envs = {"prod": "prod-east1", "prod-east1": "prod"}
-            other_env = other_envs.get(current_env)
-            if other_env:
-                other_config = GpuDevConfig(
-                    github_user=self._config.github_user,
-                    environment=other_env,
-                    region=_ENVIRONMENTS.get(other_env, {}).get("region"),
-                )
-                other_backend = AwsBackend(other_config)
-                other_infos = other_backend.list_reservations(user_info["user_id"], statuses)
-                sandboxes.extend(
-                    Sandbox(info, other_backend, user_info["user_id"]) for info in other_infos
-                )
-        except Exception:
-            pass
+        # Initialize cross-region backend lazily
+        if self._other_backend is None:
+            try:
+                from .._backend.aws import AwsBackend, _ENVIRONMENTS
+                other_envs = {"prod": "prod-east1", "prod-east1": "prod"}
+                other_env = other_envs.get(self._config.environment)
+                if other_env:
+                    self._other_backend = AwsBackend(GpuDevConfig(
+                        github_user=self._config.github_user,
+                        environment=other_env,
+                        region=_ENVIRONMENTS.get(other_env, {}).get("region"),
+                    ))
+            except Exception:
+                pass
+
+        # Query both regions in parallel
+        from concurrent.futures import ThreadPoolExecutor
+        uid = user_info["user_id"]
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f1 = ex.submit(self._backend.list_reservations, uid, statuses)
+            f2 = ex.submit(self._other_backend.list_reservations, uid, statuses) if self._other_backend else None
+            sandboxes = [Sandbox(info, self._backend, uid) for info in f1.result()]
+            if f2:
+                sandboxes.extend(Sandbox(info, self._other_backend, uid) for info in f2.result())
 
         return sandboxes
 
