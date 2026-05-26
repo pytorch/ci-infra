@@ -3099,7 +3099,6 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                 logger.info(f"Created domain name {dn} for reservation {reservation_id}")
             record_trace_event(trace_data, "dns_setup_end")
 
-        from concurrent.futures import ThreadPoolExecutor
         dns_executor = ThreadPoolExecutor(max_workers=1)
         dns_future = dns_executor.submit(_setup_dns)
 
