@@ -154,8 +154,7 @@ def get_existing_dns_names() -> List[str]:
         return []
 
     try:
-        dynamodb = boto3.resource("dynamodb")
-        table = dynamodb.Table(table_name)
+        table = _get_domain_mappings_table(table_name)
 
         # Scan for all domain mappings
         response = table.scan()
