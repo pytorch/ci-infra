@@ -1,6 +1,26 @@
-# GPU Developer CLI
+# GPU Developer CLI & SDK
 
-A command-line tool for reserving and managing GPU development servers on AWS EKS.
+A command-line tool and Python SDK for reserving and managing GPU development servers.
+
+## Python SDK
+
+For programmatic access, use the [Python SDK](../../sdk/python/README.md):
+
+```python
+from gpu_dev import GpuDev
+
+client = GpuDev()
+sandbox = client.reserve(gpu_type="h100", gpu_count=2, hours=4)
+result = sandbox.exec("nvidia-smi")
+print(result.stdout)
+sandbox.cancel()
+```
+
+Install: `pip install -e sdk/python/` — see [SDK docs](../../sdk/python/README.md) and [quickstart notebook](../../sdk/python/examples/quickstart.ipynb).
+
+---
+
+## CLI
 
 ## Table of Contents
 
