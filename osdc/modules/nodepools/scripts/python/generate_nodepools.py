@@ -33,6 +33,7 @@ if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
 from instance_specs import INSTANCE_SPECS  # noqa: E402
+from nodepool_defs import is_excluded_for_region as _is_excluded_for_region  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -486,18 +487,6 @@ def _validate_fleet(fleet_data, def_file):
                     f"not found in INSTANCE_SPECS. "
                     f"Add it to scripts/python/instance_specs.py before using it."
                 )
-
-
-def _is_excluded_for_region(fleet_or_pool_def, region):
-    """Return True if the given region appears in the def's ``exclude_regions`` list.
-
-    No-op (returns False) when ``region`` is empty/None or when the def has no
-    ``exclude_regions`` key — keeps the generator backward-compatible for
-    consumers that don't pass NODEPOOLS_REGION.
-    """
-    if not region:
-        return False
-    return region in (fleet_or_pool_def.get("exclude_regions") or [])
 
 
 def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, region=None):
