@@ -24,7 +24,13 @@ jobs:
     name: tofu plan (${{ inputs.cluster }})
     runs-on: ubuntu-latest
     environment: osdc-staging
-    timeout-minutes: 30
+    timeout-minutes: 45
+    # Serialize all tofu state-locking work per cluster. Shared with
+    # _osdc-deploy.yml so plan and deploy against the same cluster never
+    # race on the DynamoDB state lock.
+    concurrency:
+      group: osdc-tofu-${{ inputs.cluster }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 

@@ -8,5 +8,5 @@ runner:
   vcpu: 29
   memory: 113Gi
   gpu: 1
-  proactive_capacity: 5
-  max_burst_capacity: 30
+  proactive_capacity: 10
+  max_burst_capacity: 60

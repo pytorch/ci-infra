@@ -44,7 +44,8 @@ crcr/
     ├── iam.tf                      # Lambda execution role and policies
     ├── secrets.tf                  # Secrets Manager secret and version
     ├── elasticache.tf              # Redis replication group
-    └── webhook.tf                  # Lambda function and public function URL
+    ├── callback.tf                 # Result callback lambda function and public function URL
+    └── webhook.tf                  # Webhook lambda function and public function URL
 ```
 
 ## Prerequisites
@@ -86,6 +87,9 @@ aws dynamodb create-table \
 | `allowlist_ttl` | `1200` | Allowlist cache TTL in Redis (seconds) |
 | `vpc_cidr_block` | `10.0.0.0/16` | CIDR block for the VPC |
 | `availability_zone_suffixes` | `["a", "b"]` | Availability zone letter suffixes |
+| `hud_api_url` | `N/A` | URL for sending callback data to HUD |
+| `hud_bot_key` | `N/A` | Key to access to HUD (sensitive) |
+| `oot_status_ttl` | `259200` | OOT workflow run status TTL in Redis (seconds) |
 
 **Note:**
 
@@ -103,6 +107,8 @@ cd ci-infra/crcr/aws
 export TF_VAR_github_app_id=123456
 export TF_VAR_github_app_secret=<webhook_secret>
 export TF_VAR_github_app_privatekey="$(cat path/to/key.pem)"
+export TF_VAR_hud_api_url=<hud_api_url>
+export TF_VAR_hud_bot_key=<hud_bot_key>
 ```
 
 #### Deploy prod
@@ -133,6 +139,8 @@ The production deployment is handled via the `crcr-deploy-prod.yml` workflow (`w
    - `CRCR_GITHUB_APP_ID` - GitHub App ID
    - `CRCR_GITHUB_APP_SECRET` - GitHub App webhook secret
    - `CRCR_GITHUB_APP_PRIVATEKEY` - PEM-encoded GitHub App private key
+   - `CRCR_HUD_API_URL` - URL for sending callback data to HUD
+   - `CRCR_HUD_BOT_KEY` - Key to access to HUD
 
 2. **Trigger the workflow** manually from workflow_dispatch:
 
@@ -151,7 +159,7 @@ CRCR follows a four-level progression system. Each level adds more integration b
 
 | Level | Name | Status | Description |
 |---|---|---|---|
-| **L1** | Events Only | **Current** | Webhook events are forwarded to downstream repos. No feedback to upstream PRs. Downstream repos receive `repository_dispatch` and run CI independently. |
-| **L2** | HUD Visibility | developing | Downstream CI results are written to ClickHouse and displayed on a dedicated HUD page (`hud.pytorch.org/oot/[org]/[repo]`). Upstream PRs still show no check status. |
+| **L1** | Events Only | running | Webhook events are forwarded to downstream repos. No feedback to upstream PRs. Downstream repos receive `repository_dispatch` and run CI independently. |
+| **L2** | HUD Visibility | **Current**  | Downstream CI results are written to ClickHouse and displayed on a dedicated HUD page (`hud.pytorch.org/oot/[org]/[repo]`). Upstream PRs still show no check status. |
 | **L3** | Label-Triggered PR Checks | developing | A non-blocking Check Run appears on upstream PRs when a `ciflow/oot/<name>` label is added. This is the recommended long-term target for most downstream repos. |
 | **L4** | Always-On Blocking Checks | developing | Blocking Check Run auto-triggered for every PR. Reserved for critical accelerators only. Merge is blocked on failure. |

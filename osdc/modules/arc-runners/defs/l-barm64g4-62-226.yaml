@@ -4,6 +4,7 @@
 runner:
   name: l-barm64g4-62-226
   instance_type: m8g.16xlarge
+  node_fleet: m8g-large
   disk_size: 256
   vcpu: 62
   memory: 226Gi

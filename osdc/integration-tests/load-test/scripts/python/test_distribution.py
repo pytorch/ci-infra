@@ -3,6 +3,7 @@
 import pytest
 import yaml
 from distribution import (
+    _LOAD_TEST_EXCLUDED_ARM_PATTERN,
     _LOAD_TEST_EXCLUDED_GPU_PATTERN,
     OLD_TO_OSDC_LABEL,
     PRODUCTION_JOB_COUNTS,
@@ -124,9 +125,13 @@ class TestAggregateProductionCounts:
 
 
 class TestGetAvailableRunners:
-    def _make_def(self, defs_dir, name, vcpu=4, memory="8Gi", gpu=0, instance_type="test.xlarge"):
+    def _make_def(
+        self, defs_dir, name, vcpu=4, memory="8Gi", gpu=0, instance_type="test.xlarge", node_fleet=None,
+    ):
         defs_dir.mkdir(parents=True, exist_ok=True)
         runner = {"name": name, "instance_type": instance_type, "vcpu": vcpu, "memory": memory, "gpu": gpu}
+        if node_fleet is not None:
+            runner["node_fleet"] = node_fleet
         (defs_dir / f"{name}.yaml").write_text(yaml.dump({"runner": runner}))
 
     def test_scans_upstream(self, tmp_path):
@@ -323,6 +328,122 @@ class TestGetAvailableRunners:
             assert name in labels, f"{name} should NOT have been excluded"
             assert _LOAD_TEST_EXCLUDED_GPU_PATTERN.search(name) is None
         assert excluded == 0
+
+    def test_excludes_arm64g2_runner(self, tmp_path):
+        """g2 (Graviton 2) runners are excluded from load tests."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-arm64g2-6-32")
+        self._make_def(runner_defs, "l-arm64g3-16-62")
+        self._make_def(runner_defs, "l-arm64g4-16-62")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        assert "l-arm64g2-6-32" not in labels
+        assert "l-arm64g3-16-62" in labels
+        assert "l-arm64g4-16-62" in labels
+        assert excluded == 1
+
+    def test_excludes_arm64g2_baremetal_variant(self, tmp_path):
+        """Hypothetical baremetal g2 runner (l-barm64g2-*) is also excluded."""
+        upstream = tmp_path / "upstream"
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-barm64g2-12-32")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root")
+        assert "l-barm64g2-12-32" not in labels
+        assert excluded == 1
+
+    def test_arm_pattern_does_not_match_g3_g4(self):
+        """The g2 exclusion pattern must NOT match g3 or g4 runners."""
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-arm64g3-16-62") is None
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-arm64g4-16-62") is None
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-barm64g4-62-226") is None
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-arm64g2-6-32") is not None
+        assert _LOAD_TEST_EXCLUDED_ARM_PATTERN.search("l-barm64g2-12-32") is not None
+
+    def test_node_fleet_override_takes_precedence_over_family(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "g5", exclude_regions=["us-west-1"])
+        self._make_fleet_def(fleet_defs, "g5-special")
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(
+            runner_defs, "l-g5-special-runner", instance_type="g5.8xlarge", node_fleet="g5-special",
+        )
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root", region="us-west-1")
+        assert "l-g5-special-runner" in labels
+        assert excluded == 0
+
+    def test_node_fleet_override_excluded_independent_of_family(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "g5")
+        self._make_fleet_def(fleet_defs, "g5-special", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(
+            runner_defs, "l-g5-special-runner", instance_type="g5.8xlarge", node_fleet="g5-special",
+        )
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root", region="us-west-1")
+        assert "l-g5-special-runner" not in labels
+        assert excluded == 1
+
+    def test_no_node_fleet_falls_back_to_family(self, tmp_path):
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "g5", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(runner_defs, "l-g5-runner", instance_type="g5.8xlarge")
+
+        labels, excluded = get_available_runners(upstream, tmp_path / "root", region="us-west-1")
+        assert "l-g5-runner" not in labels
+        assert excluded == 1
+
+    def test_node_fleet_empty_string_rejected(self, tmp_path):
+        """An empty-string node_fleet fails DNS-1123 validation and raises."""
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "g5", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(
+            runner_defs, "l-g5-runner", instance_type="g5.8xlarge", node_fleet="",
+        )
+
+        with pytest.raises(ValueError, match="node_fleet"):
+            get_available_runners(upstream, tmp_path / "root", region="us-west-1")
+
+    def test_node_fleet_invalid_chars_raises(self, tmp_path):
+        """An embedded newline in node_fleet (YAML injection vector) fails validation and raises."""
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "g5", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(
+            runner_defs, "l-g5-evil", instance_type="g5.8xlarge", node_fleet="g5\nevil",
+        )
+
+        with pytest.raises(ValueError, match="node_fleet"):
+            get_available_runners(upstream, tmp_path / "root", region="us-west-1")
+
+    def test_node_fleet_reserved_c7i_runner_raises(self, tmp_path):
+        """node_fleet 'c7i-runner' is reserved for runner control-plane pool and must raise."""
+        upstream = tmp_path / "upstream"
+        fleet_defs = upstream / "modules" / "nodepools" / "defs"
+        self._make_fleet_def(fleet_defs, "g5", exclude_regions=["us-west-1"])
+
+        runner_defs = upstream / "modules" / "arc-runners" / "defs"
+        self._make_def(
+            runner_defs, "l-c7i-hijack", instance_type="g5.8xlarge", node_fleet="c7i-runner",
+        )
+
+        with pytest.raises(ValueError, match="reserved"):
+            get_available_runners(upstream, tmp_path / "root", region="us-west-1")
 
 
 # ── _load_fleet_exclusions ──────────────────────────────────────────────

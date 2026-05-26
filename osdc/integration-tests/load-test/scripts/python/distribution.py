@@ -7,10 +7,20 @@ proportional job allocations for load testing.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+# fleet_naming lives in scripts/python/ at the repo root. Add it to sys.path
+# so the import works both when run directly (load_test_run.py) and when run
+# via pytest (pyproject.toml testpaths also adds it).
+_SCRIPTS_PYTHON = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
+if _SCRIPTS_PYTHON not in sys.path:  # pragma: no cover
+    sys.path.insert(0, _SCRIPTS_PYTHON)
+
+from fleet_naming import derive_fleet_name  # noqa: E402
 
 # Maps old runner labels -> OSDC runner def names (without provider prefix).
 # Source: docs/runner_naming_convention.md (Old Label -> New Label Mapping)
@@ -63,8 +73,6 @@ OLD_TO_OSDC_LABEL: dict[str, str] = {
     "linux.g6.4xlarge.experimental.nvidia.gpu": "l-x86aavx2-29-113-l4",
     "linux.g6.12xlarge.nvidia.gpu": "l-x86aavx2-45-172-l4-4",
     # ARM64 (Graviton)
-    "linux.arm64.2xlarge": "l-arm64g2-6-32",
-    "linux.arm64.2xlarge.ephemeral": "l-arm64g2-6-32",
     "linux.arm64.m7g.4xlarge": "l-arm64g3-16-62",
     "linux.arm64.m7g.4xlarge.ephemeral": "l-arm64g3-16-62",
     "linux.arm64.m8g.4xlarge": "l-arm64g4-16-62",
@@ -98,12 +106,10 @@ PRODUCTION_JOB_COUNTS: dict[str, int] = {
     "linux.24xl.spr-metal": 6_983,
     "linux.r7i.2xlarge": 5_173,
     "linux.arm64.r7g.12xlarge.memory": 5_046,
-    "linux.arm64.2xlarge": 4_552,
     "linux.24xlarge.memory": 3_652,
     "linux.g4dn.4xlarge.nvidia.gpu": 3_651,
     "linux.g5.48xlarge.nvidia.gpu": 3_465,
     "linux.g6.12xlarge.nvidia.gpu": 3_261,
-    "linux.arm64.2xlarge.ephemeral": 1_536,
     "linux.8xlarge.memory": 1_522,
     "linux.r7i.4xlarge": 1_449,
     "linux.10xlarge.avx2": 1_290,
@@ -123,6 +129,8 @@ _OSDC_GPU_PATTERN = re.compile(r"-(t4|a10g|l4)(?:-(\d+))?$")
 # multi-hour queue waits, low capacity in staging). Suffix may have an optional
 # trailing "-<count>" for multi-GPU defs (e.g. "-a100-4", "-h100-8").
 _LOAD_TEST_EXCLUDED_GPU_PATTERN = re.compile(r"-(a100|h100|b200|h200|mi300|mi325)(?:-\d+)?$")
+
+_LOAD_TEST_EXCLUDED_ARM_PATTERN = re.compile(r"arm64g2(?:-|$)")
 
 
 @dataclass
@@ -184,8 +192,9 @@ def get_available_runners(
 
     Returns (labels, excluded_count). ``excluded_count`` covers both
     region-based exclusions (fleets unavailable in the target region) and
-    specialized-hardware exclusions (high-end GPU defs matching
-    ``_LOAD_TEST_EXCLUDED_GPU_PATTERN``).
+    hardware-based exclusions (high-end GPU defs matching
+    ``_LOAD_TEST_EXCLUDED_GPU_PATTERN`` and ARM Graviton-2 defs matching
+    ``_LOAD_TEST_EXCLUDED_ARM_PATTERN``).
     """
     labels: set[str] = set()
     excluded_count = 0
@@ -204,12 +213,16 @@ def get_available_runners(
                 runner = data["runner"]
                 name = runner["name"]
 
-                if _LOAD_TEST_EXCLUDED_GPU_PATTERN.search(name):
+                if _LOAD_TEST_EXCLUDED_GPU_PATTERN.search(name) or _LOAD_TEST_EXCLUDED_ARM_PATTERN.search(name):
                     excluded_count += 1
                     continue
 
                 if region and "instance_type" in runner:
-                    fleet = runner["instance_type"].split(".")[0]
+                    node_fleet = runner.get("node_fleet")
+                    try:
+                        fleet = derive_fleet_name(runner["instance_type"], override=node_fleet)
+                    except ValueError as e:
+                        raise ValueError(f"Runner {name!r}: {e}") from e
                     excluded_regions = fleet_exclusions.get(fleet, [])
                     if region in excluded_regions:
                         excluded_count += 1

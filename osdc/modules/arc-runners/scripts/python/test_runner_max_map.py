@@ -321,17 +321,31 @@ class TestIterDefFiles:
 
 
 class TestParseDefFile:
-    def test_returns_name_and_max_runners(self, tmp_path):
+    def test_returns_name_instance_type_and_max_runners(self, tmp_path):
         f = tmp_path / "r.yaml"
-        f.write_text(yaml.safe_dump({"runner": {"name": "linux-cpu", "max_runners": 8}}))
-        assert parse_def_file(f) == ("linux-cpu", 8)
+        f.write_text(
+            yaml.safe_dump({"runner": {"name": "linux-cpu", "instance_type": "c7i.4xlarge", "max_runners": 8}})
+        )
+        assert parse_def_file(f) == ("linux-cpu", "c7i.4xlarge", 8)
 
     def test_max_runners_omitted_returns_none(self, tmp_path):
         f = tmp_path / "r.yaml"
-        f.write_text(yaml.safe_dump({"runner": {"name": "linux-cpu"}}))
-        name, max_runners = parse_def_file(f)
+        f.write_text(yaml.safe_dump({"runner": {"name": "linux-cpu", "instance_type": "c7i.4xlarge"}}))
+        name, instance_type, max_runners = parse_def_file(f)
         assert name == "linux-cpu"
+        assert instance_type == "c7i.4xlarge"
         assert max_runners is None
+
+    def test_instance_type_omitted_returns_none(self, tmp_path):
+        f = tmp_path / "r.yaml"
+        f.write_text(yaml.safe_dump({"runner": {"name": "linux-cpu", "max_runners": 4}}))
+        assert parse_def_file(f) == ("linux-cpu", None, 4)
+
+    def test_non_string_instance_type_raises(self, tmp_path):
+        f = tmp_path / "r.yaml"
+        f.write_text(yaml.safe_dump({"runner": {"name": "x", "instance_type": 42}}))
+        with pytest.raises(ValueError, match=r"instance_type must be a string"):
+            parse_def_file(f)
 
     def test_missing_runner_section_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
@@ -440,6 +454,108 @@ class TestBuildMaxRunnersMap:
             "h100-1": 8,
             "b200-1": 1,
         }
+
+    def test_region_excluded_instance_forces_zero(self, tmp_path):
+        """Runner whose instance_type is region-excluded gets max_runners=0, not MAX_INT32."""
+        clusters_yaml = {
+            "defaults": {},
+            "clusters": {
+                "arc-uw1": {
+                    "region": "us-west-1",
+                    "arc-runners": {"runner_name_prefix": "mt-"},
+                    "modules": ["arc-runners"],
+                }
+            },
+        }
+        modules = {
+            "arc-runners": {
+                # Excluded in us-west-1 (g5 fleet) — must be zeroed even though def omits max_runners.
+                "a10g-8": {"name": "a10g-8", "instance_type": "g5.48xlarge"},
+                # Not excluded — preserves def-level value.
+                "t4": {"name": "t4", "instance_type": "g4dn.4xlarge", "max_runners": 2},
+            }
+        }
+        repo = make_repo(tmp_path, clusters_yaml, modules)
+        # Add a nodepool fleet def that excludes us-west-1 for g5.48xlarge.
+        nodepools_defs = repo / "modules" / "nodepools" / "defs"
+        nodepools_defs.mkdir(parents=True)
+        (nodepools_defs / "g5.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "fleet": {
+                        "name": "g5",
+                        "exclude_regions": ["us-west-1"],
+                        "instances": [{"type": "g5.48xlarge"}],
+                    }
+                }
+            )
+        )
+        result = build_max_runners_map(repo, clusters_yaml, "arc-uw1")
+        assert result == {"mt-a10g-8": 0, "mt-t4": 2}
+
+    def test_region_excluded_overrides_def_max_runners(self, tmp_path):
+        """A def-level max_runners is also overridden when instance_type is region-excluded."""
+        clusters_yaml = {
+            "defaults": {},
+            "clusters": {
+                "arc-uw1": {
+                    "region": "us-west-1",
+                    "arc-runners": {"runner_name_prefix": ""},
+                    "modules": ["arc-runners"],
+                }
+            },
+        }
+        modules = {
+            "arc-runners": {"a100": {"name": "a100", "instance_type": "p4d.24xlarge", "max_runners": 4}},
+        }
+        repo = make_repo(tmp_path, clusters_yaml, modules)
+        nodepools_defs = repo / "modules" / "nodepools" / "defs"
+        nodepools_defs.mkdir(parents=True)
+        (nodepools_defs / "p4d-24xlarge.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "nodepool": {
+                        "name": "p4d-24xlarge",
+                        "instance_type": "p4d.24xlarge",
+                        "exclude_regions": ["us-west-1"],
+                    }
+                }
+            )
+        )
+        result = build_max_runners_map(repo, clusters_yaml, "arc-uw1")
+        assert result == {"a100": 0}
+
+    def test_region_not_excluded_preserves_unbounded(self, tmp_path):
+        """In a region not on the exclusion list, capacity stays at MAX_INT32 when def omits max_runners."""
+        clusters_yaml = {
+            "defaults": {},
+            "clusters": {
+                "arc-ue2": {
+                    "region": "us-east-2",
+                    "arc-runners": {"runner_name_prefix": ""},
+                    "modules": ["arc-runners"],
+                }
+            },
+        }
+        modules = {
+            "arc-runners": {"a10g-8": {"name": "a10g-8", "instance_type": "g5.48xlarge"}},
+        }
+        repo = make_repo(tmp_path, clusters_yaml, modules)
+        nodepools_defs = repo / "modules" / "nodepools" / "defs"
+        nodepools_defs.mkdir(parents=True)
+        (nodepools_defs / "g5.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "fleet": {
+                        "name": "g5",
+                        "exclude_regions": ["us-west-1"],
+                        "instances": [{"type": "g5.48xlarge"}],
+                    }
+                }
+            )
+        )
+        result = build_max_runners_map(repo, clusters_yaml, "arc-ue2")
+        assert result == {"a10g-8": MAX_INT32}
 
     def test_normalization_underscores_in_def_name(self, tmp_path):
         clusters_yaml = {
@@ -689,6 +805,7 @@ class TestEndToEnd:
               max_burst_capacity: 2000
         """)
         (defs_dir / "l-x86iamx-8-16.yaml").write_text(full_def)
-        name, max_runners = parse_def_file(defs_dir / "l-x86iamx-8-16.yaml")
+        name, instance_type, max_runners = parse_def_file(defs_dir / "l-x86iamx-8-16.yaml")
         assert name == "l-x86iamx-8-16"
+        assert instance_type == "c7i.12xlarge"
         assert max_runners is None

@@ -1,0 +1,39 @@
+[tools]
+"github:grafana/gcx" = "0.2.16"
+
+[env]
+GRAFANA_SERVER = "https://pytorchci.grafana.net"
+
+[tasks.generate]
+description = "Generate dashboard resources for Grafana"
+usage = '''
+flag "--folder <folder>" help="Grafana folder UID" required=#true
+'''
+run = 'python3 generator.py --folder "{{usage.folder}}"'
+
+[tasks.validate]
+description = "Validate generated dashboard resources against Grafana"
+usage = '''
+flag "--folder <folder>" help="Grafana folder UID" required=#true
+'''
+depends = [{ task = "generate", args = ["--folder", "{{usage.folder}}"] }]
+run = "gcx resources validate -p generated"
+
+[tasks.push-dry-run]
+description = "Dry-run pushing generated dashboard resources to Grafana"
+usage = '''
+flag "--folder <folder>" help="Grafana folder UID" required=#true
+'''
+depends = [{ task = "validate", args = ["--folder", "{{usage.folder}}"] }]
+run = "gcx resources push --dry-run -p generated -v"
+
+[tasks.push]
+description = "Push generated dashboard resources to Grafana"
+usage = '''
+flag "--folder <folder>" help="Grafana folder UID" required=#true
+'''
+depends = [{ task = "validate", args = ["--folder", "{{usage.folder}}"] }]
+run = '''
+gcx resources push -p generated
+echo "\n✅ Published: https://pytorchci.grafana.net/dashboards/f/{{usage.folder}}\n"
+'''

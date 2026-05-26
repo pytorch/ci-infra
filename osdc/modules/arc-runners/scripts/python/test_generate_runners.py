@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from fleet_naming import derive_fleet_name
 from generate_runners import (
-    derive_fleet_name,
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
@@ -172,7 +172,7 @@ FAKE_CLUSTERS_YAML = {
         "staging": {
             "cluster_name": "my-staging",
             "region": "us-west-2",
-            "modules": ["arc-runners"],
+            "modules": ["nodepools", "arc-runners"],
             "arc-runners": {
                 "github_config_url": "https://github.com/test-org",
                 "github_secret_name": "gh-secret",
@@ -201,6 +201,7 @@ def make_def_file(
     max_runners=None,
     proactive_capacity=None,
     max_burst_capacity=None,
+    node_fleet=None,
 ):
     """Write a runner def YAML and return the path."""
     runner = {
@@ -221,10 +222,42 @@ def make_def_file(
         runner["proactive_capacity"] = proactive_capacity
     if max_burst_capacity is not None:
         runner["max_burst_capacity"] = max_burst_capacity
+    if node_fleet is not None:
+        runner["node_fleet"] = node_fleet
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
     return p
+
+
+def make_nodepool_defs(osdc_root, instance_types, module="nodepools"):
+    """Create nodepool fleet defs under OSDC_ROOT for the given instance types.
+
+    Derives one fleet per unique instance-family prefix using fleet_naming so the
+    validator can match runner defs to fleets without rewriting test fixtures
+    every time fleet-naming rules change.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[4] / "scripts" / "python"))
+    from fleet_naming import derive_fleet_name as _derive
+
+    defs_dir = osdc_root / "modules" / module / "defs"
+    defs_dir.mkdir(parents=True, exist_ok=True)
+    by_fleet = {}
+    for itype in instance_types:
+        by_fleet.setdefault(_derive(itype), []).append(itype)
+    for fleet_name, types in by_fleet.items():
+        content = {
+            "fleet": {
+                "name": fleet_name,
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [{"type": t, "weight": 100, "node_disk_size": 600, "has_nvme": True} for t in types],
+            }
+        }
+        (defs_dir / f"{fleet_name}.yaml").write_text(yaml.dump(content, default_flow_style=False))
 
 
 # ============================================================================
@@ -272,6 +305,16 @@ class TestDeriveFleetName:
 
     def test_derive_fleet_name_unknown(self):
         assert derive_fleet_name("z99.xlarge") == "z99"
+
+    def test_derive_fleet_name_override_overrides_family(self):
+        assert derive_fleet_name("g5.48xlarge", override="g5-48xlarge") == "g5-48xlarge"
+
+    def test_derive_fleet_name_override_none_falls_back(self):
+        assert derive_fleet_name("g5.48xlarge", override=None) == "g5"
+
+    def test_derive_fleet_name_override_empty_string_raises(self):
+        with pytest.raises(ValueError, match="node_fleet override invalid"):
+            derive_fleet_name("g5.48xlarge", override="")
 
 
 # ============================================================================
@@ -977,6 +1020,115 @@ class TestGenerateRunner:
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
 
+    def test_invalid_node_fleet_non_string(self, tmp_path, capsys):
+        """node_fleet must be a string, not an int."""
+        def_file = make_def_file(tmp_path, "bad-fleet-int", "c7i.24xlarge", 4, 16, node_fleet=123)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-int" in combined
+
+    def test_invalid_node_fleet_empty_string(self, tmp_path, capsys):
+        """node_fleet must be non-empty."""
+        def_file = make_def_file(tmp_path, "bad-fleet-empty", "c7i.24xlarge", 4, 16, node_fleet="")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-empty" in combined
+
+    def test_invalid_node_fleet_whitespace(self, tmp_path, capsys):
+        """node_fleet must have no leading/trailing whitespace."""
+        def_file = make_def_file(tmp_path, "bad-fleet-ws", "c7i.24xlarge", 4, 16, node_fleet="  g5-48xlarge  ")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-ws" in combined
+
+    def test_invalid_node_fleet_embedded_newline(self, tmp_path, capsys):
+        """node_fleet must not contain embedded newlines (YAML injection vector)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-nl", "c7i.24xlarge", 4, 16, node_fleet="g5\nevil")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-nl" in combined
+
+    def test_invalid_node_fleet_embedded_quote(self, tmp_path, capsys):
+        """node_fleet must not contain embedded quotes (YAML injection vector)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-q", "c7i.24xlarge", 4, 16, node_fleet='g5"evil')
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-q" in combined
+
+    def test_invalid_node_fleet_uppercase(self, tmp_path, capsys):
+        """node_fleet must be lowercase (DNS-1123 label)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-uc", "c7i.24xlarge", 4, 16, node_fleet="G5-48xlarge")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-uc" in combined
+
+    def test_invalid_node_fleet_too_long(self, tmp_path, capsys):
+        """node_fleet must be at most 63 chars (DNS-1123 label limit)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-long", "c7i.24xlarge", 4, 16, node_fleet="a" * 64)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-long" in combined
+
+    def test_invalid_node_fleet_slash(self, tmp_path, capsys):
+        """node_fleet must not contain slashes (DNS-1123 label)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-slash", "c7i.24xlarge", 4, 16, node_fleet="g5/48")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-slash" in combined
+
+    def test_invalid_node_fleet_reserved_c7i_runner(self, tmp_path, capsys):
+        """node_fleet must not be 'c7i-runner' (reserved for runner control-plane pool)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-reserved", "c7i.24xlarge", 4, 16, node_fleet="c7i-runner")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-reserved" in combined
+        assert "reserved" in combined
+
     def test_max_burst_capacity_zero_allowed(self, tmp_path):
         """max_burst_capacity: 0 is valid (means uncapped / disabled)."""
         def_file = make_def_file(tmp_path, "zero-burst", "c7i.24xlarge", 4, 16, max_burst_capacity=0)
@@ -1405,6 +1557,19 @@ RUNNER_VARIANTS = [
         },
         id="release",
     ),
+    pytest.param(
+        {
+            "name": "override-runner",
+            "instance_type": "g5.48xlarge",
+            "vcpu": 189,
+            "memory": 704,
+            "gpu": 8,
+            "disk_size": 600,
+            "node_fleet": "g5-48xlarge",
+            "expected_workflow_fleet": "g5-48xlarge",
+        },
+        id="override",
+    ),
 ]
 
 GPU_VARIANT = RUNNER_VARIANTS[1]
@@ -1425,6 +1590,8 @@ def _render_real(real_template, tmp_path, variant):
         def_kwargs["runner_group"] = variant["runner_group"]
     if "runner_class" in variant:
         def_kwargs["runner_class"] = variant["runner_class"]
+    if "node_fleet" in variant:
+        def_kwargs["node_fleet"] = variant["node_fleet"]
     def_file = make_def_file(**def_kwargs)
     output_dir = tmp_path / "out"
     output_dir.mkdir()
@@ -1659,6 +1826,7 @@ class TestMain:
         defs_dir.mkdir()
         make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
         make_def_file(defs_dir, "runner-b", "g4dn.8xlarge", 4, 16, gpu=1)
+        make_nodepool_defs(tmp_path, ["m6i.32xlarge", "g4dn.8xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1685,6 +1853,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
+        make_nodepool_defs(tmp_path, ["m6i.32xlarge"])
 
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -1735,6 +1904,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1767,7 +1937,7 @@ class TestMain:
                 "arc-prod": {
                     "cluster_name": "production",
                     "region": "us-east-1",
-                    "modules": ["arc-runners"],
+                    "modules": ["nodepools", "arc-runners"],
                     "arc-runners": {
                         "github_config_url": "https://github.com/prod-org",
                         "github_secret_name": "prod-secret",
@@ -1782,6 +1952,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1814,7 +1985,7 @@ class TestMain:
                 "arc-prod": {
                     "cluster_name": "production",
                     "region": "us-east-1",
-                    "modules": ["arc-runners"],
+                    "modules": ["nodepools", "arc-runners"],
                     "pause_runners": True,
                     "arc-runners": {
                         "github_config_url": "https://github.com/prod-org",
@@ -1831,6 +2002,7 @@ class TestMain:
         defs_dir.mkdir()
         make_def_file(defs_dir, "capped-runner", "c7i.24xlarge", 4, 16, max_runners=8)
         make_def_file(defs_dir, "elastic-runner", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
 
         output_dir = tmp_path / "out"
 

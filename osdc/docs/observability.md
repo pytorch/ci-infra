@@ -108,7 +108,7 @@ The kubelet ServiceMonitor (`/metrics` + cAdvisor) is **disabled** in `modules/m
 - `container_memory_working_set_bytes` / `container_memory_rss` (cAdvisor)
 - `kubelet_running_pods` / `kubelet_running_containers`
 
-These power the "Pods Per Node" / "Containers Per Node" panels in `dashboards/cluster-health.json` and the per-pod memory series consumed by the `cost_control` Alloy rule's control-plane scoping.
+These provide the per-pod memory series consumed by the `cost_control` Alloy rule's control-plane scoping.
 
 **TODO (re-enable)**: Ship a custom IPv6-aware kubelet ServiceMonitor under `modules/monitoring/kubernetes/monitors/servicemonitors/`. The clean path is `kubernetes_sd_configs role: node` plus a relabel on `__meta_kubernetes_node_address_InternalIP` to select the IPv6 entry, then flip `kubelet.enabled: true` (and uncomment the filter block) in `helm/values.yaml`.
 
