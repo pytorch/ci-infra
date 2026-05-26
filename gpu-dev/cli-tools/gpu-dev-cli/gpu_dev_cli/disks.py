@@ -243,6 +243,13 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
     except Exception:
         pass
 
+    # Filter out expired deleted disks (delete_date has passed)
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    disks = [
+        d for d in disks
+        if not (d.get('is_deleted') and d.get('delete_date') and str(d['delete_date']) <= today)
+    ]
+
     # Sort by last_used (most recent first)
     disks.sort(key=lambda d: d['last_used'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 

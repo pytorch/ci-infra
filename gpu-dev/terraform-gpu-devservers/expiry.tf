@@ -15,6 +15,7 @@ resource "aws_lambda_function" "reservation_expiry" {
   environment {
     variables = {
       RESERVATIONS_TABLE                 = aws_dynamodb_table.gpu_reservations.name
+      DISKS_TABLE_NAME                   = aws_dynamodb_table.disks.name
       EKS_CLUSTER_NAME                   = aws_eks_cluster.gpu_dev_cluster.name
       REGION                             = local.current_config.aws_region
       WARNING_MINUTES                    = "30"  # Warn 30 minutes before expiry
