@@ -330,6 +330,7 @@ def update_gpu_availability(gpu_type: str, k8s_client=None, active_reservations=
 
                 single_node_max = 0  # Max available on any single node
                 schedulable_total_gpus = 0  # Total GPUs on schedulable (non-cordoned) nodes
+                full_node_gpu_counts = []  # Track actual GPU count per full node (accounts for MIG)
                 for node in nodes.items:
                     if is_node_ready_and_schedulable(node):
                         available_on_node = get_available_gpus_on_node(v1, node, gpu_type)
@@ -349,24 +350,24 @@ def update_gpu_availability(gpu_type: str, k8s_client=None, active_reservations=
                         # Count as full node if all GPUs are available
                         if total_on_node > 0 and available_on_node == total_on_node:
                             full_nodes_available += 1
+                            full_node_gpu_counts.append(total_on_node)
 
                 total_gpus = schedulable_total_gpus
                 # For MIG SKUs override running_instances to the number of MIG-partitioned nodes
                 if is_mig_sku:
                     running_instances = sum(1 for n in nodes.items if is_node_ready_and_schedulable(n) and int((n.status.allocatable or {}).get(resource_name, "0")) > 0)
 
-                # Calculate max reservable considering multinode scenarios
-                # Only high-end GPU types support multinode (up to 4 nodes = 32 GPUs)
+                # Calculate max reservable using actual per-node GPU counts (not ASG gpus_per_instance)
+                # This correctly accounts for MIG-configured nodes that have fewer full GPUs
                 multinode_gpu_types = ['h100', 'h200', 'b200', 'a100']
-                if gpu_type in multinode_gpu_types and gpus_per_instance == 8:
-                    max_nodes = min(4, full_nodes_available)  # Up to 4 nodes
-                    max_reservable = max_nodes * gpus_per_instance  # e.g., 4 * 8 = 32 GPUs
+                if gpu_type in multinode_gpu_types and full_node_gpu_counts:
+                    # Sum the top N full nodes (up to 4 for multinode)
+                    sorted_counts = sorted(full_node_gpu_counts, reverse=True)
+                    max_reservable = sum(sorted_counts[:4])
 
-                    # If no full nodes available, fall back to single node max
                     if max_reservable == 0:
                         max_reservable = single_node_max
                 else:
-                    # For all other GPU types (T4, L4, T4-small, etc.), only single node
                     max_reservable = single_node_max
 
                 logger.info(f"Found {full_nodes_available} full nodes available for {gpu_type}, max reservable: {max_reservable} (single node max: {single_node_max})")
