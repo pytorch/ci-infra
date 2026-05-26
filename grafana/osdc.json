@@ -964,7 +964,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n  $__timeInterval(created_at) AS time,\n  uniqExact(id) AS jobs\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n  AND arrayExists(label -> match(label, '^mt-(rel-)?l-'), labels)\n  AND (\n    (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n  )\n  AND $__timeFilter(created_at)\nGROUP BY time\nORDER BY time ASC"
+                      "rawSql": "SELECT\n  toStartOfInterval(created_at, INTERVAL 5 MINUTE) AS time,\n  uniqExact(id) AS jobs\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n  AND arrayExists(label -> match(label, '^mt-(rel-)?l-'), labels)\n  AND (\n    (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n  )\n  AND $__timeFilter(created_at)\nGROUP BY time\nORDER BY time ASC"
                     },
                     "version": "v0"
                   },
@@ -1080,8 +1080,9 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "clamp_min(sum by(cluster) (deriv(gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])) + sum by(cluster) (rate(gha_completed_jobs_total{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])), 0)",
+                      "expr": "clamp_min(300 * (sum by(cluster) (deriv(gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])) + sum by(cluster) (rate(gha_completed_jobs_total{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m]))), 0)",
                       "instant": false,
+                      "interval": "5m",
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
                       "range": true
@@ -1099,7 +1100,7 @@
         "description": "Rate at which new jobs are starting to run, in jobs/sec. Computed as the derivative of running jobs plus the completion rate (since running = started - completed). A flat or low value while jobs are queued indicates the system is not adding runners fast enough; a high value indicates active ramp-up.",
         "id": 8,
         "links": [],
-        "title": "Runner Start Rate [cluster, scale_set]",
+        "title": "Runner Start Rate, Jobs per 5min [cluster, scale_set]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -1156,7 +1157,7 @@
                     }
                   ]
                 },
-                "unit": "ops"
+                "unit": "short"
               },
               "overrides": []
             },
