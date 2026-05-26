@@ -17,13 +17,20 @@ class SshTransport:
         self.fqdn = fqdn
 
     def _ssh_base(self) -> list[str]:
-        return [
+        # Use FQDN with ProxyCommand for standalone operation (no SSH config needed)
+        host = self.fqdn or self.pod_name
+        cmd = [
             "ssh",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR",
-            self.pod_name,
         ]
+        if self.fqdn:
+            cmd += ["-o", "ProxyCommand=gpu-dev-ssh-proxy %h %p"]
+            cmd += [f"dev@{self.fqdn}"]
+        else:
+            cmd += [self.pod_name]
+        return cmd
 
     def exec(self, command: str, *, timeout: int | None = None) -> ExecResult:
         """Execute a command on the sandbox.
@@ -69,12 +76,15 @@ class SshTransport:
             GpuDevConnectionError: Transfer failed.
         """
         src = str(Path(local_path).resolve())
+        ssh_cmd = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+        if self.fqdn:
+            ssh_cmd += " -o 'ProxyCommand=gpu-dev-ssh-proxy %h %p'"
+        remote_host = f"dev@{self.fqdn}" if self.fqdn else self.pod_name
         try:
             result = subprocess.run(
                 [
-                    "rsync", "-az", "-e",
-                    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
-                    src, f"{self.pod_name}:{remote_path}",
+                    "rsync", "-az", "-e", ssh_cmd,
+                    src, f"{remote_host}:{remote_path}",
                 ],
                 capture_output=True, text=True, timeout=300,
             )
@@ -93,12 +103,15 @@ class SshTransport:
         Raises:
             GpuDevConnectionError: Transfer failed.
         """
+        ssh_cmd = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+        if self.fqdn:
+            ssh_cmd += " -o 'ProxyCommand=gpu-dev-ssh-proxy %h %p'"
+        remote_host = f"dev@{self.fqdn}" if self.fqdn else self.pod_name
         try:
             result = subprocess.run(
                 [
-                    "rsync", "-az", "-e",
-                    "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
-                    f"{self.pod_name}:{remote_path}", str(Path(local_path).resolve()),
+                    "rsync", "-az", "-e", ssh_cmd,
+                    f"{remote_host}:{remote_path}", str(Path(local_path).resolve()),
                 ],
                 capture_output=True, text=True, timeout=300,
             )
