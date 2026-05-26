@@ -309,7 +309,7 @@ Per-node DaemonSet — each pod emits CoreDNS plugin metrics on port `9253` (zon
 
 > **Metric name gotcha**: the binary's setup-error counter is **`coredns_nodecache_setup_errors_total`** (namespace `coredns`, subsystem `nodecache`), **NOT** `nodelocaldns_setup_errors_total`. Some upstream/internal docs and PR drafts use the wrong name. Queries against `nodelocaldns_setup_errors_total` will silently return zero results — always use the `coredns_nodecache_*` form.
 
-> **Two CoreDNS request-count metric names exist** and the choice depends on which CoreDNS you're querying. NLD ships `k8s-dns-node-cache:1.26.8` which embeds an older CoreDNS that emits the legacy **`coredns_dns_request_count_total`**. The cluster CoreDNS (AWS-managed addon) is newer and emits **`coredns_dns_requests_total`** (used in the Control Plane section above and in `dashboards/cluster-health.json`). Do not "normalize" these to a single name — each is correct for its source.
+> **Two CoreDNS request-count metric names exist** and the choice depends on which CoreDNS you're querying. NLD ships `k8s-dns-node-cache:1.26.8` which embeds an older CoreDNS that emits the legacy **`coredns_dns_request_count_total`**. The cluster CoreDNS (AWS-managed addon) is newer and emits **`coredns_dns_requests_total`** (used in the Control Plane section above). Do not "normalize" these to a single name — each is correct for its source.
 
 ```promql
 # Cluster-wide NLD QPS across all zones (one pod per node)
