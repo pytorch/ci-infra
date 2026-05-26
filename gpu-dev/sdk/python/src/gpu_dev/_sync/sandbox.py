@@ -41,7 +41,18 @@ class Sandbox:
         self._user_id = user_id
         self._transport: SshTransport | None = None
 
+    def _ensure_active(self) -> None:
+        if self._info.status in (
+            ReservationStatus.CANCELLED,
+            ReservationStatus.EXPIRED,
+            ReservationStatus.FAILED,
+        ):
+            raise GpuDevError(
+                f"Sandbox is {self._info.status.value} — cannot execute commands"
+            )
+
     def _get_transport(self) -> SshTransport:
+        self._ensure_active()
         if self._transport is None:
             if not self._info.pod_name:
                 raise GpuDevError("Sandbox not ready — no pod assigned yet")
@@ -191,6 +202,7 @@ class Sandbox:
         Args:
             hours: Additional hours (max total is typically 48h).
         """
+        self._ensure_active()
         self._backend.extend_reservation(self._info.id, self._user_id, hours)
 
     def refresh(self) -> None:
@@ -255,6 +267,7 @@ class Sandbox:
         Args:
             github_username: GitHub username to add.
         """
+        self._ensure_active()
         self._backend.add_user(self._info.id, self._user_id, github_username)
 
     # ── Logs ──
