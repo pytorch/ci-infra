@@ -166,7 +166,7 @@ class AwsBackend:
             "no_persistent_disk": params.get("no_persistent_disk", False),
             "github_user": params.get("github_user", ""),
             "preserve_entrypoint": params.get("preserve_entrypoint", False),
-            "version": "0.6.0",
+            "version": __import__("gpu_dev").__version__,
         }
         if params.get("disk_name"):
             message["disk_name"] = params["disk_name"]
