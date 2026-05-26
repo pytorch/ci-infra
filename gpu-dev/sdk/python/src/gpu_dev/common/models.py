@@ -38,6 +38,7 @@ class ReservationInfo(BaseModel):
     node_ip: str | None = None
     instance_type: str | None = None
     failure_reason: str | None = None
+    detailed_status: str | None = None
     jupyter_url: str | None = None
     jupyter_enabled: bool = False
     disk_name: str | None = None

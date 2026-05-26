@@ -71,6 +71,7 @@ class GpuDev:
         spot: bool = False,
         wait: bool = True,
         timeout_minutes: int | None = None,
+        on_progress: "Callable[[str, float], None] | bool | None" = None,
     ) -> Sandbox:
         """Reserve GPU resources and return a Sandbox handle.
 
@@ -85,6 +86,8 @@ class GpuDev:
             spot: Use spot instances (cheaper, may be preempted).
             wait: Block until reservation is active (default ``True``).
             timeout_minutes: Max wait time. Defaults to config value.
+            on_progress: Progress callback or ``True`` for built-in print logging.
+                Signature: ``(message: str, elapsed_seconds: float) -> None``.
 
         Returns:
             :class:`Sandbox` handle to the reserved environment.
@@ -137,7 +140,12 @@ class GpuDev:
 
         if wait:
             tm = timeout_minutes or self._config.default_timeout_minutes
-            sandbox.wait_until_ready(tm)
+            cb = None
+            if on_progress is True:
+                cb = lambda msg, t: print(f"[{t:5.1f}s] {msg}")
+            elif callable(on_progress):
+                cb = on_progress
+            sandbox.wait_until_ready(tm, on_progress=cb)
 
         return sandbox
 

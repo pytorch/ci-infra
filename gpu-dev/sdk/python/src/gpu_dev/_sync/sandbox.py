@@ -170,21 +170,35 @@ class Sandbox:
             self._info = updated
             self._transport = None
 
-    def wait_until_ready(self, timeout_minutes: int = 30) -> None:
+    def wait_until_ready(
+        self,
+        timeout_minutes: int = 30,
+        on_progress: "Callable[[str, float], None] | None" = None,
+    ) -> None:
         """Block until the reservation becomes active.
 
         Args:
             timeout_minutes: Maximum wait time.
+            on_progress: Optional callback ``(message, elapsed_seconds) -> None``.
+                Called whenever the status changes. Use ``print`` for simple logging::
+
+                    sandbox.wait_until_ready(on_progress=lambda msg, t: print(f"[{t:.0f}s] {msg}"))
 
         Raises:
             GpuDevTimeoutError: Reservation did not activate in time.
             GpuDevError: Reservation failed.
         """
-        deadline = time.time() + timeout_minutes * 60
+        start = time.time()
+        deadline = start + timeout_minutes * 60
         delay = 0.5
+        last_msg = ""
         while time.time() < deadline:
             self.refresh()
+            elapsed = time.time() - start
+
             if self._info.status == ReservationStatus.ACTIVE:
+                if on_progress:
+                    on_progress("Ready", elapsed)
                 return
             if self._info.status == ReservationStatus.FAILED:
                 raise GpuDevError(
@@ -192,6 +206,13 @@ class Sandbox:
                 )
             if self._info.status == ReservationStatus.CANCELLED:
                 raise GpuDevError("Reservation was cancelled")
+
+            if on_progress:
+                msg = self._info.detailed_status or self._info.status.value
+                if msg != last_msg:
+                    on_progress(msg, elapsed)
+                    last_msg = msg
+
             time.sleep(delay)
             delay = min(delay + 0.5, 3.0)
         raise GpuDevTimeoutError(

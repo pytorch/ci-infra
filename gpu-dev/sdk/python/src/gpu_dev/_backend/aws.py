@@ -284,6 +284,7 @@ class AwsBackend:
             node_ip=str(item.get("node_ip", "")) or None,
             instance_type=str(item.get("instance_type", "")) or None,
             failure_reason=str(item.get("failure_reason", "")) or None,
+            detailed_status=str(item.get("current_detailed_status", "")) or None,
             jupyter_url=str(item.get("jupyter_url", "")) or None,
             jupyter_enabled=bool(item.get("jupyter_enabled", False)),
             disk_name=str(item.get("disk_name", "")) or None,
