@@ -65,9 +65,6 @@ jobs:
       restart_listeners: ${{ inputs.restart_listeners }}
       skip_lint_test: ${{ inputs.skip_lint_test }}
       run_smoke: true
-      run_compactor: false
-      run_janitor: false
-      run_load_test: false
     secrets: inherit
 
   deploy_ue2:
@@ -85,7 +82,4 @@ jobs:
       restart_listeners: ${{ inputs.restart_listeners }}
       skip_lint_test: ${{ inputs.skip_lint_test }}
       run_smoke: true
-      run_compactor: false
-      run_janitor: false
-      run_load_test: false
     secrets: inherit

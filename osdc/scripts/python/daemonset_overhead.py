@@ -63,12 +63,16 @@ EKS_ADDON_DAEMONSETS: list[DaemonSetOverhead] = [
 def parse_cpu_millicores(value: str | int | float) -> int:
     """Parse a Kubernetes CPU resource string to millicores.
 
-    Examples: "100m" -> 100, "2" -> 2000, 0.5 -> 500
+    Examples: "100m" -> 100, "2" -> 2000, 0.5 -> 500.
+    Raises ValueError for negative values — negative CPU is meaningless
+    for resource accounting and downstream callers (e.g. RunnerPodOverhead
+    clamping) assume non-negative input.
     """
     s = str(value)
-    if s.endswith("m"):
-        return int(s[:-1])
-    return int(float(s) * 1000)
+    result = int(s[:-1]) if s.endswith("m") else int(float(s) * 1000)
+    if result < 0:
+        raise ValueError(f"negative cpu value: {value!r}")
+    return result
 
 
 def parse_memory_mib(value: str | int | float) -> int:

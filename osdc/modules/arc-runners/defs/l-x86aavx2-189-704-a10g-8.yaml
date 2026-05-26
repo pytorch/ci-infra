@@ -4,6 +4,7 @@
 runner:
   name: l-x86aavx2-189-704-a10g-8
   instance_type: g5.48xlarge
+  node_fleet: g5-large
   disk_size: 150
   vcpu: 189
   memory: 704Gi
