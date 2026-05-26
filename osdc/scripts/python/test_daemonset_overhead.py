@@ -41,6 +41,14 @@ class TestParseCpuMillicores:
     def test_ten_millicores(self):
         assert parse_cpu_millicores("10m") == 10
 
+    def test_rejects_negative_millicores(self):
+        with pytest.raises(ValueError, match="negative cpu value"):
+            parse_cpu_millicores("-100m")
+
+    def test_rejects_negative_whole(self):
+        with pytest.raises(ValueError, match="negative cpu value"):
+            parse_cpu_millicores("-1")
+
 
 # ---------------------------------------------------------------------------
 # parse_memory_mib
