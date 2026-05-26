@@ -30,15 +30,18 @@ _PREFIX = "pytorch-gpu-dev"
 _CRED_CACHE_PATH = Path.home() / ".config" / "gpu-dev" / "aws-cred-cache.json"
 _CRED_CACHE_TTL = 2700  # 45 min (SSO session tokens typically last 1h)
 
-# Module-level session cache — reused across AwsBackend instances in the same process
+# Module-level session cache with expiry tracking
 _cached_session: boto3.Session | None = None
+_cached_session_expires: float = 0
 
 
 def _get_session() -> boto3.Session:
     """Get a boto3 session with disk-cached credentials (saves ~900ms SSO resolution)."""
-    global _cached_session
-    if _cached_session is not None:
+    global _cached_session, _cached_session_expires
+    if _cached_session is not None and time.time() < _cached_session_expires:
         return _cached_session
+
+    _cached_session = None
 
     # Try disk-cached credentials
     try:
@@ -50,6 +53,7 @@ def _get_session() -> boto3.Session:
                     aws_secret_access_key=cached["secret_key"],
                     aws_session_token=cached["token"],
                 )
+                _cached_session_expires = cached["expires"]
                 return _cached_session
     except Exception:
         pass
@@ -80,6 +84,7 @@ def _get_session() -> boto3.Session:
         pass
 
     _cached_session = session
+    _cached_session_expires = time.time() + _CRED_CACHE_TTL
     return session
 
 
@@ -103,8 +108,9 @@ class AwsBackend:
 
     def _refresh_on_expired(self) -> None:
         """Clear cached session and reinitialize clients."""
-        global _cached_session
+        global _cached_session, _cached_session_expires
         _cached_session = None
+        _cached_session_expires = 0
         try:
             _CRED_CACHE_PATH.unlink(missing_ok=True)
         except Exception:
