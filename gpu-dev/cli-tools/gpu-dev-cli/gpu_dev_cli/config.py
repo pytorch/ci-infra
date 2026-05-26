@@ -120,6 +120,17 @@ class Config:
 
         return session
 
+    def refresh_session(self):
+        """Clear cached credentials and re-resolve. Called on ExpiredTokenException."""
+        try:
+            self._CRED_CACHE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        self.session = self._create_aws_session()
+        self._sts_client = None
+        self._sqs_client = None
+        self._dynamodb = None
+
     @property
     def sts_client(self):
         if self._sts_client is None:

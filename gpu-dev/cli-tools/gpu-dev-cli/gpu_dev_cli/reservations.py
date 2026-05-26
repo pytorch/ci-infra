@@ -426,6 +426,18 @@ class ReservationManager:
         self.reservations_table = config.dynamodb.Table(
             config.reservations_table)
 
+    def _retry_on_expired(self, fn):
+        """Call fn, auto-refresh credentials on ExpiredTokenException."""
+        try:
+            return fn()
+        except Exception as e:
+            if "ExpiredToken" in str(type(e).__name__) or "expired" in str(e).lower():
+                self.config.refresh_session()
+                self.reservations_table = self.config.dynamodb.Table(
+                    self.config.reservations_table)
+                return fn()
+            raise
+
     def create_reservation(
         self,
         user_id: str,
