@@ -55,7 +55,7 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
       },
       {
         Effect   = "Allow"
-        Action   = ["autoscaling:DescribeAutoScalingGroups", "autoscaling:SetDesiredCapacity"]
+        Action   = ["autoscaling:DescribeAutoScalingGroups", "autoscaling:DescribeScalingActivities", "autoscaling:SetDesiredCapacity"]
         Resource = "*"
       },
       {
