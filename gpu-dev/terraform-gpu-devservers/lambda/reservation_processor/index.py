@@ -2897,17 +2897,21 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         def _check_nvme_cache_on_node(_target_node, _user_id):
             """Check if target node has NVMe cache for this user via DaemonSet pod."""
             if not _target_node:
+                logger.info(f"NVMe cache check: no target_node")
                 return False
             try:
                 v1 = client.CoreV1Api(k8s_client)
                 cache_dir = f"/mnt/nvme/user-cache/{_nvme_cache_user_dir(_user_id)}"
+                logger.info(f"NVMe cache check: node={_target_node}, dir={cache_dir}")
                 pods = v1.list_namespaced_pod(
                     "kube-system",
                     field_selector=f"spec.nodeName={_target_node},status.phase=Running",
                     label_selector="app=image-prepuller",
                 ).items
                 if not pods:
+                    logger.info(f"NVMe cache check: no prepuller pod on {_target_node}")
                     return False
+                logger.info(f"NVMe cache check: exec test -d on {pods[0].metadata.name}")
                 result = stream.stream(
                     v1.connect_get_namespaced_pod_exec,
                     pods[0].metadata.name, "kube-system",
@@ -2915,8 +2919,10 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                     command=["test", "-d", cache_dir],
                     stderr=True, stdout=True, stdin=False, tty=False,
                 )
+                logger.info(f"NVMe cache check: HIT (result={result!r})")
                 return True
-            except Exception:
+            except Exception as e:
+                logger.warning(f"NVMe cache check failed: {e}")
                 return False
 
         def _setup_disk():
