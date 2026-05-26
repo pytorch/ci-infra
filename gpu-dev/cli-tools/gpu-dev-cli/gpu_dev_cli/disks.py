@@ -154,12 +154,8 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
     List all disks for a user.
     Returns list of disk info dicts with: name, size, last_used, created_at, snapshot_count, in_use, reservation_id
     """
-    ec2_client = get_ec2_client(config)
-    dynamodb = get_dynamodb_resource(config)
-
-    # Query DynamoDB disks table for this user's disks (with pagination)
-    disks_table_name = config.disks_table if hasattr(config, 'disks_table') else f"{config.queue_name.rsplit('-', 1)[0]}-disks"
-    disks_table = dynamodb.Table(disks_table_name)
+    dynamodb = config.dynamodb
+    disks_table = dynamodb.Table(config.disks_table)
 
     dynamodb_disks = []
     response = disks_table.query(
@@ -208,9 +204,6 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
         is_deleted = disk_item.get('is_deleted', False)
         delete_date = disk_item.get('delete_date')
 
-        # Check current in_use status (check dynamically from reservations table)
-        is_in_use, reservation_id = get_disk_in_use_status(disk_name, user_id, config)
-
         disks.append({
             'name': disk_name,
             'size_gb': size_gb,
@@ -219,12 +212,36 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
             'last_used': last_used,
             'snapshot_count': snapshot_count,
             'pending_snapshot_count': pending_snapshot_count,
-            'in_use': is_in_use,
+            'in_use': bool(disk_item.get('in_use', False)),
             'is_backing_up': is_backing_up,
-            'reservation_id': reservation_id,
+            'reservation_id': str(disk_item.get('attached_to_reservation', '')) or None,
             'is_deleted': is_deleted,
             'delete_date': delete_date,
         })
+
+    # Batch check: find all active reservations with disk_name set (single query)
+    try:
+        reservations_table = dynamodb.Table(config.reservations_table)
+        active_disks = {}
+        for status in ["active", "preparing", "queued", "pending"]:
+            resp = reservations_table.query(
+                IndexName="UserStatusIndex",
+                KeyConditionExpression="user_id = :uid AND #s = :status",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":uid": user_id, ":status": status},
+                ProjectionExpression="reservation_id, disk_name",
+            )
+            for item in resp.get("Items", []):
+                dn = item.get("disk_name")
+                if dn:
+                    active_disks[dn] = str(item.get("reservation_id", ""))[:8]
+
+        for disk in disks:
+            if disk["name"] in active_disks:
+                disk["in_use"] = True
+                disk["reservation_id"] = active_disks[disk["name"]]
+    except Exception:
+        pass
 
     # Sort by last_used (most recent first)
     disks.sort(key=lambda d: d['last_used'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
