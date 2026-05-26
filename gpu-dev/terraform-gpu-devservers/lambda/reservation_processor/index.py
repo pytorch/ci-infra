@@ -94,7 +94,7 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                         continue
                     reason = act.get("StatusMessage", "")
                     az_match = re.search(r'us-east-\d[a-f]', reason)
-                    if "Insufficient capacity" in reason or "no Spot capacity" in reason.lower():
+                    if "insufficient capacity" in reason.lower() or "no spot capacity" in reason.lower():
                         no_capacity_count += 1
                         if az_match:
                             failed_azs.add(az_match.group())
