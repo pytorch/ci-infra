@@ -9114,11 +9114,10 @@ def process_clone_disk_action(record: dict[str, Any]) -> bool:
                 }],
             )
             snap_id = snap["SnapshotId"]
-            logger.info(f"Live snapshot {snap_id} initiated, waiting for completion...")
-            waiter = ec2_client.get_waiter("snapshot_completed")
-            waiter.wait(SnapshotIds=[snap_id], WaiterConfig={"Delay": 10, "MaxAttempts": 90})
+            logger.info(f"Live snapshot {snap_id} initiated (lazy — won't wait for completion)")
+            # Don't wait — the snapshot is usable immediately as a reference.
+            # create_disk_from_snapshot_or_empty handles pending snapshots at reserve time.
             active_snapshots = [snap]
-            logger.info(f"Live snapshot {snap_id} completed")
 
         source_snapshot = max(active_snapshots, key=lambda s: s['StartTime'])
         source_snapshot_id = source_snapshot['SnapshotId']
@@ -9169,7 +9168,28 @@ def process_clone_disk_action(record: dict[str, Any]) -> bool:
             write_operation_result(operation_id, "completed")
             return True
 
-        logger.info(f"Disk clone complete: '{source_disk}' -> '{target_disk}' (references snapshot {source_snapshot_id})")
+        # Copy the snapshot with target disk tags (source snapshot keeps its own tags)
+        try:
+            copy_resp = ec2_client.copy_snapshot(
+                SourceSnapshotId=source_snapshot_id,
+                SourceRegion=os.environ.get("REGION", "us-east-2"),
+                Description=f"gpu-dev clone of {source_disk} -> {target_disk} for {user_id}",
+                TagSpecifications=[{
+                    "ResourceType": "snapshot",
+                    "Tags": [
+                        {"Key": "gpu-dev-user", "Value": user_id},
+                        {"Key": "disk_name", "Value": target_disk},
+                        {"Key": "Name", "Value": f"gpu-dev-{target_disk}-clone"},
+                    ],
+                }],
+            )
+            clone_snapshot_id = copy_resp["SnapshotId"]
+            logger.info(f"Snapshot copy {clone_snapshot_id} initiated for target disk '{target_disk}' (lazy — no wait)")
+            # Don't wait — create_disk_from_snapshot_or_empty handles pending snapshots
+        except Exception as copy_err:
+            logger.warning(f"Snapshot copy failed, clone will use source snapshot directly: {copy_err}")
+
+        logger.info(f"Disk clone complete: '{source_disk}' -> '{target_disk}' (snapshot {source_snapshot_id})")
         write_operation_result(operation_id, "completed")
         return True
 
