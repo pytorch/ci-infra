@@ -15,6 +15,7 @@ The helpers here parse each shape uniformly.
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 import yaml
@@ -51,7 +52,8 @@ def load_excluded_instance_types(defs_dir: Path, region: str) -> set[str]:
     for def_file in sorted(defs_dir.glob("*.yaml")):
         try:
             data = yaml.safe_load(def_file.read_text()) or {}
-        except yaml.YAMLError:
+        except yaml.YAMLError as e:
+            print(f"warning: nodepool def {def_file}: YAML parse error: {e}", file=sys.stderr)
             continue
         if not isinstance(data, dict):
             continue
