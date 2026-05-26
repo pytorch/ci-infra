@@ -181,7 +181,136 @@
         "description": "Percent of jobs assigned to the scale set that are not yet running on a runner.",
         "id": 2,
         "links": [],
-        "title": "Percent of Assigned Jobs Not Running [cluster, scale_set]",
+        "title": "% of Assigned Jobs Not Running [cluster, scale_set]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic",
+                  "seriesBy": "max"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.9,
+                  "drawStyle": "line",
+                  "fillOpacity": 0,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "auto",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "dashed+area"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "rgba(255, 255, 255, 0)",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 10
+                    },
+                    {
+                      "color": "red",
+                      "value": 20
+                    }
+                  ]
+                },
+                "unit": "percent"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "single",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
+    },
+    "panel-9": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "grafanacloud-prom"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "app": "grafana-assistant-app",
+                      "expr": "(100 * clamp_min(sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) - sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) - 600 * max_over_time((clamp_min(sum by(cluster) (deriv(gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])) + sum by(cluster) (rate(gha_completed_jobs_total{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])), 0))[28d:5m]), 0) / sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"})) and on(cluster) (sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}) > 0)",
+                      "instant": false,
+                      "legendFormat": "{{cluster}}",
+                      "queryType": "range",
+                      "range": true
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Percent of assigned jobs that, based on historical peak runner start rate over the last 28 days, should already be running by now. Reads near 0% when the system is ramping at expected speed; climbs when jobs are accumulating faster than capacity has historically allowed.",
+        "id": 9,
+        "links": [],
+        "title": "Startup Throughput Adjusted % of Assigned Jobs Not Running [cluster, scale_set]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -931,6 +1060,127 @@
           "version": "13.1.0-25668120414"
         }
       }
+    },
+    "panel-8": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "grafanacloud-prom"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "app": "grafana-assistant-app",
+                      "expr": "clamp_min(sum by(cluster) (deriv(gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])) + sum by(cluster) (rate(gha_completed_jobs_total{cluster=~\"$cluster\", name=~\"$scale_set\"}[5m])), 0)",
+                      "instant": false,
+                      "legendFormat": "{{cluster}}",
+                      "queryType": "range",
+                      "range": true
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Rate at which new jobs are starting to run, in jobs/sec. Computed as the derivative of running jobs plus the completion rate (since running = started - completed). A flat or low value while jobs are queued indicates the system is not adding runners fast enough; a high value indicates active ramp-up.",
+        "id": 8,
+        "links": [],
+        "title": "Runner Start Rate [cluster, scale_set]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic",
+                  "seriesBy": "max"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.9,
+                  "drawStyle": "line",
+                  "fillOpacity": 0,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "auto",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                },
+                "unit": "ops"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "single",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
     }
   },
   "layout": {
@@ -983,10 +1233,36 @@
               "kind": "ElementReference",
               "name": "panel-2"
             },
-            "height": 20,
+            "height": 7,
             "width": 8,
             "x": 16,
             "y": 10
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-9"
+            },
+            "height": 7,
+            "width": 8,
+            "x": 16,
+            "y": 17
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-8"
+            },
+            "height": 6,
+            "width": 8,
+            "x": 16,
+            "y": 24
           }
         },
         {
