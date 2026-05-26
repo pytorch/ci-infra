@@ -189,13 +189,17 @@ class AwsBackend:
                 return self._item_to_info(item)
             return None
 
-        resp = self._reservations.query(
-            IndexName="UserIndex",
-            KeyConditionExpression="user_id = :uid",
-            FilterExpression="begins_with(reservation_id, :rid)",
-            ExpressionAttributeValues={":uid": user_id, ":rid": reservation_id},
-        )
+        query_kwargs = {
+            "IndexName": "UserIndex",
+            "KeyConditionExpression": "user_id = :uid",
+            "FilterExpression": "begins_with(reservation_id, :rid)",
+            "ExpressionAttributeValues": {":uid": user_id, ":rid": reservation_id},
+        }
+        resp = self._reservations.query(**query_kwargs)
         items = resp.get("Items", [])
+        while not items and "LastEvaluatedKey" in resp:
+            resp = self._reservations.query(**query_kwargs, ExclusiveStartKey=resp["LastEvaluatedKey"])
+            items = resp.get("Items", [])
         if len(items) == 1:
             return self._item_to_info(items[0])
         return None

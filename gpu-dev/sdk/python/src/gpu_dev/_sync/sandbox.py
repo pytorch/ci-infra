@@ -137,11 +137,6 @@ class Sandbox:
         return self._info.user_id
 
     @property
-    def node_ip(self) -> str | None:
-        """Node public IP."""
-        return self._info.node_ip
-
-    @property
     def is_active(self) -> bool:
         """Whether the sandbox is running and ready for commands."""
         return self._info.status == ReservationStatus.ACTIVE
@@ -321,6 +316,62 @@ class Sandbox:
             return entries
         except Exception:
             return []
+
+    def timing(self) -> list[dict[str, str | float]]:
+        """Get a performance breakdown of reservation setup.
+
+        Computes time deltas between status transitions to show
+        where time was spent.
+
+        Returns:
+            List of ``{"step": "...", "duration": seconds, "timestamp": "..."}`` dicts.
+
+        Example::
+
+            for step in sandbox.timing():
+                print(f"{step['duration']:5.1f}s  {step['step']}")
+        """
+        from datetime import datetime
+
+        entries = self.logs()
+        if not entries:
+            return []
+
+        result = []
+        prev_ts = None
+        for entry in entries:
+            ts_str = entry.get("timestamp", "")
+            msg = entry.get("message", "")
+            try:
+                ts = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                continue
+            if prev_ts:
+                delta = (ts - prev_ts).total_seconds()
+                if delta >= 0.05:
+                    result.append({
+                        "step": msg,
+                        "duration": round(delta, 2),
+                        "timestamp": ts_str,
+                    })
+            else:
+                result.append({
+                    "step": msg,
+                    "duration": 0.0,
+                    "timestamp": ts_str,
+                })
+            prev_ts = ts
+
+        if result and len(entries) >= 2:
+            first_ts = datetime.fromisoformat(entries[0]["timestamp"])
+            last_ts = datetime.fromisoformat(entries[-1]["timestamp"])
+            result.append({
+                "step": "TOTAL",
+                "duration": round((last_ts - first_ts).total_seconds(), 2),
+                "timestamp": "",
+            })
+
+        return result
 
     def pod_logs(self, lines: int = 50) -> str:
         """Fetch container stdout from the running pod via SSH.
