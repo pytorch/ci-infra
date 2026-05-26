@@ -172,7 +172,7 @@ FAKE_CLUSTERS_YAML = {
         "staging": {
             "cluster_name": "my-staging",
             "region": "us-west-2",
-            "modules": ["arc-runners"],
+            "modules": ["nodepools", "arc-runners"],
             "arc-runners": {
                 "github_config_url": "https://github.com/test-org",
                 "github_secret_name": "gh-secret",
@@ -228,6 +228,36 @@ def make_def_file(
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
     return p
+
+
+def make_nodepool_defs(osdc_root, instance_types, module="nodepools"):
+    """Create nodepool fleet defs under OSDC_ROOT for the given instance types.
+
+    Derives one fleet per unique instance-family prefix using fleet_naming so the
+    validator can match runner defs to fleets without rewriting test fixtures
+    every time fleet-naming rules change.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[4] / "scripts" / "python"))
+    from fleet_naming import derive_fleet_name as _derive
+
+    defs_dir = osdc_root / "modules" / module / "defs"
+    defs_dir.mkdir(parents=True, exist_ok=True)
+    by_fleet = {}
+    for itype in instance_types:
+        by_fleet.setdefault(_derive(itype), []).append(itype)
+    for fleet_name, types in by_fleet.items():
+        content = {
+            "fleet": {
+                "name": fleet_name,
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [{"type": t, "weight": 100, "node_disk_size": 600, "has_nvme": True} for t in types],
+            }
+        }
+        (defs_dir / f"{fleet_name}.yaml").write_text(yaml.dump(content, default_flow_style=False))
 
 
 # ============================================================================
@@ -1796,6 +1826,7 @@ class TestMain:
         defs_dir.mkdir()
         make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
         make_def_file(defs_dir, "runner-b", "g4dn.8xlarge", 4, 16, gpu=1)
+        make_nodepool_defs(tmp_path, ["m6i.32xlarge", "g4dn.8xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1822,6 +1853,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
+        make_nodepool_defs(tmp_path, ["m6i.32xlarge"])
 
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -1872,6 +1904,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1904,7 +1937,7 @@ class TestMain:
                 "arc-prod": {
                     "cluster_name": "production",
                     "region": "us-east-1",
-                    "modules": ["arc-runners"],
+                    "modules": ["nodepools", "arc-runners"],
                     "arc-runners": {
                         "github_config_url": "https://github.com/prod-org",
                         "github_secret_name": "prod-secret",
@@ -1919,6 +1952,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1951,7 +1985,7 @@ class TestMain:
                 "arc-prod": {
                     "cluster_name": "production",
                     "region": "us-east-1",
-                    "modules": ["arc-runners"],
+                    "modules": ["nodepools", "arc-runners"],
                     "pause_runners": True,
                     "arc-runners": {
                         "github_config_url": "https://github.com/prod-org",
@@ -1968,6 +2002,7 @@ class TestMain:
         defs_dir.mkdir()
         make_def_file(defs_dir, "capped-runner", "c7i.24xlarge", 4, 16, max_runners=8)
         make_def_file(defs_dir, "elastic-runner", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
 
         output_dir = tmp_path / "out"
 
