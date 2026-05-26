@@ -259,62 +259,51 @@ class Sandbox:
 
     # ── Logs ──
 
-    def logs(self, minutes: int = 30, filter: str | None = None) -> list[str]:
-        """Fetch Lambda processing logs for this reservation from CloudWatch.
+    def logs(self) -> list[dict[str, str]]:
+        """Get the status history / processing log for this reservation.
 
-        Args:
-            minutes: How far back to search (default 30 min).
-            filter: Additional text to filter on (e.g. ``"error"``).
+        Returns all status transitions with timestamps — shows exactly what
+        happened during reservation setup (disk creation, pod scheduling,
+        SSH readiness, errors, etc.).
 
         Returns:
-            List of log lines (newest last).
+            List of ``{"timestamp": "...", "message": "..."}`` dicts.
 
         Example::
 
-            for line in sandbox.logs():
-                print(line)
-
-            # Search for errors
-            for line in sandbox.logs(filter="ERROR"):
-                print(line)
+            for entry in sandbox.logs():
+                print(f"[{entry['timestamp']}] {entry['message']}")
         """
-        from .._backend.aws import _get_session, _PREFIX, _ENVIRONMENTS
-        import time as _time
-
+        from .._backend.aws import _get_session, _PREFIX
         session = _get_session()
         region = getattr(self._backend, "_region", "us-east-2")
-        logs_client = session.client("logs", region_name=region)
-
-        log_group = f"/aws/lambda/{_PREFIX}-reservation-processor"
-        start_ms = int((_time.time() - minutes * 60) * 1000)
-        rid_short = self._info.id[:8]
-
-        pattern = rid_short
-        if filter:
-            pattern = f"{rid_short} {filter}" if filter != rid_short else pattern
+        ddb = session.resource("dynamodb", region_name=region)
+        table = ddb.Table(f"{_PREFIX}-reservations")
 
         try:
-            resp = logs_client.filter_log_events(
-                logGroupName=log_group,
-                startTime=start_ms,
-                filterPattern=pattern,
-                limit=100,
+            resp = table.get_item(
+                Key={"reservation_id": self._info.id},
+                ProjectionExpression="status_history",
             )
+            history = resp.get("Item", {}).get("status_history", [])
             return [
-                event.get("message", "").strip()
-                for event in resp.get("events", [])
+                {
+                    "timestamp": str(entry.get("timestamp", "")),
+                    "message": str(entry.get("message", "")),
+                }
+                for entry in history
             ]
         except Exception:
             return []
 
     def pod_logs(self, lines: int = 50) -> str:
-        """Fetch container logs from the running pod via SSH.
+        """Fetch container stdout from the running pod via SSH.
 
         Args:
-            lines: Number of recent log lines to fetch.
+            lines: Number of recent log lines.
 
         Returns:
-            Pod log output as a string.
+            Log output as a string.
         """
         result = self.exec(
             f"cat /proc/1/fd/1 2>/dev/null | tail -{lines} || "

@@ -246,44 +246,60 @@ class GpuDev:
 
     def search_logs(
         self,
-        query: str,
-        minutes: int = 60,
-        region: str | None = None,
-    ) -> list[str]:
-        """Search Lambda logs across all reservations.
+        reservation_id: str,
+    ) -> list[dict[str, str]]:
+        """Get status history for any reservation by ID.
 
         Args:
-            query: Text to search for (e.g. ``"ERROR"``, ``"capacity"``, a reservation ID).
-            minutes: How far back to search (default 60 min).
-            region: Region to search (default: current). Use ``"us-east-1"`` for spot logs.
+            reservation_id: Full or prefix (8+ chars) reservation ID.
 
         Returns:
-            List of matching log lines (newest last).
+            List of ``{"timestamp": "...", "message": "..."}`` dicts.
 
         Example::
 
-            # Find all errors in the last hour
-            for line in client.search_logs("ERROR"):
-                print(line)
-
-            # Check spot capacity issues
-            for line in client.search_logs("capacity", region="us-east-1"):
-                print(line)
+            for entry in client.search_logs("abc12345"):
+                print(f"[{entry['timestamp']}] {entry['message']}")
         """
         from .._backend.aws import _get_session, _PREFIX
-        import time as _time
 
         session = _get_session()
-        r = region or getattr(self._backend, "_region", "us-east-2")
-        logs_client = session.client("logs", region_name=r)
+        region = getattr(self._backend, "_region", "us-east-2")
+        ddb = session.resource("dynamodb", region_name=region)
+        table = ddb.Table(f"{_PREFIX}-reservations")
 
+        # Try direct lookup first, then query UserIndex by prefix
         try:
-            resp = logs_client.filter_log_events(
-                logGroupName=f"/aws/lambda/{_PREFIX}-reservation-processor",
-                startTime=int((_time.time() - minutes * 60) * 1000),
-                filterPattern=query,
-                limit=100,
-            )
-            return [e.get("message", "").strip() for e in resp.get("events", [])]
+            user_info = self._auth()
+            if len(reservation_id) >= 32:
+                resp = table.get_item(Key={"reservation_id": reservation_id})
+                item = resp.get("Item")
+            else:
+                query_kwargs = {
+                    "IndexName": "UserIndex",
+                    "KeyConditionExpression": "user_id = :uid",
+                    "FilterExpression": "begins_with(reservation_id, :rid)",
+                    "ExpressionAttributeValues": {
+                        ":uid": user_info["user_id"],
+                        ":rid": reservation_id,
+                    },
+                }
+                item = None
+                resp = table.query(**query_kwargs)
+                if resp.get("Items"):
+                    item = resp["Items"][0]
+                else:
+                    while "LastEvaluatedKey" in resp and not item:
+                        resp = table.query(**query_kwargs, ExclusiveStartKey=resp["LastEvaluatedKey"])
+                        if resp.get("Items"):
+                            item = resp["Items"][0]
+
+            if not item:
+                return []
+            history = item.get("status_history", [])
+            return [
+                {"timestamp": str(e.get("timestamp", "")), "message": str(e.get("message", ""))}
+                for e in history
+            ]
         except Exception:
             return []
