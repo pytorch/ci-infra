@@ -1,0 +1,11 @@
+# Karpenter NodePool fleet: m7g-metal — dedicated pool for large m7g runners.
+# Name-only subset of m7g; separation is enforced by the node-fleet=m7g-metal taint.
+fleet:
+  name: m7g-metal
+  arch: arm64
+  gpu: false
+  instances:
+    - type: m7g.metal
+      weight: 100
+      node_disk_size: 1000
+      baremetal: true
