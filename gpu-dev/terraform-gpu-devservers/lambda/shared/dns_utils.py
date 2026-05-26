@@ -14,16 +14,6 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-# Module-level cached DDB table for domain mappings (avoids 2-3s boto3.resource() per call)
-_domain_mappings_table = None
-
-
-def _get_domain_mappings_table(table_name: str):
-    global _domain_mappings_table
-    if _domain_mappings_table is None:
-        _domain_mappings_table = boto3.resource("dynamodb").Table(table_name)
-    return _domain_mappings_table
-
 # Environment variables
 DOMAIN_NAME = os.environ.get("DOMAIN_NAME", "")
 HOSTED_ZONE_ID = os.environ.get("HOSTED_ZONE_ID", "")
@@ -409,6 +399,8 @@ def store_domain_mapping(subdomain: str, target_ip: str, target_port: int, reser
     Returns:
         bool: True if successful, False otherwise
     """
+    # Import DynamoDB client here to avoid circular imports
+    import boto3
     import os
 
     table_name = os.environ.get("SSH_DOMAIN_MAPPINGS_TABLE", "")
@@ -417,7 +409,8 @@ def store_domain_mapping(subdomain: str, target_ip: str, target_port: int, reser
         return True
 
     try:
-        table = _get_domain_mappings_table(table_name)
+        dynamodb = boto3.resource("dynamodb")
+        table = dynamodb.Table(table_name)
 
         item = {
             'domain_name': subdomain,
@@ -473,6 +466,8 @@ def delete_domain_mapping(subdomain: str) -> bool:
     Returns:
         bool: True if successful, False otherwise
     """
+    # Import DynamoDB client here to avoid circular imports
+    import boto3
     import os
 
     table_name = os.environ.get("SSH_DOMAIN_MAPPINGS_TABLE", "")
@@ -481,7 +476,8 @@ def delete_domain_mapping(subdomain: str) -> bool:
         return True
 
     try:
-        table = _get_domain_mappings_table(table_name)
+        dynamodb = boto3.resource("dynamodb")
+        table = dynamodb.Table(table_name)
 
         table.delete_item(Key={'domain_name': subdomain})
 

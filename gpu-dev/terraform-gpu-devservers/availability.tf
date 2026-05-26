@@ -25,7 +25,7 @@ resource "aws_lambda_function" "availability_updater" {
   function_name    = "${var.prefix}-availability-updater"
   role             = aws_iam_role.availability_updater_role.arn
   handler          = "index.handler"
-  runtime          = "python3.11"
+  runtime          = "python3.13"
   timeout                        = 300
   # 1769 MB is the sweet spot — Lambda allocates one full vCPU at this threshold.
   # Beyond 1769 MB you get fractional second vCPUs (less linear gain), and our work is single-threaded.
