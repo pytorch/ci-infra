@@ -44,6 +44,23 @@ with client.reserve(gpu_type="t4") as sb:
 # reservation cancelled automatically
 ```
 
+## Progress Tracking
+
+```python
+# Built-in progress logging
+sandbox = client.reserve(gpu_type="h100", on_progress=True)
+# [  1.5s] pending
+# [  3.2s] preparing
+# [  8.1s] 🚀 Container running
+# [ 22.4s] Ready
+
+# Custom callback
+sandbox = client.reserve(
+    gpu_type="h100",
+    on_progress=lambda msg, t: print(f"⏳ [{t:.0f}s] {msg}")
+)
+```
+
 ## Available GPU Types
 
 | Type | GPUs/node | Architecture |
@@ -75,12 +92,15 @@ client = GpuDev(GpuDevConfig(github_user="octocat"))  # Explicit config
 | `list(status=[...])` | List reservations as `Sandbox` objects |
 | `availability()` | GPU availability by type |
 | `disks()` | List persistent disks |
+| `search_logs(reservation_id)` | Get processing logs for any reservation |
 
 ### `Sandbox` — Reserved Environment
 
 ```python
 sandbox = client.reserve(gpu_type="h100")
 ```
+
+**Methods:**
 
 | Method | Description |
 |--------|-------------|
@@ -91,7 +111,11 @@ sandbox = client.reserve(gpu_type="h100")
 | `extend(hours)` | Extend duration |
 | `refresh()` | Refresh status from server |
 | `add_user(github_username)` | Grant SSH access to another user |
-| `wait_until_ready(timeout_minutes)` | Block until active |
+| `wait_until_ready(timeout, on_progress)` | Block until active |
+| `logs()` | Get reservation processing log |
+| `pod_logs(lines=50)` | Get container stdout via SSH |
+
+**Properties:**
 
 | Property | Description |
 |----------|-------------|
@@ -101,8 +125,15 @@ sandbox = client.reserve(gpu_type="h100")
 | `gpu_count` | Number of GPUs |
 | `ssh_command` | SSH command string |
 | `pod_name` | SSH hostname |
+| `fqdn` | Fully-qualified domain name |
 | `is_active` | Whether ready for commands |
 | `expires_at` | Expiration time |
+| `disk_name` | Attached persistent disk |
+| `instance_type` | EC2 instance type |
+| `created_at` | Creation timestamp |
+| `node_ip` | Node public IP |
+| `detailed_status` | Detailed status message |
+| `user_id` | Owner's user ID |
 
 ### `ExecResult`
 
@@ -111,6 +142,21 @@ result = sandbox.exec("echo hello")
 result.exit_code  # 0
 result.stdout     # "hello\n"
 result.stderr     # ""
+```
+
+## Logs & Debugging
+
+```python
+# Reservation processing log (what happened during setup)
+for entry in sandbox.logs():
+    print(f"[{entry['timestamp'][11:23]}] {entry['message']}")
+
+# Look up logs for any reservation by ID prefix
+for entry in client.search_logs("abc12345"):
+    print(f"[{entry['timestamp'][11:23]}] {entry['message']}")
+
+# Container stdout (via SSH)
+print(sandbox.pod_logs(lines=20))
 ```
 
 ## Spot Instances
@@ -129,6 +175,7 @@ Data persists across reservations when using named disks:
 # First session
 sb = client.reserve(gpu_type="h100", disk_name="my-project")
 sb.exec("pip install torch && echo done")
+sb.cancel()
 
 # Later session — packages still installed
 sb = client.reserve(gpu_type="h100", disk_name="my-project")
@@ -185,3 +232,9 @@ except GpuDevValidationError as e:
 except GpuDevTimeoutError:
     print("Reservation timed out — GPUs may be busy")
 ```
+
+Credentials are cached to disk (45-min TTL) and auto-refreshed on expiry — no manual re-auth needed in long-running notebooks.
+
+## Interactive Notebook
+
+See [examples/quickstart.ipynb](examples/quickstart.ipynb) for a hands-on walkthrough.
