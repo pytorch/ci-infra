@@ -101,9 +101,8 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                     elif "not supported" in reason and az_match:
                         unsupported_azs.add(az_match.group())
                 if no_capacity_count > 0:
-                    tried = len(failed_azs) if failed_azs else "?"
-                    az_list = ", ".join(sorted(failed_azs)) if failed_azs else "all"
-                    return f"No spot capacity in {tried} AZs ({az_list}) — retrying ~60-120s"
+                    az_list = ", ".join(sorted(failed_azs)) if failed_azs else "multiple AZs"
+                    return f"No spot capacity ({az_list}) — tried {no_capacity_count}x, retrying every ~60s"
             except Exception:
                 pass
             return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
