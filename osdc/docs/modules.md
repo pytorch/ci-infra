@@ -260,7 +260,6 @@ Grafana Alloy in metrics mode, scraping cluster + module endpoints and remote-wr
 
 - **helm/**: Alloy values for the metrics pipeline
 - **kubernetes/**: namespace, DCGM exporter DaemonSet + custom-metrics ConfigMap (`dcgm-exporter/`), PrometheusRule alert CRDs (`alerts/` — ARC, GPU, infra, network-pressure, node-compactor, nodelocaldns, harbor-cache-recovery, zombie-cleanup), and ServiceMonitor / PodMonitor manifests (`monitors/`)
-- **dashboards/**: Grafana dashboard JSON sources
 - **logging/pipeline.alloy**: Log routing rules for the monitoring module's own pods
 - **deploy.sh**: Installs `kube-prometheus-stack` (CRDs, node-exporter, kube-state-metrics, Prometheus Operator — Prometheus/Grafana/AlertManager are disabled), Prometheus Pushgateway, the `monitors/` kustomize (ServiceMonitors / PodMonitors / `alerts/` PrometheusRules) after the CRDs land, and — gated on the `grafana-cloud-credentials` secret — Grafana Alloy as the metrics push pipeline to Grafana Cloud
 

@@ -63,7 +63,6 @@ Complete every item before scheduling the maintenance window.
 
 - [ ] All migration code merged to `main` and CI green (`just lint`, `just test`)
 - [ ] Any out-of-band image / hook bumps required by the migration are deployed (handled outside this runbook)
-- [ ] Grafana dashboards verified: cluster-name labels match what the recreated cluster will use (`pytorch-arc-staging`, `pytorch-arc-cbr-production`) so panels stay continuous across recreation
 - [ ] AWS quotas in the target region:
   - `L-FE5A380F` (NAT GWs / AZ): ≥ 1 per AZ (current default of 5 is plenty)
   - Any AWS quotas the migration-specific changes introduce — operator must enumerate per migration
@@ -183,14 +182,6 @@ kubectl get cronjobs -A -o json \
   | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name) \(.spec.suspend // false)"' \
   > ${STATE_DIR}/cronjob-state-pre-cutover.txt
 
-# Grafana baseline metrics
-# Capture the dashboard URLs you want to compare post-cutover. Suggested:
-#   - pod startup time P50/P99
-#   - kube-apiserver p99 latency
-#   - CoreDNS QPS, node-local DNS health
-#   - NAT GW egress bytes
-#   - Any migration-specific panels
-echo "Capture baseline panel screenshots / CSVs from Grafana now." >&2
 ```
 
 Treat `${STATE_DIR}` as sensitive — do not commit, keep on operator workstation.
@@ -350,8 +341,6 @@ NO_PROXY="$NO_PROXY,.amazonaws.com" no_proxy="$no_proxy,.amazonaws.com" \
 # S3 wheel pipeline bucket (external to OSDC, feeds pypi-cache)
 NO_PROXY="$NO_PROXY,.amazonaws.com" no_proxy="$no_proxy,.amazonaws.com" \
   aws s3 ls "s3://pytorch-pypi-wheel-cache/" --region us-east-2 | head -5
-
-# Grafana Cloud — verify dashboards still respond (browser check)
 ```
 
 If anything cluster-related is left over (orphaned ENIs, NAT GW, EIP, security groups stuck on `cluster_security_group`), clean up by hand before redeploying — leftovers can collide with the recreated cluster.
@@ -471,7 +460,6 @@ If the validation gates fail and a hotfix is small (parameter tweak, addon versi
 After both clusters are stable for several weeks:
 
 - **Per-cluster tuning** — update `clusters.yaml` if the migration introduces any per-cluster overrides (e.g. component memory, replica counts).
-- **Dashboard fixes** — fix any panels that hardcoded patterns affected by the migration (e.g. IP regexes, addon names, label keys). Use ClickHouse / Loki / Mimir to find dashboards still referencing the old patterns.
 - **Monitoring / alerting additions** — consider whether the migration introduces new failure modes worth alerting on. Add the rules with the migration's PR if possible, or as a follow-up PR.
 - **Codebase cleanup** — if the migration left behind transitional code (feature flags, dual-path conditionals, fallback infrastructure), schedule its removal once the new path has been stable long enough that rollback is no longer plausible. Treat as a separate PR.
 
