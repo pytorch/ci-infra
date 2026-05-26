@@ -100,7 +100,7 @@ jobs:
     needs: [changes, deploy-fast]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 15
     steps:
       - name: Evaluate gate
         run: |
@@ -114,9 +114,13 @@ jobs:
             exit 1
           fi
 
-          if [[ "$osdc" != "true" ]]; then
+          if [[ "$osdc" == "false" ]]; then
             echo "No osdc changes — gate passes trivially."
             exit 0
+          fi
+          if [[ "$osdc" != "true" ]]; then
+            echo "::error::unexpected osdc filter output: '$osdc' (expected 'true' or 'false'). Failing closed."
+            exit 1
           fi
           if [[ "$deploy_result" == "success" ]]; then
             echo "Fast jobs passed (deploy + smoke + integration)."
