@@ -307,7 +307,7 @@
             "transformations": []
           }
         },
-        "description": "Percent of assigned jobs that, based on historical peak runner start rate over the last 28 days, should already be running by now. Reads near 0% when the system is ramping at expected speed; climbs when jobs are accumulating faster than capacity has historically allowed.",
+        "description": "Percent of assigned jobs that, based on historical peak runner start rate over the last 28 days, should already be running by now. A 10-minute grace window is applied: jobs that fit within what the system could start in 10 minutes at peak observed throughput are not counted. Reads near 0% when the system is ramping at expected speed; climbs when jobs are accumulating faster than capacity has historically allowed.",
         "id": 9,
         "links": [],
         "title": "Startup Throughput Adjusted % of Assigned Jobs Not Running [cluster, scale_set]",
@@ -1097,7 +1097,7 @@
             "transformations": []
           }
         },
-        "description": "Rate at which new jobs are starting to run, in jobs/sec. Computed as the derivative of running jobs plus the completion rate (since running = started - completed). A flat or low value while jobs are queued indicates the system is not adding runners fast enough; a high value indicates active ramp-up.",
+        "description": "Number of new jobs starting to run per 5-minute bucket. Computed as the derivative of running jobs plus the completion rate (since running = started - completed), scaled to a 5-minute window. A flat or low value while jobs are queued indicates the system is not adding runners fast enough; a high value indicates active ramp-up.",
         "id": 8,
         "links": [],
         "title": "Runner Start Rate, Jobs per 5min [cluster, scale_set]",
