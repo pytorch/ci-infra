@@ -1,0 +1,20 @@
+set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
+
+GRAFANA_URL := "https://pytorchci.grafana.net"
+
+# Generate dashboard resources for Grafana
+generate folder:
+    python3 generator.py --folder "{{folder}}"
+
+# Validate generated dashboard resources against Grafana
+validate folder: (generate folder)
+    gcx resources validate -p generated
+
+# Dry-run pushing generated dashboard resources to Grafana
+push-dry-run folder: (validate folder)
+    gcx resources push --dry-run -p generated -v
+
+# Push generated dashboard resources to Grafana
+push folder: (validate folder)
+    gcx resources push -p generated
+    @printf '\n✅ Published: {{GRAFANA_URL}}/dashboards/f/{{folder}}\n\n'
