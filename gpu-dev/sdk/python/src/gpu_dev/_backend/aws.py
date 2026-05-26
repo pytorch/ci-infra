@@ -177,23 +177,17 @@ class AwsBackend:
         if not user_id:
             return []
 
-        query_kwargs: dict[str, Any] = {
-            "IndexName": "UserIndex",
-            "KeyConditionExpression": "user_id = :uid",
-            "ExpressionAttributeValues": {":uid": user_id},
-        }
-
-        # Server-side filter by status to avoid scanning hundreds of old reservations
-        if statuses:
-            placeholders = {f":s{i}": s for i, s in enumerate(statuses)}
-            query_kwargs["FilterExpression"] = f"#status IN ({', '.join(placeholders.keys())})"
-            query_kwargs["ExpressionAttributeNames"] = {"#status": "status"}
-            query_kwargs["ExpressionAttributeValues"].update(placeholders)
-
-        resp = self._reservations.query(**query_kwargs)
-        items = resp.get("Items", [])
-        while "LastEvaluatedKey" in resp:
-            resp = self._reservations.query(**query_kwargs, ExclusiveStartKey=resp["LastEvaluatedKey"])
+        # Use UserStatusIndex (user_id + status as sort key) for direct lookups.
+        # One query per status, but each returns only matching items — no scanning.
+        statuses = statuses or ["active", "pending", "queued", "preparing"]
+        items: list[dict] = []
+        for status in statuses:
+            resp = self._reservations.query(
+                IndexName="UserStatusIndex",
+                KeyConditionExpression="user_id = :uid AND #s = :status",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":uid": user_id, ":status": status},
+            )
             items.extend(resp.get("Items", []))
 
         results = [self._item_to_info(item) for item in items]
