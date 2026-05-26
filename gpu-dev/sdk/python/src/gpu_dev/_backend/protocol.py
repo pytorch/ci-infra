@@ -48,6 +48,14 @@ class Backend(Protocol):
         """List persistent disks for a user."""
         ...
 
+    def clone_disk(self, user_id: str, source_disk: str, target_disk: str) -> str:
+        """Clone a disk. Returns operation_id."""
+        ...
+
+    def delete_disk(self, user_id: str, disk_name: str) -> str:
+        """Delete a disk. Returns operation_id."""
+        ...
+
     def add_user(self, reservation_id: str, user_id: str, github_username: str) -> bool:
         """Grant SSH access to another user."""
         ...

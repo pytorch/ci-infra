@@ -244,6 +244,42 @@ class GpuDev:
         user_info = self._auth()
         return self._backend.list_disks(user_info["user_id"])
 
+    def clone_disk(self, source: str, target: str, *, poll: bool = True, timeout: int = 120) -> str:
+        """Clone a persistent disk.
+
+        Args:
+            source: Name of the source disk.
+            target: Name for the new cloned disk.
+            poll: Wait for the clone to complete (default True).
+            timeout: Max seconds to wait when polling.
+
+        Returns:
+            Operation ID.
+        """
+        user_info = self._auth()
+        op_id = self._backend.clone_disk(user_info["user_id"], source, target)
+        if poll:
+            import time
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                disks = self._backend.list_disks(user_info["user_id"])
+                if any(d.name == target for d in disks):
+                    return op_id
+                time.sleep(2)
+        return op_id
+
+    def delete_disk(self, name: str) -> str:
+        """Delete a persistent disk.
+
+        Args:
+            name: Disk name to delete.
+
+        Returns:
+            Operation ID.
+        """
+        user_info = self._auth()
+        return self._backend.delete_disk(user_info["user_id"], name)
+
     def search_logs(
         self,
         reservation_id: str,

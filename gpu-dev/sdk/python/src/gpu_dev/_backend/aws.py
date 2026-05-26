@@ -282,6 +282,39 @@ class AwsBackend:
             for item in resp.get("Items", [])
         ]
 
+    def clone_disk(self, user_id: str, source_disk: str, target_disk: str) -> str:
+        import uuid
+        from datetime import datetime, timezone
+        operation_id = str(uuid.uuid4())
+        self._sqs.send_message(
+            QueueUrl=self._get_queue_url(),
+            MessageBody=json.dumps({
+                "action": "clone_disk",
+                "operation_id": operation_id,
+                "user_id": user_id,
+                "source_disk": source_disk,
+                "target_disk": target_disk,
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+            }),
+        )
+        return operation_id
+
+    def delete_disk(self, user_id: str, disk_name: str) -> str:
+        import uuid
+        from datetime import datetime, timezone
+        operation_id = str(uuid.uuid4())
+        self._sqs.send_message(
+            QueueUrl=self._get_queue_url(),
+            MessageBody=json.dumps({
+                "action": "delete_disk",
+                "operation_id": operation_id,
+                "user_id": user_id,
+                "disk_name": disk_name,
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+            }),
+        )
+        return operation_id
+
     def add_user(self, reservation_id: str, user_id: str, github_username: str) -> bool:
         message = {
             "type": "add_user",
