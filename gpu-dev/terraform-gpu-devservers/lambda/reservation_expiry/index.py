@@ -892,29 +892,6 @@ def handler(event, context):
             logger.error(f"Error cleaning up soft-deleted snapshots: {e}")
             deleted_snapshot_count = 0
 
-        # Clean up expired disk records from DynamoDB (delete_date has passed)
-        try:
-            from datetime import datetime
-            today = datetime.now().strftime('%Y-%m-%d')
-            disks_table_name = os.environ.get("DISKS_TABLE_NAME", "pytorch-gpu-dev-disks")
-            disks_table = dynamodb.Table(disks_table_name)
-            resp = disks_table.scan(
-                FilterExpression="is_deleted = :true",
-                ExpressionAttributeValues={":true": True},
-            )
-            expired_disk_count = 0
-            for disk in resp.get("Items", []):
-                dd = str(disk.get("delete_date", ""))
-                if dd and dd <= today:
-                    disks_table.delete_item(
-                        Key={"user_id": disk["user_id"], "disk_name": disk["disk_name"]}
-                    )
-                    logger.info(f"Deleted expired disk record: {disk['user_id']}/{disk['disk_name']} (expired {dd})")
-                    expired_disk_count += 1
-            if expired_disk_count:
-                logger.info(f"Cleaned up {expired_disk_count} expired disk records from DynamoDB")
-        except Exception as e:
-            logger.error(f"Error cleaning up expired disk records: {e}")
 
         return {
             "statusCode": 200,
