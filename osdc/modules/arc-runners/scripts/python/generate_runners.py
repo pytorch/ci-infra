@@ -166,9 +166,30 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         log_error(f"Invalid definition file: {def_file}")
         return False
 
-    if max_runners is not None and (not isinstance(max_runners, int) or max_runners < 1):
-        log_error(f"Invalid definition file {def_file}: max_runners must be a positive integer, got {max_runners!r}")
-        return False
+    if max_runners is not None:
+        if isinstance(max_runners, dict):
+            # Mapping form: one positive int per cluster, with `default` as the baseline.
+            if "default" not in max_runners:
+                log_error(
+                    f"Invalid definition file {def_file}: max_runners mapping must include a "
+                    f"`default` key for the baseline value, got keys {sorted(max_runners)}"
+                )
+                return False
+            for cid, value in max_runners.items():
+                if not isinstance(value, int) or value < 1:
+                    log_error(
+                        f"Invalid definition file {def_file}: max_runners[{cid!r}] must be a "
+                        f"positive integer, got {value!r}"
+                    )
+                    return False
+            cluster_id = cluster_config.get("cluster_id")
+            max_runners = max_runners.get(cluster_id, max_runners["default"])
+        elif not isinstance(max_runners, int) or max_runners < 1:
+            log_error(
+                f"Invalid definition file {def_file}: max_runners must be a positive integer or "
+                f"a mapping with a `default` key, got {max_runners!r}"
+            )
+            return False
 
     if cluster_config.get("pause_runners"):
         max_runners = 0
@@ -395,6 +416,10 @@ def main():
             f"Region {region}: nodepool exclude_regions hits {len(cluster_config['excluded_instance_types'])} "
             f"instance type(s); matching runners will render with maxRunners: 0"
         )
+
+    # Stash the cluster id so generate_runner() can pick the right
+    # max_runners_overrides entry from each def.
+    cluster_config["cluster_id"] = cluster_id
 
     # Hard-fail before touching the output dir: a runner pointing at a fleet no
     # NodePool defines would pend forever at apply time, and wiping generated/

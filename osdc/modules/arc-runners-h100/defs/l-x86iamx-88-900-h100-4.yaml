@@ -8,4 +8,6 @@ runner:
   memory: 900Gi
   gpu: 4
   # Fixed-capacity cap: 1 reserved 8-GPU node / 4 GPUs per runner = 2 concurrent runners.
-  max_runners: 2
+  max_runners:
+    default: 2
+    arc-cbr-production-uw1: 12
