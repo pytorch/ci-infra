@@ -3322,10 +3322,20 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
             ssh_config_dir = Path.home() / ".gpu-dev"
             matches = list(ssh_config_dir.glob(f"{reservation_id}*-sshconfig")) if ssh_config_dir.exists() else []
             if matches:
-                pod_name = f"gpu-dev-{reservation_id[:8]}"
-                rprint(f"[cyan]Connecting to {pod_name}...[/cyan]\n")
-                os.execvp("ssh", ["ssh", pod_name])
-                return
+                # Parse FQDN from the config file directly (works even without SSH Include)
+                config_text = matches[0].read_text()
+                fqdn_line = [l.strip() for l in config_text.splitlines() if l.strip().startswith("HostName")]
+                if fqdn_line:
+                    fqdn = fqdn_line[0].split(None, 1)[1]
+                    pod_name = f"gpu-dev-{reservation_id[:8]}"
+                    rprint(f"[cyan]Connecting to {pod_name}...[/cyan]\n")
+                    os.execvp("ssh", [
+                        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                        "-o", "ProxyCommand=gpu-dev-ssh-proxy %h %p",
+                        "-o", "ForwardAgent=yes",
+                        f"dev@{fqdn}",
+                    ])
+                    return
 
         with Live(
             Spinner("dots", text="📡 Fetching reservation details..."), console=console
