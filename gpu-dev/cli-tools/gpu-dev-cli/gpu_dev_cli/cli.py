@@ -3320,22 +3320,21 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         # Fast path: if reservation ID given, check local SSH config first (no network)
         if reservation_id:
             ssh_config_dir = Path.home() / ".gpu-dev"
-            matches = list(ssh_config_dir.glob(f"{reservation_id}*-sshconfig")) if ssh_config_dir.exists() else []
-            if matches:
-                # Parse FQDN from the config file directly (works even without SSH Include)
-                config_text = matches[0].read_text()
+            config_file = ssh_config_dir / f"{reservation_id[:8]}-sshconfig"
+            if config_file.exists():
+                config_text = config_file.read_text()
                 fqdn_line = [l.strip() for l in config_text.splitlines() if l.strip().startswith("HostName")]
                 if fqdn_line:
                     fqdn = fqdn_line[0].split(None, 1)[1]
                     pod_name = f"gpu-dev-{reservation_id[:8]}"
                     rprint(f"[cyan]Connecting to {pod_name}...[/cyan]\n")
-                    os.execvp("ssh", [
+                    import subprocess, sys
+                    sys.exit(subprocess.call([
                         "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                         "-o", "ProxyCommand=gpu-dev-ssh-proxy %h %p",
                         "-o", "ForwardAgent=yes",
                         f"dev@{fqdn}",
-                    ])
-                    return
+                    ]))
 
         with Live(
             Spinner("dots", text="📡 Fetching reservation details..."), console=console
@@ -3566,7 +3565,9 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
     except KeyboardInterrupt:
         rprint("\n[yellow]Connection cancelled by user[/yellow]")
     except Exception as e:
+        import traceback
         rprint(f"[red]❌ Error: {str(e)}[/red]")
+        traceback.print_exc()
 
 
 @main.command(name="get-ssh-config")
