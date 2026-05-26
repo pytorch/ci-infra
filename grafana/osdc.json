@@ -1145,7 +1145,6 @@
     {
       "kind": "QueryVariable",
       "spec": {
-        "allValue": ".*",
         "allowCustomValue": false,
         "current": {
           "text": "All",
