@@ -101,6 +101,36 @@ class Sandbox:
         return self._info.jupyter_url
 
     @property
+    def disk_name(self) -> str | None:
+        """Persistent disk name (if attached)."""
+        return self._info.disk_name
+
+    @property
+    def detailed_status(self) -> str | None:
+        """Detailed status message from the server."""
+        return self._info.detailed_status
+
+    @property
+    def instance_type(self) -> str | None:
+        """EC2 instance type (e.g. ``"p5.48xlarge"``)."""
+        return self._info.instance_type
+
+    @property
+    def created_at(self) -> str | None:
+        """Creation timestamp (ISO 8601)."""
+        return self._info.created_at
+
+    @property
+    def user_id(self) -> str | None:
+        """Owner's user ID."""
+        return self._info.user_id
+
+    @property
+    def node_ip(self) -> str | None:
+        """Node public IP."""
+        return self._info.node_ip
+
+    @property
     def is_active(self) -> bool:
         """Whether the sandbox is running and ready for commands."""
         return self._info.status == ReservationStatus.ACTIVE
