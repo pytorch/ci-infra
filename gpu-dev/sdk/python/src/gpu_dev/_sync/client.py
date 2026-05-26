@@ -186,7 +186,29 @@ class GpuDev:
         user_info = self._auth()
         statuses = status or ["active", "pending", "queued", "preparing"]
         infos = self._backend.list_reservations(user_info["user_id"], statuses)
-        return [Sandbox(info, self._backend, user_info["user_id"]) for info in infos]
+        sandboxes = [Sandbox(info, self._backend, user_info["user_id"]) for info in infos]
+
+        # Cross-region: also check the other region for spot/queued reservations
+        try:
+            from .._backend.aws import AwsBackend, _ENVIRONMENTS
+            current_env = self._config.environment
+            other_envs = {"prod": "prod-east1", "prod-east1": "prod"}
+            other_env = other_envs.get(current_env)
+            if other_env:
+                other_config = GpuDevConfig(
+                    github_user=self._config.github_user,
+                    environment=other_env,
+                    region=_ENVIRONMENTS.get(other_env, {}).get("region"),
+                )
+                other_backend = AwsBackend(other_config)
+                other_infos = other_backend.list_reservations(user_info["user_id"], statuses)
+                sandboxes.extend(
+                    Sandbox(info, other_backend, user_info["user_id"]) for info in other_infos
+                )
+        except Exception:
+            pass
+
+        return sandboxes
 
     def availability(self) -> dict[str, GpuAvailability]:
         """Get GPU availability by type.
