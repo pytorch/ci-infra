@@ -1192,8 +1192,10 @@ def reserve(
                                 # Build choices
                                 choices = []
 
-                                # Get available disks (exclude in-use and deleted disks)
-                                available_disks = [d for d in existing_disks if not d['in_use'] and not d.get('is_deleted', False)]
+                                # Show all non-deleted disks, marking in-use ones as disabled
+                                all_disks = [d for d in existing_disks if not d.get('is_deleted', False)]
+                                available_disks = [d for d in all_disks if not d['in_use']]
+                                in_use_disks = [d for d in all_disks if d['in_use']]
 
                                 if available_disks:
                                     choices.append(questionary.Separator("=== Available Disks ==="))
@@ -1202,6 +1204,17 @@ def reserve(
                                         choices.append(questionary.Choice(
                                             title=display,
                                             value=("select", d['name'])
+                                        ))
+
+                                if in_use_disks:
+                                    choices.append(questionary.Separator("=== In Use ==="))
+                                    for d in in_use_disks:
+                                        res_id = d.get('reservation_id', '?')[:8]
+                                        display = f"{d['name']} ({d['size_gb']}GB) — in use by {res_id}"
+                                        choices.append(questionary.Choice(
+                                            title=display,
+                                            value=("in_use", d['name']),
+                                            disabled="currently in use",
                                         ))
 
                                 choices.append(questionary.Separator("=== Options ==="))
