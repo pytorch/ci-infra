@@ -3057,55 +3057,57 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             f"Pod created, downloading container image and starting services",
         )
 
-        # Get node IPs - public for DNS, private for proxy routing
+        # Get node IPs from target_node (known from binpacking, no need to wait for pod)
         record_trace_event(trace_data, "node_ip_fetch_start")
         node_public_ip = get_pod_node_public_ip(pod_name)
         node_private_ip = get_pod_node_private_ip(pod_name)
-        # Get pod internal IP (used for multinode mpirun hostfile)
         pod_ip = get_pod_internal_ip(pod_name)
         record_trace_event(trace_data, "node_ip_fetch_end")
 
-        # Generate domain name if DNS is enabled
-        domain_name = None
-        domain_ssh_command = None
-        record_trace_event(trace_data, "dns_setup_start")
-        if get_dns_enabled():
-            # Get the preferred name from the request
+        # Start DNS setup in parallel with pod_ready_wait (saves ~5s)
+        dns_result = {"domain_name": None, "ssh_command": None}
+
+        def _setup_dns():
+            record_trace_event(trace_data, "dns_setup_start")
+            if not get_dns_enabled():
+                record_trace_event(trace_data, "dns_setup_end")
+                return
             preferred_name = request.get("name")
-            domain_name = generate_unique_name(preferred_name)
+            dn = generate_unique_name(preferred_name)
 
-            # Create DNS record (points to ALB, but we store for reference)
-            dns_success = create_dns_record(
-                domain_name, node_public_ip, node_port)
-            if dns_success:
-                domain_ssh_command = format_ssh_command_with_domain(
-                    domain_name, node_port)
-
-                # Store domain mapping with PRIVATE IP - WebSocket proxy runs in same VPC
+            dns_ok = create_dns_record(dn, node_public_ip, node_port)
+            if dns_ok:
+                dns_result["ssh_command"] = format_ssh_command_with_domain(dn, node_port)
                 duration_hours = float(request.get("duration_hours", 8))
-                expires_timestamp = int(time.time()) + \
-                    int(duration_hours * 3600)
-                mapping_stored = store_domain_mapping(domain_name, node_private_ip or node_public_ip,
-                                     node_port, reservation_id, expires_timestamp)
-
-                # Retry with new names if collision detected
-                if not mapping_stored:
-                    logger.warning(f"Domain mapping collision for {domain_name}, retrying with new name")
+                expires_ts = int(time.time()) + int(duration_hours * 3600)
+                stored = store_domain_mapping(
+                    dn, node_private_ip or node_public_ip,
+                    node_port, reservation_id, expires_ts)
+                if not stored:
+                    logger.warning(f"Domain mapping collision for {dn}, retrying")
                     for _ in range(5):
-                        domain_name = generate_unique_name()
-                        dns_success = create_dns_record(domain_name, node_public_ip, node_port)
-                        if dns_success:
-                            mapping_stored = store_domain_mapping(
-                                domain_name, node_private_ip or node_public_ip,
-                                node_port, reservation_id, expires_timestamp)
-                            if mapping_stored:
+                        dn = generate_unique_name()
+                        if create_dns_record(dn, node_public_ip, node_port):
+                            stored = store_domain_mapping(
+                                dn, node_private_ip or node_public_ip,
+                                node_port, reservation_id, expires_ts)
+                            if stored:
                                 break
-                    if not mapping_stored:
-                        logger.error(f"Failed to store domain mapping after retries for reservation {reservation_id}")
+                    if not stored:
+                        logger.error(f"Failed to store domain mapping after retries for {reservation_id}")
+                dns_result["domain_name"] = dn
+                logger.info(f"Created domain name {dn} for reservation {reservation_id}")
+            record_trace_event(trace_data, "dns_setup_end")
 
-                logger.info(
-                    f"Created domain name {domain_name} for reservation {reservation_id}")
-        record_trace_event(trace_data, "dns_setup_end")
+        from concurrent.futures import ThreadPoolExecutor
+        dns_executor = ThreadPoolExecutor(max_workers=1)
+        dns_future = dns_executor.submit(_setup_dns)
+
+        # Wait for DNS setup to complete (was running in parallel with pod_ready_wait)
+        dns_future.result()
+        dns_executor.shutdown(wait=False)
+        domain_name = dns_result["domain_name"]
+        domain_ssh_command = dns_result["ssh_command"]
 
         # Generate SSH command (use ProxyCommand with domain if available, otherwise fallback to direct IP+port)
         if domain_name:
