@@ -257,6 +257,73 @@ class Sandbox:
         """
         self._backend.add_user(self._info.id, self._user_id, github_username)
 
+    # ── Logs ──
+
+    def logs(self, minutes: int = 30, filter: str | None = None) -> list[str]:
+        """Fetch Lambda processing logs for this reservation from CloudWatch.
+
+        Args:
+            minutes: How far back to search (default 30 min).
+            filter: Additional text to filter on (e.g. ``"error"``).
+
+        Returns:
+            List of log lines (newest last).
+
+        Example::
+
+            for line in sandbox.logs():
+                print(line)
+
+            # Search for errors
+            for line in sandbox.logs(filter="ERROR"):
+                print(line)
+        """
+        from .._backend.aws import _get_session, _PREFIX, _ENVIRONMENTS
+        import time as _time
+
+        session = _get_session()
+        region = getattr(self._backend, "_region", "us-east-2")
+        logs_client = session.client("logs", region_name=region)
+
+        log_group = f"/aws/lambda/{_PREFIX}-reservation-processor"
+        start_ms = int((_time.time() - minutes * 60) * 1000)
+        rid_short = self._info.id[:8]
+
+        pattern = rid_short
+        if filter:
+            pattern = f"{rid_short} {filter}" if filter != rid_short else pattern
+
+        try:
+            resp = logs_client.filter_log_events(
+                logGroupName=log_group,
+                startTime=start_ms,
+                filterPattern=pattern,
+                limit=100,
+            )
+            return [
+                event.get("message", "").strip()
+                for event in resp.get("events", [])
+            ]
+        except Exception:
+            return []
+
+    def pod_logs(self, lines: int = 50) -> str:
+        """Fetch container logs from the running pod via SSH.
+
+        Args:
+            lines: Number of recent log lines to fetch.
+
+        Returns:
+            Pod log output as a string.
+        """
+        result = self.exec(
+            f"cat /proc/1/fd/1 2>/dev/null | tail -{lines} || "
+            f"journalctl -n {lines} 2>/dev/null || "
+            f"echo 'No logs available'",
+            timeout=10,
+        )
+        return result.stdout
+
     # ── Context Manager ──
 
     def __enter__(self) -> Sandbox:

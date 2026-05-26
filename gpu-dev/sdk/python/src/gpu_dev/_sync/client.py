@@ -243,3 +243,47 @@ class GpuDev:
         """
         user_info = self._auth()
         return self._backend.list_disks(user_info["user_id"])
+
+    def search_logs(
+        self,
+        query: str,
+        minutes: int = 60,
+        region: str | None = None,
+    ) -> list[str]:
+        """Search Lambda logs across all reservations.
+
+        Args:
+            query: Text to search for (e.g. ``"ERROR"``, ``"capacity"``, a reservation ID).
+            minutes: How far back to search (default 60 min).
+            region: Region to search (default: current). Use ``"us-east-1"`` for spot logs.
+
+        Returns:
+            List of matching log lines (newest last).
+
+        Example::
+
+            # Find all errors in the last hour
+            for line in client.search_logs("ERROR"):
+                print(line)
+
+            # Check spot capacity issues
+            for line in client.search_logs("capacity", region="us-east-1"):
+                print(line)
+        """
+        from .._backend.aws import _get_session, _PREFIX
+        import time as _time
+
+        session = _get_session()
+        r = region or getattr(self._backend, "_region", "us-east-2")
+        logs_client = session.client("logs", region_name=r)
+
+        try:
+            resp = logs_client.filter_log_events(
+                logGroupName=f"/aws/lambda/{_PREFIX}-reservation-processor",
+                startTime=int((_time.time() - minutes * 60) * 1000),
+                filterPattern=query,
+                limit=100,
+            )
+            return [e.get("message", "").strip() for e in resp.get("events", [])]
+        except Exception:
+            return []
