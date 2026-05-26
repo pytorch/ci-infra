@@ -41,33 +41,51 @@ from .interactive import (
 console = Console()
 
 
+_east1_table = None
+
 def _fetch_reservations_cross_region(reservation_mgr, user_filter, statuses, config=None):
     """Fetch reservations from current region + prod-east1 if on prod."""
-    reservations = reservation_mgr.list_reservations(
-        user_filter=user_filter, statuses_to_include=statuses)
-    # Cross-region fetch
-    try:
+    global _east1_table
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_primary():
+        return reservation_mgr.list_reservations(
+            user_filter=user_filter, statuses_to_include=statuses)
+
+    def _fetch_east1():
+        global _east1_table
         cfg = config or load_config()
-        if cfg.user_config.get("environment") == "prod":
-            east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
-            if east1_env:
-                import boto3 as _b3
-                east1_ddb = _b3.resource("dynamodb", region_name=east1_env["region"])
-                east1_table = east1_ddb.Table("pytorch-gpu-dev-reservations")
-                for st in (statuses or ["active"]):
-                    resp = east1_table.query(
-                        IndexName="StatusIndex",
-                        KeyConditionExpression="#s = :status",
-                        ExpressionAttributeNames={"#s": "status"},
-                        ExpressionAttributeValues={":status": st},
-                    )
-                    for item in resp.get("Items", []):
-                        if user_filter and item.get("user_id") != user_filter:
-                            continue
-                        item["_region"] = "us-east-1"
-                        reservations.append(item)
+        if cfg.user_config.get("environment") != "prod":
+            return []
+        east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
+        if not east1_env or not user_filter:
+            return []
+        if _east1_table is None:
+            _east1_table = cfg.session.resource(
+                "dynamodb", region_name=east1_env["region"]
+            ).Table("pytorch-gpu-dev-reservations")
+        results = []
+        for st in (statuses or ["active"]):
+            resp = _east1_table.query(
+                IndexName="UserStatusIndex",
+                KeyConditionExpression="user_id = :uid AND #s = :status",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":uid": user_filter, ":status": st},
+            )
+            for item in resp.get("Items", []):
+                item["_region"] = "us-east-1"
+                results.append(item)
+        return results
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f1 = ex.submit(_fetch_primary)
+            f2 = ex.submit(_fetch_east1)
+            reservations = f1.result()
+            reservations.extend(f2.result())
     except Exception:
-        pass
+        reservations = _fetch_primary()
     return reservations
 
 
