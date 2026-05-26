@@ -1,4 +1,12 @@
-name: "~ OSDC: Deploy (reusable)"
+name: "~ OSDC: Slow tests (reusable)"
+
+# NOTE: AWS region is hardcoded to us-west-1 in all jobs below, matching
+# _osdc-deploy.yml. This reusable is currently called only for the
+# arc-staging cluster (which lives in us-west-1). Re-using it for a
+# cluster in a different region requires either parameterizing the
+# region from `just region "${{ inputs.cluster }}"` or adding an
+# aws_region input. Do not call this reusable for non-us-west-1
+# clusters without first making that change.
 
 on:
   workflow_call:
@@ -12,48 +20,17 @@ on:
         required: false
         type: string
         default: ""
-      taint_nodes:
-        description: "Taint ARC runner nodes with NoSchedule before deploy for graceful refresh"
-        required: false
-        type: boolean
-        default: true
-      run_smoke:
-        description: "Run smoke tests after deploy"
-        required: false
-        type: boolean
-        default: true
-      run_integration:
-        description: "Run integration tests after deploy (requires CANARY_GITHUB_TOKEN)"
-        required: false
-        type: boolean
-        default: true
-      restart_listeners:
-        description: "Delete and recreate ARC listeners after deploy (required when controller image changes)"
-        required: false
-        type: boolean
-        default: false
-      skip_lint_test:
-        description: "Skip `just lint` and `just test` pre-flight checks (firefighting only)"
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  deploy:
-    name: Deploy ${{ inputs.cluster }}
+  load-test:
+    name: Load tests
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 60
-    # Serialize all tofu state-mutating work per cluster. Shared with
-    # _osdc-plan.yml so plan and deploy against the same cluster never
-    # race on the DynamoDB state lock.
-    concurrency:
-      group: osdc-tofu-${{ inputs.cluster }}
-      cancel-in-progress: false
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: osdc
@@ -73,14 +50,6 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
-      - name: Lint
-        if: ${{ !inputs.skip_lint_test }}
-        run: just lint
-
-      - name: Test
-        if: ${{ !inputs.skip_lint_test }}
-        run: just test
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
@@ -88,27 +57,15 @@ jobs:
           aws-region: us-west-1
           role-duration-seconds: 7200
 
-      # Register QEMU binfmt handlers so `docker build --platform linux/arm64`
-      # works on an amd64 runner. The base deploy builds image-cache-janitor
-      # (and node-compactor) for both archs; whenever the content-addressed
-      # tag changes (Dockerfile edit, etc.) the build branch runs and needs
-      # cross-arch emulation.
-      - name: Set up QEMU for cross-arch builds
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-
-      - name: Deploy ${{ inputs.cluster }}
-        run: just deploy "${{ inputs.cluster }}"
+      - name: Run load tests
+        run: just load-test "${{ inputs.cluster }}"
         env:
-          OSDC_CONFIRM: "yes"
-          # smoke runs as a dedicated job below, skip the in-deploy step
-          OSDC_SMOKE: "no"
-          OSDC_TAINT_NODES: ${{ inputs.taint_nodes && 'yes' || 'no' }}
-          ARC_RESTART_LISTENERS: ${{ inputs.restart_listeners && 'yes' || 'no' }}
+          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
 
-  smoke:
-    name: Smoke tests
-    needs: deploy
-    if: ${{ inputs.run_smoke }}
+  compactor:
+    name: Compactor e2e tests
+    needs: load-test
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: 30
@@ -138,16 +95,16 @@ jobs:
           aws-region: us-west-1
           role-duration-seconds: 7200
 
-      - name: Run smoke tests
-        run: just smoke "${{ inputs.cluster }}"
+      - name: Run compactor e2e tests
+        run: just test-compactor "${{ inputs.cluster }}"
 
-  integration:
-    name: Integration tests
-    needs: deploy
-    if: ${{ inputs.run_integration }}
+  janitor:
+    name: Janitor e2e tests
+    needs: load-test
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 60
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: osdc
@@ -167,11 +124,6 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
-      - name: Verify gh CLI
-        run: gh --version
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
@@ -179,7 +131,5 @@ jobs:
           aws-region: us-west-1
           role-duration-seconds: 7200
 
-      - name: Run integration tests
-        run: just integration-test "${{ inputs.cluster }}" --skip-drain --skip-smoke --skip-compactor
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
+      - name: Run janitor e2e tests
+        run: just test-janitor "${{ inputs.cluster }}"

@@ -148,7 +148,7 @@ destroy_module() {
   tofu_init "$module_dir" "$key"
   NO_PROXY="${NO_PROXY:-},.amazonaws.com" \
     no_proxy="${no_proxy:-},.amazonaws.com" \
-    tofu destroy -auto-approve \
+    tofu destroy -lock-timeout=15m -auto-approve \
     -var="cluster_name=$CNAME" \
     -var="aws_region=$REGION" \
     -var="state_bucket=$BUCKET" \
@@ -165,7 +165,7 @@ destroy_base() {
   tofu_init "$module_dir" "$key"
   NO_PROXY="${NO_PROXY:-},.amazonaws.com" \
     no_proxy="${no_proxy:-},.amazonaws.com" \
-    eval tofu destroy "$TFVARS" -auto-approve
+    eval tofu destroy -lock-timeout=15m "$TFVARS" -auto-approve
   cd - >/dev/null
   echo ""
 }
