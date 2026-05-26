@@ -32,6 +32,7 @@ jobs:
         run: |
           cd grafana
           # https://pytorchci.grafana.net/dashboards/f/fvnzj9
-          mise run push --folder fvnzj9
+          mise install
+          mise exec -- just push fvnzj9
         env:
           GRAFANA_TOKEN: ${{ secrets.PYTORCHCI_GRAFANA_API_TOKEN }}
