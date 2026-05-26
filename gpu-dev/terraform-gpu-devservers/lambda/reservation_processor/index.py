@@ -103,8 +103,8 @@ def _get_spot_provision_status(gpu_type: str) -> str:
                 if no_capacity_count > 0:
                     az_list = ", ".join(sorted(failed_azs)) if failed_azs else "multiple AZs"
                     return f"No spot capacity ({az_list}) — tried {no_capacity_count}x, retrying every ~60s"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to check ASG scaling activities for {asg_name}: {e}")
             return "Spot instance requested — ~1-2 min if available. Fulfillment not guaranteed"
         inst = instances[0]
         state = inst.get("LifecycleState", "")
