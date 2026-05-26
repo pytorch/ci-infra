@@ -9,7 +9,7 @@ fleet:
   instances:
     - type: p4d.24xlarge
       weight: 100
-      node_disk_size: 100
+      node_disk_size: 1000
       has_nvme: true
       baremetal: true
       topology_manager_policy: single-numa-node
