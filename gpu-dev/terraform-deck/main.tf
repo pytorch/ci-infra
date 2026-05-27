@@ -1,7 +1,8 @@
 # deck.devservers.io — standalone static site for presentation slides
 #
 # Separate from the main GPU devservers terraform.
-# One command: tofu apply — creates bucket, DNS, and uploads all slides.
+# One command: tofu apply — creates bucket, DNS, and syncs the whole
+# presentation/ folder to S3.
 
 terraform {
   required_version = ">= 1.5"
@@ -42,24 +43,6 @@ variable "presentation_dir" {
 locals {
   fqdn        = "deck.${var.domain_name}"
   bucket_name = "deck-${var.domain_name}"
-
-  content_types = {
-    html = "text/html"
-    css  = "text/css"
-    js   = "application/javascript"
-    json = "application/json"
-    svg  = "image/svg+xml"
-    png  = "image/png"
-    jpg  = "image/jpeg"
-    mp4  = "video/mp4"
-    webm = "video/webm"
-    ico  = "image/x-icon"
-    txt  = "text/plain"
-    toml = "text/plain"
-    md   = "text/plain"
-  }
-
-  presentation_files = fileset(var.presentation_dir, "**/*")
 }
 
 # --- S3 bucket ---
@@ -99,16 +82,16 @@ resource "aws_s3_bucket_policy" "deck" {
   })
 }
 
-# --- Upload all presentation files ---
+# --- Upload presentation folder ---
 
-resource "aws_s3_object" "slides" {
-  for_each = local.presentation_files
+resource "terraform_data" "sync_slides" {
+  triggers_replace = [timestamp()]
 
-  bucket       = aws_s3_bucket.deck.id
-  key          = each.value
-  source       = "${var.presentation_dir}/${each.value}"
-  etag         = filemd5("${var.presentation_dir}/${each.value}")
-  content_type = lookup(local.content_types, split(".", each.value)[length(split(".", each.value)) - 1], "application/octet-stream")
+  provisioner "local-exec" {
+    command = "aws s3 sync ${var.presentation_dir} s3://${aws_s3_bucket.deck.id}/ --delete --exclude '*.tfvars*' --exclude '.terraform*' --exclude 'CLAUDE.md' --exclude 'pyproject.toml' --exclude 'title-vid-old.mp4'"
+  }
+
+  depends_on = [aws_s3_bucket_policy.deck]
 }
 
 # --- DNS ---
@@ -128,7 +111,7 @@ output "url" {
   value       = "http://${local.fqdn}"
 }
 
-output "files_uploaded" {
-  description = "Number of files uploaded"
-  value       = length(local.presentation_files)
+output "source_dir" {
+  description = "Presentation directory synced to S3"
+  value       = var.presentation_dir
 }
