@@ -1,8 +1,7 @@
-# deck.devservers.io — standalone static site for presentation slides
+# deck.devservers.io — static site for presentation slides
 #
-# Separate from the main GPU devservers terraform.
-# One command: tofu apply — creates bucket, DNS, and syncs the whole
-# presentation/ folder to S3.
+# S3 bucket + CloudFront (HTTPS) + ACM certificate + Route53 alias.
+# One command: tofu apply — creates everything and syncs presentation/ to S3.
 
 terraform {
   required_version = ">= 1.5"
@@ -16,6 +15,11 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+}
+
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
 }
 
 variable "aws_region" {
@@ -82,6 +86,99 @@ resource "aws_s3_bucket_policy" "deck" {
   })
 }
 
+# --- ACM certificate (must be us-east-1 for CloudFront) ---
+
+resource "aws_acm_certificate" "deck" {
+  provider          = aws.us_east_1
+  domain_name       = local.fqdn
+  validation_method = "DNS"
+  tags              = { Name = local.fqdn }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.deck.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  }
+
+  zone_id = var.route53_zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+  records = [each.value.record]
+}
+
+resource "aws_acm_certificate_validation" "deck" {
+  provider                = aws.us_east_1
+  certificate_arn         = aws_acm_certificate.deck.arn
+  validation_record_fqdns = [for r in aws_route53_record.cert_validation : r.fqdn]
+}
+
+# --- CloudFront distribution ---
+
+resource "aws_cloudfront_distribution" "deck" {
+  enabled             = true
+  default_root_object = "index.html"
+  aliases             = [local.fqdn]
+  price_class         = "PriceClass_100" # NA + EU (cheapest)
+  http_version        = "http2and3"
+
+  origin {
+    domain_name = aws_s3_bucket_website_configuration.deck.website_endpoint
+    origin_id   = "s3-website"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only" # S3 website endpoint is HTTP only
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  default_cache_behavior {
+    target_origin_id       = "s3-website"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    forwarded_values {
+      query_string = false
+      cookies { forward = "none" }
+    }
+
+    min_ttl     = 0
+    default_ttl = 3600
+    max_ttl     = 86400
+  }
+
+  # SPA: serve index.html for 404s from S3
+  custom_error_response {
+    error_code         = 404
+    response_code      = 200
+    response_page_path = "/index.html"
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = aws_acm_certificate_validation.deck.certificate_arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+
+  restrictions {
+    geo_restriction { restriction_type = "none" }
+  }
+
+  tags = { Name = local.fqdn }
+}
+
 # --- Upload presentation folder ---
 
 resource "terraform_data" "sync_slides" {
@@ -94,21 +191,30 @@ resource "terraform_data" "sync_slides" {
   depends_on = [aws_s3_bucket_policy.deck]
 }
 
-# --- DNS ---
+# --- DNS (A alias to CloudFront) ---
 
 resource "aws_route53_record" "deck" {
   zone_id = var.route53_zone_id
   name    = local.fqdn
-  type    = "CNAME"
-  ttl     = 300
-  records = [aws_s3_bucket_website_configuration.deck.website_endpoint]
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.deck.domain_name
+    zone_id                = aws_cloudfront_distribution.deck.hosted_zone_id
+    evaluate_target_health = false
+  }
 }
 
 # --- Outputs ---
 
 output "url" {
   description = "Slide deck URL"
-  value       = "http://${local.fqdn}"
+  value       = "https://${local.fqdn}"
+}
+
+output "cloudfront_domain" {
+  description = "CloudFront distribution domain"
+  value       = aws_cloudfront_distribution.deck.domain_name
 }
 
 output "source_dir" {
