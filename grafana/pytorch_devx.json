@@ -41,67 +41,21 @@
                     "group": "grafana-clickhouse-datasource",
                     "kind": "DataQuery",
                     "spec": {
-                      "builderOptions": {
-                        "columns": [],
-                        "database": "default",
-                        "filters": [
-                          {
-                            "condition": "AND",
-                            "filterType": "custom",
-                            "hint": "time",
-                            "key": "",
-                            "operator": "WITH IN DASHBOARD TIME RANGE",
-                            "type": "datetime"
-                          }
-                        ],
-                        "limit": 1000,
-                        "meta": {},
-                        "mode": "list",
-                        "orderBy": [
-                          {
-                            "default": true,
-                            "dir": "ASC",
-                            "hint": "time",
-                            "name": ""
-                          }
-                        ],
-                        "queryType": "timeseries",
-                        "table": "_clickhouse_internal_analyzer_broken_queries"
-                      },
                       "editorType": "sql",
                       "format": 0,
                       "meta": {
                         "builderOptions": {
                           "columns": [],
-                          "database": "default",
-                          "filters": [
-                            {
-                              "condition": "AND",
-                              "filterType": "custom",
-                              "hint": "time",
-                              "key": "",
-                              "operator": "WITH IN DASHBOARD TIME RANGE",
-                              "type": "datetime"
-                            }
-                          ],
+                          "database": "",
                           "limit": 1000,
-                          "meta": {},
                           "mode": "list",
-                          "orderBy": [
-                            {
-                              "default": true,
-                              "dir": "ASC",
-                              "hint": "time",
-                              "name": ""
-                            }
-                          ],
-                          "queryType": "timeseries",
-                          "table": "_clickhouse_internal_analyzer_broken_queries"
+                          "queryType": "table",
+                          "table": ""
                         }
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n    fromUnixTimestamp(repository.pushed_at) AS pushed_time,\n    dateDiff(\n        'minutes', \n        arraySort(commits.timestamp)[1] AS commit_time, -- SQL is 1-indexed\n        pushed_time\n    ) AS drift_minutes,\n    avg(drift_minutes) OVER (ORDER BY toUnixTimestamp(pushed_time) ASC RANGE BETWEEN 7 * 24 * 60 * 60 PRECEDING AND CURRENT ROW) AS trend_7d_avg\nFROM push\nWHERE\n    repository.full_name = 'pytorch/pytorch'\n    AND ref = 'refs/heads/viable/strict'\n    AND length(commits) > 0\n    AND $__timeFilter(pushed_time)\nORDER BY pushed_time DESC"
+                      "rawSql": "WITH viable AS (\n    SELECT\n        repository.pushed_at AS pushed_ts,\n        toUnixTimestamp(head_commit.timestamp) AS commit_ts,\n        repository.full_name AS repo\n    FROM push\n    WHERE repository.full_name = 'pytorch/pytorch'\n      AND ref = 'refs/heads/viable/strict'\n      AND head_commit.id != ''\n),\nmain AS (\n    SELECT\n        repository.pushed_at AS pushed_ts,\n        toUnixTimestamp(head_commit.timestamp) AS commit_ts,\n        repository.full_name AS repo\n    FROM push\n    WHERE repository.full_name = 'pytorch/pytorch'\n      AND ref = 'refs/heads/main'\n      AND head_commit.id != ''\n)\nSELECT fromUnixTimestamp(pushed_ts) AS pushed_time, lag_minutes, trend_7d_avg\nFROM (\n    SELECT\n        m.pushed_ts,\n        (toInt64(m.commit_ts) - toInt64(nullIf(v.commit_ts, 0))) / 60.0 AS lag_minutes,\n        avg(lag_minutes) OVER (\n            ORDER BY m.pushed_ts\n            RANGE BETWEEN 604800 PRECEDING AND CURRENT ROW\n        ) AS trend_7d_avg\n    FROM main m\n    ASOF LEFT JOIN viable v\n        ON m.repo = v.repo AND m.pushed_ts >= v.pushed_ts\n)\nWHERE $__timeFilter(pushed_time)\nORDER BY pushed_time ASC"
                     },
                     "version": "v0"
                   },
@@ -113,10 +67,10 @@
             "transformations": []
           }
         },
-        "description": "",
+        "description": "How long it takes viable/strict to catch up to main.",
         "id": 4,
         "links": [],
-        "title": "viable/strict Drift Minutes",
+        "title": "viable/strict Lag",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -127,39 +81,16 @@
                   "mode": "thresholds",
                   "seriesBy": "last"
                 },
+                "min": 0,
+                "unit": "m",
                 "custom": {
-                  "axisBorderShow": false,
-                  "axisCenteredZero": false,
-                  "axisColorMode": "text",
-                  "axisLabel": "",
-                  "axisPlacement": "auto",
-                  "barAlignment": 0,
-                  "barWidthFactor": 0.6,
                   "drawStyle": "line",
-                  "fillOpacity": 27,
+                  "fillOpacity": 15,
                   "gradientMode": "scheme",
-                  "hideFrom": {
-                    "legend": false,
-                    "tooltip": false,
-                    "viz": false
-                  },
-                  "insertNulls": false,
                   "lineInterpolation": "linear",
-                  "lineStyle": {
-                    "fill": "solid"
-                  },
                   "lineWidth": 1,
                   "pointSize": 5,
-                  "scaleDistribution": {
-                    "type": "linear"
-                  },
-                  "showPoints": "auto",
-                  "showValues": false,
-                  "spanNulls": false,
-                  "stacking": {
-                    "group": "A",
-                    "mode": "none"
-                  },
+                  "showPoints": "never",
                   "thresholdsStyle": {
                     "mode": "dashed"
                   }
@@ -191,16 +122,8 @@
                   },
                   "properties": [
                     {
-                      "id": "custom.drawStyle",
-                      "value": "line"
-                    },
-                    {
                       "id": "custom.lineInterpolation",
                       "value": "smooth"
-                    },
-                    {
-                      "id": "custom.showPoints",
-                      "value": "never"
                     },
                     {
                       "id": "color",
@@ -222,10 +145,6 @@
               ]
             },
             "options": {
-              "annotations": {
-                "clustering": -1,
-                "multiLane": false
-              },
               "legend": {
                 "calcs": [],
                 "displayMode": "list",
@@ -234,7 +153,7 @@
               },
               "tooltip": {
                 "hideZeros": false,
-                "mode": "single",
+                "mode": "multi",
                 "sort": "none"
               }
             }
@@ -649,7 +568,7 @@
       "1d"
     ],
     "fiscalYearStartMonth": 0,
-    "from": "now/y",
+    "from": "now-180d",
     "hideTimepicker": false,
     "timezone": "browser",
     "to": "now"
