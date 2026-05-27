@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSDC Future Plans</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        height: 100vh;
+        width: 100vw;
+        padding: 40px 60px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        box-sizing: border-box;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 50px;
+      }
+
+      .header h1 {
+        font-size: 3.5rem;
+        font-weight: 700;
+        color: white;
+        margin-bottom: 15px;
+        letter-spacing: -2px;
+      }
+
+      .header p {
+        font-size: 1.3rem;
+        color: rgba(255, 255, 255, 0.8);
+        font-weight: 400;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        grid-template-rows: repeat(2, 1fr);
+        gap: 30px;
+        width: 100%;
+        max-width: 1400px;
+        height: 500px;
+      }
+
+      .tile {
+        border-radius: 20px;
+        padding: 30px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        color: white;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+        z-index: 1;
+      }
+
+      .tile:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        z-index: 10;
+      }
+
+      .tile-icon {
+        font-size: 4rem;
+        margin-bottom: 25px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 60px;
+        min-width: 60px;
+      }
+
+      .tile-title {
+        font-size: 1.8rem;
+        line-height: 1.2;
+      }
+
+      .tile-sub {
+        font-size: 0.9rem;
+        font-weight: 400;
+        opacity: 0.7;
+        margin-top: 10px;
+      }
+
+      .budget {
+        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
+      }
+      .grow {
+        background: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
+      }
+      .debug {
+        background: linear-gradient(135deg, #4ecdc4 0%, #44a08d 100%);
+      }
+      .execution {
+        background: linear-gradient(135deg, #2196f3 0%, #1565c0 100%);
+      }
+      .k8s-native {
+        background: linear-gradient(135deg, #2d4a87 0%, #1e3a6f 100%);
+      }
+      .scale {
+        background: linear-gradient(135deg, #76b900 0%, #388e3c 100%);
+      }
+
+      .grow-tile .tile-icon {
+        background-image: url("./weneedgpus.png");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        width: 140px !important;
+        height: 140px !important;
+        border-radius: 15px;
+        margin-bottom: 20px;
+        min-width: 140px;
+        min-height: 140px;
+        display: flex !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>OSDC: Future Roadmap</h1>
+      <p>Scaling Open Source GPU Development Infrastructure</p>
+    </div>
+
+    <div class="grid">
+      <!-- Row 1 -->
+      <div class="tile budget">
+        <div class="tile-icon">
+          <div style="font-size: 3.5rem; display: flex; gap: 0.5em">☁️ 💨</div>
+        </div>
+        <div class="tile-title">Enable<br />Multicloud</div>
+        <div class="tile-sub">AWS, GCP, Azure — bring your own capacity</div>
+      </div>
+
+      <div class="tile grow grow-tile">
+        <div class="tile-icon">&nbsp;</div>
+        <div class="tile-title">GROW!<br />Scale GPU Fleet</div>
+        <div class="tile-sub">More GPUs, more regions, more projects</div>
+      </div>
+
+      <div class="tile debug">
+        <div class="tile-icon">
+          <div style="font-size: 4rem">🐛</div>
+        </div>
+        <div class="tile-title">Remote CI<br />Debugging</div>
+        <div class="tile-sub">gpu-dev ci-debug &lt;test-url&gt;</div>
+      </div>
+
+      <!-- Row 2 -->
+      <div class="tile execution">
+        <div class="tile-icon">
+          <div style="font-size: 4rem">🚀</div>
+        </div>
+        <div class="tile-title">Remote Execution<br />& APIs</div>
+        <div class="tile-sub">Programmable GPU access at scale</div>
+      </div>
+
+      <div class="tile k8s-native">
+        <div class="tile-icon">
+          <div style="font-size: 4rem">⎈</div>
+        </div>
+        <div class="tile-title">K8s-Native<br />Operator</div>
+        <div class="tile-sub">CRD-based · drop Lambda dependency</div>
+      </div>
+
+      <div class="tile scale">
+        <div class="tile-icon">
+          <div style="font-size: 4rem">🌍</div>
+        </div>
+        <div class="tile-title">Multi-Region<br />Expansion</div>
+        <div class="tile-sub">us-west, eu-west — low latency everywhere</div>
+      </div>
+    </div>
+  </body>
+</html>

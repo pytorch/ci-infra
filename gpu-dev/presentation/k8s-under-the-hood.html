@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>K8s Under the Hood</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        padding: 35px 50px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+        color: white;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 25px;
+      }
+
+      .header h1 {
+        font-size: 2.6rem;
+        font-weight: 700;
+        margin-bottom: 6px;
+        letter-spacing: -1px;
+      }
+
+      .header p {
+        font-size: 1rem;
+        color: rgba(255, 255, 255, 0.5);
+      }
+
+      .columns {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 22px;
+        width: 100%;
+        max-width: 1400px;
+        flex: 1;
+      }
+
+      .column {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .column-header {
+        text-align: center;
+        padding: 12px;
+        border-radius: 12px;
+        font-size: 1.2rem;
+        font-weight: 700;
+      }
+
+      .col-gpu .column-header {
+        background: linear-gradient(135deg, #76b900 0%, #5a8a00 100%);
+      }
+      .col-storage .column-header {
+        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
+      }
+      .col-monitoring .column-header {
+        background: linear-gradient(135deg, #4ecdc4 0%, #44a08d 100%);
+      }
+
+      .card {
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 14px;
+        padding: 16px 18px;
+        flex: 1;
+      }
+
+      .card h3 {
+        font-size: 0.95rem;
+        margin-bottom: 10px;
+        color: rgba(255, 255, 255, 0.9);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .card-icon {
+        font-size: 1.2rem;
+      }
+
+      .code-block {
+        background: #1e1e1e;
+        border-radius: 8px;
+        padding: 12px 14px;
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 0.7rem;
+        line-height: 1.5;
+        overflow: hidden;
+      }
+
+      .kw {
+        color: #c792ea;
+      }
+      .str {
+        color: #c3e88d;
+      }
+      .num {
+        color: #f78c6c;
+      }
+      .cmt {
+        color: #546e7a;
+        font-style: italic;
+      }
+      .key {
+        color: #82aaff;
+      }
+      .val {
+        color: #e0e0e0;
+      }
+      .hl {
+        color: #61dafb;
+      }
+      .warn {
+        color: #ffbd2e;
+      }
+      .dim {
+        color: #555;
+      }
+
+      .metric {
+        display: flex;
+        justify-content: space-between;
+        padding: 5px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        font-size: 0.8rem;
+      }
+
+      .metric:last-child {
+        border-bottom: none;
+      }
+
+      .metric-label {
+        color: rgba(255, 255, 255, 0.55);
+      }
+
+      .metric-value {
+        font-weight: 600;
+        color: #61dafb;
+      }
+
+      .badge-temp {
+        font-size: 0.6rem;
+        background: rgba(255, 189, 46, 0.2);
+        color: #ffbd2e;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-weight: 600;
+        margin-left: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>K8s Under the Hood</h1>
+      <p>GPU scheduling, persistent storage, and observability on EKS</p>
+    </div>
+
+    <div class="columns">
+      <!-- GPU Scheduling Column -->
+      <div class="column col-gpu">
+        <div class="column-header">GPU Scheduling</div>
+
+        <div class="card">
+          <h3><span class="card-icon">🎮</span> NVIDIA GPU Operator</h3>
+          <div class="code-block">
+            <span class="cmt"># Pod spec — fractional GPU request</span><br />
+            <span class="key">resources</span><span class="val">:</span><br />
+            <span class="key">&nbsp;&nbsp;limits</span
+            ><span class="val">:</span><br />
+            <span class="key">&nbsp;&nbsp;&nbsp;&nbsp;nvidia.com/gpu</span
+            ><span class="val">:</span> <span class="num">4</span><br />
+            <span class="key">&nbsp;&nbsp;requests</span
+            ><span class="val">:</span><br />
+            <span class="key">&nbsp;&nbsp;&nbsp;&nbsp;cpu</span
+            ><span class="val">:</span>
+            <span class="str">"48"</span><br />
+            <span class="key">&nbsp;&nbsp;&nbsp;&nbsp;memory</span
+            ><span class="val">:</span>
+            <span class="str">"384Gi"</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3><span class="card-icon">📐</span> Fractional Allocation</h3>
+          <div class="metric">
+            <span class="metric-label">Min per pod</span>
+            <span class="metric-value">1 GPU (MIG: 0.125)</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Max per pod</span>
+            <span class="metric-value">8 GPUs (full node)</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Multi-node max</span>
+            <span class="metric-value">64 GPUs (8 nodes)</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">CPU/GPU ratio</span>
+            <span class="metric-value">12 cores / GPU</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">RAM/GPU ratio</span>
+            <span class="metric-value">96 GiB / GPU</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>
+            <span class="card-icon">⚡</span> Orchestration
+            <span class="badge-temp">migrating to K8s-native</span>
+          </h3>
+          <div class="metric">
+            <span class="metric-label">Current</span>
+            <span class="metric-value">Lambda + SQS</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Target</span>
+            <span class="metric-value">K8s Operator (CRD)</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Cold start</span>
+            <span class="metric-value">~15s end-to-end</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Storage Column -->
+      <div class="column col-storage">
+        <div class="column-header">Storage Architecture</div>
+
+        <div class="card">
+          <h3><span class="card-icon">💾</span> EBS — User Home Volume</h3>
+          <div class="code-block">
+            <span class="cmt"># Per-user persistent disk at /home/dev</span><br />
+            <br />
+            <span class="hl">reserve</span> <span class="val">→ find snapshot by name</span><br />
+            <span class="val">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ create EBS from snapshot</span><br />
+            <span class="val">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ PV + PVC → mount</span><br />
+            <br />
+            <span class="hl">cancel</span> <span class="val">&nbsp;→ snapshot volume</span><br />
+            <span class="val">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ delete vol + PV/PVC</span><br />
+            <br />
+            <span class="hl">clone</span> <span class="val">&nbsp;&nbsp;→ snapshot → new snapshot</span><br />
+            <span class="val">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ independent copy</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3><span class="card-icon">📁</span> EFS — Personal Shared</h3>
+          <div class="metric">
+            <span class="metric-label">Mount</span>
+            <span class="metric-value">/shared/&lt;user&gt;</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Persists</span>
+            <span class="metric-value">across reservations</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Capacity</span>
+            <span class="metric-value">20 TB shared</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Cross-AZ</span>
+            <span class="metric-value">all pods, all nodes</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3><span class="card-icon">🚀</span> EFS — Shared Caches</h3>
+          <div class="metric">
+            <span class="metric-label">Mount</span>
+            <span class="metric-value">/cache</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">PyTorch</span>
+            <span class="metric-value">pre-cached wheels</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">GCC / build</span>
+            <span class="metric-value">shared ccache</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Benefit</span>
+            <span class="metric-value">instant pip install</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Monitoring Column -->
+      <div class="column col-monitoring">
+        <div class="column-header">Observability</div>
+
+        <div class="card">
+          <h3><span class="card-icon">📊</span> GPU Monitoring Stack</h3>
+          <div class="code-block">
+            <span class="cmt"># DCGM Exporter → Prometheus → Grafana</span><br />
+            <br />
+            <span class="key">DCGM_FI_DEV_GPU_UTIL</span><br />
+            <span class="key">DCGM_FI_DEV_FB_USED</span><br />
+            <span class="key">DCGM_FI_DEV_GPU_TEMP</span><br />
+            <span class="key">DCGM_FI_DEV_POWER_USAGE</span><br />
+            <span class="key">DCGM_FI_DEV_PCIE_TX_THROUGHPUT</span><br />
+            <br />
+            <span class="cmt"># Per-pod, per-GPU, real-time</span><br />
+            <span class="cmt"># Grafana dashboards on NodePort</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3><span class="card-icon">🔍</span> NVIDIA Profiling</h3>
+          <div class="metric">
+            <span class="metric-label">Nsight Compute</span>
+            <span class="metric-value">ncu</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Nsight Systems</span>
+            <span class="metric-value">nsys</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Pod capability</span>
+            <span class="metric-value">CAP_SYS_ADMIN</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Dedicated nodes</span>
+            <span class="metric-value">H100 + B200</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3><span class="card-icon">🔎</span> Reservation Logs</h3>
+          <div class="metric">
+            <span class="metric-label">CLI</span>
+            <span class="metric-value">gpu-dev show --trace</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">SDK</span>
+            <span class="metric-value">sandbox.timing()</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Pod logs</span>
+            <span class="metric-value">sandbox.pod_logs()</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

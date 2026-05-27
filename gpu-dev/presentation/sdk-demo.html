@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SDK Demo — Notebook</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: #1a1a1f;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        color: #e0e0e0;
+      }
+
+      /* Jupyter-like toolbar */
+      .notebook-toolbar {
+        background: #222228;
+        border-bottom: 1px solid #333;
+        padding: 8px 20px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-shrink: 0;
+      }
+
+      .notebook-logo {
+        font-size: 1.4rem;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .notebook-logo span {
+        font-weight: 700;
+        font-size: 1rem;
+        color: #ccc;
+      }
+
+      .notebook-filename {
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 0.85rem;
+        color: #aaa;
+        background: #2a2a30;
+        padding: 4px 12px;
+        border-radius: 6px;
+      }
+
+      .notebook-badge {
+        margin-left: auto;
+        font-size: 0.75rem;
+        color: #fff;
+        background: #76b900;
+        padding: 4px 10px;
+        border-radius: 12px;
+        font-weight: 600;
+      }
+
+      /* Notebook body */
+      .notebook-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px 60px;
+      }
+
+      .cell {
+        margin-bottom: 14px;
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+      }
+
+      .cell-bracket {
+        width: 50px;
+        flex-shrink: 0;
+        text-align: right;
+        padding-top: 10px;
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 0.75rem;
+        color: #999;
+        user-select: none;
+      }
+
+      .cell-bracket.running {
+        color: #76b900;
+        font-weight: 700;
+      }
+
+      .cell-content {
+        flex: 1;
+        min-width: 0;
+      }
+
+      /* Code cells */
+      .code-cell {
+        background: #1e1e24;
+        border: 1px solid #333;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+
+      .code-cell.active {
+        border-color: #4e8fce;
+        border-left: 3px solid #4e8fce;
+      }
+
+      .code-area {
+        padding: 12px 16px;
+        font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+        font-size: 0.8rem;
+        line-height: 1.6;
+        background: #161618;
+      }
+
+      /* Markdown cells */
+      .md-cell {
+        padding: 8px 0;
+      }
+
+      .md-cell h2 {
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: #e0e0e0;
+        border-bottom: 1px solid #333;
+        padding-bottom: 6px;
+        margin-bottom: 4px;
+      }
+
+      .md-cell h3 {
+        font-size: 1rem;
+        font-weight: 600;
+        color: #bbb;
+      }
+
+      .md-cell p {
+        font-size: 0.88rem;
+        color: #999;
+        line-height: 1.5;
+        margin-top: 4px;
+      }
+
+      /* Output cells */
+      .output-area {
+        padding: 10px 16px;
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 0.78rem;
+        line-height: 1.5;
+        color: #ccc;
+        border-top: 1px solid #2a2a30;
+        background: #1a1a1f;
+      }
+
+      .output-area .success {
+        color: #66bb6a;
+      }
+
+      .output-area .info {
+        color: #64b5f6;
+      }
+
+      .output-area .dim {
+        color: #666;
+      }
+
+      /* Python syntax — dark theme */
+      .kw {
+        color: #c792ea;
+        font-weight: 600;
+      }
+      .fn {
+        color: #82aaff;
+      }
+      .str {
+        color: #c3e88d;
+      }
+      .num {
+        color: #f78c6c;
+      }
+      .cmt {
+        color: #546e7a;
+        font-style: italic;
+      }
+      .var {
+        color: #e0e0e0;
+      }
+      .op {
+        color: #89ddff;
+      }
+      .cls {
+        color: #ffcb6b;
+      }
+      .dec {
+        color: #c792ea;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="notebook-toolbar">
+      <div class="notebook-logo">📓 <span>Jupyter</span></div>
+      <div class="notebook-filename">osdc_quickstart.ipynb</div>
+      <div class="notebook-badge">Python 3 · gpu-dev v0.6.6</div>
+    </div>
+
+    <div class="notebook-body">
+      <!-- Section: Setup -->
+      <div class="cell">
+        <div class="cell-bracket"></div>
+        <div class="cell-content">
+          <div class="md-cell">
+            <h2>OSDC Python SDK</h2>
+            <p>
+              Reserve GPUs, run commands, manage persistent disks — all from
+              Python.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cell 1: Import + reserve -->
+      <div class="cell">
+        <div class="cell-bracket running">[1]:</div>
+        <div class="cell-content">
+          <div class="code-cell active">
+            <div class="code-area">
+              <span class="kw">from</span> <span class="cls">gpu_dev</span>
+              <span class="kw">import</span> <span class="cls">GpuDev</span
+              ><br />
+              <br />
+              <span class="var">client</span> <span class="op">=</span>
+              <span class="fn">GpuDev</span><span class="op">()</span><br />
+              <br />
+              <span class="cmt"># Reserve 4 H100 GPUs with persistent disk</span
+              ><br />
+              <span class="var">sandbox</span> <span class="op">=</span>
+              <span class="var">client</span><span class="op">.</span
+              ><span class="fn">reserve</span><span class="op">(</span><br />
+              <span class="var"
+                >&nbsp;&nbsp;&nbsp;&nbsp;gpu_type</span
+              ><span class="op">=</span><span class="str">"h100"</span
+              ><span class="op">,</span>
+              <span class="var">gpu_count</span><span class="op">=</span
+              ><span class="num">4</span><span class="op">,</span><br />
+              <span class="var"
+                >&nbsp;&nbsp;&nbsp;&nbsp;hours</span
+              ><span class="op">=</span><span class="num">8</span
+              ><span class="op">,</span>
+              <span class="var">disk_name</span><span class="op">=</span
+              ><span class="str">"my-project"</span><br />
+              <span class="op">)</span>
+            </div>
+            <div class="output-area">
+              <span class="dim">[18.2s]</span>
+              <span class="success">✓ Ready</span> — 4× H100 · ssh
+              dev@a1b2c3d4.osdc.dev
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cell 2: exec + upload -->
+      <div class="cell">
+        <div class="cell-bracket running">[2]:</div>
+        <div class="cell-content">
+          <div class="code-cell">
+            <div class="code-area">
+              <span class="cmt"># Upload code and run training</span><br />
+              <span class="var">sandbox</span><span class="op">.</span
+              ><span class="fn">upload</span><span class="op">(</span
+              ><span class="str">"./src/"</span><span class="op">,</span>
+              <span class="str">"/home/dev/src/"</span><span class="op"
+                >)</span
+              ><br />
+              <span class="var">result</span> <span class="op">=</span>
+              <span class="var">sandbox</span><span class="op">.</span
+              ><span class="fn">exec</span><span class="op">(</span
+              ><span class="str">"python /home/dev/src/train.py"</span
+              ><span class="op">)</span><br />
+              <span class="fn">print</span><span class="op">(</span
+              ><span class="var">result</span><span class="op">.</span
+              ><span class="var">stdout</span><span class="op">)</span>
+            </div>
+            <div class="output-area">
+              Epoch 1/10: loss=2.341 lr=0.001<br />
+              Epoch 2/10: loss=1.892 lr=0.001<br />
+              Epoch 3/10: loss=1.204 lr=0.0005<br />
+              <span class="dim">...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section: Disk Cloning -->
+      <div class="cell">
+        <div class="cell-bracket"></div>
+        <div class="cell-content">
+          <div class="md-cell">
+            <h2>Disk Cloning: Parallel Experiments</h2>
+            <p>
+              Clone your environment while it's running. Each clone is an
+              independent copy — perfect for parameter sweeps.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cell 3: Clone disks -->
+      <div class="cell">
+        <div class="cell-bracket running">[3]:</div>
+        <div class="cell-content">
+          <div class="code-cell active">
+            <div class="code-area">
+              <span class="cmt"
+                ># Clone the disk while base is still running</span
+              ><br />
+              <span class="var">client</span><span class="op">.</span
+              ><span class="fn">clone_disk</span><span class="op">(</span
+              ><span class="str">"my-project"</span><span class="op">,</span>
+              <span class="str">"exp-high-lr"</span><span class="op">)</span
+              ><br />
+              <span class="var">client</span><span class="op">.</span
+              ><span class="fn">clone_disk</span><span class="op">(</span
+              ><span class="str">"my-project"</span><span class="op">,</span>
+              <span class="str">"exp-low-lr"</span><span class="op">)</span
+              ><br />
+              <span class="var">sandbox</span><span class="op">.</span
+              ><span class="fn">cancel</span><span class="op">()</span>
+              <span class="cmt">&nbsp;# done with base</span>
+            </div>
+            <div class="output-area">
+              <span class="success">✓</span> Cloned my-project →
+              exp-high-lr
+              <span class="dim">(3.2s)</span><br />
+              <span class="success">✓</span> Cloned my-project → exp-low-lr
+              <span class="dim">(3.1s)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cell 4: Parallel experiments -->
+      <div class="cell">
+        <div class="cell-bracket running">[4]:</div>
+        <div class="cell-content">
+          <div class="code-cell">
+            <div class="code-area">
+              <span class="kw">from</span>
+              <span class="cls">concurrent.futures</span>
+              <span class="kw">import</span>
+              <span class="cls">ThreadPoolExecutor</span><br />
+              <br />
+              <span class="kw">def</span>
+              <span class="fn">run_experiment</span><span class="op">(</span
+              ><span class="var">disk</span><span class="op">,</span>
+              <span class="var">lr</span><span class="op">):</span><br />
+              <span class="kw"
+                >&nbsp;&nbsp;&nbsp;&nbsp;with</span
+              >
+              <span class="var">client</span><span class="op">.</span
+              ><span class="fn">reserve</span><span class="op">(</span><br />
+              <span class="var"
+                >&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;gpu_type</span
+              ><span class="op">=</span><span class="str">"h100"</span
+              ><span class="op">,</span>
+              <span class="var">disk_name</span><span class="op">=</span
+              ><span class="var">disk</span><br />
+              <span class="op"
+                >&nbsp;&nbsp;&nbsp;&nbsp;)</span
+              >
+              <span class="kw">as</span> <span class="var">sb</span
+              ><span class="op">:</span><br />
+              <span class="kw"
+                >&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return</span
+              >
+              <span class="var">sb</span><span class="op">.</span
+              ><span class="fn">exec</span><span class="op">(</span
+              ><span class="kw">f</span
+              ><span class="str">"LR={lr} python train.py"</span
+              ><span class="op">)</span><br />
+              <br />
+              <span class="kw">with</span>
+              <span class="fn">ThreadPoolExecutor</span><span class="op">(</span
+              ><span class="num">2</span><span class="op">)</span>
+              <span class="kw">as</span> <span class="var">pool</span
+              ><span class="op">:</span><br />
+              <span class="var"
+                >&nbsp;&nbsp;&nbsp;&nbsp;f1</span
+              >
+              <span class="op">=</span>
+              <span class="var">pool</span><span class="op">.</span
+              ><span class="fn">submit</span><span class="op">(</span
+              ><span class="var">run_experiment</span><span class="op">,</span>
+              <span class="str">"exp-high-lr"</span><span class="op">,</span>
+              <span class="num">0.01</span><span class="op">)</span><br />
+              <span class="var"
+                >&nbsp;&nbsp;&nbsp;&nbsp;f2</span
+              >
+              <span class="op">=</span>
+              <span class="var">pool</span><span class="op">.</span
+              ><span class="fn">submit</span><span class="op">(</span
+              ><span class="var">run_experiment</span><span class="op">,</span>
+              <span class="str">"exp-low-lr"</span><span class="op">,</span>
+              <span class="num">0.0001</span><span class="op">)</span>
+            </div>
+            <div class="output-area">
+              <span class="info">[exp-high-lr]</span> Epoch 10/10: loss=0.042
+              <span class="success">✓</span><br />
+              <span class="info">[exp-low-lr]</span>&nbsp; Epoch 10/10:
+              loss=0.187 <span class="success">✓</span><br />
+              <span class="dim"
+                >Both experiments completed — reservations auto-cancelled</span
+              >
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section: Fine-tuning -->
+      <div class="cell">
+        <div class="cell-bracket"></div>
+        <div class="cell-content">
+          <div class="md-cell">
+            <h2>End-to-End: Fine-tune a Model</h2>
+            <p>
+              Spot instances for cost savings. Persistent disk keeps your
+              checkpoints safe even if spot reclaims.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cell 5: Fine-tuning -->
+      <div class="cell">
+        <div class="cell-bracket running">[5]:</div>
+        <div class="cell-content">
+          <div class="code-cell active">
+            <div class="code-area">
+              <span class="kw">with</span>
+              <span class="var">client</span><span class="op">.</span
+              ><span class="fn">reserve</span><span class="op">(</span><br />
+              <span class="var"
+                >&nbsp;&nbsp;&nbsp;&nbsp;gpu_type</span
+              ><span class="op">=</span><span class="str">"h100"</span
+              ><span class="op">,</span>
+              <span class="var">gpu_count</span><span class="op">=</span
+              ><span class="num">8</span><span class="op">,</span><br />
+              <span class="var"
+                >&nbsp;&nbsp;&nbsp;&nbsp;hours</span
+              ><span class="op">=</span><span class="num">4</span
+              ><span class="op">,</span>
+              <span class="var">spot</span><span class="op">=</span
+              ><span class="kw">True</span><span class="op">,</span><br />
+              <span class="var"
+                >&nbsp;&nbsp;&nbsp;&nbsp;disk_name</span
+              ><span class="op">=</span><span class="str">"llama-finetune"</span
+              ><br />
+              <span class="op">)</span> <span class="kw">as</span>
+              <span class="var">sb</span><span class="op">:</span><br />
+              <br />
+              <span class="var">&nbsp;&nbsp;&nbsp;&nbsp;sb</span
+              ><span class="op">.</span><span class="fn">exec</span
+              ><span class="op">(</span><span class="str">"pip install -q transformers peft bitsandbytes"</span
+              ><span class="op">)</span><br />
+              <span class="var">&nbsp;&nbsp;&nbsp;&nbsp;sb</span
+              ><span class="op">.</span><span class="fn">upload</span
+              ><span class="op">(</span><span class="str">"./finetune.py"</span
+              ><span class="op">,</span>
+              <span class="str">"/home/dev/finetune.py"</span
+              ><span class="op">)</span><br />
+              <br />
+              <span class="var">&nbsp;&nbsp;&nbsp;&nbsp;result</span>
+              <span class="op">=</span>
+              <span class="var">sb</span><span class="op">.</span
+              ><span class="fn">exec</span><span class="op">(</span
+              ><span class="str">"torchrun --nproc_per_node 8 finetune.py"</span
+              ><span class="op">)</span><br />
+              <span class="fn">&nbsp;&nbsp;&nbsp;&nbsp;print</span
+              ><span class="op">(</span
+              ><span class="var">result</span><span class="op">.</span
+              ><span class="var">stdout</span><span class="op">)</span><br />
+              <br />
+              <span class="var">&nbsp;&nbsp;&nbsp;&nbsp;sb</span
+              ><span class="op">.</span><span class="fn">download</span
+              ><span class="op">(</span
+              ><span class="str">"/home/dev/output/"</span
+              ><span class="op">,</span>
+              <span class="str">"./finetuned-model/"</span
+              ><span class="op">)</span>
+            </div>
+            <div class="output-area">
+              <span class="dim">[spot] 8× H100 · 640 GB VRAM · ~70% cheaper</span><br />
+              Loading meta-llama/Llama-3.1-8B...<br />
+              LoRA rank=16, target: q_proj, v_proj<br />
+              Epoch 1/3: loss=1.842 · 12.4k tokens/s<br />
+              Epoch 2/3: loss=0.921 · 12.6k tokens/s<br />
+              Epoch 3/3: loss=0.447 · 12.5k tokens/s<br />
+              <span class="success">✓ Model saved to /home/dev/output/</span><br />
+              <span class="dim">Downloaded finetuned-model/ (2.1 GB) · reservation auto-cancelled</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

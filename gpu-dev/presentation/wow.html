@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSDC Demo</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: #0a0a0a;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        padding: 60px;
+      }
+
+      .terminal {
+        background: #1a1a1a;
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8),
+          0 0 80px rgba(102, 126, 234, 0.08);
+        width: 100%;
+        max-width: 900px;
+      }
+
+      .terminal-bar {
+        background: #2d2d2d;
+        padding: 14px 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+      }
+
+      .dot-red {
+        background: #ff5f56;
+      }
+      .dot-yellow {
+        background: #ffbd2e;
+      }
+      .dot-green {
+        background: #27c93f;
+      }
+
+      .terminal-title {
+        color: rgba(255, 255, 255, 0.4);
+        font-size: 0.85rem;
+        margin-left: 10px;
+        font-family: "SF Mono", "Fira Code", monospace;
+      }
+
+      .terminal-body {
+        padding: 30px 35px;
+        font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+        font-size: 1.15rem;
+        line-height: 2;
+      }
+
+      .prompt {
+        color: #27c93f;
+      }
+
+      .cmd {
+        color: #f0f0f0;
+        font-weight: 600;
+      }
+
+      .flag {
+        color: #c792ea;
+      }
+
+      .val {
+        color: #c3e88d;
+      }
+
+      .out {
+        color: #777;
+      }
+
+      .hl {
+        color: #61dafb;
+        font-weight: 600;
+      }
+
+      .success {
+        color: #27c93f;
+        font-weight: 600;
+      }
+
+      .warn {
+        color: #ffbd2e;
+      }
+
+      .ssh-line {
+        margin-top: 8px;
+        padding: 12px 18px;
+        background: rgba(97, 218, 251, 0.08);
+        border-radius: 8px;
+        border-left: 3px solid #61dafb;
+        display: inline-block;
+      }
+
+      .tagline {
+        color: rgba(255, 255, 255, 0.25);
+        font-size: 1.1rem;
+        margin-top: 40px;
+        text-align: center;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="dot dot-red"></div>
+        <div class="dot dot-yellow"></div>
+        <div class="dot dot-green"></div>
+        <span class="terminal-title">~ — zsh</span>
+      </div>
+      <div class="terminal-body">
+        <span class="prompt">$</span>
+        <span class="cmd"> gpu-dev reserve</span>
+        <span class="flag"> --gpu-type</span>
+        <span class="val"> h100</span>
+        <span class="flag"> --gpus</span>
+        <span class="val"> 4</span>
+        <span class="flag"> --hours</span>
+        <span class="val"> 8</span><br />
+
+        <span class="out">Reservation <span class="hl">a1b2c3d4</span> created</span><br />
+        <span class="out">Restoring persistent disk...</span><br />
+        <span class="success">Ready in 18s</span><br />
+
+        <br />
+        <div class="ssh-line">
+          <span class="prompt">$</span>
+          <span class="cmd"> ssh</span>
+          <span class="val"> dev@a1b2c3d4.osdc.dev</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="tagline">4 &times; H100 &nbsp;&middot;&nbsp; 320 GB GPU memory &nbsp;&middot;&nbsp; one command</div>
+  </body>
+</html>

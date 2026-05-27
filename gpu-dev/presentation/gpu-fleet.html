@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GPU Fleet</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 40px 60px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        color: white;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 40px;
+      }
+
+      .header h1 {
+        font-size: 3.5rem;
+        font-weight: 700;
+        margin-bottom: 10px;
+        letter-spacing: -2px;
+      }
+
+      .header p {
+        font-size: 1.2rem;
+        color: rgba(255, 255, 255, 0.7);
+      }
+
+      .table-container {
+        width: 100%;
+        max-width: 1200px;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 20px;
+        overflow: hidden;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      thead th {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 16px 20px;
+        text-align: left;
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.7);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+
+      tbody td {
+        padding: 14px 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        font-size: 1rem;
+      }
+
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+
+      tbody tr:hover {
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .gpu-name {
+        font-weight: 700;
+        font-size: 1.1rem;
+      }
+
+      .gpu-name .gen {
+        font-size: 0.7rem;
+        font-weight: 400;
+        color: rgba(255, 255, 255, 0.5);
+        display: block;
+        margin-top: 2px;
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+
+      .badge-new {
+        background: rgba(118, 185, 0, 0.3);
+        color: #a0e040;
+      }
+
+      .badge-popular {
+        background: rgba(97, 218, 251, 0.2);
+        color: #61dafb;
+      }
+
+      .badge-budget {
+        background: rgba(255, 189, 46, 0.2);
+        color: #ffbd2e;
+      }
+
+      .badge-spot {
+        background: rgba(255, 107, 107, 0.2);
+        color: #ff9a9e;
+      }
+
+      .memory-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .bar {
+        height: 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.15);
+        flex: 1;
+        max-width: 120px;
+        overflow: hidden;
+      }
+
+      .bar-fill {
+        height: 100%;
+        border-radius: 4px;
+        background: linear-gradient(90deg, #76b900, #a0e040);
+      }
+
+      .footnote {
+        text-align: center;
+        margin-top: 25px;
+        font-size: 0.9rem;
+        color: rgba(255, 255, 255, 0.5);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>GPU Fleet</h1>
+      <p>From cost-effective T4s to cutting-edge B300s</p>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>GPU</th>
+            <th>Memory / GPU</th>
+            <th>Per Node</th>
+            <th>Multinode</th>
+            <th>Interconnect</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >B300<span class="gen">Blackwell · Latest</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                192 GB
+                <div class="bar">
+                  <div class="bar-fill" style="width: 100%"></div>
+                </div>
+              </div>
+            </td>
+            <td>8</td>
+            <td>up to 48</td>
+            <td>NVLink + EFA</td>
+            <td><span class="badge badge-new">NEW</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >B200<span class="gen">Blackwell</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                192 GB
+                <div class="bar">
+                  <div class="bar-fill" style="width: 100%"></div>
+                </div>
+              </div>
+            </td>
+            <td>8</td>
+            <td>up to 48</td>
+            <td>NVLink + EFA</td>
+            <td><span class="badge badge-new">NEW</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >H200<span class="gen">Hopper · High Mem</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                141 GB
+                <div class="bar">
+                  <div class="bar-fill" style="width: 73%"></div>
+                </div>
+              </div>
+            </td>
+            <td>8</td>
+            <td>up to 48</td>
+            <td>NVLink + EFA</td>
+            <td><span class="badge badge-popular">POPULAR</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >H100<span class="gen">Hopper</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                80 GB
+                <div class="bar">
+                  <div class="bar-fill" style="width: 42%"></div>
+                </div>
+              </div>
+            </td>
+            <td>8</td>
+            <td>up to 48</td>
+            <td>NVLink + EFA</td>
+            <td><span class="badge badge-popular">POPULAR</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >A100<span class="gen">Ampere</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                40 GB
+                <div class="bar">
+                  <div class="bar-fill" style="width: 21%"></div>
+                </div>
+              </div>
+            </td>
+            <td>8</td>
+            <td>up to 48</td>
+            <td>NVLink + EFA</td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >RTX PRO 6000<span class="gen">Blackwell · Desktop</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                48 GB
+                <div class="bar">
+                  <div class="bar-fill" style="width: 25%"></div>
+                </div>
+              </div>
+            </td>
+            <td>4</td>
+            <td>—</td>
+            <td>PCIe</td>
+            <td><span class="badge badge-new">NEW</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >L4<span class="gen">Ada Lovelace</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                24 GB
+                <div class="bar">
+                  <div class="bar-fill" style="width: 13%"></div>
+                </div>
+              </div>
+            </td>
+            <td>4</td>
+            <td>—</td>
+            <td>PCIe</td>
+            <td><span class="badge badge-budget">BUDGET</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >T4<span class="gen">Turing</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                16 GB
+                <div class="bar">
+                  <div class="bar-fill" style="width: 8%"></div>
+                </div>
+              </div>
+            </td>
+            <td>4</td>
+            <td>—</td>
+            <td>PCIe</td>
+            <td><span class="badge badge-budget">BUDGET</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span class="gpu-name"
+                >CPU<span class="gen">ARM (c7g) + x86 (c7i)</span></span
+              >
+            </td>
+            <td>
+              <div class="memory-bar">
+                —
+              </div>
+            </td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td><span class="badge badge-budget">DEV/BUILD</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="footnote">
+      + MIG slices available on H100 and B200 &nbsp;·&nbsp; Spot instances
+      available (~70% cheaper) &nbsp;·&nbsp; Custom Docker images supported
+    </div>
+  </body>
+</html>

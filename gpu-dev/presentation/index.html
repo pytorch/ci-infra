@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSDC Presentation</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: #000;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .carousel {
+        position: relative;
+        width: 100%;
+        height: 100vh;
+      }
+
+      .slide {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        opacity: 0;
+        transition: opacity 0.5s ease-in-out;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .slide.active {
+        opacity: 1;
+        z-index: 1;
+      }
+
+      /* Video slide */
+      .title-video {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        min-width: 100%;
+        min-height: 100%;
+        width: auto;
+        height: auto;
+        z-index: 0;
+        object-fit: cover;
+      }
+
+      /* Image slides */
+      .slide img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+      }
+
+      /* Title slide styling */
+      .title-slide {
+        position: relative;
+        background: #000;
+        overflow: hidden;
+      }
+
+      .title-overlay {
+        position: absolute;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+        color: white;
+        z-index: 1;
+        background: rgba(0, 0, 0, 0.3);
+        padding: 20px 40px;
+        backdrop-filter: blur(8px);
+        border-radius: 15px;
+        width: auto;
+        white-space: nowrap;
+      }
+
+      .title-overlay h1 {
+        font-size: 3.5rem;
+        font-weight: 700;
+        margin-bottom: 20px;
+        letter-spacing: -1px;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7);
+      }
+
+      .title-overlay .presenters {
+        font-size: 1.8rem;
+        font-weight: 400;
+        color: rgba(255, 255, 255, 0.9);
+        text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.7);
+      }
+
+      /* Iframe slides */
+      .slide iframe {
+        width: 100%;
+        height: 100%;
+        border: none;
+        background: white;
+      }
+
+      /* Problem slide with header */
+      .problem-slide {
+        flex-direction: column;
+        justify-content: flex-start;
+        padding-top: 80px;
+        gap: 40px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      }
+
+      .problem-header h1 {
+        font-size: 3rem;
+        font-weight: 600;
+        color: white;
+        text-align: center;
+      }
+
+      .problem-content img {
+        max-height: calc(100vh - 240px);
+        border-radius: 15px;
+      }
+
+      /* Feedback slide with header */
+      .feedback-slide {
+        flex-direction: column;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 60px;
+      }
+
+      .feedback-header {
+        text-align: center;
+        margin-bottom: 40px;
+      }
+
+      .feedback-header h1 {
+        font-size: 4rem;
+        font-weight: 700;
+        color: white;
+        margin-bottom: 20px;
+        letter-spacing: -2px;
+      }
+
+      .feedback-header p {
+        font-size: 1.5rem;
+        color: rgba(255, 255, 255, 0.8);
+        font-weight: 400;
+      }
+
+      .feedback-content {
+        flex: 1;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        max-width: 1200px;
+        width: 100%;
+        transition: transform 0.3s ease-in-out;
+      }
+
+      .feedback-content:hover {
+        transform: scale(1.05);
+      }
+
+      .feedback-content img {
+        max-width: 100%;
+        max-height: 100%;
+        border-radius: 20px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        transition: box-shadow 0.3s ease-in-out;
+      }
+
+      .feedback-content:hover img {
+        box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
+      }
+
+      /* What's Next slide */
+      .whats-next-slide {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        text-align: center;
+        padding: 60px;
+      }
+
+      .whats-next-content h1 {
+        font-size: 4rem;
+        font-weight: 700;
+        margin-bottom: 50px;
+      }
+
+      .whats-next-content ul {
+        list-style: none;
+        padding: 0;
+        font-size: 1.8rem;
+        line-height: 1.7;
+        text-align: left;
+        max-width: 900px;
+      }
+
+      .whats-next-content ul li {
+        margin-bottom: 30px;
+        padding-left: 1.5em;
+        position: relative;
+      }
+
+      .whats-next-content ul li::before {
+        content: ">";
+        position: absolute;
+        left: 0;
+        color: #bca0dc;
+        font-weight: bold;
+      }
+
+      .whats-next-content a {
+        color: #fefefe;
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .whats-next-content a:hover {
+        text-decoration: underline;
+      }
+
+      /* Navigation */
+      .nav-controls {
+        position: fixed;
+        bottom: 30px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1000;
+        display: flex;
+        gap: 15px;
+        align-items: center;
+      }
+
+      .nav-btn {
+        background: rgba(255, 255, 255, 0.2);
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        color: white;
+        padding: 12px 20px;
+        border-radius: 25px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-size: 16px;
+        backdrop-filter: blur(10px);
+      }
+
+      .nav-btn:hover {
+        background: rgba(255, 255, 255, 0.3);
+        border-color: rgba(255, 255, 255, 0.5);
+      }
+
+      .slide-indicators {
+        display: flex;
+        gap: 8px;
+      }
+
+      .indicator {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.3);
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .indicator.active {
+        background: rgba(255, 255, 255, 0.8);
+        transform: scale(1.3);
+      }
+
+      /* Slide counter */
+      .slide-counter {
+        position: fixed;
+        top: 20px;
+        right: 30px;
+        z-index: 1000;
+        color: rgba(255, 255, 255, 0.4);
+        font-size: 14px;
+        font-family: "SF Mono", monospace;
+        backdrop-filter: blur(10px);
+        background: rgba(0, 0, 0, 0.3);
+        padding: 6px 12px;
+        border-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="carousel">
+      <!-- ACT 1: HOOK -->
+
+      <!-- Slide 1: Title -->
+      <div class="slide active title-slide">
+        <video autoplay muted playsinline class="title-video" id="titleVideo">
+          <source src="title-vid.mp4" type="video/mp4" />
+        </video>
+        <div class="title-overlay">
+          <h1>Open Source Developer Cloud</h1>
+          <div class="presenters">Wouter Devriendt</div>
+        </div>
+      </div>
+
+      <!-- Slide 2: Wow — instant demo -->
+      <div class="slide">
+        <iframe src="./wow.html" title="Demo"></iframe>
+      </div>
+
+      <!-- ACT 2: THE PROBLEM -->
+
+      <!-- Slide 3: Problem -->
+      <div class="slide problem-slide">
+        <div class="problem-header">
+          <h1>What triggered the start of this project?</h1>
+        </div>
+        <div class="problem-content">
+          <img src="./problem.png" alt="The Problem" />
+        </div>
+      </div>
+
+      <!-- ACT 3: THE SOLUTION -->
+
+      <!-- Slide 4: Thesis -->
+      <div class="slide">
+        <iframe src="./thesis.html" title="Thesis"></iframe>
+      </div>
+
+      <!-- Slide 5: Architecture -->
+      <div class="slide">
+        <iframe src="./architecture.html" title="Architecture"></iframe>
+      </div>
+
+      <!-- Slide 6: GPU Fleet -->
+      <div class="slide">
+        <iframe src="./gpu-fleet.html" title="GPU Fleet"></iframe>
+      </div>
+
+      <!-- ACT 4: THE EXPERIENCE -->
+
+      <!-- Slide 7: CLI Demo -->
+      <div class="slide">
+        <iframe src="./cli-demo.html" title="CLI Demo"></iframe>
+      </div>
+
+      <!-- Slide 8: SDK Demo -->
+      <div class="slide">
+        <iframe src="./sdk-demo.html" title="SDK Demo"></iframe>
+      </div>
+
+      <!-- ACT 5: UNDER THE HOOD -->
+
+      <!-- Slide 9: K8s Under the Hood -->
+      <div class="slide">
+        <iframe
+          src="./k8s-under-the-hood.html"
+          title="K8s Under the Hood"
+        ></iframe>
+      </div>
+
+      <!-- Slide 10: Multi-Node -->
+      <div class="slide">
+        <iframe src="./multinode.html" title="Multi-Node Training"></iframe>
+      </div>
+
+      <!-- ACT 6: RESULTS & FUTURE -->
+
+      <!-- Slide 11: User Feedback -->
+      <div class="slide feedback-slide">
+        <div class="feedback-header">
+          <h1>User Feedback</h1>
+          <p>What developers are saying about OSDC</p>
+        </div>
+        <div class="feedback-content">
+          <img src="./feedback.png" alt="User Feedback" />
+        </div>
+      </div>
+
+      <!-- Slide 13: Future Plans -->
+      <div class="slide">
+        <iframe
+          src="./osdc-future-plans.html"
+          title="OSDC Future Plans"
+        ></iframe>
+      </div>
+
+      <!-- Slide 15: Get Started -->
+      <div class="slide whats-next-slide">
+        <div class="whats-next-content">
+          <h1>Get Started</h1>
+          <ul>
+            <li>
+              <strong>pip install gpu-dev</strong> &mdash; CLI + Python SDK in
+              one package
+            </li>
+            <li>
+              All open source:
+              <a
+                href="https://github.com/wdvr/osdc"
+                target="_blank"
+                >github.com/wdvr/osdc</a
+              >
+            </li>
+            <li>
+              Bring your own cloud capacity &mdash; multi-cloud support coming
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide Counter -->
+    <div class="slide-counter" id="slideCounter">1 / 13</div>
+
+    <!-- Navigation Controls -->
+    <div class="nav-controls">
+      <button class="nav-btn" onclick="prevSlide()">&#8592;</button>
+
+      <div class="slide-indicators" id="indicators"></div>
+
+      <button class="nav-btn" onclick="nextSlide()">&#8594;</button>
+    </div>
+
+    <script>
+      let currentSlide = 0;
+      const slides = document.querySelectorAll(".slide");
+      const totalSlides = slides.length;
+      const counter = document.getElementById("slideCounter");
+      const indicatorContainer = document.getElementById("indicators");
+
+      // Generate indicators dynamically
+      for (let i = 0; i < totalSlides; i++) {
+        const dot = document.createElement("div");
+        dot.className = "indicator" + (i === 0 ? " active" : "");
+        dot.onclick = () => goToSlide(i);
+        indicatorContainer.appendChild(dot);
+      }
+
+      function showSlide(n, updateHash = true) {
+        if (n !== undefined) {
+          currentSlide = n;
+        }
+
+        if (currentSlide >= totalSlides) currentSlide = 0;
+        if (currentSlide < 0) currentSlide = totalSlides - 1;
+
+        slides.forEach((slide) => slide.classList.remove("active"));
+        const indicators = document.querySelectorAll(".indicator");
+        indicators.forEach((ind) => ind.classList.remove("active"));
+
+        slides[currentSlide].classList.add("active");
+        indicators[currentSlide].classList.add("active");
+        counter.textContent = `${currentSlide + 1} / ${totalSlides}`;
+
+        if (updateHash) {
+          window.history.replaceState(null, null, `#${currentSlide + 1}`);
+        }
+      }
+
+      function nextSlide() {
+        currentSlide++;
+        showSlide();
+      }
+
+      function prevSlide() {
+        currentSlide--;
+        showSlide();
+      }
+
+      function goToSlide(n) {
+        showSlide(n);
+      }
+
+      // Keyboard navigation
+      document.addEventListener("keydown", function (e) {
+        switch (e.key) {
+          case "ArrowLeft":
+            prevSlide();
+            break;
+          case "ArrowRight":
+          case " ":
+            e.preventDefault();
+            nextSlide();
+            break;
+          case "f":
+          case "F":
+            if (document.fullscreenElement) {
+              document.exitFullscreen();
+            } else {
+              document.documentElement.requestFullscreen();
+            }
+            break;
+        }
+
+        // Number keys for direct slide access
+        const num = parseInt(e.key);
+        if (num >= 1 && num <= 9 && num <= totalSlides) {
+          goToSlide(num - 1);
+        }
+      });
+
+      // Handle hash changes
+      function handleHashChange() {
+        const hash = window.location.hash.slice(1);
+        const slideNumber = parseInt(hash);
+        if (slideNumber >= 1 && slideNumber <= totalSlides) {
+          showSlide(slideNumber - 1, false);
+        }
+      }
+
+      window.addEventListener("hashchange", handleHashChange);
+
+      if (!window.location.hash) {
+        window.location.hash = "#1";
+      }
+      handleHashChange();
+
+      // Bouncing video effect for the title slide
+      const titleVideo = document.getElementById("titleVideo");
+      if (titleVideo) {
+        titleVideo.addEventListener("loadedmetadata", function () {
+          const video = this;
+          video.pause();
+
+          let isPlayingForward = true;
+          let lastFrameTime = performance.now();
+
+          function bounceLoop(now) {
+            const delta = (now - lastFrameTime) / 1000;
+            lastFrameTime = now;
+
+            if (isPlayingForward) {
+              video.currentTime += delta;
+              if (video.currentTime >= video.duration) {
+                video.currentTime = video.duration;
+                isPlayingForward = false;
+              }
+            } else {
+              video.currentTime -= delta;
+              if (video.currentTime <= 0) {
+                video.currentTime = 0;
+                isPlayingForward = true;
+              }
+            }
+            requestAnimationFrame(bounceLoop);
+          }
+          requestAnimationFrame(bounceLoop);
+        });
+      }
+    </script>
+  </body>
+</html>

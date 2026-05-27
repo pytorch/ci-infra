@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSDC Features</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 40px 50px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 35px;
+      }
+
+      .header h1 {
+        font-size: 3.2rem;
+        font-weight: 700;
+        color: white;
+        margin-bottom: 12px;
+        letter-spacing: -2px;
+      }
+
+      .header p {
+        font-size: 1.2rem;
+        color: rgba(255, 255, 255, 0.7);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        grid-template-rows: repeat(3, 1fr);
+        gap: 16px;
+        width: 100%;
+        max-width: 1350px;
+        height: 480px;
+      }
+
+      .tile {
+        border-radius: 18px;
+        padding: 22px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        color: white;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .tile:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 16px 35px rgba(0, 0, 0, 0.3);
+      }
+
+      .tile-icon {
+        font-size: 2.2rem;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .tile-title {
+        font-size: 1rem;
+        line-height: 1.3;
+      }
+
+      .tile-sub {
+        font-size: 0.7rem;
+        font-weight: 400;
+        opacity: 0.7;
+        margin-top: 4px;
+      }
+
+      /* Sizes */
+      .large {
+        grid-column: span 2;
+        grid-row: span 2;
+      }
+
+      .large .tile-icon {
+        font-size: 3.5rem;
+        margin-bottom: 16px;
+      }
+
+      .large .tile-title {
+        font-size: 1.6rem;
+      }
+
+      .large .tile-sub {
+        font-size: 0.85rem;
+      }
+
+      .wide {
+        grid-column: span 2;
+      }
+
+      .wide .tile-icon {
+        font-size: 2.8rem;
+      }
+
+      .wide .tile-title {
+        font-size: 1.15rem;
+      }
+
+      /* Colors */
+      .gpu {
+        background: linear-gradient(135deg, #76b900 0%, #5a8a00 100%);
+      }
+      .scale {
+        background: linear-gradient(135deg, #4ecdc4 0%, #44a08d 100%);
+      }
+      .storage {
+        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
+      }
+      .ondemand {
+        background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+      }
+      .ownership {
+        background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);
+      }
+      .network {
+        background: linear-gradient(135deg, #607d8b 0%, #455a64 100%);
+      }
+      .sdk-color {
+        background: linear-gradient(135deg, #2196f3 0%, #1565c0 100%);
+      }
+      .submit-color {
+        background: linear-gradient(135deg, #e91e63 0%, #c2185b 100%);
+      }
+      .ide-color {
+        background: linear-gradient(135deg, #263238 0%, #37474f 100%);
+      }
+      .fast-color {
+        background: linear-gradient(135deg, #ffb300 0%, #ff8f00 100%);
+      }
+      .k8s-color {
+        background: linear-gradient(135deg, #2d4a87 0%, #1e3a6f 100%);
+      }
+      .docker-color {
+        background: linear-gradient(135deg, #0db7ed 0%, #0a8fc2 100%);
+      }
+      .cuda-color {
+        background: linear-gradient(135deg, #76b900 0%, #388e3c 100%);
+      }
+      .profiling-color {
+        background: linear-gradient(135deg, #795548 0%, #5d4037 100%);
+      }
+
+      /* Layout */
+      .fractional {
+        grid-column: 1 / 3;
+        grid-row: 1 / 3;
+      }
+      .multinode {
+        grid-column: 3 / 5;
+        grid-row: 1 / 3;
+      }
+      .persistent {
+        grid-column: 5 / 7;
+        grid-row: 1 / 2;
+      }
+      .networking {
+        grid-column: 5 / 7;
+        grid-row: 2 / 3;
+      }
+      .sdk-tile {
+        grid-column: 1 / 2;
+        grid-row: 3 / 4;
+      }
+      .submit-tile {
+        grid-column: 2 / 3;
+        grid-row: 3 / 4;
+      }
+      .coldstart-tile {
+        grid-column: 3 / 4;
+        grid-row: 3 / 4;
+      }
+      .ide-tile {
+        grid-column: 4 / 5;
+        grid-row: 3 / 4;
+      }
+      .docker-tile {
+        grid-column: 5 / 6;
+        grid-row: 3 / 4;
+      }
+      .profiling-tile {
+        grid-column: 6 / 7;
+        grid-row: 3 / 4;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>OSDC: Feature Overview</h1>
+      <p>Everything an open source GPU developer needs</p>
+    </div>
+
+    <div class="grid">
+      <!-- Large: Fractional GPUs -->
+      <div class="tile large gpu fractional">
+        <div class="tile-icon">✂️</div>
+        <div class="tile-title">Fractional GPUs<br />0.125 — 64</div>
+        <div class="tile-sub">MIG slices to multi-node clusters</div>
+      </div>
+
+      <!-- Large: Multi-Node -->
+      <div class="tile large scale multinode">
+        <div class="tile-icon">🖥️🔗🖥️</div>
+        <div class="tile-title">Multi-Node<br />Distributed Training</div>
+        <div class="tile-sub">EFA + NCCL · torchrun ready</div>
+      </div>
+
+      <!-- Wide: Persistent Disks -->
+      <div class="tile wide storage persistent">
+        <div class="tile-icon">💾</div>
+        <div class="tile-title">Persistent Disks</div>
+        <div class="tile-sub">EBS snapshots · clone · restore</div>
+      </div>
+
+      <!-- Wide: Networking -->
+      <div class="tile wide network networking">
+        <div class="tile-icon">🌐</div>
+        <div class="tile-title">EFA + Shared Storage</div>
+        <div class="tile-sub">3200 Gbps · EFS cache · /shared</div>
+      </div>
+
+      <!-- Bottom row: 6 small tiles -->
+      <div class="tile sdk-color sdk-tile">
+        <div class="tile-icon">🐍</div>
+        <div class="tile-title">Python SDK</div>
+        <div class="tile-sub">pip install gpu-dev</div>
+      </div>
+
+      <div class="tile submit-color submit-tile">
+        <div class="tile-icon">📤</div>
+        <div class="tile-title">Job Submit</div>
+        <div class="tile-sub">Slurm-like batch mode</div>
+      </div>
+
+      <div class="tile fast-color coldstart-tile">
+        <div class="tile-icon">⚡</div>
+        <div class="tile-title">~15s Cold Start</div>
+        <div class="tile-sub">Reserve to SSH</div>
+      </div>
+
+      <div class="tile ide-color ide-tile">
+        <div class="tile-icon" style="font-size: 1.4rem; gap: 6px; display: flex">
+          💻 📓
+        </div>
+        <div class="tile-title">IDE + Jupyter</div>
+        <div class="tile-sub">VSCode · Cursor · Claude Code</div>
+      </div>
+
+      <div class="tile docker-color docker-tile">
+        <div class="tile-icon">🐳</div>
+        <div class="tile-title">Custom Docker</div>
+        <div class="tile-sub">Bring your own image</div>
+      </div>
+
+      <div class="tile profiling-color profiling-tile">
+        <div class="tile-icon">🔬</div>
+        <div class="tile-title">GPU Profiling</div>
+        <div class="tile-sub">ncu · nsys · Grafana</div>
+      </div>
+    </div>
+  </body>
+</html>

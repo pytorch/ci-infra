@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CLI Demo</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; width: 100%; }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0a0a0a;
+        display: flex;
+        flex-direction: column;
+        color: white;
+        padding: 28px 36px 18px;
+        overflow: hidden;
+      }
+
+      .header { text-align: center; margin-bottom: 14px; flex-shrink: 0; }
+      .header h1 { font-size: 2.2rem; font-weight: 700; letter-spacing: -1px; }
+      .header p { font-size: 0.9rem; color: rgba(255,255,255,0.3); }
+
+      .stage {
+        flex: 1;
+        display: flex;
+        gap: 14px;
+        min-height: 0;
+      }
+
+      /* ── Left sidebar: all 4 minis always visible ── */
+      .sidebar {
+        width: 220px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        overflow: hidden;
+      }
+
+      .mini {
+        border-radius: 9px;
+        overflow: hidden;
+        cursor: pointer;
+        transition: transform 0.35s ease, opacity 0.35s ease, box-shadow 0.35s ease, border-color 0.35s ease;
+        opacity: 0.35;
+        border: 2px solid transparent;
+        flex-shrink: 0;
+        background: #1a1a1a;
+      }
+
+      .mini:hover { opacity: 0.65; }
+
+      .mini.visited { opacity: 0.55; }
+
+      .mini.active {
+        opacity: 1;
+        border-color: #61dafb;
+        box-shadow: 0 0 16px rgba(97, 218, 251, 0.25);
+        transform: scale(1.03);
+      }
+
+      .mini-bar {
+        background: #2d2d2d;
+        padding: 5px 8px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .mini-dot { width: 6px; height: 6px; border-radius: 50%; }
+      .mini-title {
+        color: rgba(255,255,255,0.4);
+        font-size: 0.55rem;
+        margin-left: 5px;
+        font-family: "SF Mono", monospace;
+      }
+      .mini-body {
+        padding: 6px 8px;
+        font-family: "SF Mono", monospace;
+        font-size: 0.46rem;
+        line-height: 1.35;
+        max-height: 80px;
+        overflow: hidden;
+        color: #888;
+      }
+
+      /* ── Main area ── */
+      .main {
+        flex: 1;
+        position: relative;
+        min-width: 0;
+      }
+
+      .panel {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        opacity: 0;
+        transform: scale(0.92);
+        transform-origin: left center;
+        transition: opacity 0.4s ease, transform 0.4s ease;
+        pointer-events: none;
+      }
+
+      .panel.active {
+        opacity: 1;
+        transform: scale(1);
+        pointer-events: auto;
+      }
+
+      /* ── Terminal ── */
+      .terminal {
+        background: #1a1a1a;
+        border-radius: 13px;
+        overflow: hidden;
+        box-shadow: 0 14px 45px rgba(0,0,0,0.6);
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+
+      .terminal-bar {
+        background: #2d2d2d;
+        padding: 11px 16px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-shrink: 0;
+      }
+      .dot { width: 12px; height: 12px; border-radius: 50%; }
+      .dot-r { background: #ff5f56; }
+      .dot-y { background: #ffbd2e; }
+      .dot-g { background: #27c93f; }
+      .terminal-title {
+        color: rgba(255,255,255,0.4);
+        font-size: 0.78rem;
+        margin-left: 8px;
+        font-family: "SF Mono", monospace;
+      }
+
+      .terminal-body {
+        padding: 18px 22px;
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 0.88rem;
+        line-height: 1.75;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      /* syntax */
+      .p { color: #27c93f; }
+      .c { color: #f0f0f0; font-weight: 600; }
+      .f { color: #c792ea; }
+      .v { color: #c3e88d; }
+      .o { color: #888; }
+      .h { color: #61dafb; }
+      .s { color: #27c93f; }
+      .w { color: #ffbd2e; }
+      .d { color: #555; }
+      .t { color: #61dafb; font-weight: 600; }
+      .sep { color: #333; }
+
+      /* nav hint */
+      .nav-hint {
+        text-align: center;
+        margin-top: 8px;
+        font-size: 0.65rem;
+        color: rgba(255,255,255,0.15);
+        flex-shrink: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Developer Experience: CLI</h1>
+      <p>pip install gpu-dev</p>
+    </div>
+
+    <div class="stage">
+
+      <!-- ── Sidebar: mini thumbnails ── -->
+      <div class="sidebar">
+
+        <div class="mini active" data-idx="0" onclick="go(0)">
+          <div class="mini-bar">
+            <div class="mini-dot dot-r"></div><div class="mini-dot dot-y"></div><div class="mini-dot dot-g"></div>
+            <span class="mini-title">Reserve GPUs</span>
+          </div>
+          <div class="mini-body">
+            <span class="p">$</span> <span class="c">gpu-dev reserve</span> <span class="f">--gpu-type</span> <span class="v">h100</span><br/>
+            <span class="o">📋 Reservation <span class="h">a1b2c3d4</span></span><br/>
+            <span class="s">✅ Ready! (18s)</span><br/>
+            <span class="o">SSH: <span class="h">ssh dev@a1b2.osdc.dev</span></span>
+          </div>
+        </div>
+
+        <div class="mini" data-idx="1" onclick="go(1)">
+          <div class="mini-bar">
+            <div class="mini-dot dot-r"></div><div class="mini-dot dot-y"></div><div class="mini-dot dot-g"></div>
+            <span class="mini-title">GPU Availability</span>
+          </div>
+          <div class="mini-body">
+            <span class="p">$</span> <span class="c">gpu-dev avail</span><br/>
+            <span class="o">B300 <span class="s">8</span>/16 · H100 <span class="w">0</span>/16</span><br/>
+            <span class="o">T4 <span class="s">12</span>/16 · CPU <span class="s">4</span>/4</span>
+          </div>
+        </div>
+
+        <div class="mini" data-idx="2" onclick="go(2)">
+          <div class="mini-bar">
+            <div class="mini-dot dot-r"></div><div class="mini-dot dot-y"></div><div class="mini-dot dot-g"></div>
+            <span class="mini-title">Batch Submit</span>
+          </div>
+          <div class="mini-body">
+            <span class="p">$</span> <span class="c">gpu-dev submit</span> <span class="f">--spot</span><br/>
+            <span class="o">💰 <span class="w">spot</span> (~70% cheaper)</span><br/>
+            <span class="s">🚀 Running on 8x H100</span>
+          </div>
+        </div>
+
+        <div class="mini" data-idx="3" onclick="go(3)">
+          <div class="mini-bar">
+            <div class="mini-dot dot-r"></div><div class="mini-dot dot-y"></div><div class="mini-dot dot-g"></div>
+            <span class="mini-title">Disk Contents</span>
+          </div>
+          <div class="mini-body">
+            <span class="p">$</span> <span class="c">gpu-dev disk list-content</span><br/>
+            <span class="o">📁 /home/dev/ src/ outputs/</span><br/>
+            <span class="s">✅ Cloned → experiment-v2</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── Main area: full panels ── -->
+      <div class="main">
+
+        <!-- Panel 0: Reserve -->
+        <div class="panel active" data-idx="0">
+          <div class="terminal">
+            <div class="terminal-bar">
+              <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+              <span class="terminal-title">Reserve GPUs</span>
+            </div>
+            <div class="terminal-body">
+              <span class="p">$</span> <span class="c">gpu-dev reserve</span> <span class="f">--gpu-type</span> <span class="v">h100</span> <span class="f">--gpus</span> <span class="v">4</span> <span class="f">--hours</span> <span class="v">8</span><br/><br/>
+              <span class="o">📋 Reservation <span class="h">a1b2c3d4</span> created</span><br/>
+              <span class="o">⏳ Waiting for pod...</span><br/>
+              <span class="o">🔧 Restoring persistent disk...</span><br/>
+              <span class="s">✅ Ready! (18s)</span><br/><br/>
+              <span class="o">SSH: <span class="h">ssh dev@a1b2c3d4.osdc.dev</span></span><br/>
+              <span class="o">GPUs: <span class="h">4x H100 (320 GB)</span></span><br/>
+              <span class="o">Disk: <span class="h">my-project</span> (restored from snapshot)</span><br/>
+              <span class="o">Expires: <span class="w">2026-05-27 14:30:00</span></span><br/><br/>
+              <span class="d"># Also: --jupyter, --spot, --dockerfile, --distributed</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 1: Availability -->
+        <div class="panel" data-idx="1">
+          <div class="terminal">
+            <div class="terminal-bar">
+              <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+              <span class="terminal-title">GPU Availability</span>
+            </div>
+            <div class="terminal-body">
+              <span class="p">$</span> <span class="c">gpu-dev avail</span><br/><br/>
+              <span class="t">GPU Type&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Avail&nbsp;&nbsp;Total&nbsp;&nbsp;Queue&nbsp;&nbsp;Est. Wait&nbsp;&nbsp;Interconnect</span><br/>
+              <span class="sep">──────────────────────────────────────────────────────────────</span><br/>
+              <span class="o">B300&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">8</span>/<span class="h">16</span>&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">0 min</span>&nbsp;&nbsp;&nbsp;&nbsp;NVLink + EFA</span><br/>
+              <span class="o">B200&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">4</span>/<span class="h">16</span>&nbsp;&nbsp;&nbsp;&nbsp;1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="w">~15 min</span>&nbsp;&nbsp;NVLink + EFA</span><br/>
+              <span class="o">H200&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">8</span>/<span class="h">16</span>&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">0 min</span>&nbsp;&nbsp;&nbsp;&nbsp;NVLink + EFA</span><br/>
+              <span class="o">H100&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="w">0</span>/<span class="h">16</span>&nbsp;&nbsp;&nbsp;&nbsp;3&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="w">~45 min</span>&nbsp;&nbsp;NVLink + EFA</span><br/>
+              <span class="o">RTX PRO 6000&nbsp;&nbsp;<span class="s">4</span>/<span class="h">8</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">0 min</span>&nbsp;&nbsp;&nbsp;&nbsp;PCIe</span><br/>
+              <span class="o">A100&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">6</span>/<span class="h">16</span>&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">0 min</span>&nbsp;&nbsp;&nbsp;&nbsp;NVLink + EFA</span><br/>
+              <span class="o">T4&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">12</span>/<span class="h">16</span>&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">0 min</span>&nbsp;&nbsp;&nbsp;&nbsp;PCIe</span><br/>
+              <span class="o">CPU (ARM)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">4</span>/<span class="h">4</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">0 min</span>&nbsp;&nbsp;&nbsp;&nbsp;—</span><br/>
+              <span class="o">CPU (x86)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">4</span>/<span class="h">4</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="s">0 min</span>&nbsp;&nbsp;&nbsp;&nbsp;—</span><br/><br/>
+              <span class="d"># Multinode: --gpus 16 --distributed &nbsp;·&nbsp; Spot: --spot (~70% cheaper)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 2: Submit -->
+        <div class="panel" data-idx="2">
+          <div class="terminal">
+            <div class="terminal-bar">
+              <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+              <span class="terminal-title">Batch Job Submission</span>
+            </div>
+            <div class="terminal-body">
+              <span class="p">$</span> <span class="c">gpu-dev submit</span> <span class="f">--gpu-type</span> <span class="v">h100</span> <span class="f">--gpus</span> <span class="v">8</span> <span class="f">--spot</span><br/>
+              <span class="c">&nbsp;&nbsp;</span><span class="f">--disk</span> <span class="v">my-project</span> <span class="f">--runtime</span> <span class="v">./src</span> <span class="f">--</span> <span class="v">python train.py</span><br/><br/>
+              <span class="o">📋 Job <span class="h">e5f6g7h8</span> submitted</span><br/>
+              <span class="o">💰 Using <span class="w">spot instance</span> (~70% cheaper)</span><br/>
+              <span class="o">💾 Persistent disk: <span class="h">my-project</span></span><br/>
+              <span class="o">📂 Syncing <span class="h">./src</span> → /home/dev/runtime/</span><br/>
+              <span class="o">⏳ Queued, waiting for capacity...</span><br/>
+              <span class="s">🚀 Running on 8x H100</span><br/><br/>
+              <span class="h">[stdout]</span> <span class="o">Epoch 1/10: loss=2.34 lr=0.001</span><br/>
+              <span class="h">[stdout]</span> <span class="o">Epoch 2/10: loss=1.87 lr=0.001</span><br/>
+              <span class="h">[stdout]</span> <span class="o">Epoch 3/10: loss=1.21 lr=0.0005</span><br/>
+              <span class="d">...</span><br/><br/>
+              <span class="s">✅ Job completed. Results synced back.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 3: Disk -->
+        <div class="panel" data-idx="3">
+          <div class="terminal">
+            <div class="terminal-bar">
+              <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+              <span class="terminal-title">Inspect Disk Contents</span>
+            </div>
+            <div class="terminal-body">
+              <span class="p">$</span> <span class="c">gpu-dev disk list-content</span> <span class="v">my-project</span><br/><br/>
+              <span class="t">my-project (100 GB) — last used 2h ago</span><br/>
+              <span class="sep">────────────────────────────────────────────</span><br/>
+              <span class="o">📁 /home/dev/</span><br/>
+              <span class="o">&nbsp;&nbsp;├── src/</span><br/>
+              <span class="o">&nbsp;&nbsp;│&nbsp;&nbsp; ├── train.py <span class="d">4.2 KB</span></span><br/>
+              <span class="o">&nbsp;&nbsp;│&nbsp;&nbsp; ├── model.py <span class="d">12.8 KB</span></span><br/>
+              <span class="o">&nbsp;&nbsp;│&nbsp;&nbsp; └── data/ <span class="d">2.1 GB</span></span><br/>
+              <span class="o">&nbsp;&nbsp;├── outputs/</span><br/>
+              <span class="o">&nbsp;&nbsp;│&nbsp;&nbsp; ├── checkpoint_ep10.pt <span class="d">1.4 GB</span></span><br/>
+              <span class="o">&nbsp;&nbsp;│&nbsp;&nbsp; └── logs/ <span class="d">48 MB</span></span><br/>
+              <span class="o">&nbsp;&nbsp;├── .bashrc <span class="d">1.2 KB</span></span><br/>
+              <span class="o">&nbsp;&nbsp;└── .venv/ <span class="d">3.8 GB</span></span><br/><br/>
+              <span class="d">Snapshot #3 · 2026-05-26 10:14:22</span><br/><br/>
+              <span class="p">$</span> <span class="c">gpu-dev disk clone</span> <span class="v">my-project experiment-v2</span><br/>
+              <span class="s">✅ Cloned my-project → experiment-v2 (3.1s)</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="nav-hint">← → to navigate · click thumbnails</div>
+
+    <script>
+      const minis = document.querySelectorAll('.mini');
+      const panels = document.querySelectorAll('.panel');
+      let current = 0;
+
+      function go(idx) {
+        idx = Math.max(0, Math.min(idx, 3));
+        if (idx === current) return;
+
+        // Update minis
+        minis.forEach((m, i) => {
+          m.classList.remove('active', 'visited');
+          if (i === idx) m.classList.add('active');
+          else if (i < idx) m.classList.add('visited');
+        });
+
+        // Update panels
+        panels.forEach((p, i) => {
+          p.classList.toggle('active', i === idx);
+        });
+
+        current = idx;
+      }
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          e.stopPropagation();
+          go(current + 1);
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          e.stopPropagation();
+          go(current - 1);
+        }
+      });
+    </script>
+  </body>
+</html>

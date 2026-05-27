@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-Node Training</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: linear-gradient(135deg, #0f0c29 0%, #1a1a4e 50%, #24243e 100%);
+        padding: 35px 50px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+        color: white;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 28px;
+      }
+
+      .header h1 {
+        font-size: 2.8rem;
+        font-weight: 700;
+        margin-bottom: 6px;
+        letter-spacing: -1px;
+        background: linear-gradient(90deg, #61dafb, #c792ea);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .header p {
+        font-size: 1rem;
+        color: rgba(255, 255, 255, 0.5);
+      }
+
+      .content {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 22px;
+        width: 100%;
+        max-width: 1300px;
+        flex: 1;
+      }
+
+      .card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        padding: 22px;
+        display: flex;
+        flex-direction: column;
+        backdrop-filter: blur(10px);
+      }
+
+      .card h3 {
+        font-size: 1.05rem;
+        margin-bottom: 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: rgba(255, 255, 255, 0.9);
+      }
+
+      .card-icon {
+        font-size: 1.3rem;
+      }
+
+      /* Node diagram */
+      .diagram-box {
+        display: flex;
+        gap: 16px;
+        justify-content: center;
+        align-items: center;
+        flex: 1;
+      }
+
+      .node-box {
+        background: linear-gradient(135deg, rgba(118, 185, 0, 0.15), rgba(118, 185, 0, 0.05));
+        border: 2px solid rgba(118, 185, 0, 0.4);
+        border-radius: 14px;
+        padding: 14px 18px;
+        text-align: center;
+        min-width: 150px;
+      }
+
+      .node-title {
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #76b900;
+        margin-bottom: 8px;
+      }
+
+      .gpu-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 3px;
+        margin-bottom: 6px;
+      }
+
+      .gpu-chip {
+        background: linear-gradient(135deg, #76b900, #5a8a00);
+        color: white;
+        font-size: 0.55rem;
+        padding: 3px 0;
+        border-radius: 3px;
+        font-weight: 700;
+        text-align: center;
+      }
+
+      .node-label {
+        font-size: 0.65rem;
+        color: rgba(255, 255, 255, 0.4);
+        margin-top: 4px;
+      }
+
+      .connection {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+      }
+
+      .connection-line {
+        width: 80px;
+        height: 3px;
+        background: linear-gradient(90deg, #61dafb, #c792ea);
+        border-radius: 2px;
+        position: relative;
+      }
+
+      .connection-line::before,
+      .connection-line::after {
+        content: "";
+        position: absolute;
+        top: -3px;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+      }
+
+      .connection-line::before {
+        left: -4px;
+        background: #61dafb;
+      }
+
+      .connection-line::after {
+        right: -4px;
+        background: #c792ea;
+      }
+
+      .connection-label {
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: #61dafb;
+        margin-top: 4px;
+      }
+
+      .connection-sub {
+        font-size: 0.65rem;
+        color: rgba(255, 255, 255, 0.4);
+      }
+
+      /* Performance bars */
+      .perf-bars {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        justify-content: center;
+      }
+
+      .perf-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .perf-header {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.82rem;
+      }
+
+      .perf-label {
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      .perf-value {
+        font-weight: 700;
+        color: #61dafb;
+      }
+
+      .perf-value.green {
+        color: #76b900;
+      }
+
+      .perf-bar-track {
+        height: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 5px;
+        overflow: hidden;
+      }
+
+      .perf-bar-fill {
+        height: 100%;
+        border-radius: 5px;
+        transition: width 0.5s ease;
+      }
+
+      .fill-nvlink {
+        background: linear-gradient(90deg, #76b900, #a0e040);
+        width: 100%;
+      }
+
+      .fill-tree {
+        background: linear-gradient(90deg, #61dafb, #82aaff);
+        width: 63%;
+      }
+
+      .fill-ring {
+        background: linear-gradient(90deg, #c792ea, #e0a0ff);
+        width: 28%;
+      }
+
+      .fill-future {
+        background: linear-gradient(90deg, #ffbd2e, #ff9800);
+        width: 95%;
+        opacity: 0.5;
+        background-image: repeating-linear-gradient(
+          45deg,
+          transparent,
+          transparent 4px,
+          rgba(255, 255, 255, 0.15) 4px,
+          rgba(255, 255, 255, 0.15) 8px
+        );
+      }
+
+      /* Code block */
+      .code-block {
+        background: rgba(0, 0, 0, 0.4);
+        border-radius: 10px;
+        padding: 16px 18px;
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 0.78rem;
+        line-height: 1.55;
+        flex: 1;
+      }
+
+      .prompt {
+        color: #27c93f;
+      }
+      .cmd {
+        color: #e0e0e0;
+      }
+      .flag {
+        color: #c792ea;
+      }
+      .val {
+        color: #c3e88d;
+      }
+      .cmt {
+        color: #546e7a;
+        font-style: italic;
+      }
+      .out {
+        color: #888;
+      }
+      .hl {
+        color: #61dafb;
+      }
+
+      .full-width {
+        grid-column: 1 / -1;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Multi-Node Distributed Training</h1>
+      <p>
+        EFA networking + NCCL — up to 64 GPUs across 8 nodes, one command
+      </p>
+    </div>
+
+    <div class="content">
+      <!-- Node diagram -->
+      <div class="card">
+        <h3><span class="card-icon">🖥️</span> 2×8 H100 Example</h3>
+        <div class="diagram-box">
+          <div class="node-box">
+            <div class="node-title">Node 0 (master)</div>
+            <div class="gpu-grid">
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+            </div>
+            <div class="node-label">NVLink within node</div>
+          </div>
+
+          <div class="connection">
+            <div class="connection-label">EFA</div>
+            <div class="connection-line"></div>
+            <div class="connection-sub">3200 Gbps</div>
+          </div>
+
+          <div class="node-box">
+            <div class="node-title">Node 1 (worker)</div>
+            <div class="gpu-grid">
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+              <span class="gpu-chip">H100</span>
+            </div>
+            <div class="node-label">NVLink within node</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Performance visualization -->
+      <div class="card">
+        <h3><span class="card-icon">📊</span> NCCL AllReduce Bandwidth</h3>
+        <div class="perf-bars">
+          <div class="perf-item">
+            <div class="perf-header">
+              <span class="perf-label">Single-node NVLink (baseline)</span>
+              <span class="perf-value green">~34 GB/s</span>
+            </div>
+            <div class="perf-bar-track">
+              <div class="perf-bar-fill fill-nvlink"></div>
+            </div>
+          </div>
+
+          <div class="perf-item">
+            <div class="perf-header">
+              <span class="perf-label">Cross-node EFA (best, 2×8 GPUs)</span>
+              <span class="perf-value">~21 GB/s avg · 33.6 peak</span>
+            </div>
+            <div class="perf-bar-track">
+              <div class="perf-bar-fill fill-tree"></div>
+            </div>
+          </div>
+
+          <div class="perf-item">
+            <div class="perf-header">
+              <span class="perf-label">Cross-node EFA (conservative)</span>
+              <span class="perf-value" style="color: #c792ea">~9.5 GB/s avg</span>
+            </div>
+            <div class="perf-bar-track">
+              <div class="perf-bar-fill fill-ring"></div>
+            </div>
+          </div>
+
+          <div class="perf-item">
+            <div class="perf-header">
+              <span class="perf-label">Future w/ GPUDirect RDMA (estimated)</span>
+              <span class="perf-value" style="color: #ffbd2e">~300+ GB/s</span>
+            </div>
+            <div class="perf-bar-track">
+              <div class="perf-bar-fill fill-future"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CLI command -->
+      <div class="card full-width">
+        <h3>
+          <span class="card-icon">💻</span> One Command — Automatic NCCL + SSH + Env Setup
+        </h3>
+        <div class="code-block">
+          <span class="prompt">$</span>
+          <span class="cmd"> gpu-dev reserve</span>
+          <span class="flag"> --gpu-type</span>
+          <span class="val"> h100</span>
+          <span class="flag"> --gpus</span>
+          <span class="val"> 16</span>
+          <span class="flag"> --distributed</span>
+          <span class="flag"> --hours</span>
+          <span class="val"> 8</span><br />
+          <br />
+          <span class="out">📋 Reservation <span class="hl">mn-abc123</span> — 2 nodes × 8 GPUs</span><br />
+          <span class="out">🔗 EFA networking configured · peer SSH ready</span><br />
+          <span class="out">✅ <span class="hl">MASTER_ADDR</span>, <span class="hl">WORLD_SIZE</span>, <span class="hl">RANK</span>, <span class="hl">NCCL_*</span> pre-configured</span><br />
+          <br />
+          <span class="cmt"># Just run torchrun — everything is set up</span><br />
+          <span class="prompt">dev@node-0 $</span>
+          <span class="cmd"> torchrun</span>
+          <span class="flag"> --nproc_per_node</span><span class="val"> 8</span>
+          <span class="flag"> --nnodes</span><span class="val"> 2</span>
+          <span class="flag"> --node_rank</span><span class="val"> 0</span>
+          <span class="cmd"> train.py</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
