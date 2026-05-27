@@ -1,14 +1,7 @@
 # deck.devservers.io — standalone static site for presentation slides
 #
-# This is intentionally separate from the main GPU devservers terraform.
-# Anyone rolling out OSDC can skip this entirely — it's just a slide deck host.
-#
-# Usage:
-#   1. Set your variables (domain, Route53 zone ID)
-#   2. tofu init && tofu apply
-#   3. aws s3 sync ../presentation/ s3://<bucket>/ --delete
-#
-# No dependency on the main infra state, EKS cluster, or Lambda functions.
+# Separate from the main GPU devservers terraform.
+# One command: tofu apply — creates bucket, DNS, and uploads all slides.
 
 terraform {
   required_version = ">= 1.5"
@@ -40,12 +33,36 @@ variable "route53_zone_id" {
   type        = string
 }
 
+variable "presentation_dir" {
+  description = "Path to the presentation directory"
+  type        = string
+  default     = "../presentation"
+}
+
 locals {
   fqdn        = "deck.${var.domain_name}"
   bucket_name = "deck-${var.domain_name}"
+
+  content_types = {
+    html = "text/html"
+    css  = "text/css"
+    js   = "application/javascript"
+    json = "application/json"
+    svg  = "image/svg+xml"
+    png  = "image/png"
+    jpg  = "image/jpeg"
+    mp4  = "video/mp4"
+    webm = "video/webm"
+    ico  = "image/x-icon"
+    txt  = "text/plain"
+    toml = "text/plain"
+    md   = "text/plain"
+  }
+
+  presentation_files = fileset(var.presentation_dir, "**/*")
 }
 
-# --- S3 static website ---
+# --- S3 bucket ---
 
 resource "aws_s3_bucket" "deck" {
   bucket = local.bucket_name
@@ -82,6 +99,18 @@ resource "aws_s3_bucket_policy" "deck" {
   })
 }
 
+# --- Upload all presentation files ---
+
+resource "aws_s3_object" "slides" {
+  for_each = local.presentation_files
+
+  bucket       = aws_s3_bucket.deck.id
+  key          = each.value
+  source       = "${var.presentation_dir}/${each.value}"
+  etag         = filemd5("${var.presentation_dir}/${each.value}")
+  content_type = lookup(local.content_types, split(".", each.value)[length(split(".", each.value)) - 1], "application/octet-stream")
+}
+
 # --- DNS ---
 
 resource "aws_route53_record" "deck" {
@@ -99,11 +128,7 @@ output "url" {
   value       = "http://${local.fqdn}"
 }
 
-output "upload_command" {
-  description = "Run this to deploy slides"
-  value       = "aws s3 sync ../presentation/ s3://${local.bucket_name}/ --delete"
-}
-
-output "bucket" {
-  value = local.bucket_name
+output "files_uploaded" {
+  description = "Number of files uploaded"
+  value       = length(local.presentation_files)
 }
