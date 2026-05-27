@@ -18,6 +18,10 @@ Usage:
     # Check if a module is enabled
     cluster-config.py arc-staging has-module arc      -> exits 0 (true) or 1 (false)
 
+    # List the enabled modules that consume runner_image_tag (comma-separated)
+    cluster-config.py arc-cbr-production runner-image-modules
+        -> arc-runners,arc-runners-b200,arc-runners-h100
+
     # List all cluster IDs
     cluster-config.py --list
 """
@@ -29,6 +33,13 @@ from pathlib import Path
 import yaml
 
 CONFIG_PATH = Path(os.environ.get("CLUSTERS_YAML", Path(__file__).resolve().parent.parent / "clusters.yaml"))
+
+# Modules whose generated manifests embed `runner_image_tag` from clusters.yaml.
+# Authoritative source: modules/arc-runners/scripts/python/generate_runners.py is
+# re-used by the arc-runners-{b200,h100} delegates via their deploy.sh wrappers.
+# If a new module starts reading `runner_image_tag`, add it here so the
+# Renovate auto-update pipeline redeploys it on every bump.
+RUNNER_IMAGE_CONSUMER_MODULES = ("arc-runners", "arc-runners-b200", "arc-runners-h100")
 
 
 def load_config():
@@ -111,6 +122,10 @@ def main():
     elif cmd == "modules":
         for m in cluster_cfg.get("modules", []):
             print(m)
+    elif cmd == "runner-image-modules":
+        enabled = cluster_cfg.get("modules", []) or []
+        consumers = [m for m in enabled if m in RUNNER_IMAGE_CONSUMER_MODULES]
+        print(",".join(consumers))
     elif cmd == "state_bucket":
         print(cluster_cfg.get("state_bucket", f"ciforge-tfstate-{cluster_id}"))
     elif cmd == "region":

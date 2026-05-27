@@ -1,0 +1,109 @@
+name: "OSDC: PR validate (script-gated)"
+
+# Dispatched on demand by osdc-renovate-autoapprove.yml to validate a PR's
+# head SHA against arc-staging before the autoapprove script approves and
+# merges the PR. Posts a commit status `osdc/pr-validate` on the head SHA
+# (pending -> success/failure). The autoapprove script polls that status
+# and only proceeds to merge when it is `success`.
+#
+# This exists because GitHub does not let the merge_group event gate the
+# merge itself — required-checks on the queue do not actually block. Moving
+# validation to the PR branch and gating client-side (in the autoapprove
+# script) is the only way to guarantee no unvalidated Renovate PR can land.
+#
+# The reusable deploy is called with ref=${{ inputs.head_sha }} so we
+# validate exactly the SHA the autoapprove script will merge — eliminating
+# the race between dispatch time and merge time.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number being validated (for context in the status target_url and logs)"
+        required: true
+        type: string
+      head_sha:
+        description: "Full 40-char head SHA to validate and post status against"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  statuses: write
+
+# Shares arc-staging with osdc-pre-merge.yml so a PR validation queues
+# behind any in-flight merge_group run touching staging, and vice versa.
+# cancel-in-progress: false because the post-job MUST run to post a
+# terminal status — cancelling mid-run would leave `pending` forever.
+concurrency:
+  group: osdc-staging
+  cancel-in-progress: false
+
+jobs:
+  pre:
+    name: Post pending status
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post pending status on head SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=pending \
+            -f context=osdc/pr-validate \
+            -f description="Validating PR #$PR_NUMBER on arc-staging" \
+            -f target_url="$TARGET_URL"
+
+  validate:
+    name: Validate on arc-staging
+    needs: pre
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: arc-staging
+      environment: osdc-staging
+      taint_nodes: true
+      restart_listeners: true
+      ref: ${{ inputs.head_sha }}
+    secrets: inherit
+
+  post:
+    name: Post terminal status
+    needs: [pre, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post success or failure status on head SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$VALIDATE_RESULT" = "success" ]; then
+            STATE=success
+            DESC="Staging deploy + smoke + integration passed for PR #$PR_NUMBER"
+          else
+            STATE=failure
+            DESC="Staging validation result was '$VALIDATE_RESULT' for PR #$PR_NUMBER"
+          fi
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$STATE" \
+            -f context=osdc/pr-validate \
+            -f description="$DESC" \
+            -f target_url="$TARGET_URL"
