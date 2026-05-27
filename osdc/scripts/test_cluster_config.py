@@ -328,6 +328,56 @@ class TestMain:
         assert "monitoring" in lines
         assert "buildkit" in lines
 
+    def test_runner_image_modules_staging(self, capsys):
+        """Staging enables arc-runners only (no -b200/-h100) — output is that single entry."""
+        code = run_main("staging", "runner-image-modules")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == "arc-runners"
+
+    def test_runner_image_modules_production(self, capsys):
+        """Production enables arc-runners; the -b200/-h100 delegates are not in
+        FAKE_CONFIG, so only arc-runners appears."""
+        code = run_main("production", "runner-image-modules")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == "arc-runners"
+
+    def test_runner_image_modules_preserves_yaml_order(self, capsys, monkeypatch):
+        """Output ordering matches the cluster's modules: list, not the
+        RUNNER_IMAGE_CONSUMER_MODULES constant — keeps the filter purely
+        a membership test."""
+        cfg = {
+            "defaults": {},
+            "clusters": {
+                "ordered": {
+                    "cluster_name": "ordered",
+                    "region": "r",
+                    "modules": ["arc-runners-h100", "arc-runners", "arc-runners-b200"],
+                },
+            },
+        }
+        monkeypatch.setattr(cluster_config, "load_config", lambda: cfg)
+        code = run_main("ordered", "runner-image-modules")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == "arc-runners-h100,arc-runners,arc-runners-b200"
+
+    def test_runner_image_modules_none_enabled(self, capsys, monkeypatch):
+        """Cluster with no runner-image consumer modules prints an empty line —
+        the auto-deploy workflow keys on this to skip the cluster entirely."""
+        cfg = {
+            "defaults": {},
+            "clusters": {
+                "no-runners": {
+                    "cluster_name": "no-runners",
+                    "region": "r",
+                    "modules": ["karpenter", "monitoring"],
+                },
+            },
+        }
+        monkeypatch.setattr(cluster_config, "load_config", lambda: cfg)
+        code = run_main("no-runners", "runner-image-modules")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == ""
+
     def test_has_module_present(self):
         code = run_main("staging", "has-module", "karpenter")
         assert code == 0
