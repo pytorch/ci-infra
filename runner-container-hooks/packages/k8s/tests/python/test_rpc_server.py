@@ -149,6 +149,48 @@ class TestWaitForProcess:
         assert rpc_mod._job_status == "idle"
 
 
+class TestResetChildOomScore:
+    def test_writes_zero_to_oom_score_adj(self, rpc_mod):
+        # Verify the child-reset path opens the right /proc file for write
+        # and writes "0" to it. We assert on observable side effects only —
+        # not on the specific syscall sequence — so the test stays valid if
+        # the implementation switches between os.open/os.write/os.close and
+        # builtins.open().
+        fake_fd = 7
+        with (
+            patch.object(rpc_mod.os, "open", return_value=fake_fd) as mock_open_,
+            patch.object(rpc_mod.os, "write") as mock_write,
+            patch.object(rpc_mod.os, "close") as mock_close,
+        ):
+            rpc_mod._reset_child_oom_score()
+
+        mock_open_.assert_called_once()
+        opened_path = mock_open_.call_args[0][0]
+        assert opened_path == "/proc/self/oom_score_adj"
+        # Flags must include write access.
+        flags = mock_open_.call_args[0][1]
+        assert flags & rpc_mod.os.O_WRONLY == rpc_mod.os.O_WRONLY
+        mock_write.assert_called_once_with(fake_fd, b"0")
+        mock_close.assert_called_once_with(fake_fd)
+
+    def test_oserror_is_swallowed(self, rpc_mod):
+        # On macOS dev environments /proc doesn't exist; the function must
+        # silently ignore the failure so the server can still start.
+        with patch.object(rpc_mod.os, "open", side_effect=OSError("nope")):
+            rpc_mod._reset_child_oom_score()
+
+    def test_write_oserror_is_swallowed(self, rpc_mod):
+        # If write(2) fails (e.g. permission denied inside an unprivileged
+        # container), the function must still swallow the error.
+        fake_fd = 7
+        with (
+            patch.object(rpc_mod.os, "open", return_value=fake_fd),
+            patch.object(rpc_mod.os, "write", side_effect=OSError("denied")),
+            patch.object(rpc_mod.os, "close"),
+        ):
+            rpc_mod._reset_child_oom_score()
+
+
 class TestStartExec:
     def test_starts_process(self, rpc_mod, log_dir):
         with patch.object(rpc_mod.subprocess, "Popen") as mock_popen:
@@ -160,6 +202,19 @@ class TestStartExec:
             assert call_args[1]["start_new_session"] is True
             assert (log_dir / "j1.stdout").exists()
             assert (log_dir / "j1.stderr").exists()
+            stdout_f.close()
+            stderr_f.close()
+
+    def test_passes_preexec_fn(self, rpc_mod, log_dir):
+        # The child must reset its oom_score_adj after fork() so it stays
+        # a normal OOM candidate even though the server is OOM-immune.
+        with patch.object(rpc_mod.subprocess, "Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            _, stdout_f, stderr_f = rpc_mod._start_exec("j1", "/tmp/s.sh")
+            assert (
+                mock_popen.call_args[1]["preexec_fn"]
+                is rpc_mod._reset_child_oom_score
+            )
             stdout_f.close()
             stderr_f.close()
 
@@ -705,6 +760,60 @@ class TestMain:
         ):
             with pytest.raises(SystemExit):
                 rpc_mod.main()
+
+    def test_writes_oom_score_adj_at_startup(self, rpc_mod):
+        # main() must mark the server itself as OOM-immune (-1000) so the
+        # kernel kills the user job under memory pressure instead of the
+        # server, preserving the channel the hook driver uses to report.
+        mocked = mock_open()
+        with (
+            patch.object(rpc_mod.sys, "argv", ["s", "--token", "t"]),
+            patch.object(rpc_mod.os, "makedirs"),
+            patch.object(rpc_mod.signal, "signal"),
+            patch.object(rpc_mod.threading, "Thread"),
+            patch.object(rpc_mod, "DualStackHTTPServer") as mock_cls,
+            patch("builtins.open", mocked),
+        ):
+            mock_cls.return_value = MagicMock()
+            mock_cls.return_value.serve_forever.side_effect = RuntimeError("x")
+            with pytest.raises(RuntimeError):
+                rpc_mod.main()
+
+        # /proc/self/oom_score_adj must be among the files opened for write.
+        oom_calls = [
+            c for c in mocked.call_args_list
+            if c.args and c.args[0] == "/proc/self/oom_score_adj"
+        ]
+        assert len(oom_calls) == 1
+        assert oom_calls[0].args[1] == "w"
+        # And "-1000" must be written to it.
+        handle = mocked()
+        handle.write.assert_any_call("-1000")
+
+    def test_oom_score_adj_oserror_does_not_block_startup(self, rpc_mod):
+        # On macOS / dev environments /proc/self/oom_score_adj doesn't exist.
+        # The server must still start — only serve_forever should be reached.
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/oom_score_adj":
+                raise OSError("No such file or directory")
+            return real_open(path, *args, **kwargs)
+
+        with (
+            patch.object(rpc_mod.sys, "argv", ["s", "--token", "t"]),
+            patch.object(rpc_mod.os, "makedirs"),
+            patch.object(rpc_mod.signal, "signal"),
+            patch.object(rpc_mod.threading, "Thread"),
+            patch.object(rpc_mod, "DualStackHTTPServer") as mock_cls,
+            patch("builtins.open", side_effect=fake_open),
+        ):
+            mock_cls.return_value = MagicMock()
+            mock_cls.return_value.serve_forever.side_effect = RuntimeError("x")
+            with pytest.raises(RuntimeError):
+                rpc_mod.main()
+            # Reached serve_forever — startup was NOT aborted by the OSError.
+            mock_cls.return_value.serve_forever.assert_called_once()
 
 
 class TestLogRequest:

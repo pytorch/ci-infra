@@ -57,6 +57,27 @@ def _wait_for_process(proc, job_id):
             _job_status = "completed" if code == 0 else "failed"
 
 
+def _reset_child_oom_score():
+    """Reset the child's oom_score_adj so it doesn't inherit the server's
+    OOM immunity. The server runs with oom_score_adj=-1000 so the kernel
+    won't kill it under memory pressure, but the user job (the actual
+    memory consumer) must remain a normal OOM candidate.
+
+    Runs as preexec_fn between fork() and execve() in a multithreaded
+    process: only async-signal-safe calls are allowed here. os.open /
+    os.write / os.close map directly to open(2)/write(2)/close(2), which
+    are async-signal-safe. Do NOT add logging, Python I/O, or anything
+    that touches the allocator or the GIL — it can deadlock the child."""
+    try:
+        fd = os.open("/proc/self/oom_score_adj", os.O_WRONLY)
+        try:
+            os.write(fd, b"0")
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def _start_exec(job_id, script_path):
     """Open log files and spawn the subprocess. Called OUTSIDE the lock.
 
@@ -69,6 +90,7 @@ def _start_exec(job_id, script_path):
         proc = subprocess.Popen(
             ["sh", "-e", script_path],
             stdout=stdout_file, stderr=stderr_file, start_new_session=True,
+            preexec_fn=_reset_child_oom_score,
         )
     except Exception:
         stdout_file.close()
@@ -327,6 +349,15 @@ def main():
 
     global _auth_token
     _auth_token = args.token
+
+    # Mark the server as a non-preferred OOM target so the kernel kills the
+    # user job (high RSS) before this process, leaving the hook driver a
+    # working channel to report the failure.
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("-1000")
+    except OSError as e:
+        print(f"Warning: failed to set oom_score_adj: {e}")
 
     os.makedirs(LOG_DIR, exist_ok=True)
 
