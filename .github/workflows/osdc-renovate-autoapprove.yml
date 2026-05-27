@@ -243,10 +243,11 @@ jobs:
       # the job timeout is 360 min to match.
       #
       # The wait script also re-checks PR head.sha on each iteration and
-      # bails as `close-head-moved` if the PR is rebased mid-wait,
-      # detects stuck `pending` statuses (post job never reported) and
-      # re-dispatches, and retries transient gh api failures so a single
-      # GitHub 5xx during the 6h window doesn't abort the wait.
+      # bails as `close-head-moved` if the PR is rebased mid-wait, and
+      # retries transient gh api failures so a single GitHub 5xx during
+      # the 6h window doesn't abort the wait. A persistent `pending`
+      # state is treated as in-flight / queued — the script keeps polling
+      # until the status flips or the 6h timeout expires.
       - name: Wait for osdc/pr-validate status
         id: wait
         if: steps.validate.outputs.decision == 'approve'

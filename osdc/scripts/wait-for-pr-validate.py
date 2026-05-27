@@ -19,10 +19,6 @@ Inputs (env vars, all required):
 Optional env vars:
     POLL_INTERVAL_SEC  default 90
     MAX_WAIT_SEC       default 21600 (6h)
-    PENDING_GRACE_SEC  default 1800 (30 min) — if status is `pending` for
-                       longer than this AND no osdc-pr-validate run is
-                       in flight for HEAD_SHA, treat as stuck and
-                       re-dispatch.
     GITHUB_OUTPUT      path to the per-step output file (set automatically
                        by GH Actions runner; required when run by a step)
 
@@ -44,9 +40,11 @@ Hardening notes (each is load-bearing — see PR review):
       touch ref-shaped strings.
     - All gh api calls have bounded retry with backoff to absorb the
       occasional transient 5xx during a 6h wait.
-    - Detects stuck `pending` (post job never reported terminal): if
-      pending persists past PENDING_GRACE_SEC and no run is in-flight
-      for HEAD_SHA, re-dispatches.
+    - A persistent `pending` state is treated as "validation in progress
+      or queued behind the osdc-staging concurrency group" — the script
+      just keeps polling until the status flips or MAX_WAIT_SEC elapses.
+      If the post job dies (rare: runner eviction at the wrong moment),
+      the script will time out and Renovate reopens on the next cycle.
 """
 
 import json
@@ -55,7 +53,6 @@ import re
 import subprocess
 import sys
 import time
-from datetime import UTC
 from typing import Any
 
 # Strict shape we accept: only the canonical renovate-runner branch
@@ -147,55 +144,21 @@ def _read_pr(repo: str, pr_number: str) -> dict[str, Any]:
     return json.loads(raw)
 
 
-def _read_status(repo: str, sha: str) -> tuple[str, float]:
-    """Return (state, age_seconds) for the osdc/pr-validate status on `sha`.
+def _read_status(repo: str, sha: str) -> str:
+    """Return the most recent osdc/pr-validate status state for `sha`.
 
-    state is one of "", "pending", "success", "failure", "error".
-    age_seconds is wall-clock seconds since the status was posted (0.0 if missing).
+    Returns one of "", "pending", "success", "failure", "error" — empty
+    string when no status with that context exists on the SHA.
     """
     raw = _gh_api([f"repos/{repo}/commits/{sha}/status"])
     payload = json.loads(raw)
     matching = [s for s in payload.get("statuses", []) if s.get("context") == STATUS_CONTEXT]
     if not matching:
-        return "", 0.0
+        return ""
     # GitHub returns statuses ordered most-recent first within the combined
     # endpoint, but be explicit: pick the one with the latest updated_at.
     latest = max(matching, key=lambda s: s.get("updated_at", ""))
-    state = latest.get("state", "")
-    updated_at = latest.get("updated_at", "")
-    try:
-        from datetime import datetime
-
-        ts = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-        age = (datetime.now(UTC) - ts).total_seconds()
-    except (ValueError, TypeError):
-        age = 0.0
-    return state, age
-
-
-def _has_in_flight_run(repo: str, sha: str) -> bool:
-    """True if there is a non-completed osdc-pr-validate run for `sha`.
-
-    A completed-but-cancelled run (e.g. runner eviction) is NOT considered
-    in-flight, which lets us re-dispatch when the post job never ran.
-    """
-    raw = _gh_api(
-        [
-            f"repos/{repo}/actions/workflows/{VALIDATE_WORKFLOW}/runs",
-            "-X",
-            "GET",
-            "-f",
-            f"head_sha={sha}",
-            "-f",
-            "per_page=20",
-        ]
-    )
-    payload = json.loads(raw)
-    for run in payload.get("workflow_runs", []):
-        status = run.get("status", "")
-        if status in ("queued", "in_progress", "waiting", "pending", "requested"):
-            return True
-    return False
+    return latest.get("state", "")
 
 
 def _dispatch_validate(repo: str, pr_number: str, head_sha: str) -> None:
@@ -215,7 +178,6 @@ def main() -> int:
 
     poll_interval = _int_env("POLL_INTERVAL_SEC", 90)
     max_wait = _int_env("MAX_WAIT_SEC", 6 * 60 * 60)
-    pending_grace = _int_env("PENDING_GRACE_SEC", 30 * 60)
 
     if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
         _emit_output("close-validation-failed", f"HEAD_SHA is not a 40-char hex SHA: {head_sha!r}")
@@ -232,7 +194,6 @@ def main() -> int:
 
     deadline = time.monotonic() + max_wait
     dispatched = False
-    dispatched_at: float | None = None
 
     while True:
         # Bail if the PR head moved while we were waiting. A force-push
@@ -253,10 +214,10 @@ def main() -> int:
                 return 0
 
         try:
-            state, age = _read_status(repo, head_sha)
+            state = _read_status(repo, head_sha)
         except RuntimeError as e:
             print(f"::warning::failed to read status: {e}")
-            state, age = "", 0.0
+            state = ""
 
         if state == "success":
             print(f"{STATUS_CONTEXT} is green for {head_sha} — proceeding.")
@@ -271,26 +232,14 @@ def main() -> int:
             )
             return 0
 
-        if state == "pending":
-            # Pending is normal while the validate run is executing. But if it
-            # has been pending past the grace period AND no run is currently
-            # in flight for this SHA (post job died, runner evicted, etc.),
-            # the status will never flip — re-dispatch.
-            if age > pending_grace:
-                try:
-                    in_flight = _has_in_flight_run(repo, head_sha)
-                except RuntimeError as e:
-                    print(f"::warning::failed to check in-flight runs: {e}")
-                    in_flight = True  # Be conservative — assume in flight, keep waiting.
-                if not in_flight:
-                    print(f"Status pending for {age:.0f}s with no in-flight run — re-dispatching.")
-                    try:
-                        _dispatch_validate(repo, pr_number, head_sha)
-                        dispatched_at = time.monotonic()
-                    except RuntimeError as e:
-                        _emit_output("close-dispatch-failed", f"re-dispatch failed: {e}")
-                        return 0
-        elif state == "":
+        if state == "":
+            # No status posted yet. On the first iteration, dispatch the
+            # validate workflow. On later iterations, just keep polling —
+            # dispatches are idempotent (osdc-staging concurrency group
+            # serializes them) and there is no reliable cheap signal to
+            # tell whether the prior dispatch is genuinely lost or just
+            # queued. If validation is truly dead, we time out at MAX_WAIT
+            # and Renovate retries next cycle.
             if not dispatched:
                 print(f"No {STATUS_CONTEXT} status on {head_sha} yet — dispatching.")
                 try:
@@ -299,21 +248,10 @@ def main() -> int:
                     _emit_output("close-dispatch-failed", f"initial dispatch failed: {e}")
                     return 0
                 dispatched = True
-                dispatched_at = time.monotonic()
-            else:
-                # We dispatched but no status posted yet. The pre job posts
-                # pending almost immediately on a free runner; if we still
-                # see nothing after pending_grace, something is wrong.
-                if dispatched_at is not None and time.monotonic() - dispatched_at > pending_grace:
-                    print(f"::warning::dispatched {pending_grace}s ago but no status posted — re-dispatching.")
-                    try:
-                        _dispatch_validate(repo, pr_number, head_sha)
-                        dispatched_at = time.monotonic()
-                    except RuntimeError as e:
-                        _emit_output("close-dispatch-failed", f"re-dispatch failed: {e}")
-                        return 0
-        else:
+        elif state != "pending":
             print(f"::warning::unexpected {STATUS_CONTEXT} state {state!r} on {head_sha} — continuing to poll.")
+        # state == "pending" → validation is running (or queued behind
+        # the osdc-staging concurrency group). Just keep polling.
 
         if time.monotonic() >= deadline:
             _emit_output(

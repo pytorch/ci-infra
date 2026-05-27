@@ -31,7 +31,6 @@ def _required_env(monkeypatch, tmp_path):
     # Make the poll loop fast.
     monkeypatch.setenv("POLL_INTERVAL_SEC", "0")
     monkeypatch.setenv("MAX_WAIT_SEC", "1")
-    monkeypatch.setenv("PENDING_GRACE_SEC", "1")
     return out_file
 
 
@@ -180,19 +179,17 @@ def test_gh_workflow_run_raises_on_failure():
 def test_read_status_missing_returns_empty():
     payload = '{"statuses": []}'
     with patch.object(wait_mod, "_gh_api", return_value=payload):
-        state, age = wait_mod._read_status("o/r", VALID_SHA)
+        state = wait_mod._read_status("o/r", VALID_SHA)
     assert state == ""
-    assert age == 0.0
 
 
-def test_read_status_returns_state_and_age():
+def test_read_status_returns_state():
     payload = (
         '{"statuses": [{"context": "osdc/pr-validate", "state": "pending", "updated_at": "2026-05-26T20:00:00Z"}]}'
     )
     with patch.object(wait_mod, "_gh_api", return_value=payload):
-        state, age = wait_mod._read_status("o/r", VALID_SHA)
+        state = wait_mod._read_status("o/r", VALID_SHA)
     assert state == "pending"
-    assert age >= 0.0
 
 
 def test_read_status_picks_latest_when_multiple():
@@ -204,43 +201,8 @@ def test_read_status_picks_latest_when_multiple():
         "]}"
     )
     with patch.object(wait_mod, "_gh_api", return_value=payload):
-        state, _ = wait_mod._read_status("o/r", VALID_SHA)
+        state = wait_mod._read_status("o/r", VALID_SHA)
     assert state == "success"
-
-
-def test_read_status_handles_malformed_timestamp():
-    payload = '{"statuses": [{"context": "osdc/pr-validate", "state": "success", "updated_at": "not-a-date"}]}'
-    with patch.object(wait_mod, "_gh_api", return_value=payload):
-        state, age = wait_mod._read_status("o/r", VALID_SHA)
-    assert state == "success"
-    assert age == 0.0
-
-
-# ---------------------------------------------------------------------------
-# _has_in_flight_run
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("status", "expected"),
-    [
-        ("queued", True),
-        ("in_progress", True),
-        ("waiting", True),
-        ("pending", True),
-        ("requested", True),
-        ("completed", False),
-    ],
-)
-def test_has_in_flight_run(status, expected):
-    payload = f'{{"workflow_runs": [{{"status": "{status}"}}]}}'
-    with patch.object(wait_mod, "_gh_api", return_value=payload):
-        assert wait_mod._has_in_flight_run("o/r", VALID_SHA) is expected
-
-
-def test_has_in_flight_run_empty():
-    with patch.object(wait_mod, "_gh_api", return_value='{"workflow_runs": []}'):
-        assert wait_mod._has_in_flight_run("o/r", VALID_SHA) is False
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +242,7 @@ def test_main_rejects_head_ref_with_dash_prefix(_required_env):
 def test_main_happy_path_status_already_green(_required_env):
     with (
         patch.object(wait_mod, "_read_pr", return_value={"head": {"sha": VALID_SHA, "ref": VALID_REF}}),
-        patch.object(wait_mod, "_read_status", return_value=("success", 1.0)),
+        patch.object(wait_mod, "_read_status", return_value="success"),
     ):
         rc = wait_mod.main()
     out = _read_output(_required_env)
@@ -290,7 +252,7 @@ def test_main_happy_path_status_already_green(_required_env):
 
 def test_main_dispatches_when_no_status_then_succeeds(_required_env):
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
-    states = [("", 0.0), ("success", 1.0)]
+    states = ["", "success"]
     with (
         patch.object(wait_mod, "_read_pr", return_value=pr),
         patch.object(wait_mod, "_read_status", side_effect=states),
@@ -307,7 +269,7 @@ def test_main_closes_on_failure(_required_env):
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
     with (
         patch.object(wait_mod, "_read_pr", return_value=pr),
-        patch.object(wait_mod, "_read_status", return_value=("failure", 1.0)),
+        patch.object(wait_mod, "_read_status", return_value="failure"),
     ):
         rc = wait_mod.main()
     out = _read_output(_required_env)
@@ -319,7 +281,7 @@ def test_main_closes_on_error(_required_env):
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
     with (
         patch.object(wait_mod, "_read_pr", return_value=pr),
-        patch.object(wait_mod, "_read_status", return_value=("error", 1.0)),
+        patch.object(wait_mod, "_read_status", return_value="error"),
     ):
         wait_mod.main()
     out = _read_output(_required_env)
@@ -342,7 +304,7 @@ def test_main_closes_on_dispatch_failure(_required_env):
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
     with (
         patch.object(wait_mod, "_read_pr", return_value=pr),
-        patch.object(wait_mod, "_read_status", return_value=("", 0.0)),
+        patch.object(wait_mod, "_read_status", return_value=""),
         patch.object(wait_mod, "_dispatch_validate", side_effect=RuntimeError("boom")),
     ):
         wait_mod.main()
@@ -355,68 +317,31 @@ def test_main_timeout(_required_env, monkeypatch):
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
     with (
         patch.object(wait_mod, "_read_pr", return_value=pr),
-        patch.object(wait_mod, "_read_status", return_value=("pending", 1.0)),
-        patch.object(wait_mod, "_has_in_flight_run", return_value=True),
+        patch.object(wait_mod, "_read_status", return_value="pending"),
     ):
         wait_mod.main()
     out = _read_output(_required_env)
     assert out["decision"] == "close-validation-timeout"
 
 
-def test_main_redispatches_stuck_pending(_required_env, monkeypatch):
-    """Pending past grace period with no in-flight run → re-dispatch."""
-    monkeypatch.setenv("PENDING_GRACE_SEC", "0")
+def test_main_polls_pending_until_success(_required_env):
+    """No status initially → dispatch once; then pending pending success → approve, no re-dispatch."""
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
-    # First poll: pending stuck → dispatch. Second poll: green.
-    states = [("pending", 100.0), ("success", 1.0)]
+    states = ["", "pending", "pending", "success"]
     with (
         patch.object(wait_mod, "_read_pr", return_value=pr),
         patch.object(wait_mod, "_read_status", side_effect=states),
-        patch.object(wait_mod, "_has_in_flight_run", return_value=False),
         patch.object(wait_mod, "_dispatch_validate") as dispatch,
     ):
         wait_mod.main()
     out = _read_output(_required_env)
     assert out["decision"] == "approve"
-    dispatch.assert_called_once()
-
-
-def test_main_does_not_redispatch_if_in_flight(_required_env, monkeypatch):
-    monkeypatch.setenv("PENDING_GRACE_SEC", "0")
-    pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
-    states = [("pending", 100.0), ("success", 1.0)]
-    with (
-        patch.object(wait_mod, "_read_pr", return_value=pr),
-        patch.object(wait_mod, "_read_status", side_effect=states),
-        patch.object(wait_mod, "_has_in_flight_run", return_value=True),
-        patch.object(wait_mod, "_dispatch_validate") as dispatch,
-    ):
-        wait_mod.main()
-    out = _read_output(_required_env)
-    assert out["decision"] == "approve"
-    dispatch.assert_not_called()
-
-
-def test_main_in_flight_check_failure_treated_conservatively(_required_env, monkeypatch):
-    """If we can't check in-flight runs, keep waiting (don't re-dispatch)."""
-    monkeypatch.setenv("PENDING_GRACE_SEC", "0")
-    pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
-    states = [("pending", 100.0), ("success", 1.0)]
-    with (
-        patch.object(wait_mod, "_read_pr", return_value=pr),
-        patch.object(wait_mod, "_read_status", side_effect=states),
-        patch.object(wait_mod, "_has_in_flight_run", side_effect=RuntimeError("api down")),
-        patch.object(wait_mod, "_dispatch_validate") as dispatch,
-    ):
-        wait_mod.main()
-    out = _read_output(_required_env)
-    assert out["decision"] == "approve"
-    dispatch.assert_not_called()
+    assert dispatch.call_count == 1
 
 
 def test_main_unexpected_state_continues_polling(_required_env, capsys):
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
-    states = [("weird", 0.0), ("success", 1.0)]
+    states = ["weird", "success"]
     with (
         patch.object(wait_mod, "_read_pr", return_value=pr),
         patch.object(wait_mod, "_read_status", side_effect=states),
@@ -427,28 +352,11 @@ def test_main_unexpected_state_continues_polling(_required_env, capsys):
     assert "unexpected" in capsys.readouterr().out
 
 
-def test_main_redispatches_when_status_never_posts(_required_env, monkeypatch):
-    """If dispatch returned OK but no status appears past grace, re-dispatch."""
-    monkeypatch.setenv("PENDING_GRACE_SEC", "0")
-    pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
-    states = [("", 0.0), ("", 0.0), ("success", 1.0)]
-    with (
-        patch.object(wait_mod, "_read_pr", return_value=pr),
-        patch.object(wait_mod, "_read_status", side_effect=states),
-        patch.object(wait_mod, "_dispatch_validate") as dispatch,
-    ):
-        wait_mod.main()
-    out = _read_output(_required_env)
-    assert out["decision"] == "approve"
-    # Initial dispatch + at least one re-dispatch
-    assert dispatch.call_count >= 2
-
-
 def test_main_recovers_from_transient_pr_read_failure(_required_env):
     """Single failure to re-read PR mid-poll should not abort the wait."""
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
     pr_calls = [pr, RuntimeError("transient"), pr]
-    states = [("pending", 0.0), ("success", 1.0)]
+    states = ["pending", "success"]
 
     def pr_side(*_a, **_kw):
         r = pr_calls.pop(0)
@@ -467,7 +375,7 @@ def test_main_recovers_from_transient_pr_read_failure(_required_env):
 
 def test_main_recovers_from_transient_status_read_failure(_required_env):
     pr = {"head": {"sha": VALID_SHA, "ref": VALID_REF}}
-    status_results = [RuntimeError("transient"), ("success", 1.0)]
+    status_results = [RuntimeError("transient"), "success"]
 
     def status_side(*_a, **_kw):
         r = status_results.pop(0)
