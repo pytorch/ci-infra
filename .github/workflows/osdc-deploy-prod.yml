@@ -6,10 +6,9 @@ name: "OSDC: Deploy production"
 # `environment:osdc-production` in the sub claim, so IAM enforces the gate too.
 #
 # Default behavior (target = all): sequential rollout.
-#   1. Deploy arc-cbr-production-uw1.
-#   2. Run the post-deploy smoke battery on uw1.
-#   3. Deploy arc-cbr-production
-#   4. Run the post-deploy smoke battery on ue2.
+#   1. Deploy arc-cbr-production-uw1 + smoke.
+#   2. Deploy arc-cbr-production (ue2) + smoke.
+#   3. Deploy meta-prod-aws-ue1 + smoke.
 #
 # Picking a specific cluster from the dropdown bypasses the sequencing and
 # deploys only that one — useful for hotfixes or to recover from a partial
@@ -28,6 +27,7 @@ on:
         default: all
         options:
           - all
+          - meta-prod-aws-ue1
           - arc-cbr-production-uw1
           - arc-cbr-production
       taint_nodes:
@@ -77,6 +77,23 @@ jobs:
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
       cluster: arc-cbr-production
+      environment: osdc-production
+      taint_nodes: ${{ inputs.taint_nodes }}
+      restart_listeners: ${{ inputs.restart_listeners }}
+      skip_lint_test: ${{ inputs.skip_lint_test }}
+      run_smoke: true
+    secrets: inherit
+
+  deploy_ue1:
+    needs: deploy_ue2
+    if: |
+      !cancelled() && (
+        inputs.target == 'meta-prod-aws-ue1' ||
+        (inputs.target == 'all' && needs.deploy_ue2.result == 'success')
+      )
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: meta-prod-aws-ue1
       environment: osdc-production
       taint_nodes: ${{ inputs.taint_nodes }}
       restart_listeners: ${{ inputs.restart_listeners }}
