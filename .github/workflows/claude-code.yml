@@ -6,6 +6,9 @@ on:
   issues:
     types: [opened]
 
+permissions:
+  contents: read
+
 jobs:
   claude-code:
     uses: pytorch/test-infra/.github/workflows/_claude-code.yml@main
