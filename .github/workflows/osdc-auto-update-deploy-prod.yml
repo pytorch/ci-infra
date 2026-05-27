@@ -43,7 +43,7 @@ jobs:
       uw1_modules: ${{ steps.modules.outputs.uw1_modules }}
       ue2_modules: ${{ steps.modules.outputs.ue2_modules }}
     steps:
-      - name: Checkout repo (for validate-runner-bump.sh and cluster-config.py)
+      - name: Checkout repo (for validate-runner-bump.py and cluster-config.py)
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
@@ -111,11 +111,11 @@ jobs:
           fi
 
           # Diff-content validation: defense-in-depth against compromised RENOVATE_TOKEN.
-          # Shared with osdc-renovate-autoapprove.yml via osdc/scripts/validate-runner-bump.sh
+          # Shared with osdc-renovate-autoapprove.yml via osdc/scripts/validate-runner-bump.py
           # so the regex, line-count, and monotonicity rules cannot drift apart.
           PATCH_JSON=$(gh api "repos/$REPO/commits/$SHA")
           export PATCH_JSON
-          osdc/scripts/validate-runner-bump.sh > /tmp/validate.out
+          uv run osdc/scripts/validate-runner-bump.py > /tmp/validate.out
           DECISION=$(grep '^decision=' /tmp/validate.out | head -1 | cut -d= -f2-)
           REASON=$(grep '^reason='   /tmp/validate.out | head -1 | cut -d= -f2-)
 

@@ -184,9 +184,9 @@ jobs:
       # widen the approver token's blast radius for diff inspection.
       #
       # Both enforcement points (this step and the post-merge gate in
-      # osdc-auto-update-deploy-prod.yml) call osdc/scripts/validate-runner-bump.sh
+      # osdc-auto-update-deploy-prod.yml) call osdc/scripts/validate-runner-bump.py
       # so the regex, line-count, and monotonicity rules cannot drift apart.
-      - name: Checkout repo (for validate-runner-bump.sh)
+      - name: Checkout repo (for validate-runner-bump.py)
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
@@ -214,7 +214,7 @@ jobs:
           PATCH_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate)
           export PATCH_JSON
 
-          osdc/scripts/validate-runner-bump.sh > /tmp/validate.out
+          uv run osdc/scripts/validate-runner-bump.py > /tmp/validate.out
           DECISION=$(grep '^decision=' /tmp/validate.out | head -1 | cut -d= -f2-)
           REASON=$(grep '^reason='   /tmp/validate.out | head -1 | cut -d= -f2-)
           OLD_VER=$(grep '^old_ver=' /tmp/validate.out | head -1 | cut -d= -f2- || true)
