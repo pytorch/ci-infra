@@ -20,7 +20,7 @@
       }
     }
   ],
-  "cursorSync": "Off",
+  "cursorSync": "Crosshair",
   "editable": true,
   "elements": {
     "panel-4": {
@@ -327,7 +327,7 @@
               },
               "tooltip": {
                 "hideZeros": false,
-                "mode": "single",
+                "mode": "multi",
                 "sort": "none"
               }
             }
@@ -368,7 +368,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "  WITH commits AS (\n      SELECT\n          commit.id AS commit_sha,\n          commit.timestamp AS commit_time\n      FROM default.push\n      ARRAY JOIN commits AS commit\n      WHERE\n          repository.full_name = 'pytorch/pytorch'\n          AND ref = 'refs/heads/main'\n  ),\n  blocking_runs AS (\n      SELECT id\n      FROM default.workflow_run\n      WHERE\n          head_branch = 'main'\n          AND event = 'push'\n          AND path IN (\n              -- Core\n              '.github/workflows/lint.yml',\n              '.github/workflows/pull.yml',\n              '.github/workflows/trunk.yml',\n              '.github/workflows/inductor.yml',\n              '.github/workflows/inductor-periodic.yml',\n              '.github/workflows/inductor-unittest.yml',\n              '.github/workflows/periodic.yml',\n              '.github/workflows/slow.yml',\n              '.github/workflows/dynamo-unittest.yml',\n              -- Modern hardware\n              '.github/workflows/rocm-mi300.yml',\n              '.github/workflows/rocm-mi355.yml',\n              '.github/workflows/xpu.yml',\n              '.github/workflows/mac-mps.yml',\n              '.github/workflows/tsan.yml',\n              '.github/workflows/inductor-rocm-mi300.yml',\n              '.github/workflows/inductor-rocm-mi355.yml',\n              -- Distributed\n              '.github/workflows/b200-distributed.yml',\n              '.github/workflows/h100-distributed.yml',\n              -- Adjacent / integrations\n              '.github/workflows/dtensor.yml',\n              '.github/workflows/inductor-pallas.yml',\n              '.github/workflows/vllm.yml',\n              '.github/workflows/torchtitan.yml'\n          )\n  )\n  \nSELECT\n    commits.commit_time AS commit_time,\n    round((countIf(default.workflow_job.conclusion = 'failure') / count()) * 100.0, 2) AS failure_percent,\n    avg(failure_percent) OVER (ORDER BY toUnixTimestamp(commits.commit_time) ASC RANGE BETWEEN 7 * 24 * 60 * 60 PRECEDING AND CURRENT ROW) AS trend_7d_avg\nFROM default.workflow_job\nINNER JOIN commits ON commits.commit_sha = default.workflow_job.head_sha\nINNER JOIN blocking_runs ON blocking_runs.id = default.workflow_job.run_id\nWHERE\n    default.workflow_job.run_attempt = 1\n    AND $__timeFilter(commits.commit_time)\nGROUP BY commits.commit_sha, commits.commit_time\nORDER BY commit_time ASC"
+                      "rawSql": "  WITH commits AS (\n      SELECT\n          commit.id AS commit_sha,\n          commit.timestamp AS commit_time\n      FROM default.push\n      ARRAY JOIN commits AS commit\n      WHERE\n          repository.full_name = 'pytorch/pytorch'\n          AND ref = 'refs/heads/main'\n  ),\n  blocking_runs AS (\n      SELECT id\n      FROM default.workflow_run\n      WHERE\n          head_branch = 'main'\n          AND event = 'push'\n          AND path IN (\n              -- Core\n              '.github/workflows/lint.yml',\n              '.github/workflows/pull.yml',\n              '.github/workflows/trunk.yml',\n              '.github/workflows/inductor.yml',\n              '.github/workflows/inductor-periodic.yml',\n              '.github/workflows/inductor-unittest.yml',\n              '.github/workflows/periodic.yml',\n              '.github/workflows/slow.yml',\n              '.github/workflows/dynamo-unittest.yml',\n              -- Modern hardware\n              '.github/workflows/rocm-mi300.yml',\n              '.github/workflows/rocm-mi355.yml',\n              '.github/workflows/xpu.yml',\n              '.github/workflows/mac-mps.yml',\n              '.github/workflows/tsan.yml',\n              '.github/workflows/inductor-rocm-mi300.yml',\n              '.github/workflows/inductor-rocm-mi355.yml',\n              -- Distributed\n              '.github/workflows/b200-distributed.yml',\n              '.github/workflows/h100-distributed.yml',\n              -- Adjacent / integrations\n              '.github/workflows/dtensor.yml',\n              '.github/workflows/inductor-pallas.yml',\n              '.github/workflows/vllm.yml',\n              '.github/workflows/torchtitan.yml'\n          )\n  )\n  \nSELECT\n    commits.commit_time AS commit_time,\n    round((countIf(default.workflow_job.conclusion = 'failure') / count()) * 100.0, 2) AS failure_percent,\n    avg(failure_percent) OVER (ORDER BY toUnixTimestamp(commits.commit_time) ASC RANGE BETWEEN 6 * 24 * 60 * 60 PRECEDING AND CURRENT ROW) AS trend_7d_avg\nFROM default.workflow_job\nINNER JOIN commits ON commits.commit_sha = default.workflow_job.head_sha\nINNER JOIN blocking_runs ON blocking_runs.id = default.workflow_job.run_id\nWHERE\n    default.workflow_job.run_attempt = 1\n    AND $__timeFilter(commits.commit_time)\nGROUP BY commits.commit_sha, commits.commit_time\nORDER BY commit_time ASC"
                     },
                     "version": "v0"
                   },
@@ -493,7 +493,183 @@
               },
               "tooltip": {
                 "hideZeros": false,
-                "mode": "single",
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
+    },
+    "panel-7": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "WITH\n  commits AS (\n    SELECT\n      toStartOfDay(head_commit.timestamp) AS day,\n      head_commit.id AS sha\n    FROM push\n    WHERE repository.full_name = 'pytorch/pytorch'\n      AND ref IN ('refs/heads/master', 'refs/heads/main')\n      AND $__timeFilter(head_commit.timestamp)\n  ),\n  all_runs AS (\n    SELECT workflow_run.id AS id, commits.day AS day, commits.sha AS sha\n    FROM workflow_run FINAL\n    JOIN commits ON workflow_run.head_sha = commits.sha\n    WHERE lower(workflow_run.name) IN ('lint', 'pull', 'trunk', 'linux-aarch64')\n      AND workflow_run.event != 'workflow_run'\n      AND workflow_run.id IN (\n        SELECT id FROM materialized_views.workflow_run_by_head_sha\n        WHERE head_sha IN (SELECT sha FROM commits)\n      )\n  ),\n  all_jobs AS (\n    SELECT all_runs.day AS day, all_runs.sha AS sha, workflow_job.conclusion AS conclusion,\n      ROW_NUMBER() OVER (PARTITION BY workflow_job.name, workflow_job.head_sha\n                         ORDER BY workflow_job.run_attempt DESC) AS row_num\n    FROM workflow_job FINAL\n    JOIN all_runs ON all_runs.id = workflow_job.run_id\n    WHERE workflow_job.name NOT IN ('ciflow_should_run', 'generate-test-matrix')\n      AND workflow_job.name NOT LIKE '%rerun_disabled_tests%'\n      AND workflow_job.name NOT LIKE '%mem_leak_check%'\n      AND workflow_job.name NOT LIKE '%unstable%'\n      AND workflow_job.id IN (\n        SELECT id FROM materialized_views.workflow_job_by_head_sha\n        WHERE head_sha IN (SELECT sha FROM commits)\n      )\n  ),\n  per_commit AS (\n    SELECT day, sha,\n      max(row_num = 1 AND conclusion IN ('failure', 'timed_out', 'cancelled')) AS broken_trunk_red\n    FROM all_jobs\n    GROUP BY day, sha\n    HAVING COUNT(*) > 10 AND countIf(conclusion = '') = 0\n  ),\n  daily AS (\n    SELECT day,\n      countIf(broken_trunk_red) AS red_count,\n      COUNT(*) AS commit_count\n    FROM per_commit\n    GROUP BY day\n  )\nSELECT\n  day AS time,\n  red_count * 100.0 / commit_count AS red_percent,\n  sum(red_count) OVER w * 100.0 / sum(commit_count) OVER w AS trend_7d_avg\nFROM daily\nWINDOW w AS (\n  ORDER BY toUnixTimestamp(day) ASC\n  RANGE BETWEEN 6 * 86400 PRECEDING AND CURRENT ROW\n)\nORDER BY day ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Share of main commits classified as red on the trunk-blocking workflows (Lint, pull, trunk, linux-aarch64). A commit is red if any job's latest run_attempt is failure/timed_out/cancelled. Commits with pending jobs or fewer than 10 jobs are excluded. Mirrors the test-infra HUD '% commits red on main (broken trunk)' definition.",
+        "id": 7,
+        "links": [],
+        "title": "% Commits Red on Main (broken trunk)",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds",
+                  "seriesBy": "last"
+                },
+                "min": 0,
+                "unit": "percent",
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 27,
+                  "gradientMode": "scheme",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "dashed"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 10
+                    },
+                    {
+                      "color": "red",
+                      "value": 50
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "trend_7d_avg",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineInterpolation",
+                      "value": "smooth"
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                      }
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
                 "sort": "none"
               }
             }
@@ -529,8 +705,8 @@
             },
             "height": 10,
             "width": 8,
-            "x": 8,
-            "y": 0
+            "x": 0,
+            "y": 10
           }
         },
         {
@@ -543,6 +719,19 @@
             "height": 10,
             "width": 8,
             "x": 16,
+            "y": 0
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-7"
+            },
+            "height": 10,
+            "width": 8,
+            "x": 8,
             "y": 0
           }
         }
