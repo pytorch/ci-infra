@@ -1,7 +1,6 @@
 ## Features
 
-- Add IPv6 dual-stack support to the in-pod RPC server: binds `::` with `IPV6_V6ONLY` cleared so the same socket accepts both IPv4 and IPv6 connections. URL construction in the hook now brackets IPv6 literals (`[fd00::1]:port`), and the in-pod health probe uses `localhost` so it resolves to whichever loopback address is available. Works on IPv4-only, IPv6-only, and dual-stack pods with no v4-only regression.
-- Forward GitHub Actions job cancellation to the workflow pod via a new RPC `/kill` endpoint. When the runner sends `SIGTERM` to the hook, the hook now signals the in-pod RPC server, which terminates the running script's process group instead of leaving it orphaned.
+- Protect the in-pod RPC server from OOM-kills under memory pressure: the server now sets its own `oom_score_adj` to `-1000` at startup so the kernel kills the user job (the actual memory consumer) instead of the RPC server. The spawned user job resets its `oom_score_adj` back to `0` via an async-signal-safe `preexec_fn` so it remains a normal OOM candidate. Result: when a workflow pod hits its memory limit, the hook driver still has a working channel to report a clean failure instead of seeing the RPC server die mid-step.
 
 ## SHA-256 Checksums
 
