@@ -1,0 +1,176 @@
+name: "OSDC: Auto-deploy runner image to prod"
+
+# Fires after a Renovate runner-image auto-update PR merges to main. Deploys
+# the new runner image to both prod clusters sequentially (uw1 first, smoke,
+# then ue2, smoke). This is the post-merge half of the runner-image update
+# automation; the pre-merge half (staging deploy + validation) is dispatched
+# by osdc-renovate-autoapprove.yml via osdc-pr-validate.yml, which posts the
+# `osdc/pr-validate` commit status that the autoapprover gates the merge on.
+#
+# IMPORTANT: This workflow assumes the autoapprover only merges Renovate
+# PRs after osdc/pr-validate is green on the PR head SHA. If that gate is
+# disabled or bypassed, the Renovate PR would merge with no staging
+# validation and this workflow would happily roll it out to prod. The
+# autoapprover's wait-for-status step is the only enforcement point.
+#
+# The check-trigger job uses a TRIPLE gate (label + exact bot author +
+# branch prefix `renovate-runner/`) so this workflow ONLY fires for
+# runner-image auto-update PRs.
+#
+# Concurrency shares a group with osdc-deploy-prod so this and manual prod
+# deploys never overlap.
+on:
+  push:
+    branches: [main]
+    paths:
+      - osdc/clusters.yaml
+
+concurrency:
+  group: osdc-deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_deploy: ${{ steps.gate.outputs.should_deploy }}
+      uw1_modules: ${{ steps.modules.outputs.uw1_modules }}
+      ue2_modules: ${{ steps.modules.outputs.ue2_modules }}
+    steps:
+      - name: Checkout repo (for validate-runner-bump.py and cluster-config.py)
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      # cluster-config.py declares its runtime + deps via PEP-723 inline
+      # metadata, which only `uv run` understands. Direct `python3` on
+      # ubuntu-latest lacks PyYAML and the script ImportErrors.
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: false
+
+      - id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EXPECTED_BOT: ${{ vars.OSDC_RENOVATE_BOT_LOGIN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPECTED_BOT" ]; then
+            echo "::error::Repo variable OSDC_RENOVATE_BOT_LOGIN must be set to the exact login of the Renovate bot identity."
+            exit 1
+          fi
+
+          PR_JSON=""
+          for i in 1 2 3 4 5; do
+            PR_JSON=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[0] // empty' || true)
+            if [ -n "$PR_JSON" ]; then
+              break
+            fi
+            if [ "$i" -lt 5 ]; then
+              echo "Attempt $i/5: PR not yet associated with $SHA — retrying in 10s..."
+              sleep 10
+            fi
+          done
+          if [ -z "$PR_JSON" ]; then
+            echo "No PR found for $SHA after 5 retries (~50s) — treating as direct push to main, skipping deploy."
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LABELS=$(echo "$PR_JSON" | jq -r '.labels[].name')
+          AUTHOR=$(echo "$PR_JSON" | jq -r '.user.login')
+          HEAD_REF=$(echo "$PR_JSON" | jq -r '.head.ref // ""')
+          echo "PR labels: $LABELS"
+          echo "PR author: $AUTHOR (expected: $EXPECTED_BOT)"
+          echo "PR head:   $HEAD_REF"
+
+          LABEL_OK=false
+          AUTHOR_OK=false
+          BRANCH_OK=false
+          if echo "$LABELS" | grep -qx 'auto-runner-update'; then LABEL_OK=true; fi
+          if [ "$AUTHOR" = "$EXPECTED_BOT" ]; then AUTHOR_OK=true; fi
+          case "$HEAD_REF" in
+            renovate-runner/*) BRANCH_OK=true ;;
+          esac
+
+          if [ "$LABEL_OK" = "true" ] && [ "$AUTHOR_OK" = "true" ] && [ "$BRANCH_OK" = "true" ]; then
+            echo "Triple gate passed — validating diff content..."
+          else
+            echo "Triple gate failed (label=$LABEL_OK author=$AUTHOR_OK branch=$BRANCH_OK) — skipping."
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Diff-content validation: defense-in-depth against compromised RENOVATE_TOKEN.
+          # Shared with osdc-renovate-autoapprove.yml via osdc/scripts/validate-runner-bump.py
+          # so the regex, line-count, and monotonicity rules cannot drift apart.
+          PATCH_JSON=$(gh api "repos/$REPO/commits/$SHA")
+          export PATCH_JSON
+          uv run osdc/scripts/validate-runner-bump.py > /tmp/validate.out
+          DECISION=$(grep '^decision=' /tmp/validate.out | head -1 | cut -d= -f2-)
+          REASON=$(grep '^reason='   /tmp/validate.out | head -1 | cut -d= -f2-)
+
+          if [ "$DECISION" != "approve" ]; then
+            echo "::error::Diff validation rejected $SHA: $DECISION — $REASON. Refusing to deploy."
+            exit 1
+          fi
+          echo "Version bump validated: $REASON"
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+
+      - id: modules
+        if: steps.gate.outputs.should_deploy == 'true'
+        env:
+          CLUSTERS_YAML: ${{ github.workspace }}/osdc/clusters.yaml
+        run: |
+          set -euo pipefail
+          UW1=$(uv run osdc/scripts/cluster-config.py arc-cbr-production-uw1 runner-image-modules)
+          UE2=$(uv run osdc/scripts/cluster-config.py arc-cbr-production     runner-image-modules)
+          echo "uw1 runner-image modules: ${UW1:-<none>}"
+          echo "ue2 runner-image modules: ${UE2:-<none>}"
+          {
+            echo "uw1_modules=$UW1"
+            echo "ue2_modules=$UE2"
+          } >> "$GITHUB_OUTPUT"
+
+  # `runner_image_tag` (the value Renovate bumps in clusters.yaml) is consumed
+  # ONLY by modules/arc-runners/scripts/python/generate_runners.py, which is
+  # also re-used by arc-runners-{b200,h100} delegate modules. The set of
+  # consumer module names lives in osdc/scripts/cluster-config.py
+  # (RUNNER_IMAGE_CONSUMER_MODULES) and the per-cluster slice is computed
+  # above (steps.modules). Cluster IDs and uw1->ue2 ordering stay hardcoded
+  # because the sequencing is intentional (uw1 absorbs failures first), not
+  # data-driven.
+  deploy_uw1:
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_deploy == 'true' && needs.check-trigger.outputs.uw1_modules != ''
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: arc-cbr-production-uw1
+      environment: osdc-production
+      modules: ${{ needs.check-trigger.outputs.uw1_modules }}
+      run_smoke: true
+      run_integration: false
+      skip_lint_test: true
+    secrets: inherit
+
+  deploy_ue2:
+    needs: [check-trigger, deploy_uw1]
+    if: ${{ !cancelled() && needs.deploy_uw1.result == 'success' && needs.check-trigger.outputs.ue2_modules != '' }}
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: arc-cbr-production
+      environment: osdc-production
+      modules: ${{ needs.check-trigger.outputs.ue2_modules }}
+      run_smoke: true
+      run_integration: false
+      skip_lint_test: true
+    secrets: inherit
