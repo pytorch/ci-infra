@@ -37,6 +37,16 @@ on:
         required: false
         type: boolean
         default: false
+      modules:
+        description: "Comma-separated list of modules to deploy with `just deploy-module` (empty = full `just deploy`)"
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: "Git ref (branch, tag, or SHA) to check out. Empty = the ref that triggered the caller workflow."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   id-token: write
@@ -59,6 +69,8 @@ jobs:
         working-directory: osdc
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install just
         uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
@@ -81,12 +93,13 @@ jobs:
         if: ${{ !inputs.skip_lint_test }}
         run: just test
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       # Register QEMU binfmt handlers so `docker build --platform linux/arm64`
       # works on an amd64 runner. The base deploy builds image-cache-janitor
@@ -97,8 +110,21 @@ jobs:
         uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
 
       - name: Deploy ${{ inputs.cluster }}
-        run: just deploy "${{ inputs.cluster }}"
+        run: |
+          set -euo pipefail
+          if [ -z "${MODULES}" ]; then
+            just deploy "${CLUSTER}"
+          else
+            IFS=',' read -ra MODULE_LIST <<< "${MODULES}"
+            for module in "${MODULE_LIST[@]}"; do
+              module="$(echo "$module" | tr -d '[:space:]')"
+              [ -z "${module}" ] && continue
+              just deploy-module "${CLUSTER}" "${module}"
+            done
+          fi
         env:
+          CLUSTER: ${{ inputs.cluster }}
+          MODULES: ${{ inputs.modules }}
           OSDC_CONFIRM: "yes"
           # smoke runs as a dedicated job below, skip the in-deploy step
           OSDC_SMOKE: "no"
@@ -117,6 +143,8 @@ jobs:
         working-directory: osdc
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install just
         uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
@@ -131,12 +159,13 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       - name: Run smoke tests
         run: just smoke "${{ inputs.cluster }}"
@@ -153,6 +182,8 @@ jobs:
         working-directory: osdc
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install just
         uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
@@ -172,12 +203,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CANARY_GITHUB_TOKEN }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      - name: Configure AWS for cluster
+        id: aws
+        uses: ./.github/actions/osdc-aws-login
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
-          aws-region: us-west-1
-          role-duration-seconds: 7200
+          cluster: ${{ inputs.cluster }}
+          account-id: ${{ secrets.META_AWS_ACC_ID }}
+          role: ${{ secrets.META_AWS_DEPLOY_ROLE }}
 
       - name: Run integration tests
         run: just integration-test "${{ inputs.cluster }}" --skip-drain --skip-smoke --skip-compactor

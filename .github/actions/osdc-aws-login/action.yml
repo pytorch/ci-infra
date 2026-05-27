@@ -1,0 +1,42 @@
+name: "OSDC: Resolve cluster region and configure AWS credentials"
+description: "Looks up the cluster's AWS region from clusters.yaml and assumes the OSDC deploy role."
+inputs:
+  cluster:
+    description: "Cluster id from clusters.yaml"
+    required: true
+  account-id:
+    description: "AWS account ID (typically secrets.META_AWS_ACC_ID)"
+    required: true
+  role:
+    description: "AWS IAM role to assume (typically secrets.META_AWS_DEPLOY_ROLE)"
+    required: true
+  role-duration-seconds:
+    description: "STS session duration"
+    required: false
+    default: "7200"
+outputs:
+  region:
+    description: "Resolved AWS region"
+    value: ${{ steps.region.outputs.region }}
+runs:
+  using: composite
+  steps:
+    - name: Determine AWS region
+      id: region
+      shell: bash
+      working-directory: osdc
+      run: |
+        set -euo pipefail
+        REGION="$(just region "${{ inputs.cluster }}")"
+        if [ -z "$REGION" ]; then
+          echo "::error::just region returned empty for cluster '${{ inputs.cluster }}'"
+          exit 1
+        fi
+        echo "region=$REGION" >> "$GITHUB_OUTPUT"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+      with:
+        role-to-assume: arn:aws:iam::${{ inputs.account-id }}:role/${{ inputs.role }}
+        aws-region: ${{ steps.region.outputs.region }}
+        role-duration-seconds: ${{ inputs.role-duration-seconds }}
