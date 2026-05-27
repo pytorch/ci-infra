@@ -2,7 +2,9 @@
 
 ## What this pipeline does
 
-A Renovate-driven, unattended pipeline that keeps `runner_image_tag` in `osdc/clusters.yaml` current with new GitHub Actions runner image releases on GHCR. Runs on cron (Mon + Thu, 14:00 UTC) plus `workflow_dispatch`. When a release at least 5 days old is found, Renovate opens a single-line bump PR on a `renovate-runner/*` branch with the `auto-runner-update` label. A separate workflow auto-approves and enqueues the PR into the merge queue, which triggers full staging validation (deploy + smoke + integration + load test) via `osdc-pre-merge.yml`. On a green queue run the PR squash-merges; a post-merge workflow then deploys the new image to `arc-cbr-production-uw1` (smoke), then `arc-cbr-production` (smoke), sequentially.
+A Renovate-driven, unattended pipeline that keeps `runner_image_tag` in `osdc/clusters.yaml` current with new GitHub Actions runner image releases on GHCR. Runs on cron (Mon + Thu, 14:00 UTC) plus `workflow_dispatch`. When a release at least 5 days old is found, Renovate opens a single-line bump PR on a `renovate-runner/*` branch with the `auto-runner-update` label. A separate auto-approve workflow validates the diff, dispatches `osdc-pr-validate.yml` against the PR head SHA to deploy + smoke + integration test on `arc-staging`, and polls the `osdc/pr-validate` commit status. When the status flips to `success`, the auto-approver approves the PR (SHA-pinned) and squash-merges it immediately. A post-merge workflow then deploys the new image to `arc-cbr-production-uw1` (smoke), then `arc-cbr-production` (smoke), sequentially.
+
+GitHub merge queue required-checks are not reliably enforced at merge time, so the merge gate is a client-side script poll on the `osdc/pr-validate` commit status, not a branch-protection required check.
 
 ## Prerequisites
 
@@ -14,15 +16,15 @@ The pipeline relies on the following repo configuration. If any is missing, the 
   - Deployment-branch policy restricted to `main`
   - Holds both PATs below
 - **Repo secret `UPDATEBOT_TOKEN`** — PAT owned by `pytorchupdatebot`. Used by `osdc-renovate.yml` to push `renovate-runner/*` branches and open PRs.
-- **Repo secret `GH_PYTORCHBOT_TOKEN`** — PAT owned by `pytorchbot`. Used by `osdc-renovate-autoapprove.yml` to approve, enqueue, comment, and close PRs.
+- **Repo secret `GH_PYTORCHBOT_TOKEN`** — PAT owned by `pytorchbot`. Used by `osdc-renovate-autoapprove.yml` to approve, merge, comment, and close PRs.
 - **Distinct identities.** `UPDATEBOT_TOKEN` and `GH_PYTORCHBOT_TOKEN` MUST be owned by different GitHub accounts. The branch ruleset on `main` forbids self-approval — if both PATs are the same identity, every auto-approval is rejected by GitHub and nothing ever merges.
 - **Repo variable `OSDC_RENOVATE_BOT_LOGIN`** — the GitHub login of `UPDATEBOT_TOKEN`'s owner. Today: `pytorchupdatebot`. Read by both the auto-approver and the post-merge deploy gate to verify the PR author matches. The discover job fails closed if this variable is empty.
 - **Branch ruleset on `main`** — requires 1 approving review and forbids self-approval.
-- **Merge queue enabled on `main`** with `osdc-pre-merge` configured as a **queue-required** check. It MUST be a queue-required check, not a plain branch-required check: `osdc-pre-merge.yml` only runs inside the merge queue, so listing it as a plain required check would block `gh pr merge --auto` from ever queueing the PR (the required check would be permanently pending). Without `osdc-pre-merge` in the queue, the PR auto-merges on approval alone with zero staging validation.
+- **No `osdc-pre-merge` / `pre-merge-ok` required check on `main`.** The script-gated merge does an immediate `gh pr merge --squash` after polling `osdc/pr-validate`; if `pre-merge-ok` were required on the PR branch, the merge would block waiting for a check that only runs in the merge queue (which the script bypasses). `osdc-pre-merge.yml` still fires on `merge_group` for observability but is informational only.
 
 ## Pause the pipeline
 
-Remove the `auto-runner-update` label from any open Renovate PR. The auto-approve job and the stale-close job both filter on this label, so an unlabeled PR will not be approved, enqueued, or auto-closed. Renovate itself will continue to open new PRs on the next scheduled run; close them manually or unlabel them as they appear.
+Remove the `auto-runner-update` label from any open Renovate PR. The auto-approve job and the stale-close job both filter on this label, so an unlabeled PR will not be approved, merged, or auto-closed. Renovate itself will continue to open new PRs on the next scheduled run; close them manually or unlabel them as they appear.
 
 To stop Renovate from opening PRs at all, disable the `osdc-renovate.yml` workflow via the Actions UI.
 
@@ -88,7 +90,7 @@ Both PATs live in the `osdc-renovate` GitHub Environment. To rotate:
 | Secret | Owner | Required scopes | Used by |
 |--------|-------|-----------------|---------|
 | `UPDATEBOT_TOKEN` | `pytorchupdatebot` | Contents: Read+write; Pull requests: Read+write; Metadata: Read. **Must NOT have**: Workflows, Administration, Actions, Secrets, or any org permissions | `osdc-renovate.yml` (push branches, open PRs) |
-| `GH_PYTORCHBOT_TOKEN` | `pytorchbot` | Contents: Read; Pull requests: Read+write; Metadata: Read. **Must NOT have**: Workflows, Administration, Actions, Secrets, or any org permissions | `osdc-renovate-autoapprove.yml` (approve, enqueue, comment, close) |
+| `GH_PYTORCHBOT_TOKEN` | `pytorchbot` | Contents: Read; Pull requests: Read+write; Metadata: Read. **Must NOT have**: Workflows, Administration, Actions, Secrets, or any org permissions | `osdc-renovate-autoapprove.yml` (approve, merge, comment, close) |
 
 Rotation steps:
 
@@ -105,7 +107,9 @@ If the owning identity of `UPDATEBOT_TOKEN` ever changes, also update the repo v
 |------|------|
 | `osdc/renovate.json` | Renovate config — match rules for `runner_image_tag`, schedule, labels, branch prefix, minimum release age |
 | `.github/workflows/osdc-renovate.yml` | Scheduled + dispatchable Renovate runner. Opens the bump PR |
-| `.github/workflows/osdc-renovate-autoapprove.yml` | Triggered by `workflow_run` on the renovate workflow. Validates the diff, approves, enqueues, and stale-closes |
+| `.github/workflows/osdc-renovate-autoapprove.yml` | Triggered by `workflow_run` on the renovate workflow. Validates the diff, dispatches `osdc-pr-validate.yml`, polls the `osdc/pr-validate` status, then approves + immediately squash-merges (or auto-closes), and stale-closes |
+| `.github/workflows/osdc-pr-validate.yml` | Dispatched by the auto-approver per PR head SHA. Posts the `osdc/pr-validate` commit status (pending → success/failure) after deploy + smoke + integration on `arc-staging`. Wraps `_osdc-deploy.yml` with `ref=<head_sha>` |
+| `osdc/scripts/wait-for-pr-validate.py` | The client-side merge gate. Dispatches `osdc-pr-validate.yml` against `main` (trusted workflow definition), polls the `osdc/pr-validate` status with bounded retry, bails on head-moved / dispatch-failed / stuck-pending |
 | `.github/workflows/osdc-auto-update-deploy-prod.yml` | Triggered by `push` to `main` touching `osdc/clusters.yaml`. Re-validates the merge commit, then deploys uw1 then ue2 sequentially |
-| `.github/workflows/osdc-pre-merge.yml` | Merge-queue check — full staging deploy + smoke + integration + load test |
+| `.github/workflows/osdc-pre-merge.yml` | Informational `merge_group` signal — full staging deploy + smoke + integration. **Not** a merge gate; the merge is gated client-side on `osdc/pr-validate` |
 | `.github/workflows/osdc-deploy-prod.yml` | Manual prod deploy used to recover from a failed or skipped auto-deploy |

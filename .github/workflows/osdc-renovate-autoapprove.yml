@@ -15,9 +15,14 @@ name: "OSDC: Auto-approve Renovate runner-image PRs"
 # self-approval, so a SEPARATE identity approves the PR and adds it to the
 # merge queue: `osdc-renovate.yml` opens PRs as `pytorchupdatebot` (via
 # UPDATEBOT_TOKEN), this workflow approves them as `pytorchbot` (via
-# GH_PYTORCHBOT_TOKEN). The merge queue triggers osdc-pre-merge.yml which
-# runs full staging deploy + smoke + integration + load test. If green, the
-# PR squash-merges to main; if red, the PR is ejected and no merge happens.
+# GH_PYTORCHBOT_TOKEN). Before approving, this workflow dispatches
+# osdc-pr-validate.yml against the PR head SHA and waits for the
+# `osdc/pr-validate` commit status to flip to success — that is the gate.
+# Merging happens immediately (gh pr merge --squash, no --auto) once the
+# status is green. The merge_group entrypoint in osdc-pre-merge.yml still
+# fires on the eventual merge but is informational only; GitHub does not
+# reliably enforce required checks at merge-queue time, which is why the
+# gating moved here.
 #
 # Auto-close behaviors operators should know about:
 #   - Diff-validation failure (wrong file, wrong line count, bad regex,
@@ -61,11 +66,13 @@ on:
 permissions:
   contents: read
   pull-requests: read
-  actions: read
+  actions: write
+  statuses: read
 
 concurrency:
   # Constant group serializes re-runs of osdc-renovate so the second autoapprove
-  # waits for the first to finish, avoiding double `gh pr merge --auto` calls.
+  # waits for the first to finish — prevents two runs racing on the same PR set
+  # with overlapping dispatches and immediate squash merges.
   group: osdc-renovate-approve
   cancel-in-progress: false
 
@@ -144,7 +151,10 @@ jobs:
     if: needs.discover.outputs.approve_count != '0'
     runs-on: ubuntu-latest
     environment: osdc-renovate
-    timeout-minutes: 5
+    # 360 = 6h. The validate step waits for osdc/pr-validate on the PR
+    # head SHA, which serializes behind any other staging consumer in the
+    # osdc-staging concurrency group; a queued PR can wait hours.
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.discover.outputs.approve_matrix) }}
@@ -180,6 +190,11 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: false
 
       - name: Validate PR diff and decide
         id: validate
@@ -217,8 +232,33 @@ jobs:
             echo "head_sha=$HEAD_SHA"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Approve PR
+      # Client-side merge gate: dispatch osdc-pr-validate against the PR
+      # head SHA (using the trusted workflow definition on `main`, NOT
+      # the PR branch — a compromised PR cannot swap the workflow file
+      # underneath us) and poll the `osdc/pr-validate` commit status
+      # until it flips to success or failure. The validation workflow
+      # shares the `osdc-staging` concurrency group with osdc-pre-merge.yml,
+      # so this serializes behind any other consumer touching arc-staging.
+      # A backlog of 2-3 PRs can keep this step waiting for several hours;
+      # the job timeout is 360 min to match.
+      #
+      # The wait script also re-checks PR head.sha on each iteration and
+      # bails as `close-head-moved` if the PR is rebased mid-wait,
+      # detects stuck `pending` statuses (post job never reported) and
+      # re-dispatches, and retries transient gh api failures so a single
+      # GitHub 5xx during the 6h window doesn't abort the wait.
+      - name: Wait for osdc/pr-validate status
+        id: wait
         if: steps.validate.outputs.decision == 'approve'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ matrix.pr }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.validate.outputs.head_sha }}
+        run: uv run osdc/scripts/wait-for-pr-validate.py
+
+      - name: Approve PR
+        if: steps.wait.outputs.decision == 'approve'
         env:
           GH_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
           PR_NUMBER: ${{ matrix.pr }}
@@ -238,8 +278,8 @@ jobs:
             -f commit_id="$HEAD_SHA" \
             -f body="Auto-approved by OSDC auto-approver: runner-image bump PR from Renovate (validated at $HEAD_SHA)."
 
-      - name: Add to merge queue (auto-merge)
-        if: steps.validate.outputs.decision == 'approve'
+      - name: Merge PR
+        if: steps.wait.outputs.decision == 'approve'
         env:
           GH_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
           PR_NUMBER: ${{ matrix.pr }}
@@ -247,26 +287,39 @@ jobs:
           HEAD_SHA: ${{ steps.validate.outputs.head_sha }}
         run: |
           set -euo pipefail
-          # --match-head-commit pins the auto-merge to the SHA we validated;
-          # if a force-push lands before the merge queue picks the PR up,
-          # auto-merge is invalidated rather than enqueuing unvalidated code.
-          gh pr merge --squash --auto \
+          # Immediate squash merge (no --auto). Gating happened in the
+          # wait step above: osdc/pr-validate is green for this SHA.
+          # --match-head-commit pins the merge to the validated SHA;
+          # if a force-push lands between the wait check and this call,
+          # GitHub rejects the merge rather than landing unvalidated code.
+          gh pr merge --squash \
             --match-head-commit "$HEAD_SHA" \
             "$PR_NUMBER" \
             --repo "$REPO"
 
       - name: Close PR on validation failure
-        if: startsWith(steps.validate.outputs.decision, 'close-')
+        if: |
+          startsWith(steps.validate.outputs.decision, 'close-') ||
+          startsWith(steps.wait.outputs.decision, 'close-')
         env:
           GH_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
           PR_NUMBER: ${{ matrix.pr }}
           REPO: ${{ github.repository }}
-          DECISION: ${{ steps.validate.outputs.decision }}
-          REASON: ${{ steps.validate.outputs.reason }}
+          DIFF_DECISION: ${{ steps.validate.outputs.decision }}
+          DIFF_REASON: ${{ steps.validate.outputs.reason }}
+          WAIT_DECISION: ${{ steps.wait.outputs.decision }}
+          WAIT_REASON: ${{ steps.wait.outputs.reason }}
         run: |
           set -euo pipefail
+          if [[ "$WAIT_DECISION" == close-* ]]; then
+            DECISION="$WAIT_DECISION"
+            REASON="$WAIT_REASON"
+          else
+            DECISION="$DIFF_DECISION"
+            REASON="$DIFF_REASON"
+          fi
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-            "Auto-closed: diff validation failed (\`$DECISION\`): $REASON. If a fix is needed, a new PR will be opened by Renovate on the next run when an eligible version is available."
+            "Auto-closed: \`$DECISION\` — $REASON. If a fix is needed, a new PR will be opened by Renovate on the next run when an eligible version is available."
           gh pr close "$PR_NUMBER" --repo "$REPO"
 
   close_stale:

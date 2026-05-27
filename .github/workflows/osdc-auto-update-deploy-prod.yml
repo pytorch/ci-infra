@@ -3,15 +3,15 @@ name: "OSDC: Auto-deploy runner image to prod"
 # Fires after a Renovate runner-image auto-update PR merges to main. Deploys
 # the new runner image to both prod clusters sequentially (uw1 first, smoke,
 # then ue2, smoke). This is the post-merge half of the runner-image update
-# automation; the pre-merge half (staging deploy + validation) runs on the
-# PR via osdc-pre-merge.yml in the merge queue.
+# automation; the pre-merge half (staging deploy + validation) is dispatched
+# by osdc-renovate-autoapprove.yml via osdc-pr-validate.yml, which posts the
+# `osdc/pr-validate` commit status that the autoapprover gates the merge on.
 #
-# IMPORTANT: This workflow assumes the merge queue is configured on `main`
-# AND that osdc-pre-merge.yml is a required check in the queue. Without
-# that, the Renovate PR auto-merges on EasyCLA + 1 approval without any
-# staging validation. Verify repo Settings -> Branches -> main has merge
-# queue enabled and osdc-pre-merge listed as required before relying on
-# this workflow for safe rollouts.
+# IMPORTANT: This workflow assumes the autoapprover only merges Renovate
+# PRs after osdc/pr-validate is green on the PR head SHA. If that gate is
+# disabled or bypassed, the Renovate PR would merge with no staging
+# validation and this workflow would happily roll it out to prod. The
+# autoapprover's wait-for-status step is the only enforcement point.
 #
 # The check-trigger job uses a TRIPLE gate (label + exact bot author +
 # branch prefix `renovate-runner/`) so this workflow ONLY fires for
@@ -159,9 +159,6 @@ jobs:
       modules: ${{ needs.check-trigger.outputs.uw1_modules }}
       run_smoke: true
       run_integration: false
-      run_compactor: false
-      run_janitor: false
-      run_load_test: false
       skip_lint_test: true
     secrets: inherit
 
@@ -175,8 +172,5 @@ jobs:
       modules: ${{ needs.check-trigger.outputs.ue2_modules }}
       run_smoke: true
       run_integration: false
-      run_compactor: false
-      run_janitor: false
-      run_load_test: false
       skip_lint_test: true
     secrets: inherit

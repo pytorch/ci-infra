@@ -14,7 +14,9 @@ permissions:
 # per workflow invocation against arc-staging. cancel-in-progress: false
 # so a later run waits for the prior run's slow jobs to finish before
 # deploy/smoke/integration even start — protects test fixtures from
-# interleaving.
+# interleaving. Shared with osdc-pr-validate.yml so PR-branch validation
+# dispatched by the Renovate autoapprover queues behind any merge_group
+# run touching staging, and vice versa.
 concurrency:
   group: osdc-staging
   cancel-in-progress: false
@@ -22,8 +24,8 @@ concurrency:
 jobs:
   # ------------------------------------------------------------------
   # Path filter: skip expensive jobs when no OSDC files changed.
-  # The marker job (pre-merge-ok) still runs and reports green so the
-  # merge queue's required check resolves.
+  # The marker job (pre-merge-ok) still runs and reports green so any
+  # legacy required-check configuration on the merge queue resolves.
   # ------------------------------------------------------------------
   changes:
     runs-on: ubuntu-latest
@@ -54,8 +56,9 @@ jobs:
               - '.github/workflows/osdc-renovate.yml'
 
   # ------------------------------------------------------------------
-  # Fast set: deploy + smoke + integration. Gates the merge queue
-  # via the pre-merge-ok marker job below.
+  # Fast set: deploy + smoke + integration. Informational signal on
+  # merge_group runs. Renovate PR merges are gated by osdc-pr-validate.yml
+  # via the osdc/pr-validate commit status, not by this workflow.
   # ------------------------------------------------------------------
   deploy-fast:
     needs: changes
@@ -90,14 +93,18 @@ jobs:
     secrets: inherit
 
   # ------------------------------------------------------------------
-  # Marker job: the SOLE required status check on the merge queue.
+  # Marker job. Historically the sole required status check on the
+  # merge queue; under script-gated Renovate merging, the actual gate
+  # is the osdc/pr-validate commit status posted by osdc-pr-validate.yml,
+  # and this marker is retained as a no-op signal for any legacy
+  # branch-protection configuration still pointing at it.
   # Reports green when either:
   #   (a) no osdc changes (path filter excluded), OR
   #   (b) deploy-fast succeeded.
   # slow-tests result is NOT considered — they're informational.
   # if: always() is required so this job still runs (and reports) when
-  # deploy-fast is skipped by the path filter; otherwise the required
-  # check never reports and the merge queue times out.
+  # deploy-fast is skipped by the path filter; otherwise nothing
+  # reports back on the merge_group event.
   # ------------------------------------------------------------------
   pre-merge-ok:
     needs: [changes, deploy-fast]
