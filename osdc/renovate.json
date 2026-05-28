@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "onboarding": false,
+  "requireConfig": "optional",
+  "branchPrefix": "renovate-runner/",
+  "labels": ["auto-runner-update", "renovate"],
+  "rangeStrategy": "pin",
+  "enabledManagers": ["custom.regex"],
+  "platformAutomerge": false,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^osdc/clusters\\.yaml$/"],
+      "matchStrings": [
+        "# renovate: keep marker[^\\n]*\\n\\s*runner_image_tag:\\s*[\"'](?<currentValue>[^\"']+)[\"']"
+      ],
+      "depNameTemplate": "ghcr.io/actions/actions-runner",
+      "packageNameTemplate": "ghcr.io/actions/actions-runner",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["ghcr.io/actions/actions-runner"],
+      "allowedVersions": "<3.0.0",
+      "ignoreUnstable": true,
+      "minimumReleaseAge": "5 days",
+      "prCreation": "immediate",
+      "commitMessageTopic": "GHA runner image",
+      "commitMessageAction": "bump",
+      "prBodyNotes": [
+        "Auto-update for `ghcr.io/actions/actions-runner`. After approval and merge, prod deploy fires via `osdc-auto-update-deploy-prod.yml`."
+      ]
+    }
+  ]
+}
