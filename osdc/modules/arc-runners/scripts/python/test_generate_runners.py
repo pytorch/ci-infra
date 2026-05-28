@@ -203,7 +203,11 @@ def make_def_file(
     max_burst_capacity=None,
     node_fleet=None,
 ):
-    """Write a runner def YAML and return the path."""
+    """Write a runner def YAML and return the path.
+
+    `max_runners` accepts either an int (baseline for every cluster) or a dict
+    of `{default: int, <cluster_id>: int, ...}` matching the generator schema.
+    """
     runner = {
         "name": name,
         "instance_type": instance_type,
@@ -755,13 +759,140 @@ class TestGenerateRunner:
         assert docs[0]["minRunners"] == 0
         assert docs[0]["maxRunners"] == 8
 
+    def test_max_runners_mapping_picks_per_cluster_value(self, tmp_path):
+        """A per-cluster entry in the max_runners mapping replaces the default baseline."""
+        def_file = make_def_file(
+            tmp_path,
+            "h100-1gpu",
+            "p5.48xlarge",
+            22,
+            225,
+            gpu=1,
+            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "cluster_id": "arc-cbr-production-uw1",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "h100-1gpu.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 48
+
+    def test_max_runners_mapping_falls_back_to_default(self, tmp_path):
+        """When the cluster has no explicit entry, the `default` baseline applies."""
+        def_file = make_def_file(
+            tmp_path,
+            "h100-1gpu",
+            "p5.48xlarge",
+            22,
+            225,
+            gpu=1,
+            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "cluster_id": "arc-cbr-production",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "h100-1gpu.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 8
+
+    def test_max_runners_mapping_rejects_missing_default(self, tmp_path):
+        """A max_runners mapping without a `default` key is rejected."""
+        def_file = make_def_file(
+            tmp_path,
+            "h100-1gpu",
+            "p5.48xlarge",
+            22,
+            225,
+            gpu=1,
+            max_runners={"arc-cbr-production-uw1": 48},
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "cluster_id": "arc-cbr-production-uw1",
+        }
+
+        with pytest.raises(ValueError, match="max_runners mapping must include a `default` key"):
+            generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100")
+
+    def test_pause_runners_overrides_max_runners_mapping(self, tmp_path):
+        """pause_runners=true wins over a per-cluster mapping entry — maxRunners is forced to 0."""
+        def_file = make_def_file(
+            tmp_path,
+            "h100-1gpu",
+            "p5.48xlarge",
+            22,
+            225,
+            gpu=1,
+            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "cluster_id": "arc-cbr-production-uw1",
+            "pause_runners": True,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "h100-1gpu.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+    def test_region_exclusion_overrides_max_runners_mapping(self, tmp_path):
+        """A region-excluded instance type forces maxRunners=0 even when a per-cluster entry is set."""
+        def_file = make_def_file(
+            tmp_path,
+            "h100-1gpu",
+            "p5.48xlarge",
+            22,
+            225,
+            gpu=1,
+            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "cluster_id": "arc-cbr-production-uw1",
+            "excluded_instance_types": {"p5.48xlarge"},
+            "region": "us-west-1",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "h100-1gpu.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
     def test_invalid_max_runners_zero(self, tmp_path):
         """max_runners must be a positive integer; 0 is rejected."""
         def_file = make_def_file(tmp_path, "bad-cap", "c7i.24xlarge", 4, 16, max_runners=0)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        with pytest.raises(ValueError, match="max_runners must be a positive integer"):
+            generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners")
 
     def test_invalid_max_runners_non_int(self, tmp_path):
         """max_runners must be an int, not a string."""
@@ -769,7 +900,8 @@ class TestGenerateRunner:
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        with pytest.raises(ValueError, match="max_runners must be a positive integer"):
+            generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners")
 
     def test_pause_runners_forces_max_runners_zero_when_def_unset(self, tmp_path):
         """pause_runners=true forces maxRunners: 0 even when the def omits max_runners."""
