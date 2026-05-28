@@ -30,8 +30,6 @@ data:
     DCGM_FI_DEV_ECC_SBE_AGG_TOTAL, counter, Single-bit ECC errors (aggregate)
     DCGM_FI_DEV_ECC_DBE_AGG_TOTAL, counter, Double-bit ECC errors (aggregate)
     DCGM_FI_DEV_RETIRED_SBE,      counter, Retired pages (single-bit)
-    DCGM_FI_DEV_RETIRED_DBE,      counter, Retired pages (double-bit)
-    DCGM_FI_DEV_RETIRED_PENDING,  gauge, Retired pages pending
     DCGM_FI_DEV_XID_ERRORS,       gauge, Last XID error code
     # Tier 2 — Diagnostic
     DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, counter, NVLink total bandwidth (bytes)

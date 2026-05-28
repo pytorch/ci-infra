@@ -23,12 +23,16 @@ from pathlib import Path
 
 import yaml
 
-# instance_specs lives in scripts/python/ at the repo root.  Add it to
-# sys.path so the import works both when run directly (deploy.sh) and
-# when run via pytest (pyproject.toml testpaths also adds it).
+# instance_specs and fleet_naming live in scripts/python/ at the repo root.
+# Add it to sys.path so the import works both when run directly (deploy.sh)
+# and when run via pytest (pyproject.toml testpaths also adds it).
 _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python")
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
+
+from fleet_naming import derive_fleet_name  # noqa: E402
+from nodepool_defs import load_excluded_instance_types  # noqa: E402
+from runner_fleet_validator import validate_cluster_runner_fleets  # noqa: E402
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -52,16 +56,6 @@ def log_error(msg):
 def normalize_name(name):
     """Normalize runner name for K8s resources (replace dots and underscores with dashes)."""
     return name.replace(".", "-").replace("_", "-")
-
-
-def derive_fleet_name(instance_type):
-    """Derive the node-fleet name from an instance type.
-
-    Returns the instance family (everything before the dot).  GPU scheduling
-    is handled by nvidia.com/gpu resource requests, not fleet-level isolation,
-    so GPU and CPU instances use the same derivation: family name only.
-    """
-    return instance_type.split(".")[0]  # r7a, g5, c7i, p6-b200, etc.
 
 
 # Kubernetes resource quantity suffixes → multiplier (bytes)
@@ -119,6 +113,18 @@ def get_cluster_config(clusters_yaml, cluster_id):
     return cluster_cfg, defaults
 
 
+def _resolve_consumer_root(upstream_dir):
+    env_root = os.environ.get("OSDC_ROOT", "")
+    if not env_root:
+        return None
+    candidate = Path(env_root).resolve()
+    if not candidate.is_dir():
+        return None
+    if candidate == upstream_dir.resolve():
+        return None
+    return candidate
+
+
 def resolve_value(cluster_cfg, defaults, dotpath):
     """Resolve a dot-separated path against cluster config with defaults fallback."""
     parts = dotpath.split(".")
@@ -152,6 +158,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     max_runners = runner.get("max_runners")
     proactive_capacity = runner.get("proactive_capacity", 0)
     max_burst_capacity = runner.get("max_burst_capacity", 0)
+    node_fleet_override = runner.get("node_fleet")
     if cluster_config.get("force_proactive_capacity_zero"):
         proactive_capacity = 0
 
@@ -162,6 +169,21 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     if max_runners is not None and (not isinstance(max_runners, int) or max_runners < 1):
         log_error(f"Invalid definition file {def_file}: max_runners must be a positive integer, got {max_runners!r}")
         return False
+
+    if cluster_config.get("pause_runners"):
+        max_runners = 0
+
+    # Region-exclusion guard: if the backing nodepool/fleet excludes the
+    # cluster's region (no underlying capacity), force advertised capacity to
+    # zero so GitHub does not route jobs that would pend forever.
+    if instance_type in (cluster_config.get("excluded_instance_types") or set()):
+        log_warning(
+            f"{runner_name}: instance_type {instance_type} excluded in region "
+            f"{cluster_config.get('region', '?')} via modules/nodepools/defs/ "
+            f"— forcing max_runners=0, proactive_capacity=0"
+        )
+        max_runners = 0
+        proactive_capacity = 0
 
     if max_burst_capacity is not None and (not isinstance(max_burst_capacity, int) or max_burst_capacity < 0):
         log_error(
@@ -177,10 +199,22 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
             f"Consider raising max_burst_capacity."
         )
 
-    node_fleet = derive_fleet_name(instance_type)
+    try:
+        node_fleet = derive_fleet_name(instance_type, override=node_fleet_override)
+    except ValueError as e:
+        log_error(f"Invalid definition file {def_file}: {e}")
+        return False
 
     # Cluster-specific values
     github_url = cluster_config.get("github_config_url", "")
+
+    # Cluster-level runner_group override (e.g. multi-region prod assigns a
+    # per-region runner group so two clusters can share scale-set names without
+    # collision). When set, wins over the def file's value. The repo-scope
+    # guard below still applies.
+    cluster_runner_group = cluster_config.get("runner_group")
+    if cluster_runner_group:
+        runner_group = cluster_runner_group
 
     # Runner groups are an org-level GitHub concept. Repo-scoped githubConfigUrl
     # (e.g. github.com/org/repo) can't resolve runner groups — force "default".
@@ -340,6 +374,42 @@ def main():
 
     # Staging clusters: force proactive_capacity to 0 regardless of runner def value
     cluster_config["force_proactive_capacity_zero"] = "staging" in cluster_id
+
+    cluster_config["pause_runners"] = bool(cluster_cfg.get("pause_runners"))
+    if cluster_config["pause_runners"]:
+        log_warning(f"pause_runners=true for cluster '{cluster_id}' — all scale sets will render with maxRunners: 0")
+
+    # Mirror the nodepools generator's exclude_regions handling: zero out
+    # advertised capacity for any runner whose instance_type is in a fleet/
+    # nodepool def that excludes this cluster's region.
+    region = cluster_cfg.get("region", "")
+    nodepools_defs_dir = (
+        Path(os.environ["NODEPOOLS_DEFS_DIR"])
+        if "NODEPOOLS_DEFS_DIR" in os.environ
+        else repo_root / "modules" / "nodepools" / "defs"
+    )
+    cluster_config["region"] = region
+    cluster_config["excluded_instance_types"] = load_excluded_instance_types(nodepools_defs_dir, region)
+    if cluster_config["excluded_instance_types"]:
+        log_info(
+            f"Region {region}: nodepool exclude_regions hits {len(cluster_config['excluded_instance_types'])} "
+            f"instance type(s); matching runners will render with maxRunners: 0"
+        )
+
+    # Hard-fail before touching the output dir: a runner pointing at a fleet no
+    # NodePool defines would pend forever at apply time, and wiping generated/
+    # before validation would destroy the previous (good) render on failure.
+    consumer_root = _resolve_consumer_root(repo_root)
+    fleet_errors = validate_cluster_runner_fleets(
+        cluster_id,
+        clusters_yaml,
+        upstream_dir=repo_root,
+        consumer_root=consumer_root,
+    )
+    if fleet_errors:
+        for err in fleet_errors:
+            log_error(err)
+        sys.exit(1)
 
     # Clean output dir so removed defs don't leave stale generated files
     if output_dir.exists():

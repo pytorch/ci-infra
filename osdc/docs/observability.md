@@ -76,7 +76,7 @@ The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 
 | Type | Name | Target Namespace | What it monitors |
 |------|------|-----------------|-----------------|
-| ServiceMonitor | apiserver | default | K8s API server request rate, latency, inflight requests, etcd latency |
+| ServiceMonitor | apiserver | default | K8s API server request counters (`apiserver_request_total`, `apiserver_request_terminations_total`) — latency, inflight, and etcd metrics are filtered out |
 | ServiceMonitor | arc-controller | arc-systems | ARC controller metrics |
 | ServiceMonitor | harbor | harbor-system | Harbor exporter metrics |
 | ServiceMonitor | karpenter | karpenter | Karpenter controller metrics |
@@ -95,7 +95,22 @@ The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 Plus kube-prometheus-stack built-in targets:
 - **node-exporter** — DaemonSet on ALL nodes (tolerates all taints), 60s interval; heavily filtered (see "Layer 2" below — only `node_memory_MemAvailable_bytes` and `node_memory_MemTotal_bytes` are kept)
 - **kube-state-metrics** — Deployment on base-infrastructure nodes
-- **kubelet ServiceMonitor** — built-in scrape of `/metrics` and cAdvisor at 60s interval; `/metrics/probes` is disabled. Heavily filtered: kubelet keeps only `kubelet_running_(pods|containers)|kubelet_node_name`; cAdvisor keeps only `container_memory_working_set_bytes|container_memory_rss`
+
+The built-in kubelet ServiceMonitor is currently disabled — see [Disabled scrapers (IPv6 migration)](#disabled-scrapers-ipv6-migration).
+
+### Disabled scrapers (IPv6 migration)
+
+The kubelet ServiceMonitor (`/metrics` + cAdvisor) is **disabled** in `modules/monitoring/helm/values.yaml` (`kubelet.enabled: false`).
+
+**Why**: Prometheus Operator manages the kubelet Endpoints object directly (unlike a normal ServiceMonitor that reads the Service's auto-built EndpointSlice), and its address picker (`pkg/kubelet/controller.go`) returns the first `NodeInternalIP` from `node.status.addresses`. On EKS dual-stack nodes the IPv4 InternalIP is listed first, so the Endpoints contain IPv4 addresses exclusively. Alloy runs in IPv6-only pods and cannot reach those endpoints — every scrape times out and the series silently disappear from Mimir.
+
+**What this drops** (until re-enabled):
+- `container_memory_working_set_bytes` / `container_memory_rss` (cAdvisor)
+- `kubelet_running_pods` / `kubelet_running_containers`
+
+These provide the per-pod memory series consumed by the `cost_control` Alloy rule's control-plane scoping.
+
+**TODO (re-enable)**: Ship a custom IPv6-aware kubelet ServiceMonitor under `modules/monitoring/kubernetes/monitors/servicemonitors/`. The clean path is `kubernetes_sd_configs role: node` plus a relabel on `__meta_kubernetes_node_address_InternalIP` to select the IPv6 entry, then flip `kubelet.enabled: true` (and uncomment the filter block) in `helm/values.yaml`.
 
 ### Cost-control filtering (three layers)
 
@@ -124,12 +139,11 @@ Per-source `keep` whitelists or targeted `drop` rules — most filtering lives h
 
 | Source | Filter |
 |--------|--------|
-| `apiserver` ServiceMonitor | `keep`: `apiserver_request_total\|apiserver_request_terminations_total` only |
+| `apiserver` ServiceMonitor | `keep`: `apiserver_request_total\|apiserver_request_terminations_total` only — request rate and termination counts only; latency, inflight, and etcd metrics are dropped |
 | `coredns` PodMonitor | `drop`: `go_.*`, `process_.*`, `coredns_dns_request_duration_seconds_bucket\|coredns_forward_request_duration_seconds_bucket` |
 | `pypi-cache` ServiceMonitor | `keep`: `nginx_up\|nginx_http_requests_total\|nginx_connections_active` only |
-| kubelet (built-in) | `keep`: `kubelet_running_(pods\|containers)\|kubelet_node_name` |
-| cAdvisor (built-in via kubelet) | `keep`: `container_memory_working_set_bytes\|container_memory_rss` only — `/metrics/probes` is disabled |
-| node-exporter (built-in) | `keep`: `node_memory_MemAvailable_bytes\|node_memory_MemTotal_bytes` only — drops everything else including all CPU, disk I/O, filesystem, network, and load metrics |
+| node-exporter (built-in) | `keep`: `node_memory_MemAvailable_bytes\|node_memory_MemTotal_bytes\|node_nf_conntrack_entries\|node_nf_conntrack_entries_limit` only — drops everything else including all CPU, disk I/O, filesystem, network, and load metrics. Conntrack metrics are kept because they power the `ipv6-network-pressure` alerts (pod-to-IPv4 egress via VPC CNI SNAT is conntrack-heavy under IPv6-only EKS). |
+| `buildkit` ServiceMonitor | `drop`: `go_.*`, `process_.*`, `promhttp_.*\|target_info`, `.*_bucket` — drop-list pattern (not keep-list); buckets are dropped wholesale, only `_sum`/`_count` survive for latency tracking |
 | DCGM ServiceMonitor | label drops: `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION`, `pci_bus_id` |
 
 #### Layer 3: Alloy `cost_control` (safety net)
@@ -148,7 +162,7 @@ Final drops applied to anything that escapes layers 1–2:
 
 ### Alerting
 
-PrometheusRule CRDs are defined locally and synced to Grafana Cloud Mimir via Alloy's `mimir.rules.kubernetes` component for remote evaluation. Six alert groups across six PrometheusRule files in `kubernetes/alerts/`:
+PrometheusRule CRDs are defined locally and synced to Grafana Cloud Mimir via Alloy's `mimir.rules.kubernetes` component for remote evaluation. Eight alert groups across eight PrometheusRule files in `kubernetes/alerts/`:
 
 | Group | Alert | Condition |
 |-------|-------|-----------|
@@ -163,12 +177,15 @@ PrometheusRule CRDs are defined locally and synced to Grafana Cloud Mimir via Al
 | infrastructure | `KarpenterNodeClaimNotReady` | NodeClaim created but no node joins for 15m |
 | node-compactor | `NodeCompactorReconcileErrors` | Continuous reconciliation errors for 15m (burst-absorption offline) |
 | zombie-cleanup | `ZombieCleanupCapReached` | Per-round cap reached — zombie pods deferred to next run |
-| harbor-cache-recovery | `HarborCacheRecoveryFailing` | Cache-recovery CronJob failing for 15m (≥3 consecutive runs at */5) |
-| harbor-cache-recovery | `HarborCacheRecoveryOOM` | Recovery pod OOMKilled (most common root cause — listing pods cluster-wide) |
-| harbor-cache-recovery | `HarborCacheRecoveryStale` | No successful recovery run in >30m (CronJob suspended/stuck) |
+| harbor-cache-recovery | `HarborCacheRecoveryFailing` | Cache-recovery CronJob failing for 15m (≥3 consecutive runs at */5). Targets `kube_job_status_failed` — each scheduled run is a fresh Job object, no long-lived pod to watch. |
+| harbor-cache-recovery | `HarborCacheRecoveryOOM` | Recovery pod OOMKilled (most common root cause — listing pods cluster-wide). Uses `kube_pod_container_status_terminated_reason` (no `_last_`) because recovery pods have `restartPolicy=Never`; KSM only populates `_last_terminated_reason` after a container restart. |
+| harbor-cache-recovery | `HarborCacheRecoveryStale` | No successful recovery run in >30m (CronJob suspended/stuck). Targets `kube_job_status_completion_time` for the same Job-vs-Pod reason. |
 | nodelocaldns | `NodeLocalDNSSetupErrors` | `increase(coredns_nodecache_setup_errors_total[5m]) > 0` — iptables NOTRACK rule install failed |
 | nodelocaldns | `NodeLocalDNSPodRestarting` | NLD container restarting (per-node DNS interception briefly degrades to fallthrough) |
 | nodelocaldns | `NodeLocalDNSDaemonSetDegraded` | DaemonSet has unavailable pods for >15m |
+| ipv6-network-pressure | `NodeConntrackHighWarn` | `node_nf_conntrack_entries / node_nf_conntrack_entries_limit > 0.80` for 5m — pod-to-IPv4 egress on IPv6-only EKS goes via VPC CNI's IPv4 SNAT, which is conntrack-heavy |
+| ipv6-network-pressure | `NodeConntrackHighCritical` | Same ratio > 0.95 for 2m — new connections will start failing imminently; raise `nf_conntrack_max` or drain the node |
+| ipv6-network-pressure | `NodeConntrackMetricMissing` | `absent(node_nf_conntrack_entries)` for 10m — catches silent loss of node-exporter scraping (e.g. IPv6 endpoint regression); without it the conntrack alerts above would be inert |
 
 ### Adding a new ServiceMonitor/PodMonitor
 
@@ -180,7 +197,9 @@ Monitors are applied by `deploy.sh` after kube-prometheus-stack Helm install (CR
 
 ### Credential setup (monitoring)
 
-The Grafana Cloud URL comes from `clusters.yaml` (`monitoring.grafana_cloud_url`), not from the secret. The secret only contains authentication credentials:
+The Grafana Cloud URL comes from `clusters.yaml` (`monitoring.grafana_cloud_url`), not from the secret. Two separate secrets are used in the `monitoring` namespace — one for Alloy's write path, one for the smoke tests' Mimir read queries.
+
+**Write credentials** — required for Alloy. The `monitoring/deploy.sh` script gates Alloy install on this secret existing:
 
 ```bash
 kubectl create namespace monitoring
@@ -188,6 +207,15 @@ kubectl create secret generic grafana-cloud-credentials \
   -n monitoring \
   --from-literal=username='<GRAFANA_CLOUD_METRICS_USER_ID>' \
   --from-literal=password='<API_KEY_WITH_METRICS_WRITE_SCOPE>'
+```
+
+**Read credentials** — required for `just smoke` to verify metrics actually arrived in Mimir. Without it, the remote-verification tests in `modules/monitoring/tests/smoke/test_monitoring.py` skip silently, leaving `remote_write` regressions undetected:
+
+```bash
+kubectl create secret generic grafana-cloud-read-credentials \
+  -n monitoring \
+  --from-literal=username='<GRAFANA_CLOUD_METRICS_USER_ID>' \
+  --from-literal=password='<API_KEY_WITH_METRICS_READ_SCOPE>'
 ```
 
 ### Configuration (clusters.yaml)
@@ -324,7 +352,7 @@ See [observability-estimates.md](observability-estimates.md#log-volume-estimatio
 2. `deploy.sh` installs kube-prometheus-stack (CRDs + exporters), chart `v82.10.3`
 3. `deploy.sh` installs Prometheus Pushgateway (chart `v3.6.0`, runs on base-infrastructure, scraped by the `pushgateway` ServiceMonitor)
 4. `deploy.sh` applies `kubernetes/monitors/` (ServiceMonitors, PodMonitors, and PrometheusRules — alerts are included via kustomization, requires CRDs from step 2)
-5. `deploy.sh` conditionally installs Alloy (chart version from `clusters.yaml` `alloy_chart_version`, currently `1.6.2`) if `grafana-cloud-credentials` secret exists
+5. `deploy.sh` conditionally installs Alloy (chart version from `clusters.yaml` `alloy_chart_version`, currently `1.6.2`) if `grafana-cloud-credentials` secret exists. After every successful `helm upgrade`, `deploy.sh` runs `kubectl rollout restart deployment/alloy` followed by `rollout status` — this picks up secret rotations and external config changes that Helm doesn't trigger naturally (the secret keys are referenced via `valueFrom.secretKeyRef`, so Kubernetes won't restart pods when the secret value changes).
 
 ### Logging (module — runs during `deploy-module`)
 
@@ -362,6 +390,15 @@ CI nodes can have 100+ concurrent runner pods each producing logs. The logging A
 ### Module pipeline ordering
 
 The `// MODULE_PIPELINES` marker in `base.alloy` is placed **before** `stage.structured_metadata` and `stage.label_drop`. This means module `stage.match` blocks can select on `{pod=~"..."}` and `{node=~"..."}` labels. After the module pipelines run, pod and node are moved to structured metadata and dropped from indexed labels.
+
+### IPv6 binding overrides (IPv6-only EKS)
+
+Under IPv6-only EKS the kubelet readiness probe targets the pod's IPv6 address. Several upstream Helm chart defaults bind to `0.0.0.0` (IPv4-only) and would leave pods stuck `NotReady` and metrics silently missing:
+
+- **`alloy-logging` and `alloy-events`** — both set `alloy.listenAddr: "[::]"` (in `modules/logging/helm/alloy-logging-values.yaml` and `alloy-events-values.yaml`). Without this the DaemonSet/Deployment never passes readiness.
+- **`node-exporter`** — `prometheus-node-exporter.listenOnAllInterfaces: false` (in `modules/monitoring/helm/values.yaml`), which makes node-exporter bind the node's primary IP from Downward API `status.hostIP` instead of `0.0.0.0:9100`. Without it Alloy (IPv6-only pod) cannot scrape node-exporter and `node_nf_conntrack_entries` silently disappears — which would in turn make the `ipv6-network-pressure` alerts inert (the `NodeConntrackMetricMissing` alert exists precisely to catch this regression).
+
+These overrides are easy to miss when adding a new Alloy chart instance or another `:0.0.0.0`-binding exporter — anything that needs to be scraped or probed from the IPv6 pod network must bind IPv6.
 
 ## Troubleshooting
 

@@ -1,0 +1,578 @@
+{
+  "annotations": [
+    {
+      "kind": "AnnotationQuery",
+      "spec": {
+        "builtIn": true,
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "query": {
+          "datasource": {
+            "name": "-- Grafana --"
+          },
+          "group": "grafana",
+          "kind": "DataQuery",
+          "spec": {},
+          "version": "v0"
+        }
+      }
+    }
+  ],
+  "cursorSync": "Off",
+  "editable": true,
+  "elements": {
+    "panel-4": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "WITH viable AS (\n    SELECT\n        repository.pushed_at AS pushed_ts,\n        toUnixTimestamp(head_commit.timestamp) AS commit_ts,\n        repository.full_name AS repo\n    FROM push\n    WHERE repository.full_name = 'pytorch/pytorch'\n      AND ref = 'refs/heads/viable/strict'\n      AND head_commit.id != ''\n),\nmain AS (\n    SELECT\n        repository.pushed_at AS pushed_ts,\n        toUnixTimestamp(head_commit.timestamp) AS commit_ts,\n        repository.full_name AS repo\n    FROM push\n    WHERE repository.full_name = 'pytorch/pytorch'\n      AND ref = 'refs/heads/main'\n      AND head_commit.id != ''\n)\nSELECT fromUnixTimestamp(pushed_ts) AS pushed_time, lag_minutes, trend_7d_avg\nFROM (\n    SELECT\n        m.pushed_ts,\n        (toInt64(m.commit_ts) - toInt64(nullIf(v.commit_ts, 0))) / 60.0 AS lag_minutes,\n        avg(lag_minutes) OVER (\n            ORDER BY m.pushed_ts\n            RANGE BETWEEN 604800 PRECEDING AND CURRENT ROW\n        ) AS trend_7d_avg\n    FROM main m\n    ASOF LEFT JOIN viable v\n        ON m.repo = v.repo AND m.pushed_ts >= v.pushed_ts\n)\nWHERE $__timeFilter(pushed_time)\nORDER BY pushed_time ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "Drift"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "How long it takes viable/strict to catch up to main.",
+        "id": 4,
+        "links": [],
+        "title": "viable/strict Lag",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds",
+                  "seriesBy": "last"
+                },
+                "min": 0,
+                "unit": "m",
+                "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 15,
+                  "gradientMode": "scheme",
+                  "lineInterpolation": "linear",
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "showPoints": "never",
+                  "thresholdsStyle": {
+                    "mode": "dashed"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 240
+                    },
+                    {
+                      "color": "red",
+                      "value": 1440
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "trend_7d_avg",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.lineInterpolation",
+                      "value": "smooth"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
+    },
+    "panel-5": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "SELECT\n    revert_day,\n    prs_reverted,\n    sum(prs_reverted) OVER (\n        ORDER BY toUnixTimestamp(revert_day) ASC\n        RANGE BETWEEN 6 * 24 * 60 * 60 PRECEDING AND CURRENT ROW\n    ) / least(7.0, toFloat64(count() OVER (\n        ORDER BY toUnixTimestamp(revert_day) ASC\n        RANGE BETWEEN 6 * 24 * 60 * 60 PRECEDING AND CURRENT ROW\n    ))) AS trend_7d_avg\nFROM (\n    SELECT\n        toStartOfDay(event_time) AS revert_day,\n        COUNT() AS prs_reverted\n    FROM pull_label_event\n    WHERE\n        repo_name = 'pytorch/pytorch'\n        AND label_name = 'Reverted'\n        AND action = 'labeled'\n        AND $__timeFilter(event_time)\n    GROUP BY revert_day\n)\nORDER BY revert_day DESC\nLIMIT 100"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 5,
+        "links": [],
+        "title": "Daily PR Reverts",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds",
+                  "seriesBy": "last"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.5,
+                  "drawStyle": "bars",
+                  "fillOpacity": 50,
+                  "gradientMode": "scheme",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "auto",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "dashed"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 10
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "trend_7d_avg",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineInterpolation",
+                      "value": "smooth"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "single",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
+    },
+    "panel-6": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "  WITH commits AS (\n      SELECT\n          commit.id AS commit_sha,\n          commit.timestamp AS commit_time\n      FROM default.push\n      ARRAY JOIN commits AS commit\n      WHERE\n          repository.full_name = 'pytorch/pytorch'\n          AND ref = 'refs/heads/main'\n  ),\n  blocking_runs AS (\n      SELECT id\n      FROM default.workflow_run\n      WHERE\n          head_branch = 'main'\n          AND event = 'push'\n          AND path IN (\n              -- Core\n              '.github/workflows/lint.yml',\n              '.github/workflows/pull.yml',\n              '.github/workflows/trunk.yml',\n              '.github/workflows/inductor.yml',\n              '.github/workflows/inductor-periodic.yml',\n              '.github/workflows/inductor-unittest.yml',\n              '.github/workflows/periodic.yml',\n              '.github/workflows/slow.yml',\n              '.github/workflows/dynamo-unittest.yml',\n              -- Modern hardware\n              '.github/workflows/rocm-mi300.yml',\n              '.github/workflows/rocm-mi355.yml',\n              '.github/workflows/xpu.yml',\n              '.github/workflows/mac-mps.yml',\n              '.github/workflows/tsan.yml',\n              '.github/workflows/inductor-rocm-mi300.yml',\n              '.github/workflows/inductor-rocm-mi355.yml',\n              -- Distributed\n              '.github/workflows/b200-distributed.yml',\n              '.github/workflows/h100-distributed.yml',\n              -- Adjacent / integrations\n              '.github/workflows/dtensor.yml',\n              '.github/workflows/inductor-pallas.yml',\n              '.github/workflows/vllm.yml',\n              '.github/workflows/torchtitan.yml'\n          )\n  )\n  \nSELECT\n    commits.commit_time AS commit_time,\n    round((countIf(default.workflow_job.conclusion = 'failure') / count()) * 100.0, 2) AS failure_percent,\n    avg(failure_percent) OVER (ORDER BY toUnixTimestamp(commits.commit_time) ASC RANGE BETWEEN 7 * 24 * 60 * 60 PRECEDING AND CURRENT ROW) AS trend_7d_avg\nFROM default.workflow_job\nINNER JOIN commits ON commits.commit_sha = default.workflow_job.head_sha\nINNER JOIN blocking_runs ON blocking_runs.id = default.workflow_job.run_id\nWHERE\n    default.workflow_job.run_attempt = 1\n    AND $__timeFilter(commits.commit_time)\nGROUP BY commits.commit_sha, commits.commit_time\nORDER BY commit_time ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 6,
+        "links": [],
+        "title": "Workflow Failure Percent / Main Commit",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "fixedColor": "rgba(242, 73, 92, 0.75)",
+                  "mode": "fixed"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 50,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "auto",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "trend_7d_avg",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineInterpolation",
+                      "value": "smooth"
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                      }
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "single",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
+    }
+  },
+  "layout": {
+    "kind": "GridLayout",
+    "spec": {
+      "items": [
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-4"
+            },
+            "height": 10,
+            "width": 8,
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-5"
+            },
+            "height": 10,
+            "width": 8,
+            "x": 8,
+            "y": 0
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-6"
+            },
+            "height": 10,
+            "width": 8,
+            "x": 16,
+            "y": 0
+          }
+        }
+      ]
+    }
+  },
+  "links": [],
+  "liveNow": false,
+  "preload": false,
+  "tags": [],
+  "timeSettings": {
+    "autoRefresh": "",
+    "autoRefreshIntervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ],
+    "fiscalYearStartMonth": 0,
+    "from": "now-180d",
+    "hideTimepicker": false,
+    "timezone": "browser",
+    "to": "now"
+  },
+  "title": "PyTorch DevX",
+  "variables": []
+}

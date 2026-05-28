@@ -54,6 +54,12 @@ FAKE_CONFIG = {
             "cluster_name": "my-production",
             "region": "us-east-1",
             "modules": ["karpenter", "arc", "arc-runners", "buildkit", "monitoring"],
+            "nodepools-h100": {
+                "capacity_reservation_ids": ["cr-aaa111", "cr-bbb222"],
+            },
+            "nodepools-b200": {
+                "capacity_reservation_ids": [],
+            },
         },
     },
 }
@@ -371,6 +377,22 @@ class TestMain:
         code = run_main("staging", "feature_flag")
         assert code == 0
         assert capsys.readouterr().out.strip() == "true"
+
+    def test_list_value_comma_separated(self, capsys):
+        """List values print as comma-separated for shell consumption."""
+        code = run_main("production", "nodepools-h100.capacity_reservation_ids")
+        assert code == 0
+        out = capsys.readouterr().out.strip()
+        assert out == "cr-aaa111,cr-bbb222"
+        # Must not look like a Python list repr
+        assert "[" not in out
+        assert "'" not in out
+
+    def test_empty_list_value(self, capsys):
+        """Empty list prints as empty string."""
+        code = run_main("production", "nodepools-b200.capacity_reservation_ids")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == ""
 
     def test_bool_false_field_output(self, capsys):
         """Boolean False from defaults should print 'false'."""

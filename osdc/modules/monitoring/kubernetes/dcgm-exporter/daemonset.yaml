@@ -53,11 +53,14 @@ spec:
           args:
             - -f
             - /etc/dcgm-exporter/custom-metrics.csv
+            - --collect-interval=60000
           env:
             - name: DCGM_EXPORTER_KUBERNETES
               value: "true"
             - name: DCGM_EXPORTER_LISTEN
               value: ":9400"
+            - name: GOMEMLIMIT
+              value: "450MiB"
           resources:
             requests:
               cpu: 100m

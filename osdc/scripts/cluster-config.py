@@ -128,6 +128,8 @@ def main():
                 sys.exit(1)
         elif isinstance(val, bool):
             print(str(val).lower())
+        elif isinstance(val, list):
+            print(",".join(str(v) for v in val))
         else:
             print(val)
 

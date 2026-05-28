@@ -61,7 +61,7 @@ defaults:
     pdb_enabled: true
     pdb_min_available: 1
   arc:
-    chart_version: "0.14.1-jeanschmidt.9"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
+    chart_version: "0.14.1-jeanschmidt.11"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
     runner_image_tag: "2.334.0"  # ghcr.io/actions/actions-runner tag — pin to avoid :latest
     replica_count: 4
     log_level: info
@@ -82,7 +82,7 @@ defaults:
     gpu_disruption_budget: "20%"
     cpu_disruption_budget: "20%"
   buildkit:
-    replicas_per_arch: 5
+    replicas_per_arch: 12
   monitoring:
     grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
     grafana_cloud_read_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
@@ -187,6 +187,92 @@ clusters:
       - monitoring
       - logging
 
+  arc-cbr-production-uw1:
+    cluster_name: pytorch-arc-cbr-production-uw1
+    region: us-west-1
+    state_bucket: ciforge-tfstate-arc-cbr-prod-uw1
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+      cluster_admin_role_names:
+        - osdc_gha_prod
+    base:
+      vpc_cidr: "10.8.0.0/16"
+    git_cache:
+      central_replicas: 15
+      central_cpu_request: "10"
+      central_cpu_limit: "15"
+      central_memory_request: "10Gi"
+      central_memory_limit: "50Gi"
+    node_compactor:
+      min_node_age_seconds: 900
+    arc-runners:
+      github_config_url: "https://github.com/pytorch"
+      github_secret_name: pytorch-arc-cbr-production
+      runner_name_prefix: "mt-"
+      runner_group: "arc-cbr-prod-uw1"   # distinct from us-east-2's "default" — see doc
+    nodepools-h100:
+      # us-west-1 H100 capacity reservations (p5.48xlarge, 8× H100 each):
+      #   cr-04d3d1d84e127a562 — 2 nodes (16 H100 GPUs)
+      #   cr-09a53051589034fb8 — 4 nodes (32 H100 GPUs)
+      # Total: 6 nodes, 48 H100 GPUs.
+      # Generator change to honor this override is pending — see
+      # docs/prod-cluster-ha-us-west-1.md "Phase 1 prerequisite 2".
+      capacity_reservation_ids:
+        - cr-04d3d1d84e127a562
+        - cr-09a53051589034fb8
+    pypi_cache:
+      replicas: 10
+    modules:
+      - karpenter
+      - arc
+      - nodepools
+      - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
+      - arc-runners
+      - arc-runners-h100
+      - pypi-cache
+      - cache-enforcer
+      - zombie-cleanup
+      - harbor-cache-recovery
+      - monitoring
+      - logging
+
+  meta-prod-aws-ue1:
+    cluster_name: meta-prod-aws-ue1
+    region: us-east-1
+    state_bucket: ciforge-tfstate-arc-cbr-prod-ue1
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+      cluster_admin_role_names:
+        - osdc_gha_prod
+    base:
+      vpc_cidr: "10.4.0.0/16"
+    git_cache:
+      central_replicas: 15
+      central_cpu_request: "10"
+      central_cpu_limit: "15"
+      central_memory_request: "10Gi"
+      central_memory_limit: "50Gi"
+    node_compactor:
+      min_node_age_seconds: 900
+    arc-runners:
+      github_config_url: "https://github.com/pytorch"
+      github_secret_name: meta-prod-aws-ue1
+      runner_name_prefix: "mt-"
+      runner_group: "meta-prod-aws-ue1"
+    pypi_cache:
+      replicas: 10
+    modules:
+      - karpenter
+      - arc
+      - nodepools
+      - arc-runners
+      - pypi-cache
+      - cache-enforcer
+      - zombie-cleanup
+      - harbor-cache-recovery
+      - monitoring
+      - logging
+
   arc-cbr-production:
     cluster_name: pytorch-arc-cbr-production
     region: us-east-2
@@ -213,6 +299,17 @@ clusters:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-cbr-production
       runner_name_prefix: "mt-"
+    nodepools-h100:
+      # us-east-2 H100 capacity reservation (p5.48xlarge, 8× H100).
+      capacity_reservation_ids:
+        - cr-0c3f05dffb85ed832
+    nodepools-b200:
+      # us-east-2 B200 capacity reservations (p6-b200.48xlarge, 8× B200 each).
+      # Two reserved nodes total = 16 B200 GPUs. arc-runners-b200/defs/*.yaml
+      # max_runners are sized assuming this count.
+      capacity_reservation_ids:
+        - cr-02cf82c9a0f7fa8c0
+        - cr-06ec9d6c14b9d9981
     pypi_cache:
       replicas: 10
     modules:

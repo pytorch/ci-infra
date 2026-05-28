@@ -211,8 +211,7 @@ template:
 
     # Pin runner pods to the dedicated c7i-runner pool (separate from the
     # workflow pool defined by {{NODE_FLEET}} on the ConfigMap below). This
-    # topology split is what makes preemption victim selection deterministic
-    # — see PROACTIVE_CAPACITY.md "Dedicated Runner NodePool".
+    # topology split is what makes preemption victim selection deterministic.
     # Runner-class isolation (osdc.io/runner-class) is a workflow-pool
     # concern only; c7i-runner nodes carry no runner-class label.
     nodeSelector:
@@ -221,11 +220,11 @@ template:
 
     # Tolerate node-fleet + instance-type taints. The c7i-runner NodePool
     # inherits the git-cache-not-ready startupTaint from the unconditional
-    # generator emission; the git-cache-warmer DaemonSet does not run on
-    # this pool, so the taint is never cleared. Tolerating it lets runner
-    # pods schedule despite the persistent taint. The runner pod itself
-    # does NOT use the git-cache mount — only the toleration is required
-    # for scheduling.
+    # generator emission. The git-cache-warmer DaemonSet runs on this pool
+    # (its nodeAffinity matches workload-type: github-runner) and clears
+    # the taint once the local cache is hydrated, but runner pods don't
+    # use the git-cache mount and tolerate the taint to schedule
+    # immediately without waiting for warmer hydration.
     tolerations:
       - key: node-fleet
         operator: Equal
@@ -295,7 +294,7 @@ template:
             value: /home/runner/hook-extensions/job-pod.yaml
           # Use OSDC wrapper that validates env vars and surfaces errors
           # clearly, then delegates to patched hooks from DaemonSet.
-          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.12
+          # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.13
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /home/runner/hook-extensions/wrapper.js
           # PyTorch CI workflows depend on Docker images built in parallel by

@@ -1,12 +1,35 @@
 name: "OSDC: Deploy production"
 
-# Manual rollout for arc-cbr-production. Protected by the `osdc-production` GitHub
+# Manual rollout for prod. Protected by the `osdc-production` GitHub
 # environment (configure required reviewers in repo Settings → Environments) —
 # the prod IAM role additionally trusts only tokens with
 # `environment:osdc-production` in the sub claim, so IAM enforces the gate too.
+#
+# Default behavior (target = all): sequential rollout.
+#   1. Deploy arc-cbr-production-uw1 + smoke.
+#   2. Deploy arc-cbr-production (ue2) + smoke.
+#   3. Deploy meta-prod-aws-ue1 + smoke.
+#
+# Picking a specific cluster from the dropdown bypasses the sequencing and
+# deploys only that one — useful for hotfixes or to recover from a partial
+# rollout.
+#
+# Workflow-level concurrency prevents overlapping prod runs regardless of
+# which target was chosen; a single-cluster dispatch waits for an in-flight
+# `all` rollout to finish.
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: "Cluster(s) to deploy"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - meta-prod-aws-ue1
+          - arc-cbr-production-uw1
+          - arc-cbr-production
       taint_nodes:
         description: "Taint ARC runner nodes before deploy (graceful refresh)"
         required: false
@@ -24,7 +47,7 @@ on:
         default: false
 
 concurrency:
-  group: osdc-deploy-arc-cbr-production
+  group: osdc-deploy-prod
   cancel-in-progress: false
 
 permissions:
@@ -32,7 +55,25 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  deploy_uw1:
+    if: ${{ inputs.target == 'all' || inputs.target == 'arc-cbr-production-uw1' }}
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: arc-cbr-production-uw1
+      environment: osdc-production
+      taint_nodes: ${{ inputs.taint_nodes }}
+      restart_listeners: ${{ inputs.restart_listeners }}
+      skip_lint_test: ${{ inputs.skip_lint_test }}
+      run_smoke: true
+    secrets: inherit
+
+  deploy_ue2:
+    needs: deploy_uw1
+    if: |
+      !cancelled() && (
+        inputs.target == 'arc-cbr-production' ||
+        (inputs.target == 'all' && needs.deploy_uw1.result == 'success')
+      )
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
       cluster: arc-cbr-production
@@ -41,10 +82,21 @@ jobs:
       restart_listeners: ${{ inputs.restart_listeners }}
       skip_lint_test: ${{ inputs.skip_lint_test }}
       run_smoke: true
-      run_compactor: false
-      run_janitor: false
-      run_load_test: false
-    # secrets: inherit is required for the reusable workflow to pick up
-    # osdc-production environment secrets (META_AWS_ACC_ID, META_AWS_DEPLOY_ROLE,
-    # CANARY_GITHUB_TOKEN). Without it, secrets.* resolves to empty strings.
+    secrets: inherit
+
+  deploy_ue1:
+    needs: deploy_ue2
+    if: |
+      !cancelled() && (
+        inputs.target == 'meta-prod-aws-ue1' ||
+        (inputs.target == 'all' && needs.deploy_ue2.result == 'success')
+      )
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: meta-prod-aws-ue1
+      environment: osdc-production
+      taint_nodes: ${{ inputs.taint_nodes }}
+      restart_listeners: ${{ inputs.restart_listeners }}
+      skip_lint_test: ${{ inputs.skip_lint_test }}
+      run_smoke: true
     secrets: inherit

@@ -29,6 +29,7 @@ data:
     import json
     import logging
     import os
+    import socket
     import subprocess
     import sys
     import threading
@@ -130,6 +131,18 @@ data:
     # Prometheus metrics server (stdlib only, no pip dependencies)
     # ---------------------------------------------------------------------------
 
+    class DualStackHTTPServer(HTTPServer):
+        # Bind ::0 with IPV6_V6ONLY=0 so the socket accepts both IPv6 and
+        # IPv4-mapped IPv6 connections (single socket serves both families).
+        # Required because runner pods on IPv6-only EKS have no IPv4 address
+        # but PodMonitor scrapes can originate from either family.
+        address_family = socket.AF_INET6
+
+        def server_bind(self) -> None:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            super().server_bind()
+
+
     class MetricsServer:
         """Thread-safe Prometheus metrics with an HTTP endpoint on /metrics."""
 
@@ -203,7 +216,7 @@ data:
                 def log_message(self, fmt, *args) -> None:  # noqa: ARG002
                     pass
 
-            server = HTTPServer(("0.0.0.0", METRICS_PORT), Handler)
+            server = DualStackHTTPServer(("::", METRICS_PORT), Handler)
             t = threading.Thread(target=server.serve_forever, daemon=True)
             t.start()
             log.info("Metrics server listening on :%d/metrics", METRICS_PORT)

@@ -1,0 +1,13 @@
+# ARC runner definition: l-barm64g3-62-226
+# Instance type: m7g.metal (dedicated node — bare-metal runner)
+# Used for: inductor CPU perf benchmarks (needs bare-metal for noise isolation)
+runner:
+  name: l-barm64g3-62-226
+  instance_type: m7g.metal
+  node_fleet: m7g-metal
+  disk_size: 256
+  vcpu: 62
+  memory: 226Gi
+  gpu: 0
+  proactive_capacity: 10
+  max_burst_capacity: 250

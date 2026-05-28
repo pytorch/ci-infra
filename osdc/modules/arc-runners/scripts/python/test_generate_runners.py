@@ -7,11 +7,12 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from fleet_naming import derive_fleet_name
 from generate_runners import (
-    derive_fleet_name,
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
+    load_excluded_instance_types,
     main,
     normalize_name,
     parse_memory_bytes,
@@ -171,7 +172,7 @@ FAKE_CLUSTERS_YAML = {
         "staging": {
             "cluster_name": "my-staging",
             "region": "us-west-2",
-            "modules": ["arc-runners"],
+            "modules": ["nodepools", "arc-runners"],
             "arc-runners": {
                 "github_config_url": "https://github.com/test-org",
                 "github_secret_name": "gh-secret",
@@ -200,6 +201,7 @@ def make_def_file(
     max_runners=None,
     proactive_capacity=None,
     max_burst_capacity=None,
+    node_fleet=None,
 ):
     """Write a runner def YAML and return the path."""
     runner = {
@@ -220,10 +222,42 @@ def make_def_file(
         runner["proactive_capacity"] = proactive_capacity
     if max_burst_capacity is not None:
         runner["max_burst_capacity"] = max_burst_capacity
+    if node_fleet is not None:
+        runner["node_fleet"] = node_fleet
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
     return p
+
+
+def make_nodepool_defs(osdc_root, instance_types, module="nodepools"):
+    """Create nodepool fleet defs under OSDC_ROOT for the given instance types.
+
+    Derives one fleet per unique instance-family prefix using fleet_naming so the
+    validator can match runner defs to fleets without rewriting test fixtures
+    every time fleet-naming rules change.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[4] / "scripts" / "python"))
+    from fleet_naming import derive_fleet_name as _derive
+
+    defs_dir = osdc_root / "modules" / module / "defs"
+    defs_dir.mkdir(parents=True, exist_ok=True)
+    by_fleet = {}
+    for itype in instance_types:
+        by_fleet.setdefault(_derive(itype), []).append(itype)
+    for fleet_name, types in by_fleet.items():
+        content = {
+            "fleet": {
+                "name": fleet_name,
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [{"type": t, "weight": 100, "node_disk_size": 600, "has_nvme": True} for t in types],
+            }
+        }
+        (defs_dir / f"{fleet_name}.yaml").write_text(yaml.dump(content, default_flow_style=False))
 
 
 # ============================================================================
@@ -271,6 +305,16 @@ class TestDeriveFleetName:
 
     def test_derive_fleet_name_unknown(self):
         assert derive_fleet_name("z99.xlarge") == "z99"
+
+    def test_derive_fleet_name_override_overrides_family(self):
+        assert derive_fleet_name("g5.48xlarge", override="g5-48xlarge") == "g5-48xlarge"
+
+    def test_derive_fleet_name_override_none_falls_back(self):
+        assert derive_fleet_name("g5.48xlarge", override=None) == "g5"
+
+    def test_derive_fleet_name_override_empty_string_raises(self):
+        with pytest.raises(ValueError, match="node_fleet override invalid"):
+            derive_fleet_name("g5.48xlarge", override="")
 
 
 # ============================================================================
@@ -326,6 +370,121 @@ class TestLoadClustersYaml:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             load_clusters_yaml(tmp_path)
+
+
+# ============================================================================
+# load_excluded_instance_types
+# ============================================================================
+
+
+class TestLoadExcludedInstanceTypes:
+    def _write_def(self, dirpath, name, content):
+        p = dirpath / f"{name}.yaml"
+        p.write_text(yaml.dump(content, default_flow_style=False))
+
+    def test_fleet_format_excludes_all_listed_instances(self, tmp_path):
+        """A fleet def with exclude_regions returns every instance type it declares."""
+        self._write_def(
+            tmp_path,
+            "g5",
+            {
+                "fleet": {
+                    "name": "g5",
+                    "exclude_regions": ["us-west-1"],
+                    "instances": [{"type": "g5.48xlarge"}, {"type": "g5.12xlarge"}],
+                }
+            },
+        )
+        assert load_excluded_instance_types(tmp_path, "us-west-1") == {"g5.48xlarge", "g5.12xlarge"}
+
+    def test_legacy_nodepool_format(self, tmp_path):
+        """A legacy single-instance nodepool def returns its instance_type."""
+        self._write_def(
+            tmp_path,
+            "p4d-24xlarge",
+            {
+                "nodepool": {
+                    "name": "p4d-24xlarge",
+                    "instance_type": "p4d.24xlarge",
+                    "exclude_regions": ["us-west-1"],
+                }
+            },
+        )
+        assert load_excluded_instance_types(tmp_path, "us-west-1") == {"p4d.24xlarge"}
+
+    def test_non_matching_region_returns_empty(self, tmp_path):
+        """An exclude_regions list that does not contain the target region contributes nothing."""
+        self._write_def(
+            tmp_path,
+            "g5",
+            {
+                "fleet": {
+                    "name": "g5",
+                    "exclude_regions": ["us-west-1"],
+                    "instances": [{"type": "g5.48xlarge"}],
+                }
+            },
+        )
+        assert load_excluded_instance_types(tmp_path, "us-east-2") == set()
+
+    def test_no_exclude_regions_returns_empty(self, tmp_path):
+        """A def without exclude_regions contributes nothing."""
+        self._write_def(
+            tmp_path,
+            "c7i",
+            {"fleet": {"name": "c7i", "instances": [{"type": "c7i.24xlarge"}]}},
+        )
+        assert load_excluded_instance_types(tmp_path, "us-west-1") == set()
+
+    def test_empty_region_returns_empty(self, tmp_path):
+        """A falsy region short-circuits to an empty set (backward-compatible)."""
+        self._write_def(
+            tmp_path,
+            "g5",
+            {
+                "fleet": {
+                    "name": "g5",
+                    "exclude_regions": ["us-west-1"],
+                    "instances": [{"type": "g5.48xlarge"}],
+                }
+            },
+        )
+        assert load_excluded_instance_types(tmp_path, "") == set()
+
+    def test_missing_dir_returns_empty(self, tmp_path):
+        """A missing nodepools defs dir returns an empty set rather than raising."""
+        assert load_excluded_instance_types(tmp_path / "absent", "us-west-1") == set()
+
+    def test_multiple_defs_merge(self, tmp_path):
+        """Excluded instance types from multiple defs are unioned."""
+        self._write_def(
+            tmp_path,
+            "g5",
+            {
+                "fleet": {
+                    "name": "g5",
+                    "exclude_regions": ["us-west-1"],
+                    "instances": [{"type": "g5.48xlarge"}],
+                }
+            },
+        )
+        self._write_def(
+            tmp_path,
+            "p4d-24xlarge",
+            {
+                "nodepool": {
+                    "name": "p4d-24xlarge",
+                    "instance_type": "p4d.24xlarge",
+                    "exclude_regions": ["us-west-1"],
+                }
+            },
+        )
+        self._write_def(
+            tmp_path,
+            "c7i",
+            {"fleet": {"name": "c7i", "instances": [{"type": "c7i.24xlarge"}]}},
+        )
+        assert load_excluded_instance_types(tmp_path, "us-west-1") == {"g5.48xlarge", "p4d.24xlarge"}
 
 
 # ============================================================================
@@ -612,6 +771,135 @@ class TestGenerateRunner:
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
 
+    def test_pause_runners_forces_max_runners_zero_when_def_unset(self, tmp_path):
+        """pause_runners=true forces maxRunners: 0 even when the def omits max_runners."""
+        def_file = make_def_file(tmp_path, "elastic-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "pause_runners": True,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "elastic-runner.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+    def test_pause_runners_overrides_def_max_runners(self, tmp_path):
+        """pause_runners=true overrides a def-level max_runners value."""
+        def_file = make_def_file(tmp_path, "fixed-runner", "p6-b200.48xlarge", 22, 225, gpu=1, max_runners=8)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "pause_runners": True,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "fixed-runner.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+    def test_pause_runners_false_preserves_def_value(self, tmp_path):
+        """pause_runners=false preserves the def's max_runners value."""
+        def_file = make_def_file(tmp_path, "kept-runner", "c7i.24xlarge", 4, 16, max_runners=8)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "pause_runners": False,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "kept-runner.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 8
+
+    def test_region_excluded_instance_forces_max_runners_zero(self, tmp_path):
+        """Runners whose instance_type matches a nodepool exclude_regions entry render with maxRunners: 0."""
+        def_file = make_def_file(
+            tmp_path, "uw1-a10g", "g5.48xlarge", 189, 704, gpu=8, proactive_capacity=5, max_burst_capacity=30
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "region": "us-west-1",
+            "excluded_instance_types": {"g5.48xlarge", "g5.12xlarge"},
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "uw1-a10g.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_region_excluded_instance_overrides_def_max_runners(self, tmp_path):
+        """A def-level max_runners is overridden when the instance_type is region-excluded."""
+        def_file = make_def_file(tmp_path, "uw1-fixed", "p4d.24xlarge", 88, 1000, gpu=8, max_runners=4)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "region": "us-west-1",
+            "excluded_instance_types": {"p4d.24xlarge"},
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "uw1-fixed.yaml").read_text()))
+        assert docs[0]["maxRunners"] == 0
+
+    def test_region_not_excluded_preserves_capacity(self, tmp_path):
+        """When the instance_type is not in the excluded set, capacity is unchanged."""
+        def_file = make_def_file(
+            tmp_path, "ue2-a10g", "g5.48xlarge", 189, 704, gpu=8, proactive_capacity=5, max_burst_capacity=30
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "region": "us-east-2",
+            "excluded_instance_types": set(),
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "ue2-a10g.yaml").read_text()))
+        assert "maxRunners" not in docs[0]
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "5"
+
+    def test_pause_runners_unset_preserves_unbounded(self, tmp_path):
+        """pause_runners unset leaves the RSS unbounded when the def also omits max_runners."""
+        def_file = make_def_file(tmp_path, "elastic-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "elastic-runner.yaml").read_text()))
+        assert "maxRunners" not in docs[0]
+
     def test_proactive_capacity_default_zero(self, tmp_path):
         """proactive_capacity defaults to 0 when not in the runner def."""
         def_file = make_def_file(tmp_path, "cap-runner", "c7i.24xlarge", 4, 16)
@@ -731,6 +1019,115 @@ class TestGenerateRunner:
         output_dir.mkdir()
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+
+    def test_invalid_node_fleet_non_string(self, tmp_path, capsys):
+        """node_fleet must be a string, not an int."""
+        def_file = make_def_file(tmp_path, "bad-fleet-int", "c7i.24xlarge", 4, 16, node_fleet=123)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-int" in combined
+
+    def test_invalid_node_fleet_empty_string(self, tmp_path, capsys):
+        """node_fleet must be non-empty."""
+        def_file = make_def_file(tmp_path, "bad-fleet-empty", "c7i.24xlarge", 4, 16, node_fleet="")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-empty" in combined
+
+    def test_invalid_node_fleet_whitespace(self, tmp_path, capsys):
+        """node_fleet must have no leading/trailing whitespace."""
+        def_file = make_def_file(tmp_path, "bad-fleet-ws", "c7i.24xlarge", 4, 16, node_fleet="  g5-48xlarge  ")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-ws" in combined
+
+    def test_invalid_node_fleet_embedded_newline(self, tmp_path, capsys):
+        """node_fleet must not contain embedded newlines (YAML injection vector)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-nl", "c7i.24xlarge", 4, 16, node_fleet="g5\nevil")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-nl" in combined
+
+    def test_invalid_node_fleet_embedded_quote(self, tmp_path, capsys):
+        """node_fleet must not contain embedded quotes (YAML injection vector)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-q", "c7i.24xlarge", 4, 16, node_fleet='g5"evil')
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-q" in combined
+
+    def test_invalid_node_fleet_uppercase(self, tmp_path, capsys):
+        """node_fleet must be lowercase (DNS-1123 label)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-uc", "c7i.24xlarge", 4, 16, node_fleet="G5-48xlarge")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-uc" in combined
+
+    def test_invalid_node_fleet_too_long(self, tmp_path, capsys):
+        """node_fleet must be at most 63 chars (DNS-1123 label limit)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-long", "c7i.24xlarge", 4, 16, node_fleet="a" * 64)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-long" in combined
+
+    def test_invalid_node_fleet_slash(self, tmp_path, capsys):
+        """node_fleet must not contain slashes (DNS-1123 label)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-slash", "c7i.24xlarge", 4, 16, node_fleet="g5/48")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-slash" in combined
+
+    def test_invalid_node_fleet_reserved_c7i_runner(self, tmp_path, capsys):
+        """node_fleet must not be 'c7i-runner' (reserved for runner control-plane pool)."""
+        def_file = make_def_file(tmp_path, "bad-fleet-reserved", "c7i.24xlarge", 4, 16, node_fleet="c7i-runner")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "node_fleet" in combined
+        assert "bad-fleet-reserved" in combined
+        assert "reserved" in combined
 
     def test_max_burst_capacity_zero_allowed(self, tmp_path):
         """max_burst_capacity: 0 is valid (means uncapped / disabled)."""
@@ -945,6 +1342,56 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all((output_dir / "rel-repo.yaml").read_text()))
         assert docs[0]["runnerGroup"] == "default"
 
+    def test_runner_group_cluster_override_wins(self, tmp_path):
+        """Cluster-level runner_group overrides the def file's value."""
+        # Def file says "release-runners"...
+        def_file = make_def_file(tmp_path, "ovr-def", "m6i.32xlarge", 4, 16, runner_group="release-runners")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        # ...but the cluster config says "arc-cbr-prod-uw1" — cluster wins.
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "runner_group": "arc-cbr-prod-uw1",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "ovr-def.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "arc-cbr-prod-uw1"
+
+    def test_runner_group_cluster_override_no_def_value(self, tmp_path):
+        """Cluster-level runner_group applies even when the def doesn't set one."""
+        def_file = make_def_file(tmp_path, "ovr-nodef", "m6i.32xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "runner_group": "arc-cbr-prod-uw1",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "ovr-nodef.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "arc-cbr-prod-uw1"
+
+    def test_runner_group_cluster_override_repo_scope_guard_still_wins(self, tmp_path):
+        """Repo-scoped URL still forces 'default' even when cluster sets a custom group."""
+        def_file = make_def_file(tmp_path, "ovr-repo", "m6i.32xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch/pytorch-canary",  # repo-scoped
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "runner_group": "arc-staging-uw2",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "ovr-repo.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "default"
+
     def test_runner_class_release(self, tmp_path):
         """Release runners get required runner-class affinity on the workflow pod;
         runner-class isolation does not apply to the runner pod (it lives on the
@@ -1110,6 +1557,19 @@ RUNNER_VARIANTS = [
         },
         id="release",
     ),
+    pytest.param(
+        {
+            "name": "override-runner",
+            "instance_type": "g5.48xlarge",
+            "vcpu": 189,
+            "memory": 704,
+            "gpu": 8,
+            "disk_size": 600,
+            "node_fleet": "g5-48xlarge",
+            "expected_workflow_fleet": "g5-48xlarge",
+        },
+        id="override",
+    ),
 ]
 
 GPU_VARIANT = RUNNER_VARIANTS[1]
@@ -1130,6 +1590,8 @@ def _render_real(real_template, tmp_path, variant):
         def_kwargs["runner_group"] = variant["runner_group"]
     if "runner_class" in variant:
         def_kwargs["runner_class"] = variant["runner_class"]
+    if "node_fleet" in variant:
+        def_kwargs["node_fleet"] = variant["node_fleet"]
     def_file = make_def_file(**def_kwargs)
     output_dir = tmp_path / "out"
     output_dir.mkdir()
@@ -1364,6 +1826,7 @@ class TestMain:
         defs_dir.mkdir()
         make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
         make_def_file(defs_dir, "runner-b", "g4dn.8xlarge", 4, 16, gpu=1)
+        make_nodepool_defs(tmp_path, ["m6i.32xlarge", "g4dn.8xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1390,6 +1853,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
+        make_nodepool_defs(tmp_path, ["m6i.32xlarge"])
 
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -1440,6 +1904,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1472,7 +1937,7 @@ class TestMain:
                 "arc-prod": {
                     "cluster_name": "production",
                     "region": "us-east-1",
-                    "modules": ["arc-runners"],
+                    "modules": ["nodepools", "arc-runners"],
                     "arc-runners": {
                         "github_config_url": "https://github.com/prod-org",
                         "github_secret_name": "prod-secret",
@@ -1487,6 +1952,7 @@ class TestMain:
         defs_dir = tmp_path / "defs"
         defs_dir.mkdir()
         make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
 
         output_dir = tmp_path / "out"
 
@@ -1503,6 +1969,58 @@ class TestMain:
         docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
+
+    def test_pause_runners_forces_max_runners_zero(self, tmp_path, monkeypatch):
+        """main() honors cluster-level pause_runners=true by forcing maxRunners: 0."""
+        paused_config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/prod-org",
+                    "github_secret_name": "prod-secret",
+                    "runner_name_prefix": "prod-",
+                },
+            },
+            "clusters": {
+                "arc-prod": {
+                    "cluster_name": "production",
+                    "region": "us-east-1",
+                    "modules": ["nodepools", "arc-runners"],
+                    "pause_runners": True,
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/prod-org",
+                        "github_secret_name": "prod-secret",
+                        "runner_name_prefix": "prod-",
+                    },
+                },
+            },
+        }
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(paused_config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "capped-runner", "c7i.24xlarge", 4, 16, max_runners=8)
+        make_def_file(defs_dir, "elastic-runner", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "arc-prod"]):
+            assert main() == 0
+
+        capped_docs = list(yaml.safe_load_all((output_dir / "capped-runner.yaml").read_text()))
+        assert capped_docs[0]["maxRunners"] == 0
+
+        elastic_docs = list(yaml.safe_load_all((output_dir / "elastic-runner.yaml").read_text()))
+        assert elastic_docs[0]["maxRunners"] == 0
 
     def test_missing_template_exits_1(self, tmp_path, monkeypatch):
         p = tmp_path / "clusters.yaml"

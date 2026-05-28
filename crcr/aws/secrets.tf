@@ -9,5 +9,6 @@ resource "aws_secretsmanager_secret_version" "main" {
     GITHUB_APP_SECRET      = var.github_app_secret
     GITHUB_APP_PRIVATE_KEY = var.github_app_privatekey
     REDIS_LOGIN            = random_password.redis_password.result
+    HUD_BOT_KEY            = var.hud_bot_key
   })
 }

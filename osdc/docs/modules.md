@@ -36,6 +36,12 @@ REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
 ```
 
+**Module resolution (consumer override).** Before running the three phases, `deploy-module` resolves the module directory as: if `$OSDC_ROOT/modules/<name>/` exists, use it; otherwise fall back to `$OSDC_UPSTREAM/modules/<name>/`. This is how a downstream consumer repo replaces a shared upstream module with a local variant — drop a module of the same name under your own `modules/` and it wins.
+
+**Audit logging.** `deploy-module` wraps each invocation with `scripts/deploy-log.sh` calls (`deploy_log_start` / `deploy_log_finish`) at both `cmd` and `module` scope. Successes and failures are recorded and surfaced by `just deploy-history` and `just deploy-status`.
+
+**`force` argument.** `deploy-module` accepts an optional third positional `force` argument; setting it to any non-empty value (e.g. `just deploy-module my-cluster monitoring force`) exports `HELM_FORCE_UPGRADE=1` for the duration of the run, which the shared `helm-upgrade.sh` helper honours to force a Helm upgrade even when no diff is detected.
+
 ## Creating a new module
 
 1. Create directory:
@@ -93,7 +99,7 @@ variable "state_bucket" { type = string }
 variable "cluster_id"   { type = string }
 ```
 
-Add more variables as needed. If they need cluster-specific values, extend `clusters.yaml` with module-specific config — `scripts/cluster-config.py` is generic (it walks dotted paths against the YAML with deep-merged defaults), so no code change is required to read new keys.
+Add more variables as needed. If they need cluster-specific values, extend `clusters.yaml` with module-specific config — `scripts/cluster-config.py` is generic (it walks dotted paths against the YAML with per-path fallback: the cluster's own value wins, otherwise the same path is looked up under `defaults`), so no code change is required to read new keys.
 
 ## Adding kubernetes resources to a module
 
@@ -154,11 +160,11 @@ The `logging` module's `assemble_config.py` discovers these via `--modules-dir` 
 
 ## Tests
 
-Every module has a `tests/` directory; pytest tests are auto-collected by `just test`. Modules that own deployable behaviour can additionally provide a `tests/smoke/` directory — `just smoke <cluster>` walks every enabled module and runs whichever `tests/smoke` it finds (`arc/`, `eks/`, `karpenter/` currently have one).
+Most non-delegate modules have a `tests/` directory; pytest tests are auto-collected by `just test`. Exceptions: the four delegate modules (`arc-runners-h100`, `arc-runners-b200`, `nodepools-h100`, `nodepools-b200`) have no `tests/` of their own, and `zombie-cleanup` keeps its tests alongside the script under `scripts/python/test_*.py`. Modules that own deployable behaviour can additionally provide a `tests/smoke/` directory — `just smoke <cluster>` walks every enabled module and runs whichever `tests/smoke` it finds. Every non-delegate module currently has one.
 
 ## Delegate modules (GPU variants)
 
-GPU SKUs (`arc-runners-h100`, `arc-runners-b200`, `nodepools-h100`, `nodepools-b200`) are pure delegate modules: they ship only their own `defs/` (and `generated/`) and a 14-line `deploy.sh` that `exec`s the parent module's deploy script after exporting a few env vars:
+GPU SKUs (`arc-runners-h100`, `arc-runners-b200`, `nodepools-h100`, `nodepools-b200`) are pure delegate modules: they ship only their own `defs/` (and `generated/`), optionally a `scripts/` directory (the `nodepools-*` delegates carry a per-SKU node-setup script), and a 13-line `deploy.sh` that `exec`s the parent module's deploy script after exporting a few env vars:
 
 ```bash
 #!/usr/bin/env bash
@@ -215,9 +221,10 @@ ARC runner scale sets for GitHub Actions self-hosted runners. Requires `arc` (co
 - **defs/**: Runner definitions (source of truth) — instance type, CPU, memory, GPU, default max runners
 - **templates/runner.yaml.tpl**: Multi-doc template: Helm values + job pod hook ConfigMap
 - **generated/**: Auto-generated ARC runner configs (from defs + template)
+- **kubernetes/**: `arc-runners` namespace, `hooks-warmer` Deployment (warms the runner-container-hooks image on every node), `kustomization.yaml` — auto-applied in Phase 2 because `kustomization.yaml` is present
 - **scripts/python/generate_runners.py**: Reads `defs/` + template + `clusters.yaml` → writes `generated/`
 - **scripts/python/validate_runner_qos.py**: Pre-deploy validation (Guaranteed QoS, requests == limits) — invoked via `uv run`
-- **deploy.sh**: Generates configs, validates QoS, applies ConfigMaps + Helm releases (enforces `arc` module presence)
+- **deploy.sh**: Generates configs, validates QoS, applies the per-runner hook ConfigMaps and Helm releases (enforces `arc` module presence)
 
 ### logging
 
@@ -234,8 +241,9 @@ Dual-architecture container build service with HAProxy load balancing.
 
 - **kubernetes/base/**: BuildKit namespace, Deployments (arm64 + amd64), Services, HAProxy (least-connections LB), NetworkPolicy
 - **scripts/python/generate_buildkit.py**: Generates Deployments + NodePools from instance type specs and `clusters.yaml` config
-- **scripts/node-setup.sh**: NVMe RAID0, registry mirrors, CPU tuning for build nodes
 - **deploy.sh**: Generates manifests, applies k8s resources, deploys Karpenter NodePools, waits for rollout
+
+Build-node tuning (NVMe RAID0, registry mirrors, CPU tuning) is not a separate script in this module — it comes from the Karpenter EC2NodeClass userData baked into the generated `nodepools.yaml` and from cluster-wide DaemonSets in `base/kubernetes/`.
 
 ### harbor-cache-recovery
 
@@ -251,10 +259,9 @@ Automated recovery from Harbor proxy cache corruption (stale manifests, size mis
 Grafana Alloy in metrics mode, scraping cluster + module endpoints and remote-writing to Grafana Cloud Mimir.
 
 - **helm/**: Alloy values for the metrics pipeline
-- **kubernetes/**: ServiceMonitor / PodMonitor / additional scrape configs
-- **dashboards/**: Grafana dashboard JSON sources
+- **kubernetes/**: namespace, DCGM exporter DaemonSet + custom-metrics ConfigMap (`dcgm-exporter/`), PrometheusRule alert CRDs (`alerts/` — ARC, GPU, infra, network-pressure, node-compactor, nodelocaldns, harbor-cache-recovery, zombie-cleanup), and ServiceMonitor / PodMonitor manifests (`monitors/`)
 - **logging/pipeline.alloy**: Log routing rules for the monitoring module's own pods
-- **deploy.sh**: Secret-gated Alloy install, dashboard sync
+- **deploy.sh**: Installs `kube-prometheus-stack` (CRDs, node-exporter, kube-state-metrics, Prometheus Operator — Prometheus/Grafana/AlertManager are disabled), Prometheus Pushgateway, the `monitors/` kustomize (ServiceMonitors / PodMonitors / `alerts/` PrometheusRules) after the CRDs land, and — gated on the `grafana-cloud-credentials` secret — Grafana Alloy as the metrics push pipeline to Grafana Cloud
 
 ### pypi-cache
 
@@ -282,8 +289,8 @@ CronJob that reaps orphaned ARC runner pods left behind by aborted GitHub Action
 
 ### arc-runners-h100, arc-runners-b200
 
-Delegate modules for H100 / B200 GPU runner scale sets. Ship only `defs/`, `generated/`, and a 14-line `deploy.sh` that exports `ARC_RUNNERS_DEFS_DIR` / `ARC_RUNNERS_OUTPUT_DIR` / `ARC_RUNNERS_MODULE_NAME` then `exec`s the parent `arc-runners/deploy.sh`. See "Delegate modules" above.
+Delegate modules for H100 / B200 GPU runner scale sets. Ship only `defs/`, `generated/`, and a 13-line `deploy.sh` that exports `ARC_RUNNERS_DEFS_DIR` / `ARC_RUNNERS_OUTPUT_DIR` / `ARC_RUNNERS_MODULE_NAME` then `exec`s the parent `arc-runners/deploy.sh`. See "Delegate modules" above.
 
 ### nodepools-h100, nodepools-b200
 
-Delegate modules for H100 / B200 GPU NodePools. Same pattern as the arc-runners delegates but exporting `NODEPOOLS_*` env vars and delegating to `nodepools/deploy.sh`.
+Delegate modules for H100 / B200 GPU NodePools. Same pattern as the arc-runners delegates but with an extra `scripts/` directory holding a per-SKU node-setup script, exporting `NODEPOOLS_*` env vars and delegating to `nodepools/deploy.sh`.

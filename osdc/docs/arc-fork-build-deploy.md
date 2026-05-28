@@ -14,13 +14,17 @@
 
 ## Helm Chart
 
-Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image and publishes the chart to GHCR.
+Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image (multi-arch `linux/amd64` + `linux/arm64`) and publishes the chart to GHCR.
 
 - **OCI registry**: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.9`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
-- **Image tags**: `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (set during workflow dispatch — pass `release_tag_name=0.14.1-jeanschmidt.9` to match the chart)
+- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.11`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
+- **Image tags**: the workflow publishes two tags per build:
+  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.11` to match the chart)
+  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>-<short_sha>` (immutable tag with the source commit baked in, useful for pinning and debugging)
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
+
+**Exact-match enforcement on `release_tag_name`**: the workflow's first step runs `hack/check-gh-chart-versions.sh ${{ inputs.release_tag_name }}` and rejects the build unless `release_tag_name` matches **all four** chart fields exactly — `version` and `appVersion` of both `gha-runner-scale-set-controller` and `gha-runner-scale-set`. Partial matches (e.g., just major.minor) fail at build time. The major.minor allowance described in "Controller Version Check" below is a runtime-only behavior of `IsVersionAllowed`, not a build-time relaxation.
 
 ## Using the Local Chart (dev workflow)
 
@@ -92,22 +96,26 @@ docker buildx build \
   --platform linux/amd64 \
   --build-arg VERSION=0.14.1 \
   --build-arg COMMIT_SHA=$(git rev-parse HEAD) \
-  -t localhost:30002/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1 \
+  -t localhost:8081/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1 \
   -f Dockerfile \
   --load .
 
 # Save to tarball for crane push (faster than docker push over port-forward)
-docker save localhost:30002/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1 -o /tmp/arc-controller.tar
+docker save localhost:8081/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1 -o /tmp/arc-controller.tar
 
-# Port-forward to Harbor (if not already running)
-kubectl port-forward -n harbor-system svc/harbor 30002:80 &
+# Port-forward to Harbor (if not already running).
+# Port 8081 matches the project convention used by every other deploy.sh
+# (modules/arc, modules/harbor-cache-recovery, base/node-compactor, etc.) —
+# pick the same port so concurrent port-forwards from `just deploy-module`
+# do not collide.
+kubectl port-forward -n harbor-system svc/harbor 8081:80 &
 
 # Authenticate crane with Harbor
 HARBOR_PASS=$(kubectl get secret -n harbor-system harbor-admin-password -o jsonpath='{.data.password}' | base64 -d)
-mise exec -- crane auth login localhost:30002 -u admin -p "$HARBOR_PASS" --insecure
+mise exec -- crane auth login localhost:8081 -u admin -p "$HARBOR_PASS" --insecure
 
 # Push via crane (much faster than docker push — deduplicates existing blobs)
-mise exec -- crane push --insecure /tmp/arc-controller.tar localhost:30002/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1
+mise exec -- crane push --insecure /tmp/arc-controller.tar localhost:8081/osdc/gha-runner-scale-set-controller:0.14.1-capacity.1
 ```
 
 **Tagging**: always use the `<chart_version>-capacity.<N>` format. Bump `<N>` for every new build — `IfNotPresent` pull policy means the same tag won't be re-pulled. Never use a static mutable tag like `latest` or `proactive-capacity` in production. Never use a `v` prefix on `VERSION` — the controller's semver parser does not strip it and will fail the version check.
@@ -129,14 +137,14 @@ This runs `modules/arc/deploy.sh`, which:
 3. **Applies RBAC** from `modules/arc/kubernetes/capacity-monitor-rbac.yaml`
 4. **Helm upgrade** of the fork chart:
    - Chart: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.9`)
+   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.11`)
    - Image: defaults to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<chart_version>`. Override with `arc.image_repository` / `arc.image_tag` in `clusters.yaml` for local Harbor builds.
 
 Other deploy.sh config knobs (all from `clusters.yaml`):
 
 | Key | Default | What |
 |-----|---------|------|
-| `arc.chart_version` | `0.14.1-jeanschmidt.9` | Helm chart version (fork) |
+| `arc.chart_version` | `0.14.1-jeanschmidt.11` | Helm chart version (fork) |
 | `arc.image_repository` | `ghcr.io/jeanschmidt/gha-runner-scale-set-controller` | Controller image repo (override for local Harbor builds) |
 | `arc.image_tag` | _(chart_version)_ | Controller image tag (override for local Harbor builds) |
 | `arc.replica_count` | `2` | Controller replicas |
@@ -167,7 +175,8 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_RUNNER_CPU` | `750m` | `750m` | Runner placeholder CPU request — **must match the runner container's actual CPU request/limit** |
 | `CAPACITY_AWARE_RUNNER_MEMORY` | `512Mi` | `1Gi` | Runner placeholder memory request — **must match the runner container's actual memory request/limit**. The template value (`1Gi`) is the operative value; the code default (`512Mi`) would under-reserve and defeat the topology guarantee. |
 | `CAPACITY_AWARE_NODE_FLEET` | _(empty)_ | `{{NODE_FLEET}}` (from runner def) | Node fleet for placeholder-workflow scheduling (workflow pool, per-scale-set) |
-| `CAPACITY_AWARE_RUNNER_NODE_FLEET` | _(empty)_ | `c7i-runner` | **Required when `CAPACITY_AWARE_ENABLED=true`** — the dedicated runner-pool fleet for placeholder-runner scheduling. `Validate()` returns an error if missing. Cluster-wide value (currently `c7i-runner`). See "Dedicated Runner NodePool" in `PROACTIVE_CAPACITY.md`. |
+| `CAPACITY_AWARE_RUNNER_NODE_FLEET` | _(empty)_ | `c7i-runner` | **Required when `CAPACITY_AWARE_ENABLED=true`** — the cluster-wide runner-pool fleet for placeholder-runner scheduling (currently `c7i-runner`). `Validate()` returns an error if missing. Distinct from `CAPACITY_AWARE_NODE_FLEET` above: runner placeholders always land on the cluster-wide runner pool, while workflow placeholders land on the per-scale-set workflow pool. |
+| `CAPACITY_AWARE_HUD_FAILURE_MULTIPLIER` | `3` | _(unset — uses code default)_ | When the HUD API is unreachable, the capacity monitor over-provisions placeholders to `ProactiveCapacity * multiplier`. Outer caps (`MaxRunners` headroom, `MaxBurstCapacity`) bound the absolute blast radius. Clamped to a minimum of `1`. |
 | `CAPACITY_AWARE_RUNNER_CLASS` | _(empty)_ | `{{RUNNER_CLASS}}` (from runner def) | Runner class for placeholder node selector |
 | `CAPACITY_AWARE_HUD_API_URL` | _(built-in default URL)_ | hardcoded PyTorch HUD `queued_jobs_aggregate` URL | HUD endpoint for queued job counts |
 | `CAPACITY_AWARE_HUD_API_TOKEN` | _(empty)_ | from K8s secret `pytorch-hud-token` (optional mount) | PyTorch HUD API token for queued job counts |
@@ -186,11 +195,11 @@ The template mounts this as optional (`optional: true`), so missing the secret d
 
 ## Adding maxRunners to a Runner Definition
 
-Add `max_runners: <value>` to the runner def YAML. Most existing defs also set `proactive_capacity` and `max_burst_capacity` — copy those too unless you specifically want to opt out of proactive capacity. Example:
+Add `max_runners: <value>` to the runner def YAML. Most existing defs also set `proactive_capacity` and `max_burst_capacity` — copy those too unless you specifically want to opt out of proactive capacity. Example (fictitious def, for illustration only):
 
 ```yaml
 runner:
-  name: l-x86iavx512-8-16
+  name: l-x86example-8-16
   instance_type: c7a.48xlarge
   vcpu: 8
   memory: 16Gi
@@ -203,7 +212,12 @@ runner:
 
 This flows through the template as `maxRunners:` in the generated Helm values (the chart's standard scaling field — `gha_max_runners` at `runner.yaml.tpl:73` is an unrelated Prometheus metric). The capacity monitor reads `config.MaxRunners` (set from the listener config) and uses it as the ceiling for `X-ScaleSetMaxCapacity`. Without `max_runners`, the value is empty/unlimited.
 
-H100 (`modules/arc-runners-h100/defs/`) and B200 (`modules/arc-runners-b200/defs/`) runners all set `max_runners` (1, 2, 4, or 8 depending on GPU split). CPU/T4/A10G/L4/A100 runner defs currently do not set `max_runners`.
+H100 (`modules/arc-runners-h100/defs/`) and B200 (`modules/arc-runners-b200/defs/`) runners all set `max_runners`, computed as `(reserved GPUs / GPUs per runner)`:
+
+- H100 has 1 reserved 8-GPU node (8 total GPUs). Per-split values: `8 / 4 / 2 / 1` for 1× / 2× / 4× / 8× splits.
+- B200 has 2 reserved 8-GPU nodes (16 total GPUs). Per-split values: `16 / 8 / 4 / 2` for 1× / 2× / 4× / 8× splits.
+
+CPU/T4/A10G/L4/A100 runner defs currently do not set `max_runners`.
 
 ## Load Testing the Capacity Monitor
 
@@ -221,7 +235,7 @@ To exercise multiple runner types in parallel (e.g., CPU + GPU), repeat `--label
 just load-test arc-staging --label l-x86iamx-8-16:400 --label l-x86iavx512-29-115-t4:200
 ```
 
-**GPU labels in us-west-1**: g5 (A10G) and g6 (L4) fleets have `exclude_regions: [us-west-1]`. Only g4dn (T4) is available — pick from `l-x86iavx512-29-115-t4` (1×T4), `l-x86iavx512-45-172-t4-4` (4×T4), or `l-bx86iavx512-94-344-t4-8` (8×T4, bare-metal).
+**GPU labels in us-west-1**: g5 (A10G) and g6 (L4) fleets have `exclude_regions: [us-west-1]`. Only g4dn (T4) is available — pick from `l-x86iavx512-29-115-t4` (1×T4), `l-x86iavx512-45-172-t4-4` (4×T4), or `l-bx86iavx512-94-344-t4-8` (8×T4, bare-metal). Scale sets for excluded instance types still deploy but render with `maxRunners: 0`, so picking one of them in `--label` is a no-op.
 
 `--label` and `--jobs` are mutually exclusive. Without `--label`, `--jobs N` distributes proportionally across all available runner types.
 
@@ -244,7 +258,7 @@ If the capacity monitor is NOT starting despite `CAPACITY_AWARE_ENABLED=true`, t
 
 On ARC upgrades:
 1. Check if `cmd/ghalistener/main.go` changed (the entry point wiring -- our changes are in the capacity monitor errgroup block)
-2. Check if `github.com/actions/scaleset` changed (specifically `listener.SetMaxRunners()` and `listener.Config`)
+2. Check if `github.com/actions/scaleset/listener` changed (specifically `listener.SetMaxRunners()` and `listener.Config` — that sub-package is the API surface we depend on)
 3. Rebase the fork's `master` branch onto upstream master
 4. Rebuild and push the image to Harbor
 
@@ -255,3 +269,88 @@ The `capacity/` package is entirely ours -- no upstream merge conflicts possible
 - `Dockerfile` — `LABEL org.opencontainers.image.source` rewritten to point at the fork
 - `charts/*/Chart.yaml` — `version` and `appVersion` bumped to `<upstream>-jeanschmidt.<N>` on every fork publish
 - Various other commits across feature branches (e.g., "Drop runner-class from runner placeholders", "Split runner/workflow placeholder fleets", "Require runner-class in workflow affinity") that touch additional files outside `capacity/`
+
+## Stale Listener Recovery
+
+### Symptom
+
+- Listener pods (named `<runner-name>-<hash>-listener`) in `arc-systems` stuck in `CrashLoopBackOff`
+- Pod logs end with `Application returned an error: failed to create actions message session client ... 404 Not Found ... RunnerScaleSetNotFoundException`
+- The post-deploy check in `modules/arc-runners/deploy.sh` prints a WARNING banner naming the affected AutoscalingRunnerSets
+
+### Root cause
+
+The scale-set ID stamped on the AutoscalingRunnerSet annotation `runner-scale-set-id` no longer exists on GitHub's broker. The controller does not verify the annotation against the broker — it trusts any syntactically valid ID. Restarting the listener pod or the controller does not help; only re-registration does.
+
+Common triggers:
+
+- GitHub App installation lost access to the repo (permission rotation, scope change)
+- Repo was renamed, archived, or moved
+- An admin manually deleted scale sets via the GitHub UI or API
+- Broker-side key rotation that invalidated existing scale-set IDs
+
+### Before healing — verify the GitHub App still has access
+
+```bash
+gh api /repos/<org>/<repo> | jq '{name, archived, full_name}'
+gh api /app/installations | jq '.[] | select(.id == <installation-id>)'
+```
+
+If the App lost access, fix that first — `CreateRunnerScaleSet` will also 404 and healing will not work.
+
+### Recovery
+
+First, check for drift without touching the cluster (exits non-zero if anything is drifted — safe to run from CI/cron):
+
+```bash
+just heal-arc-check <cluster>
+```
+
+Heal a single ARS (smallest blast radius — start here to validate):
+
+```bash
+just heal-arc <cluster> <ars-name>
+```
+
+Heal everything that is drifted on a cluster (use for broad events like broker-key rotation):
+
+```bash
+just heal-arc <cluster>
+```
+
+`heal-arc` detects five categories of drift and recovers each in order:
+
+1. **Controller drift** — `arc-gha-rs-controller` Deployment in `arc-systems` is missing or has fewer ready replicas than desired. Recovery: `kubectl rollout restart` + `rollout status` with a 5-minute timeout. If the controller cannot recover, the recipe aborts (no downstream reconcile is possible).
+2. **ARS drift** — the `runner-scale-set-id` annotation is missing on an AutoscalingRunnerSet. Recovery: keep the annotation cleared and delete the matching AutoscalingListener; the controller then calls `CreateRunnerScaleSet` against the GitHub broker, stamps the fresh ID, and creates a new listener pod. All descendant EphemeralRunnerSets are queued for cascade-deletion (they will hold the old ID after re-registration).
+3. **Listener drift** — the AutoscalingListener is missing, its `spec.runnerScaleSetId` does not match the ARS canonical ID, or its pod is not Running/Ready (CrashLoopBackOff, ImagePullBackOff, etc.). Recovery: delete the listener; the controller recreates it using the current ARS annotation.
+4. **Listener orphan drift** — the AutoscalingListener's `spec.ephemeralRunnerSetName` references an EphemeralRunnerSet that no longer exists. The listener spec is set ONCE at creation and does NOT track ERS renames, so any time an ERS is deleted and the controller recreates it with a fresh random suffix, the existing listener still embeds the old (now-dead) ERS name in its config secret and crashloops trying to patch the nonexistent ERS. Recovery: delete the listener; the controller recreates it with the current ERS name embedded.
+5. **ERS drift** — `EphemeralRunnerSet.spec.ephemeralRunnerSpec.runnerScaleSetId` does not match the parent ARS canonical ID. Recovery: delete the EphemeralRunnerSet (cascade-deletes its EphemeralRunners); the parent ARS controller creates a fresh ERS with the current ID.
+
+**Listener/ERS cascade:** `AutoscalingListener` and `EphemeralRunnerSet` are a coupled pair — any time an ERS is deleted (whether for `ers_drift` or as part of the `ers_cascade_from_ars` queue), the parent ARS's listener is ALSO queued for deletion so the controller can recreate them together with consistent name references. Listeners are deleted first (faster than ERS deletes, and avoids the existing listener pod crashlooping while the new ERS is being created). Deletes are paced with a short inter-delete sleep to keep the controller's reconcile burst from exhausting AWS CNI IP allocations on the listener node.
+
+After recovery, `heal-arc` sleeps briefly to let the controller settle, then re-runs the drift report once. If drift_count is zero the recovery is reported complete; otherwise the remaining drift is printed and the recipe exits non-zero.
+
+The `OSDC_CONFIRM=yes|no|ask` gate applies to `heal-arc` (default `ask`). `heal-arc-check` never prompts.
+
+### Watching recovery
+
+```bash
+kubectl get autoscalinglisteners -n arc-systems -w
+```
+
+New listener pods should reach `Running` within 30-60s. Verify the new scale-set ID:
+
+```bash
+kubectl get autoscalingrunnersets -n arc-runners -o json \
+  | jq '.items[] | {name: .metadata.name, scaleSetId: .metadata.annotations["runner-scale-set-id"]}'
+```
+
+### Opting out of the post-deploy check
+
+For rapid iteration where the check is noise:
+
+```bash
+ARC_LISTENER_CHECK=skip just deploy-module <cluster> arc-runners
+```
+
+The wait window is configurable via `ARC_LISTENER_CHECK_TIMEOUT` (seconds, default 60). The check polls every 5s and breaks early once every listener is either Running steady or has restartCount >= 2.
