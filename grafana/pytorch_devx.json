@@ -194,7 +194,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n    revert_day,\n    prs_reverted,\n    sum(prs_reverted) OVER (\n        ORDER BY toUnixTimestamp(revert_day) ASC\n        RANGE BETWEEN 6 * 24 * 60 * 60 PRECEDING AND CURRENT ROW\n    ) / least(7.0, toFloat64(count() OVER (\n        ORDER BY toUnixTimestamp(revert_day) ASC\n        RANGE BETWEEN 6 * 24 * 60 * 60 PRECEDING AND CURRENT ROW\n    ))) AS trend_7d_avg\nFROM (\n    SELECT\n        toStartOfDay(event_time) AS revert_day,\n        COUNT() AS prs_reverted\n    FROM pull_label_event\n    WHERE\n        repo_name = 'pytorch/pytorch'\n        AND label_name = 'Reverted'\n        AND action = 'labeled'\n        AND $__timeFilter(event_time)\n    GROUP BY revert_day\n)\nORDER BY revert_day DESC\nLIMIT 100"
+                      "rawSql": "SELECT\n    revert_day,\n    prs_reverted,\n    sum(prs_reverted) OVER (\n        ORDER BY toUnixTimestamp(revert_day) ASC\n        RANGE BETWEEN 6 * 24 * 60 * 60 PRECEDING AND CURRENT ROW\n    ) / 7.0 AS trend_7d_avg\nFROM (\n    SELECT\n        toStartOfDay(head_commit.timestamp) AS revert_day,\n        COUNT() AS prs_reverted\n    FROM push\n    WHERE\n        repository.full_name = 'pytorch/pytorch'\n        AND ref IN ('refs/heads/master', 'refs/heads/main')\n        AND (\n            head_commit.message LIKE 'Revert %'\n            OR head_commit.message LIKE 'Back out%'\n        )\n        AND $__timeFilter(head_commit.timestamp)\n    GROUP BY revert_day\n)\nORDER BY revert_day DESC"
                     },
                     "version": "v0"
                   },
@@ -757,7 +757,7 @@
       "1d"
     ],
     "fiscalYearStartMonth": 0,
-    "from": "now-180d",
+    "from": "now-6M",
     "hideTimepicker": false,
     "timezone": "browser",
     "to": "now"
