@@ -34,21 +34,16 @@ import sys
 
 EXPECTED_FILE = "osdc/clusters.yaml"
 
-# MUST remain bit-for-bit equivalent to the prior bash regex so the pre-
-# and post-merge gates accept/reject the same set of patches.
 LINE_PATTERN = re.compile(r'^    runner_image_tag:[ \t]*"(?P<ver>\d+\.\d+\.\d+)"[ \t]*(#.*)?$')
 
 
-def _emit(decision: str, reason: str, **extra: str) -> None:
-    print(f"decision={decision}")
-    print(f"reason={reason}")
-    for k, v in extra.items():
-        print(f"{k}={v}")
+def _emit(decision: str, reason: str, **kwargs: str) -> None:
+    fields = {"decision": decision, "reason": reason, **kwargs}
+    print(*(f"{k}={v}" for k, v in fields.items()), sep="\n")
 
 
-def _semver_tuple(version: str) -> tuple[int, int, int]:
-    parts = version.split(".")
-    return (int(parts[0]), int(parts[1]), int(parts[2]))
+def _semver_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in version.split("."))
 
 
 def main() -> int:
