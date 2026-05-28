@@ -829,7 +829,8 @@ class TestGenerateRunner:
             "cluster_id": "arc-cbr-production-uw1",
         }
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is False
+        with pytest.raises(ValueError, match="max_runners mapping must include a `default` key"):
+            generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100")
 
     def test_pause_runners_overrides_max_runners_mapping(self, tmp_path):
         """pause_runners=true wins over a per-cluster mapping entry — maxRunners is forced to 0."""
@@ -890,7 +891,8 @@ class TestGenerateRunner:
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        with pytest.raises(ValueError, match="max_runners must be a positive integer"):
+            generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners")
 
     def test_invalid_max_runners_non_int(self, tmp_path):
         """max_runners must be an int, not a string."""
@@ -898,7 +900,8 @@ class TestGenerateRunner:
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+        with pytest.raises(ValueError, match="max_runners must be a positive integer"):
+            generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners")
 
     def test_pause_runners_forces_max_runners_zero_when_def_unset(self, tmp_path):
         """pause_runners=true forces maxRunners: 0 even when the def omits max_runners."""

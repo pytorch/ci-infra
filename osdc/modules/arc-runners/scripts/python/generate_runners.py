@@ -170,26 +170,23 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         if isinstance(max_runners, dict):
             # Mapping form: one positive int per cluster, with `default` as the baseline.
             if "default" not in max_runners:
-                log_error(
+                raise ValueError(
                     f"Invalid definition file {def_file}: max_runners mapping must include a "
                     f"`default` key for the baseline value, got keys {sorted(max_runners)}"
                 )
-                return False
             for cid, value in max_runners.items():
                 if not isinstance(value, int) or value < 1:
-                    log_error(
+                    raise ValueError(
                         f"Invalid definition file {def_file}: max_runners[{cid!r}] must be a "
                         f"positive integer, got {value!r}"
                     )
-                    return False
             cluster_id = cluster_config.get("cluster_id")
             max_runners = max_runners.get(cluster_id, max_runners["default"])
         elif not isinstance(max_runners, int) or max_runners < 1:
-            log_error(
+            raise ValueError(
                 f"Invalid definition file {def_file}: max_runners must be a positive integer or "
                 f"a mapping with a `default` key, got {max_runners!r}"
             )
-            return False
 
     if cluster_config.get("pause_runners"):
         max_runners = 0
