@@ -1,0 +1,29 @@
+# Karpenter NodePool fleet: p5-large — dedicated pool for the 8-GPU H100 runner
+# (l-bx86iamx-176-1800-h100-8). Name-only subset of p5-48xlarge; separation is
+# enforced by the node-fleet=p5-large taint. Mirrors p4d-large / g5-large.
+#
+# Topology: this pool deliberately does NOT set single-numa-node (unlike the
+# packed p5-48xlarge pool). p5.48xlarge is a 2-NUMA-node box (4 H100 + ~96 vCPU
+# per node), so an all-8-GPU / 176-vCPU pod spans BOTH NUMA nodes and is rejected
+# with TopologyAffinityError under single-numa-node — the runner (and its
+# listener placeholder) then hangs forever, pinning a reserved node idle.
+# topologyManagerPolicy is a kubelet/node-level setting, not per-pod, which is
+# why the full-node runner needs its own pool. We leave it at the generator
+# default (best-effort), matching g5-large. Do NOT add single-numa-node here.
+#
+# Both p5 pools draw from the same us-west-1 H100 capacity reservations (merged
+# in per-cluster from clusters.<id>.nodepools-h100.capacity_reservation_ids at
+# deploy time) — the reservation is a shared instance pool, so either pool can
+# launch a reserved node up to the total reserved count.
+fleet:
+  name: p5-large
+  arch: amd64
+  gpu: true
+  instances:
+    - type: p5.48xlarge
+      weight: 100
+      node_disk_size: 1000
+      has_nvme: true
+      baremetal: true
+      capacity_type: reserved
+      user_data_script: scripts/h100-node-setup.sh

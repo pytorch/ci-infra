@@ -1,0 +1,28 @@
+# Karpenter NodePool fleet: p6-b200-large — dedicated pool for the 8-GPU B200 runner
+# (l-bx86iamx-176-1800-b200-8). Name-only subset of p6-b200-48xlarge; separation
+# is enforced by the node-fleet=p6-b200-large taint. Mirrors p4d-large / p5-large.
+#
+# Topology: this pool must NOT use single-numa-node (unlike the packed
+# p6-b200-48xlarge pool). p6-b200.48xlarge is a 2-NUMA-node box with its 8 B200s
+# split 4-per-node, so an all-8-GPU / 176-vCPU pod spans BOTH NUMA nodes and is
+# rejected with TopologyAffinityError under single-numa-node — the runner (and its
+# listener placeholder) then hangs forever, pinning a reserved node idle.
+# topologyManagerPolicy is a kubelet/node-level setting, not per-pod, which is why
+# the full-node runner needs its own pool. We leave it at the generator default
+# (best-effort), matching p5-large. Do NOT add single-numa-node here.
+#
+# Both p6-b200 pools draw from the same reserved instance pool (merged in
+# per-cluster from clusters.<id>.nodepools-b200.capacity_reservation_ids at deploy
+# time), so either pool can launch a reserved node up to the total reserved count.
+fleet:
+  name: p6-b200-large
+  arch: amd64
+  gpu: true
+  instances:
+    - type: p6-b200.48xlarge
+      weight: 100
+      node_disk_size: 1000
+      has_nvme: true
+      baremetal: true
+      capacity_type: reserved
+      user_data_script: scripts/b200-node-setup.sh

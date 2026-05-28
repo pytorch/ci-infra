@@ -1,8 +1,13 @@
 # ARC runner definition: l-bx86iamx-176-1800-h100-8 (8x NVIDIA H100, full node)
-# Scheduled on NodePool: p5-48xlarge (from nodepools-h100 module)
+# Scheduled on NodePool fleet: p5-large (from nodepools-h100 module).
+# Uses its OWN fleet — NOT the shared p5-48xlarge pool — because that pool pins
+# topologyManagerPolicy: single-numa-node, which an all-8-GPU pod can never
+# satisfy on a 2-NUMA-node p5.48xlarge (TopologyAffinityError). See
+# nodepools-h100/defs/p5-large.yaml for the full rationale.
 runner:
   name: l-bx86iamx-176-1800-h100-8
   instance_type: p5.48xlarge
+  node_fleet: p5-large
   disk_size: 200
   vcpu: 176
   memory: 1800Gi
