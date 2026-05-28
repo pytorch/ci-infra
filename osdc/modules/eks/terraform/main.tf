@@ -5,6 +5,13 @@
 
 data "aws_availability_zones" "available" {
   state = "available"
+
+  # Exclude Local Zones and Wavelength Zones — they belong to separate network
+  # border groups and cannot use the VPC's auto-assigned IPv6 CIDR block.
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
 }
 
 locals {
