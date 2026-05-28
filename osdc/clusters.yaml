@@ -159,7 +159,7 @@ clusters:
       # cluster-id selection in osdc/docs/arc-fork-build-deploy.md if you
       # updated it) once the upstream chart bumps to jeanschmidt.10+.
       image_repository: "harbor.harbor-system.svc.cluster.local/osdc/gha-runner-scale-set-controller"
-      image_tag: "0.14.1-capacity.runnerLabels.1"
+      image_tag: "0.14.1-capacity.runnerLabels.2"
     node_compactor:
       dry_run: true
     nodepools:
