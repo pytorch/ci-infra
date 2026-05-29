@@ -1354,7 +1354,7 @@
             "$__all"
           ]
         },
-        "definition": "label_values(gha_assigned_jobs{cluster=~\".*arc.*production.*\"},cluster)",
+        "definition": "label_values(gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*\"},cluster)",
         "hide": "dontHide",
         "includeAll": true,
         "label": "Cluster",
@@ -1369,7 +1369,7 @@
           "kind": "DataQuery",
           "spec": {
             "qryType": 1,
-            "query": "label_values(gha_assigned_jobs{cluster=~\".*arc.*production.*\"},cluster)",
+            "query": "label_values(gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*\"},cluster)",
             "refId": "PrometheusVariableQueryEditor-VariableQuery"
           },
           "version": "v0"
