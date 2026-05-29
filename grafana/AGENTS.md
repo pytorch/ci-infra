@@ -35,4 +35,15 @@ mise run push --folder "..."
   * Contains GitHub data
 * grafanacloud-pytorchci-prom, grafanacloud-prom
   * Contains GitHub Actions Runner Controller data
-  * Clone https://github.com/actions/actions-runner-controller to a temporary directory to understand the ARC provided data
+* pytorch-hud (MCP) 
+  * If available it is a powerful tool that helps you get more in-depth context on clickhouse data, plus it exports HUD APIs that can be used to query and get information while developing (not useful for dashboard queries, but powerful for planning)
+
+## Reference repositories
+
+This repo, on <repo-root>/osdc the OSDC project lives, scan it to understand how metrics are exported and what metrics are available to be used, read the docs on <repo-root>/osdc/docs to understand the scope and project setup.
+
+### Clone those repositories in a temp source if you don't have them already in other known places
+
+* https://github.com/jeanschmidt/actions-runner-controller - to understand how actions-runner-controller exposes data
+* https://github.com/seemethere/actions-knowledge-base - to understand how all other components expose data (kubernetes, harbor, etc)
+
