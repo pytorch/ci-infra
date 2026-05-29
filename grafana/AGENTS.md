@@ -37,6 +37,8 @@ mise run push --folder "..."
   | `arc-cbr-prod-uw1` | `pytorch-arc-cbr-production-uw1` |
   | `meta-prod-aws-ue1` | `meta-prod-aws-ue1` |
 
+  `workflow_job` data doesn't carry the Prometheus cluster name — only `runner_group_name`. Something has to translate the two, and since the mapping rarely changes and lives entirely in our control, hardcoding it in the panel queries (with this table as the source of truth) is simpler than a ClickHouse dictionary or an ARC label-injection change, which just relocate the same mapping while adding moving parts.
+
 ## Datasources
 
 * grafana-clickhouse-datasource
