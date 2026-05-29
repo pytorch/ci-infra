@@ -1215,7 +1215,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND match(extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$'), '^(${runner_name_prefix:regex})$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at"
+                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND match(extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$'), '^(${runner_name_prefix:regex})$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > created_at\nORDER BY started_at"
                     },
                     "version": "v0"
                   },
@@ -1230,7 +1230,7 @@
         "description": "Per-job queue time distribution over time for OSDC production runners, excluding capacity-constrained GPU runners (h100, b200, gb200, a100). Y-axis log scale, minutes.",
         "id": 10,
         "links": [],
-        "title": "Queue Time Distribution (excl. capacity-constrained instances) [cluster, repository]",
+        "title": "Queue Time Distribution (excl. capacity-constrained instances) [cluster, repository, scale_set, runner_name_prefix]",
         "vizConfig": {
           "group": "heatmap",
           "kind": "VizConfig",
@@ -1342,7 +1342,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND match(extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$'), '^(${runner_name_prefix:regex})$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at"
+                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND match(extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$'), '^(${runner_name_prefix:regex})$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > created_at\nORDER BY started_at"
                     },
                     "version": "v0"
                   },
@@ -1357,7 +1357,7 @@
         "description": "Per-job queue time distribution over time for OSDC production runners, ONLY capacity-constrained GPU runners (h100, b200, gb200, a100). Y-axis log scale, minutes.",
         "id": 11,
         "links": [],
-        "title": "Queue Time Distribution (capacity-constrained instances only) [cluster, repository]",
+        "title": "Queue Time Distribution (capacity-constrained instances only) [cluster, repository, scale_set, runner_name_prefix]",
         "vizConfig": {
           "group": "heatmap",
           "kind": "VizConfig",
