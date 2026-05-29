@@ -1182,6 +1182,260 @@
           "version": "13.1.0-25668120414"
         }
       }
+    },
+    "panel-10": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Per-job queue time distribution over time for OSDC production runners, excluding capacity-constrained GPU runners (h100, b200, gb200, a100). Y-axis log scale, minutes.",
+        "id": 10,
+        "links": [],
+        "title": "Queue Time Distribution (excl. capacity-constrained instances) [cluster, repository]",
+        "vizConfig": {
+          "group": "heatmap",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "custom": {
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "scaleDistribution": {
+                    "type": "linear"
+                  }
+                }
+              },
+              "overrides": []
+            },
+            "options": {
+              "calculate": true,
+              "calculation": {
+                "xBuckets": {
+                  "mode": "size",
+                  "value": ""
+                },
+                "yBuckets": {
+                  "mode": "count",
+                  "scale": {
+                    "log": 10,
+                    "type": "log"
+                  },
+                  "value": "30"
+                }
+              },
+              "cellGap": 0,
+              "cellValues": {
+                "unit": "short"
+              },
+              "color": {
+                "exponent": 0.5,
+                "fill": "#96D98D",
+                "mode": "opacity",
+                "reverse": false,
+                "scale": "exponential",
+                "steps": 64
+              },
+              "exemplars": {
+                "color": "rgba(255,0,255,0.7)"
+              },
+              "filterValues": {
+                "le": 1e-9
+              },
+              "legend": {
+                "show": true
+              },
+              "rowsFrame": {
+                "layout": "auto"
+              },
+              "showValue": "never",
+              "tooltip": {
+                "mode": "single",
+                "show": true,
+                "yHistogram": false
+              },
+              "yAxis": {
+                "axisLabel": "Queue (min)",
+                "axisPlacement": "left",
+                "decimals": 1,
+                "min": 0.01,
+                "reverse": false,
+                "unit": "m"
+              }
+            },
+            "version": ""
+          }
+        }
+      }
+    },
+    "panel-11": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Per-job queue time distribution over time for OSDC production runners, ONLY capacity-constrained GPU runners (h100, b200, gb200, a100). Y-axis log scale, minutes.",
+        "id": 11,
+        "links": [],
+        "title": "Queue Time Distribution (capacity-constrained instances only) [cluster, repository]",
+        "vizConfig": {
+          "group": "heatmap",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "custom": {
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "scaleDistribution": {
+                    "type": "linear"
+                  }
+                }
+              },
+              "overrides": []
+            },
+            "options": {
+              "calculate": true,
+              "calculation": {
+                "xBuckets": {
+                  "mode": "size",
+                  "value": ""
+                },
+                "yBuckets": {
+                  "mode": "count",
+                  "scale": {
+                    "log": 10,
+                    "type": "log"
+                  },
+                  "value": "30"
+                }
+              },
+              "cellGap": 0,
+              "cellValues": {
+                "unit": "short"
+              },
+              "color": {
+                "exponent": 0.5,
+                "fill": "#5794F2",
+                "mode": "opacity",
+                "reverse": false,
+                "scale": "exponential",
+                "steps": 64
+              },
+              "exemplars": {
+                "color": "rgba(255,0,255,0.7)"
+              },
+              "filterValues": {
+                "le": 1e-9
+              },
+              "legend": {
+                "show": true
+              },
+              "rowsFrame": {
+                "layout": "auto"
+              },
+              "showValue": "never",
+              "tooltip": {
+                "mode": "single",
+                "show": true,
+                "yHistogram": false
+              },
+              "yAxis": {
+                "axisLabel": "Queue (min)",
+                "axisPlacement": "left",
+                "decimals": 1,
+                "min": 0.01,
+                "reverse": false,
+                "unit": "m"
+              }
+            },
+            "version": ""
+          }
+        }
+      }
     }
   },
   "layout": {
@@ -1303,6 +1557,32 @@
             "width": 24,
             "x": 0,
             "y": 30
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-10"
+            },
+            "height": 8,
+            "width": 12,
+            "x": 0,
+            "y": 40
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-11"
+            },
+            "height": 8,
+            "width": 12,
+            "x": 12,
+            "y": 40
           }
         }
       ]
