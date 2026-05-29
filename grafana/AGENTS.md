@@ -28,6 +28,14 @@ mise run push --folder "..."
   * NEVER make edits to any folders other than the folder UID provided with `--folder`
   * NEVER use curl directly to interact with the API
 * Panel titles must end with the list of dashboard variables referenced in the panel's query, formatted as `[var1, var2]` without the `$` prefix (e.g. `Running Jobs [cluster, scale_set]`). The `$` is omitted so Grafana doesn't interpolate the variable value into the title. Include every `$var`/`${var}` the query uses; omit the suffix entirely if the query uses no variables.
+* Every time a series apear in more than one graph, all graphs that use it should use `palette-classic-by-name`, unless there is an explicit reason for this that is well documented and valid.
+* ClickHouse queries that filter OSDC runners by `${cluster}` must map `runner_group_name` (GitHub) to the Prometheus `cluster` value using the table below. Keep all panels using this mapping in sync — when a cluster is added, update every panel that uses it.
+
+  | `runner_group_name` | `${cluster}` value |
+  |---|---|
+  | `default`, `release-runners` | `pytorch-arc-cbr-production` |
+  | `arc-cbr-prod-uw1` | `pytorch-arc-cbr-production-uw1` |
+  | `meta-prod-aws-ue1` | `meta-prod-aws-ue1` |
 
 ## Datasources
 
@@ -35,4 +43,15 @@ mise run push --folder "..."
   * Contains GitHub data
 * grafanacloud-pytorchci-prom, grafanacloud-prom
   * Contains GitHub Actions Runner Controller data
-  * Clone https://github.com/actions/actions-runner-controller to a temporary directory to understand the ARC provided data
+* pytorch-hud (MCP) 
+  * If available it is a powerful tool that helps you get more in-depth context on clickhouse data, plus it exports HUD APIs that can be used to query and get information while developing (not useful for dashboard queries, but powerful for planning)
+
+## Reference repositories
+
+This repo, on <repo-root>/osdc the OSDC project lives, scan it to understand how metrics are exported and what metrics are available to be used, read the docs on <repo-root>/osdc/docs to understand the scope and project setup.
+
+### Clone those repositories in a temp source if you don't have them already in other known places
+
+* https://github.com/jeanschmidt/actions-runner-controller - to understand how actions-runner-controller exposes data
+* https://github.com/seemethere/actions-knowledge-base - to understand how all other components expose data (kubernetes, harbor, etc)
+
