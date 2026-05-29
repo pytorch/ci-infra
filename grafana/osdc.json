@@ -1215,7 +1215,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at"
+                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND match(extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$'), '^(${runner_name_prefix:regex})$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at"
                     },
                     "version": "v0"
                   },
@@ -1342,7 +1342,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at"
+                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND match(extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$'), '^(${runner_name_prefix:regex})$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > toDateTime('2020-01-01')\n    AND started_at > created_at\nORDER BY started_at"
                     },
                     "version": "v0"
                   },
@@ -1672,7 +1672,46 @@
             "$__all"
           ]
         },
-        "definition": "label_values(gha_assigned_jobs{cluster=~\"${cluster:regex}\"},name)",
+        "definition": "SELECT DISTINCT extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') AS prefix FROM default.workflow_job WHERE arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels) AND started_at > now() - INTERVAL 7 DAY AND runner_group_name IN ('default', 'release-runners', 'arc-cbr-prod-uw1', 'meta-prod-aws-ue1') AND extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') != '' ORDER BY prefix",
+        "hide": "dontHide",
+        "includeAll": true,
+        "label": "Runner name",
+        "multi": true,
+        "name": "runner_name_prefix",
+        "options": [],
+        "query": {
+          "datasource": {
+            "name": "ceczcsck1b20wb"
+          },
+          "group": "grafana-clickhouse-datasource",
+          "kind": "DataQuery",
+          "spec": {
+            "editorType": "sql",
+            "format": 1,
+            "queryType": "table",
+            "rawSql": "SELECT DISTINCT extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') AS prefix FROM default.workflow_job WHERE arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels) AND started_at > now() - INTERVAL 7 DAY AND runner_group_name IN ('default', 'release-runners', 'arc-cbr-prod-uw1', 'meta-prod-aws-ue1') AND extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') != '' ORDER BY prefix"
+          },
+          "version": "v0"
+        },
+        "refresh": "onDashboardLoad",
+        "regex": "",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": "alphabeticalAsc"
+      }
+    },
+    {
+      "kind": "QueryVariable",
+      "spec": {
+        "allValue": ".*",
+        "allowCustomValue": false,
+        "current": {
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "definition": "label_values(gha_assigned_jobs{cluster=~\"${cluster:regex}\", name=~\"(${runner_name_prefix:regex})-.*\"},name)",
         "hide": "dontHide",
         "includeAll": true,
         "label": "Scale set",
@@ -1687,7 +1726,7 @@
           "kind": "DataQuery",
           "spec": {
             "qryType": 1,
-            "query": "label_values(gha_assigned_jobs{cluster=~\"${cluster:regex}\"},name)",
+            "query": "label_values(gha_assigned_jobs{cluster=~\"${cluster:regex}\", name=~\"(${runner_name_prefix:regex})-.*\"},name)",
             "refId": "PrometheusVariableQueryEditor-VariableQuery"
           },
           "version": "v0"
