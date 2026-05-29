@@ -36,7 +36,7 @@ mise run push --folder "..."
 * grafanacloud-pytorchci-prom, grafanacloud-prom
   * Contains GitHub Actions Runner Controller data
 * pytorch-hud (MCP) 
-  * If available it is a powerful tool that helps you get more in deapth context on clickhouse data, plus it exports HUD APIS that can be used to query and get information while developing (not useful for dashboard queries, but powerful for planning)
+  * If available it is a powerful tool that helps you get more in-depth context on clickhouse data, plus it exports HUD APIs that can be used to query and get information while developing (not useful for dashboard queries, but powerful for planning)
 
 ## Reference repositories
 
