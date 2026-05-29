@@ -28,6 +28,7 @@ mise run push --folder "..."
   * NEVER make edits to any folders other than the folder UID provided with `--folder`
   * NEVER use curl directly to interact with the API
 * Panel titles must end with the list of dashboard variables referenced in the panel's query, formatted as `[var1, var2]` without the `$` prefix (e.g. `Running Jobs [cluster, scale_set]`). The `$` is omitted so Grafana doesn't interpolate the variable value into the title. Include every `$var`/`${var}` the query uses; omit the suffix entirely if the query uses no variables.
+* Every time a series apear in more than one graph, all graphs that use it should use `palette-classic-by-name`, unless there is an explicit reason for this that is well documented and valid.
 
 ## Datasources
 
