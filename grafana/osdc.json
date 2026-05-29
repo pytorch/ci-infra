@@ -964,7 +964,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n  toStartOfInterval(created_at, INTERVAL 5 MINUTE) AS time,\n  uniqExact(id) AS jobs\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n  AND arrayExists(label -> match(label, '^mt-(rel-)?l-'), labels)\n  AND (\n    (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n  )\n  AND $__timeFilter(created_at)\nGROUP BY time\nORDER BY time ASC"
+                      "rawSql": "SELECT\n  toStartOfInterval(created_at, INTERVAL 5 MINUTE) AS time,\n  uniqExact(id) AS jobs\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n  AND arrayExists(label -> match(label, '^mt-(rel-)?l-'), labels)\n  AND (\n    (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n  )\n  AND $__timeFilter(created_at)\nGROUP BY time\nORDER BY time ASC"
                     },
                     "version": "v0"
                   },
