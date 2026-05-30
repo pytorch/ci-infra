@@ -159,37 +159,51 @@ def select_gpu_type_interactive(
             parts.append(f"{a}×{cgt.rsplit('-', 1)[-1].upper()}")
         return parts, tot_a, tot_c
 
-    # ── The selectable list IS the table ──────────────────────────────────────
-    # questionary indents Separators and Choices identically, so a Separator
-    # header + aligned column text line up with the selectable rows. Arrow keys
-    # move through the table; Enter picks the highlighted row. No separate print.
-    def _row_cells(gt, info, is_spot=False):
-        avail = int(info.get("available", 0))
-        wd, emoji = _format_wait(avail, info.get("estimated_wait_minutes", 0))
-        ql = int(info.get("queue_length", 0))
-        if ql > 0:
-            wd += f" · {ql} queued"
-        typ = f"{gt.upper()} *" if is_spot else gt.upper()
-        return [typ, str(avail), str(int(info.get("max_reservable", 0))),
-                str(int(info.get("total", 0)))], f"{emoji} {wd}"
+    # ── The selectable list IS the table (boxed + colored) ────────────────────
+    # Box-drawing borders are non-selectable Separators; each GPU is a Choice whose
+    # title is FormattedText so cells are individually colored. questionary indents
+    # Separators and Choices identically, so the borders line up with the rows.
+    # Arrow keys move through the table; the » pointer marks the row, Enter picks it.
+    # Emoji are kept OUT of cells (double-width → would ragged the right border);
+    # status is conveyed with color instead.
+    G, R, Y, BL, CY, MG, DIM = (
+        "fg:ansigreen", "fg:ansired", "fg:ansiyellow",
+        "fg:ansiblue", "fg:ansicyan bold", "fg:ansimagenta", "fg:#808080")
 
-    # Rows: (cells[type, avail, maxres, total], status, value, kind).
-    data_rows = []
+    def _status(info):
+        avail = int(info.get("available", 0))
+        est = info.get("estimated_wait_minutes", 0)
+        ql = int(info.get("queue_length", 0))
+        if avail > 0:
+            text, style = "available now", G
+        elif est:
+            text, style = _format_wait(avail, est)[0], Y
+        else:
+            text, style = "queued", Y
+        if ql > 0:
+            text += f" · {ql} queued"
+        return text, style
+
+    # rows: (cells[type, avail, maxres, total, status], styles|None, value, kind)
+    rows = []
     for gt, info in full_gpus.items():
         if info.get("maintenance", False):
-            data_rows.append((
-                [gt.upper(), "-", "-", str(int(info.get("total", 0)))],
-                f"MAINTENANCE: {info.get('maintenance_reason', '')}", gt, "maint"))
+            reason = (info.get("maintenance_reason", "") or "maintenance")[:18]
+            rows.append(([gt.upper(), "-", "-", str(int(info.get("total", 0))),
+                          f"MAINT: {reason}"], None, gt, "maint"))
             continue
-        cells, status = _row_cells(gt, info)
-        data_rows.append((cells, status, gt, "gpu"))
+        a = int(info.get("available", 0))
+        st_text, st_style = _status(info)
+        cells = [gt.upper(), str(a), str(int(info.get("max_reservable", 0))),
+                 str(int(info.get("total", 0))), st_text]
+        styles = [CY, G if a > 0 else R, G, BL, st_style]
+        rows.append((cells, styles, gt, "gpu"))
         parts, mig_a, mig_c = _mig_breakdown(gt)
         if parts:
-            data_rows.append((
-                [" └─ MIG", str(mig_a), "-", str(mig_c)],
-                f"{' '.join(parts)} · pick {gt.upper()} ↑", None, "mig"))
+            rows.append(([" └─ MIG", str(mig_a), "-", str(mig_c), " ".join(parts)],
+                         None, None, "mig"))
 
-    spot_data = []
+    spot_rows = []
     if spot_gpus:
         _pn = {"b300": 8, "b200": 8, "h200": 8, "h100": 8, "a100": 8, "t4": 4, "l4": 4}
         _od = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
@@ -205,40 +219,48 @@ def select_gpu_type_interactive(
                 try:
                     disc = f"~{int((1 - float(sp) / _od.get(gt, 50)) * 100)}% off"
                 except (ValueError, TypeError):
-                    disc = "spot price n/a"
-            status = ("✅ node up" if avail > 0 else "⚡ spins up ~10min") + f" · {disc}"
-            spot_data.append((
-                [f"{gt.upper()} *", str(avail), f"{_pn.get(gt, 8)}/node", "-"],
-                status, f"spot:{gt}", "spot"))
+                    disc = "spot n/a"
+            st_text = ("node up · " if avail > 0 else "spins up · ") + disc
+            cells = [f"{gt.upper()} *", str(avail), f"{_pn.get(gt, 8)}/node", "-", st_text]
+            styles = [MG, G if avail > 0 else DIM, G, DIM, G if avail > 0 else Y]
+            spot_rows.append((cells, styles, f"spot:{gt}", "spot"))
 
-    # Column widths over the 4 text columns (header + all rows).
-    headers = ["GPU Type", "Avail", "MaxRes", "Total"]
-    _all_cells = [headers] + [r[0] for r in data_rows] + [s[0] for s in spot_data]
-    widths = [max(len(str(row[i])) for row in _all_cells) for i in range(4)]
+    headers = ["GPU Type", "Avail", "MaxRes", "Total", "Status"]
+    all_cells = [headers] + [r[0] for r in rows] + [s[0] for s in spot_rows]
+    W = [max(len(str(rc[i])) for rc in all_cells) for i in range(5)]
 
-    def _fmt(cells, status=""):
-        body = "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(cells))
-        return f"{body}   {status}".rstrip()
+    def _bar(left, mid, right):
+        return left + mid.join("─" * (w + 2) for w in W) + right
+
+    def _line(cells):  # plain string row (header / mig / maint), inside the box
+        return "│" + "│".join(f" {str(c):<{W[i]}} " for i, c in enumerate(cells)) + "│"
+
+    def _ft(cells, styles):  # colored row -> FormattedText for a Choice
+        toks = [("class:separator", "│")]
+        for i, c in enumerate(cells):
+            toks.append((styles[i], f" {str(c):<{W[i]}} "))
+            toks.append(("class:separator", "│"))
+        return toks
 
     console.print()
-    choices = [questionary.Separator(_fmt(headers, "Status"))]
-    if not data_rows:
-        choices.append(questionary.Separator("(no GPU types available)"))
-    for cells, status, value, kind in data_rows:
-        title = _fmt(cells, status)
-        if kind == "mig":
-            choices.append(questionary.Separator(title))
-        elif kind == "maint":
-            choices.append(questionary.Choice(title=title, value=value, disabled="maintenance"))
+    choices = [questionary.Separator(_bar("┌", "┬", "┐")),
+               questionary.Separator(_line(headers)),
+               questionary.Separator(_bar("├", "┼", "┤"))]
+    if not rows:
+        choices.append(questionary.Separator(_line(["(none)", "", "", "", ""])))
+    for cells, styles, value, kind in rows:
+        if kind in ("mig", "maint"):
+            choices.append(questionary.Separator(_line(cells)))
         else:
-            choices.append(questionary.Choice(title=title, value=value))
+            choices.append(questionary.Choice(title=_ft(cells, styles), value=value))
 
-    if spot_data:
-        choices.append(questionary.Separator("⚡ Spot — us-east-1, ~70% cheaper, may be preempted:"))
-        for cells, status, value, _kind in spot_data:
-            choices.append(questionary.Choice(title=_fmt(cells, status), value=value))
+    if spot_rows:
+        choices.append(questionary.Separator(_bar("├", "┼", "┤")))
+        for cells, styles, value, _k in spot_rows:
+            choices.append(questionary.Choice(title=_ft(cells, styles), value=value))
 
-    choices.append(questionary.Separator("───"))
+    choices.append(questionary.Separator(_bar("└", "┴", "┘")))
+    choices.append(questionary.Separator(" "))
     if _hide_spot:
         choices.append(questionary.Choice(
             title="⚡ Show spot options (us-east-1, ~70% cheaper, may be preempted)",
@@ -251,7 +273,8 @@ def select_gpu_type_interactive(
     while True:
         try:
             answer = questionary.select(
-                "Select GPU type (↑/↓, Enter):", choices=choices, style=custom_style
+                "Select GPU type — ↑/↓ then Enter (MIG: pick its parent GPU):",
+                choices=choices, style=custom_style
             ).ask()
 
             if answer == "_refresh":
