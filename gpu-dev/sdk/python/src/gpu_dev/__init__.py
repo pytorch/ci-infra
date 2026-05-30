@@ -63,4 +63,4 @@ try:
 
     __version__ = _pkg_version("gpu-dev")
 except Exception:
-    __version__ = "0.7.2"
+    __version__ = "0.7.3"

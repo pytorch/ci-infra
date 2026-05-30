@@ -89,20 +89,6 @@ def select_gpu_type_interactive(
         if "-mig-" not in gt and not (_hide_spot and _is_spot_type(gt))
     }
 
-    # Aggregate MIG slice availability per parent type, hinted on the h100/b200 rows.
-    def _mig_aggregates(parent: str):
-        avail = sum(
-            int(info.get("available", 0))
-            for gt, info in (availability_info or {}).items()
-            if gt.startswith(f"{parent}-mig-")
-        )
-        cap = sum(
-            int(info.get("total", 0))
-            for gt, info in (availability_info or {}).items()
-            if gt.startswith(f"{parent}-mig-")
-        )
-        return avail, cap
-
     # Detect spot types and fetch cross-region spot availability
     from .config import Config, load_config
     _cfg = load_config()
@@ -142,16 +128,11 @@ def select_gpu_type_interactive(
             except Exception as e:
                 pass  # east1 not accessible — show without spot
 
-    # Categorize GPU types into 3 sections
-    full_gpus = {}
-    mig_gpus = {}
-    for gt, info in visible_info.items():
-        if "mig" in gt:
-            mig_gpus[gt] = info
-        else:
-            full_gpus[gt] = info
+    # visible_info already excludes -mig- SKUs and (when hidden) spot, so these are
+    # all "full" rows; MIG slices render as a sub-row under their parent.
+    full_gpus = dict(visible_info)
 
-    # Spot types from cross-region (prod-east1) — only non-MIG, non-CPU spot types
+    # Spot types from cross-region (prod-east1).
     spot_gpus = {k: v for k, v in spot_region_info.items() if k in _spot_types}
 
     def _format_wait(available, est_wait):
@@ -166,11 +147,6 @@ def select_gpu_type_interactive(
             return f"{h}h{f' {m}min' if m else ''}", "⏳"
         return "Unknown", "⚠️"
 
-    def _format_avail(available, is_maintenance, maintenance_reason):
-        if is_maintenance:
-            return f"[red]MAINTENANCE[/red]"
-        return f"[green]{available}[/green]" if available > 0 else f"[red]{available}[/red]"
-
     def _mig_breakdown(parent):
         """Compact per-slice availability for a parent, e.g. (['12×1G','4×2G'], 16, 32)."""
         parts, tot_a, tot_c = [], 0, 0
@@ -183,143 +159,84 @@ def select_gpu_type_interactive(
             parts.append(f"{a}×{cgt.rsplit('-', 1)[-1].upper()}")
         return parts, tot_a, tot_c
 
-    def _build_table(title, items, is_spot=False, with_mig=False):
-        console.print(f"\n[cyan]{title}[/cyan]")
-        table = Table()
-        table.add_column("GPU Type", style="cyan")
-        table.add_column("Avail", style="green")
-        table.add_column("Max\nReservable", style="bright_green")
-        table.add_column("Total", style="blue")
-        table.add_column("Est. Wait Time", style="magenta")
-        for gt, info in items.items():
-            avail = info.get("available", 0)
-            maint = info.get("maintenance", False)
-            maint_reason = info.get("maintenance_reason", "")
-            wait_display, _ = _format_wait(avail, info.get("estimated_wait_minutes", 0))
-            if maint:
-                wait_display = maint_reason or "Under maintenance"
-            label = f"{gt.upper()} *" if is_spot else gt.upper()
-            table.add_row(
-                label,
-                _format_avail(avail, maint, maint_reason),
-                "-" if maint else str(info.get("max_reservable", 0)),
-                str(info.get("total", 0)),
-                wait_display,
-            )
-            # Compact MIG slice sub-row beneath the parent (h100/b200 today).
-            if with_mig:
-                parts, mig_a, mig_c = _mig_breakdown(gt)
-                if parts:
-                    av = f"[green]{mig_a}[/green]" if mig_a > 0 else f"[red]{mig_a}[/red]"
-                    table.add_row(
-                        f"[dim] └─ MIG {' '.join(parts)}[/dim]",
-                        av, "-", str(mig_c), "[dim]pick parent ↑[/dim]")
-        console.print(table)
+    # ── The selectable list IS the table ──────────────────────────────────────
+    # questionary indents Separators and Choices identically, so a Separator
+    # header + aligned column text line up with the selectable rows. Arrow keys
+    # move through the table; Enter picks the highlighted row. No separate print.
+    def _row_cells(gt, info, is_spot=False):
+        avail = int(info.get("available", 0))
+        wd, emoji = _format_wait(avail, info.get("estimated_wait_minutes", 0))
+        ql = int(info.get("queue_length", 0))
+        if ql > 0:
+            wd += f" · {ql} queued"
+        typ = f"{gt.upper()} *" if is_spot else gt.upper()
+        return [typ, str(avail), str(int(info.get("max_reservable", 0))),
+                str(int(info.get("total", 0)))], f"{emoji} {wd}"
 
-    # Section 1: Full GPUs & CPUs (MIG slices shown as a compact sub-row per parent)
-    _build_table("━━━ Full GPUs & CPUs ━━━", full_gpus, with_mig=True)
-
-    # Section 3: Spot Instances (cross-region) — custom table with per-node + price
-    if spot_gpus:
-        spot_per_node = {"b300": 8, "b200": 8, "h200": 8, "h100": 8, "a100": 8, "t4": 4, "l4": 4}
-        console.print(f"\n[cyan]━━━ ⚡ Spot Instances (us-east-1, ~70% cheaper) ━━━[/cyan]")
-        st = Table()
-        st.add_column("GPU Type", style="cyan")
-        st.add_column("Avail\nNow", style="green")
-        st.add_column("Per\nNode", style="bright_green")
-        st.add_column("Status", style="magenta")
-        st.add_column("Spot Discount", style="dim")
-        _on_demand = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
-        for gt, info in spot_gpus.items():
-            avail = info.get("available", 0)
-            pn = spot_per_node.get(gt, 8)
-            ad = f"[green]{avail}[/green]" if avail > 0 else "[dim]0[/dim]"
-            status = "[green]Node up[/green]" if avail > 0 else "Spins up on reserve (~10 min)"
-            si = info.get("spot_info", {}) or {}
-            # Availability signal from spot price vs on-demand
-            sp = si.get("spot_price", "") if isinstance(si, dict) else ""
-            if not sp or (isinstance(si, dict) and "No spot data" in str(si.get("spot_signal", ""))):
-                avail_signal = "[green]Available[/green]" if avail > 0 else "[dim]No price data[/dim]"
-            else:
-                try:
-                    ratio = float(sp) / _on_demand.get(gt, 50)
-                    pct = int((1 - ratio) * 100)
-                    if ratio < 0.4:
-                        avail_signal = f"[green]High ({pct}% off)[/green]"
-                    elif ratio < 0.7:
-                        avail_signal = f"[yellow]Medium ({pct}% off)[/yellow]"
-                    else:
-                        avail_signal = f"[red]Low ({pct}% off)[/red]"
-                except (ValueError, TypeError):
-                    avail_signal = "[yellow]Unknown[/yellow]"
-            st.add_row(f"{gt.upper()} *", ad, str(pn), status, avail_signal)
-        console.print(st)
-        console.print("[dim]* = spot: ~70% cheaper, AWS can reclaim with 2-min notice, fulfillment not guaranteed.[/dim]")
-        console.print("[dim]  Separate cluster with separate disks. A node spins up when you reserve.[/dim]")
-
-    # Build choices across all 3 sections
-    choices = []
-    if full_gpus:
-        choices.append(questionary.Separator("═══ Full GPUs & CPUs ═══"))
+    # Rows: (cells[type, avail, maxres, total], status, value, kind).
+    data_rows = []
     for gt, info in full_gpus.items():
-        avail = info.get("available", 0)
-        total = info.get("total", 0)
-        maint = info.get("maintenance", False)
-        maint_reason = info.get("maintenance_reason", "")
-        _, status_indicator = _format_wait(avail, info.get("estimated_wait_minutes", 0))
-        ql = info.get("queue_length", 0)
-        if maint:
-            choices.append(questionary.Choice(
-                title=f"🔧 {gt.upper()} - MAINTENANCE: {maint_reason}", value=gt, disabled="Under maintenance"))
-        else:
-            label = f"{status_indicator} {gt.upper()} ({avail}/{total} available)"
-            if ql > 0:
-                label += f" - {ql} in queue"
-            # Any parent with MIG children gets a slice hint (h100/b200 today).
-            mig_avail, mig_cap = _mig_aggregates(gt)
-            if mig_cap > 0:
-                label += f" — also {mig_avail}/{mig_cap} MIG slices"
-            choices.append(questionary.Choice(title=label, value=gt))
+        if info.get("maintenance", False):
+            data_rows.append((
+                [gt.upper(), "-", "-", str(int(info.get("total", 0)))],
+                f"MAINTENANCE: {info.get('maintenance_reason', '')}", gt, "maint"))
+            continue
+        cells, status = _row_cells(gt, info)
+        data_rows.append((cells, status, gt, "gpu"))
+        parts, mig_a, mig_c = _mig_breakdown(gt)
+        if parts:
+            data_rows.append((
+                [" └─ MIG", str(mig_a), "-", str(mig_c)],
+                f"{' '.join(parts)} · pick {gt.upper()} ↑", None, "mig"))
 
-    if mig_gpus:
-        choices.append(questionary.Separator("═══ 🔬 MIG Slices (fractional GPUs) ═══"))
-        for gt, info in mig_gpus.items():
-            avail = info.get("available", 0)
-            total = info.get("total", 0)
-            _, si = _format_wait(avail, info.get("estimated_wait_minutes", 0))
-            choices.append(questionary.Choice(
-                title=f"{si} {gt.upper()} ({avail}/{total} available)", value=gt))
-
+    spot_data = []
     if spot_gpus:
-        _spot_per_node = {"b300": 8, "b200": 8, "h200": 8, "h100": 8, "a100": 8, "t4": 4, "l4": 4}
-        _on_demand = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
-        choices.append(questionary.Separator("═══ ⚡ Spot Instances (us-east-1) ═══"))
+        _pn = {"b300": 8, "b200": 8, "h200": 8, "h100": 8, "a100": 8, "t4": 4, "l4": 4}
+        _od = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
         for gt, info in spot_gpus.items():
-            avail = info.get("available", 0)
-            pn = _spot_per_node.get(gt, 8)
-            si_data = info.get("spot_info", {}) or {}
-            sp = si_data.get("spot_price", "") if isinstance(si_data, dict) else ""
-            # Derive availability signal
-            avail_now = int(info.get("available", 0))
-            if not sp or "No spot data" in str(si_data.get("spot_signal", "")):
-                if avail_now > 0:
-                    signal = f"🟢 {avail_now} available now"
-                else:
+            avail = int(info.get("available", 0))
+            si = info.get("spot_info", {}) or {}
+            sp = si.get("spot_price", "") if isinstance(si, dict) else ""
+            if not sp or "No spot data" in str(si.get("spot_signal", "")):
+                if avail <= 0:
                     continue
+                disc = "available now"
             else:
                 try:
-                    ratio = float(sp) / _on_demand.get(gt, 50)
-                    pct = int((1 - ratio) * 100)
-                    if ratio < 0.4: signal = f"🟢 High avail ({pct}% off)"
-                    elif ratio < 0.7: signal = f"🟡 Medium ({pct}% off)"
-                    else: signal = f"🔴 Low ({pct}% off)"
+                    disc = f"~{int((1 - float(sp) / _od.get(gt, 50)) * 100)}% off"
                 except (ValueError, TypeError):
-                    signal = "availability unknown"
-            if avail > 0:
-                label = f"✅ {gt.upper()} * ({avail} free, {pn}/node, {signal})"
-            else:
-                label = f"⚡ {gt.upper()} * ({pn} GPUs/node, {signal})"
-            choices.append(questionary.Choice(title=label, value=f"spot:{gt}"))
+                    disc = "spot price n/a"
+            status = ("✅ node up" if avail > 0 else "⚡ spins up ~10min") + f" · {disc}"
+            spot_data.append((
+                [f"{gt.upper()} *", str(avail), f"{_pn.get(gt, 8)}/node", "-"],
+                status, f"spot:{gt}", "spot"))
+
+    # Column widths over the 4 text columns (header + all rows).
+    headers = ["GPU Type", "Avail", "MaxRes", "Total"]
+    _all_cells = [headers] + [r[0] for r in data_rows] + [s[0] for s in spot_data]
+    widths = [max(len(str(row[i])) for row in _all_cells) for i in range(4)]
+
+    def _fmt(cells, status=""):
+        body = "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(cells))
+        return f"{body}   {status}".rstrip()
+
+    console.print()
+    choices = [questionary.Separator(_fmt(headers, "Status"))]
+    if not data_rows:
+        choices.append(questionary.Separator("(no GPU types available)"))
+    for cells, status, value, kind in data_rows:
+        title = _fmt(cells, status)
+        if kind == "mig":
+            choices.append(questionary.Separator(title))
+        elif kind == "maint":
+            choices.append(questionary.Choice(title=title, value=value, disabled="maintenance"))
+        else:
+            choices.append(questionary.Choice(title=title, value=value))
+
+    if spot_data:
+        choices.append(questionary.Separator("⚡ Spot — us-east-1, ~70% cheaper, may be preempted:"))
+        for cells, status, value, _kind in spot_data:
+            choices.append(questionary.Choice(title=_fmt(cells, status), value=value))
 
     choices.append(questionary.Separator("───"))
     if _hide_spot:
@@ -334,7 +251,7 @@ def select_gpu_type_interactive(
     while True:
         try:
             answer = questionary.select(
-                "Select GPU type:", choices=choices, style=custom_style
+                "Select GPU type (↑/↓, Enter):", choices=choices, style=custom_style
             ).ask()
 
             if answer == "_refresh":
