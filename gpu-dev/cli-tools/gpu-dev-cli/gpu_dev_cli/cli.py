@@ -5,6 +5,8 @@ Reserve and manage GPU development servers
 
 import click
 import os
+import sys
+import time
 from typing import Optional
 from rich.console import Console
 from rich.table import Table
@@ -618,6 +620,12 @@ def main(ctx: click.Context) -> None:
     help="Named persistent disk to use (e.g., 'pytorch-main'), or 'none' for temporary storage only. Use 'gpu-dev disk list' to see available disks.",
 )
 @click.option(
+    "--ref",
+    type=str,
+    default=None,
+    help="Pytorch ref to pre-stage in /home/dev/pytorch: a branch/tag, a PR (pr/123, #123, or bare 123), or a commit sha. Defaults to master; 'none' to skip. Ignored with --disk.",
+)
+@click.option(
     "--node-label",
     "-l",
     type=str,
@@ -628,6 +636,8 @@ def main(ctx: click.Context) -> None:
               help="Acknowledge spot instance (~1/3 cost, may be preempted with 2-min notice). Required for spot-only types.")
 @click.option("--fast-cache", is_flag=True, default=False, hidden=True,
               help="Use NVMe local cache for faster session restore (experimental).")
+@click.option("--no-connect", is_flag=True, default=False,
+              help="Don't auto-SSH into the pod once active. By default an interactive (TTY) reserve drops you straight in; scripts/non-TTY never auto-connect.")
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -647,7 +657,9 @@ def reserve(
     dockerimage: Optional[str],
     preserve_entrypoint: bool,
     disk: Optional[str],
+    ref: Optional[str],
     node_label: tuple,
+    no_connect: bool = False,
     spot: bool = False,
     fast_cache: bool = False,
 ) -> None:
@@ -687,6 +699,14 @@ def reserve(
         if disk and disk.lower() == "none":
             explicit_no_disk_from_param = True
             disk = None
+
+        # --ref implies ephemeral: staging only happens when no persistent disk is
+        # attached (a default disk would silently skip the ref). So a bare --ref
+        # (no explicit --disk) means "no persistent disk" — otherwise the ref is a
+        # no-op. --disk still wins (ref ignored, as documented).
+        if ref and ref.strip().lower() not in ("", "none") and not disk and not no_persist:
+            no_persist = True
+            rprint("[dim]--ref → ephemeral pod (no persistent disk) so the ref can be staged[/dim]")
 
         # Determine if we should use interactive mode
         use_interactive = interactive
@@ -735,6 +755,12 @@ def reserve(
         else:
             max_gpus = None  # Will be set later in interactive mode
 
+        # --no-persist and --disk contradict each other (ephemeral vs named disk).
+        # Fail fast rather than silently dropping the disk (no_persist used to win).
+        if no_persist and disk and disk.lower() != "none":
+            rprint("[red]❌ --no-persist and --disk are mutually exclusive — drop one.[/red]")
+            sys.exit(2)
+
         if use_interactive:
             # Interactive mode - gather parameters interactively
             rprint("[cyan]🎯 Interactive reservation mode[/cyan]")
@@ -767,8 +793,9 @@ def reserve(
                     else:
                         f_ssh = ex.submit(validate_ssh_key_matches_github_user, config, None)
                         ssh_result = None
-                    # Only fetch availability if we need the interactive picker
-                    need_interactive = gpu_type is None
+                    # Fetch availability whenever a picker needs it: the GPU-type
+                    # picker (no gpu_type) or the count picker (no gpus).
+                    need_interactive = gpu_type is None or gpus is None
                     if need_interactive:
                         f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
 
@@ -798,13 +825,13 @@ def reserve(
                     rprint("[yellow]💡 Check https://fburl.com/gh-ssh for info on how to add your ssh key to Github[/yellow]")
                 return
 
-            if not availability_info:
+            if need_interactive and not availability_info:
                 rprint("[red]❌ Could not get GPU availability information[/red]")
                 return
 
-            # Interactive GPU type selection
+            # Interactive GPU type selection (spot hidden unless --spot)
             if gpu_type is None:
-                gpu_type = select_gpu_type_interactive(availability_info)
+                gpu_type = select_gpu_type_interactive(availability_info, show_spot=spot)
                 if gpu_type is None:
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
@@ -842,18 +869,22 @@ def reserve(
                     return
 
                 max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
-                result = select_gpu_count_interactive(
-                    gpu_type_lower, max_gpus, availability_info=availability_info)
-                if result is None:
-                    rprint("[yellow]Reservation cancelled.[/yellow]")
-                    return
-                # If user picked a MIG slice, the function returns (gpu_type, count).
-                if isinstance(result, tuple):
-                    gpu_type, gpu_count = result
-                    gpu_type_lower = gpu_type.lower()
-                    max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
+                if gpu_type_lower.startswith("cpu-"):
+                    # CPU instances have a single option (0 GPUs) — don't prompt.
+                    gpu_count = 0
                 else:
-                    gpu_count = result
+                    result = select_gpu_count_interactive(
+                        gpu_type_lower, max_gpus, availability_info=availability_info)
+                    if result is None:
+                        rprint("[yellow]Reservation cancelled.[/yellow]")
+                        return
+                    # If user picked a MIG slice, the function returns (gpu_type, count).
+                    if isinstance(result, tuple):
+                        gpu_type, gpu_count = result
+                        gpu_type_lower = gpu_type.lower()
+                        max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
+                    else:
+                        gpu_count = result
 
                 # Show distributed warning for interactive multinode selections (always show)
                 if gpu_count > max_gpus:
@@ -888,7 +919,7 @@ def reserve(
 
             # Interactive disk selection (if not multinode - only master node gets persistent disk)
             # This comes BEFORE duration so user knows what they're reserving
-            if disk is None and not explicit_no_disk_from_param:
+            if disk is None and not explicit_no_disk_from_param and not no_persist:
                 disk = select_disk_interactive(user_info["user_id"], config)
                 # Check if user cancelled
                 if disk == "__cancelled__":
@@ -944,7 +975,7 @@ def reserve(
 
             # Non-interactive disk selection (if not specified via flag)
             # Only for single-node reservations
-            if disk is None and max_gpus is not None and gpu_count <= max_gpus and not explicit_no_disk_from_param:
+            if disk is None and max_gpus is not None and gpu_count <= max_gpus and not explicit_no_disk_from_param and not no_persist:
                 # In non-interactive mode, check if terminal supports interactive prompts
                 if check_interactive_support():
                     # Load config and authenticate if not already done
@@ -1269,7 +1300,10 @@ def reserve(
             )
 
             persistent_reservations = []
-            if not ignore_no_persist:
+            # Only warn about a same-disk conflict when the user actually wants a
+            # disk. If they explicitly asked for none (--no-persist / --disk none),
+            # the "you'll start empty" warning is redundant noise — skip it.
+            if not ignore_no_persist and not no_persist and not explicit_no_disk_from_param:
                 existing_reservations = reservation_mgr.list_reservations(
                     user_filter=user_info["user_id"],
                     statuses_to_include=[
@@ -1355,6 +1389,26 @@ def reserve(
                     console.print(f"[yellow]Warning: Invalid node-label format '{label}', expected key=value[/yellow]")
 
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
+
+            # Fast path: synchronous warm-pool claim, always attempted (no opt-out
+            # flag — direct is the only path). Single-node, ephemeral, default-image,
+            # on-demand only; the server re-checks eligibility and we fall back to
+            # SQS silently on any miss / no warm pod / no Function-URL access.
+            if gpu_count <= max_gpus and not disk and not ref and not dockerfile_s3_key and not dockerimage and not spot:
+                live.stop()
+                _t0 = time.time()
+                direct_res = reservation_mgr.claim_direct(
+                    user_id=user_info["user_id"], gpu_count=gpu_count, gpu_type=gpu_type,
+                    duration_hours=hours, name=name,
+                    github_user=user_info["github_user"], ref=ref)
+                if direct_res:
+                    _show_direct_success(direct_res, time.time() - _t0)
+                    _maybe_show_sdk_tip()
+                    _maybe_autoconnect(ctx, direct_res.get("reservation_id"), no_connect)
+                    return
+                live.start()
+                live.update(Spinner("dots", text="📡 Submitting reservation request..."))
+
             if gpu_count > max_gpus:
                 # Multinode reservation
                 num_nodes = gpu_count // max_gpus
@@ -1378,6 +1432,7 @@ def reserve(
                     disk_name=disk,
                     spot=spot,
                     node_labels=node_labels if node_labels else None,
+                    ref=ref,
                 )
             else:
                 # Single node reservation
@@ -1399,6 +1454,7 @@ def reserve(
                     node_labels=node_labels if node_labels else None,
                     trace=trace,
                     fast_cache=fast_cache,
+                    ref=ref,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 
@@ -1449,14 +1505,118 @@ def reserve(
                     rprint(
                         f"[yellow]💡 Use 'gpu-dev show {reservation_ids[0][:8]}' to check connection details later[/yellow]"
                     )
-                elif trace:
-                    # Display timing trace
-                    reservation_mgr.display_reservation_trace(reservation_ids[0])
+                else:
+                    if trace:
+                        reservation_mgr.display_reservation_trace(reservation_ids[0])
+                    _maybe_show_sdk_tip()
+                    _maybe_autoconnect(ctx, reservation_ids[0], no_connect)
         else:
             rprint("[red]❌ Failed to create reservation[/red]")
 
     except Exception as e:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+@main.command(context_settings={"ignore_unknown_options": True})
+@click.argument("ref")
+@click.argument("test_args", nargs=-1, required=True)
+@click.option("--gpu-type", default="b200", show_default=True, help="GPU type for the repro box.")
+@click.option("--gpus", type=int, default=1, show_default=True)
+@click.option("--hours", type=float, default=3.0, show_default=True,
+              help="Lifetime ceiling; the box auto-cancels when the test exits unless --keep.")
+@click.option("--keep", is_flag=True, default=False,
+              help="Keep the reservation after the test exits (default: auto-cancel).")
+@click.pass_context
+def repro(ctx, ref, test_args, gpu_type, gpus, hours, keep):
+    """Reserve a GPU, check out a PR/commit, run a test, then auto-cancel.
+
+    REF: pr/<N>, #<N>, a bare PR number, a branch, or a commit sha. PRs use
+    pull/<N>/merge (what CI tests), falling back to /head.
+
+    TEST_ARGS are passed straight to `python` inside ~/pytorch, e.g.
+
+      gpu-dev repro pr/185264 test/inductor/test_flex_attention.py TestFlexAttentionCUDA.test_large_kv_int64_pointer_math_cuda
+    """
+    import shlex
+    import subprocess
+    config = load_config()
+    reservation_mgr = ReservationManager(config)
+    try:
+        user_info = authenticate_user(config)
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]"); return
+
+    # ref -> in-pod fetch+checkout (PRs prefer /merge = CI's view, fall back to /head)
+    r = ref.strip(); prnum = None
+    if r.startswith("pr/"): prnum = r[3:]
+    elif r.startswith("#"): prnum = r[1:]
+    elif r.isdigit(): prnum = r
+    if prnum:
+        fetch = (f"git fetch origin pull/{prnum}/merge 2>/dev/null && git checkout -f FETCH_HEAD || "
+                 f"{{ echo '[repro] no /merge ref, using /head'; git fetch origin pull/{prnum}/head && git checkout -f FETCH_HEAD; }}")
+    else:
+        rq = shlex.quote(r)
+        fetch = f"git fetch origin {rq} 2>/dev/null && git checkout -f FETCH_HEAD || git checkout -f {rq}"
+
+    testcmd = " ".join(shlex.quote(a) for a in test_args)
+    remote = (
+        "set -e; cd /home/dev/pytorch; "
+        "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
+        f"echo '[repro] checkout {r}'; {fetch}; "
+        "echo \"[repro] HEAD $(git rev-parse --short HEAD)\"; "
+        "git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 >/dev/null 2>&1 || true; "
+        "if ! PYTHONPATH=/home/dev/pytorch python -c 'import torch' 2>/dev/null; then "
+        "echo '[repro] incremental rebuild on warm build/...'; pip install --break-system-packages -e . --no-build-isolation; fi; "
+        f"echo '[repro] running: python {testcmd}'; "
+        f"PYTHONPATH=/home/dev/pytorch python {testcmd}"
+    )
+
+    # Reserve — warm claim (instant) first, else cold ephemeral. Always no-persist
+    # (so the prebuilt tree is staged; a default disk would skip staging).
+    rprint(f"[cyan]🔬 repro: reserving {gpus}x {gpu_type} (warm if available)…[/cyan]")
+    rid = ssh_cmd = None
+    try:
+        res = reservation_mgr.claim_direct(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gpu_type,
+            duration_hours=hours, name="repro", github_user=user_info["github_user"], ref=None)
+    except Exception:
+        res = None
+    if res:
+        rid, ssh_cmd = res.get("reservation_id"), res.get("ssh_command")
+        rprint(f"[green]⚡ warm pod claimed: {str(rid)[:8]}[/green]")
+    else:
+        rprint("[cyan]   no warm pod — cold reserve (≈2 min)…[/cyan]")
+        rid = reservation_mgr.create_reservation(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gpu_type,
+            duration_hours=hours, name="repro", github_user=user_info["github_user"],
+            no_persistent_disk=True)
+        if not rid:
+            rprint("[red]❌ reservation failed[/red]"); return
+        reservation_mgr.wait_for_reservation_completion(reservation_id=rid, timeout_minutes=None, verbose=True)
+        conn = reservation_mgr.get_connection_info(rid, user_info["user_id"]) or {}
+        ssh_cmd = conn.get("ssh_command")
+    if not ssh_cmd or ssh_cmd.startswith("ssh user@"):
+        rprint(f"[red]❌ no SSH connection for {str(rid)[:8]}[/red]"); return
+
+    # Ensure non-interactive host-key handling, then run the test, streaming output.
+    if "StrictHostKeyChecking" not in ssh_cmd:
+        ssh_cmd = ssh_cmd.replace("ssh ", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ", 1)
+    rprint(f"[dim]→ {ssh_cmd}[/dim]\n")
+    rc = 1
+    try:
+        rc = subprocess.run(f"{ssh_cmd} {shlex.quote(remote)}", shell=True).returncode
+    except KeyboardInterrupt:
+        rprint("\n[yellow]interrupted[/yellow]")
+    finally:
+        if keep:
+            rprint(f"[cyan]📌 kept {str(rid)[:8]} — gpu-dev connect {str(rid)[:8]} • gpu-dev cancel {str(rid)[:8]}[/cyan]")
+        else:
+            try:
+                reservation_mgr.cancel_reservation(rid, user_info["user_id"])
+                rprint(f"[green]🧹 cancelled repro box {str(rid)[:8]}[/green]")
+            except Exception as e:
+                rprint(f"[yellow]auto-cancel failed for {str(rid)[:8]}: {e}[/yellow]")
+    rprint(f"\n[bold]repro exit code: {rc}[/bold]")
 
 
 _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100",
@@ -1469,6 +1629,8 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
 @click.option("--gpus", type=int, default=1, show_default=True, help="GPU count (multinode if > per-node max).")
 @click.option("--hours", type=float, default=1.0, show_default=True, help="Reservation lifetime ceiling — job auto-cancels well before this if it finishes.")
 @click.option("--disk", type=str, default=None, help="Persistent disk name (master node only). Omit for ephemeral storage.")
+@click.option("--ref", type=str, default=None,
+              help="Pytorch ref to pre-stage in /home/dev/pytorch: branch/tag, PR (pr/123, #123, or bare 123), or commit sha. Defaults to master; 'none' to skip. Ignored with --disk.")
 @click.option("--no-persistent-disk", is_flag=True, help="Skip persistent disk entirely.")
 @click.option("--spot", is_flag=True, default=False,
               help="Acknowledge spot instance (~1/3 cost, may be preempted). Required for spot-only types.")
@@ -1487,7 +1649,7 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
               help="Minutes to wait for the reservation to become active. Defaults to 24h since GPU reservations may queue when the cluster is full.")
 @click.argument("command", nargs=-1, required=True)
 @click.pass_context
-def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, spot, dockerfile, dockerimage, preserve_entrypoint,
+def submit(ctx, gpu_type, gpus, hours, disk, ref, no_persistent_disk, spot, dockerfile, dockerimage, preserve_entrypoint,
            runtime, no_pull, keep_alive, name, timeout, command):
     """Submit a job: reserve, sync code, run, sync results back, auto-cancel.
 
@@ -1602,7 +1764,7 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, spot, dockerfil
             duration_hours=hours, name=name, github_user=user_info["github_user"],
             no_persistent_disk=no_persistent_disk, disk_name=disk_name,
             spot=spot, dockerfile=dockerfile_payload, dockerimage=dockerimage,
-            preserve_entrypoint=preserve_entrypoint)
+            preserve_entrypoint=preserve_entrypoint, source_command="submit", ref=ref)
         if not reservation_ids:
             rprint("[red]❌ Failed to create multinode reservation[/red]")
             sys.exit(2)
@@ -1613,7 +1775,7 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, spot, dockerfil
             duration_hours=hours, name=name, github_user=user_info["github_user"],
             no_persistent_disk=no_persistent_disk, disk_name=disk_name,
             spot=spot, dockerfile=dockerfile_payload, dockerimage=dockerimage,
-            preserve_entrypoint=preserve_entrypoint)
+            preserve_entrypoint=preserve_entrypoint, source_command="submit", ref=ref)
         if not primary_id:
             rprint("[red]❌ Failed to create reservation[/red]")
             sys.exit(2)
@@ -1965,6 +2127,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
 
             table = Table(title="GPU Reservations")
             table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("Type", style="dim", no_wrap=True)
             table.add_column("User", style="green")
             table.add_column("GPUs", style="magenta")
             table.add_column("Status")
@@ -2153,10 +2316,15 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         lambda_version = reservation.get("lambda_version", "")
                         lambda_version_display = lambda_version if lambda_version else "<0.2.6"
 
+                    # Format source command type
+                    source_cmd = reservation.get("source_command", "reserve")
+                    type_display = source_cmd if source_cmd else "reserve"
+
                     # Apply dimming to entire row for cancelled/expired reservations
                     row_data = [
                         f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(
                             reservation_id)[:8],
+                        f"[dim]{type_display}[/dim]" if dim_row else type_display,
                         f"[dim]{user_display}[/dim]" if dim_row else user_display,
                         f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
                         status_display,
@@ -2298,6 +2466,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             # Create table
                             table = Table(title="GPU Reservations")
                             table.add_column("ID", style="cyan", no_wrap=True)
+                            table.add_column("Type", style="dim", no_wrap=True)
                             table.add_column("User", style="green")
                             table.add_column("GPUs", style="magenta")
                             table.add_column("Status")
@@ -2399,7 +2568,9 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                     else:
                                         expires_formatted = "N/A"
 
-                                    table.add_row(res_id, user_display, gpu_display, status_display,
+                                    source_cmd = reservation.get("source_command", "reserve")
+                                    type_display = source_cmd if source_cmd else "reserve"
+                                    table.add_row(res_id, type_display, user_display, gpu_display, status_display,
                                                 storage_display, queue_info, created_formatted, expires_formatted)
                                 except:
                                     continue
@@ -2784,6 +2955,11 @@ def cancel(
             remove_ssh_config_for_reservation(reservation_id)
             rprint(
                 f"[green]✅ Reservation {reservation_id[:8]} cancelled[/green]")
+            # Cancelling from inside a gpu-dev pod kills the pod you're in — make the
+            # impending SSH drop expected instead of an abrupt "Broken pipe".
+            if os.environ.get("GPU_DEV_USER_ID"):
+                rprint(
+                    "[yellow]🛑 Shutting down this reservation — if you're connected to this pod, your session will close shortly.[/yellow]")
         else:
             rprint(
                 f"[red]❌ Failed to cancel reservation {reservation_id[:8]}[/red]")
@@ -2890,6 +3066,79 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
 
 
 
+def _maybe_show_sdk_tip() -> None:
+    """For a user's first few reservations, nudge them toward the Python SDK +
+    `gpu-dev repro` for sub-second, scriptable workflows. Counted locally."""
+    try:
+        import json
+        path = os.path.expanduser("~/.config/gpu-dev/reserve-count.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            n = int(json.load(open(path)).get("count", 0))
+        except Exception:
+            n = 0
+        n += 1
+        json.dump({"count": n}, open(path, "w"))
+        if n <= 5:
+            rprint(
+                "\n[bold cyan]✨ NEW:[/bold cyan] use the [bold]gpu_dev[/bold] Python SDK for "
+                "sub-second reservations + repro GitHub issues →\n"
+                "   [underline]https://github.com/wdvr/osdc/blob/main/docs/SDK_REPRO.md[/underline]")
+    except Exception:
+        pass
+
+
+def _maybe_autoconnect(ctx: click.Context, rid: Optional[str], no_connect: bool) -> None:
+    """Drop the user straight into the pod once it's active — but only for an
+    interactive (TTY) reserve. Scripts / non-TTY just get the reservation back so
+    pipelines aren't hijacked into an ssh session. --no-connect always opts out."""
+    import sys
+    if no_connect or not rid or not sys.stdout.isatty():
+        return
+    rprint("\n[dim]Connecting… (exit the shell to leave the reservation running; gpu-dev cancel to end it)[/dim]")
+    try:
+        ctx.invoke(connect, reservation_id=rid)
+    except Exception as e:
+        rprint(f"[yellow]Auto-connect failed ({e}). Connect manually: gpu-dev connect {str(rid)[:8]}[/yellow]")
+
+
+def _show_direct_success(res: dict, elapsed: float) -> None:
+    """Print the success block for an instant warm-pool claim,
+    matching the normal reserve output (SSH config + VS Code/Cursor remote)."""
+    from gpu_dev_cli.reservations import (
+        create_ssh_config_for_reservation, _generate_vscode_command, _generate_cursor_command)
+    rid = res.get("reservation_id", "") or ""
+    ssh_command = res.get("ssh_command", "") or ""
+    pod_name = res.get("pod_name", "") or ""
+    fqdn = res.get("fqdn") or ""
+
+    rprint(f"\n[green]✅ Instant reservation ready in {elapsed:.1f}s![/green]")
+    rprint(f"[bold]📋 Reservation ID:[/bold] {rid}")
+    if res.get("expires_at"):
+        rprint(f"[dim]⏰ Valid until: {res['expires_at']}[/dim]")
+    if rid:
+        rprint(f"[bold]⚡ Quick Connect:[/bold] gpu-dev connect {rid[:8]}")
+
+    # Build the per-reservation SSH config so `ssh <pod>` and connect work cleanly.
+    use_include = False
+    if fqdn and pod_name and rid:
+        try:
+            _cfg, use_include = create_ssh_config_for_reservation(fqdn, pod_name, rid, None)
+        except Exception:
+            pass
+    if pod_name and use_include:
+        rprint(f"[bold]🖥️  SSH Command:[/bold] ssh {pod_name}")
+    elif ssh_command:
+        rprint(f"[bold]🖥️  SSH Command:[/bold] {ssh_command}")
+
+    vsc = _generate_vscode_command(ssh_command) if ssh_command else None
+    cur = _generate_cursor_command(ssh_command) if ssh_command else None
+    if vsc:
+        rprint(f"[bold]💻 VS Code Remote:[/bold] {vsc}")
+    if cur:
+        rprint(f"[bold]🖥️ Cursor Remote:[/bold] {cur}")
+
+
 def _format_gpu_display(gpu_count, gpu_type):
     """Render a friendly '{N}× {type}' string for reservation listings.
 
@@ -2914,8 +3163,11 @@ def _format_gpu_display(gpu_count, gpu_type):
     return f"{gpu_count}x {str(gpu_type).upper()}"
 
 
-def _show_availability() -> None:
-    """Shared function to show GPU availability"""
+def _show_availability(show_spot: bool = False) -> None:
+    """Shared function to show GPU availability.
+
+    Spot SKUs (cpu-spot + the us-east-1 spot cluster) are hidden unless show_spot.
+    """
     try:
         with Live(
             Spinner("dots", text="📡 Checking GPU availability..."), console=console
@@ -2932,7 +3184,7 @@ def _show_availability() -> None:
                 _east1_spot_types = frozenset(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
 
                 def _fetch_east1_spot():
-                    if _env_name != "prod" or not _east1_spot_types:
+                    if not show_spot or _env_name != "prod" or not _east1_spot_types:
                         return {}
                     east1_r = Config.ENVIRONMENTS["prod-east1"]["region"]
                     east1_table = config.session.resource("dynamodb", region_name=east1_r).Table("pytorch-gpu-dev-gpu-availability")
@@ -2998,8 +3250,16 @@ def _show_availability() -> None:
                 "CPU (arm64)": 6,
             }
 
-            # Split into categories
-            full_types = {k: v for k, v in availability_info.items() if "mig" not in k}
+            # Split into categories. Hide spot SKUs (e.g. cpu-spot) unless --spot,
+            # but never hide everything if the env is spot-only.
+            def _is_spot(k):
+                return k == "cpu-spot" or k.endswith("-spot")
+            _non_spot_exists = any(not _is_spot(k) for k in availability_info if "mig" not in k)
+            _hide_spot = (not show_spot) and _non_spot_exists
+            full_types = {
+                k: v for k, v in availability_info.items()
+                if "mig" not in k and not (_hide_spot and _is_spot(k))
+            }
             mig_types = {k: v for k, v in availability_info.items() if "mig" in k}
 
             def _sort_by_arch(items):
@@ -3095,8 +3355,12 @@ def _show_availability() -> None:
             rprint("  [green]●[/green]: 1+ full node available - [yellow]●[/yellow]: GPUs available, but no full node - [red]●[/red]: No GPUs available")
 
             # Show usage tip
+            if _hide_spot:
+                rprint(
+                    "\n[dim]💡 Spot instances hidden — pass '--spot' to show (us-east-1, ~70% cheaper, may be preempted)[/dim]"
+                )
             rprint(
-                "\n[dim]💡 Use 'gpu-dev reserve' (interactive) to see all options including MIG slices and spot instances[/dim]"
+                "\n[dim]💡 Use 'gpu-dev reserve' (interactive) to see all options including MIG slices[/dim]"
             )
 
         else:
@@ -3106,9 +3370,12 @@ def _show_availability() -> None:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
-def _show_availability_watch(interval: int) -> None:
+def _show_availability_watch(interval: int, show_spot: bool = False) -> None:
     _env_name = load_config().user_config.get("environment", "prod")
     _spot_types = frozenset(Config.ENVIRONMENTS.get(_env_name, {}).get("spot_types", []))
+
+    def _is_spot(k):
+        return k == "cpu-spot" or k.endswith("-spot")
 
     """Watch mode for GPU availability with auto-refresh"""
     import time
@@ -3135,6 +3402,13 @@ def _show_availability_watch(interval: int) -> None:
 
                     # Get availability data
                     availability_info = reservation_mgr.get_gpu_availability_by_type()
+
+                    # Hide spot SKUs (e.g. cpu-spot) unless --spot, never hide everything.
+                    if availability_info and not show_spot:
+                        if any(not _is_spot(k) for k in availability_info if "mig" not in k):
+                            availability_info = {
+                                k: v for k, v in availability_info.items() if not _is_spot(k)
+                            }
 
                     if availability_info:
                         # GPU architecture mapping (for display)
@@ -3488,8 +3762,6 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         config_file = gpu_dev_dir / f"{short_id}-sshconfig"
 
         if not config_file.exists():
-            rprint("[yellow]⚠️  SSH config not found, downloading...[/yellow]")
-
             # Extract connection details from the connection_info
             if is_multinode:
                 pod_name = selected_node.get("pod_name")
@@ -3502,7 +3774,11 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                 node_res_id = reservation_id
                 node_name = connection_info.get("name")
 
+            # Only build a per-reservation SSH config when there's an FQDN to
+            # proxy through. Direct-NodePort reservations (e.g. warm-pool claims)
+            # connect straight via ssh_command — no config or warning needed.
             if fqdn and pod_name and node_res_id:
+                rprint("[yellow]⚠️  SSH config not found, downloading...[/yellow]")
                 from gpu_dev_cli.reservations import create_ssh_config_for_reservation
                 config_path, use_include = create_ssh_config_for_reservation(
                     fqdn, pod_name, node_res_id, node_name
@@ -3511,8 +3787,6 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                     rprint(f"[green]✅ SSH config created: {config_path}[/green]\n")
                 else:
                     rprint("[yellow]⚠️  Failed to create SSH config, attempting connection anyway...[/yellow]\n")
-            else:
-                rprint("[yellow]⚠️  Missing connection details, attempting connection anyway...[/yellow]\n")
 
         # Add agent forwarding if not already present
         if "-A" not in ssh_command and "-o ForwardAgent=yes" not in ssh_command:
@@ -3550,17 +3824,34 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         rprint(f"[dim]Executing: {ssh_command}[/dim]\n")
         result = subprocess.run(ssh_command, shell=True)
 
-        # Check for auth failure (SSH exits with code 255 for connection/auth errors)
+        # SSH exits 255 for ANY connection/auth error — that includes a reservation
+        # that expired/was cancelled (pod gone) or a dropped connection, not just
+        # auth. Re-check the reservation's real state before blaming auth, so the
+        # primary user doesn't get told to ask themselves for access.
         if result.returncode == 255:
-            # Try to extract primary username from connection info
             primary_user = connection_info.get("user_id", "the-primary-user")
             current_user = user_info.get("user_id", "your-github-username")
+            status = ""
+            try:
+                fresh = reservation_mgr.get_connection_info(reservation_id, current_user) or {}
+                status = str(fresh.get("status", "")).lower()
+            except Exception:
+                pass
 
-            rprint("\n[red]❌ Authentication failed. You don't have SSH access to this reservation.[/red]\n")
-            rprint(f"[cyan]Ask the primary user ([yellow]{primary_user}[/yellow]) to add you:[/cyan]")
-            rprint(f"[dim]   gpu-dev edit {reservation_id[:8]} --add-user {current_user}[/dim]\n")
-            rprint(f"[cyan]Then download your SSH config:[/cyan]")
-            rprint(f"[dim]   gpu-dev get-ssh-config {reservation_id[:8]}[/dim]\n")
+            if status in ("expired", "completed", "cancelled", "canceled", "ended", "failed"):
+                rprint(f"\n[yellow]⏰ Reservation {reservation_id[:8]} has {status} — the pod is gone.[/yellow]")
+                rprint("[dim]   Start a new one: gpu-dev reserve --gpu-type <type> --gpus <n>[/dim]\n")
+            elif current_user == primary_user or status == "active":
+                # Owner (or still-active): this was a closed/dropped connection, not auth.
+                rprint(f"\n[yellow]🔌 Connection to reservation {reservation_id[:8]} closed.[/yellow]")
+                rprint(f"[dim]   If it's still active, reconnect: gpu-dev connect {reservation_id[:8]}   (gpu-dev list to check status)[/dim]\n")
+            else:
+                # Genuinely not your reservation and you're not on it → auth.
+                rprint("\n[red]❌ Authentication failed. You don't have SSH access to this reservation.[/red]\n")
+                rprint(f"[cyan]Ask the primary user ([yellow]{primary_user}[/yellow]) to add you:[/cyan]")
+                rprint(f"[dim]   gpu-dev edit {reservation_id[:8]} --add-user {current_user}[/dim]\n")
+                rprint(f"[cyan]Then download your SSH config:[/cyan]")
+                rprint(f"[dim]   gpu-dev get-ssh-config {reservation_id[:8]}[/dim]\n")
 
     except KeyboardInterrupt:
         rprint("\n[yellow]Connection cancelled by user[/yellow]")
@@ -3758,8 +4049,14 @@ def help(ctx: click.Context) -> None:
     default=5,
     help="Refresh interval in seconds for watch mode (default: 5)",
 )
+@click.option(
+    "--spot",
+    is_flag=True,
+    default=False,
+    help="Also show spot instances (us-east-1, ~70% cheaper, may be preempted). Hidden by default.",
+)
 @click.pass_context
-def avail(ctx: click.Context, watch: bool, interval: int) -> None:
+def avail(ctx: click.Context, watch: bool, interval: int, spot: bool) -> None:
     """Show GPU availability by type and queue estimates
 
     Displays real-time information about GPU availability for each GPU type.
@@ -3779,9 +4076,9 @@ def avail(ctx: click.Context, watch: bool, interval: int) -> None:
     This helps you choose the right GPU type and understand wait times before reserving.
     """
     if watch:
-        _show_availability_watch(interval)
+        _show_availability_watch(interval, show_spot=spot)
     else:
-        _show_availability()
+        _show_availability(show_spot=spot)
 
 
 @main.command()

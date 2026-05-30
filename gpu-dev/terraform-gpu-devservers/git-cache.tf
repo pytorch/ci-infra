@@ -2,6 +2,11 @@
 # Maintains bare copies of pytorch/pytorch AND all its submodules, refreshed every 15 min.
 # User pods get a transparent git wrapper that clones from cache,
 # then sets origin to GitHub — all subsequent git ops go to GitHub directly.
+#
+# Also publishes pytorch-worktree-master.tar.gz: a ready-to-use working tree
+# (master + submodules already checked out, .git kept, origins pointed back at
+# GitHub) so pods can drop pytorch into /home/dev with a single extract instead
+# of a cold checkout + per-submodule clone on the critical path.
 
 # Management namespace for infrastructure services (git-cache, monitoring, etc.)
 resource "kubernetes_namespace" "management" {
@@ -251,6 +256,58 @@ NGINXCONF
                   tar -czf "$tarball.tmp" -C /git-cache "$name" 2>/dev/null && mv "$tarball.tmp" "$tarball" || echo "[CACHE]   WARNING: Failed to create $tarball"
                 done
                 echo "[CACHE] All tarballs created"
+
+                # Build a ready-to-use worktree snapshot (master + submodules
+                # checked out). Rebuild only when master advances.
+                NEWSHA=$(git -C /git-cache/pytorch.git rev-parse HEAD 2>/dev/null || echo none)
+                OLDSHA=$(cat /git-cache/pytorch-worktree-master.sha 2>/dev/null || echo never)
+                if [ "$NEWSHA" = "$OLDSHA" ]; then
+                  echo "[CACHE] Worktree snapshot already at $NEWSHA, skipping rebuild"
+                else
+                  echo "[CACHE] Building pytorch worktree snapshot ($OLDSHA -> $NEWSHA)..."
+                  WT_DIR=/tmp/pytorch-worktree
+                  rm -rf "$WT_DIR"
+                  if git clone --no-hardlinks /git-cache/pytorch.git "$WT_DIR" 2>&1 | tail -1; then
+                    cd "$WT_DIR"
+                    git checkout -f master 2>/dev/null || git checkout -f main 2>/dev/null || true
+
+                    # Point top-level submodule URLs at local mirrors for a network-free update
+                    git submodule init 2>/dev/null || true
+                    git config -f .gitmodules --get-regexp '^submodule\..*\.url$' | while read key url; do
+                      name=$(echo "$url" | sed 's|https://github.com/||;s|/|_|g;s|\.git$||')
+                      sub=$(echo "$key" | sed 's/^submodule\.//;s/\.url$//')
+                      mirror="/git-cache/$name.git"
+                      [ -d "$mirror" ] && git config "submodule.$sub.url" "file://$mirror"
+                    done
+
+                    echo "[CACHE]   Checking out submodules..."
+                    git -c protocol.file.allow=always submodule update --init --recursive 2>&1 | tail -3 || echo "[CACHE]   WARNING: some submodules failed"
+
+                    # Restore all origins to GitHub so user git ops work after drop-in
+                    git remote set-url origin https://github.com/pytorch/pytorch.git
+                    git config -f .gitmodules --get-regexp '^submodule\..*\.url$' | while read key url; do
+                      sub=$(echo "$key" | sed 's/^submodule\.//;s/\.url$//')
+                      git config "submodule.$sub.url" "$url"
+                    done
+                    git -c protocol.file.allow=always submodule foreach --recursive 'u=$(git config -f "$toplevel/.gitmodules" "submodule.$name.url" 2>/dev/null); [ -n "$u" ] && git remote set-url origin "$u" || true' 2>/dev/null || true
+
+                    echo "[CACHE]   Packaging worktree @ $NEWSHA..."
+                    cd /tmp
+                    rm -f /git-cache/pytorch-worktree-master.tar.gz.tmp
+                    if tar -C /tmp -cf - pytorch-worktree | pigz -p 4 > /git-cache/pytorch-worktree-master.tar.gz.tmp 2>/dev/null; then
+                      mv /git-cache/pytorch-worktree-master.tar.gz.tmp /git-cache/pytorch-worktree-master.tar.gz
+                      echo "$NEWSHA" > /git-cache/pytorch-worktree-master.sha
+                      WTSIZE=$(du -sh /git-cache/pytorch-worktree-master.tar.gz | awk '{print $1}')
+                      echo "[CACHE]   pytorch-worktree-master.tar.gz: $WTSIZE @ $NEWSHA"
+                    else
+                      echo "[CACHE]   WARNING: worktree packaging failed"
+                      rm -f /git-cache/pytorch-worktree-master.tar.gz.tmp
+                    fi
+                    rm -rf "$WT_DIR"
+                  else
+                    echo "[CACHE]   WARNING: worktree clone failed"
+                  fi
+                fi
               fi
 
               echo "[CACHE] Refresh complete at $(date). Next in 3600s (1 hour)..."
@@ -308,6 +365,175 @@ resource "kubernetes_service" "git_cache" {
 
     selector = {
       app = "git-cache"
+    }
+  }
+}
+
+# DaemonSet: keep a node-local copy of the pytorch worktree snapshot on each
+# dev node's NVMe (falls back to root disk via DirectoryOrCreate). Pods then
+# drop pytorch in with a local copy instead of pulling the tarball from the
+# in-cluster cache every time. Refreshes when the snapshot sha changes.
+resource "kubernetes_daemonset" "pytorch_snapshot" {
+  metadata {
+    name      = "pytorch-snapshot"
+    namespace = "kube-system"
+    labels    = { app = "pytorch-snapshot" }
+  }
+
+  spec {
+    selector {
+      match_labels = { app = "pytorch-snapshot" }
+    }
+
+    strategy {
+      type = "RollingUpdate"
+      rolling_update {
+        max_unavailable = "100%"
+      }
+    }
+
+    template {
+      metadata {
+        labels = { app = "pytorch-snapshot" }
+      }
+
+      spec {
+        # GPU + CPU dev nodes only (skip mgmt/control-plane).
+        affinity {
+          node_affinity {
+            required_during_scheduling_ignored_during_execution {
+              node_selector_term {
+                match_expressions {
+                  key      = "NodeType"
+                  operator = "In"
+                  values   = ["gpu", "cpu"]
+                }
+              }
+            }
+          }
+        }
+
+        toleration {
+          key      = "nvidia.com/gpu"
+          operator = "Exists"
+          effect   = "NoSchedule"
+        }
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        container {
+          name    = "snapshot"
+          image   = "alpine:3.21"
+          command = ["/bin/sh", "-c"]
+          args = [<<-EOT
+            apk add --no-cache curl tar >/dev/null 2>&1 || true
+            CACHE="http://git-cache.management.svc.cluster.local:8080"
+            DEST=/mnt/nvme/pytorch-worktree
+            ARCH=$(uname -m)
+            PREBUILT="/ccache_shared/prebuilt/pytorch-$ARCH"
+            BUILT=/mnt/nvme/pytorch-built
+            echo "[nvme-pytorch] snapshot maintainer started (arch=$ARCH)"
+            while true; do
+              # 1. source-only worktree snapshot (master) from git-cache HTTP —
+              #    used for --ref / build-from-scratch staging.
+              NEW=$(curl -sf "$CACHE/pytorch-worktree-master.sha" 2>/dev/null || echo none)
+              OLD=$(cat "$DEST/.sha" 2>/dev/null || echo never)
+              if [ "$NEW" != "none" ] && [ "$NEW" != "$OLD" ]; then
+                echo "[nvme-pytorch] worktree $OLD -> $NEW"
+                rm -rf /mnt/nvme/pytorch-worktree.tmp
+                mkdir -p /mnt/nvme/pytorch-worktree.tmp
+                if curl -sf "$CACHE/pytorch-worktree-master.tar.gz" | tar -xz -C /mnt/nvme/pytorch-worktree.tmp --strip-components=1; then
+                  echo "$NEW" > /mnt/nvme/pytorch-worktree.tmp/.sha
+                  rm -rf /mnt/nvme/pytorch-worktree.old
+                  [ -d "$DEST" ] && mv "$DEST" /mnt/nvme/pytorch-worktree.old
+                  mv /mnt/nvme/pytorch-worktree.tmp "$DEST"
+                  rm -rf /mnt/nvme/pytorch-worktree.old
+                  echo "[nvme-pytorch] worktree ready at $NEW"
+                else
+                  echo "[nvme-pytorch] worktree download failed, will retry"
+                  rm -rf /mnt/nvme/pytorch-worktree.tmp
+                fi
+              fi
+
+              # 2. prebuilt viable/strict tree (source + build/ + .so, importable)
+              #    from the shared EFS, published as a single zstd tarball (rsync of
+              #    the raw tree over EFS/NFS dies on per-file round-trips). Download
+              #    the tarball (sequential read) + extract to node-local NVMe.
+              if [ -f "$PREBUILT.sha" ]; then
+                BNEW=$(cat "$PREBUILT.sha" 2>/dev/null || echo none)
+                BOLD=$(cat "$BUILT/.sha" 2>/dev/null || echo never)
+                if [ "$BNEW" != "$BOLD" ] && { [ -f "$PREBUILT.tar.zst" ] || [ -f "$PREBUILT.tar.gz" ]; }; then
+                  echo "[nvme-pytorch] built tree $BOLD -> $BNEW"
+                  rm -rf /mnt/nvme/pytorch-built.tmp
+                  mkdir -p /mnt/nvme/pytorch-built.tmp
+                  if [ -f "$PREBUILT.tar.zst" ]; then
+                    apk add --no-cache zstd >/dev/null 2>&1 || true
+                    DECOMP="zstd -dc $PREBUILT.tar.zst"
+                  else
+                    DECOMP="gzip -dc $PREBUILT.tar.gz"
+                  fi
+                  if $DECOMP | tar -x -C /mnt/nvme/pytorch-built.tmp --strip-components=1; then
+                    echo "$BNEW" > /mnt/nvme/pytorch-built.tmp/.sha
+                    rm -rf /mnt/nvme/pytorch-built.old
+                    [ -d "$BUILT" ] && mv "$BUILT" /mnt/nvme/pytorch-built.old
+                    mv /mnt/nvme/pytorch-built.tmp "$BUILT"
+                    rm -rf /mnt/nvme/pytorch-built.old
+                    echo "[nvme-pytorch] built tree ready at $BNEW"
+                  else
+                    echo "[nvme-pytorch] built tree extract failed, will retry"
+                    rm -rf /mnt/nvme/pytorch-built.tmp
+                  fi
+                fi
+              fi
+
+              sleep 900
+            done
+          EOT
+          ]
+
+          volume_mount {
+            name       = "nvme-root"
+            mount_path = "/mnt/nvme"
+          }
+          volume_mount {
+            name       = "ccache-shared"
+            mount_path = "/ccache_shared"
+            read_only  = true
+          }
+
+          resources {
+            requests = {
+              cpu    = "50m"
+              memory = "64Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+        }
+
+        volume {
+          name = "nvme-root"
+          host_path {
+            path = "/mnt/nvme"
+            type = "DirectoryOrCreate"
+          }
+        }
+        # Shared ccache EFS — source of the prebuilt viable/strict tree (/prebuilt).
+        volume {
+          name = "ccache-shared"
+          nfs {
+            server    = local.ccache_efs_dns
+            path      = "/"
+            read_only = true
+          }
+        }
+      }
     }
   }
 }

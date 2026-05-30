@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.request
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -12,7 +13,8 @@ from typing import Any
 
 import boto3
 import botocore.exceptions
-import botocore.exceptions
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 
 from ..common.config import GpuDevConfig
 from ..common.errors import GpuDevAuthError, GpuDevError
@@ -172,6 +174,8 @@ class AwsBackend:
             message["disk_name"] = params["disk_name"]
         if params.get("docker_image"):
             message["dockerimage"] = params["docker_image"]
+        if params.get("ref"):
+            message["ref"] = params["ref"]
         if params.get("spot"):
             message["spot"] = True
 
@@ -180,6 +184,86 @@ class AwsBackend:
             MessageBody=json.dumps(message),
         )
         return reservation_id
+
+    def _get_direct_url(self) -> str | None:
+        """Function URL for synchronous claims, cached in-process and on disk
+        (~/.config/gpu-dev/direct-url.json, keyed by region; shared with the CLI)."""
+        if getattr(self, "_direct_url", None) is not None:
+            return self._direct_url or None
+        cache_path = Path.home() / ".config" / "gpu-dev" / "direct-url.json"
+        cache: dict = {}
+        try:
+            cache = json.loads(cache_path.read_text())
+            if cache.get(self._region):
+                self._direct_url = cache[self._region]
+                return self._direct_url
+        except Exception:
+            cache = {}
+        try:
+            lam = self._session.client("lambda", region_name=self._region)
+            resp = lam.get_function_url_config(
+                FunctionName=f"{_PREFIX}-reservation-processor", Qualifier="live")
+            self._direct_url = resp.get("FunctionUrl", "")
+        except Exception:
+            self._direct_url = ""
+        if self._direct_url:
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache[self._region] = self._direct_url
+                cache_path.write_text(json.dumps(cache))
+            except Exception:
+                pass
+        return self._direct_url or None
+
+    def _signed_post(self, url: str, payload: dict) -> dict | None:
+        """SigV4-signed POST to the Function URL (stdlib urllib, no extra deps)."""
+        try:
+            creds = self._session.get_credentials()
+            if creds is None:
+                return None
+            data = json.dumps(payload).encode()
+            aws_req = AWSRequest(method="POST", url=url, data=data,
+                                 headers={"Content-Type": "application/json"})
+            SigV4Auth(creds, "lambda", self._region).add_auth(aws_req)
+            req = urllib.request.Request(url, data=data, headers=dict(aws_req.headers), method="POST")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                if resp.status != 200:
+                    return None
+                return json.loads(resp.read())
+        except Exception:
+            return None
+
+    def claim_direct(self, params: dict) -> dict | None:
+        """Synchronous warm-pool claim via the Function URL. Returns the active
+        reservation dict if claimed, else None (caller falls back to SQS)."""
+        self._direct_reason = None
+        url = self._get_direct_url()
+        if not url:
+            self._direct_reason = "url_unavailable"
+            return None
+        payload = {
+            "reservation_id": str(uuid.uuid4()),
+            "user_id": params["user_id"],
+            "gpu_count": params.get("gpu_count", 1),
+            "gpu_type": params.get("gpu_type", "a100"),
+            "duration_hours": params.get("duration_hours", 8.0),
+            "name": params.get("name"),
+            "created_at": datetime.utcnow().isoformat(),
+            "status": "pending",
+            "github_user": params.get("github_user", ""),
+            "version": __import__("gpu_dev").__version__,
+            "source_command": "reserve",
+        }
+        if params.get("ref"):
+            payload["ref"] = params["ref"]
+        result = self._signed_post(url, payload)
+        if result is None:
+            self._direct_reason = "request_failed"
+            return None
+        if not result.get("claimed"):
+            self._direct_reason = result.get("reason", "unavailable")
+            return None
+        return result.get("reservation")
 
     def get_reservation(self, reservation_id: str, user_id: str) -> ReservationInfo | None:
         if len(reservation_id) >= 32:
@@ -231,6 +315,7 @@ class AwsBackend:
             "type": "cancellation",
             "reservation_id": reservation_id,
             "user_id": user_id,
+            "version": __import__("gpu_dev").__version__,
         }
         self._sqs.send_message(
             QueueUrl=self._get_queue_url(),
@@ -244,6 +329,7 @@ class AwsBackend:
             "reservation_id": reservation_id,
             "user_id": user_id,
             "extend_hours": hours,
+            "version": __import__("gpu_dev").__version__,
         }
         self._sqs.send_message(
             QueueUrl=self._get_queue_url(),
@@ -294,6 +380,7 @@ class AwsBackend:
                 "user_id": user_id,
                 "source_disk": source_disk,
                 "target_disk": target_disk,
+                "version": __import__("gpu_dev").__version__,
                 "requested_at": datetime.now(timezone.utc).isoformat(),
             }),
         )
@@ -310,6 +397,7 @@ class AwsBackend:
                 "operation_id": operation_id,
                 "user_id": user_id,
                 "disk_name": disk_name,
+                "version": __import__("gpu_dev").__version__,
                 "requested_at": datetime.now(timezone.utc).isoformat(),
             }),
         )
@@ -321,6 +409,7 @@ class AwsBackend:
             "reservation_id": reservation_id,
             "user_id": user_id,
             "github_username": github_username,
+            "version": __import__("gpu_dev").__version__,
         }
         self._sqs.send_message(
             QueueUrl=self._get_queue_url(),

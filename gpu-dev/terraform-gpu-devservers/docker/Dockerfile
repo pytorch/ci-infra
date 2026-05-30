@@ -37,7 +37,9 @@ RUN for attempt in 1 2 3; do \
         ccache \
         htop \
         tree \
-        rsync
+        rsync \
+        zstd \
+        pigz
 # Install Node.js 20 from NodeSource (required for Claude CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
@@ -140,8 +142,12 @@ COPY ssh_config /etc/ssh/sshd_config
 # Lives in /opt/claude with a /usr/local/bin/claude symlink, survives every reservation
 # regardless of persistent-disk state, and can't be shadowed by stale npm installs on
 # user disks. Image rebuilds are the only update path — controlled, reproducible.
+# Bump CLAUDE_CODE_BUILD to bust the layer cache and re-fetch the latest Claude Code
+# (the installer always grabs latest; without a bump Docker reuses the cached layer).
 USER root
-RUN curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash || echo "Claude native install failed (non-fatal at build time)"
+ARG CLAUDE_CODE_BUILD=2026-05-29
+RUN echo "Claude Code build marker: $CLAUDE_CODE_BUILD" && \
+    curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash || echo "Claude native install failed (non-fatal at build time)"
 RUN if [ -e /opt/claude/.local/bin/claude ]; then \
         ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude; \
         chmod -R a+rX /opt/claude; \

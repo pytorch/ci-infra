@@ -28,7 +28,7 @@ jobs:
             echo "::error::Tag version ($TAG_VERSION) does not match package version ($PKG_VERSION)"
             exit 1
           fi
-      - name: Build package
+      - name: "Build package (gpu-dev = CLI + SDK)"
         run: uv build
       - name: Generate attestations
         uses: actions/attest-build-provenance@v2
@@ -36,3 +36,8 @@ jobs:
           subject-path: dist/*
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Multi-package + re-run safety: skip any file already on PyPI (e.g. a
+          # gpu-dev version that published before a sibling failed) instead of
+          # erroring on the duplicate.
+          skip-existing: true

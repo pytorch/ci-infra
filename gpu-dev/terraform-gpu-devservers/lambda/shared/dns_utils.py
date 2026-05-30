@@ -128,6 +128,11 @@ def is_reserved_name(name: str) -> bool:
     return False
 
 
+def _get_domain_mappings_table(table_name: str):
+    """DynamoDB table resource for the SSH domain mappings."""
+    return boto3.resource("dynamodb").Table(table_name)
+
+
 def get_existing_dns_names() -> List[str]:
     """Get list of existing DNS names from active reservations only."""
     # Import here to avoid circular imports

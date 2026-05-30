@@ -69,9 +69,21 @@ resource "aws_iam_role_policy" "gpu_dev_pod_policy" {
         ]
       },
       {
-        Effect = "Allow"
-        Action = "sts:GetCallerIdentity"
+        Effect   = "Allow"
+        Action   = "sts:GetCallerIdentity"
         Resource = "*"
+      },
+      {
+        # Only for `gpu-dev reserve --direct` (synchronous warm-pool claim).
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunctionUrl",
+          "lambda:GetFunctionUrlConfig"
+        ]
+        Resource = [
+          "arn:aws:lambda:*:*:function:pytorch-gpu-dev-reservation-processor",
+          "arn:aws:lambda:*:*:function:pytorch-gpu-dev-reservation-processor:*"
+        ]
       },
       {
         Effect = "Allow"
@@ -82,6 +94,18 @@ resource "aws_iam_role_policy" "gpu_dev_pod_policy" {
           "bedrock:GetInferenceProfile",
           "bedrock:ListFoundationModels",
           "bedrock-mantle:*"
+        ]
+        Resource = "*"
+      },
+      {
+        # Newer Anthropic models on Bedrock are gated behind an AWS Marketplace
+        # subscription. The pod hits Bedrock directly (IRSA, no admin pre-subscribe),
+        # so allow it to view + self-subscribe — otherwise Claude Code 403s with
+        # "aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe".
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe"
         ]
         Resource = "*"
       },

@@ -17,6 +17,7 @@ class ReservationParams(BaseModel):
     disk_name: str | None = None
     docker_image: str | None = None
     dockerfile_path: str | None = None
+    ref: str | None = None
     preserve_entrypoint: bool = False
     recreate_env: bool = False
     spot: bool = False

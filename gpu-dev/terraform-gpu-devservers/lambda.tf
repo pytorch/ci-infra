@@ -115,7 +115,14 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
         Action = [
           "lambda:InvokeFunction"
         ]
-        Resource = aws_lambda_function.availability_updater.arn
+        Resource = [
+          aws_lambda_function.availability_updater.arn,
+          # Self-invoke for async warm-pool refill + EFS mount after a claim.
+          # Construct the ARN (don't reference the function resource) to avoid a
+          # dependency cycle: function -> role -> role_policy.
+          "arn:aws:lambda:${local.current_config.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.prefix}-reservation-processor",
+          "arn:aws:lambda:${local.current_config.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.prefix}-reservation-processor:*"
+        ]
       },
       {
         Effect = "Allow"
@@ -160,7 +167,7 @@ resource "aws_lambda_function" "reservation_processor" {
   role             = aws_iam_role.reservation_processor_role.arn
   handler          = "index.handler"
   runtime          = "python3.13"
-  timeout          = 900 # 15 minutes for K8s operations
+  timeout          = 900  # 15 minutes for K8s operations
   memory_size      = 2048 # 2GB memory to prevent out-of-memory crashes
   source_code_hash = null_resource.reservation_processor_build.triggers.code_hash
   publish          = true
@@ -176,7 +183,7 @@ resource "aws_lambda_function" "reservation_processor" {
       QUEUE_URL                          = aws_sqs_queue.gpu_reservation_queue.url
       AVAILABILITY_UPDATER_FUNCTION_NAME = aws_lambda_function.availability_updater.function_name
       PRIMARY_AVAILABILITY_ZONE          = data.aws_availability_zones.available.names[0]
-      GPU_DEV_CONTAINER_IMAGE            = local.latest_image_uri  # Use stable 'latest' tag so pods can restart after OOM
+      GPU_DEV_CONTAINER_IMAGE            = local.latest_image_uri # Use stable 'latest' tag so pods can restart after OOM
       EFS_SECURITY_GROUP_ID              = aws_security_group.efs_sg.id
       EFS_SUBNET_IDS                     = join(",", concat([aws_subnet.gpu_dev_subnet.id, aws_subnet.gpu_dev_subnet_secondary.id], length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : []))
       CCACHE_SHARED_EFS_ID               = aws_efs_file_system.ccache_shared.id
@@ -187,15 +194,15 @@ resource "aws_lambda_function" "reservation_processor" {
       SSH_DOMAIN_MAPPINGS_TABLE          = local.effective_domain_name != "" ? aws_dynamodb_table.ssh_domain_mappings.name : ""
       SSL_CERTIFICATE_ARN                = local.effective_domain_name != "" ? aws_acm_certificate.wildcard[0].arn : ""
       LAMBDA_VERSION                     = "0.6.5"
-      MIN_CLI_VERSION                    = "0.6.5"
+      MIN_CLI_VERSION                    = "0.7.0"
       # Comma-separated GPU types that require --spot flag, or "all" for every type.
       # Empty = no spot types (on-demand / reserved). Set per-workspace.
-      ASG_NAME_PREFIX                    = "${var.prefix}-gpu-nodes"
-      SPOT_GPU_TYPES                     = lookup({
+      ASG_NAME_PREFIX = "${var.prefix}-gpu-nodes"
+      SPOT_GPU_TYPES = lookup({
         "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000,cpu-spot"
       }, terraform.workspace, "")
-      DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
-      OPERATIONS_TABLE                   = aws_dynamodb_table.operations.name
+      DISK_CONTENTS_BUCKET = aws_s3_bucket.disk_contents.bucket
+      OPERATIONS_TABLE     = aws_dynamodb_table.operations.name
     }, local.alb_env_vars)
   }
 
@@ -281,8 +288,8 @@ resource "aws_lambda_alias" "reservation_processor_live" {
 }
 
 resource "aws_lambda_provisioned_concurrency_config" "reservation_processor" {
-  function_name                  = aws_lambda_function.reservation_processor.function_name
-  qualifier                      = aws_lambda_alias.reservation_processor_live.name
+  function_name                     = aws_lambda_function.reservation_processor.function_name
+  qualifier                         = aws_lambda_alias.reservation_processor_live.name
   provisioned_concurrent_executions = 2
 }
 
@@ -292,6 +299,35 @@ resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   function_name    = aws_lambda_alias.reservation_processor_live.arn
   batch_size       = 1
 }
+
+# Function URL for synchronous warm-pool claims (gpu-dev reserve --direct).
+# IAM-authed: callers need lambda:InvokeFunctionUrl on this function. Everything
+# else (cold reservations, cancel, etc.) keeps using SQS.
+resource "aws_lambda_function_url" "reservation_processor_direct" {
+  function_name      = aws_lambda_function.reservation_processor.function_name
+  qualifier          = aws_lambda_alias.reservation_processor_live.name
+  authorization_type = "AWS_IAM"
+}
+
+resource "aws_lambda_permission" "allow_function_url" {
+  statement_id           = "AllowFunctionUrlInvoke"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.reservation_processor.function_name
+  qualifier              = aws_lambda_alias.reservation_processor_live.name
+  principal              = "*"
+  function_url_auth_type = "AWS_IAM"
+}
+
+output "reservation_processor_direct_url" {
+  description = "Lambda Function URL for synchronous warm-pool claims (gpu-dev reserve --direct)"
+  value       = aws_lambda_function_url.reservation_processor_direct.function_url
+}
+
+# Note: aws_lambda_provisioned_concurrency_config already blocks `tf apply` until
+# the new version's PC is READY (a real check). AWS still drains the previous
+# version's provisioned envs for ~60-90s afterward, during which SQS can briefly
+# run the old code — there's no clean API to gate on that, so we don't try. If a
+# reservation right after apply hits old behavior, re-run it a minute later.
 
 # CloudWatch Event Rule to trigger processor every minute for queue management
 resource "aws_cloudwatch_event_rule" "reservation_processor_schedule" {

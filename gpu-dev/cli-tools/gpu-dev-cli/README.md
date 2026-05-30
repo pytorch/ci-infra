@@ -16,7 +16,7 @@ print(result.stdout)
 sandbox.cancel()
 ```
 
-Install: `pip install -e sdk/python/` — see [SDK docs](../../sdk/python/README.md) and [quickstart notebook](../../sdk/python/examples/quickstart.ipynb).
+The SDK ships inside the `gpu-dev` package: `pip install gpu-dev`, then `from gpu_dev import GpuDev`. See [SDK docs](../../sdk/python/README.md) and [quickstart notebook](../../sdk/python/examples/quickstart.ipynb).
 
 ---
 
@@ -683,23 +683,19 @@ gpu-dev disk list-content <disk-name>
 ### Getting Help
 
 - Use `gpu-dev help` or `gpu-dev <command> --help`
-- Report issues: https://github.com/anthropics/claude-code/issues
+- Report issues: https://github.com/wdvr/osdc/issues
 
 ---
 
 ## Development
 
 ```bash
-# Install development dependencies
-poetry install --with dev
+# Editable install from the repo (one package: CLI + SDK)
+pip install -e .
 
-# Run tests
-poetry run pytest
-
-# Format code
-poetry run black .
-poetry run isort .
-
-# Type checking
-poetry run mypy .
+# Build the distribution the way CI does (uv)
+uv build                            # gpu-dev (CLI + SDK)
 ```
+
+Releases are tag-driven: pushing a `v*` tag runs `.github/workflows/publish.yml`,
+which builds and publishes both packages to PyPI.

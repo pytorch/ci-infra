@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSDC — Instant GPU Sandboxes</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      :root {
+        --bg: #0a0a0a;
+        --bg-soft: #16161a;
+        --bg-card: #1a1a1f;
+        --line: #2a2a32;
+        --text: #e6e6e6;
+        --muted: rgba(255, 255, 255, 0.55);
+        --faint: rgba(255, 255, 255, 0.3);
+        --green: #76b900;
+        --green-bright: #9be000;
+        --blue: #82aaff;
+        --cyan: #89ddff;
+        --purple: #c792ea;
+        --mono: "SF Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+        overflow-x: hidden;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 0 28px;
+      }
+
+      /* ── Nav ── */
+      nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        backdrop-filter: blur(12px);
+        background: rgba(10, 10, 10, 0.7);
+        border-bottom: 1px solid var(--line);
+      }
+      nav .wrap {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        height: 60px;
+      }
+      .brand {
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        font-size: 1.05rem;
+      }
+      .brand .dot {
+        color: var(--green);
+      }
+      .nav-links {
+        margin-left: auto;
+        display: flex;
+        gap: 22px;
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-cta {
+        font-family: var(--mono);
+        font-size: 0.82rem;
+        color: var(--green-bright);
+        border: 1px solid rgba(118, 185, 0, 0.4);
+        padding: 7px 13px;
+        border-radius: 8px;
+        background: rgba(118, 185, 0, 0.07);
+        transition: all 0.25s ease;
+      }
+      .nav-cta:hover {
+        background: rgba(118, 185, 0, 0.16);
+        border-color: var(--green);
+      }
+
+      /* ── Hero ── */
+      .hero {
+        padding: 96px 0 60px;
+        text-align: center;
+        position: relative;
+      }
+      .hero::before {
+        content: "";
+        position: absolute;
+        top: -120px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 760px;
+        height: 420px;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(118, 185, 0, 0.14),
+          transparent 70%
+        );
+        filter: blur(20px);
+        z-index: -1;
+        pointer-events: none;
+      }
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        background: var(--bg-soft);
+        padding: 6px 14px;
+        border-radius: 30px;
+        margin-bottom: 28px;
+      }
+      .eyebrow .pulse {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 0 rgba(118, 185, 0, 0.6);
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(118, 185, 0, 0.5);
+        }
+        70% {
+          box-shadow: 0 0 0 8px rgba(118, 185, 0, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(118, 185, 0, 0);
+        }
+      }
+      h1 {
+        font-size: 4rem;
+        font-weight: 800;
+        letter-spacing: -2.5px;
+        line-height: 1.02;
+        margin-bottom: 22px;
+      }
+      h1 .grad {
+        background: linear-gradient(120deg, var(--green-bright), var(--cyan));
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .sub {
+        font-size: 1.22rem;
+        color: var(--muted);
+        max-width: 620px;
+        margin: 0 auto 40px;
+      }
+      .sub code {
+        font-family: var(--mono);
+        font-size: 0.95em;
+        color: var(--text);
+        background: var(--bg-soft);
+        padding: 2px 7px;
+        border-radius: 5px;
+        border: 1px solid var(--line);
+      }
+
+      /* ── Code window ── */
+      .window {
+        background: #161618;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.7);
+        text-align: left;
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      .window-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+        background: #1e1e22;
+        border-bottom: 1px solid var(--line);
+      }
+      .tl {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+      .tl.r {
+        background: #ff5f56;
+      }
+      .tl.y {
+        background: #ffbd2e;
+      }
+      .tl.g {
+        background: #27c93f;
+      }
+      .window-title {
+        margin-left: 10px;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        color: var(--faint);
+      }
+      .code {
+        padding: 22px 26px;
+        font-family: var(--mono);
+        font-size: 1rem;
+        line-height: 1.75;
+        white-space: pre;
+        overflow-x: auto;
+      }
+      .out {
+        padding: 14px 26px 22px;
+        font-family: var(--mono);
+        font-size: 0.92rem;
+        line-height: 1.7;
+        border-top: 1px solid #232328;
+        background: #131315;
+        color: #bcbcc4;
+      }
+
+      /* syntax */
+      .kw {
+        color: var(--purple);
+        font-weight: 600;
+      }
+      .fn {
+        color: var(--blue);
+      }
+      .str {
+        color: #c3e88d;
+      }
+      .num {
+        color: #f78c6c;
+      }
+      .cmt {
+        color: #546e7a;
+        font-style: italic;
+      }
+      .op {
+        color: var(--cyan);
+      }
+      .cls {
+        color: #ffcb6b;
+      }
+      .success {
+        color: #76b900;
+      }
+      .info {
+        color: var(--blue);
+      }
+      .dim {
+        color: #666;
+      }
+
+      .hero-actions {
+        margin-top: 40px;
+        display: flex;
+        gap: 14px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      .btn {
+        font-family: var(--mono);
+        font-size: 0.92rem;
+        padding: 13px 22px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        transition: all 0.25s ease;
+        cursor: pointer;
+      }
+      .btn-primary {
+        background: var(--green);
+        color: #0a0a0a;
+        font-weight: 700;
+        border-color: var(--green);
+      }
+      .btn-primary:hover {
+        background: var(--green-bright);
+        transform: translateY(-1px);
+      }
+      .btn-ghost {
+        background: var(--bg-soft);
+        color: var(--text);
+      }
+      .btn-ghost:hover {
+        border-color: var(--muted);
+      }
+
+      /* ── Section scaffolding ── */
+      section {
+        padding: 70px 0;
+        border-top: 1px solid var(--line);
+      }
+      .section-eyebrow {
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        color: var(--green);
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        margin-bottom: 12px;
+      }
+      h2 {
+        font-size: 2.3rem;
+        font-weight: 800;
+        letter-spacing: -1px;
+        margin-bottom: 14px;
+      }
+      .section-sub {
+        color: var(--muted);
+        font-size: 1.1rem;
+        max-width: 620px;
+        margin-bottom: 44px;
+      }
+
+      /* ── Feature grid ── */
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+      }
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 26px;
+        transition: all 0.25s ease;
+      }
+      .card:hover {
+        border-color: rgba(118, 185, 0, 0.45);
+        transform: translateY(-3px);
+      }
+      .card .ic {
+        font-size: 1.6rem;
+        margin-bottom: 14px;
+      }
+      .card h3 {
+        font-size: 1.12rem;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
+      .card p {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .card code {
+        font-family: var(--mono);
+        color: var(--cyan);
+        font-size: 0.88em;
+      }
+
+      /* ── Speed strip ── */
+      .speed {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        align-items: stretch;
+      }
+      .bar-row {
+        margin-bottom: 18px;
+      }
+      .bar-label {
+        display: flex;
+        justify-content: space-between;
+        font-family: var(--mono);
+        font-size: 0.86rem;
+        margin-bottom: 7px;
+        color: var(--muted);
+      }
+      .bar-track {
+        height: 12px;
+        background: var(--bg-soft);
+        border-radius: 7px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+      }
+      .bar-fill {
+        height: 100%;
+        border-radius: 7px;
+      }
+      .bar-cold {
+        width: 100%;
+        background: linear-gradient(90deg, #3a3a42, #55555f);
+      }
+      .bar-warm {
+        width: 12%;
+        background: linear-gradient(90deg, var(--green), var(--green-bright));
+      }
+      .panel {
+        background: var(--bg-card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 28px;
+      }
+      .panel h3 {
+        font-size: 1.05rem;
+        margin-bottom: 22px;
+        font-weight: 700;
+      }
+      .panel.warm {
+        border-color: rgba(118, 185, 0, 0.4);
+        box-shadow: 0 0 40px rgba(118, 185, 0, 0.06) inset;
+      }
+      .big-num {
+        font-family: var(--mono);
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+      .big-num.cold {
+        color: var(--muted);
+      }
+      .big-num.warm {
+        color: var(--green-bright);
+      }
+
+      /* ── How it works ── */
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 16px;
+        counter-reset: step;
+      }
+      .step {
+        background: var(--bg-card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 24px 20px;
+        position: relative;
+      }
+      .step::before {
+        counter-increment: step;
+        content: counter(step);
+        font-family: var(--mono);
+        font-size: 0.85rem;
+        font-weight: 700;
+        color: var(--green);
+        border: 1px solid rgba(118, 185, 0, 0.4);
+        background: rgba(118, 185, 0, 0.08);
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        margin-bottom: 14px;
+      }
+      .step h4 {
+        font-size: 1rem;
+        margin-bottom: 6px;
+      }
+      .step p {
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      /* ── CTA ── */
+      .cta {
+        text-align: center;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(118, 185, 0, 0.08),
+          transparent 70%
+        );
+      }
+      .install {
+        display: inline-flex;
+        align-items: center;
+        gap: 14px;
+        font-family: var(--mono);
+        font-size: 1.05rem;
+        background: var(--bg-soft);
+        border: 1px solid var(--line);
+        padding: 15px 24px;
+        border-radius: 12px;
+        margin: 18px 0 30px;
+      }
+      .install .prompt {
+        color: var(--green);
+      }
+      .install .copy {
+        color: var(--faint);
+        font-size: 0.8rem;
+        border-left: 1px solid var(--line);
+        padding-left: 14px;
+        cursor: pointer;
+      }
+      .install .copy:hover {
+        color: var(--text);
+      }
+
+      footer {
+        border-top: 1px solid var(--line);
+        padding: 34px 0;
+        color: var(--faint);
+        font-size: 0.85rem;
+        display: flex;
+        gap: 18px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      footer a:hover {
+        color: var(--text);
+      }
+      footer .spacer {
+        margin-left: auto;
+      }
+
+      .tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        color: var(--faint);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 2px 8px;
+        margin-left: 8px;
+        vertical-align: middle;
+      }
+
+      @media (max-width: 860px) {
+        h1 {
+          font-size: 2.7rem;
+          letter-spacing: -1.5px;
+        }
+        .grid,
+        .steps,
+        .speed {
+          grid-template-columns: 1fr;
+        }
+        .code {
+          font-size: 0.85rem;
+        }
+        .nav-links {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <div class="wrap">
+        <div class="brand">osdc<span class="dot">.</span></div>
+        <div class="nav-links">
+          <a href="#how">How it works</a>
+          <a href="#speed">Speed</a>
+          <a href="#features">Features</a>
+          <a href="https://github.com/wdvr/osdc">GitHub</a>
+        </div>
+        <a class="nav-cta" href="#start">pip install gpu-dev</a>
+      </div>
+    </nav>
+
+    <!-- ── HERO ── -->
+    <header class="hero">
+      <div class="wrap">
+        <div class="eyebrow"><span class="pulse"></span> Warm pools · sub-second GPU sandboxes</div>
+        <h1>A GPU sandbox in<br /><span class="grad">one <code style="font-family: var(--mono); font-size: 0.82em">with</code> block.</span></h1>
+        <p class="sub">
+          Reserve real H100s, B200s, or a CPU box, run your code, and tear it all
+          down — in a single context manager. Pre-warmed pods mean you get a
+          shell before your terminal finishes scrolling.
+        </p>
+
+        <div class="window">
+          <div class="window-bar">
+            <span class="tl r"></span><span class="tl y"></span><span class="tl g"></span>
+            <span class="window-title">repro.py</span>
+          </div>
+<div class="code"><span class="kw">from</span> <span class="cls">gpu_dev</span> <span class="kw">import</span> <span class="cls">GpuDev</span>
+
+<span class="kw">with</span> <span class="cls">GpuDev</span><span class="op">()</span><span class="op">.</span><span class="fn">reserve</span><span class="op">(</span><span class="kw">gpu_type</span><span class="op">=</span><span class="str">"h100"</span><span class="op">)</span> <span class="kw">as</span> sandbox<span class="op">:</span>
+    result <span class="op">=</span> sandbox<span class="op">.</span><span class="fn">exec</span><span class="op">(</span><span class="str">"python -c 'import torch; print(torch.cuda.get_device_name())'"</span><span class="op">)</span>
+    <span class="fn">print</span><span class="op">(</span>result<span class="op">.</span>stdout<span class="op">)</span>
+<span class="cmt"># sandbox auto-cancelled on exit — you only pay for what you used</span></div>
+          <div class="out">
+            <span class="dim">[1.2s]</span> <span class="success">✓ Ready</span> — 1× H100 · <span class="dim">ssh dev@a1b2c3d4.devservers.io</span><br />
+            NVIDIA H100 80GB HBM3<br />
+            <span class="dim">reservation auto-cancelled · 1.2s billed</span>
+          </div>
+        </div>
+
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#start">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/wdvr/osdc">★ Star on GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── HOW IT WORKS ── -->
+    <section id="how">
+      <div class="wrap">
+        <div class="section-eyebrow">How it works</div>
+        <h2>Reserve → run → gone</h2>
+        <p class="section-sub">
+          No tickets, no Slack pings, no idle instances you forgot to kill. The
+          sandbox lives exactly as long as your <code style="font-family: var(--mono); color: var(--cyan)">with</code> block.
+        </p>
+        <div class="steps">
+          <div class="step">
+            <h4>Call reserve()</h4>
+            <p>Pick a GPU type and count. Defaults are sane; everything is a keyword arg.</p>
+          </div>
+          <div class="step">
+            <h4>Claim a warm pod</h4>
+            <p>A pre-booted pod with sshd already running is handed to you — your key injected on the fly.</p>
+          </div>
+          <div class="step">
+            <h4>Run your work</h4>
+            <p><code style="font-family: var(--mono); color: var(--cyan)">.exec()</code>, <code style="font-family: var(--mono); color: var(--cyan)">.upload()</code>, <code style="font-family: var(--mono); color: var(--cyan)">.download()</code>, or just SSH in like any box.</p>
+          </div>
+          <div class="step">
+            <h4>Auto-teardown</h4>
+            <p>Leaving the block cancels the reservation. Persistent disks survive if you asked for one.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── SPEED ── -->
+    <section id="speed">
+      <div class="wrap">
+        <div class="section-eyebrow">Why it's instant</div>
+        <h2>Warm pools, not cold starts</h2>
+        <p class="section-sub">
+          We keep a standby pool of booted pods per GPU type. Reserving claims
+          one instead of building it from scratch — no scheduling, no image
+          pull, no sshd boot on your critical path.
+        </p>
+        <div class="speed">
+          <div class="panel">
+            <h3>❄️ Cold start <span class="big-num cold">~12s</span></h3>
+            <div class="bar-row">
+              <div class="bar-label"><span>schedule + pull + sshd + probe</span><span>12s</span></div>
+              <div class="bar-track"><div class="bar-fill bar-cold"></div></div>
+            </div>
+            <p style="color: var(--muted); font-size: 0.9rem">
+              The classic path: place the pod, pull the image, boot the SSH
+              daemon, wait for the readiness probe. Fine — but you feel it.
+            </p>
+          </div>
+          <div class="panel warm">
+            <h3>⚡ Warm pool <span class="big-num warm">~1.2s</span></h3>
+            <div class="bar-row">
+              <div class="bar-label"><span>claim + inject key</span><span>1.2s</span></div>
+              <div class="bar-track"><div class="bar-fill bar-warm"></div></div>
+            </div>
+            <p style="color: var(--muted); font-size: 0.9rem">
+              The pod is already running. Claiming it is a label swap and an
+              <code style="font-family: var(--mono); color: var(--cyan)">authorized_keys</code> append. That's the whole story.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── FEATURES ── -->
+    <section id="features">
+      <div class="wrap">
+        <div class="section-eyebrow">What you get</div>
+        <h2>A real box, not a toy</h2>
+        <p class="section-sub">
+          Every sandbox is a genuine GPU node on our cluster — full driver
+          stack, NVLink, EFA, the works.
+        </p>
+        <div class="grid">
+          <div class="card">
+            <div class="ic">🎮</div>
+            <h3>Any GPU, 1→64</h3>
+            <p>T4, L4, A10G, RTX PRO 6000, A100, H100, B200, B300 — single card up to multi-node NVLink fabrics.</p>
+          </div>
+          <div class="card">
+            <div class="ic">🔪</div>
+            <h3>MIG slices</h3>
+            <p>Need a sliver? Reserve <code>h100-mig-1g</code> and share a card. Pre-warmed and instant too.</p>
+          </div>
+          <div class="card">
+            <div class="ic">💾</div>
+            <h3>Persistent disks</h3>
+            <p>Name a disk once; it follows you across sandboxes. Clone it for parallel experiments in seconds.</p>
+          </div>
+          <div class="card">
+            <div class="ic">🐍</div>
+            <h3>CLI + SDK, one install</h3>
+            <p><code>pip install gpu-dev</code> gives you both <code>gpu-dev reserve</code> and the Python <code>GpuDev()</code> client.</p>
+          </div>
+          <div class="card">
+            <div class="ic">💸</div>
+            <h3>Spot, safely</h3>
+            <p>Pass <code>spot=True</code> for ~70% off. Checkpoints land on a persistent disk that survives reclaim.</p>
+          </div>
+          <div class="card">
+            <div class="ic">🔁</div>
+            <h3>Built for CI repro</h3>
+            <p>A failing PyTorch job is one reserve away from a live shell on a matching box. <span class="tag">soon: 1-command</span></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── CTA ── -->
+    <section id="start" class="cta">
+      <div class="wrap">
+        <div class="section-eyebrow" style="text-align: center">Get started</div>
+        <h2 style="text-align: center">Your first sandbox is one line away</h2>
+        <div class="install">
+          <span><span class="prompt">$</span> pip install gpu-dev</span>
+          <span class="copy" onclick="navigator.clipboard && navigator.clipboard.writeText('pip install gpu-dev')">copy</span>
+        </div>
+        <div>
+          <a class="btn btn-primary" href="https://github.com/wdvr/osdc">Read the docs</a>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap" style="display: flex; gap: 18px; align-items: center; flex-wrap: wrap; width: 100%">
+        <span class="brand">osdc<span class="dot">.</span></span>
+        <span>Open Source Dev Cloud</span>
+        <a href="https://github.com/wdvr/osdc" class="spacer">github.com/wdvr/osdc</a>
+        <span class="dim">Bring your own cloud capacity — multi-cloud coming</span>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -6,7 +6,7 @@ from .._backend.aws import AwsBackend
 from .._backend.protocol import Backend
 from ..common.config import GpuDevConfig
 from ..common.enums import GPU_MAX_COUNT, ReservationStatus
-from ..common.errors import GpuDevValidationError
+from ..common.errors import GpuDevTimeoutError, GpuDevValidationError
 from ..common.models import DiskInfo, GpuAvailability, ReservationInfo
 from .sandbox import Sandbox
 
@@ -68,7 +68,9 @@ class GpuDev:
         jupyter: bool = False,
         disk_name: str | None = None,
         docker_image: str | None = None,
+        ref: str | None = None,
         spot: bool = False,
+        direct: bool = True,
         wait: bool = True,
         timeout_minutes: int | None = None,
         on_progress: "Callable[[str, float], None] | bool | None" = None,
@@ -83,6 +85,10 @@ class GpuDev:
             jupyter: Enable Jupyter Lab access.
             disk_name: Persistent disk to attach.
             docker_image: Custom Docker image instead of default.
+            ref: Pytorch ref to pre-stage in ``/home/dev/pytorch``. Accepts a
+                branch/tag, a PR (``"pr/123"``, ``"#123"``, or bare ``"123"``),
+                or a commit sha. Defaults to ``master``; pass ``"none"`` to skip.
+                Ignored when ``disk_name`` is set.
             spot: Use spot instances (cheaper, may be preempted).
             wait: Block until reservation is active (default ``True``).
             timeout_minutes: Max wait time. Defaults to config value.
@@ -115,6 +121,36 @@ class GpuDev:
             )
 
         user_info = self._auth()
+
+        # Fast path: synchronous warm-pool claim (default). Single-node, ephemeral,
+        # default-image, on-demand only; the server re-checks and we fall back to
+        # SQS on any miss. Returns an already-active Sandbox (no polling).
+        if direct and not disk_name and not ref and not docker_image and not spot and gpu_count <= max(1, max_gpus):
+            res = self._backend.claim_direct({
+                "user_id": user_info["user_id"],
+                "github_user": user_info["github_user"],
+                "gpu_type": gpu_type_lower,
+                "gpu_count": gpu_count,
+                "duration_hours": hours,
+                "name": name,
+                "ref": ref,
+            })
+            if res:
+                info = ReservationInfo(
+                    id=res.get("reservation_id"),
+                    status=ReservationStatus.ACTIVE,
+                    gpu_type=gpu_type_lower,
+                    gpu_count=gpu_count,
+                    name=name,
+                    user_id=user_info["user_id"],
+                    ssh_command=res.get("ssh_command"),
+                    pod_name=res.get("pod_name"),
+                    node_ip=res.get("node_ip"),
+                    fqdn=res.get("fqdn"),
+                    expires_at=res.get("expires_at"),
+                )
+                return Sandbox(info, self._backend, user_info["user_id"])
+
         reservation_id = self._backend.create_reservation({
             "user_id": user_info["user_id"],
             "github_user": user_info["github_user"],
@@ -125,7 +161,11 @@ class GpuDev:
             "jupyter": jupyter,
             "disk_name": disk_name,
             "docker_image": docker_image,
+            "ref": ref,
             "spot": spot,
+            # --ref implies ephemeral: staging is skipped when a persistent disk is
+            # attached, so a ref with no explicit disk means no persistent disk.
+            "no_persistent_disk": bool(ref and str(ref).strip().lower() not in ("", "none") and not disk_name),
         })
 
         info = ReservationInfo(
@@ -266,6 +306,9 @@ class GpuDev:
                 if any(d.name == target for d in disks):
                     return op_id
                 time.sleep(2)
+            raise GpuDevTimeoutError(
+                f"Disk clone {source!r} -> {target!r} did not appear within {timeout}s"
+            )
         return op_id
 
     def delete_disk(self, name: str) -> str:

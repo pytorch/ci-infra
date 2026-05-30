@@ -532,6 +532,11 @@ def get_available_gpus_on_node(v1_api, node, gpu_type: str = None) -> int:
         used_gpus = 0
         for pod in pods.items:
             if pod.status.phase in ["Running", "Pending"]:
+                # Warm-pool pods that are still 'ready' hold the slice but are
+                # claimed instantly, so count them as available, not used.
+                labels = pod.metadata.labels or {}
+                if labels.get("app") == "gpu-dev-warm" and labels.get("warm-state") == "ready":
+                    continue
                 for container in pod.spec.containers:
                     if container.resources and container.resources.requests:
                         gpu_request = container.resources.requests.get(

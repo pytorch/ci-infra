@@ -57,4 +57,10 @@ __all__ = [
     "ExecResult",
 ]
 
-__version__ = "0.6.5"
+# Reads the installed gpu-dev dist version (SDK ships inside the gpu-dev package).
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("gpu-dev")
+except Exception:
+    __version__ = "0.7.2"

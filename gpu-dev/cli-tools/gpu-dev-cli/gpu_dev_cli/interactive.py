@@ -50,11 +50,22 @@ def check_interactive_support() -> bool:
     return True
 
 
+def _is_spot_type(gt: str) -> bool:
+    """Spot SKUs hidden from default views: the cpu-spot type + any `*-spot` type."""
+    return gt == "cpu-spot" or gt.endswith("-spot")
+
+
 def select_gpu_type_interactive(
     availability_info: Dict[str, Dict[str, Any]],
     _refresh: bool = False,
+    show_spot: bool = False,
 ) -> Optional[str]:
-    """Interactive GPU type selection with availability table"""
+    """Interactive GPU type selection with availability table.
+
+    Spot SKUs (cpu-spot + the cross-region us-east-1 spot cluster) are hidden by
+    default — pass show_spot=True (CLI `--spot`) or pick the "Show spot options"
+    entry to reveal them.
+    """
     if not check_interactive_support():
         return None
 
@@ -65,11 +76,17 @@ def select_gpu_type_interactive(
         _mgr = ReservationManager(_cfg)
         availability_info = _mgr.get_gpu_availability_by_type() or availability_info
 
+    # Don't hide spot when the whole environment is spot-only (nothing left to show).
+    _non_spot_exists = any(
+        not _is_spot_type(gt) for gt in availability_info if "-mig-" not in gt
+    )
+    _hide_spot = (not show_spot) and _non_spot_exists
+
     # Hide MIG slice SKUs from the top-level selector — reached via the h100 submenu.
     # Direct `--gpu-type h100-mig-1g` still works for non-interactive scripts.
     visible_info = {
         gt: info for gt, info in availability_info.items()
-        if "-mig-" not in gt
+        if "-mig-" not in gt and not (_hide_spot and _is_spot_type(gt))
     }
 
     # Aggregate MIG slice availability per parent type, hinted on the h100/b200 rows.
@@ -86,12 +103,6 @@ def select_gpu_type_interactive(
         )
         return avail, cap
 
-    h100_mig_avail, h100_mig_capacity = _mig_aggregates("h100")
-    b200_mig_avail, b200_mig_capacity = _mig_aggregates("b200")
-    # Backwards-compat aliases for the existing h100 row code below.
-    mig_total_available = h100_mig_avail
-    mig_total_capacity = h100_mig_capacity
-
     # Detect spot types and fetch cross-region spot availability
     from .config import Config, load_config
     _cfg = load_config()
@@ -102,9 +113,10 @@ def select_gpu_type_interactive(
     has_spot_types = len(_spot_types) > 0
 
     # Cross-region: if we're on prod, also fetch prod-east1 spot availability
+    # (skipped entirely when spot is hidden — saves a DynamoDB scan).
     spot_region_info = {}
     spot_region_name = None
-    if _env_name == "prod":
+    if _env_name == "prod" and not _hide_spot:
         east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
         if east1_env:
             spot_region_name = "prod-east1"
@@ -159,7 +171,19 @@ def select_gpu_type_interactive(
             return f"[red]MAINTENANCE[/red]"
         return f"[green]{available}[/green]" if available > 0 else f"[red]{available}[/red]"
 
-    def _build_table(title, items, is_spot=False):
+    def _mig_breakdown(parent):
+        """Compact per-slice availability for a parent, e.g. (['12×1G','4×2G'], 16, 32)."""
+        parts, tot_a, tot_c = [], 0, 0
+        for cgt, ci in sorted((availability_info or {}).items()):
+            if not cgt.startswith(f"{parent}-mig-"):
+                continue
+            a, c = int(ci.get("available", 0)), int(ci.get("total", 0))
+            tot_a += a
+            tot_c += c
+            parts.append(f"{a}×{cgt.rsplit('-', 1)[-1].upper()}")
+        return parts, tot_a, tot_c
+
+    def _build_table(title, items, is_spot=False, with_mig=False):
         console.print(f"\n[cyan]{title}[/cyan]")
         table = Table()
         table.add_column("GPU Type", style="cyan")
@@ -182,16 +206,18 @@ def select_gpu_type_interactive(
                 str(info.get("total", 0)),
                 wait_display,
             )
+            # Compact MIG slice sub-row beneath the parent (h100/b200 today).
+            if with_mig:
+                parts, mig_a, mig_c = _mig_breakdown(gt)
+                if parts:
+                    av = f"[green]{mig_a}[/green]" if mig_a > 0 else f"[red]{mig_a}[/red]"
+                    table.add_row(
+                        f"[dim] └─ MIG {' '.join(parts)}[/dim]",
+                        av, "-", str(mig_c), "[dim]pick parent ↑[/dim]")
         console.print(table)
 
-    # Section 1: Full GPUs & CPUs
-    _build_table("━━━ Full GPUs & CPUs ━━━", full_gpus)
-
-    # Section 2: MIG Slices
-    if mig_gpus:
-        console.print("[dim]  Sliced GPUs — isolated fractions of a physical GPU. Perfect for smaller jobs[/dim]")
-        console.print("[dim]  that don\'t need full performance or VRAM.[/dim]")
-        _build_table("━━━ 🔬 MIG Slices ━━━", mig_gpus)
+    # Section 1: Full GPUs & CPUs (MIG slices shown as a compact sub-row per parent)
+    _build_table("━━━ Full GPUs & CPUs ━━━", full_gpus, with_mig=True)
 
     # Section 3: Spot Instances (cross-region) — custom table with per-node + price
     if spot_gpus:
@@ -249,10 +275,10 @@ def select_gpu_type_interactive(
             label = f"{status_indicator} {gt.upper()} ({avail}/{total} available)"
             if ql > 0:
                 label += f" - {ql} in queue"
-            if gt == "h100" and mig_total_capacity > 0:
-                label += f" — also {mig_total_available}/{mig_total_capacity} MIG slices"
-            elif gt == "b200" and b200_mig_capacity > 0:
-                label += f" — also {b200_mig_avail}/{b200_mig_capacity} MIG slices"
+            # Any parent with MIG children gets a slice hint (h100/b200 today).
+            mig_avail, mig_cap = _mig_aggregates(gt)
+            if mig_cap > 0:
+                label += f" — also {mig_avail}/{mig_cap} MIG slices"
             choices.append(questionary.Choice(title=label, value=gt))
 
     if mig_gpus:
@@ -296,11 +322,15 @@ def select_gpu_type_interactive(
             choices.append(questionary.Choice(title=label, value=f"spot:{gt}"))
 
     choices.append(questionary.Separator("───"))
+    if _hide_spot:
+        choices.append(questionary.Choice(
+            title="⚡ Show spot options (us-east-1, ~70% cheaper, may be preempted)",
+            value="_show_spot"))
     choices.append(questionary.Choice(title="🔄 Refresh availability", value="_refresh"))
 
     console.print()
 
-    # Interactive selection — loop on refresh
+    # Interactive selection — loop on refresh / spot toggle
     while True:
         try:
             answer = questionary.select(
@@ -309,7 +339,10 @@ def select_gpu_type_interactive(
 
             if answer == "_refresh":
                 console.print("[dim]Refreshing...[/dim]")
-                return select_gpu_type_interactive(availability_info, _refresh=True)
+                return select_gpu_type_interactive(
+                    availability_info, _refresh=True, show_spot=show_spot)
+            if answer == "_show_spot":
+                return select_gpu_type_interactive(availability_info, show_spot=True)
             return answer
         except (KeyboardInterrupt, EOFError):
             console.print("\n[yellow]Selection cancelled.[/yellow]")

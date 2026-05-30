@@ -11,6 +11,7 @@ import time
 import uuid
 import socket
 import random
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -19,6 +20,7 @@ from decimal import Decimal
 from typing import Any
 
 import boto3
+import botocore.exceptions
 
 from shared import K8sGPUTracker, setup_kubernetes_client
 from shared.snapshot_utils import create_pod_shutdown_snapshot, get_latest_snapshot, safe_create_snapshot, capture_disk_contents
@@ -55,6 +57,47 @@ EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(
     ",") if os.environ.get("EFS_SUBNET_IDS") else []
 CCACHE_SHARED_EFS_ID = os.environ.get("CCACHE_SHARED_EFS_ID")
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
+
+# Pytorch ref staging: which working tree to drop into /home/dev/pytorch.
+# Accepts a branch/tag, a PR ("pr/123" or "123"), a commit sha, or a skip
+# sentinel ("none"). Refs only ever contain these chars, so anything else is
+# rejected to keep the value safe for shell interpolation.
+_PYTORCH_REF_RE = re.compile(r"^[A-Za-z0-9._/#-]{1,200}$")
+_PYTORCH_REF_SKIP = {"none", "off", "false", "no", "skip"}
+
+
+def sanitize_pytorch_ref(raw: Any) -> str:
+    """Normalize a user-supplied pytorch ref. Defaults to master; 'none' skips."""
+    if not raw:
+        return "master"
+    val = str(raw).strip()
+    if val.lower() in _PYTORCH_REF_SKIP:
+        return "none"
+    if _PYTORCH_REF_RE.match(val):
+        return val
+    return "master"
+
+
+# Warm pool: how many pre-booted, unclaimed pods to keep ready per GPU type.
+# Tiered on purpose — cheap for CPU and MIG slices, none for full GPUs (idle
+# full GPUs are too expensive to hold). Override via the WARM_POOL_TARGETS env
+# var (JSON object). Reconciled by a scheduled tick; claimed instantly.
+_DEFAULT_WARM_TARGETS = {
+    "cpu-x86": 5, "cpu-arm": 5,
+    "h100-mig-1g": 2, "h100-mig-2g": 2, "h100-mig-3g": 2,
+    "b200-mig-1g": 2, "b200-mig-2g": 2, "b200-mig-3g": 2,
+    # Full-GPU warm pods: instant single-GPU claims. Safe because a 2/4/8-GPU (or
+    # full-MIG-node) request evicts them via _evict_warm_for_capacity to free the node.
+    "h100": 1, "b200": 1,
+}
+try:
+    WARM_POOL_TARGETS = (
+        json.loads(os.environ["WARM_POOL_TARGETS"])
+        if os.environ.get("WARM_POOL_TARGETS") else _DEFAULT_WARM_TARGETS
+    )
+except Exception:
+    WARM_POOL_TARGETS = _DEFAULT_WARM_TARGETS
+WARM_POD_MAX_AGE_HOURS = float(os.environ.get("WARM_POD_MAX_AGE_HOURS", "12"))
 
 # Version validation - injected via Terraform
 LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.9")
@@ -229,8 +272,6 @@ def retry_with_backoff(func, *args, max_retries=5, initial_delay=1, max_delay=32
     Raises:
         Last exception if all retries fail
     """
-    import botocore.exceptions
-
     delay = initial_delay
     last_exception = None
 
@@ -348,6 +389,60 @@ def get_k8s_client():
     return _k8s_client
 
 
+def _evict_warm_for_capacity(v1, gpu_type, gpus_requested, ready_nodes):
+    """Free GPU capacity by deleting disposable warm-ready pods when no node has
+    enough room otherwise. Warm pods are recreated by the reconciler. Evicts the
+    minimum count on a SINGLE node that satisfies the request (preferring the most
+    already-free node, so we evict as few as possible). Returns (az, node) or
+    (None, None). This is what lets warm pods coexist with 2/4/8-GPU and
+    full-MIG-node requests — the request reclaims the node in ~pod-termination time."""
+    try:
+        resource_name = get_gpu_resource_name(gpu_type)
+        by_node = {}
+        for p in _list_warm_pods(v1, gpu_type=gpu_type, state="ready"):
+            node = p.spec.node_name if p.spec else None
+            if not node or p.status.phase != "Running":
+                continue
+            held = 0
+            for c in (p.spec.containers or []):
+                if c.resources and c.resources.requests:
+                    held += int(c.resources.requests.get(resource_name, "0"))
+            if held > 0:
+                by_node.setdefault(node, []).append((p, held))
+        for n in ready_nodes:  # most-free first → fewest evictions
+            freed, evict = 0, []
+            for p, held in by_node.get(n["node_name"], []):
+                if n["available_gpus"] + freed >= gpus_requested:
+                    break
+                evict.append(p)
+                freed += held
+            if evict and n["available_gpus"] + freed >= gpus_requested:
+                for p in evict:
+                    # Hard guard: NEVER delete anything that isn't an idle standby.
+                    # _list_warm_pods already filters by label, but re-check right
+                    # before delete to rule out any claim race (Lambda is serialized,
+                    # so this should never trip — but a reservation pod must never die).
+                    lbl = p.metadata.labels or {}
+                    if lbl.get("app") != "gpu-dev-warm" or lbl.get("warm-state") != "ready":
+                        logger.warning(f"eviction skipped {p.metadata.name}: not an idle warm pod ({lbl.get('warm-state')})")
+                        continue
+                    try:
+                        v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
+                        try:
+                            v1.delete_namespaced_service(f"{p.metadata.name}-ssh", "gpu-dev")
+                        except Exception:
+                            pass
+                    except Exception as de:
+                        logger.warning(f"warm evict delete failed for {p.metadata.name}: {de}")
+                logger.info(
+                    f"Evicted {len(evict)} warm {gpu_type} pod(s) on {n['node_name']} to free "
+                    f"{freed} GPU(s) for a {gpus_requested}-GPU request")
+                return n["az"], n["node_name"]
+    except Exception as e:
+        logger.warning(f"warm eviction for capacity failed: {e}")
+    return None, None
+
+
 def get_target_az_for_reservation(gpu_type, gpus_requested):
     """
     Dynamically determine which AZ the pod will land in based on available capacity.
@@ -434,7 +529,20 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
             return target_az, target_node
 
         if all_ready_nodes:
-            # No single node has enough GPUs — return AZ of the node with the most available GPUs
+            # No single node fits as-is. Before parking the pod Pending, free
+            # capacity by evicting disposable warm-ready pods (reconciler recreates
+            # them). This lets warm pods coexist with 2/4/8-GPU and full-MIG-node
+            # requests instead of blocking them.
+            if gpu_type in WARM_POOL_TARGETS:
+                ev_az, ev_node = _evict_warm_for_capacity(
+                    v1, gpu_type, gpus_requested,
+                    sorted(all_ready_nodes, key=lambda n: -n['available_gpus']),
+                )
+                if ev_node:
+                    logger.info(f"Eviction freed room for {gpu_type} {gpus_requested}gpu on {ev_node}")
+                    return ev_az, ev_node
+
+            # Still nothing — return AZ of the node with the most available GPUs
             # so disk lands in the right AZ. No node hint (pod will Pending until something frees up).
             best_node = max(all_ready_nodes, key=lambda n: n['available_gpus'])
             target_az = best_node['az']
@@ -1144,6 +1252,70 @@ def trigger_availability_update():
         raise
 
 
+def trigger_warm_reconcile():
+    """Async self-invoke to refill the warm pool immediately after a claim,
+    instead of waiting up to a minute for the scheduled tick."""
+    try:
+        fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+        if not fn:
+            return
+        boto3.client("lambda").invoke(
+            FunctionName=fn, InvocationType="Event",
+            Payload=json.dumps({"warm_pool_reconcile": True}))
+    except Exception as e:
+        logger.warning(f"warm reconcile trigger failed: {e}")
+
+
+def trigger_efs_mount(reservation_id: str, user_id: str, pod_name: str):
+    """Async self-invoke to mount the user's per-user EFS into a claimed warm
+    pod — off the claim's critical path (the pod is already active)."""
+    try:
+        fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+        if not fn or not user_id or not pod_name:
+            return
+        boto3.client("lambda").invoke(
+            FunctionName=fn, InvocationType="Event",
+            Payload=json.dumps({"action": "mount_efs", "reservation_id": reservation_id,
+                                "user_id": user_id, "pod_name": pod_name}))
+    except Exception as e:
+        logger.warning(f"efs mount trigger failed: {e}")
+
+
+def mount_user_efs_into_pod(body: dict) -> bool:
+    """Mount the user's per-user EFS at /shared-personal inside a claimed warm
+    pod (EFS is NFS, so no node-attach needed — we mount it at runtime)."""
+    user_id = body.get("user_id")
+    pod_name = body.get("pod_name")
+    if not user_id or not pod_name:
+        return True
+    try:
+        fs_id = create_or_find_user_efs(user_id)
+        if not fs_id:
+            return True
+        ensure_efs_mount_target(fs_id)
+        dns = get_efs_mount_dns(fs_id)
+        if not dns:
+            return True
+        user_dir = _nvme_cache_user_dir(user_id)
+        mount_cmd = (
+            "command -v mount.nfs4 >/dev/null 2>&1 || "
+            "(apt-get update -y && apt-get install -y nfs-common) >/dev/null 2>&1 || true\n"
+            "mkdir -p /shared-personal\n"
+            "mountpoint -q /shared-personal || "
+            f"mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 {dns}:/ /shared-personal\n"
+            f"mkdir -p /shared-personal/{user_dir} && chown 1081:1081 /shared-personal/{user_dir} 2>/dev/null || true\n"
+            "chmod 755 /shared-personal 2>/dev/null || true"
+        )
+        v1 = client.CoreV1Api(get_k8s_client())
+        stream(v1.connect_get_namespaced_pod_exec, pod_name, "gpu-dev",
+               command=["/bin/bash", "-c", mount_cmd], container="gpu-dev",
+               stderr=True, stdin=False, stdout=True, tty=False)
+        logger.info(f"Mounted user EFS {fs_id} into {pod_name} at /shared-personal")
+    except Exception as e:
+        logger.warning(f"mount_user_efs_into_pod failed for {pod_name}: {e}")
+    return True
+
+
 def update_reservation_error(reservation_id: str, error_message: str, error_field: str = "failure_reason") -> None:
     """Update reservation with error message in any error field"""
     try:
@@ -1257,10 +1429,385 @@ def record_trace_event(trace_data: dict, event_name: str) -> None:
         trace_data[event_name] = Decimal(str(time.time()))
 
 
+# ── Warm pool ────────────────────────────────────────────────────────────────
+
+def _warm_gpu_count(gpu_type: str) -> int:
+    """GPUs a warm pod of this type should hold (0 for CPU, 1 for MIG slices)."""
+    return 0 if gpu_type.startswith("cpu-") else 1
+
+
+def _list_warm_pods(v1, gpu_type: str = None, state: str = None) -> list:
+    sel = "app=gpu-dev-warm"
+    if state:
+        sel += f",warm-state={state}"
+    if gpu_type:
+        sel += f",warm-gpu-type={gpu_type}"
+    return v1.list_namespaced_pod(namespace="gpu-dev", label_selector=sel).items
+
+
+def _create_warm_pod(gpu_type: str, gpu_count: int) -> str:
+    # Name carries no "warm" marker: a pod keeps its name after it's claimed, and a
+    # claimed pod is a normal reservation — "gpu-dev-warm-..." in the user's shell
+    # prompt is confusing. Standby status lives in the label (app=gpu-dev-warm), not
+    # the name. Result: gpu-dev-b200-1d95ba (claimed) instead of gpu-dev-warm-b200-...
+    pod_name = f"gpu-dev-{gpu_type}-{uuid.uuid4().hex[:6]}"
+    k8s_client = get_k8s_client()
+    create_pod(
+        k8s_client, pod_name, gpu_count, gpu_type,
+        github_public_key="", user_id="warm", warm=True, pytorch_ref="master",
+        is_new_disk=True,  # ephemeral home → set up shell env (.zshrc etc.)
+    )
+    # Pre-create the SSH NodePort service now (off the claim critical path). The
+    # selector (reservation=<podname>) is stable, so the claim just reuses it.
+    try:
+        node_port = find_available_node_port(k8s_client)
+        create_service(k8s_client, pod_name, node_port, ssh_port=22)
+    except Exception as svc_e:
+        logger.warning(f"warm pod {pod_name} service pre-create failed: {svc_e}")
+    logger.info(f"Created warm pod {pod_name} ({gpu_count}x {gpu_type})")
+    return pod_name
+
+
+def _provision_warm_pod(v1, pod) -> None:
+    """Backfill connection details on a ready warm pod (node IP/port + domain
+    mapping) and stash them as annotations, so the claim avoids live k8s/DNS
+    calls. Idempotent: skips pods already provisioned or not yet Running."""
+    ann = pod.metadata.annotations or {}
+    if ann.get("warm-domain") or pod.status.phase != "Running":
+        return
+    pod_name = pod.metadata.name
+    try:
+        svc = v1.read_namespaced_service(f"{pod_name}-ssh", "gpu-dev")
+        node_port = svc.spec.ports[0].node_port
+    except Exception:
+        return  # service not ready yet; try next tick
+    node_public_ip = get_pod_node_public_ip(pod_name)
+    node_private_ip = get_pod_node_private_ip(pod_name)
+    pod_ip = get_pod_internal_ip(pod_name)
+    domain_name = "-"
+    if get_dns_enabled():
+        try:
+            domain_name = generate_unique_name()
+            # Placeholder mapping (reservation_id='warm', far expiry); the claim
+            # rebinds it to the real reservation.
+            store_domain_mapping(
+                domain_name, node_private_ip or node_public_ip,
+                node_port, "warm", int(time.time()) + 7 * 24 * 3600)
+        except Exception as e:
+            logger.warning(f"warm provision mapping failed for {pod_name}: {e}")
+            domain_name = "-"
+    v1.patch_namespaced_pod(pod_name, "gpu-dev", {"metadata": {"annotations": {
+        "warm-node-ip": node_public_ip or "",
+        "warm-node-private-ip": node_private_ip or "",
+        "warm-pod-ip": pod_ip or "",
+        "warm-node-port": str(node_port),
+        "warm-domain": domain_name,
+    }}})
+
+
+def reconcile_warm_pool() -> dict:
+    """Top up / recycle the standby pool of pre-booted pods per GPU type."""
+    v1 = client.CoreV1Api(get_k8s_client())
+    created = recycled = 0
+    max_age_s = WARM_POD_MAX_AGE_HOURS * 3600
+    for gpu_type, target in WARM_POOL_TARGETS.items():
+        try:
+            pods = _list_warm_pods(v1, gpu_type=gpu_type)
+            live = []
+            for p in pods:
+                labels = p.metadata.labels or {}
+                phase = p.status.phase
+                # Claimed pods are real reservations now (they keep the app label but
+                # warm-state flips to "claimed"). They are NOT standby: don't count
+                # them toward the target (else the pool never refills after a claim)
+                # and don't recycle them here (expiry/cancel own their lifecycle).
+                if labels.get("warm-state") == "claimed":
+                    continue
+                created_ts = p.metadata.creation_timestamp.timestamp() if p.metadata.creation_timestamp else time.time()
+                age_s = time.time() - created_ts
+                stale = labels.get("warm-state") == "ready" and age_s > max_age_s
+                if phase in ("Failed", "Succeeded") or stale:
+                    try:
+                        v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
+                        try:
+                            v1.delete_namespaced_service(f"{p.metadata.name}-ssh", "gpu-dev")
+                        except Exception:
+                            pass
+                        recycled += 1
+                    except Exception as de:
+                        logger.warning(f"warm recycle delete failed for {p.metadata.name}: {de}")
+                    continue
+                live.append(p)
+            # Backfill connection details on ready pods so claims stay fast.
+            for p in live:
+                if (p.metadata.labels or {}).get("warm-state") == "ready":
+                    try:
+                        _provision_warm_pod(v1, p)
+                    except Exception as pe:
+                        logger.warning(f"warm provision failed for {p.metadata.name}: {pe}")
+            deficit = int(target) - len(live)
+            for _ in range(max(0, deficit)):
+                try:
+                    _create_warm_pod(gpu_type, _warm_gpu_count(gpu_type))
+                    created += 1
+                except Exception as ce:
+                    logger.warning(f"warm create failed for {gpu_type}: {ce}")
+                    break
+        except Exception as e:
+            logger.warning(f"warm reconcile failed for {gpu_type}: {e}")
+    logger.info(f"Warm pool reconcile: created={created} recycled={recycled}")
+    return {"statusCode": 200, "body": json.dumps({"created": created, "recycled": recycled})}
+
+
+def warm_pool_eligible(body: dict) -> bool:
+    """A reservation can be served from the warm pool only if it matches a warm
+    pod's shape: a pooled GPU type, ephemeral, default image, single node."""
+    gpu_type = body.get("gpu_type", "")
+    if gpu_type not in WARM_POOL_TARGETS:
+        return False
+    if body.get("dockerimage") or body.get("dockerfile"):
+        return False
+    if body.get("spot") or body.get("is_multinode") or body.get("disk_name"):
+        return False
+    # Warm pods carry master; an explicit ref must take the cold path that
+    # stages it. (Default/no ref resolves to master -> claimable.)
+    if sanitize_pytorch_ref(body.get("ref")) != "master":
+        return False
+    return True
+
+
+def try_claim_warm_pod(body: dict) -> bool:
+    """Claim a ready warm pod for this reservation. Returns False (fail-open) so
+    the caller falls back to the normal cold path on any miss/error."""
+    try:
+        reservation_id = body.get("reservation_id")
+        gpu_type = body.get("gpu_type")
+        gpu_count = int(body.get("gpu_count", 0))
+        github_user = body.get("github_user", "")
+        user_id = body.get("user_id")
+
+        trace_enabled = bool(body.get("trace"))
+        trace_data = {} if trace_enabled else None
+        if trace_enabled and body.get("trace_cli_start"):
+            trace_data["trace_cli_start"] = Decimal(str(body["trace_cli_start"]))
+        record_trace_event(trace_data, "warm_claim_start")
+
+        if gpu_count != _warm_gpu_count(gpu_type):
+            return False
+
+        github_public_key = get_github_public_key(github_user)
+        if not github_public_key:
+            return False
+        record_trace_event(trace_data, "github_key_fetched")
+
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+
+        candidate = None
+        for p in _list_warm_pods(v1, gpu_type=gpu_type, state="ready"):
+            labels = p.metadata.labels or {}
+            if p.status.phase == "Running" and labels.get("warm-gpu-count") == str(gpu_count):
+                candidate = p
+                break
+        if candidate is None:
+            return False
+        record_trace_event(trace_data, "warm_pod_selected")
+
+        pod_name = candidate.metadata.name
+        # Lambda runs serialized (reserved concurrency 1) so no claim race.
+        # Graduate the pod OUT of the warm pool: flip app to gpu-dev-pod (so it
+        # matches normal reservations) and clear the warm-* labels. After this it's
+        # invisible to _list_warm_pods (app=gpu-dev-warm), so neither the reconciler
+        # nor eviction can ever count or delete it — it's just a reservation. The
+        # SSH service selects by `reservation`, not `app`, so connectivity is intact.
+        v1.patch_namespaced_pod(
+            pod_name, "gpu-dev",
+            {"metadata": {"labels": {"app": "gpu-dev-pod", "warm-state": None,
+                                     "warm-gpu-type": None, "warm-gpu-count": None},
+                          "annotations": {"gpu-dev-user-id": user_id or ""}}},
+        )
+        record_trace_event(trace_data, "warm_pod_labeled")
+
+        inject_cmd = (
+            "mkdir -p /home/dev/.ssh && touch /home/dev/.ssh/authorized_keys\n"
+            "while IFS= read -r k; do [ -n \"$k\" ] && ! grep -Fq \"$k\" /home/dev/.ssh/authorized_keys && echo \"$k\" >> /home/dev/.ssh/authorized_keys; done <<'KEOF'\n"
+            f"{github_public_key}\n"
+            "KEOF\n"
+            "chmod 700 /home/dev/.ssh && chmod 600 /home/dev/.ssh/authorized_keys && chown -R 1081:1081 /home/dev/.ssh"
+        )
+        stream(
+            v1.connect_get_namespaced_pod_exec, pod_name, "gpu-dev",
+            command=["/bin/bash", "-c", inject_cmd], container="gpu-dev",
+            stderr=True, stdin=False, stdout=True, tty=False,
+        )
+        record_trace_event(trace_data, "ssh_key_injected")
+
+        duration_hours = float(body.get("duration_hours", 8))
+        reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+        reservations_table.put_item(Item={
+            "reservation_id": reservation_id,
+            "user_id": user_id,
+            "gpu_count": gpu_count,
+            "gpu_type": gpu_type,
+            "duration_hours": Decimal(str(duration_hours)),
+            "name": body.get("name", f"{gpu_count}x {gpu_type}"),
+            "created_at": body.get("created_at", datetime.utcnow().isoformat()),
+            "status": "preparing",
+            "expires_at": (datetime.utcnow() + timedelta(hours=duration_hours)).isoformat(),
+            "github_user": github_user,
+            "lambda_version": LAMBDA_VERSION,
+            "source_command": body.get("source_command", "reserve"),
+            "warm_claimed": True,
+        })
+        record_trace_event(trace_data, "ddb_record_written")
+
+        # Connection details — prefer values pre-provisioned on the warm pod
+        # (node IP/port + domain) so the claim skips live k8s/DNS calls. Resolve
+        # live only if the pod wasn't provisioned yet (claimed before backfill).
+        ann = candidate.metadata.annotations or {}
+        if ann.get("warm-node-port") and ann.get("warm-domain"):
+            node_port = int(ann["warm-node-port"])
+            node_public_ip = ann.get("warm-node-ip") or ""
+            node_private_ip = ann.get("warm-node-private-ip") or ""
+            pod_ip = ann.get("warm-pod-ip") or ""
+            domain_name = ann["warm-domain"] if ann["warm-domain"] != "-" else None
+        else:
+            try:
+                svc = v1.read_namespaced_service(f"{pod_name}-ssh", "gpu-dev")
+                node_port = svc.spec.ports[0].node_port
+            except Exception:
+                node_port = find_available_node_port(k8s_client)
+                create_service(k8s_client, pod_name, node_port, ssh_port=22)
+            node_public_ip = get_pod_node_public_ip(pod_name)
+            node_private_ip = get_pod_node_private_ip(pod_name)
+            pod_ip = get_pod_internal_ip(pod_name)
+            domain_name = generate_unique_name(body.get("name")) if get_dns_enabled() else None
+        record_trace_event(trace_data, "conn_details_resolved")
+
+        # Bind the domain mapping to this reservation. SSH reaches the pod only via
+        # the WebSocket proxy (NodePorts aren't internet-facing), which resolves
+        # the FQDN from this mapping. We skip the Route53 CNAME on purpose — it's
+        # ~4.5s and only used for Jupyter HTTPS, not SSH.
+        if domain_name:
+            try:
+                expires_ts = int(time.time()) + int(duration_hours * 3600)
+                store_domain_mapping(
+                    domain_name, node_private_ip or node_public_ip,
+                    node_port, reservation_id, expires_ts)
+                # Proxy-form command (same as the cold path): SSH dials the fixed
+                # ssh.devservers.io endpoint via ProxyCommand, which resolves the
+                # FQDN -> node:port server-side. A bare `ssh dev@<fqdn>` would try
+                # to DNS-resolve the per-reservation name (no record) and fail.
+                _suffix = os.environ.get("DOMAIN_NAME", "")
+                _full = f"{domain_name}.{_suffix}" if _suffix else domain_name
+                ssh_command = (
+                    "ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' "
+                    "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"dev@{_full}")
+            except Exception as dns_e:
+                logger.warning(f"warm claim domain mapping failed (non-fatal): {dns_e}")
+                domain_name = None
+        if not domain_name:
+            ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
+        record_trace_event(trace_data, "domain_mapping_bound")
+
+        update_reservation_connection_info(
+            reservation_id=reservation_id,
+            ssh_command=ssh_command,
+            pod_name=pod_name,
+            node_port=node_port,
+            node_ip=node_public_ip,
+            node_private_ip=node_private_ip,
+            pod_ip=pod_ip,
+            jupyter_port=0,
+            jupyter_url_base="",
+            jupyter_enabled=False,
+            k8s_client=k8s_client,
+            domain_name=domain_name,
+        )
+        record_trace_event(trace_data, "warm_claim_complete")
+        if trace_data:
+            try:
+                reservations_table.update_item(
+                    Key={"reservation_id": reservation_id},
+                    UpdateExpression="SET trace_data = :td, claim_path = :cp",
+                    ExpressionAttributeValues={":td": trace_data, ":cp": "warm"},
+                )
+            except Exception as te:
+                logger.warning(f"warm claim trace store failed: {te}")
+        logger.info(f"Claimed warm pod {pod_name} for reservation {reservation_id}")
+        # Refill the consumed slot now (don't wait for the 1-min tick), and mount
+        # the user's EFS — both async so they don't slow the claim response.
+        trigger_warm_reconcile()
+        trigger_efs_mount(reservation_id, user_id, pod_name)
+        try:
+            trigger_availability_update()
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.warning(f"Warm claim failed, falling back to cold path: {e}")
+        return False
+
+
+def handle_direct_claim(event) -> dict:
+    """Function URL handler for synchronous warm-pool claims. Returns the active
+    reservation on success, or {claimed: false} so the CLI falls back to SQS."""
+    def _resp(payload):
+        return {"statusCode": 200, "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(payload)}
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except Exception:
+        return _resp({"claimed": False, "reason": "bad_json"})
+
+    if not warm_pool_eligible(body):
+        return _resp({"claimed": False, "reason": "ineligible"})
+    try:
+        validate_cli_version(body)
+    except ValueError as ve:
+        return _resp({"claimed": False, "reason": str(ve)})
+
+    if not try_claim_warm_pod(body):
+        return _resp({"claimed": False, "reason": "no_warm_pod"})
+
+    item = {}
+    try:
+        item = dynamodb.Table(RESERVATIONS_TABLE).get_item(
+            Key={"reservation_id": body["reservation_id"]}).get("Item", {}) or {}
+    except Exception as e:
+        logger.warning(f"direct claim: could not read back reservation: {e}")
+    return _resp({"claimed": True, "reservation": {
+        "reservation_id": item.get("reservation_id") or body.get("reservation_id"),
+        "status": item.get("status", "active"),
+        "ssh_command": item.get("ssh_command"),
+        "pod_name": item.get("pod_name"),
+        "node_ip": item.get("node_ip"),
+        "node_port": int(item["node_port"]) if item.get("node_port") is not None else None,
+        "fqdn": item.get("fqdn"),
+        "expires_at": item.get("expires_at"),
+    }})
+
+
 def handler(event, context):
     """Main Lambda handler"""
     try:
         logger.info(f"Processing event: {json.dumps(event)}")
+
+        # Synchronous claim via Lambda Function URL (gpu-dev reserve --direct).
+        # Returns the active reservation in the HTTP response — no SQS, no poll.
+        # Only warm-eligible requests; anything else tells the CLI to use SQS.
+        if event.get("requestContext", {}).get("http") or event.get("rawPath"):
+            return handle_direct_claim(event)
+
+        # Scheduled tick to keep the warm pool topped up.
+        if event.get("warm_pool_reconcile"):
+            logger.info("Reconciling warm pool")
+            return reconcile_warm_pool()
+
+        # Async: mount a claimed warm pod's per-user EFS (self-invoked by the claim).
+        if event.get("action") == "mount_efs":
+            return {"ok": mount_user_efs_into_pod(event)}
 
         # Check if this is a scheduled event for queue processing
         if event.get("source") == "cloudwatch.schedule":
@@ -1281,25 +1828,20 @@ def handler(event, context):
                 try:
                     message_body = json.loads(record["body"])
 
-                    # Validate CLI version for all requests
-                    try:
-                        validate_cli_version(message_body)
-                    except ValueError as version_error:
-                        error_str = str(version_error)
-                        action = message_body.get("action")
-                        reservation_id = message_body.get("reservation_id")
+                    message_type = message_body.get("type", "reservation")
+                    action = message_body.get("action")
 
-                        # For extend actions, write to extension_error so CLI polling detects it
-                        if action == "extend_reservation" and reservation_id:
-                            try:
-                                reservation = find_reservation_by_prefix(
-                                    reservation_id, message_body.get("user_id"))
-                                update_reservation_error(
-                                    reservation["reservation_id"], error_str, "extension_error")
-                            except Exception as lookup_err:
-                                logger.error(
-                                    f"Could not write extension_error for {reservation_id}: {lookup_err}")
-                        else:
+                    # Validate CLI version for new reservation requests. Management
+                    # messages such as cancellation/clone/delete historically did not
+                    # include a version, and treating them as reservation requests can
+                    # discard the action or even mark a live reservation as failed.
+                    if message_type == "reservation" and not action:
+                        try:
+                            validate_cli_version(message_body)
+                        except ValueError as version_error:
+                            error_str = str(version_error)
+                            reservation_id = message_body.get("reservation_id")
+
                             # Write error to operations table (for CLI polling)
                             operation_id = message_body.get("operation_id")
                             write_operation_result(operation_id, "failed", error_str)
@@ -1311,11 +1853,9 @@ def handler(event, context):
                                     detailed_status="CLI version validation failed",
                                     failure_reason=error_str
                                 )
-                        logger.error(f"Version validation failed: {error_str}")
-                        delete_sqs_message(record)
-                        continue
-
-                    message_type = message_body.get("type", "reservation")
+                            logger.error(f"Version validation failed: {error_str}")
+                            delete_sqs_message(record)
+                            continue
 
                     if message_type == "cancellation":
                         success = process_cancellation_request(record)
@@ -1340,7 +1880,12 @@ def handler(event, context):
                         success = process_multinode_individual_node(
                             message_body)
                     else:
-                        success = process_reservation_request(record)
+                        # Try the warm pool first (fail-open); else cold path.
+                        success = False
+                        if message_type == "reservation" and not action and warm_pool_eligible(message_body):
+                            success = try_claim_warm_pod(message_body)
+                        if not success:
+                            success = process_reservation_request(record)
 
                     # Delete message from queue if processed successfully
                     if success:
@@ -1419,6 +1964,8 @@ def process_multinode_reservation_request(reservation_request: dict[str, Any]) -
                     initial_record["github_user"] = reservation_request["github_user"]
                 if reservation_request.get("version"):
                     initial_record["cli_version"] = reservation_request["version"]
+                if reservation_request.get("source_command"):
+                    initial_record["source_command"] = reservation_request["source_command"]
                 # Store Lambda version
                 initial_record["lambda_version"] = LAMBDA_VERSION
 
@@ -2153,6 +2700,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                     initial_record["no_persistent_disk"] = reservation_request["no_persistent_disk"]
                 if "recreate_env" in reservation_request:
                     initial_record["recreate_env"] = reservation_request["recreate_env"]
+                if reservation_request.get("source_command"):
+                    initial_record["source_command"] = reservation_request["source_command"]
 
                 # Store initial record
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
@@ -3004,6 +3553,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         if not github_public_key:
             raise ValueError(f"Could not fetch GitHub public key for GitHub user '{github_user}'")
 
+        pytorch_ref = sanitize_pytorch_ref(request.get("ref"))
+
         nvme_cache_hit = False
         if use_persistent_disk and disk_result:
             persistent_volume_id, is_new_disk, disk_warning, target_az, target_node, nvme_cache_hit = disk_result
@@ -3074,6 +3625,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             node_labels=node_labels,
             trace_data=trace_data,
             nvme_cache_hit=nvme_cache_hit,
+            pytorch_ref=pytorch_ref,
         )
         record_trace_event(trace_data, "k8s_resources_create_end")
 
@@ -3639,6 +4191,7 @@ def create_kubernetes_resources(
     node_labels: dict = None,
     trace_data: dict = None,
     nvme_cache_hit: bool = False,
+    pytorch_ref: str = "master",
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
@@ -3744,6 +4297,7 @@ def create_kubernetes_resources(
                         node_labels=node_labels,
                         trace_data=trace_data,
                         nvme_cache_hit=nvme_cache_hit,
+                        pytorch_ref=pytorch_ref,
                     )
                     logger.info(f"Created new pod {pod_name} with Jupyter")
                     update_reservation_status(
@@ -3835,6 +4389,7 @@ def create_kubernetes_resources(
                         node_labels=node_labels,
                         trace_data=trace_data,
                         nvme_cache_hit=nvme_cache_hit,
+                        pytorch_ref=pytorch_ref,
                     )
                     logger.info(f"Created new pod {pod_name} without Jupyter")
                     update_reservation_status(
@@ -4111,6 +4666,10 @@ def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:
         client.V1EnvVar(name="GPU_DEV_THREAD_COUNT", value=thread_str),
         # ccache configuration for faster C++ compilation
         client.V1EnvVar(name="CCACHE_DIR", value="/ccache_shared"),
+        # Pod Python is the system (PEP 668 externally-managed) interpreter and
+        # venv is unavailable (no ensurepip), so `pip install -e . --no-build-isolation`
+        # — the canonical pytorch dev build — otherwise errors. This lets it just work.
+        client.V1EnvVar(name="PIP_BREAK_SYSTEM_PACKAGES", value="1"),
     ]
 
 
@@ -4194,6 +4753,8 @@ def create_pod(
     node_labels: dict = None,
     trace_data: dict = None,
     nvme_cache_hit: bool = False,
+    pytorch_ref: str = "master",
+    warm: bool = False,
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
@@ -4237,6 +4798,14 @@ def create_pod(
                 f"Will use EBS volume {persistent_volume_id} for /home/dev")
         else:
             logger.info(f"Using EmptyDir for /home/dev (no persistent disk)")
+
+        # Pre-stage pytorch into /home/dev/pytorch from the in-cluster worktree
+        # snapshot. Only for ephemeral homes (a persistent disk brings its own
+        # checkout) and unless explicitly skipped with ref="none".
+        should_stage_pytorch = (not use_persistent_disk) and pytorch_ref != "none"
+        stage_flag = "true" if should_stage_pytorch else "false"
+        logger.info(
+            f"Pod {pod_name} pytorch staging: {should_stage_pytorch} (ref={pytorch_ref})")
 
         # Create pod spec
         # Use OnFailure to auto-restart on OOM kills - init container is idempotent
@@ -4403,6 +4972,15 @@ def create_pod(
 
                         # Write CPU thread limits for SSH sessions
                         # Container env vars are not inherited by SSH login shells
+                        # Ensure ~/.local/bin is on PATH for ALL pods, every disk
+                        # state — Claude Code's self-updater installs there, and we
+                        # intentionally keep that opt-in newer claude. /etc is
+                        # container-level so this is fresh on every pod start.
+                        echo 'export PATH="$HOME/.local/bin:$PATH"' > /etc/profile.d/zz-local-bin.sh
+                        chmod 644 /etc/profile.d/zz-local-bin.sh
+                        mkdir -p /etc/zsh
+                        grep -q '/.local/bin' /etc/zsh/zshenv 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> /etc/zsh/zshenv
+
                         # Use /etc/profile.d/ for bash and /etc/zsh/zshenv for zsh
                         if [ -n "$GPU_DEV_THREAD_COUNT" ]; then
                             echo "[STARTUP] Writing CPU thread limits for SSH sessions..."
@@ -4814,6 +5392,13 @@ if [[ -n "\$MULTINODE_HOSTS" ]]; then
 fi
 EOF_ZSHRC_EXT
 
+                        # Ensure ~/.local/bin (Claude Code self-update, pip --user) is on PATH
+                        # even on persistent disks whose own rc may reset PATH — these managed
+                        # _ext files are sourced last by ~/.bashrc / ~/.zshrc. Single-quoted so
+                        # $HOME/$PATH expand at the user's shell time, not now.
+                        echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/dev/.bashrc_ext
+                        echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/dev/.zshrc_ext
+
                         chown 1081:1081 /home/dev/.bashrc_ext /home/dev/.zshrc_ext
                         echo "[STARTUP] ✓ Shell extension files written"
 
@@ -5134,6 +5719,112 @@ GITCACHESCRIPT
                         # NOTE: Git wrapper disabled - cache is opt-in only via git-clone-cached command
                         # Users can run: git-clone-cached pytorch
                         # Instead of: git clone https://github.com/pytorch/pytorch.git
+
+                        # Install stage-pytorch: drops the prebuilt worktree snapshot into
+                        # /home/dev/pytorch, then checks out the requested ref (PR/commit/branch).
+                        cat > /usr/local/bin/stage-pytorch << 'STAGEPYTORCH'
+#!/bin/bash
+# stage-pytorch [ref] — drop pytorch into /home/dev/pytorch. Default (no ref):
+# the PREBUILT viable/strict tree (source + build/ + .so) so "import torch" works
+# instantly with no pod-side build. With a ref: same tree (build/ stays warm so a
+# rebuild is incremental), then checks out the PR/commit/branch.
+REF="$1"
+CACHE_URL="http://git-cache.management.svc.cluster.local:8080"
+DEST=/home/dev/pytorch
+BUILT=/nvme-pytorch-built
+SRC=/nvme-pytorch
+
+if ! command -v git >/dev/null 2>&1; then echo "[pytorch] git unavailable, skipping"; exit 0; fi
+
+PREBUILT_DROPPED=no
+if [ -d "$DEST/.git" ]; then
+    echo "[pytorch] $DEST already present, skipping drop-in"
+elif [ -f "$BUILT/.sha" ]; then
+    echo "[pytorch] Dropping in prebuilt tree (viable/strict, build/ + .so included)..."
+    mkdir -p "$DEST"
+    cp -a --reflink=auto "$BUILT/." "$DEST/" 2>/dev/null || cp -a "$BUILT/." "$DEST/"
+    PREBUILT_DROPPED=yes
+elif [ -d "$SRC/.git" ]; then
+    echo "[pytorch] Copying source worktree from node-local NVMe..."
+    mkdir -p "$DEST"
+    cp -a --reflink=auto "$SRC/." "$DEST/" 2>/dev/null || cp -a "$SRC/." "$DEST/"
+else
+    echo "[pytorch] Fetching worktree snapshot from cache..."
+    mkdir -p "$DEST"
+    if curl -sf "$CACHE_URL/pytorch-worktree-master.tar.gz" | tar -xz -C "$DEST" --strip-components=1; then
+        echo "[pytorch] Snapshot extracted to $DEST"
+    else
+        echo "[pytorch] Snapshot unavailable, falling back to git-clone-cached"
+        rm -rf "$DEST"
+        git-clone-cached pytorch "$DEST" || exit 0
+    fi
+fi
+
+cd "$DEST" || exit 0
+git config --global --add safe.directory "$DEST" 2>/dev/null || true
+
+REF_APPLIED=no
+case "$REF" in
+    ""|master|main|MASTER|MAIN)
+        echo "[pytorch] no ref override (prebuilt viable/strict)" ;;
+    *)
+        PRNUM=""
+        case "$REF" in
+            pr/*) PRNUM=$(echo "$REF" | sed 's|^pr/||') ;;
+            '#'*) PRNUM=$(echo "$REF" | sed 's|^#||') ;;
+            *[!0-9]*) : ;;
+            *) PRNUM="$REF" ;;
+        esac
+        if [ -n "$PRNUM" ]; then
+            # Prefer pull/N/merge (PR merged onto current trunk = exactly what CI
+            # tests, incl. trunk-added tests); fall back to /head (raw PR branch)
+            # when no merge ref exists (closed/unmergeable PR).
+            echo "[pytorch] Checking out PR #$PRNUM (prefer /merge = CI's view)..."
+            if git fetch origin "pull/$PRNUM/merge" 2>/dev/null; then
+                git checkout -f FETCH_HEAD 2>/dev/null && REF_APPLIED=yes
+            elif git fetch origin "pull/$PRNUM/head" 2>/dev/null; then
+                echo "[pytorch] no /merge ref, using /head"
+                git checkout -f FETCH_HEAD 2>/dev/null && REF_APPLIED=yes
+            else
+                echo "[pytorch] WARNING: could not fetch PR #$PRNUM"
+            fi
+        else
+            echo "[pytorch] Checking out $REF..."
+            if git fetch origin "$REF" 2>/dev/null; then
+                git checkout -f FETCH_HEAD 2>/dev/null && REF_APPLIED=yes
+            else
+                git fetch origin 2>/dev/null || true
+                git checkout -f "$REF" 2>/dev/null && REF_APPLIED=yes || echo "[pytorch] WARNING: could not check out $REF"
+            fi
+        fi
+        git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 2>/dev/null || true ;;
+esac
+
+# import torch with no build: only when the dropped-in .so still matches the tree
+# (no ref checkout changed the source). With a ref the .so is stale, but build/ is
+# warm so `pip install -e . --no-build-isolation` rebuilds incrementally and the
+# editable install then puts torch on sys.path.
+if [ "$PREBUILT_DROPPED" = "yes" ] && [ "$REF_APPLIED" = "no" ]; then
+    printf 'export PYTHONPATH="/home/dev/pytorch:$PYTHONPATH"\n' > /etc/profile.d/zz-pytorch.sh 2>/dev/null || true
+    for ext in /home/dev/.bashrc_ext /home/dev/.zshrc_ext; do
+        grep -q 'home/dev/pytorch' "$ext" 2>/dev/null || printf 'export PYTHONPATH="/home/dev/pytorch:$PYTHONPATH"\n' >> "$ext"
+    done
+    echo "[pytorch] PYTHONPATH set -> import torch ready (no build needed)"
+elif [ "$REF_APPLIED" = "yes" ]; then
+    echo "[pytorch] ref checked out; build/ warm -> rebuild: pip install -e . --no-build-isolation"
+fi
+
+chown -R 1081:1081 "$DEST" 2>/dev/null || true
+git rev-parse HEAD 2>/dev/null > /home/dev/.pytorch-ready || echo unknown > /home/dev/.pytorch-ready
+echo "[pytorch] Ready at $DEST ($(cat /home/dev/.pytorch-ready))"
+STAGEPYTORCH
+                        chmod +x /usr/local/bin/stage-pytorch
+
+                        if [ "{stage_flag}" = "true" ]; then
+                            echo "[STARTUP] Staging pytorch (ref={pytorch_ref}) in background..."
+                            touch /home/dev/.pytorch-staging 2>/dev/null || true
+                            ( /usr/local/bin/stage-pytorch "{pytorch_ref}" > /home/dev/.pytorch-staging.log 2>&1; rm -f /home/dev/.pytorch-staging; ) &
+                        fi
 
                         echo "[STARTUP] Configuring SSH..."
                         mkdir -p /run/sshd
@@ -5577,7 +6268,9 @@ EOF
                             name="ccache-shared", mount_path="/ccache_shared"),
                     ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else [])
                     + ([client.V1VolumeMount(name="hugepages-2mi", mount_path="/dev/hugepages")] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else [])
-                    + ([client.V1VolumeMount(name="nvme-cache", mount_path="/nvme-cache")] if use_persistent_disk else []),
+                    + ([client.V1VolumeMount(name="nvme-cache", mount_path="/nvme-cache")] if use_persistent_disk else [])
+                    + ([client.V1VolumeMount(name="nvme-pytorch", mount_path="/nvme-pytorch", read_only=True),
+                        client.V1VolumeMount(name="nvme-pytorch-built", mount_path="/nvme-pytorch-built", read_only=True)] if should_stage_pytorch else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
                             add=["IPC_LOCK", "SYS_ADMIN", "SYS_RESOURCE"]
@@ -5727,7 +6420,23 @@ EOF
                         type="DirectoryOrCreate"
                     )
                 )
-            ] if use_persistent_disk else []),
+            ] if use_persistent_disk else [])
+            + ([
+                client.V1Volume(
+                    name="nvme-pytorch",
+                    host_path=client.V1HostPathVolumeSource(
+                        path="/mnt/nvme/pytorch-worktree",
+                        type="DirectoryOrCreate"
+                    )
+                ),
+                client.V1Volume(
+                    name="nvme-pytorch-built",
+                    host_path=client.V1HostPathVolumeSource(
+                        path="/mnt/nvme/pytorch-built",
+                        type="DirectoryOrCreate"
+                    )
+                )
+            ] if should_stage_pytorch else []),
             node_selector={
                 "GpuType": get_node_gpu_type(gpu_type),
                 **({} if target_az is None else {"topology.kubernetes.io/zone": target_az}),
@@ -5788,10 +6497,21 @@ EOF
         if user_id:
             annotations["gpu-dev-user-id"] = user_id
 
+        if warm:
+            pod_labels = {
+                "app": "gpu-dev-warm",
+                "reservation": pod_name,
+                "warm-state": "ready",
+                "warm-gpu-type": gpu_type,
+                "warm-gpu-count": str(gpu_count),
+            }
+        else:
+            pod_labels = {"app": "gpu-dev-pod", "reservation": pod_name}
+
         pod_metadata = client.V1ObjectMeta(
             name=pod_name,
             namespace="gpu-dev",
-            labels={"app": "gpu-dev-pod", "reservation": pod_name},
+            labels=pod_labels,
             annotations=annotations if annotations else None,
         )
 
@@ -6308,17 +7028,43 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 ).get('Item', {})
                 clone_source = disk_item.get('clone_source_snapshot')
                 if clone_source:
-                    # Verify the source snapshot still exists and is completed
+                    # Clone entries reference an immutable source snapshot. If a
+                    # previous lazy clone left a pending reference, wait here so
+                    # cloned disks never silently fall back to empty volumes.
                     try:
                         snap_response = ec2_client.describe_snapshots(SnapshotIds=[clone_source])
                         snap_list = snap_response.get('Snapshots', [])
-                        if snap_list and snap_list[0]['State'] == 'completed':
-                            latest_snapshot = snap_list[0]
-                            logger.info(f"Using clone source snapshot {clone_source} for disk '{disk_name}'")
+                        if snap_list:
+                            clone_snapshot = snap_list[0]
+                            if clone_snapshot['State'] == 'pending':
+                                logger.info(f"Clone source snapshot {clone_source} is pending for disk '{disk_name}' - waiting for completion")
+                                if reservation_id:
+                                    update_reservation_status(
+                                        reservation_id,
+                                        "preparing",
+                                        "Waiting for cloned disk snapshot to complete"
+                                    )
+                                waiter = ec2_client.get_waiter('snapshot_completed')
+                                waiter.wait(
+                                    SnapshotIds=[clone_source],
+                                    WaiterConfig={'Delay': 15, 'MaxAttempts': 120}
+                                )
+                                snap_response = ec2_client.describe_snapshots(SnapshotIds=[clone_source])
+                                clone_snapshot = snap_response.get('Snapshots', [])[0]
+
+                            if clone_snapshot['State'] == 'completed':
+                                latest_snapshot = clone_snapshot
+                                logger.info(f"Using clone source snapshot {clone_source} for disk '{disk_name}'")
+                            else:
+                                raise RuntimeError(
+                                    f"Clone source snapshot {clone_source} is {clone_snapshot['State']}"
+                                )
                     except Exception as snap_err:
                         logger.warning(f"Clone source snapshot {clone_source} not accessible: {snap_err}")
+                        raise
             except Exception as db_err:
                 logger.warning(f"Could not check clone_source_snapshot for disk '{disk_name}': {db_err}")
+                raise
 
         # Step 3: Create volume from snapshot or empty
         if latest_snapshot:
@@ -9114,9 +9860,14 @@ def process_clone_disk_action(record: dict[str, Any]) -> bool:
                 }],
             )
             snap_id = snap["SnapshotId"]
-            logger.info(f"Live snapshot {snap_id} initiated (lazy — won't wait for completion)")
-            # Don't wait — the snapshot is usable immediately as a reference.
-            # create_disk_from_snapshot_or_empty handles pending snapshots at reserve time.
+            logger.info(f"Live snapshot {snap_id} initiated; waiting for completion")
+            waiter = ec2_client.get_waiter("snapshot_completed")
+            waiter.wait(
+                SnapshotIds=[snap_id],
+                WaiterConfig={"Delay": 15, "MaxAttempts": 120},
+            )
+            snap = ec2_client.describe_snapshots(SnapshotIds=[snap_id])["Snapshots"][0]
+            logger.info(f"Live snapshot {snap_id} completed")
             active_snapshots = [snap]
 
         source_snapshot = max(active_snapshots, key=lambda s: s['StartTime'])
@@ -9167,27 +9918,6 @@ def process_clone_disk_action(record: dict[str, Any]) -> bool:
             logger.info(f"Disk '{target_disk}' already exists for user '{user_id}', skipping creation")
             write_operation_result(operation_id, "completed")
             return True
-
-        # Copy the snapshot with target disk tags (source snapshot keeps its own tags)
-        try:
-            copy_resp = ec2_client.copy_snapshot(
-                SourceSnapshotId=source_snapshot_id,
-                SourceRegion=os.environ.get("REGION", "us-east-2"),
-                Description=f"gpu-dev clone of {source_disk} -> {target_disk} for {user_id}",
-                TagSpecifications=[{
-                    "ResourceType": "snapshot",
-                    "Tags": [
-                        {"Key": "gpu-dev-user", "Value": user_id},
-                        {"Key": "disk_name", "Value": target_disk},
-                        {"Key": "Name", "Value": f"gpu-dev-{target_disk}-clone"},
-                    ],
-                }],
-            )
-            clone_snapshot_id = copy_resp["SnapshotId"]
-            logger.info(f"Snapshot copy {clone_snapshot_id} initiated for target disk '{target_disk}' (lazy — no wait)")
-            # Don't wait — create_disk_from_snapshot_or_empty handles pending snapshots
-        except Exception as copy_err:
-            logger.warning(f"Snapshot copy failed, clone will use source snapshot directly: {copy_err}")
 
         logger.info(f"Disk clone complete: '{source_disk}' -> '{target_disk}' (snapshot {source_snapshot_id})")
         write_operation_result(operation_id, "completed")

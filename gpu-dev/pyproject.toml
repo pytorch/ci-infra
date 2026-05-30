@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-dev"
-version = "0.6.6"
-description = "CLI tool for PyTorch GPU developer server reservations"
+version = "0.7.2"
+description = "CLI + Python SDK for PyTorch GPU developer server reservations"
 authors = [{name = "PyTorch Team"}]
 readme = "cli-tools/gpu-dev-cli/README.md"
 requires-python = ">=3.10"
@@ -27,9 +27,19 @@ gpu-dev = "gpu_dev_cli.cli:main"
 gpu-dev-ssh-proxy = "gpu_dev_cli.ssh_proxy:main"
 gpu-dev-mcp = "gpu_dev_cli.mcp_server:main"
 
+# One distribution ships BOTH the CLI (gpu_dev_cli) and the SDK (gpu_dev), from
+# their two source trees, via explicit per-package dirs.
 [tool.setuptools]
-packages = ["gpu_dev_cli"]
-package-dir = {"" = "cli-tools/gpu-dev-cli"}
+packages = [
+    "gpu_dev_cli",
+    "gpu_dev",
+    "gpu_dev._async",
+    "gpu_dev._backend",
+    "gpu_dev._sync",
+    "gpu_dev._transport",
+    "gpu_dev.common",
+]
+package-dir = {"gpu_dev_cli" = "cli-tools/gpu-dev-cli/gpu_dev_cli", "gpu_dev" = "sdk/python/src/gpu_dev"}
 
 [tool.setuptools.package-data]
-gpu_dev_cli = ["py.typed"]
+gpu_dev = ["py.typed"]
