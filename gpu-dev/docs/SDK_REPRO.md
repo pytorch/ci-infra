@@ -35,14 +35,18 @@ with client.reserve(gpu_type="b200", gpu_count=1, hours=1) as sb:
 PyTorch is pre-staged at `~/pytorch` (importable). To reproduce a failure, point at
 the **PR or commit** and run the test.
 
-**One CLI command** (reserve → checkout → run → auto-cancel):
+**One CLI command** (reserve → checkout → run → **drop you into the box to fix**):
 ```bash
 gpu-dev repro pr/185264 test/inductor/test_flex_attention.py TestFlexAttentionCUDA.test_large_kv_int64_pointer_math_cuda
 ```
 - `REF`: `pr/<N>`, `#<N>`, a bare PR number, a branch, or a commit sha.
 - PRs use **`pull/<N>/merge`** (what CI actually tests — the PR merged onto current
   trunk), falling back to `/head`. Use this, not the raw branch.
-- `--keep` to inspect afterward instead of auto-cancelling.
+- By default (in a terminal) repro runs the test, prints the verdict, then **lands
+  you in the box** at `~/pytorch` with the ref checked out so you can fix and re-run;
+  it stays alive until you cancel (prompted on exit).
+- `--no-connect` = CI mode: run, auto-cancel, process exit code = the test result.
+- `--keep` never cancels (no prompt). `--gpu-type` / `--gpus` / `--hours` to size it.
 
 **From the SDK:**
 ```python
@@ -101,5 +105,12 @@ own compiles populate it for the next person too.
   (warm shared ccache), not a cold build. See [Builds are cached](#builds-are-cached-shared-ccache).
 - **Ephemeral by design.** Repro boxes have no persistent disk; bring code via
   `--ref`, `sb.upload`, or git.
+- **Reproducing a reverted PR / an OOM.** `pr/N` uses `/merge` = the PR re-applied
+  onto *current* trunk — so if the PR was reverted, `/merge` effectively un-reverts
+  it and you test the **fixed** tree (it'll pass). To repro the failing trunk state,
+  check out the **exact land commit** instead (`gpu-dev repro <sha> …`). And match the
+  CI runner's GPU: an **OOM** only reproduces on a GPU as small as the runner's — the
+  default `b200` has far more memory, so a memory-bound failure won't show there
+  (`--gpu-type h100`/`a100`/… to match).
 
 See also: `sdk/python/README.md` and `sdk/python/examples/`.

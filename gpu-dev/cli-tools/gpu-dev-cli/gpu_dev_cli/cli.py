@@ -1523,12 +1523,19 @@ def reserve(
 @click.option("--gpu-type", default="b200", show_default=True, help="GPU type for the repro box.")
 @click.option("--gpus", type=int, default=1, show_default=True)
 @click.option("--hours", type=float, default=3.0, show_default=True,
-              help="Lifetime ceiling; the box auto-cancels when the test exits unless --keep.")
+              help="Lifetime ceiling for the box.")
+@click.option("--no-connect", is_flag=True, default=False,
+              help="CI mode: run the test, auto-cancel, exit code = test result. Default (on a TTY) drops you into the box to iterate.")
 @click.option("--keep", is_flag=True, default=False,
-              help="Keep the reservation after the test exits (default: auto-cancel).")
+              help="Never cancel the box (skip the cancel prompt / auto-cancel).")
 @click.pass_context
-def repro(ctx, ref, test_args, gpu_type, gpus, hours, keep):
-    """Reserve a GPU, check out a PR/commit, run a test, then auto-cancel.
+def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
+    """Reserve a GPU, check out a PR/commit, run a test, then drop you into the box.
+
+    By default (in a terminal) repro runs the test and then **connects you into the
+    box** at ~/pytorch — the ref is checked out, so you can fix and re-run. The box
+    stays alive until you cancel it (you're prompted on exit). Use --no-connect for
+    CI/scripts (run the test, auto-cancel, process exit code = the test result).
 
     REF: pr/<N>, #<N>, a bare PR number, a branch, or a commit sha. PRs use
     pull/<N>/merge (what CI tests), falling back to /head.
@@ -1539,6 +1546,7 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, keep):
     """
     import shlex
     import subprocess
+    import sys
     config = load_config()
     reservation_mgr = ReservationManager(config)
     try:
@@ -1602,21 +1610,55 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, keep):
     if "StrictHostKeyChecking" not in ssh_cmd:
         ssh_cmd = ssh_cmd.replace("ssh ", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ", 1)
     rprint(f"[dim]→ {ssh_cmd}[/dim]\n")
+    rid8 = str(rid)[:8]
     rc = 1
     try:
         rc = subprocess.run(f"{ssh_cmd} {shlex.quote(remote)}", shell=True).returncode
     except KeyboardInterrupt:
-        rprint("\n[yellow]interrupted[/yellow]")
-    finally:
+        rprint("\n[yellow]interrupted[/yellow]"); rc = 130
+
+    verdict = "[green]✓ test passed[/green]" if rc == 0 else f"[red]✗ test failed (exit {rc})[/red]"
+
+    # Default (TTY): drop into the box so you can fix and re-run. --no-connect is the
+    # CI path: auto-cancel and exit with the test's code.
+    connect = (not no_connect) and sys.stdout.isatty()
+    if connect:
+        rprint(f"\n{verdict} — dropping you into the box at ~/pytorch ({ref} checked out).")
+        rprint(f"[dim]  re-run:  python {testcmd}[/dim]")
+        rprint(f"[dim]  finish:  gpu-dev cancel  (from inside)  •  or exit this shell[/dim]\n")
+        shell_cmd = f"{ssh_cmd} -t {shlex.quote('cd /home/dev/pytorch 2>/dev/null; exec ${SHELL:-bash} -l')}"
+        try:
+            subprocess.run(shell_cmd, shell=True)
+        except KeyboardInterrupt:
+            pass
         if keep:
-            rprint(f"[cyan]📌 kept {str(rid)[:8]} — gpu-dev connect {str(rid)[:8]} • gpu-dev cancel {str(rid)[:8]}[/cyan]")
-        else:
+            rprint(f"[cyan]📌 left {rid8} running — connect: gpu-dev connect {rid8} • cancel: gpu-dev cancel {rid8}[/cyan]")
+            return
+        try:
+            drop = click.confirm(f"Cancel repro box {rid8}?", default=True)
+        except (KeyboardInterrupt, EOFError, click.Abort):
+            drop = False
+        if drop:
             try:
                 reservation_mgr.cancel_reservation(rid, user_info["user_id"])
-                rprint(f"[green]🧹 cancelled repro box {str(rid)[:8]}[/green]")
+                rprint(f"[green]🧹 cancelled {rid8}[/green]")
             except Exception as e:
-                rprint(f"[yellow]auto-cancel failed for {str(rid)[:8]}: {e}[/yellow]")
-    rprint(f"\n[bold]repro exit code: {rc}[/bold]")
+                rprint(f"[yellow]cancel failed for {rid8}: {e}[/yellow]")
+        else:
+            rprint(f"[cyan]📌 left {rid8} running — connect: gpu-dev connect {rid8} • cancel: gpu-dev cancel {rid8}[/cyan]")
+        return
+
+    # --no-connect / non-TTY: auto-cancel unless --keep, exit code = test result.
+    if keep:
+        rprint(f"[cyan]📌 kept {rid8} — gpu-dev connect {rid8} • gpu-dev cancel {rid8}[/cyan]")
+    else:
+        try:
+            reservation_mgr.cancel_reservation(rid, user_info["user_id"])
+            rprint(f"[green]🧹 cancelled repro box {rid8}[/green]")
+        except Exception as e:
+            rprint(f"[yellow]auto-cancel failed for {rid8}: {e}[/yellow]")
+    rprint(f"\n[bold]repro exit code: {rc}[/bold] ({verdict})")
+    sys.exit(rc)
 
 
 _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100",
