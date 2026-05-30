@@ -2668,6 +2668,24 @@ def cancel(
             rprint("[red]❌ Cannot specify both --all and a reservation ID[/red]")
             return
 
+        # Inside a gpu-dev pod, `gpu-dev cancel` (no id) shuts down THIS reservation
+        # directly. The pod knows its own reservation (GPU_DEV_RESERVATION_ID) and
+        # owner (GPU_DEV_USER_ID), so we skip the github_user / interactive list —
+        # which can't work in a pod that has no `gpu-dev config set github_user`.
+        pod_rid = os.environ.get("GPU_DEV_RESERVATION_ID", "").strip()
+        pod_uid = os.environ.get("GPU_DEV_USER_ID", "").strip()
+        if pod_rid and pod_uid and pod_uid != "warm" and not reservation_id and not all:
+            rprint("[yellow]🛑 Shutting down this reservation — if you're connected to this pod, your session will close shortly.[/yellow]")
+            try:
+                reservation_mgr = ReservationManager(load_config())
+                ok = reservation_mgr.cancel_reservation(pod_rid, pod_uid)
+            except Exception as e:
+                ok = False
+                rprint(f"[red]❌ Could not cancel from inside the pod: {e}[/red]")
+            if not ok:
+                rprint(f"[dim]If that didn't work, cancel from your laptop: gpu-dev cancel {pod_rid[:8]}[/dim]")
+            return
+
         # Handle --all flag (non-interactive)
         if all:
             with Live(

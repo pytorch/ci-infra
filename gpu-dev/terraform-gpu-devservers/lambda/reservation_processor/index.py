@@ -1633,7 +1633,18 @@ def try_claim_warm_pod(body: dict) -> bool:
             "while IFS= read -r k; do [ -n \"$k\" ] && ! grep -Fq \"$k\" /home/dev/.ssh/authorized_keys && echo \"$k\" >> /home/dev/.ssh/authorized_keys; done <<'KEOF'\n"
             f"{github_public_key}\n"
             "KEOF\n"
-            "chmod 700 /home/dev/.ssh && chmod 600 /home/dev/.ssh/authorized_keys && chown -R 1081:1081 /home/dev/.ssh"
+            "chmod 700 /home/dev/.ssh && chmod 600 /home/dev/.ssh/authorized_keys && chown -R 1081:1081 /home/dev/.ssh\n"
+            # Warm pods were pre-booted with user_id='warm'; stamp the real claimant's
+            # identity into the managed shell-ext files so `gpu-dev` inside the pod
+            # (cancel/list/...) authenticates as the user and IRSA assumes the right
+            # session. The user connects AFTER the claim, so their login shell picks
+            # these up. Also record the reservation id for `gpu-dev cancel`.
+            "for f in /home/dev/.bashrc_ext /home/dev/.zshrc_ext; do [ -f \"$f\" ] || continue\n"
+            f"  sed -i -e 's|^export GPU_DEV_USER_ID=.*|export GPU_DEV_USER_ID=\"{user_id}\"|'"
+            f" -e 's|^export GPU_DEV_GITHUB_USER=.*|export GPU_DEV_GITHUB_USER=\"{github_user}\"|'"
+            f" -e 's|^export AWS_ROLE_SESSION_NAME=.*|export AWS_ROLE_SESSION_NAME=\"{user_id}\"|' \"$f\"\n"
+            f"  grep -q '^export GPU_DEV_RESERVATION_ID=' \"$f\" && sed -i 's|^export GPU_DEV_RESERVATION_ID=.*|export GPU_DEV_RESERVATION_ID=\"{reservation_id}\"|' \"$f\" || echo 'export GPU_DEV_RESERVATION_ID=\"{reservation_id}\"' >> \"$f\"\n"
+            "done"
         )
         stream(
             v1.connect_get_namespaced_pod_exec, pod_name, "gpu-dev",
@@ -5272,6 +5283,10 @@ EOF_PROFILE
 
 # User identification
 export GPU_DEV_USER_ID="{user_id or 'dev'}"
+# Reservation id — from the pod hostname (gpu-dev-<id>). Warm claims overwrite this
+# in place with the full id; cold pods carry the 8-char prefix (cancellation resolves
+# by prefix). Lets `gpu-dev cancel` with no args inside the pod stop this reservation.
+export GPU_DEV_RESERVATION_ID="$(hostname | sed -e 's/^gpu-dev-//')"
 
 # Multinode peer info — inlined from container env at pod startup. sshd strips
 # container env vars from login shells, so we materialize the values into rc files.
@@ -5338,6 +5353,10 @@ EOF_BASHRC_EXT
 
 # User identification
 export GPU_DEV_USER_ID="{user_id or 'dev'}"
+# Reservation id — from the pod hostname (gpu-dev-<id>). Warm claims overwrite this
+# in place with the full id; cold pods carry the 8-char prefix (cancellation resolves
+# by prefix). Lets `gpu-dev cancel` with no args inside the pod stop this reservation.
+export GPU_DEV_RESERVATION_ID="$(hostname | sed -e 's/^gpu-dev-//')"
 
 # Multinode peer info — inlined from container env at pod startup. sshd strips
 # container env vars from login shells, so we materialize the values into rc files.
