@@ -5283,10 +5283,11 @@ EOF_PROFILE
 
 # User identification
 export GPU_DEV_USER_ID="{user_id or 'dev'}"
-# Reservation id — from the pod hostname (gpu-dev-<id>). Warm claims overwrite this
-# in place with the full id; cold pods carry the 8-char prefix (cancellation resolves
-# by prefix). Lets `gpu-dev cancel` with no args inside the pod stop this reservation.
-export GPU_DEV_RESERVATION_ID="$(hostname | sed -e 's/^gpu-dev-//')"
+# Reservation id from the pod hostname; warm claims overwrite it with the full id,
+# cold pods keep the 8-char prefix. Used by gpu-dev cancel (no args) inside the pod.
+# NOTE: escape the dollar so this is evaluated when the shell sources the file, NOT
+# command-substituted while this (unquoted) heredoc is written at pod startup.
+export GPU_DEV_RESERVATION_ID="\$(hostname | sed -e 's/^gpu-dev-//')"
 
 # Multinode peer info — inlined from container env at pod startup. sshd strips
 # container env vars from login shells, so we materialize the values into rc files.
@@ -5353,10 +5354,11 @@ EOF_BASHRC_EXT
 
 # User identification
 export GPU_DEV_USER_ID="{user_id or 'dev'}"
-# Reservation id — from the pod hostname (gpu-dev-<id>). Warm claims overwrite this
-# in place with the full id; cold pods carry the 8-char prefix (cancellation resolves
-# by prefix). Lets `gpu-dev cancel` with no args inside the pod stop this reservation.
-export GPU_DEV_RESERVATION_ID="$(hostname | sed -e 's/^gpu-dev-//')"
+# Reservation id from the pod hostname; warm claims overwrite it with the full id,
+# cold pods keep the 8-char prefix. Used by gpu-dev cancel (no args) inside the pod.
+# NOTE: escape the dollar so this is evaluated when the shell sources the file, NOT
+# command-substituted while this (unquoted) heredoc is written at pod startup.
+export GPU_DEV_RESERVATION_ID="\$(hostname | sed -e 's/^gpu-dev-//')"
 
 # Multinode peer info — inlined from container env at pod startup. sshd strips
 # container env vars from login shells, so we materialize the values into rc files.
