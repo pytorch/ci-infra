@@ -512,6 +512,21 @@ mig-configs:
       mig-devices:
         "7g.144gb": 1
 
+  # Custom: H100 mixed split — GPUs 0-5 stay full (reservable as --gpu-type h100),
+  # GPUs 6-7 partitioned per-GPU into 2x1g.10gb + 1x2g.20gb + 1x3g.40gb.
+  # Per node: 6 full + 4 small + 2 medium + 2 large slices.
+  h100-6full-2mig-balanced:
+    - device-filter: ["0x233010DE", "0x233110DE", "0x232210DE", "0x20B210DE", "0x20B510DE", "0x20F310DE", "0x20F510DE", "0x232410DE"]
+      devices: [0, 1, 2, 3, 4, 5]
+      mig-enabled: false
+    - device-filter: ["0x233010DE", "0x233110DE", "0x232210DE", "0x20B210DE", "0x20B510DE", "0x20F310DE", "0x20F510DE", "0x232410DE"]
+      devices: [6, 7]
+      mig-enabled: true
+      mig-devices:
+        "1g.10gb": 2
+        "2g.20gb": 1
+        "3g.40gb": 1
+
   # Custom: B200 mixed split — GPUs 0-5 stay full (reservable as --gpu-type b200),
   # GPUs 6-7 partitioned per-GPU into 2x1g.23gb + 1x2g.45gb + 1x3g.90gb.
   # Per node: 6 full + 4 small + 2 medium + 2 large slices.

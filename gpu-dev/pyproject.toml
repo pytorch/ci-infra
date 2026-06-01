@@ -22,6 +22,22 @@ dependencies = [
     "mcp>=1.0.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "moto[dynamodb,sqs,ec2]>=5.0",
+    "kubernetes>=28.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "sdk/python/tests"]
+python_files = ["test_*.py"]
+addopts = "-q -ra"
+markers = [
+    "integration: real-pod test on staging (cpu/t4); opt-in via --run-integration",
+]
+
 [project.scripts]
 gpu-dev = "gpu_dev_cli.cli:main"
 gpu-dev-ssh-proxy = "gpu_dev_cli.ssh_proxy:main"

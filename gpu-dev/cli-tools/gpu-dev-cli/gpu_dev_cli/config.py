@@ -29,6 +29,15 @@ class Config:
             "description": "Spot-only us-east-1 environment (T4/L4/CPU)",
             "spot_types": ["b300", "b200", "h200", "h100", "a100", "t4", "l4", "rtxpro6000"],
         },
+        # Staging (us-west-1, tf workspace "test"). Same standard resource prefix
+        # as prod, just a different region — so only the region changes. Live
+        # capacity: cpu-x86/arm + t4. Used for integration tests. Select via
+        # `GPU_DEV_ENVIRONMENT=staging` (or the legacy "test" env, same target).
+        "staging": {
+            "region": "us-west-1",
+            "workspace": "test",
+            "description": "Staging (us-west-1, cpu + t4)",
+        },
     }
     DEFAULT_ENVIRONMENT = "prod"
 
@@ -43,19 +52,33 @@ class Config:
         # Load unified config (handles migration from legacy files)
         self.user_config = self._load_config()
 
-        # Get region: env vars take priority (for spot routing), then config, then default
+        # Active environment: GPU_DEV_ENVIRONMENT env wins (handy for tests/CI),
+        # then the persisted config, then the default. Its region/prefix back the
+        # fallbacks below so e.g. `GPU_DEV_ENVIRONMENT=staging` reaches us-west-2.
+        env_override = os.getenv("GPU_DEV_ENVIRONMENT")
+        env_name = env_override or self.user_config.get(
+            "environment", self.DEFAULT_ENVIRONMENT)
+        env_cfg = self.ENVIRONMENTS.get(env_name, {})
+
+        # Get region: AWS_* env vars take priority (for spot routing); then an
+        # explicit GPU_DEV_ENVIRONMENT switch uses that env's region (beating the
+        # persisted one); then the persisted config; then the env's region; default.
         env_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
         if env_region and env_region != self.user_config.get("region"):
             self.aws_region = env_region
+        elif env_override and env_cfg.get("region"):
+            self.aws_region = env_cfg["region"]
         elif self.user_config.get("region"):
             self.aws_region = self.user_config["region"]
+        elif env_cfg.get("region"):
+            self.aws_region = env_cfg["region"]
         else:
             self.aws_region = "us-east-2"
 
         os.environ["AWS_DEFAULT_REGION"] = self.aws_region
 
-        # Resource naming convention - no config needed!
-        self.prefix = "pytorch-gpu-dev"
+        # Resource naming convention — per-environment prefix (default for prod).
+        self.prefix = env_cfg.get("prefix", "pytorch-gpu-dev")
 
         # Construct ARNs from convention
         self.queue_name = f"{self.prefix}-reservation-queue"

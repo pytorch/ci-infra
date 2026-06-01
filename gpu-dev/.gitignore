@@ -73,3 +73,14 @@ lambda/*/package/
 admin/output/
 
 .claude/worktrees/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Org-specific (filled in locally; not committed)
+docs/INTERNAL_AUTH.md
+
+# Local scratch / staging terraform working dir
+*.pid
+terraform-gpu-devservers/staging/.terraform/
+terraform-gpu-devservers/staging/__pycache__/
+terraform-gpu-devservers/staging/*.log

@@ -426,7 +426,10 @@ class AwsBackend:
     def _item_to_info(item: dict[str, Any]) -> ReservationInfo:
         return ReservationInfo(
             id=str(item.get("reservation_id", "")),
-            status=item.get("status", "unknown"),
+            # A record may be written before its status field exists; default to
+            # PENDING (a real enum member) rather than "unknown", which is not a
+            # ReservationStatus and would raise a pydantic ValidationError.
+            status=item.get("status") or "pending",
             gpu_type=str(item.get("gpu_type", "")),
             gpu_count=int(item.get("gpu_count", 1)),
             name=str(item.get("name", "")) or None,
