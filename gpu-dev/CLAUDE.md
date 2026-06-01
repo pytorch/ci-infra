@@ -28,6 +28,45 @@ For terraform, we use opentofu, don't ever run tf apply directly. You're free to
 - Group imports in standard order: standard library, third-party, local imports
 - Use absolute imports when possible
 
+## Testing (DO THIS FOR EVERY CHANGE)
+
+There is a real test suite now. **Every change must keep it green, and add/adjust
+tests.** Two tiers:
+
+**1. Unit + mocks — ALWAYS run, must stay green (CI runs this on every push/PR).**
+Fully mocked (boto3 / k8s / SSH / subprocess), no network, ~2s.
+```bash
+uv pip install -e ".[test]"        # one-time: pytest, moto, kubernetes
+uv run pytest -m "not integration" # ~1140 tests; run before every commit
+```
+- Layout: `tests/unit/{sdk,cli,lambda_fn}/test_*.py`; shared fixtures in the root
+  `conftest.py` (`cli_runner`, `lambda_index` = the lambda imported as `index`
+  with env pre-set, `aws_mocks` = MagicMock boto3 handles).
+- When you touch CLI / SDK / lambda code, update or add the matching `test_*.py`.
+- CI: `.github/workflows/tests.yml`. Lambda imports need env vars + sys.path — the
+  root `conftest.py` already sets both.
+
+**2. e2e integration on STAGING — run for anything touching the
+reserve/pod/SSH/lambda path before merging.** Real reservations on the **staging**
+cluster (us-west-1), cpu + t4 only, auto-cancelled.
+```bash
+GPU_DEV_TEST_ENV=staging GPU_DEV_GITHUB_USER=wdvr \
+  uv run pytest -m integration --run-integration -v
+```
+- Staging = `GPU_DEV_ENVIRONMENT=staging` → us-west-1, standard `pytorch-gpu-dev-*`
+  prefix (tf workspace `test`). Wired in `cli-tools/.../config.py` ENVIRONMENTS.
+- Covers: cpu-x86 + t4 reserve→active→cancel, list-while-active, exec
+  (`nproc`/`nvidia-smi`/`torch.cuda`), and **`claude -p` answers "Paris"** (proves
+  the pod's Claude Code/Bedrock works). Each cancels in a `finally` (no leaked pods).
+- Skips cleanly if staging is unreachable or the runner has no outbound SSH (e.g. a
+  sandbox). The reservation role can query/SQS but lacks `DescribeTable`, so the
+  reachability probe uses scan+get-queue-url, not describe.
+- Validated live (2026-05-31): cpu + t4 lifecycle PASS.
+
+**Rule of thumb:** unit+mocks for *every* change; add e2e coverage when you add a
+new command/flow; run the staging e2e before merging anything that could affect a
+live reservation. Don't say "done/tested" without having run the relevant tier.
+
 ## Content
 
 - torchci - a next.js app containing a PyTorch CI tracker
