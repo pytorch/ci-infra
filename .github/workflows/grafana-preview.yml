@@ -1,0 +1,58 @@
+name: "Grafana: Preview dashboard changes"
+
+on:
+  pull_request:
+    paths:
+      - grafana/**
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: grafana-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PREVIEW_FOLDER: pr-preview-${{ github.event.pull_request.number }}
+      # Parent folder UID — previews are created as subfolders of this.
+      PARENT_FOLDER: ftzkfk
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          version: 2026.5.11
+          install: true
+
+      - name: Generate preview resources
+        run: |
+          cd grafana
+          python3 generator.py \
+            --folder "$PREVIEW_FOLDER" \
+            --folder-title "PR Preview #${{ github.event.pull_request.number }}" \
+            --parent-folder "$PARENT_FOLDER"
+
+      - name: Push preview dashboards
+        run: |
+          cd grafana
+          mise exec -- gcx resources push -p generated
+        env:
+          GRAFANA_TOKEN: ${{ secrets.PYTORCHCI_GRAFANA_API_TOKEN }}
+
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: grafana-preview
+          message: |
+            ### Grafana Dashboard Preview
+
+            Preview dashboards deployed to a temporary folder:
+            **https://pytorchci.grafana.net/dashboards/f/${{ env.PREVIEW_FOLDER }}**
+
+            This folder will be automatically cleaned up when the PR is closed.

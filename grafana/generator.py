@@ -13,6 +13,14 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         description="Generate Grafana dashboard resources."
     )
     parser.add_argument("--folder", required=True, help="Grafana folder UID")
+    parser.add_argument(
+        "--folder-title",
+        help="Create a folder resource with this title",
+    )
+    parser.add_argument(
+        "--parent-folder",
+        help="Parent folder UID (creates the folder as a subfolder)",
+    )
     return parser.parse_args(argv)
 
 
@@ -32,6 +40,28 @@ def wrap_dashboard(
         },
         "spec": dashboard,
     }
+
+
+def create_folder_resource(
+    folder_uid: str,
+    title: str,
+    parent_folder: str = None,
+) -> Dict[str, object]:
+    resource: Dict[str, object] = {
+        "apiVersion": "folder.grafana.app/v1",
+        "kind": "Folder",
+        "metadata": {
+            "name": folder_uid,
+        },
+        "spec": {
+            "title": title,
+        },
+    }
+    if parent_folder:
+        resource["metadata"]["annotations"] = {
+            "grafana.app/folder": parent_folder,
+        }
+    return resource
 
 
 def reset_generated_dir(generated_dir: Path) -> None:
@@ -57,6 +87,16 @@ def main(argv: List[str]) -> int:
 
     generated_dir = Path("generated")
     reset_generated_dir(generated_dir)
+
+    if args.folder_title:
+        folder_resource = create_folder_resource(
+            args.folder, args.folder_title, args.parent_folder
+        )
+        folder_file = generated_dir / "_folder.json"
+        with folder_file.open("w", encoding="utf-8") as output:
+            json.dump(folder_resource, output, indent=2, ensure_ascii=False)
+            output.write("\n")
+        logging.info("Generated folder resource: %s", folder_file)
 
     for dashboard_file in dashboard_files:
         with dashboard_file.open(encoding="utf-8") as source:
