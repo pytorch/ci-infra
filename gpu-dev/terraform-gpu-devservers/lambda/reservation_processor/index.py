@@ -4706,8 +4706,11 @@ def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:
         client.V1EnvVar(name="MAKEFLAGS", value=f"-j{thread_str}"),  # make parallelism
         # Used by startup script to write to /etc/environment for SSH sessions
         client.V1EnvVar(name="GPU_DEV_THREAD_COUNT", value=thread_str),
-        # ccache configuration for faster C++ compilation
+        # ccache configuration for faster C++ compilation. MAXSIZE >> a single
+        # PyTorch build (10-20GB) so the shared cache holds many commits and repros
+        # hit instead of recompiling (the default ~5GB evicts constantly).
         client.V1EnvVar(name="CCACHE_DIR", value="/ccache_shared"),
+        client.V1EnvVar(name="CCACHE_MAXSIZE", value="150G"),
         # Pod Python is the system (PEP 668 externally-managed) interpreter and
         # venv is unavailable (no ensurepip), so `pip install -e . --no-build-isolation`
         # — the canonical pytorch dev build — otherwise errors. This lets it just work.
@@ -5038,6 +5041,7 @@ export MAX_JOBS=$GPU_DEV_THREAD_COUNT
 export CMAKE_BUILD_PARALLEL_LEVEL=$GPU_DEV_THREAD_COUNT
 export MAKEFLAGS="-j$GPU_DEV_THREAD_COUNT"
 export CCACHE_DIR="/ccache_shared"
+export CCACHE_MAXSIZE="150G"
 EOF
                             chmod 644 /etc/profile.d/cpu-limits.sh
 
@@ -5053,6 +5057,7 @@ export MAX_JOBS=$GPU_DEV_THREAD_COUNT
 export CMAKE_BUILD_PARALLEL_LEVEL=$GPU_DEV_THREAD_COUNT
 export MAKEFLAGS="-j$GPU_DEV_THREAD_COUNT"
 export CCACHE_DIR="/ccache_shared"
+export CCACHE_MAXSIZE="150G"
 EOF
                             chmod 644 /etc/zsh/zshenv
 

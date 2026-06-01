@@ -92,10 +92,16 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 export BUILD_TEST=0
                 export MAX_JOBS=128
                 export CCACHE_DIR=/ccache_shared
+                # A single PyTorch build is 10-20GB of objects; the ccache default
+                # (~5GB) evicts constantly (prod was at 37k cleanups / ~45% hits).
+                # Size it to hold many commits so repros + the next viable/strict
+                # bump mostly hit. EFS is elastic; ~$0.30/GB-mo.
+                export CCACHE_MAXSIZE=150G
                 export CMAKE_C_COMPILER_LAUNCHER=ccache
                 export CMAKE_CXX_COMPILER_LAUNCHER=ccache
                 export CMAKE_CUDA_COMPILER_LAUNCHER=ccache
                 mkdir -p "$CCACHE_DIR"
+                ccache -M 150G 2>/dev/null || true   # persist max_size into the shared cache config
 
                 # --- checkout viable/strict (last green trunk commit) ---
                 if [ ! -d "$SRC/.git" ]; then
