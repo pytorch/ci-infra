@@ -42,6 +42,7 @@ resource "kubernetes_persistent_volume_claim" "git_cache" {
 }
 
 resource "kubernetes_deployment" "git_cache" {
+  depends_on = [kubernetes_namespace.management]
   metadata {
     name      = "git-cache"
     namespace = "management"
@@ -345,6 +346,7 @@ NGINXCONF
 }
 
 resource "kubernetes_service" "git_cache" {
+  depends_on = [kubernetes_namespace.management]
   metadata {
     name      = "git-cache"
     namespace = "management"

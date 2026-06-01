@@ -35,6 +35,7 @@ locals {
 }
 
 resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
+  depends_on = [kubernetes_namespace.management]
   metadata {
     name      = "pytorch-prebuild"
     namespace = "management"
