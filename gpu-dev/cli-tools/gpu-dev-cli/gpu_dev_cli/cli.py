@@ -1562,17 +1562,38 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
     if r.startswith("pr/"): prnum = r[3:]
     elif r.startswith("#"): prnum = r[1:]
     elif r.isdigit(): prnum = r
+    gh = "https://github.com/pytorch/pytorch.git"
     if prnum:
         fetch = (f"git fetch origin pull/{prnum}/merge 2>/dev/null && git checkout -f FETCH_HEAD || "
                  f"{{ echo '[repro] no /merge ref, using /head'; git fetch origin pull/{prnum}/head && git checkout -f FETCH_HEAD; }}")
+        # resolve to a concrete SHA up front so we can check the by-sha artifact cache
+        resolve = (f"WANT=$(timeout 15 git ls-remote {gh} pull/{prnum}/merge 2>/dev/null | head -1 | cut -f1); "
+                   f"[ -n \"$WANT\" ] || WANT=$(timeout 15 git ls-remote {gh} pull/{prnum}/head 2>/dev/null | head -1 | cut -f1); ")
     else:
         rq = shlex.quote(r)
         fetch = f"git fetch origin {rq} 2>/dev/null && git checkout -f FETCH_HEAD || git checkout -f {rq}"
+        resolve = (f"WANT=$(timeout 15 git ls-remote {gh} {rq} 2>/dev/null | head -1 | cut -f1); "
+                   f"[ -n \"$WANT\" ] || case {rq} in *[!0-9a-fA-F]*) WANT= ;; *) WANT={rq} ;; esac; ")
 
     testcmd = " ".join(shlex.quote(a) for a in test_args)
+    # by-sha artifact cache: if a fully-built tree for the resolved SHA already exists
+    # (shared EFS, seeded by the build node + prior repros), stage it -> ZERO build.
+    # Otherwise build, then publish the result so the next dev (anyone) gets it instant.
     remote = (
         "set -e; cd /home/dev/pytorch; "
         "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
+        "BYSHA=/ccache_shared/prebuilt/by-sha; HIT=; "
+        + resolve +
+        "echo \"[repro] target ${WANT:-?}\"; "
+        "if [ -n \"$WANT\" ] && [ -f \"$BYSHA/$WANT.sha\" ]; then "
+        "TB=$(ls \"$BYSHA/$WANT.tar.\"* 2>/dev/null | head -1); "
+        "if [ -n \"$TB\" ]; then echo '[repro] by-sha cache HIT -> staging prebuilt tree (zero build)'; "
+        "rm -rf /home/dev/pytorch.new; mkdir -p /home/dev/pytorch.new; "
+        "case \"$TB\" in *.zst) zstd -dc \"$TB\" 2>/dev/null | tar -C /home/dev/pytorch.new --strip-components=1 -xf - 2>/dev/null ;; "
+        "*) tar -C /home/dev/pytorch.new --strip-components=1 -xzf \"$TB\" 2>/dev/null ;; esac; "
+        "if [ -d /home/dev/pytorch.new/.git ]; then rm -rf /home/dev/pytorch; mv /home/dev/pytorch.new /home/dev/pytorch; cd /home/dev/pytorch; HIT=1; "
+        "else rm -rf /home/dev/pytorch.new; echo '[repro] by-sha extract failed, building from source'; fi; fi; fi; "
+        "if [ -z \"$HIT\" ]; then "
         f"echo '[repro] checkout {r}'; {fetch}; "
         "echo \"[repro] HEAD $(git rev-parse --short HEAD)\"; "
         "git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 >/dev/null 2>&1 || true; "
@@ -1580,6 +1601,12 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         "echo \"[repro] prebuilt torch != this commit -> rebuilding (ccache-accelerated, but the further this commit is from viable/strict, the more recompiles). checked-out: $(git log -1 --format='%h %ci')\"; "
         # -v streams the cmake/ninja [x/N] progress instead of pip's blind 'still running...' spinner.
         "pip install --break-system-packages -e . --no-build-isolation -v; fi; "
+        # cache this build for the next dev (detached so it survives the ssh session)
+        "SHA=$(git rev-parse HEAD 2>/dev/null); "
+        "if command -v publish-pytorch-build >/dev/null 2>&1 && [ -n \"$SHA\" ] && [ ! -f \"$BYSHA/$SHA.sha\" ]; then "
+        "echo '[repro] caching this build (by-sha) for next time…'; "
+        "setsid publish-pytorch-build \"$SHA\" >/dev/null 2>&1 < /dev/null & fi; "
+        "fi; "
         f"echo '[repro] running: python {testcmd}'; "
         f"PYTHONPATH=/home/dev/pytorch python {testcmd}"
     )

@@ -5793,6 +5793,65 @@ SRC=/nvme-pytorch
 
 if ! command -v git >/dev/null 2>&1; then echo "[pytorch] git unavailable, skipping"; exit 0; fi
 
+# --- by-SHA artifact cache fast path (Phase 2) ---
+# If the requested ref resolves to a SHA we already have a fully-built tree for,
+# drop THAT tree in -> "import torch" works with ZERO build (the .so matches the
+# source). On any miss we fall through to the normal drop-in + checkout below.
+BYSHA_DIR=/ccache_shared/prebuilt/by-sha
+GH=https://github.com/pytorch/pytorch.git
+WANT_SHA=""
+case "$REF" in
+    ""|master|main|MASTER|MAIN) : ;;
+    *)
+        PRN=""
+        case "$REF" in
+            pr/*) PRN=$(echo "$REF" | sed 's|^pr/||') ;;
+            '#'*) PRN=$(echo "$REF" | sed 's|^#||') ;;
+            *[!0-9]*) : ;;
+            *) PRN="$REF" ;;
+        esac
+        if [ -n "$PRN" ]; then
+            WANT_SHA=$(timeout 15 git ls-remote "$GH" "pull/$PRN/merge" 2>/dev/null | head -1 | cut -f1)
+            [ -z "$WANT_SHA" ] && WANT_SHA=$(timeout 15 git ls-remote "$GH" "pull/$PRN/head" 2>/dev/null | head -1 | cut -f1)
+        else
+            WANT_SHA=$(timeout 15 git ls-remote "$GH" "$REF" 2>/dev/null | head -1 | cut -f1)
+            if [ -z "$WANT_SHA" ]; then
+                case "$REF" in *[!0-9a-fA-F]*) : ;; *) WANT_SHA="$REF" ;; esac
+            fi
+        fi ;;
+esac
+
+if [ -n "$WANT_SHA" ] && [ ! -d "$DEST/.git" ] && [ -f "$BYSHA_DIR/$WANT_SHA.sha" ]; then
+    BYSHA_TB=""
+    if command -v zstd >/dev/null 2>&1 && [ -f "$BYSHA_DIR/$WANT_SHA.tar.zst" ]; then
+        BYSHA_TB="$BYSHA_DIR/$WANT_SHA.tar.zst"
+    elif [ -f "$BYSHA_DIR/$WANT_SHA.tar.gz" ]; then
+        BYSHA_TB="$BYSHA_DIR/$WANT_SHA.tar.gz"
+    fi
+    if [ -n "$BYSHA_TB" ]; then
+        echo "[pytorch] by-sha cache HIT for $WANT_SHA -> staging prebuilt tree (zero build)"
+        mkdir -p /home/dev
+        rm -rf "$DEST"
+        case "$BYSHA_TB" in
+            *.zst) zstd -dc "$BYSHA_TB" 2>/dev/null | tar -C /home/dev -xf - 2>/dev/null ;;
+            *)     tar -C /home/dev -xzf "$BYSHA_TB" 2>/dev/null ;;
+        esac
+        if [ -d "$DEST/.git" ]; then
+            git config --global --add safe.directory "$DEST" 2>/dev/null || true
+            printf 'export PYTHONPATH="/home/dev/pytorch:$PYTHONPATH"\n' > /etc/profile.d/zz-pytorch.sh 2>/dev/null || true
+            for ext in /home/dev/.bashrc_ext /home/dev/.zshrc_ext; do
+                grep -q 'home/dev/pytorch' "$ext" 2>/dev/null || printf 'export PYTHONPATH="/home/dev/pytorch:$PYTHONPATH"\n' >> "$ext"
+            done
+            chown -R 1081:1081 "$DEST" 2>/dev/null || true
+            echo "$WANT_SHA" > /home/dev/.pytorch-ready
+            echo "[pytorch] Ready at $DEST ($WANT_SHA) - by-sha, no build needed"
+            exit 0
+        fi
+        echo "[pytorch] by-sha extract failed; falling back to normal staging"
+        rm -rf "$DEST"
+    fi
+fi
+
 PREBUILT_DROPPED=no
 if [ -d "$DEST/.git" ]; then
     echo "[pytorch] $DEST already present, skipping drop-in"
@@ -5876,6 +5935,29 @@ git rev-parse HEAD 2>/dev/null > /home/dev/.pytorch-ready || echo unknown > /hom
 echo "[pytorch] Ready at $DEST ($(cat /home/dev/.pytorch-ready))"
 STAGEPYTORCH
                         chmod +x /usr/local/bin/stage-pytorch
+
+                        # publish-pytorch-build [sha] — tar /home/dev/pytorch into the
+                        # by-SHA artifact cache so the next repro of this commit stages
+                        # it with ZERO build. Best-effort; .sha is written LAST = the
+                        # completion gate (a partial tar has no marker -> ignored).
+                        cat > /usr/local/bin/publish-pytorch-build << 'PUBPYTORCH'
+#!/bin/bash
+SHA="$1"
+BYSHA=/ccache_shared/prebuilt/by-sha
+[ -n "$SHA" ] || SHA=$(git -C /home/dev/pytorch rev-parse HEAD 2>/dev/null)
+[ -n "$SHA" ] || exit 0
+[ -d /ccache_shared ] || exit 0
+[ -f "$BYSHA/$SHA.sha" ] && exit 0
+[ -d /home/dev/pytorch/.git ] || exit 0
+mkdir -p "$BYSHA" || exit 0
+TMP="$BYSHA/$SHA.tar.gz.tmp.$$"
+if tar -C /home/dev -czf "$TMP" pytorch 2>/dev/null; then
+    mv "$TMP" "$BYSHA/$SHA.tar.gz" && echo "$SHA" > "$BYSHA/$SHA.sha"
+else
+    rm -f "$TMP"
+fi
+PUBPYTORCH
+                        chmod +x /usr/local/bin/publish-pytorch-build
 
                         if [ "{stage_flag}" = "true" ]; then
                             echo "[STARTUP] Staging pytorch (ref={pytorch_ref}) in background..."

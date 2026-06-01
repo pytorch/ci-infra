@@ -183,6 +183,35 @@ def test_remote_command_structure(cli_runner):
     assert "PYTHONPATH=/home/dev/pytorch python test/inductor/test_flex_attention.py TestX.test_y" in cmd
 
 
+# ---------------------------------------------------------------------------
+# by-sha artifact cache (Phase 1/2): consume on hit, fill after a build
+# ---------------------------------------------------------------------------
+def test_remote_checks_bysha_cache_before_building(cli_runner):
+    res, rm, run = _run(cli_runner, ["pr/185264", "test/foo.py"], claim_result=WARM)
+    cmd = _remote_str(run)
+    # resolves the ref to a concrete SHA, then probes the shared by-sha cache
+    assert "git ls-remote" in cmd and "pull/185264/merge" in cmd
+    assert "/ccache_shared/prebuilt/by-sha" in cmd
+    assert "by-sha cache HIT" in cmd
+    # the from-source fetch+build path is gated behind a cache miss
+    assert 'if [ -z "$HIT" ]' in cmd
+
+
+def test_remote_publishes_build_to_bysha(cli_runner):
+    res, rm, run = _run(cli_runner, ["pr/1", "test/foo.py"], claim_result=WARM)
+    cmd = _remote_str(run)
+    # after a from-source build, publish the tree for the next dev (detached)
+    assert "publish-pytorch-build" in cmd
+    assert "setsid" in cmd
+
+
+def test_bysha_resolve_for_branch_uses_lsremote_of_ref(cli_runner):
+    res, rm, run = _run(cli_runner, ["my-feature-branch", "test/foo.py"], claim_result=WARM)
+    cmd = _remote_str(run)
+    assert "git ls-remote" in cmd and "my-feature-branch" in cmd
+    assert "/ccache_shared/prebuilt/by-sha" in cmd
+
+
 def test_test_args_are_shlex_quoted(cli_runner):
     res, rm, run = _run(
         cli_runner,

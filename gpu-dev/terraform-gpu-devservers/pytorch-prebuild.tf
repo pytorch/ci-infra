@@ -153,6 +153,20 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 fi
                 echo "$TARGET" > "$PUB.sha"
                 echo "[prebuild] published $(du -sh "$PUBFILE" | cut -f1) @ $TARGET"
+
+                # --- also seed the by-SHA artifact cache (Phase 1) ---
+                # Same bytes, hardlinked (no extra EFS space) so a repro that resolves
+                # to exactly this SHA stages a fully-built tree with ZERO build. The
+                # .sha marker is written LAST = the completion gate stage-pytorch polls.
+                BYSHA="$PREBUILT/by-sha"
+                mkdir -p "$BYSHA"
+                EXT="$${PUBFILE##*.}"   # zst or gz, whichever we published
+                BYSHA_FILE="$BYSHA/$TARGET.tar.$EXT"
+                if [ ! -f "$BYSHA_FILE" ]; then
+                  ln -f "$PUBFILE" "$BYSHA_FILE" 2>/dev/null || cp "$PUBFILE" "$BYSHA_FILE"
+                  echo "$TARGET" > "$BYSHA/$TARGET.sha"
+                  echo "[prebuild] seeded by-sha cache: $TARGET.tar.$EXT"
+                fi
                 ccache -s 2>/dev/null | grep -iE 'hits|misses' | head
                 echo "[prebuild] DONE $TARGET"
               EOT
