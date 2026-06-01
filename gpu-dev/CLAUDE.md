@@ -104,6 +104,42 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
 
 # AGENT SECTION
 
+## Fast-repro redesign — by-SHA artifact cache + on-demand build (2026-06-01)
+
+Goal: `gpu-dev repro <ref>` for any pytorch commit from the last ~72h lands a built,
+importable tree in <2min. Design: `docs/FAST_REPRO_DESIGN.md`. **All merged to main**
+(PRs #186–#189); **needs `tofu apply` (prod, workspace `prod`) + image rebuild**.
+
+- **by-SHA artifact cache** (#186): whole *built* trees keyed by commit SHA at
+  `/ccache_shared/prebuilt/by-sha/<sha>.tar.{zst,gz}` (`.sha` written last = the
+  completion gate). Cron seeds one per viable/strict bump (hardlink, no extra space).
+  `stage-pytorch` (cold `--ref`) + `gpu-dev repro` consume on hit → `import torch`
+  with ZERO build. `repro` also publishes its in-pod build via `publish-pytorch-build`
+  (detached) so the cache fills from real usage. All paths safe-fallback on miss;
+  `ls-remote` is `timeout 15`.
+- **retention** (#188): prebuild cron prunes by-sha entries >72h every tick (storage
+  budget ~500-650GB on the elastic ccache EFS). The by-sha set IS the snapshot ladder.
+- **mold linker** (#187): Dockerfile installs `mold`; cron + in-pod repro build wrap
+  with `mold -run` (guarded on `command -v mold`). Drops the libtorch_cuda.so relink
+  ~1-3min → ~15s. **Needs image rebuild** to activate (prod runs a stale image; that's
+  also why prod publishes gzip not zstd — the Dockerfile has zstd already).
+- **on-demand build worker** (#189, `pytorch-ondemand.tf`): always-on Deployment on
+  NodeType=build drains `prebuilt/build-queue/<sha>.req` (own hostPath tree
+  `/mnt/ondemand-build` → builds at `/home/dev/pytorch` so build/ paths are
+  pod-compatible; mold+ccache), publishes by-sha, writes `.worker-alive` heartbeat.
+  `repro` enqueues + polls ONLY when the heartbeat is fresh (else straight to in-pod
+  build → zero regression if not deployed). Makes the FIRST repro of an uncached
+  commit fast. Coordination 100% via shared EFS — no new networking/RBAC/lambda.
+- cuDNN fidelity (`USE_CUDNN=1`) DEFERRED — forcing it can fail the build if cuDNN
+  isn't found under cuda-13.2; needs prod e2e. Base image is cudnn9-devel.
+- Fast path is **prod-arch only** (`sm_90;sm_100` = H100/B200); t4/staging is wrong-arch.
+- Also: SSH alias now keys off reservation id not pod name (#185) so warm/repro pods
+  are reachable via `ssh gpu-dev-<resid>` / `connect` (routing is via the FQDN, the
+  alias is a local label). CCACHE_MAXSIZE settled at 250G (#184).
+- Prod e2e: `gpu-dev repro <fresh-sha> <test> --gpu-type h100 --no-connect` (first =
+  off-pod build + stage; rerun = by-sha HIT zero build). Worker logs:
+  `k -n management logs deploy/pytorch-ondemand-builder -f`.
+
 ## Instant-sandboxes branch — WIP & things to fix (2026-05-29)
 
 Big push on warm pools + instant claims + prebuilt pytorch. Tracking state here so it's not lost.
