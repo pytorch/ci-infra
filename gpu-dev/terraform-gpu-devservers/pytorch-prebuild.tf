@@ -123,8 +123,13 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
 
                 # --- build (incremental; build/ persists on hostPath) ---
                 pip install --break-system-packages -r requirements.txt 2>&1 | tail -2 || true
+                # mold links libtorch_cuda.so in ~15s vs ~1-3min for ld -> the relink
+                # floor that otherwise dominates an incremental build. mold -run wraps
+                # the whole build so every link goes through it. Guarded: no-op until
+                # the image ships mold.
+                MOLD=""; command -v mold >/dev/null 2>&1 && { MOLD="mold -run"; echo "[prebuild] using mold linker"; }
                 T0=$(date +%s)
-                python -m pip install --break-system-packages -e . --no-build-isolation || { echo "[prebuild] BUILD FAILED"; exit 1; }
+                $MOLD python -m pip install --break-system-packages -e . --no-build-isolation || { echo "[prebuild] BUILD FAILED"; exit 1; }
                 echo "[prebuild] build took $(( $(date +%s) - T0 ))s"
 
                 # --- verify importable + correct archs ---

@@ -212,6 +212,14 @@ def test_bysha_resolve_for_branch_uses_lsremote_of_ref(cli_runner):
     assert "/ccache_shared/prebuilt/by-sha" in cmd
 
 
+def test_remote_uses_mold_linker_when_available(cli_runner):
+    res, rm, run = _run(cli_runner, ["pr/1", "test/foo.py"], claim_result=WARM)
+    cmd = _remote_str(run)
+    # guarded mold -run wrapper on the rebuild (no-op until the image ships mold)
+    assert "command -v mold" in cmd
+    assert "mold -run" in cmd
+
+
 def test_test_args_are_shlex_quoted(cli_runner):
     res, rm, run = _run(
         cli_runner,
