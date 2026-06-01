@@ -35,7 +35,7 @@ locals {
 }
 
 resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
-  depends_on = [kubernetes_namespace.management]
+  depends_on = [kubernetes_namespace.management, null_resource.docker_build_and_push]
   metadata {
     name      = "pytorch-prebuild"
     namespace = "management"
@@ -66,8 +66,11 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
             restart_policy = "Never"
 
             container {
-              name              = "build"
-              image             = local.latest_image_uri # same image users run
+              name = "build"
+              # Hash-tagged (not :latest): a rebuilt image = a new tag, so each cron
+              # job pulls it (IfNotPresent -> "not present"). The build node has no
+              # image-prepuller, so :latest would stay stale here (no mold/zstd).
+              image             = local.full_image_uri
               image_pull_policy = "IfNotPresent"
               command           = ["/bin/bash", "-lc"]
               args = [<<-EOT

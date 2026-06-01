@@ -18,7 +18,7 @@
 # with the hourly cron's tree; shared ccache is concurrency-safe.
 
 resource "kubernetes_deployment_v1" "pytorch_ondemand" {
-  depends_on = [kubernetes_namespace.management]
+  depends_on = [kubernetes_namespace.management, null_resource.docker_build_and_push]
   metadata {
     name      = "pytorch-ondemand-builder"
     namespace = "management"
@@ -37,8 +37,13 @@ resource "kubernetes_deployment_v1" "pytorch_ondemand" {
         restart_policy = "Always"
 
         container {
-          name              = "builder"
-          image             = local.latest_image_uri
+          name = "builder"
+          # Hash-tagged (not :latest): a rebuilt image = a new tag, so this
+          # Deployment's template changes and k8s rolls it automatically, and
+          # IfNotPresent pulls the new tag (it's "not present") — no Always, no
+          # manual recycle. The build node has no image-prepuller, so :latest would
+          # stay stale here.
+          image             = local.full_image_uri
           image_pull_policy = "IfNotPresent"
           command           = ["/bin/bash", "-lc"]
           args = [<<-EOT
