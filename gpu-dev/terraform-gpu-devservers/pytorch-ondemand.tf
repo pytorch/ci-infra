@@ -81,21 +81,32 @@ resource "kubernetes_deployment_v1" "pytorch_ondemand" {
             fi
             git config --global --add safe.directory "$SRC" 2>/dev/null || true
 
-            build_sha() {
-              local sha="$1"
+            # build_ref <fetchref> <wantsha>: fetch the ref (pull/N/merge, a branch, or a
+            # sha — a synthetic merge sha isn't fetchable by sha alone, so we need the
+            # ref), build it, and publish by-sha under the ACTUAL built HEAD. The
+            # requester polls for <wantsha>; if the ref drifted, HEAD != wantsha and the
+            # requester just falls back to its in-pod build.
+            build_ref() {
+              local fref="$1" want="$2" actual zb
               cd "$SRC" || return 1
-              git fetch --force origin "$sha" 2>/dev/null || git fetch --force origin 2>/dev/null || true
-              git checkout -f "$sha" 2>/dev/null || { echo "[ondemand] checkout $sha failed"; return 1; }
+              if git fetch --force origin "$fref" 2>/dev/null; then
+                git checkout -f FETCH_HEAD 2>/dev/null || { echo "[ondemand] checkout FETCH_HEAD ($fref) failed"; return 1; }
+              else
+                git fetch --force origin 2>/dev/null || true
+                git checkout -f "$want" 2>/dev/null || { echo "[ondemand] checkout $want failed"; return 1; }
+              fi
               git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 2>/dev/null || true
               pip install --break-system-packages -r requirements.txt 2>&1 | tail -1 || true
-              $MOLD python -m pip install --break-system-packages -e . --no-build-isolation || { echo "[ondemand] build $sha FAILED"; return 1; }
-              local zb; zb=$(command -v zstd 2>/dev/null || true)
+              $MOLD python -m pip install --break-system-packages -e . --no-build-isolation || { echo "[ondemand] build $fref FAILED"; return 1; }
+              actual=$(git rev-parse HEAD 2>/dev/null); [ -n "$actual" ] || return 1
+              zb=$(command -v zstd 2>/dev/null || true)
               if [ -n "$zb" ]; then
-                tar -C /home/dev -cf - pytorch | "$zb" -3 -T0 -q -o "$BYSHA/$sha.tar.zst.tmp" && mv "$BYSHA/$sha.tar.zst.tmp" "$BYSHA/$sha.tar.zst" || return 1
+                tar -C /home/dev -cf - pytorch | "$zb" -3 -T0 -q -o "$BYSHA/$actual.tar.zst.tmp" && mv "$BYSHA/$actual.tar.zst.tmp" "$BYSHA/$actual.tar.zst" || return 1
               else
-                tar -C /home/dev -cf - pytorch | gzip -1 > "$BYSHA/$sha.tar.gz.tmp" && mv "$BYSHA/$sha.tar.gz.tmp" "$BYSHA/$sha.tar.gz" || return 1
+                tar -C /home/dev -cf - pytorch | gzip -1 > "$BYSHA/$actual.tar.gz.tmp" && mv "$BYSHA/$actual.tar.gz.tmp" "$BYSHA/$actual.tar.gz" || return 1
               fi
-              echo "$sha" > "$BYSHA/$sha.sha"
+              echo "$actual" > "$BYSHA/$actual.sha"
+              echo "[ondemand] published $actual (req $want via $fref)"
               return 0
             }
 
@@ -106,9 +117,10 @@ resource "kubernetes_deployment_v1" "pytorch_ondemand" {
               if [ -n "$REQ" ]; then
                 SHA=$(basename "$REQ" .req)
                 if [ -f "$BYSHA/$SHA.sha" ]; then rm -f "$REQ"; continue; fi
-                echo "[ondemand] building $SHA"
+                FREF=$(head -1 "$REQ" 2>/dev/null); [ -n "$FREF" ] || FREF="$SHA"
+                echo "[ondemand] building $SHA (ref $FREF)"
                 T0=$(date +%s)
-                if build_sha "$SHA"; then echo "[ondemand] published $SHA in $(( $(date +%s) - T0 ))s"; else echo "[ondemand] $SHA build failed"; fi
+                if build_ref "$FREF" "$SHA"; then echo "[ondemand] done in $(( $(date +%s) - T0 ))s"; else echo "[ondemand] $SHA build failed"; fi
                 rm -f "$REQ"
               else
                 sleep 5

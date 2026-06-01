@@ -1566,13 +1566,15 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
     if prnum:
         fetch = (f"git fetch origin pull/{prnum}/merge 2>/dev/null && git checkout -f FETCH_HEAD || "
                  f"{{ echo '[repro] no /merge ref, using /head'; git fetch origin pull/{prnum}/head && git checkout -f FETCH_HEAD; }}")
-        # resolve to a concrete SHA up front so we can check the by-sha artifact cache
-        resolve = (f"WANT=$(timeout 15 git ls-remote {gh} pull/{prnum}/merge 2>/dev/null | head -1 | cut -f1); "
-                   f"[ -n \"$WANT\" ] || WANT=$(timeout 15 git ls-remote {gh} pull/{prnum}/head 2>/dev/null | head -1 | cut -f1); ")
+        # resolve to a concrete SHA up front (for the by-sha cache lookup) AND keep the
+        # fetch ref FREF — the build farm needs the ref (a pull/N/merge sha isn't
+        # fetchable by sha alone), it's enqueued so the worker can fetch it.
+        resolve = (f"FREF=pull/{prnum}/merge; WANT=$(timeout 15 git ls-remote {gh} $FREF 2>/dev/null | head -1 | cut -f1); "
+                   f"[ -n \"$WANT\" ] || {{ FREF=pull/{prnum}/head; WANT=$(timeout 15 git ls-remote {gh} $FREF 2>/dev/null | head -1 | cut -f1); }}; ")
     else:
         rq = shlex.quote(r)
         fetch = f"git fetch origin {rq} 2>/dev/null && git checkout -f FETCH_HEAD || git checkout -f {rq}"
-        resolve = (f"WANT=$(timeout 15 git ls-remote {gh} {rq} 2>/dev/null | head -1 | cut -f1); "
+        resolve = (f"FREF={rq}; WANT=$(timeout 15 git ls-remote {gh} {rq} 2>/dev/null | head -1 | cut -f1); "
                    f"[ -n \"$WANT\" ] || case {rq} in *[!0-9a-fA-F]*) WANT= ;; *) WANT={rq} ;; esac; ")
 
     testcmd = " ".join(shlex.quote(a) for a in test_args)
@@ -1597,7 +1599,7 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         "if [ -n \"$WANT\" ] && bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] by-sha cache HIT -> staged prebuilt tree (zero build)'; fi; "
         # 2) not cached, build farm alive -> request an off-pod build, wait, then stage
         "if [ -z \"$HIT\" ] && [ -n \"$WANT\" ] && [ -n \"$(find \"$QUEUE/.worker-alive\" -mmin -2 2>/dev/null)\" ]; then "
-        "echo \"[repro] no cached build; requesting off-pod build of $WANT (build farm)…\"; touch \"$QUEUE/$WANT.req\" 2>/dev/null || true; "
+        "echo \"[repro] no cached build; requesting off-pod build of $WANT (build farm)…\"; printf '%s\\n' \"$FREF\" > \"$QUEUE/$WANT.req\" 2>/dev/null || true; "
         "i=0; while [ $i -lt 180 ]; do [ -f \"$BYSHA/$WANT.sha\" ] && break; [ -f \"$QUEUE/$WANT.req\" ] || break; sleep 2; i=$((i+1)); done; "
         "if bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] off-pod build ready -> staged (zero build)'; else echo '[repro] off-pod build unavailable, building locally'; fi; fi; "
         # 3) fall back to in-pod fetch + build (+ cache the result for the next dev)
