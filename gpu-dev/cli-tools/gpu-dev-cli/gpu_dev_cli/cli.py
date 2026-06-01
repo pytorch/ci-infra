@@ -1584,7 +1584,8 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
         "BYSHA=/ccache_shared/prebuilt/by-sha; QUEUE=/ccache_shared/prebuilt/build-queue; HIT=; "
         # bs <sha>: stage a fully-built by-sha tree into /home/dev/pytorch (zero build); 0 on success.
-        "bs() { local s=\"$1\" tb; tb=$(ls \"$BYSHA/$s.tar.\"* 2>/dev/null | head -1); [ -n \"$tb\" ] || return 1; "
+        # explicit ext check, not a glob: the pod login shell is zsh, where an unmatched glob is a hard error.
+        "bs() { local s=\"$1\" tb=; for e in zst gz; do [ -f \"$BYSHA/$s.tar.$e\" ] && { tb=\"$BYSHA/$s.tar.$e\"; break; }; done; [ -n \"$tb\" ] || return 1; "
         "rm -rf /home/dev/pytorch.new; mkdir -p /home/dev/pytorch.new; "
         "case \"$tb\" in *.zst) zstd -dc \"$tb\" 2>/dev/null | tar -C /home/dev/pytorch.new --strip-components=1 -xf - 2>/dev/null ;; "
         "*) tar -C /home/dev/pytorch.new --strip-components=1 -xzf \"$tb\" 2>/dev/null ;; esac; "
@@ -1605,12 +1606,12 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         "echo \"[repro] HEAD $(git rev-parse --short HEAD)\"; "
         "git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 >/dev/null 2>&1 || true; "
         "if ! PYTHONPATH=/home/dev/pytorch python -c 'import torch' 2>/dev/null; then "
-        # mold -run routes the libtorch_cuda.so relink through mold (~15s vs minutes);
-        # guarded so it no-ops until the image ships mold.
-        "M=; command -v mold >/dev/null 2>&1 && M='mold -run'; "
         "echo \"[repro] prebuilt torch != this commit -> rebuilding (ccache-accelerated, but the further this commit is from viable/strict, the more recompiles). checked-out: $(git log -1 --format='%h %ci')\"; "
-        # -v streams the cmake/ninja [x/N] progress instead of pip's blind 'still running...' spinner.
-        "$M pip install --break-system-packages -e . --no-build-isolation -v; fi; "
+        # mold -run routes the libtorch_cuda.so relink through mold (~15s vs minutes); guarded.
+        # Explicit if/else (not `$M pip`): the pod login shell is zsh, which doesn't word-split
+        # unquoted vars. -v streams the cmake/ninja [x/N] progress instead of pip's blind spinner.
+        "if command -v mold >/dev/null 2>&1; then mold -run pip install --break-system-packages -e . --no-build-isolation -v; "
+        "else pip install --break-system-packages -e . --no-build-isolation -v; fi; fi; "
         # cache this build for the next dev (detached so it survives the ssh session)
         "SHA=$(git rev-parse HEAD 2>/dev/null); "
         "if command -v publish-pytorch-build >/dev/null 2>&1 && [ -n \"$SHA\" ] && [ ! -f \"$BYSHA/$SHA.sha\" ]; then "

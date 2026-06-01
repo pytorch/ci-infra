@@ -182,6 +182,7 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 # .sha marker is written LAST = the completion gate stage-pytorch polls.
                 BYSHA="$PREBUILT/by-sha"
                 mkdir -p "$BYSHA"
+                chmod 1777 "$BYSHA" 2>/dev/null || true   # dev-user pods publish here too
                 EXT="$${PUBFILE##*.}"   # zst or gz, whichever we published
                 BYSHA_FILE="$BYSHA/$TARGET.tar.$EXT"
                 if [ ! -f "$BYSHA_FILE" ]; then

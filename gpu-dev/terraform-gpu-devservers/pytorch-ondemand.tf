@@ -54,6 +54,9 @@ resource "kubernetes_deployment_v1" "pytorch_ondemand" {
             BYSHA="$PREBUILT/by-sha"
             GH=https://github.com/pytorch/pytorch.git
             mkdir -p "$QUEUE" "$BYSHA"
+            # world-writable (sticky, like /tmp): dev-user pods enqueue <sha>.req here
+            # and publish their own builds to by-sha; the worker runs as root.
+            chmod 1777 "$QUEUE" "$BYSHA" 2>/dev/null || true
 
             # --- toolchain (matches the cron, so ccache entries are identical) ---
             export PATH=/usr/local/cuda-13.2/bin:$PATH
