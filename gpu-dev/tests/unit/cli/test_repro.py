@@ -220,6 +220,18 @@ def test_remote_uses_mold_linker_when_available(cli_runner):
     assert "mold -run" in cmd
 
 
+def test_remote_requests_offpod_build_heartbeat_guarded(cli_runner):
+    res, rm, run = _run(cli_runner, ["pr/1", "test/foo.py"], claim_result=WARM)
+    cmd = _remote_str(run)
+    # heartbeat-guarded on-demand request to the build farm + shared bs() staging
+    assert "build-queue" in cmd
+    assert ".worker-alive" in cmd
+    assert "$WANT.req" in cmd
+    assert "bs()" in cmd
+    # on-demand is gated behind a cache miss, before the in-pod build
+    assert 'if [ -z "$HIT" ]' in cmd
+
+
 def test_test_args_are_shlex_quoted(cli_runner):
     res, rm, run = _run(
         cli_runner,

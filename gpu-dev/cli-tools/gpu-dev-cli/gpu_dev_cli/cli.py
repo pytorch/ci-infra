@@ -1582,17 +1582,24 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
     remote = (
         "set -e; cd /home/dev/pytorch; "
         "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
-        "BYSHA=/ccache_shared/prebuilt/by-sha; HIT=; "
+        "BYSHA=/ccache_shared/prebuilt/by-sha; QUEUE=/ccache_shared/prebuilt/build-queue; HIT=; "
+        # bs <sha>: stage a fully-built by-sha tree into /home/dev/pytorch (zero build); 0 on success.
+        "bs() { local s=\"$1\" tb; tb=$(ls \"$BYSHA/$s.tar.\"* 2>/dev/null | head -1); [ -n \"$tb\" ] || return 1; "
+        "rm -rf /home/dev/pytorch.new; mkdir -p /home/dev/pytorch.new; "
+        "case \"$tb\" in *.zst) zstd -dc \"$tb\" 2>/dev/null | tar -C /home/dev/pytorch.new --strip-components=1 -xf - 2>/dev/null ;; "
+        "*) tar -C /home/dev/pytorch.new --strip-components=1 -xzf \"$tb\" 2>/dev/null ;; esac; "
+        "[ -d /home/dev/pytorch.new/.git ] || { rm -rf /home/dev/pytorch.new; return 1; }; "
+        "rm -rf /home/dev/pytorch; mv /home/dev/pytorch.new /home/dev/pytorch; return 0; }; "
         + resolve +
         "echo \"[repro] target ${WANT:-?}\"; "
-        "if [ -n \"$WANT\" ] && [ -f \"$BYSHA/$WANT.sha\" ]; then "
-        "TB=$(ls \"$BYSHA/$WANT.tar.\"* 2>/dev/null | head -1); "
-        "if [ -n \"$TB\" ]; then echo '[repro] by-sha cache HIT -> staging prebuilt tree (zero build)'; "
-        "rm -rf /home/dev/pytorch.new; mkdir -p /home/dev/pytorch.new; "
-        "case \"$TB\" in *.zst) zstd -dc \"$TB\" 2>/dev/null | tar -C /home/dev/pytorch.new --strip-components=1 -xf - 2>/dev/null ;; "
-        "*) tar -C /home/dev/pytorch.new --strip-components=1 -xzf \"$TB\" 2>/dev/null ;; esac; "
-        "if [ -d /home/dev/pytorch.new/.git ]; then rm -rf /home/dev/pytorch; mv /home/dev/pytorch.new /home/dev/pytorch; cd /home/dev/pytorch; HIT=1; "
-        "else rm -rf /home/dev/pytorch.new; echo '[repro] by-sha extract failed, building from source'; fi; fi; fi; "
+        # 1) already cached -> stage it (zero build)
+        "if [ -n \"$WANT\" ] && bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] by-sha cache HIT -> staged prebuilt tree (zero build)'; fi; "
+        # 2) not cached, build farm alive -> request an off-pod build, wait, then stage
+        "if [ -z \"$HIT\" ] && [ -n \"$WANT\" ] && [ -n \"$(find \"$QUEUE/.worker-alive\" -mmin -2 2>/dev/null)\" ]; then "
+        "echo \"[repro] no cached build; requesting off-pod build of $WANT (build farm)…\"; touch \"$QUEUE/$WANT.req\" 2>/dev/null || true; "
+        "i=0; while [ $i -lt 180 ]; do [ -f \"$BYSHA/$WANT.sha\" ] && break; [ -f \"$QUEUE/$WANT.req\" ] || break; sleep 2; i=$((i+1)); done; "
+        "if bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] off-pod build ready -> staged (zero build)'; else echo '[repro] off-pod build unavailable, building locally'; fi; fi; "
+        # 3) fall back to in-pod fetch + build (+ cache the result for the next dev)
         "if [ -z \"$HIT\" ]; then "
         f"echo '[repro] checkout {r}'; {fetch}; "
         "echo \"[repro] HEAD $(git rev-parse --short HEAD)\"; "
