@@ -48,20 +48,33 @@ uv run pytest -m "not integration" # ~1140 tests; run before every commit
 
 **2. e2e integration on STAGING — run for anything touching the
 reserve/pod/SSH/lambda path before merging.** Real reservations on the **staging**
-cluster (us-west-1), cpu + t4 only, auto-cancelled.
+cluster (us-west-1), cpu + t4 only, auto-cancelled. Staging is the DEFAULT target
+and github_user comes from your config, so the bare command is enough:
 ```bash
-GPU_DEV_TEST_ENV=staging GPU_DEV_GITHUB_USER=wdvr \
-  uv run pytest -m integration --run-integration -v
+uv run pytest -m integration --run-integration -v
 ```
-- Staging = `GPU_DEV_ENVIRONMENT=staging` → us-west-1, standard `pytorch-gpu-dev-*`
-  prefix (tf workspace `test`). Wired in `cli-tools/.../config.py` ENVIRONMENTS.
+- Staging is the default (`GPU_DEV_TEST_ENV` defaults to `staging` → us-west-1,
+  standard `pytorch-gpu-dev-*` prefix, tf workspace `test`). The integration
+  conftest pins the region so the unit-test us-east-2 default can't leak in. Wired
+  in `cli-tools/.../config.py` ENVIRONMENTS.
 - Covers: cpu-x86 + t4 reserve→active→cancel, list-while-active, exec
-  (`nproc`/`nvidia-smi`/`torch.cuda`), and **`claude -p` answers "Paris"** (proves
-  the pod's Claude Code/Bedrock works). Each cancels in a `finally` (no leaked pods).
+  (`nproc`/`nvidia-smi`/`torch.cuda`), **`claude -p` answers "Paris"** (pod Claude
+  Code/Bedrock), and the **warm pool** (fast warm claim + custom-image
+  warm-ineligibility). Each cancels in a `finally` (no leaked pods).
+- Warm-pool tests need `WARM_POOL_TARGETS` deployed on staging — set in
+  `lambda.tf` for workspace `test` (`{t4, cpu-x86, cpu-arm}`); `tf apply` the test
+  workspace. Until then they skip ("came up cold"). Custom-image test: set
+  `GPU_DEV_TEST_IMAGE`.
+- Repro test (`test_repro_known_failure.py`): set `GPU_DEV_REPRO_REF` +
+  `GPU_DEV_REPRO_TEST` to a known-red (commit, test). Find one with the
+  **treehugger MCP** (`hud`, user-scope — `get_hud_data`/`master_commit_red`).
+  Note: prebuilt torch is h100/b200 arch, so a CUDA test on t4 needs a full build;
+  prefer a failure that runs on the box's GPU or on cpu.
 - Skips cleanly if staging is unreachable or the runner has no outbound SSH (e.g. a
   sandbox). The reservation role can query/SQS but lacks `DescribeTable`, so the
   reachability probe uses scan+get-queue-url, not describe.
-- Validated live (2026-05-31): cpu + t4 lifecycle PASS.
+- Validated live (2026-05-31): cpu + t4 lifecycle PASS; warm-claim test confirmed
+  it reaches the real reserve (skips until WARM_POOL_TARGETS is applied).
 
 **Rule of thumb:** unit+mocks for *every* change; add e2e coverage when you add a
 new command/flow; run the staging e2e before merging anything that could affect a

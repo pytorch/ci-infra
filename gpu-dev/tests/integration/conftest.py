@@ -23,8 +23,16 @@ ACTIVE_TIMEOUT_MIN = float(os.environ.get("GPU_DEV_TEST_TIMEOUT_MIN", "15"))
 
 @pytest.fixture(scope="session", autouse=True)
 def _select_env():
-    # Point the CLI Config at the target environment for this process.
-    os.environ.setdefault("GPU_DEV_ENVIRONMENT", TEST_ENV)
+    # Point the CLI Config at the target environment (staging by default) and PIN
+    # the region to that env's region — the root conftest sets AWS_DEFAULT_REGION
+    # to us-east-2 for the lambda unit tests, which would otherwise leak in and
+    # send integration reservations to the wrong region.
+    os.environ["GPU_DEV_ENVIRONMENT"] = TEST_ENV
+    from gpu_dev_cli.config import Config
+    region = Config.ENVIRONMENTS.get(TEST_ENV, {}).get("region")
+    if region:
+        os.environ["AWS_REGION"] = region
+        os.environ["AWS_DEFAULT_REGION"] = region
     yield
 
 
@@ -92,14 +100,17 @@ def exec_or_skip(conn: dict, remote: str, timeout: int = 120):
 
 
 @contextlib.contextmanager
-def reserved(manager, gpu_type, gpu_count, hours=0.5):
-    """Reserve -> wait active -> yield connection info -> ALWAYS cancel."""
+def reserved(manager, gpu_type, gpu_count, hours=0.5, **create_kwargs):
+    """Reserve -> wait active -> yield (rid, connection info) -> ALWAYS cancel.
+
+    Extra create_kwargs (e.g. dockerimage=...) pass straight to create_reservation.
+    """
     user_id = manager._test_user["user_id"]
     github_user = manager._test_user["github_user"]
     rid = manager.create_reservation(
         user_id=user_id, gpu_count=gpu_count, gpu_type=gpu_type,
         duration_hours=hours, name="itest", github_user=github_user,
-        no_persistent_disk=True)
+        no_persistent_disk=True, **create_kwargs)
     assert rid, "create_reservation returned no id"
     try:
         manager.wait_for_reservation_completion(
@@ -109,3 +120,12 @@ def reserved(manager, gpu_type, gpu_count, hours=0.5):
     finally:
         with contextlib.suppress(Exception):
             manager.cancel_reservation(rid, user_id)
+
+
+def read_reservation(manager, rid: str) -> dict:
+    """Fetch the raw reservation record from DynamoDB (for warm_claimed, status…)."""
+    from gpu_dev_cli.config import load_config
+    cfg = load_config()
+    item = cfg.dynamodb.Table(cfg.reservations_table).get_item(
+        Key={"reservation_id": rid}).get("Item")
+    return item or {}
