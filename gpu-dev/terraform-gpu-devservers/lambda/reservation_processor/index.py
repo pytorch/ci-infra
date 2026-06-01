@@ -1505,6 +1505,20 @@ def _provision_warm_pod(v1, pod) -> None:
     }}})
 
 
+def _recycle_warm_pod(v1, p) -> bool:
+    """Delete a warm pod + its SSH service. Returns True on pod delete success."""
+    try:
+        v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
+        try:
+            v1.delete_namespaced_service(f"{p.metadata.name}-ssh", "gpu-dev")
+        except Exception:
+            pass
+        return True
+    except Exception as de:
+        logger.warning(f"warm recycle delete failed for {p.metadata.name}: {de}")
+        return False
+
+
 def reconcile_warm_pool() -> dict:
     """Top up / recycle the standby pool of pre-booted pods per GPU type."""
     v1 = client.CoreV1Api(get_k8s_client())
@@ -1527,17 +1541,18 @@ def reconcile_warm_pool() -> dict:
                 age_s = time.time() - created_ts
                 stale = labels.get("warm-state") == "ready" and age_s > max_age_s
                 if phase in ("Failed", "Succeeded") or stale:
-                    try:
-                        v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
-                        try:
-                            v1.delete_namespaced_service(f"{p.metadata.name}-ssh", "gpu-dev")
-                        except Exception:
-                            pass
+                    if _recycle_warm_pod(v1, p):
                         recycled += 1
-                    except Exception as de:
-                        logger.warning(f"warm recycle delete failed for {p.metadata.name}: {de}")
                     continue
                 live.append(p)
+            # Scale DOWN when over target (e.g. the target count was just lowered):
+            # delete the excess standby pods so we don't hold more than configured.
+            excess = len(live) - int(target)
+            if excess > 0:
+                for p in live[int(target):]:
+                    if _recycle_warm_pod(v1, p):
+                        recycled += 1
+                live = live[:int(target)]
             # Backfill connection details on ready pods so claims stay fast.
             for p in live:
                 if (p.metadata.labels or {}).get("warm-state") == "ready":
@@ -1555,6 +1570,22 @@ def reconcile_warm_pool() -> dict:
                     break
         except Exception as e:
             logger.warning(f"warm reconcile failed for {gpu_type}: {e}")
+
+    # Clean up standby pods of types NO LONGER in WARM_POOL_TARGETS. Without this,
+    # changing the targets (or applying them on a cluster that lacks those node
+    # types, e.g. h100/b200 on staging) leaves orphaned warm pods stuck Pending
+    # forever. Claimed pods (real reservations) are never touched.
+    try:
+        for p in _list_warm_pods(v1):
+            labels = p.metadata.labels or {}
+            if labels.get("warm-state") == "claimed":
+                continue
+            if labels.get("warm-gpu-type") not in WARM_POOL_TARGETS:
+                if _recycle_warm_pod(v1, p):
+                    recycled += 1
+    except Exception as e:
+        logger.warning(f"warm de-targeted cleanup failed: {e}")
+
     logger.info(f"Warm pool reconcile: created={created} recycled={recycled}")
     return {"statusCode": 200, "body": json.dumps({"created": created, "recycled": recycled})}
 

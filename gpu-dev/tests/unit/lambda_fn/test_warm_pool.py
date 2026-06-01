@@ -453,3 +453,43 @@ def test_evict_outer_exception_returns_none(lambda_index, monkeypatch):
     az, node = lambda_index._evict_warm_for_capacity(
         v1, "h100", 1, [_node("node-a", 0)])
     assert (az, node) == (None, None)
+
+
+# --- reconcile_warm_pool: scale-down + de-targeted cleanup --------------------
+
+def test_reconcile_scales_down_when_over_target(lambda_index, monkeypatch):
+    # Target lowered to 2 but 5 ready standby pods exist -> delete the 3 excess.
+    pods = [_make_pod(f"gpu-dev-cpu-x86-{i}", warm_state="ready", gpu_type="cpu-x86",
+                      gpu_held=0, creation_ts=time.time()) for i in range(5)]
+    v1, created, result = _reconcile_with(
+        lambda_index, monkeypatch,
+        pods_by_type={"cpu-x86": pods, None: pods},
+        target_overrides={"cpu-x86": 2},
+    )
+    deleted = [c.args[0] for c in v1.delete_namespaced_pod.call_args_list]
+    assert len(deleted) == 3, deleted          # 5 live - 2 target
+    assert created == []                         # already over target
+    import json
+    assert json.loads(result["body"])["recycled"] == 3
+
+
+def test_reconcile_cleans_up_detargeted_types(lambda_index, monkeypatch):
+    # Targets = {t4:1}. Stale h100 standby pods (a type no longer targeted, e.g.
+    # left over from the default targets on a cluster with no h100 nodes) must be
+    # deleted; a CLAIMED h100 (real reservation) must NOT be touched.
+    t4 = _make_pod("gpu-dev-t4-x", warm_state="ready", gpu_type="t4", creation_ts=time.time())
+    h1 = _make_pod("gpu-dev-h100-a", warm_state="ready", gpu_type="h100", creation_ts=time.time())
+    h2 = _make_pod("gpu-dev-h100-b", warm_state="ready", gpu_type="h100", creation_ts=time.time())
+    hclaim = _make_pod("gpu-dev-h100-claimed", warm_state="claimed", gpu_type="h100",
+                       creation_ts=time.time())
+    allpods = [t4, h1, h2, hclaim]
+    v1, created, _ = _reconcile_with(
+        lambda_index, monkeypatch,
+        pods_by_type={"t4": [t4], None: allpods},
+        target_overrides={"t4": 1},
+    )
+    deleted = [c.args[0] for c in v1.delete_namespaced_pod.call_args_list]
+    assert "gpu-dev-h100-a" in deleted and "gpu-dev-h100-b" in deleted   # de-targeted -> cleaned
+    assert "gpu-dev-h100-claimed" not in deleted                         # real reservation, untouched
+    assert "gpu-dev-t4-x" not in deleted                                 # targeted type kept
+    assert created == []                                                 # t4 already at target
