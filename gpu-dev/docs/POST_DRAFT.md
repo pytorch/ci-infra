@@ -1,104 +1,53 @@
 # Instant GPU sandboxes for PyTorch
 
-Reserve a GPU box in ~1 second, with PyTorch already built. Repro a failing CI test,
-edit C++/CUDA, and rebuild in seconds — not a cold 30-minute compile. From Python or
-one CLI command.
+Reserve an **H100 or B200 in under a second** — full GPUs *or* MIG slices — with PyTorch
+already built and importable. Ephemeral and auto-cleaned, like a serverless function but
+with a GPU attached. From Python or one CLI command.
 
-## 1. Python SDK
+## 1. Sub-second reservations
+A warm pool of pre-booted pods means a reserve *claims* one instead of cold-booting it:
+- **H100 / B200** — full GPUs (1–8) or **MIG slices** (`h100-mig-1g`, `b200-mig-3g`, …); also A100 / T4 / CPU.
+- **~1 s** to an active box (vs minutes for a cold boot).
 
+## 2. PyTorch prebuilt + editable
+Every box gets PyTorch already built at **`viable/strict`** (the last all-green trunk
+commit) and installed as an **editable install** (`pip install -e .`) at `~/pytorch`:
+- `import torch` works **instantly** — zero build.
+- Edit Python → no rebuild (editable). Edit C++/CUDA → `pip install -e . --no-build-isolation`
+  rebuilds **incrementally** (warm `build/` + shared ccache + mold linker) — seconds, not minutes.
+
+Two ways in, both ephemeral with PyTorch ready:
+```bash
+gpu-dev reserve --gpu-type h100 --gpus 1 --no-persist
+```
 ```python
 from gpu_dev import GpuDev
 
-client = GpuDev()
-with client.reserve(gpu_type="h100", gpu_count=1, hours=1) as sb:   # ~instant warm claim
-    print(sb.exec("python -c 'import torch; print(torch.__version__, torch.cuda.is_available())'").stdout)
-    sb.upload("./train.py", "/home/dev/train.py")
-    print(sb.exec("python /home/dev/train.py").stdout)
-# auto-cancels on exit
+with GpuDev().reserve(gpu_type="b200", gpu_count=1) as sandbox:   # ~1s, auto-cleans on exit
+    sandbox.upload("train.py", "/home/dev/train.py")
+    r = sandbox.exec("cd ~/pytorch && python /home/dev/train.py")  # GPU + torch already there
+    print(r.stdout, r.returncode)
 ```
+That ephemeral, isolated, auto-cleaned shape is also great for **agent sandboxing** — hand
+an agent a throwaway GPU box to run its own generated code/tests; it vanishes when done.
 
-`reserve()` returns an **active** sandbox (no polling). `sb.exec()` / `sb.upload()`.
-GPU types: `b200`, `h100`, `a100`, `t4`, MIG slices (`h100-mig-1g`, …), `cpu-x86`/`cpu-arm`.
-
-## 2. Sub-second reservations
-
-A pool of **pre-booted pods** (PyTorch prebuilt, SSH up) sits warm; a reserve just
-*claims* one instead of booting from scratch.
-
-```bash
-gpu-dev reserve --gpu-type h100 --gpus 1     # warm claim → active in ~1s
-```
-
-| | cold boot | warm claim |
-|---|---|---|
-| reserve → usable | ~2–4 min (node scale, pull, SSH) | **~1–2 s** |
-| `import torch` | builds / installs | **0 s** (prebuilt staged) |
-
-## 3. `gpu-dev repro` — reproduce a failing PR/commit
-
+## 3. Repro a failing PR/commit
 ```bash
 gpu-dev repro pr/185264 test/inductor/test_flex_attention.py \
   TestFlexAttentionCUDA.test_large_kv_int64_pointer_math_cuda --gpu-type h100
 ```
+Reserves a box, checks out the ref (a **merged** PR → its real land commit on `main`),
+builds it off-pod (~100 s, then cached for everyone), runs the test, and drops you in to fix it.
 
-Reserves a box, checks out the ref, runs the test, prints the verdict, then **drops you
-into the box** at `~/pytorch` with the ref checked out so you can fix and re-run.
-`--no-connect` = CI mode (run, auto-cancel, exit code = test result).
-
-- **Merged PR → the actual land commit on `main`** (the real trunk state that was red).
-  **Open PR → `pull/N/merge`** (what CI tests), falling back to `/head`. Also takes a
-  branch or commit sha.
-- The build is **off-pod**: the box requests it from an always-on build farm (192-core
-  node, mold linker, shared ccache) and stages the result — so a never-before-built
-  commit lands in ~100 s, and any commit built once is then **zero-build** for everyone.
-
-## 4. `gpu-dev submit` — run a job, get results back
-
+## 4. Run a job (multinode)
 ```bash
-gpu-dev submit --runtime ./ -- python train.py            # sync cwd, run, sync results, auto-cancel
-gpu-dev submit --gpus 16 --gpu-type h100 --runtime . -- bash run.sh   # multinode
+gpu-dev submit --gpus 16 --gpu-type h100 --runtime . -- bash run.sh
 ```
-
-Reserves → rsyncs your code up → runs the command → syncs results back → cancels. Exit
-code mirrors the remote command. Multinode wires `RANK`/`SIZE`/`MASTER_ADDR`/… so
-`torchrun` just works.
-
-## Caching — why builds are fast
-
-Three layers, so you almost never pay for a cold compile:
-
-1. **Prebuilt tree.** Every box gets PyTorch already built at `viable/strict` and staged
-   at `~/pytorch` → `import torch` works with **zero build**.
-2. **By-SHA artifact cache.** Whole *built* trees are cached by commit SHA on the shared
-   EFS (every viable/strict bump + every repro fills it, kept for ~72 h). Repro a commit
-   anyone has built → it's staged with **zero build**. A cache miss is built **off-pod**
-   on an always-on build farm (192-core node, mold linker), then it's cached too.
-3. **Shared ccache** (`/ccache_shared`, one EFS mounted in every pod *and* the build node)
-   → all C++/CUDA object compiles are cached and shared, so even a from-scratch build is
-   incremental, and the farm's per-commit builds are ~100 s, not ~30 min.
-
-Expected timings (CUDA 13.2):
-
-| action | time |
-|---|---|
-| warm claim → active | ~1–2 s |
-| `import torch` (prebuilt) | 0 s |
-| repro a **cached** commit (by-SHA hit) | **0 build** — just stage the prebuilt tree |
-| repro an **uncached** commit (build farm) | **~100 s** off-pod (mold + ccache), then cached for everyone |
-| Python-only edit | 0 s (no rebuild — `PYTHONPATH=~/pytorch`) |
-| edit one C++/CUDA file → rebuild | ~15–40 s (incremental: warm `build/` + ccache + mold) |
-| true cold build (empty cache) | ~20–40 min (rare; one-time) |
-
-## PyTorch is fully editable
-
-The box ships PyTorch **editable-installed**:
-- **Python changes** — no rebuild; `PYTHONPATH=~/pytorch` resolves them immediately.
-- **C++/CUDA changes** — `pip install -e . --no-build-isolation` rebuilds *incrementally*
-  on the warm `build/` (ninja) with ccache, so a one-file edit is seconds-to-minutes,
-  not a cold build.
-
-So the loop is: repro a failing test → edit the kernel → rebuild in seconds → re-run.
+Reserves (here 2× 8-GPU nodes), rsyncs your code up, runs it — `RANK` / `SIZE` /
+`MASTER_ADDR` / `MASTER_PORT` are wired so `torchrun` just works — syncs results back, and
+auto-cancels. Exit code mirrors the job.
 
 ---
-*Draft — timings are from the m7i build node (128 jobs); a 1-GPU dev box builds at fewer
-cores, so cold builds there are proportionally slower (see notes).*
+
+**Feedback wanted.** What would you build on a sub-second, ephemeral, lambda-like GPU
+sandbox — CI repros, agent sandboxes, interactive dev, burst jobs? Tell us your use cases.
