@@ -82,6 +82,20 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 exec 9>"$PREBUILT/build-$ARCH.lock"
                 if ! flock -n 9; then echo "[prebuild] another build holds the lock; exiting"; exit 0; fi
 
+                # --- by-SHA cache retention (Phase 3): prune to the trailing ~72h ---
+                # The by-sha cache (viable/strict bumps + repro usage-fill) is the
+                # "snapshot ladder": dozens of points across the window, so any commit
+                # is a small delta from a neighbour. Cap it by age so storage stays in
+                # budget (~500-650GB). Runs every tick (even when v/s is unchanged).
+                BYSHA="$PREBUILT/by-sha"
+                if [ -d "$BYSHA" ]; then
+                  PRUNED=$(find "$BYSHA" -maxdepth 1 -name '*.tar.*' -mtime +3 2>/dev/null | wc -l | tr -d ' ')
+                  if [ "$PRUNED" -gt 0 ]; then
+                    find "$BYSHA" -maxdepth 1 \( -name '*.tar.*' -o -name '*.sha' \) -mtime +3 -delete 2>/dev/null || true
+                    echo "[prebuild] pruned $PRUNED by-sha entrie(s) older than 72h"
+                  fi
+                fi
+
                 # --- toolchain (validated recipe) ---
                 export PATH=/usr/local/cuda-13.2/bin:$PATH
                 export CUDA_HOME=/usr/local/cuda-13.2
