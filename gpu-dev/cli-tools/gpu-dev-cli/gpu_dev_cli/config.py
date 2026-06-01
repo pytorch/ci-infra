@@ -29,13 +29,13 @@ class Config:
             "description": "Spot-only us-east-1 environment (T4/L4/CPU)",
             "spot_types": ["b300", "b200", "h200", "h100", "a100", "t4", "l4", "rtxpro6000"],
         },
-        # Staging (us-west-1, tf workspace "test"). Same standard resource prefix
-        # as prod, just a different region — so only the region changes. Live
-        # capacity: cpu-x86/arm + t4. Used for integration tests. Select via
-        # `GPU_DEV_ENVIRONMENT=staging` (or the legacy "test" env, same target).
+        # Staging (us-west-1, tf "default" workspace, environment=test). Same
+        # standard resource prefix as prod, just a different region — so only the
+        # region changes. Live capacity: cpu-x86/arm + t4. Used for integration
+        # tests. Select via `GPU_DEV_ENVIRONMENT=staging` (or the "test" env alias).
         "staging": {
             "region": "us-west-1",
-            "workspace": "test",
+            "workspace": "default",
             "description": "Staging (us-west-1, cpu + t4)",
         },
     }

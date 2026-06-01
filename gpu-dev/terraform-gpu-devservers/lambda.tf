@@ -201,12 +201,13 @@ resource "aws_lambda_function" "reservation_processor" {
       SPOT_GPU_TYPES = lookup({
         "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000,cpu-spot"
       }, terraform.workspace, "")
-      # Warm-pool tier counts per workspace (JSON object). Staging (workspace
-      # "test", us-west-1) only has t4 + cpu nodes, so scope warm pods to those —
-      # the in-code default (h100/b200/MIG) would create unschedulable Pending
-      # pods here. Empty string -> lambda falls back to _DEFAULT_WARM_TARGETS.
+      # Warm-pool tier counts per workspace (JSON object). Staging is the "default"
+      # workspace (us-west-1, environment=test) and only has t4 + cpu nodes, so
+      # scope warm pods to those — the in-code default (h100/b200/MIG) would create
+      # unschedulable Pending pods here. Empty -> lambda falls back to
+      # _DEFAULT_WARM_TARGETS (prod keeps its h100/b200/cpu/MIG warm pool).
       WARM_POOL_TARGETS = lookup({
-        "test" = jsonencode({ t4 = 2, "cpu-x86" = 2, "cpu-arm" = 2 })
+        "default" = jsonencode({ t4 = 2, "cpu-x86" = 2, "cpu-arm" = 2 })
       }, terraform.workspace, "")
       DISK_CONTENTS_BUCKET = aws_s3_bucket.disk_contents.bucket
       OPERATIONS_TABLE     = aws_dynamodb_table.operations.name

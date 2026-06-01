@@ -54,7 +54,7 @@ and github_user comes from your config, so the bare command is enough:
 uv run pytest -m integration --run-integration -v
 ```
 - Staging is the default (`GPU_DEV_TEST_ENV` defaults to `staging` → us-west-1,
-  standard `pytorch-gpu-dev-*` prefix, tf workspace `test`). The integration
+  standard `pytorch-gpu-dev-*` prefix, tf workspace `default`). The integration
   conftest pins the region so the unit-test us-east-2 default can't leak in. Wired
   in `cli-tools/.../config.py` ENVIRONMENTS.
 - Covers: cpu-x86 + t4 reserve→active→cancel, list-while-active, exec
@@ -62,9 +62,10 @@ uv run pytest -m integration --run-integration -v
   Code/Bedrock), and the **warm pool** (fast warm claim + custom-image
   warm-ineligibility). Each cancels in a `finally` (no leaked pods).
 - Warm-pool tests need `WARM_POOL_TARGETS` deployed on staging — set in
-  `lambda.tf` for workspace `test` (`{t4, cpu-x86, cpu-arm}`); `tf apply` the test
-  workspace. Until then they skip ("came up cold"). Custom-image test: set
-  `GPU_DEV_TEST_IMAGE`.
+  `lambda.tf` for the `default` workspace (`{t4, cpu-x86, cpu-arm}`). Staging IS the
+  tf `default` workspace (us-west-1, environment=test) — there is no `test`/`staging`
+  workspace: `tofu workspace select default && tofu apply`. Until then the warm
+  tests skip ("came up cold"). Custom-image test: set `GPU_DEV_TEST_IMAGE`.
 - Repro test (`test_repro_known_failure.py`): set `GPU_DEV_REPRO_REF` +
   `GPU_DEV_REPRO_TEST` to a known-red (commit, test). Find one with the
   **treehugger MCP** (`hud`, user-scope — `get_hud_data`/`master_commit_red`).
