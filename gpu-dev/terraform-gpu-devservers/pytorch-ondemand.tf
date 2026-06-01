@@ -97,7 +97,10 @@ resource "kubernetes_deployment_v1" "pytorch_ondemand" {
               fi
               git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 2>/dev/null || true
               pip install --break-system-packages -r requirements.txt 2>&1 | tail -1 || true
-              $MOLD python -m pip install --break-system-packages -e . --no-build-isolation || { echo "[ondemand] build $fref FAILED"; return 1; }
+              # Stream the build (-v = ninja [x/N] progress) to a log on the shared EFS,
+              # keyed by the REQUESTED sha, so the requester can tail it live.
+              local log="$QUEUE/$want.log"; : > "$log"
+              if ! $MOLD python -m pip install --break-system-packages -e . --no-build-isolation -v > "$log" 2>&1; then echo "[ondemand] build $fref FAILED"; tail -8 "$log"; return 1; fi
               actual=$(git rev-parse HEAD 2>/dev/null); [ -n "$actual" ] || return 1
               zb=$(command -v zstd 2>/dev/null || true)
               if [ -n "$zb" ]; then
@@ -121,7 +124,7 @@ resource "kubernetes_deployment_v1" "pytorch_ondemand" {
                 echo "[ondemand] building $SHA (ref $FREF)"
                 T0=$(date +%s)
                 if build_ref "$FREF" "$SHA"; then echo "[ondemand] done in $(( $(date +%s) - T0 ))s"; else echo "[ondemand] $SHA build failed"; fi
-                rm -f "$REQ"
+                rm -f "$REQ" "$QUEUE/$SHA.log"
               else
                 sleep 5
               fi

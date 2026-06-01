@@ -1599,8 +1599,12 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         "if [ -n \"$WANT\" ] && bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] by-sha cache HIT -> staged prebuilt tree (zero build)'; fi; "
         # 2) not cached, build farm alive -> request an off-pod build, wait, then stage
         "if [ -z \"$HIT\" ] && [ -n \"$WANT\" ] && [ -n \"$(find \"$QUEUE/.worker-alive\" -mmin -2 2>/dev/null)\" ]; then "
-        "echo \"[repro] no cached build; requesting off-pod build of $WANT (build farm)…\"; printf '%s\\n' \"$FREF\" > \"$QUEUE/$WANT.req\" 2>/dev/null || true; "
-        "i=0; while [ $i -lt 180 ]; do [ -f \"$BYSHA/$WANT.sha\" ] && break; [ -f \"$QUEUE/$WANT.req\" ] || break; sleep 2; i=$((i+1)); done; "
+        "echo \"[repro] no cached build; requesting off-pod build of $WANT (build farm; streaming progress)…\"; printf '%s\\n' \"$FREF\" > \"$QUEUE/$WANT.req\" 2>/dev/null || true; "
+        # poll for the artifact; meanwhile tail the farm's build log (ninja [x/N]) so it's not a silent hang.
+        "i=0; LL=0; while [ $i -lt 400 ]; do [ -f \"$BYSHA/$WANT.sha\" ] && break; [ -f \"$QUEUE/$WANT.req\" ] || break; "
+        "if [ -f \"$QUEUE/$WANT.log\" ]; then NL=$(wc -l < \"$QUEUE/$WANT.log\" 2>/dev/null || echo 0); "
+        "if [ \"$NL\" -gt \"$LL\" ]; then tail -n +$((LL+1)) \"$QUEUE/$WANT.log\" 2>/dev/null | grep -aE '\\[[0-9]+/[0-9]+\\]|Building wheel|Successfully built|error' | tail -1 | sed 's/^/  [farm] /'; LL=$NL; fi; fi; "
+        "sleep 3; i=$((i+1)); done; "
         "if bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] off-pod build ready -> staged (zero build)'; else echo '[repro] off-pod build unavailable, building locally'; fi; fi; "
         # 3) fall back to in-pod fetch + build (+ cache the result for the next dev)
         "if [ -z \"$HIT\" ]; then "
