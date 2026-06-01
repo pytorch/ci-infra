@@ -1574,7 +1574,9 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         "echo \"[repro] HEAD $(git rev-parse --short HEAD)\"; "
         "git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 >/dev/null 2>&1 || true; "
         "if ! PYTHONPATH=/home/dev/pytorch python -c 'import torch' 2>/dev/null; then "
-        "echo '[repro] incremental rebuild on warm build/...'; pip install --break-system-packages -e . --no-build-isolation; fi; "
+        "echo \"[repro] prebuilt torch != this commit -> rebuilding (ccache-accelerated, but the further this commit is from viable/strict, the more recompiles). checked-out: $(git log -1 --format='%h %ci')\"; "
+        # -v streams the cmake/ninja [x/N] progress instead of pip's blind 'still running...' spinner.
+        "pip install --break-system-packages -e . --no-build-isolation -v; fi; "
         f"echo '[repro] running: python {testcmd}'; "
         f"PYTHONPATH=/home/dev/pytorch python {testcmd}"
     )

@@ -176,9 +176,9 @@ def test_remote_command_structure(cli_runner):
     assert "cd /home/dev/pytorch" in cmd
     assert "safe.directory /home/dev/pytorch" in cmd
     assert "submodule update --init --recursive" in cmd
-    # import torch guard -> incremental rebuild
+    # import torch guard -> rebuild (editable, no build isolation, streamed with -v)
     assert "import torch" in cmd
-    assert "incremental rebuild on warm build/" in cmd
+    assert "pip install" in cmd and "--no-build-isolation" in cmd and "-v" in cmd
     # PYTHONPATH-prefixed python invocation of the test args
     assert "PYTHONPATH=/home/dev/pytorch python test/inductor/test_flex_attention.py TestX.test_y" in cmd
 
