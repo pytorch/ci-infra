@@ -319,6 +319,9 @@ def _show_single_reservation(connection_info: dict) -> None:
         reservation_id = connection_info["reservation_id"]
         reservation_name = connection_info.get("name")
         pod_name = connection_info.get("pod_name", "")
+        # SSH host alias keys off the reservation id (works for warm-claimed pods,
+        # whose pod_name != gpu-dev-<resid8>). pod_name is shown separately below.
+        host_alias = f"gpu-dev-{short_id}"
         ssh_config_path = get_ssh_config_path(reservation_id, reservation_name)
         use_include = is_ssh_include_enabled()
 
@@ -328,14 +331,14 @@ def _show_single_reservation(connection_info: dict) -> None:
             if use_include:
                 # User approved Include - show simple commands
                 from .reservations import _make_vscode_link
-                ssh_command_display = f"[green]ssh {pod_name}[/green]"
-                vscode_url = _make_vscode_link(pod_name)
-                vscode_cmd_text = f"code --remote ssh-remote+{pod_name} /home/dev"
+                ssh_command_display = f"[green]ssh {host_alias}[/green]"
+                vscode_url = _make_vscode_link(host_alias)
+                vscode_cmd_text = f"code --remote ssh-remote+{host_alias} /home/dev"
                 vscode_command_display = f"[link={vscode_url}][green]{vscode_cmd_text}[/green][/link]"
                 vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command_display}\n"
             else:
                 # User declined Include - show commands with -F flag
-                ssh_command_display = f"[green]ssh -F {ssh_config_path} {pod_name}[/green]"
+                ssh_command_display = f"[green]ssh -F {ssh_config_path} {host_alias}[/green]"
                 vscode_command_display = f"Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config (or: [green]gpu-dev config ssh-include enable[/green])"
                 vscode_info = f"[blue]VS Code/Cursor:[/blue] {vscode_command_display}\n"
         else:
@@ -1881,7 +1884,9 @@ def submit(ctx, gpu_type, gpus, hours, disk, ref, no_persistent_disk, spot, dock
                 sys.exit(1)
             create_ssh_config_for_reservation(master_fqdn, master_pod, master_id, master_name)
 
-        ssh_alias = master_pod
+        # Host alias matches the Host line written by create_ssh_config_for_reservation
+        # (keyed off the reservation id, so warm-claimed masters resolve too).
+        ssh_alias = f"gpu-dev-{master_id[:8]}"
         ssh_base = ["ssh", "-F", str(config_file), "-o", "StrictHostKeyChecking=accept-new"]
         rsync_e = " ".join(shlex.quote(x) for x in ssh_base)
 
@@ -3168,11 +3173,15 @@ def _show_direct_success(res: dict, elapsed: float) -> None:
     """Print the success block for an instant warm-pool claim,
     matching the normal reserve output (SSH config + VS Code/Cursor remote)."""
     from gpu_dev_cli.reservations import (
-        create_ssh_config_for_reservation, _generate_vscode_command, _generate_cursor_command)
+        create_ssh_config_for_reservation, _generate_vscode_command,
+        _generate_cursor_command, _make_vscode_link, _make_cursor_link)
     rid = res.get("reservation_id", "") or ""
     ssh_command = res.get("ssh_command", "") or ""
     pod_name = res.get("pod_name", "") or ""
     fqdn = res.get("fqdn") or ""
+    # Host alias keys off the reservation id — warm-claimed pods have a pod_name
+    # that is NOT gpu-dev-<resid8>, so we must not use pod_name as the ssh alias.
+    host_alias = f"gpu-dev-{rid[:8]}" if rid else pod_name
 
     rprint(f"\n[green]✅ Instant reservation ready in {elapsed:.1f}s![/green]")
     rprint(f"[bold]📋 Reservation ID:[/bold] {rid}")
@@ -3181,24 +3190,28 @@ def _show_direct_success(res: dict, elapsed: float) -> None:
     if rid:
         rprint(f"[bold]⚡ Quick Connect:[/bold] gpu-dev connect {rid[:8]}")
 
-    # Build the per-reservation SSH config so `ssh <pod>` and connect work cleanly.
+    # Build the per-reservation SSH config so `ssh gpu-dev-<resid8>` and connect work cleanly.
     use_include = False
     if fqdn and pod_name and rid:
         try:
             _cfg, use_include = create_ssh_config_for_reservation(fqdn, pod_name, rid, None)
         except Exception:
             pass
-    if pod_name and use_include:
-        rprint(f"[bold]🖥️  SSH Command:[/bold] ssh {pod_name}")
-    elif ssh_command:
-        rprint(f"[bold]🖥️  SSH Command:[/bold] {ssh_command}")
-
-    vsc = _generate_vscode_command(ssh_command) if ssh_command else None
-    cur = _generate_cursor_command(ssh_command) if ssh_command else None
-    if vsc:
-        rprint(f"[bold]💻 VS Code Remote:[/bold] {vsc}")
-    if cur:
-        rprint(f"[bold]🖥️ Cursor Remote:[/bold] {cur}")
+    if use_include and rid:
+        rprint(f"[bold]🖥️  SSH Command:[/bold] ssh {host_alias}")
+        vscode_url = _make_vscode_link(host_alias)
+        cursor_url = _make_cursor_link(host_alias)
+        rprint(f"[bold]💻 VS Code Remote:[/bold] [link={vscode_url}]code --remote ssh-remote+{host_alias} /home/dev[/link]")
+        rprint(f"[bold]🖥️ Cursor Remote:[/bold] [link={cursor_url}]cursor --remote ssh-remote+{host_alias} /home/dev[/link]")
+    else:
+        if ssh_command:
+            rprint(f"[bold]🖥️  SSH Command:[/bold] {ssh_command}")
+        vsc = _generate_vscode_command(ssh_command) if ssh_command else None
+        cur = _generate_cursor_command(ssh_command) if ssh_command else None
+        if vsc:
+            rprint(f"[bold]💻 VS Code Remote:[/bold] {vsc}")
+        if cur:
+            rprint(f"[bold]🖥️ Cursor Remote:[/bold] {cur}")
 
 
 def _format_gpu_display(gpu_count, gpu_type):
@@ -3781,7 +3794,8 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
             for node in nodes:
                 status_display = "✅ Active" if node.get("status") == "active" else f"⏳ {node.get('status', 'unknown')}"
                 pod_name = node.get("pod_name", "unknown")
-                ssh_cmd_short = f"ssh {pod_name}" if pod_name != "unknown" else "N/A"
+                node_rid = node.get("reservation_id")
+                ssh_cmd_short = f"ssh gpu-dev-{node_rid[:8]}" if node_rid else "N/A"
 
                 table.add_row(
                     f"Node {node.get('node_index', 0) + 1}",
@@ -4038,10 +4052,11 @@ def get_ssh_config_cmd(ctx: click.Context, reservation_id: Optional[str]) -> Non
                 )
 
                 if config_path:
+                    node_alias = f"gpu-dev-{node_res_id[:8]}"
                     if use_include:
-                        rprint(f"[green]✅ Node {node_idx + 1}:[/green] [cyan]ssh {pod_name}[/cyan]")
+                        rprint(f"[green]✅ Node {node_idx + 1}:[/green] [cyan]ssh {node_alias}[/cyan]")
                     else:
-                        rprint(f"[green]✅ Node {node_idx + 1}:[/green] [cyan]ssh -F {config_path} {pod_name}[/cyan]")
+                        rprint(f"[green]✅ Node {node_idx + 1}:[/green] [cyan]ssh -F {config_path} {node_alias}[/cyan]")
                 else:
                     rprint(f"[yellow]⚠️  Node {node_idx + 1}: Failed to create SSH config[/yellow]")
 
@@ -4069,12 +4084,13 @@ def get_ssh_config_cmd(ctx: click.Context, reservation_id: Optional[str]) -> Non
             )
 
             if config_path:
+                host_alias = f"gpu-dev-{reservation_id[:8]}"
                 rprint(f"[green]✅ SSH config created:[/green] [cyan]{config_path}[/cyan]\n")
                 if use_include:
-                    rprint(f"[green]🎉 You can now connect with:[/green] [cyan]ssh {pod_name}[/cyan]")
+                    rprint(f"[green]🎉 You can now connect with:[/green] [cyan]ssh {host_alias}[/cyan]")
                     rprint(f"[dim]   or:[/dim] [cyan]gpu-dev connect {reservation_id[:8]}[/cyan]")
                 else:
-                    rprint(f"[green]🎉 You can now connect with:[/green] [cyan]ssh -F {config_path} {pod_name}[/cyan]")
+                    rprint(f"[green]🎉 You can now connect with:[/green] [cyan]ssh -F {config_path} {host_alias}[/cyan]")
                     rprint(f"[dim]   or:[/dim] [cyan]gpu-dev connect {reservation_id[:8]}[/cyan]")
             else:
                 rprint("[red]❌ Failed to create SSH config[/red]")
@@ -4641,13 +4657,13 @@ def ssh_include(action: str):
 
     \b
     When enabled:
-      • Simple SSH commands: ssh <pod-name>
-      • VS Code Remote works: code --remote ssh-remote+<pod-name>
+      • Simple SSH commands: ssh gpu-dev-<reservation-id>
+      • VS Code Remote works: code --remote ssh-remote+gpu-dev-<reservation-id>
       • Cursor Remote works: Open Remote SSH in Cursor
 
     \b
     When disabled:
-      • Need -F flag: ssh -F ~/.gpu-dev/<id>-sshconfig <pod-name>
+      • Need -F flag: ssh -F ~/.gpu-dev/<id>-sshconfig gpu-dev-<reservation-id>
       • VS Code/Cursor requires manual config setup
 
     \b

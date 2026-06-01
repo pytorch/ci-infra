@@ -177,12 +177,14 @@ def _generate_cursor_command(ssh_command: str) -> Optional[str]:
         return None
 
 
-def _generate_ssh_config(hostname: str, pod_name: str) -> str:
+def _generate_ssh_config(hostname: str, host_alias: str) -> str:
     """Generate SSH config for a reservation
 
     Args:
-        hostname: The FQDN hostname (e.g., old_bison.devservers.io)
-        pod_name: The pod name to use as SSH host alias
+        hostname: The FQDN hostname (e.g., old_bison.devservers.io). SSH routing
+            happens via this HostName (the ProxyCommand routes on the FQDN), so
+            host_alias is a purely local label.
+        host_alias: The local SSH host alias (e.g., gpu-dev-<resid8>)
 
     Returns:
         SSH config content as string
@@ -196,7 +198,7 @@ def _generate_ssh_config(hostname: str, pod_name: str) -> str:
     extra = "    AddKeysToAgent yes\n"
     if sys.platform == "darwin":
         extra += "    IgnoreUnknown UseKeychain\n    UseKeychain yes\n"
-    config_content = f"""Host {pod_name}
+    config_content = f"""Host {host_alias}
     HostName {hostname}
     User dev
     ForwardAgent yes
@@ -255,10 +257,10 @@ def _check_ssh_config_permission() -> bool:
     console.print("[dim]  • ~/.cursor/ssh_config[/dim]")
     console.print("[dim]Line added: Include ~/.gpu-dev/*-sshconfig[/dim]\n")
     console.print("[green]Benefits:[/green]")
-    console.print("  • Simple commands: [green]ssh <pod-name>[/green]")
-    console.print("  • VS Code Remote works: [green]code --remote ssh-remote+<pod-name>[/green]")
+    console.print("  • Simple commands: [green]ssh gpu-dev-<reservation-id>[/green]")
+    console.print("  • VS Code Remote works: [green]code --remote ssh-remote+gpu-dev-<reservation-id>[/green]")
     console.print("  • Cursor Remote works: Open Remote SSH in Cursor")
-    console.print("\n[dim]Without this, you'll need to use: [green]ssh -F ~/.gpu-dev/<id>-sshconfig <pod-name>[/green][/dim]")
+    console.print("\n[dim]Without this, you'll need to use: [green]ssh -F ~/.gpu-dev/<id>-sshconfig gpu-dev-<reservation-id>[/green][/dim]")
     console.print("[yellow]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/yellow]\n")
 
     approved = click.confirm("Add Include directive to SSH config files?", default=True)
@@ -326,7 +328,8 @@ def create_ssh_config_for_reservation(hostname: str, pod_name: str, reservation_
 
     Args:
         hostname: The FQDN hostname (e.g., old_bison.devservers.io)
-        pod_name: The pod name to use as SSH host alias
+        pod_name: The k8s pod name (kept for API compat; no longer used for the
+            host alias — warm-claimed pods have a pod_name != gpu-dev-<resid8>)
         reservation_id: The reservation ID (full or short)
         name: Optional reservation name to use for filename (falls back to short ID)
 
@@ -346,8 +349,12 @@ def create_ssh_config_for_reservation(hostname: str, pod_name: str, reservation_
     short_id = reservation_id[:8]
     filename = f"{short_id}-sshconfig"
 
+    # Key the host alias off the reservation id (not pod_name) so warm-claimed pods,
+    # whose pod_name differs from gpu-dev-<resid8>, are still reachable as gpu-dev-<resid8>.
+    host_alias = f"gpu-dev-{short_id}"
+
     config_file = gpu_dev_dir / filename
-    config_content = _generate_ssh_config(hostname, pod_name)
+    config_content = _generate_ssh_config(hostname, host_alias)
 
     try:
         config_file.write_text(config_content)
@@ -2220,10 +2227,11 @@ class ReservationManager:
                                                     console.print(
                                                         f"[yellow]⚠️  Could not create SSH config for node {node['index']+1}: {str(e)}[/yellow]")
 
-                                            # Show connection info
+                                            # Show connection info (alias keys off the reservation id)
+                                            node_alias = f"gpu-dev-{res_id[:8]}" if res_id else pod_name
                                             if config_path and pod_name and use_include:
                                                 console.print(
-                                                    f"[cyan]🖥️  Node {node['index']+1}:[/cyan] [green]ssh {pod_name}[/green]")
+                                                    f"[cyan]🖥️  Node {node['index']+1}:[/cyan] [green]ssh {node_alias}[/green]")
                                             else:
                                                 ssh_command = res.get(
                                                     "ssh_command", "ssh user@pending")
@@ -2321,27 +2329,29 @@ class ReservationManager:
                                         console.print(
                                             f"[yellow]⚠️  Could not create SSH config: {str(e)}[/yellow]")
 
-                                # Show SSH command using config file if created, otherwise fallback
+                                # Show SSH command using config file if created, otherwise fallback.
+                                # Alias keys off the reservation id (works for warm-claimed pods too).
+                                host_alias = f"gpu-dev-{short_id}"
                                 if config_path and pod_name:
                                     if use_include:
                                         # User approved Include - show simple commands
                                         console.print(
-                                            f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh {pod_name}[/green]")
+                                            f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh {host_alias}[/green]")
                                         # Create clickable VS Code link
-                                        vscode_url = _make_vscode_link(pod_name)
-                                        vscode_command = f"code --remote ssh-remote+{pod_name} /home/dev"
+                                        vscode_url = _make_vscode_link(host_alias)
+                                        vscode_command = f"code --remote ssh-remote+{host_alias} /home/dev"
                                         console.print(
                                             f"[cyan]💻 VS Code Remote:[/cyan] [link={vscode_url}][green]{vscode_command}[/green][/link]")
 
                                         # Create clickable Cursor link
-                                        cursor_url = _make_cursor_link(pod_name)
-                                        cursor_command = f"cursor --remote ssh-remote+{pod_name} /home/dev"
+                                        cursor_url = _make_cursor_link(host_alias)
+                                        cursor_command = f"cursor --remote ssh-remote+{host_alias} /home/dev"
                                         console.print(
                                             f"[cyan]🖥️ Cursor Remote:[/cyan] [link={cursor_url}][green]{cursor_command}[/green][/link]")
                                     else:
                                         # User declined Include - show commands with -F flag
                                         console.print(
-                                            f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh -F {config_path} {pod_name}[/green]")
+                                            f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh -F {config_path} {host_alias}[/green]")
                                         console.print(
                                             f"[cyan]💻 VS Code/Cursor:[/cyan] Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config")
                                         console.print(
