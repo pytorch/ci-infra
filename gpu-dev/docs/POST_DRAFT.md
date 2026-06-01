@@ -41,10 +41,16 @@ gpu-dev repro pr/185264 test/inductor/test_flex_attention.py \
   TestFlexAttentionCUDA.test_large_kv_int64_pointer_math_cuda --gpu-type h100
 ```
 
-Reserves a box, checks out the ref (PRs use `pull/N/merge` — what CI actually tests),
-runs the test, prints the verdict, then **drops you into the box** at `~/pytorch` with
-the ref checked out so you can fix and re-run. `--no-connect` = CI mode (run, auto-cancel,
-exit code = test result).
+Reserves a box, checks out the ref, runs the test, prints the verdict, then **drops you
+into the box** at `~/pytorch` with the ref checked out so you can fix and re-run.
+`--no-connect` = CI mode (run, auto-cancel, exit code = test result).
+
+- **Merged PR → the actual land commit on `main`** (the real trunk state that was red).
+  **Open PR → `pull/N/merge`** (what CI tests), falling back to `/head`. Also takes a
+  branch or commit sha.
+- The build is **off-pod**: the box requests it from an always-on build farm (192-core
+  node, mold linker, shared ccache) and stages the result — so a never-before-built
+  commit lands in ~100 s, and any commit built once is then **zero-build** for everyone.
 
 ## 4. `gpu-dev submit` — run a job, get results back
 
@@ -59,13 +65,17 @@ code mirrors the remote command. Multinode wires `RANK`/`SIZE`/`MASTER_ADDR`/…
 
 ## Caching — why builds are fast
 
-Two layers, so you almost never pay for a cold compile:
+Three layers, so you almost never pay for a cold compile:
 
 1. **Prebuilt tree.** Every box gets PyTorch already built at `viable/strict` and staged
    at `~/pytorch` → `import torch` works with **zero build**.
-2. **Shared ccache** (`/ccache_shared`, one EFS mounted in every pod *and* the build node)
-   → all C++/CUDA object compiles are cached and shared across users. Checking out a ref
-   past `viable/strict`, or editing C++, reuses those objects instead of recompiling.
+2. **By-SHA artifact cache.** Whole *built* trees are cached by commit SHA on the shared
+   EFS (every viable/strict bump + every repro fills it, kept for ~72 h). Repro a commit
+   anyone has built → it's staged with **zero build**. A cache miss is built **off-pod**
+   on an always-on build farm (192-core node, mold linker), then it's cached too.
+3. **Shared ccache** (`/ccache_shared`, one EFS mounted in every pod *and* the build node)
+   → all C++/CUDA object compiles are cached and shared, so even a from-scratch build is
+   incremental, and the farm's per-commit builds are ~100 s, not ~30 min.
 
 Expected timings (CUDA 13.2):
 
@@ -73,10 +83,11 @@ Expected timings (CUDA 13.2):
 |---|---|
 | warm claim → active | ~1–2 s |
 | `import torch` (prebuilt) | 0 s |
+| repro a **cached** commit (by-SHA hit) | **0 build** — just stage the prebuilt tree |
+| repro an **uncached** commit (build farm) | **~100 s** off-pod (mold + ccache), then cached for everyone |
 | Python-only edit | 0 s (no rebuild — `PYTHONPATH=~/pytorch`) |
-| edit one C++/CUDA file → rebuild | ~40 s (incremental: warm `build/` + ccache) |
-| build a ref near `viable/strict` | a few min (mostly cache hits) |
-| cold build (far ref / empty cache) | ~20–40 min (one-time; fills the cache for everyone) |
+| edit one C++/CUDA file → rebuild | ~15–40 s (incremental: warm `build/` + ccache + mold) |
+| true cold build (empty cache) | ~20–40 min (rare; one-time) |
 
 ## PyTorch is fully editable
 

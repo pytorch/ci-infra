@@ -105,13 +105,17 @@ def _remote_str(run_mock):
 WARM = {"reservation_id": "warm0001abcd", "ssh_command": "ssh -p 30022 dev@1.2.3.4"}
 
 
-def test_ref_pr_slash_uses_merge_with_head_fallback(cli_runner):
+def test_ref_pr_merged_uses_land_commit_else_merge_then_head(cli_runner):
     res, rm, run = _run(cli_runner, ["pr/185264", "test/foo.py"], claim_result=WARM)
     cmd = _remote_str(run)
-    assert "git fetch origin pull/185264/merge" in cmd
-    assert "no /merge ref, using /head" in cmd
-    assert "git fetch origin pull/185264/head" in cmd
-    # checkout of FETCH_HEAD is the merge/head strategy, not a literal ref checkout
+    # merged PR -> the GitHub API merge_commit_sha (the actual trunk commit)
+    assert "api.github.com/repos/pytorch/pytorch/pulls/185264" in cmd
+    assert "merge_commit_sha" in cmd
+    assert '"merged"' in cmd
+    # open PR fallback: pull/N/merge then /head
+    assert "pull/185264/merge" in cmd
+    assert "pull/185264/head" in cmd
+    # checkout uses the resolved fetch ref / sha (FETCH_HEAD strategy)
     assert "git checkout -f FETCH_HEAD" in cmd
 
 
@@ -129,23 +133,24 @@ def test_ref_bare_number_is_treated_as_pr(cli_runner):
     assert "pull/42/head" in cmd
 
 
-def test_ref_branch_uses_generic_fetch_checkout(cli_runner):
+def test_ref_branch_resolves_via_lsremote_no_pr_path(cli_runner):
     res, rm, run = _run(cli_runner, ["my-feature-branch", "test/foo.py"], claim_result=WARM)
     cmd = _remote_str(run)
-    # branch path: generic fetch of the ref, fall back to literal checkout
-    assert "git fetch origin my-feature-branch" in cmd
-    assert "git checkout -f my-feature-branch" in cmd
-    # not a PR path
-    assert "pull/" not in cmd
+    # branch path: resolve via ls-remote of the ref, fetch the resolved FREF
+    assert "git ls-remote" in cmd and "my-feature-branch" in cmd
+    assert "FREF=my-feature-branch" in cmd
+    assert "git fetch origin \"$FREF\"" in cmd
+    # not a PR path (no GitHub PR API / pull refs)
+    assert "pull/" not in cmd and "api.github.com" not in cmd
 
 
-def test_ref_sha_uses_generic_fetch_checkout(cli_runner):
+def test_ref_sha_resolves_to_itself_no_pr_path(cli_runner):
     sha = "abc123def456"
     res, rm, run = _run(cli_runner, [sha, "test/foo.py"], claim_result=WARM)
     cmd = _remote_str(run)
-    assert f"git fetch origin {sha}" in cmd
-    assert f"git checkout -f {sha}" in cmd
-    assert "pull/" not in cmd
+    assert sha in cmd
+    assert "git fetch origin \"$FREF\"" in cmd
+    assert "pull/" not in cmd and "api.github.com" not in cmd
 
 
 def test_ref_with_shell_metachars_is_quoted(cli_runner):

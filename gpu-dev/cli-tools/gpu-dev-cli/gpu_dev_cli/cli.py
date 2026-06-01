@@ -1557,25 +1557,33 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
     except RuntimeError as e:
         rprint(f"[red]❌ {str(e)}[/red]"); return
 
-    # ref -> in-pod fetch+checkout (PRs prefer /merge = CI's view, fall back to /head)
+    # Resolve the ref in-pod -> WANT (sha, for the by-sha cache) + FREF (fetch ref).
+    # A MERGED pr/N reproduces the actual squash/merge commit on main (the real trunk
+    # state that was red) — NOT pull/N/merge (the PR re-applied onto *current* trunk,
+    # which goes green once the fix lands). Open PRs keep pull/N/merge (= CI's view).
     r = ref.strip(); prnum = None
     if r.startswith("pr/"): prnum = r[3:]
     elif r.startswith("#"): prnum = r[1:]
     elif r.isdigit(): prnum = r
     gh = "https://github.com/pytorch/pytorch.git"
     if prnum:
-        fetch = (f"git fetch origin pull/{prnum}/merge 2>/dev/null && git checkout -f FETCH_HEAD || "
-                 f"{{ echo '[repro] no /merge ref, using /head'; git fetch origin pull/{prnum}/head && git checkout -f FETCH_HEAD; }}")
-        # resolve to a concrete SHA up front (for the by-sha cache lookup) AND keep the
-        # fetch ref FREF — the build farm needs the ref (a pull/N/merge sha isn't
-        # fetchable by sha alone), it's enqueued so the worker can fetch it.
-        resolve = (f"FREF=pull/{prnum}/merge; WANT=$(timeout 15 git ls-remote {gh} $FREF 2>/dev/null | head -1 | cut -f1); "
-                   f"[ -n \"$WANT\" ] || {{ FREF=pull/{prnum}/head; WANT=$(timeout 15 git ls-remote {gh} $FREF 2>/dev/null | head -1 | cut -f1); }}; ")
+        api = f"https://api.github.com/repos/pytorch/pytorch/pulls/{prnum}"
+        resolve = (
+            f"PRJSON=$(curl -s -m 10 -H 'Accept: application/vnd.github+json' -H 'User-Agent: gpu-dev' {api} 2>/dev/null); "
+            "MCS=$(printf '%s' \"$PRJSON\" | grep -oE '\"merge_commit_sha\": *\"[0-9a-f]+\"' | head -1 | cut -d'\"' -f4); "
+            "if printf '%s' \"$PRJSON\" | grep -q '\"merged\": *true' && [ -n \"$MCS\" ]; then "
+            f"WANT=\"$MCS\"; FREF=\"$MCS\"; echo \"[repro] pr/{prnum} is merged -> reproducing trunk commit $MCS\"; "
+            f"else FREF=pull/{prnum}/merge; WANT=$(timeout 15 git ls-remote {gh} $FREF 2>/dev/null | head -1 | cut -f1); "
+            f"[ -n \"$WANT\" ] || {{ FREF=pull/{prnum}/head; WANT=$(timeout 15 git ls-remote {gh} $FREF 2>/dev/null | head -1 | cut -f1); echo '[repro] open PR, no /merge -> /head'; }}; fi; ")
     else:
         rq = shlex.quote(r)
-        fetch = f"git fetch origin {rq} 2>/dev/null && git checkout -f FETCH_HEAD || git checkout -f {rq}"
         resolve = (f"FREF={rq}; WANT=$(timeout 15 git ls-remote {gh} {rq} 2>/dev/null | head -1 | cut -f1); "
                    f"[ -n \"$WANT\" ] || case {rq} in *[!0-9a-fA-F]*) WANT= ;; *) WANT={rq} ;; esac; ")
+    # in-pod fallback checkout (by-sha miss + farm unavailable): fetch the resolved ref,
+    # else check out the sha directly (reachable for a merged-PR land commit / trunk).
+    checkout = ("git fetch origin \"$FREF\" 2>/dev/null && git checkout -f FETCH_HEAD "
+                "|| git checkout -f \"$WANT\" 2>/dev/null "
+                "|| { git fetch --force origin 2>/dev/null && git checkout -f \"$WANT\"; }")
 
     testcmd = " ".join(shlex.quote(a) for a in test_args)
     # by-sha artifact cache: if a fully-built tree for the resolved SHA already exists
@@ -1587,7 +1595,8 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         "BYSHA=/ccache_shared/prebuilt/by-sha; QUEUE=/ccache_shared/prebuilt/build-queue; HIT=; "
         # bs <sha>: stage a fully-built by-sha tree into /home/dev/pytorch (zero build); 0 on success.
         # explicit ext check, not a glob: the pod login shell is zsh, where an unmatched glob is a hard error.
-        "bs() { local s=\"$1\" tb=; for e in zst gz; do [ -f \"$BYSHA/$s.tar.$e\" ] && { tb=\"$BYSHA/$s.tar.$e\"; break; }; done; [ -n \"$tb\" ] || return 1; "
+        # require the .sha completion gate (written last) so we never stage a half-published tarball.
+        "bs() { local s=\"$1\" tb=; [ -f \"$BYSHA/$s.sha\" ] || return 1; for e in zst gz; do [ -f \"$BYSHA/$s.tar.$e\" ] && { tb=\"$BYSHA/$s.tar.$e\"; break; }; done; [ -n \"$tb\" ] || return 1; "
         "rm -rf /home/dev/pytorch.new; mkdir -p /home/dev/pytorch.new; "
         "case \"$tb\" in *.zst) zstd -dc \"$tb\" 2>/dev/null | tar -C /home/dev/pytorch.new --strip-components=1 -xf - 2>/dev/null ;; "
         "*) tar -C /home/dev/pytorch.new --strip-components=1 -xzf \"$tb\" 2>/dev/null ;; esac; "
@@ -1608,7 +1617,7 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         "if bs \"$WANT\"; then cd /home/dev/pytorch; HIT=1; echo '[repro] off-pod build ready -> staged (zero build)'; else echo '[repro] off-pod build unavailable, building locally'; fi; fi; "
         # 3) fall back to in-pod fetch + build (+ cache the result for the next dev)
         "if [ -z \"$HIT\" ]; then "
-        f"echo '[repro] checkout {r}'; {fetch}; "
+        "echo \"[repro] checking out $FREF\"; " + checkout + "; "
         "echo \"[repro] HEAD $(git rev-parse --short HEAD)\"; "
         "git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 >/dev/null 2>&1 || true; "
         "if ! PYTHONPATH=/home/dev/pytorch python -c 'import torch' 2>/dev/null; then "
