@@ -430,8 +430,13 @@ resource "kubernetes_daemonset" "image_prepuller" {
         }
 
         init_container {
-          name              = "pull-gpu-dev-image"
-          image             = local.latest_image_uri
+          name = "pull-gpu-dev-image"
+          # Pre-warm the SAME immutable hash tag the dev/warm pods use (see
+          # GPU_DEV_CONTAINER_IMAGE in lambda.tf). On a new hash this DS template
+          # changes -> rolls -> pulls the new tag onto every node, so by the time a
+          # pod referencing that tag is created, IfNotPresent finds it present (no
+          # per-pod 27GB pull, no stale :latest cache).
+          image             = local.full_image_uri
           image_pull_policy = "Always"
           command           = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
         }
