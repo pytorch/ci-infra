@@ -33,6 +33,19 @@ output "nat_gateway_ids" {
   value       = aws_nat_gateway.this[*].id
 }
 
+output "nat_gateway_public_ips" {
+  description = "Map of NAT Gateway index (0-based) to list of public IPv4 addresses (primary first, then secondaries)."
+  value = {
+    for nat_idx in range(local.nat_gateway_count) :
+    "nat-${nat_idx + 1}" => concat(
+      [aws_eip.nat[nat_idx].public_ip],
+      [for sec_key, sec in local.nat_secondary_eips :
+        aws_eip.nat_secondary[sec_key].public_ip
+      if sec.nat_idx == nat_idx]
+    )
+  }
+}
+
 output "internet_gateway_id" {
   description = "The ID of the Internet Gateway"
   value       = aws_internet_gateway.this.id
