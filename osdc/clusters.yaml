@@ -295,12 +295,11 @@ clusters:
       capacity_reservation_ids:
         - cr-0c3f05dffb85ed832
     nodepools-b200:
-      # us-east-2 B200 capacity reservations (p6-b200.48xlarge, 8× B200 each).
-      # Two reserved nodes total = 16 B200 GPUs. arc-runners-b200/defs/*.yaml
+      # us-east-2 B200 capacity reservation (p6-b200.48xlarge, 8× B200 each).
+      # One reserved node total = 8 B200 GPUs. arc-runners-b200/defs/*.yaml
       # max_runners are sized assuming this count.
       capacity_reservation_ids:
-        - cr-02cf82c9a0f7fa8c0
-        - cr-06ec9d6c14b9d9981
+        - cr-0b15c0b3163f09d26
     pypi_cache:
       replicas: 10
     modules:
