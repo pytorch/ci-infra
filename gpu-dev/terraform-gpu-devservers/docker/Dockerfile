@@ -40,7 +40,8 @@ RUN for attempt in 1 2 3; do \
         rsync \
         zstd \
         pigz \
-        mold
+        mold \
+        bubblewrap
 # Install Node.js 20 from NodeSource (required for Claude CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
@@ -118,7 +119,8 @@ RUN pip install --no-cache-dir --break-system-packages \
         scikit-learn \
         plotly \
         tensorboard \
-        gpu-dev
+        gpu-dev \
+        aws-bedrock-token-generator
 
 # Create dev user with UID 1081 to avoid conflicts with common base image users (e.g., ubuntu=1000)
 RUN useradd -u 1081 -m -s /usr/bin/zsh dev && \
@@ -160,13 +162,18 @@ WORKDIR /home/dev
 RUN mkdir -p ~/.npm-global && \
     npm config set prefix ~/.npm-global
 
-# OpenAI Codex CLI installed SYSTEM-WIDE as root (parallels the Claude install above).
-# Auth is per-user: either `export OPENAI_API_KEY=sk-…` in their shell, or `codex login`
-# for the browser/ChatGPT-account flow. AWS Bedrock now serves Codex (announced 2026-04-28
-# at openai.com/index/openai-on-aws) — once we have early access, swap in the Bedrock-backed
-# install + flip an env var; users won't need their own keys anymore.
+# OpenAI Codex CLI on GPT-5.5 via AWS Bedrock (GA 2026-06-01). Installed system-wide
+# (parallels Claude above), then /usr/local/bin/codex is replaced with a thin wrapper that
+# auths via the pod IRSA — it mints a short-lived Bedrock bearer token (no per-user OpenAI
+# key) and pins the bedrock-mantle provider + GPT-5.5 metadata. Reasoning effort is set with
+# the CODEX_EFFORT env var (default high); the wrapper rewrites ~/.codex/config.toml each
+# launch (home is ephemeral) so a /model picker mishap self-heals on restart. IAM is already
+# in place (pod IRSA: bedrock-mantle:* + aws-marketplace:Subscribe).
 USER root
 RUN npm install -g --prefix /usr/local @openai/codex || echo "Codex CLI install failed (non-fatal at build time)"
+# Bedrock wrapper, base64-embedded to avoid heredoc/quoting fragility. Overwrites the npm
+# bin symlink; the real launcher stays at /usr/local/lib/node_modules/@openai/codex/bin/codex.js.
+RUN echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaAojIENvZGV4IHdpcmVkIHRvIEdQVC01LjUgb24gQVdTIEJlZHJvY2sgKHVzLWVhc3QtMiBtYW50bGUgZW5kcG9pbnQpLgojIEF1dGggdmlhIHRoZSBwb2QgSVJTQSAtPiBzaG9ydC1saXZlZCAofjEyaCkgQmVkcm9jayBiZWFyZXIgdG9rZW47IG5vIHBlci11c2VyIGtleS4KIyBSZWFzb25pbmcgZWZmb3J0IHZpYSBDT0RFWF9FRkZPUlQgZW52IChkZWZhdWx0IGhpZ2gpLiBUaGUgY29uZmlnIGlzIChyZSl3cml0dGVuIG9uCiMgZXZlcnkgbGF1bmNoOiAvaG9tZS9kZXYgaXMgZXBoZW1lcmFsLCBhbmQgdGhpcyBhbHNvIHNlbGYtaGVhbHMgYSAvbW9kZWwgbWlzaGFwCiMgKHRoZSBwaWNrZXIgY2FuIGNvcnJ1cHQgdGhlIG1vZGVsIGlkOyByZXN0YXJ0aW5nIGNvZGV4IHJlc2V0cyBpdCkuCnNldCArZQpSRUFMPS91c3IvbG9jYWwvbGliL25vZGVfbW9kdWxlcy9Ab3BlbmFpL2NvZGV4L2Jpbi9jb2RleC5qcwpFRkZPUlQ9IiR7Q09ERVhfRUZGT1JUOi1oaWdofSIKbWtkaXIgLXAgIiRIT01FLy5jb2RleCIgMj4vZGV2L251bGwKY2F0ID4gIiRIT01FLy5jb2RleC9jb25maWcudG9tbCIgPDxDRkcKbW9kZWwgPSAib3BlbmFpLmdwdC01LjUiCm1vZGVsX3Byb3ZpZGVyID0gImJlZHJvY2siCndlYl9zZWFyY2ggPSAiZGlzYWJsZWQiCm1vZGVsX2NvbnRleHRfd2luZG93ID0gMjcyMDAwCm1vZGVsX21heF9vdXRwdXRfdG9rZW5zID0gMTI4MDAwCm1vZGVsX3JlYXNvbmluZ19lZmZvcnQgPSAiJEVGRk9SVCIKClttb2RlbF9wcm92aWRlcnMuYmVkcm9ja10KbmFtZSA9ICJBV1MgQmVkcm9jayAoR1BULTUuNSkiCmJhc2VfdXJsID0gImh0dHBzOi8vYmVkcm9jay1tYW50bGUudXMtZWFzdC0yLmFwaS5hd3Mvb3BlbmFpL3YxIgplbnZfa2V5ID0gIk9QRU5BSV9BUElfS0VZIgp3aXJlX2FwaSA9ICJyZXNwb25zZXMiCkNGRwpUT0s9IiQocHl0aG9uMyAtYyAnZnJvbSBhd3NfYmVkcm9ja190b2tlbl9nZW5lcmF0b3IgaW1wb3J0IHByb3ZpZGVfdG9rZW47IHByaW50KHByb3ZpZGVfdG9rZW4ocmVnaW9uPSJ1cy1lYXN0LTIiKSknIDI+L2Rldi9udWxsKSIKWyAtbiAiJFRPSyIgXSAmJiBleHBvcnQgT1BFTkFJX0FQSV9LRVk9IiRUT0siCmV4ZWMgIiRSRUFMIiAiJEAiCg==' | base64 -d > /usr/local/bin/codex && chmod 0755 /usr/local/bin/codex
 
 USER dev
 
