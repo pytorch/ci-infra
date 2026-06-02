@@ -531,6 +531,35 @@ deploy-module cluster module force="":
     deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START"
     deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START"
 
+# Remove a module's resources from a cluster. Operator is expected to have
+# run `just drain-runners` first for runner modules. Deletes everything
+# labelled osdc.io/module=<module> (today: nodepools*, arc-runners*) and
+# helm-uninstalls matching arc-runners releases.
+remove-module cluster module:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    MODULE="{{module}}"
+    just kubeconfig "$CLUSTER"
+
+    echo "Removing all resources labelled osdc.io/module=$MODULE from $CLUSTER..."
+
+    # arc-runners convention: arc-runner-hook-<n> ConfigMap → arc-<n> Helm release
+    while IFS=/ read -r ns name; do
+        [ -z "$name" ] && continue
+        [[ "$name" == arc-runner-hook-* ]] || continue
+        release="arc-${name#arc-runner-hook-}"
+        echo "  helm uninstall $release -n $ns"
+        helm uninstall "$release" -n "$ns" --ignore-not-found || true
+        kubectl delete secret -n "$ns" -l "owner=helm,name=$release" --ignore-not-found || true
+    done < <(kubectl get cm -A -l "osdc.io/module=$MODULE" \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}')
+
+    kubectl delete configmap,nodepool.karpenter.sh,ec2nodeclass.karpenter.k8s.aws \
+        -A -l "osdc.io/module=$MODULE" --ignore-not-found
+
 # Run `tofu plan` for base + every terraform-backed module of a cluster.
 # Read-only: no apply, no k8s/helm side effects. Safe to run from CI on PRs.
 plan cluster:
