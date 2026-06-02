@@ -55,11 +55,23 @@ async def tunnel_ssh(target_host: str, target_port: int):
     # WebSocket URL - wss:// for secure WebSocket
     ws_url = f"wss://{proxy_host}/tunnel/{target_host}"
 
+    # Verify TLS against certifi's CA bundle. The default SSL context uses the OS
+    # trust store, which on macOS python.org builds is often empty
+    # ("unable to get local issuer certificate" / CERTIFICATE_VERIFY_FAILED).
+    # certifi ships the Mozilla bundle, so this works without the manual
+    # "Install Certificates.command" step.
+    ssl_ctx = ssl_module.create_default_context()
+    try:
+        import certifi
+        ssl_ctx.load_verify_locations(certifi.where())
+    except Exception:
+        pass  # fall back to the default trust store
+
     last_exc = None
     for attempt in range(MAX_RETRIES):
         try:
             async with websockets.connect(
-                ws_url, open_timeout=20,
+                ws_url, ssl=ssl_ctx, open_timeout=20,
                 ping_interval=30, ping_timeout=10,
             ) as websocket:
                 # Set up stdin/stdout for SSH
