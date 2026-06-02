@@ -3453,15 +3453,22 @@ def _show_availability(show_spot: bool = False) -> None:
                 spot_table = Table(title="⚡ Spot Instances (us-east-1, ~70% cheaper)")
                 spot_table.add_column("GPU Type", style="cyan")
                 spot_table.add_column("Avail\nNow", style="green")
+                spot_table.add_column("In\nUse", style="yellow")
                 spot_table.add_column("Per\nNode", style="bright_green")
                 spot_table.add_column("Status", style="magenta")
                 spot_table.add_column("Spot Discount", style="dim")
                 _on_demand = {"b300": 95, "b200": 95, "h200": 55, "h100": 98, "a100": 32, "t4": 4.5, "l4": 7}
                 for gt, info in sorted(spot_region_info.items()):
                     avail = info.get("available", 0)
+                    total = info.get("total", 0)
+                    in_use = max(0, total - avail)  # GPUs on up spot nodes already taken
                     per_node = spot_gpus_per_node.get(gt, 8)
                     avail_display = f"[green]{avail}[/green]" if avail > 0 else f"[dim]0[/dim]"
-                    status = "[green]Node up[/green]" if avail > 0 else "Spins up on reserve (~10 min)"
+                    in_use_display = f"[yellow]{in_use}[/yellow]" if in_use > 0 else f"[dim]0[/dim]"
+                    if in_use > 0:
+                        status = "[yellow]Node up (in use)[/yellow]" if avail == 0 else "[green]Node up[/green]"
+                    else:
+                        status = "[green]Node up[/green]" if avail > 0 else "Spins up on reserve (~10 min)"
                     si = info.get("spot_info", {}) or {}
                     sp = si.get("spot_price", "") if isinstance(si, dict) else ""
                     if not sp or (isinstance(si, dict) and "No spot data" in str(si.get("spot_signal", ""))):
@@ -3473,7 +3480,7 @@ def _show_availability(show_spot: bool = False) -> None:
                             avail_signal = f"[green]{pct}% off on-demand[/green]" if pct > 0 else "[dim]At on-demand price[/dim]"
                         except (ValueError, TypeError):
                             avail_signal = "[yellow]Unknown[/yellow]"
-                    spot_table.add_row(f"{gt.upper()} *", avail_display, str(per_node), status, avail_signal)
+                    spot_table.add_row(f"{gt.upper()} *", avail_display, in_use_display, str(per_node), status, avail_signal)
                 console.print(spot_table)
                 rprint("[dim]* = spot: ~70% cheaper, AWS can reclaim with 2-min notice, fulfillment not guaranteed.[/dim]")
                 rprint("[dim]  Separate cluster (us-east-1) with separate disks. Select via gpu-dev reserve (interactive).[/dim]")

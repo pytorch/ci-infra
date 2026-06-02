@@ -1293,13 +1293,24 @@ def expire_reservation_due_to_missing_pod(reservation: dict[str, Any]) -> None:
 
         reason = "Pod was removed outside of reservation system"
         if is_spot:
+            # A spot reservation losing its pod is almost always an AWS spot
+            # reclaim — default to a spot-aware message and refine via EC2 if the
+            # node is still describable. (node_ip is the node's PUBLIC ip on the
+            # spot path, so the old private-ip-only lookup never matched and it
+            # fell back to the generic message.)
+            reason = f"Spot instance reclaimed by AWS ({gpu_type.upper()})"
             node_ip = reservation.get("node_ip", "")
             if node_ip:
                 try:
                     ec2 = boto3.client("ec2", region_name=os.environ.get("REGION", "us-east-1"))
+                    # node_ip may be public or private depending on the path — try both.
                     instances = ec2.describe_instances(
                         Filters=[{"Name": "private-ip-address", "Values": [node_ip]}]
                     ).get("Reservations", [])
+                    if not instances:
+                        instances = ec2.describe_instances(
+                            Filters=[{"Name": "ip-address", "Values": [node_ip]}]
+                        ).get("Reservations", [])
                     for r in instances:
                         for inst in r.get("Instances", []):
                             state_reason = inst.get("StateTransitionReason", "")
