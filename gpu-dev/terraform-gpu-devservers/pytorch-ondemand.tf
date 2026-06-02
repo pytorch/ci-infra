@@ -19,6 +19,14 @@
 
 resource "kubernetes_deployment_v1" "pytorch_ondemand" {
   depends_on = [kubernetes_namespace.management, null_resource.docker_build_and_push]
+  # Don't block (or fail) the apply on this background worker's rollout. It's a
+  # Recreate-strategy deployment on the build node (no image-prepuller), so on
+  # every image change it cold-pulls the ~28GB image (~6min) with 0 replicas Ready
+  # in the gap — which exceeds the default wait_for_rollout window and errors the
+  # apply even though it converges seconds later. The worker isn't user-facing;
+  # requesters fall through to in-pod builds while it's down. (Same as the
+  # pytorch-snapshot DaemonSet in git-cache.tf.)
+  wait_for_rollout = false
   metadata {
     name      = "pytorch-ondemand-builder"
     namespace = "management"
