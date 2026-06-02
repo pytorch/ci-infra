@@ -6328,7 +6328,7 @@ EOF
                             # Only start Jupyter if enabled at creation time
                             if [ "$JUPYTER_ENABLED" = "true" ]; then
                                 echo "[STARTUP] Starting Jupyter Lab in background..."
-                                nohup su - dev -c "cd /workspace && /opt/conda/bin/jupyter-lab --config=/home/dev/.jupyter/jupyter_lab_config.py" > /tmp/jupyter.log 2>&1 &
+                                nohup su - dev -c "cd /workspace && $(command -v jupyter-lab || echo /usr/local/bin/jupyter-lab) --config=/home/dev/.jupyter/jupyter_lab_config.py" > /tmp/jupyter.log 2>&1 &
                                 echo "[STARTUP] Jupyter Lab started (check /tmp/jupyter.log for details)"
                             else
                                 echo "[STARTUP] Jupyter Lab configured but not started (use 'gpu-dev edit --enable-jupyter' to enable)"
@@ -9296,7 +9296,7 @@ def enable_jupyter_in_pod(
 
             # Start Jupyter as dev user in background (config already exists)
             echo "Starting Jupyter Lab with existing config..."
-            nohup su - dev -c "cd /workspace && /opt/conda/bin/jupyter-lab --config=/home/dev/.jupyter/jupyter_lab_config.py" > /tmp/jupyter.log 2>&1 &
+            nohup su - dev -c "cd /workspace && $(command -v jupyter-lab || echo /usr/local/bin/jupyter-lab) --config=/home/dev/.jupyter/jupyter_lab_config.py" > /tmp/jupyter.log 2>&1 &
 
             # Wait for startup
             sleep 3
