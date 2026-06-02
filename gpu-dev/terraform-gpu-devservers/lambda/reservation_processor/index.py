@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Optional
 
 import boto3
 import botocore.exceptions
@@ -1488,11 +1488,15 @@ def _provision_warm_pod(v1, pod) -> None:
     if get_dns_enabled():
         try:
             domain_name = generate_unique_name()
-            # Placeholder mapping (reservation_id='warm', far expiry); the claim
-            # rebinds it to the real reservation.
+            # Placeholder mapping (reservation_id='warm'); the claim rebinds it to
+            # the real reservation. Expiry tracks the pod's own max age (+2h slack)
+            # so a leaked mapping (recycle that missed the delete) self-cleans via
+            # DynamoDB TTL within hours instead of lingering for days and bloating
+            # the name pool that generate_unique_name() collides against.
             store_domain_mapping(
                 domain_name, node_private_ip or node_public_ip,
-                node_port, "warm", int(time.time()) + 7 * 24 * 3600)
+                node_port, "warm",
+                int(time.time()) + int(WARM_POD_MAX_AGE_HOURS * 3600) + 2 * 3600)
         except Exception as e:
             logger.warning(f"warm provision mapping failed for {pod_name}: {e}")
             domain_name = "-"
@@ -1506,17 +1510,63 @@ def _provision_warm_pod(v1, pod) -> None:
 
 
 def _recycle_warm_pod(v1, p) -> bool:
-    """Delete a warm pod + its SSH service. Returns True on pod delete success."""
+    """Delete a warm pod + its SSH service + its placeholder domain mapping.
+
+    The mapping cleanup matters: an unclaimed warm pod holds a 'warm' placeholder
+    name in the SSH mappings table, and generate_unique_name() counts every
+    non-expired mapping as taken. Dropping the pod but leaving the mapping leaks
+    the name until its TTL — orphans then pile up and manufacture '-2' suffixes on
+    fresh reservations. Freeing it here keeps the name pool ~= the live pod count.
+    Returns True on pod delete success.
+    """
     try:
+        dom = (p.metadata.annotations or {}).get("warm-domain")
         v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
         try:
             v1.delete_namespaced_service(f"{p.metadata.name}-ssh", "gpu-dev")
         except Exception:
             pass
+        if dom and dom != "-":
+            try:
+                delete_domain_mapping(dom)
+            except Exception as me:
+                logger.warning(f"warm recycle domain cleanup failed for {dom}: {me}")
         return True
     except Exception as de:
         logger.warning(f"warm recycle delete failed for {p.metadata.name}: {de}")
         return False
+
+
+def _current_image_digest() -> Optional[str]:
+    """Resolve the digest the pod image tag (`:latest`) currently points to in ECR.
+    Used to rotate warm pods off a stale image after a rebuild. None on any error
+    (callers then skip rotation — fail-safe, never recycle on uncertainty)."""
+    try:
+        img = GPU_DEV_CONTAINER_IMAGE
+        if "/" not in img or ".ecr." not in img:
+            return None
+        repo_and_tag = img.split("/", 1)[1]
+        repo, _, tag = repo_and_tag.partition(":")
+        tag = tag or "latest"
+        ecr = boto3.client("ecr")
+        resp = ecr.describe_images(
+            repositoryName=repo, imageIds=[{"imageTag": tag}])
+        return resp["imageDetails"][0]["imageDigest"]
+    except Exception as e:
+        logger.warning(f"could not resolve current image digest: {e}")
+        return None
+
+
+def _pod_image_digest(p) -> Optional[str]:
+    """The sha256 digest the gpu-dev container is actually running (from the pod's
+    container status imageID, e.g. '...repo@sha256:abc'). None if not reported."""
+    try:
+        for cs in (p.status.container_statuses or []):
+            if cs.name == "gpu-dev" and cs.image_id and "@" in cs.image_id:
+                return cs.image_id.split("@", 1)[1]
+    except Exception:
+        pass
+    return None
 
 
 def reconcile_warm_pool() -> dict:
@@ -1524,6 +1574,11 @@ def reconcile_warm_pool() -> dict:
     v1 = client.CoreV1Api(get_k8s_client())
     created = recycled = 0
     max_age_s = WARM_POD_MAX_AGE_HOURS * 3600
+    # Rotate idle warm pods off a stale image after a rebuild. Resolved once per
+    # reconcile; rotation is capped at 1 pod per type per tick so the pool drains
+    # gradually (never all at once) and only ever touches warm-state=ready pods —
+    # claimed pods (real reservations) are never recycled here.
+    desired_digest = _current_image_digest()
     for gpu_type, target in WARM_POOL_TARGETS.items():
         try:
             pods = _list_warm_pods(v1, gpu_type=gpu_type)
@@ -1553,6 +1608,18 @@ def reconcile_warm_pool() -> dict:
                     if _recycle_warm_pod(v1, p):
                         recycled += 1
                 live = live[:int(target)]
+            # Rotate ONE stale-image ready pod out (the deficit backfill below then
+            # recreates it on the fresh image). Capped at 1/type/tick = gradual.
+            if desired_digest:
+                for p in live:
+                    if (p.metadata.labels or {}).get("warm-state") != "ready":
+                        continue
+                    rd = _pod_image_digest(p)
+                    if rd and rd != desired_digest:
+                        if _recycle_warm_pod(v1, p):
+                            recycled += 1
+                            live.remove(p)
+                        break
             # Backfill connection details on ready pods so claims stay fast.
             for p in live:
                 if (p.metadata.labels or {}).get("warm-state") == "ready":
@@ -1659,6 +1726,7 @@ def try_claim_warm_pod(body: dict) -> bool:
         )
         record_trace_event(trace_data, "warm_pod_labeled")
 
+        resid8 = (reservation_id or "")[:8]
         inject_cmd = (
             "mkdir -p /home/dev/.ssh && touch /home/dev/.ssh/authorized_keys\n"
             "while IFS= read -r k; do [ -n \"$k\" ] && ! grep -Fq \"$k\" /home/dev/.ssh/authorized_keys && echo \"$k\" >> /home/dev/.ssh/authorized_keys; done <<'KEOF'\n"
@@ -1670,11 +1738,18 @@ def try_claim_warm_pod(body: dict) -> bool:
             # (cancel/list/...) authenticates as the user and IRSA assumes the right
             # session. The user connects AFTER the claim, so their login shell picks
             # these up. Also record the reservation id for `gpu-dev cancel`.
+            # A warm pod's kernel hostname is the pool name (gpu-dev-<type>-<hex>),
+            # so the shell prompt would show that instead of anything tied to the
+            # reservation. Stamp GPU_DEV_HOSTLABEL=gpu-dev-<resid8> (== the SSH alias
+            # from #185); the image prompt prefers it over %m/\\h, so warm pods show
+            # the same handle you connect with. Cold pods leave it unset (their
+            # hostname already IS gpu-dev-<resid8>).
             "for f in /home/dev/.bashrc_ext /home/dev/.zshrc_ext; do [ -f \"$f\" ] || continue\n"
             f"  sed -i -e 's|^export GPU_DEV_USER_ID=.*|export GPU_DEV_USER_ID=\"{user_id}\"|'"
             f" -e 's|^export GPU_DEV_GITHUB_USER=.*|export GPU_DEV_GITHUB_USER=\"{github_user}\"|'"
             f" -e 's|^export AWS_ROLE_SESSION_NAME=.*|export AWS_ROLE_SESSION_NAME=\"{user_id}\"|' \"$f\"\n"
             f"  grep -q '^export GPU_DEV_RESERVATION_ID=' \"$f\" && sed -i 's|^export GPU_DEV_RESERVATION_ID=.*|export GPU_DEV_RESERVATION_ID=\"{reservation_id}\"|' \"$f\" || echo 'export GPU_DEV_RESERVATION_ID=\"{reservation_id}\"' >> \"$f\"\n"
+            f"  grep -q '^export GPU_DEV_HOSTLABEL=' \"$f\" && sed -i 's|^export GPU_DEV_HOSTLABEL=.*|export GPU_DEV_HOSTLABEL=\"gpu-dev-{resid8}\"|' \"$f\" || echo 'export GPU_DEV_HOSTLABEL=\"gpu-dev-{resid8}\"' >> \"$f\"\n"
             "done"
         )
         stream(

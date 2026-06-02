@@ -28,7 +28,8 @@ import pytest
 
 def _make_pod(name, *, warm_state="ready", phase="Running", node="node-a",
               gpu_type="h100", resource="nvidia.com/gpu", gpu_held=1,
-              app="gpu-dev-warm", creation_ts=None, annotations=None):
+              app="gpu-dev-warm", creation_ts=None, annotations=None,
+              image_id=None):
     """A stand-in for a kubernetes V1Pod with just the attrs the code reads."""
     labels = {"app": app, "warm-gpu-type": gpu_type}
     if warm_state is not None:
@@ -41,13 +42,16 @@ def _make_pod(name, *, warm_state="ready", phase="Running", node="node-a",
     if creation_ts is not None:
         ts = SimpleNamespace(timestamp=lambda v=creation_ts: v)
 
+    container_statuses = (
+        [SimpleNamespace(name="gpu-dev", image_id=image_id)] if image_id else [])
+
     return SimpleNamespace(
         metadata=SimpleNamespace(
             name=name, labels=labels, annotations=annotations or {},
             creation_timestamp=ts,
         ),
         spec=SimpleNamespace(node_name=node, containers=[container]),
-        status=SimpleNamespace(phase=phase),
+        status=SimpleNamespace(phase=phase, container_statuses=container_statuses),
     )
 
 
@@ -144,12 +148,15 @@ def test_create_warm_pod_uses_unique_names(lambda_index):
 
 # --- reconcile_warm_pool ------------------------------------------------------
 
-def _reconcile_with(lambda_index, monkeypatch, *, pods_by_type, target_overrides=None):
+def _reconcile_with(lambda_index, monkeypatch, *, pods_by_type, target_overrides=None,
+                    desired_digest=None):
     """Run reconcile_warm_pool with a single fake CoreV1Api `v1`.
 
     pods_by_type: {gpu_type: [pods]} returned by _list_warm_pods for that type.
     Patches WARM_POOL_TARGETS to exactly the keys in target_overrides (so only
-    the types we care about are reconciled). Returns (v1, created_calls).
+    the types we care about are reconciled). `desired_digest` stubs
+    _current_image_digest (default None = image rotation disabled, so existing
+    tests never touch ECR). Returns (v1, created_calls, result).
     """
     v1 = MagicMock(name="v1")
 
@@ -172,6 +179,8 @@ def _reconcile_with(lambda_index, monkeypatch, *, pods_by_type, target_overrides
     monkeypatch.setattr(lambda_index, "_list_warm_pods", fake_list)
     monkeypatch.setattr(lambda_index, "_create_warm_pod", fake_create)
     monkeypatch.setattr(lambda_index, "_provision_warm_pod", lambda *_a, **_k: None)
+    monkeypatch.setattr(lambda_index, "_current_image_digest",
+                        lambda: desired_digest)
 
     result = lambda_index.reconcile_warm_pool()
     return v1, created_calls, result
@@ -311,6 +320,184 @@ def test_reconcile_per_type_failure_isolated(lambda_index, monkeypatch):
     # cpu-x86 still got topped up despite cpu-arm failing
     assert created.count("cpu-x86") == 2
     assert "cpu-arm" not in created
+
+
+# --- _recycle_warm_pod: domain-mapping cleanup (orphan-leak fix) --------------
+
+def test_recycle_deletes_domain_mapping(lambda_index, monkeypatch):
+    # The whole point of the fix: recycling a warm pod must also free its
+    # placeholder DNS name, else generate_unique_name() collides against orphans.
+    deleted = []
+    monkeypatch.setattr(lambda_index, "delete_domain_mapping",
+                        lambda d: deleted.append(d))
+    v1 = MagicMock()
+    pod = _make_pod("gpu-dev-h100-x", annotations={"warm-domain": "clever_fox"})
+    assert lambda_index._recycle_warm_pod(v1, pod) is True
+    v1.delete_namespaced_pod.assert_called_once()
+    assert deleted == ["clever_fox"]
+
+
+def test_recycle_no_mapping_delete_when_no_domain(lambda_index, monkeypatch):
+    deleted = []
+    monkeypatch.setattr(lambda_index, "delete_domain_mapping",
+                        lambda d: deleted.append(d))
+    v1 = MagicMock()
+    # placeholder "-" and absent annotation must both skip the mapping delete
+    for ann in ({"warm-domain": "-"}, {}):
+        pod = _make_pod("gpu-dev-h100-x", annotations=ann)
+        assert lambda_index._recycle_warm_pod(v1, pod) is True
+    assert deleted == []
+
+
+def test_recycle_swallows_mapping_delete_error(lambda_index, monkeypatch):
+    # A failed mapping cleanup must not fail the recycle (pod is already gone).
+    monkeypatch.setattr(lambda_index, "delete_domain_mapping",
+                        lambda d: (_ for _ in ()).throw(RuntimeError("ddb down")))
+    v1 = MagicMock()
+    pod = _make_pod("gpu-dev-h100-x", annotations={"warm-domain": "clever_fox"})
+    assert lambda_index._recycle_warm_pod(v1, pod) is True
+
+
+# --- _provision_warm_pod: placeholder mapping expiry --------------------------
+
+def test_provision_uses_short_placeholder_expiry(lambda_index, monkeypatch):
+    # The placeholder must expire on the pod's own timescale (max_age + 2h), NOT
+    # the old 7 days — that long TTL is what let orphans pile up.
+    monkeypatch.setattr(lambda_index, "WARM_POD_MAX_AGE_HOURS", 12.0)
+    monkeypatch.setattr(lambda_index, "get_dns_enabled", lambda: True)
+    monkeypatch.setattr(lambda_index, "generate_unique_name", lambda: "brave_owl")
+    monkeypatch.setattr(lambda_index, "get_pod_node_public_ip", lambda _n: "1.2.3.4")
+    monkeypatch.setattr(lambda_index, "get_pod_node_private_ip", lambda _n: "10.0.0.1")
+    monkeypatch.setattr(lambda_index, "get_pod_internal_ip", lambda _n: "10.1.0.1")
+    captured = {}
+    monkeypatch.setattr(lambda_index, "store_domain_mapping",
+                        lambda *a: captured.setdefault("args", a))
+    v1 = MagicMock()
+    v1.read_namespaced_service.return_value = SimpleNamespace(
+        spec=SimpleNamespace(ports=[SimpleNamespace(node_port=30111)]))
+    pod = _make_pod("gpu-dev-h100-fresh", warm_state="ready")
+
+    before = time.time()
+    lambda_index._provision_warm_pod(v1, pod)
+    expires = captured["args"][4]
+    # (12h + 2h) ahead, well under the old 7-day (604800s) value
+    assert 13 * 3600 < (expires - before) < 15 * 3600
+
+
+# --- image digest helpers + rotation ------------------------------------------
+
+def test_pod_image_digest_parses_image_id(lambda_index):
+    pod = _make_pod("p", image_id="acct.dkr.ecr.us-east-2.amazonaws.com/repo@sha256:abc123")
+    assert lambda_index._pod_image_digest(pod) == "sha256:abc123"
+
+
+def test_pod_image_digest_none_when_absent(lambda_index):
+    assert lambda_index._pod_image_digest(_make_pod("p")) is None  # no statuses
+
+
+def test_current_image_digest_queries_ecr(lambda_index, monkeypatch):
+    fake_ecr = MagicMock()
+    fake_ecr.describe_images.return_value = {
+        "imageDetails": [{"imageDigest": "sha256:deadbeef"}]}
+    monkeypatch.setattr(lambda_index, "GPU_DEV_CONTAINER_IMAGE",
+                        "1234.dkr.ecr.us-east-2.amazonaws.com/gpu-dev:latest")
+    monkeypatch.setattr(lambda_index.boto3, "client", lambda svc: fake_ecr)
+    assert lambda_index._current_image_digest() == "sha256:deadbeef"
+    _, kw = fake_ecr.describe_images.call_args
+    assert kw["repositoryName"] == "gpu-dev"
+    assert kw["imageIds"] == [{"imageTag": "latest"}]
+
+
+def test_current_image_digest_none_for_non_ecr_image(lambda_index, monkeypatch):
+    monkeypatch.setattr(lambda_index, "GPU_DEV_CONTAINER_IMAGE",
+                        "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel")
+    assert lambda_index._current_image_digest() is None
+
+
+def test_current_image_digest_swallows_ecr_error(lambda_index, monkeypatch):
+    def boom(_svc):
+        raise RuntimeError("no ecr")
+    monkeypatch.setattr(lambda_index, "GPU_DEV_CONTAINER_IMAGE",
+                        "1234.dkr.ecr.us-east-2.amazonaws.com/gpu-dev:latest")
+    monkeypatch.setattr(lambda_index.boto3, "client", boom)
+    assert lambda_index._current_image_digest() is None
+
+
+def test_reconcile_rotates_one_stale_image_pod(lambda_index, monkeypatch):
+    # Two ready pods at target=2: one on the desired digest, one stale. The stale
+    # one is recycled (and refilled); the current one is left alone.
+    cur = _make_pod("gpu-dev-h100-current", warm_state="ready", creation_ts=time.time(),
+                    image_id="r@sha256:NEW")
+    stale = _make_pod("gpu-dev-h100-stale", warm_state="ready", creation_ts=time.time(),
+                      image_id="r@sha256:OLD", annotations={"warm-domain": "old_fox"})
+    monkeypatch.setattr(lambda_index, "delete_domain_mapping", lambda d: None)
+    v1, created, _ = _reconcile_with(
+        lambda_index, monkeypatch,
+        pods_by_type={"h100": [cur, stale]},
+        target_overrides={"h100": 2},
+        desired_digest="sha256:NEW",
+    )
+    deleted = [c.args[0] for c in v1.delete_namespaced_pod.call_args_list]
+    assert "gpu-dev-h100-stale" in deleted
+    assert "gpu-dev-h100-current" not in deleted
+    assert created == [("h100", 1)]  # the rotated-out slot is refilled
+
+
+def test_reconcile_rotation_caps_one_per_tick(lambda_index, monkeypatch):
+    # Three stale ready pods, target=3: only ONE is rotated per reconcile (gradual).
+    stale = [_make_pod(f"gpu-dev-h100-s{i}", warm_state="ready", creation_ts=time.time(),
+                       image_id="r@sha256:OLD") for i in range(3)]
+    monkeypatch.setattr(lambda_index, "delete_domain_mapping", lambda d: None)
+    v1, created, _ = _reconcile_with(
+        lambda_index, monkeypatch,
+        pods_by_type={"h100": stale},
+        target_overrides={"h100": 3},
+        desired_digest="sha256:NEW",
+    )
+    deleted = [c.args[0] for c in v1.delete_namespaced_pod.call_args_list]
+    assert len(deleted) == 1
+    assert created == [("h100", 1)]
+
+
+def test_reconcile_no_rotation_when_digest_matches(lambda_index, monkeypatch):
+    p = _make_pod("gpu-dev-h100-ok", warm_state="ready", creation_ts=time.time(),
+                  image_id="r@sha256:NEW")
+    v1, created, _ = _reconcile_with(
+        lambda_index, monkeypatch,
+        pods_by_type={"h100": [p]},
+        target_overrides={"h100": 1},
+        desired_digest="sha256:NEW",
+    )
+    v1.delete_namespaced_pod.assert_not_called()
+    assert created == []
+
+
+def test_reconcile_skips_rotation_when_digest_unknown(lambda_index, monkeypatch):
+    # ECR lookup failed (None) -> never recycle on uncertainty.
+    p = _make_pod("gpu-dev-h100-x", warm_state="ready", creation_ts=time.time(),
+                  image_id="r@sha256:OLD")
+    v1, created, _ = _reconcile_with(
+        lambda_index, monkeypatch,
+        pods_by_type={"h100": [p]},
+        target_overrides={"h100": 1},
+        desired_digest=None,
+    )
+    v1.delete_namespaced_pod.assert_not_called()
+    assert created == []
+
+
+def test_reconcile_rotation_never_touches_claimed(lambda_index, monkeypatch):
+    # A claimed pod on a stale image is a real reservation — never rotate it.
+    claimed = _make_pod("gpu-dev-h100-claimed", warm_state="claimed",
+                        creation_ts=time.time(), image_id="r@sha256:OLD")
+    v1, created, _ = _reconcile_with(
+        lambda_index, monkeypatch,
+        pods_by_type={"h100": [claimed]},
+        target_overrides={"h100": 1},
+        desired_digest="sha256:NEW",
+    )
+    v1.delete_namespaced_pod.assert_not_called()
+    assert created == [("h100", 1)]  # claimed not counted; refill the standby slot
 
 
 # --- _evict_warm_for_capacity -------------------------------------------------

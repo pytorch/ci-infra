@@ -151,6 +151,7 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
         Effect = "Allow"
         Action = [
           "ecr:DescribeRepositories",
+          "ecr:DescribeImages",
           "ecr:CreateRepository",
           "ecr:GetAuthorizationToken"
         ]

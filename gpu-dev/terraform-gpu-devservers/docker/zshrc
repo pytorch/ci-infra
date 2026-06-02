@@ -54,5 +54,8 @@ alias ll='ls -alF'
 alias la='ls -A'
 alias l='ls -CF'
 
-# Custom prompt to show full path (no time) - override theme prompt
-PROMPT='%{$fg[green]%}%n@%m%{$reset_color%}:%{$fg[blue]%}%~%{$reset_color%}$ '
+# Custom prompt to show full path (no time) - override theme prompt.
+# Host segment prefers $GPU_DEV_HOSTLABEL (set on warm-claimed pods to
+# gpu-dev-<reservation>, since their kernel hostname is the warm-pool name);
+# falls back to %m (the real hostname, already gpu-dev-<reservation> for cold pods).
+PROMPT='%{$fg[green]%}%n@'"${GPU_DEV_HOSTLABEL:-%m}"'%{$reset_color%}:%{$fg[blue]%}%~%{$reset_color%}$ '

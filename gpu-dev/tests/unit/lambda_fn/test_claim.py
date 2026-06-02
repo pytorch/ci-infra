@@ -240,6 +240,9 @@ def test_inject_cmd_stamps_identity(lambda_index, aws_mocks):
         assert 'GPU_DEV_GITHUB_USER="octocat"' in script
         assert 'AWS_ROLE_SESSION_NAME="octocat-uid"' in script
         assert 'GPU_DEV_RESERVATION_ID="res-123"' in script
+        # prompt host label tied to the reservation (== the SSH alias), so a
+        # warm pod's prompt shows gpu-dev-<resid8>, not the warm-pool hostname
+        assert 'GPU_DEV_HOSTLABEL="gpu-dev-res-123"' in script
 
 
 def test_inject_cmd_targets_claimed_pod(lambda_index, aws_mocks):

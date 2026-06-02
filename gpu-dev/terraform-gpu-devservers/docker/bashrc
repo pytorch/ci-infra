@@ -20,3 +20,11 @@ alias gpu-watch='watch -n 1 nvidia-smi'
 alias ll='ls -alF'
 alias la='ls -A'
 alias l='ls -CF'
+
+# On warm-claimed pods the kernel hostname is the warm-pool name, not
+# gpu-dev-<reservation>. Show the reservation-based label (== the SSH alias) in
+# the prompt instead. Cold pods leave GPU_DEV_HOSTLABEL unset -> default \h, which
+# is already gpu-dev-<reservation>.
+if [ -n "$GPU_DEV_HOSTLABEL" ]; then
+    PS1="\[\e[32m\]\u@${GPU_DEV_HOSTLABEL}\[\e[0m\]:\[\e[34m\]\w\[\e[0m\]\$ "
+fi
