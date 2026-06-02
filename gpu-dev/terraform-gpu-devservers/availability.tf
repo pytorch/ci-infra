@@ -130,7 +130,8 @@ resource "aws_iam_role_policy" "availability_updater_policy" {
         Effect = "Allow"
         Action = [
           "autoscaling:DescribeAutoScalingGroups",
-          "autoscaling:SetDesiredCapacity"
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:CreateOrUpdateTags"
         ]
         Resource = "*"
       },

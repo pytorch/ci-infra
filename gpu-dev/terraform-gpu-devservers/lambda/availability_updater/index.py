@@ -6,6 +6,7 @@ Updates GPU availability table when ASG instances launch/terminate
 import json
 import logging
 import os
+import time
 from typing import Dict, Any
 
 import boto3
@@ -28,6 +29,12 @@ GPU_INSTANCE_TYPES = {
     "cpu-x86": "c7i.8xlarge", "cpu-arm": "c7g.8xlarge",
 }
 SPOT_GPU_TYPES = os.environ.get("SPOT_GPU_TYPES", "")
+# Keep an idle spot node warm this long after its last active reservation ended,
+# so back-to-back reservations reuse it instead of paying a cold spot re-launch
+# (which can also hit "no spot capacity"). Tracked via an ASG tag stamped each
+# tick a reservation is active.
+SPOT_KEEPALIVE_MINUTES = float(os.environ.get("SPOT_KEEPALIVE_MINUTES", "25"))
+SPOT_LAST_ACTIVE_TAG = "gpu-dev/spot-last-active"
 
 
 def get_spot_price_info(gpu_type: str) -> dict:
@@ -190,12 +197,41 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                                 break
                         if has_active:
                             break
-                    if not has_active:
+                    if has_active:
+                        # Stamp the ASG so we keep it warm for a grace period after
+                        # this reservation ends (see SPOT_KEEPALIVE_MINUTES).
+                        try:
+                            autoscaling.create_or_update_tags(Tags=[{
+                                "ResourceId": asg,
+                                "ResourceType": "auto-scaling-group",
+                                "Key": SPOT_LAST_ACTIVE_TAG,
+                                "Value": str(int(time.time())),
+                                "PropagateAtLaunch": False,
+                            }])
+                        except Exception as tag_err:
+                            logger.warning(f"could not stamp {SPOT_LAST_ACTIVE_TAG} on {asg}: {tag_err}")
+                    else:
                         resp = autoscaling.describe_auto_scaling_groups(AutoScalingGroupNames=[asg])
                         groups = resp.get("AutoScalingGroups", [])
                         if groups and groups[0]["DesiredCapacity"] > 0:
-                            logger.info(f"Scaling down idle spot ASG {asg} to 0")
-                            autoscaling.set_desired_capacity(AutoScalingGroupName=asg, DesiredCapacity=0)
+                            # Honor the keep-alive grace period: only scale to 0 once it's
+                            # been idle SPOT_KEEPALIVE_MINUTES past the last active reservation.
+                            last_active = 0
+                            for tag in groups[0].get("Tags", []):
+                                if tag.get("Key") == SPOT_LAST_ACTIVE_TAG:
+                                    try:
+                                        last_active = int(tag.get("Value") or 0)
+                                    except (ValueError, TypeError):
+                                        last_active = 0
+                                    break
+                            idle_for = time.time() - last_active if last_active else None
+                            if idle_for is not None and idle_for < SPOT_KEEPALIVE_MINUTES * 60:
+                                logger.info(
+                                    f"Spot ASG {asg} idle {int(idle_for)}s < grace "
+                                    f"{SPOT_KEEPALIVE_MINUTES}m — keeping warm")
+                            else:
+                                logger.info(f"Scaling down idle spot ASG {asg} to 0 (grace elapsed)")
+                                autoscaling.set_desired_capacity(AutoScalingGroupName=asg, DesiredCapacity=0)
                         else:
                             logger.debug(f"Spot ASG {asg} already at 0 or not found")
                 except Exception as sd_err:

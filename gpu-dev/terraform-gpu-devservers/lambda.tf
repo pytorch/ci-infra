@@ -205,10 +205,16 @@ resource "aws_lambda_function" "reservation_processor" {
       # Warm-pool tier counts per workspace (JSON object). Staging is the "default"
       # workspace (us-west-1, environment=test) and only has t4 + cpu nodes, so
       # scope warm pods to those — the in-code default (h100/b200/MIG) would create
-      # unschedulable Pending pods here. Empty -> lambda falls back to
-      # _DEFAULT_WARM_TARGETS (prod keeps its h100/b200/cpu/MIG warm pool).
+      # unschedulable Pending pods here. prod-east1 is the SPOT cluster (scale-to-
+      # zero ASGs), where a warm pool is actively harmful: the warm pods can never
+      # schedule (no idle nodes), pile up Pending for hours, then grab the spot node
+      # the instant a real --spot reservation launches one — starving the
+      # reservation. So give it an EMPTY pool ("{}" -> no warm pods; note "" would
+      # fall back to the in-code default). Empty string -> _DEFAULT_WARM_TARGETS
+      # (prod us-east-2 keeps its h100/b200/cpu/MIG warm pool).
       WARM_POOL_TARGETS = lookup({
-        "default" = jsonencode({ t4 = 2, "cpu-x86" = 2, "cpu-arm" = 2 })
+        "default"    = jsonencode({ t4 = 2, "cpu-x86" = 2, "cpu-arm" = 2 })
+        "prod-east1" = jsonencode({})
       }, terraform.workspace, "")
       DISK_CONTENTS_BUCKET = aws_s3_bucket.disk_contents.bucket
       OPERATIONS_TABLE     = aws_dynamodb_table.operations.name
