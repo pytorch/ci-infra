@@ -236,31 +236,8 @@ kubectl get sa -A -o json | \
          "\(.metadata.namespace)/\(.metadata.name) \(.metadata.annotations."eks.amazonaws.com/role-arn")"'
 ```
 
-### Soak window
-
-Run ≥ 3 days, preferably 7 days at production load, before promoting `arc-staging` → `arc-cbr-production`.
-
-Watch:
-
-- kube-apiserver p99 latency — drift > 2x baseline = etcd / control-plane sizing issue.
-- CoreDNS QPS — flat vs baseline.
-- Pod startup P50 / P99 — drift > 2x P99 = scheduler pressure or CNI tuning.
-- GitHub Actions runner success rate — within ± 1pp of pre-cutover.
-- Harbor 5xx / cache miss — elevated for ~ 2 weeks as cold S3 re-fills; watch for 5xx that are NOT misses.
-- pypi-cache cold-start errors — re-population from wheel-pipeline S3 takes days.
-- Change-specific watch items — operator enumerates per change.
-
-Daily check-in. Promote only after a clean full soak window.
-
 ### Rollback
 
 Cluster recreation is one-way. Rollback = revert the change on a hotfix branch, merge it, destroy + recreate again. Costs: one extra maintenance window per cluster, another round of Harbor/EFS loss, another IRSA refresh.
 
 If the validation gates fail and the hotfix is small (parameter tweak, addon version), fix forward (`just deploy ${CLUSTER}` after merge) instead of destroying.
-
-### References
-
-- `docs/architecture.md`, `docs/operations.md`
-- `scripts/destroy-cluster.sh` — destroy helper (step 5)
-- `scripts/cluster-config.py` — resolves cluster-name / region / state-bucket / tfvars / module list from `clusters.yaml`
-- `modules/eks/tests/smoke/` — base smoke assertions; add change-specific ones here
