@@ -3832,39 +3832,72 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             f"MAIN FLOW: Pod is ready, checking SSH daemon status from logs for {reservation_id}"
         )
 
+        # Let the user know we're past pod creation and waiting on the service.
+        # On persistent-disk reservations the entrypoint restores the disk before
+        # sshd binds, so this can legitimately take a few minutes.
+        update_reservation_status(
+            reservation_id,
+            "preparing",
+            "Container running — restoring your environment and starting SSH…"
+            if use_persistent_disk
+            else "Container running — starting SSH service…",
+        )
+
         record_trace_event(trace_data, "ssh_ready_check_start")
         ssh_ready = False
         try:
             v1 = client.CoreV1Api(k8s_client)
 
-            # Poll for SSH daemon: 100ms for first 8s, then backoff to 5s
-            # Default image starts SSH in ~2-5s, so rapid polling catches it instantly
-            # Custom images may take longer, backoff keeps API load reasonable
-            max_attempts = 60
+            # Poll pod logs for the sshd-ready marker. Fast (100ms) for the first
+            # 8s to catch the common fast path instantly, then back off to 5s.
+            # Slow-disk startups restore the disk *before* sshd binds, so allow up
+            # to ~150s. If the marker never appears we finalize anyway below —
+            # routing is already in place and the SSH proxy retries until sshd binds.
+            deadline = time.time() + 150.0
             elapsed = 0.0
-
-            for attempt in range(max_attempts):
+            attempt = 0
+            logs = ""
+            while time.time() < deadline:
                 logs = v1.read_namespaced_pod_log(
-                    name=pod_name, namespace="gpu-dev", container="gpu-dev", tail_lines=100
+                    name=pod_name, namespace="gpu-dev", container="gpu-dev", tail_lines=200
                 )
                 if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
                     logger.info(
                         f"SSH daemon confirmed running in pod logs for {pod_name} (attempt {attempt + 1}, {elapsed:.1f}s elapsed)")
                     ssh_ready = True
                     break
-                else:
-                    if attempt < max_attempts - 1:
-                        delay = 0.1 if elapsed < 8.0 else min(1.0 + (elapsed - 8.0) * 0.3, 5.0)
-                        time.sleep(delay)
-                        elapsed += delay
-                    else:
-                        logger.warning(
-                            f"SSH daemon not detected after {max_attempts} attempts, logs preview: {logs[-200:]}")
+                delay = 0.1 if elapsed < 8.0 else min(1.0 + (elapsed - 8.0) * 0.3, 5.0)
+                time.sleep(delay)
+                elapsed += delay
+                attempt += 1
+            if not ssh_ready:
+                logger.warning(
+                    f"SSH daemon marker not seen for {pod_name} after {elapsed:.1f}s, logs preview: {logs[-200:]}")
         except Exception as e:
             logger.warning(f"Could not check SSH daemon logs: {e}")
             # Assume ready if pod is running (NLB will handle routing)
             ssh_ready = True
         record_trace_event(trace_data, "ssh_ready_check_end")
+
+        # If the sshd marker never showed, don't orphan the reservation in
+        # 'preparing'. Only a genuinely broken pod should fail here; otherwise the
+        # pod is just slow to bind sshd (disk restore) — routing is already stored,
+        # so we finalize anyway and let the SSH proxy retry until sshd is up.
+        if not ssh_ready:
+            logger.warning(
+                f"MAIN FLOW: SSH daemon not confirmed for reservation {reservation_id}, checking pod status for errors")
+            pod_info = update_pod_status_and_events(k8s_client, pod_name, reservation_id)
+            if not should_finalize_without_ssh_marker(pod_info):
+                update_reservation_status(
+                    reservation_id,
+                    "failed",
+                    f"Pod failed to start properly: {pod_info['display_message']}",
+                )
+                raise RuntimeError(f"Pod failed: {pod_info['display_message']}")
+            logger.warning(
+                f"SSH daemon not confirmed for {pod_name}, but pod is healthy — "
+                f"finalizing connection anyway (SSH proxy retries until sshd binds)")
+            ssh_ready = True
 
         if ssh_ready:
             # Update status: Finalizing connection
@@ -3985,28 +4018,6 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                     f"Failed to trigger availability update: {update_error}")
                 # Don't fail the reservation for this
 
-        else:
-            logger.warning(
-                f"MAIN FLOW: SSH connectivity test FAILED for reservation {reservation_id}, checking pod status for errors")
-            # Check pod status using our consolidated monitoring function
-            pod_info = update_pod_status_and_events(
-                k8s_client, pod_name, reservation_id)
-            if pod_info["has_errors"]:
-                update_reservation_status(
-                    reservation_id,
-                    "failed",
-                    f"Pod failed to start properly: {pod_info['display_message']}",
-                )
-                raise RuntimeError(
-                    f"Pod failed: {pod_info['display_message']}")
-            else:
-                # Pod is running but SSH not ready yet - keep as preparing
-                # Status message already updated by update_pod_status_and_events
-                pass
-                logger.warning(
-                    f"SSH not ready yet for {pod_name}, keeping reservation in preparing state"
-                )
-
         # GPU allocation handled automatically by K8s scheduler
 
         # Store trace data in DynamoDB if tracing is enabled
@@ -4055,6 +4066,18 @@ def delete_sqs_message(record: dict[str, Any]) -> None:
             logger.warning("No receipt handle found for message deletion")
     except Exception as e:
         logger.error(f"Error deleting SQS message: {str(e)}")
+
+
+def should_finalize_without_ssh_marker(pod_info: dict) -> bool:
+    """Decide what to do when the sshd-ready log marker never appeared.
+
+    The pod's routing (domain mapping) is stored before the readiness poll, so a
+    slow sshd (e.g. a persistent-disk restore that runs before sshd binds) is not
+    a failure — finalizing anyway lets the CLI's SSH proxy retry until sshd is up,
+    instead of orphaning the reservation in 'preparing' forever. Only a pod that
+    actually reports errors should fail.
+    """
+    return not pod_info.get("has_errors", False)
 
 
 def update_reservation_status(reservation_id: str, status: str, detailed_status: str = None, failure_reason: str = None) -> None:
@@ -8487,7 +8510,7 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
             if pod_phase == "Pending":
                 display_message = "⏳ Pod pending"
             elif pod_phase == "Running":
-                display_message = "🚀 Container running"
+                display_message = "🚀 Container running — starting SSH service…"
             else:
                 display_message = f"Pod phase: {pod_phase}"
 
