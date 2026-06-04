@@ -4,7 +4,12 @@
 
 Operator-facing runbook for destroying and recreating an existing OSDC cluster. Use this whenever a planned change touches a property of `aws_eks_cluster` (or a directly-dependent resource) that AWS rejects in-place with a ForceNew plan — VPC / IP family / CIDR changes, encryption_config additions, or any other immutable field.
 
-**Per-cluster, never in parallel.** Do `arc-staging` (us-west-1) first; only promote to `arc-cbr-production` (us-east-2) after staging has soaked.
+**Per-cluster, never in parallel.** Do `arc-staging` (us-west-1) first; only promote to the new/changed production cluster after staging has soaked. 
+
+- This can change if you are deploying a new cluster with a tested configuration or migrating a cluster from one state to another:
+ - Creating a new cluster: green signals on [osdc-pre-merge.yml](https://github.com/pytorch/ci-infra/blob/main/.github/workflows/osdc-pre-merge.yml) for the latest main version should be sufficient;
+ - Fully destroying / recreating: same as for creating a new cluster;
+ - Migrating / terraform network eks changes: please deploy `arc-staging` to your current version, then execute this procedure to it and follow the testing guidelines first;
 
 **Code change must already be on `main` with green CI.** `just deploy <cluster>` after destroy is the only path that brings up the new cluster shape.
 
@@ -27,9 +32,26 @@ Operator-facing runbook for destroying and recreating an existing OSDC cluster. 
 
 ## 2. Cluster destroy
 
-### 1. Disable OSDC traffic
+### 1. Rebalance traffic away from the cluster's provider
 
-Flip the OSDC experiment / GK. New jobs stop being routed; in-flight jobs continue.
+**When this step applies:** OSDC LF traffic is live (provider migration complete) AND the cluster being recreated serves real production traffic on either provider (Meta or Linux Foundation). Skip for staging, dev, or any cluster outside the live traffic pool.
+
+Steady state is roughly 50/50 between Meta and LF, with two clusters per provider sharing each half (Meta 25/25, LF 25/25). Taking a cluster down leaves the surviving cluster on that provider carrying the full provider share. Shift the `lf:` experiment percentage so per-cluster load stays roughly flat.
+
+Example — destroying one Meta cluster:
+
+| Phase | Meta total | Meta per-cluster | LF total | LF per-cluster |
+|---|---|---|---|---|
+| Pre-cutover  | 50% (2 clusters) | 25% / 25% | 50% (2 clusters) | 25% / 25% |
+| During cutover | 34% (1 cluster) | 34% | 66% (2 clusters) | 33% / 33% |
+| Post-cutover | 50% (2 clusters) | 25% / 25% | 50% (2 clusters) | 25% / 25% |
+
+Toggle by editing the body of the [pytorch/test-infra#5132 routing comment](https://github.com/pytorch/test-infra/issues/5132#issuecomment-2076772891) and updating the `lf:` experiment value. New jobs route per the new split immediately; in-flight jobs continue on whichever cluster picked them up.
+
+Record the pre-cutover percentage so step 13 can restore it.
+
+> [!IMPORTANT]
+> Step **1** & **2** can be done right after each other if a cluster affected have full replication for the same runners in other regions/clusters (or just another cluster is being added, so step 1 is a no-op). BUT, if there is no replication, it is advisable to wait multiple hours (4-6+) in between to make sure no newer jobs will be assigned on step **2**.
 
 ### 2. Drain runners and tear down compute
 
@@ -47,6 +69,9 @@ kubectl get pods -n arc-runners -l app.kubernetes.io/component=runner --no-heade
 kubectl delete nodepools --all
 kubectl get nodeclaims    # expect: No resources found
 ```
+
+> [!IMPORTANT]
+> After step 2, it is important to wait for ALL JOBS CURRETLY RUNNING  TO FINISH, this can, potentially, take 6h+ depending on the assigned jobs. Proceeding will cause canceled jobs. And this also helps ensure no newer jobs are being picked up.
 
 **Delete NodePools first, not NodeClaims** — Karpenter cascade-deletes the owned NodeClaims via its `karpenter.sh/termination` finalizer. Deleting NodeClaims first leaves orphans (see "Stuck NodeClaim finalizers" in the annex).
 
@@ -175,9 +200,12 @@ awk '$2=="false"{print $1}' ${HOME}/.osdc-cutover/${CLUSTER}/cronjob-state-pre-c
 
 The prod path is gated by the `osdc-production` GitHub environment and an OIDC trust-policy `sub` claim; CI is the only audit-clean way in.
 
-### 13. Re-enable OSDC traffic
+### 13. Rebalance traffic back
 
-The un-pause deploy in step 12 already re-synced every `AutoScalingRunnerSet`. Flip the OSDC experiment / GK and watch the queue drain.
+If you shifted the `lf:` experiment percentage in step 1, restore it to the pre-cutover value via the same [pytorch/test-infra#5132 routing comment](https://github.com/pytorch/test-infra/issues/5132#issuecomment-2076772891). The un-pause deploy in step 12 already re-synced every `AutoScalingRunnerSet`, so the recreated cluster is ready to accept its share.
+
+> [!NOTE]
+> Re-balancing depends on the final desired state.
 
 `just resume-runners` is out-of-band recovery, NOT the standard cutover path.
 
