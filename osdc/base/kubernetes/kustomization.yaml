@@ -14,6 +14,11 @@ resources:
   - registry-mirror-config.yaml
   - algif-mitigation.yaml
   - dirtyfrag-mitigation.yaml
+  # node-taint-remover ships only a ConfigMap (generated at apply time from
+  # lib/taint_remover.py to avoid drift). Its kustomization.yaml is a
+  # placeholder; deploy.sh in deploy-base does the actual ConfigMap apply
+  # before consuming DaemonSets (cache-enforcer, registry-mirror-config,
+  # node-performance-tuning) are restarted.
   # image-cache-janitor is deployed via its own deploy.sh (builds custom image)
   # nodelocaldns is deployed via its own deploy.sh (resolves kube-dns ClusterIP at apply time)
   # NOTE: Namespaces for modules (arc-runners, arc-systems, buildkit, etc.)
