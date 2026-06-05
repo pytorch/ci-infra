@@ -2,6 +2,7 @@
 
 Required information from the user:
   * Environment variable `GRAFANA_TOKEN`. A private API token to access Grafana. NEVER print the value of environment variable. Only confirm if it's set.
+    * Easiest way to get a READ ONLY token (no Grafana UI needed): `export GRAFANA_TOKEN=$(curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://hud.pytorch.org/api/gcx-token)`. This mints a per-user Viewer service-account token, gated by pytorch/pytorch write access. Note: a Viewer token is read-only, so it's sufficient for `validate`/dry-run but NOT for `push` (publishing needs an Editor token).
     * If the token provides more than viewer access, warn the user that this is highly discouraged and dangerous. Tell the user to get a READ ONLY token from https://pytorchci.grafana.net/org/serviceaccounts/cfn5z4cfsydc0b
   * Folder UID. The folder UID to publish dashboards to. This is required for each publish session. If the user provides a Grafana URL see how to get the ID in publish.py.
 
