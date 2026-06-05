@@ -285,10 +285,10 @@ clusters:
     buildkit:
       amd64_instance_type: m6id.24xlarge
       amd64_replicas: 32
+      amd64_pods_per_node: 2
       arm64_instance_type: m7gd.16xlarge
       arm64_replicas: 8
       arm64_pods_per_node: 4
-      pods_per_node: 2
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-cbr-production
