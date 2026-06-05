@@ -34,22 +34,38 @@ AMD64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_replicas "$REPLICAS")
 ARM64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_replicas "$REPLICAS")
 AMD64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_pods_per_node "$PODS_PER_NODE")
 ARM64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_pods_per_node "$PODS_PER_NODE")
+AUTOSCALING=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.enabled false)
 
 GENERATED_DIR="$MODULE_DIR/generated"
 
 # --- Generate manifests ---
 
 echo "Generating BuildKit manifests..."
-uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" \
-  --arm64-instance-type "$ARM64_INSTANCE" \
-  --amd64-instance-type "$AMD64_INSTANCE" \
-  --replicas "$REPLICAS" \
-  --pods-per-node "$PODS_PER_NODE" \
-  --amd64-replicas "$AMD64_REPLICAS" \
-  --arm64-replicas "$ARM64_REPLICAS" \
-  --amd64-pods-per-node "$AMD64_PODS_PER_NODE" \
-  --arm64-pods-per-node "$ARM64_PODS_PER_NODE" \
+GEN_ARGS=(
+  --arm64-instance-type "$ARM64_INSTANCE"
+  --amd64-instance-type "$AMD64_INSTANCE"
+  --replicas "$REPLICAS"
+  --pods-per-node "$PODS_PER_NODE"
+  --amd64-replicas "$AMD64_REPLICAS"
+  --arm64-replicas "$ARM64_REPLICAS"
+  --amd64-pods-per-node "$AMD64_PODS_PER_NODE"
+  --arm64-pods-per-node "$ARM64_PODS_PER_NODE"
   --output-dir "$GENERATED_DIR"
+)
+if [[ "${AUTOSCALING,,}" == "true" ]]; then
+  AMD64_MIN=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_min 2)
+  AMD64_MAX=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_max 8)
+  ARM64_MIN=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_min 4)
+  ARM64_MAX=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_max 8)
+  GEN_ARGS+=(
+    --autoscaling
+    --amd64-min "$AMD64_MIN"
+    --amd64-max "$AMD64_MAX"
+    --arm64-min "$ARM64_MIN"
+    --arm64-max "$ARM64_MAX"
+  )
+fi
+uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" "${GEN_ARGS[@]}"
 
 # --- Apply NodePools (with cluster name substitution) ---
 
@@ -91,6 +107,14 @@ else
   echo "Waiting for buildkitd rollout..."
   kubectl rollout status deployment/buildkitd-arm64 -n buildkit --timeout=15m
   kubectl rollout status deployment/buildkitd-amd64 -n buildkit --timeout=15m
+fi
+
+# --- KEDA autoscaling (optional) ---
+# Scales on the in-cluster buildkit LB metrics; no external metrics backend.
+
+if [[ "${AUTOSCALING,,}" == "true" ]]; then
+  echo "Applying KEDA autoscaling manifests..."
+  kubectl_apply_if_changed -f "$GENERATED_DIR/autoscaling.yaml"
 fi
 
 echo "BuildKit deployed."
