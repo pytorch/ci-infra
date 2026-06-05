@@ -312,14 +312,6 @@ class TestGenerateNodepoolYaml:
         ec2 = docs[1]
         assert "amiFamily" not in ec2["spec"]
 
-    def test_startup_taints_present(self):
-        nodepool_def = _make_nodepool_def()
-        output = generate_nodepool_yaml(nodepool_def, "nodepools")
-        docs = self._parse(output)
-        np = docs[0]
-        startup_taints = np["spec"]["template"]["spec"]["startupTaints"]
-        assert any(t["key"] == "git-cache-not-ready" for t in startup_taints)
-
     def test_cluster_name_placeholder(self):
         nodepool_def = _make_nodepool_def()
         output = generate_nodepool_yaml(nodepool_def, "nodepools")

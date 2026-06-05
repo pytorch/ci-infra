@@ -58,12 +58,6 @@ arc-cbr-production-uw1:
     cluster_admin_role_names: [osdc_gha_prod]
   base:
     vpc_cidr: "10.8.0.0/16"                       # non-overlap with 10.0/16, 10.4/16
-  git_cache:
-    central_replicas: 15
-    central_cpu_request: "10"
-    central_cpu_limit: "15"
-    central_memory_request: "10Gi"
-    central_memory_limit: "50Gi"
   node_compactor:
     min_node_age_seconds: 900
   buildkit:
@@ -164,7 +158,7 @@ follows automatically.
 - B200 in us-west-1 (no capacity reservation available).
 - A10G / L4 / A100 / AMD-CPU runners in us-west-1 (AWS does not offer
   these instance families in the region — see above).
-- Cross-region Harbor / PyPI / git-cache sharing — failure-domain
+- Cross-region Harbor / PyPI sharing — failure-domain
   isolation is the design intent.
 - Workflow changes in `pytorch/pytorch`. The whole point of the
   same-label-different-group design is that workflows don't change.
