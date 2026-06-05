@@ -4,6 +4,11 @@
 #
 # See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.15
 # Remove this when upstream merges the fixes into actions/runner-container-hooks
+#
+# [STAGING TEST — DO NOT MERGE / DO NOT DEPLOY TO PROD] Temporarily points at a
+# fork test build (huydhn/runner-container-hooks v0.8.15-podreason.1) that adds
+# pod-failure-reason surfacing in waitForPodPhases (PR jeanschmidt/runner-
+# container-hooks#10). Revert to jeanschmidt v0.8.14 after staging validation.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -54,8 +59,8 @@ spec:
             - -c
             - |
               set -eu
-              HOOKS_VERSION="0.8.15"
-              HOOKS_URL="https://github.com/jeanschmidt/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
+              HOOKS_VERSION="0.8.15-podreason.1"  # STAGING TEST — revert to 0.8.15 after validation
+              HOOKS_URL="https://github.com/huydhn/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
               DEST="/mnt/runner-container-hooks"
               MARKER="$DEST/.version"
 
