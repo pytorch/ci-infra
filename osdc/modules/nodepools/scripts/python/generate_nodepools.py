@@ -35,6 +35,23 @@ if _scripts_python not in sys.path:
 from instance_specs import INSTANCE_SPECS  # noqa: E402
 from nodepool_defs import is_excluded_for_region as _is_excluded_for_region  # noqa: E402
 
+# Maps module name -> list of startup taint dicts.
+#
+# Each taint dict has the keys: ``key``, ``value``, ``effect`` (all str), and an
+# optional ``applies_when`` callable. The callable receives the full
+# ``nodepool_def`` dict and returns True if the taint should be emitted on that
+# NodePool. When ``applies_when`` is absent, the taint applies to every NodePool
+# whose module is enabled.
+#
+# A taint is emitted on a NodePool only if BOTH:
+#   1. its module name appears in NODEPOOLS_ENABLED_MODULES (enabled for the cluster), AND
+#   2. its optional applies_when(nodepool_def) returns True.
+#
+# This guards against stuck taints: a startup taint must only be added when
+# there is a corresponding DaemonSet on the cluster and node that will remove
+# it at end-of-init.
+MODULE_STARTUP_TAINTS: dict[str, list[dict]] = {}
+
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
@@ -245,6 +262,26 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
         else ""
     )
 
+    # ----- Module-aware startup taints -----
+    # Emit a startupTaint only when:
+    #   1. its owning module is in NODEPOOLS_ENABLED_MODULES for this cluster, AND
+    #   2. its optional applies_when(nodepool_def) predicate returns True.
+    # This prevents stuck taints on clusters/nodepools where no DaemonSet exists
+    # to remove the taint at end-of-init.
+    enabled_modules = set(os.environ.get("NODEPOOLS_ENABLED_MODULES", "").split())
+    startup_taint_lines = []
+    for module, taints in MODULE_STARTUP_TAINTS.items():
+        if module not in enabled_modules:
+            continue
+        for t in taints:
+            predicate = t.get("applies_when")
+            if predicate is not None and not predicate(nodepool_def):
+                continue
+            startup_taint_lines.append(
+                f'        - key: {t["key"]}\n          value: "{t["value"]}"\n          effect: {t["effect"]}\n'
+            )
+    startup_taints_block = "      startupTaints:\n" + "".join(startup_taint_lines) if startup_taint_lines else ""
+
     # ----- Build YAML -----
     yaml_content = f"""# Karpenter NodePool + EC2NodeClass: {instance_type}
 # Auto-generated from defs/{name}.yaml — do not edit by hand.
@@ -299,10 +336,7 @@ spec:
           value: "{instance_type}"
           effect: NoSchedule
 {gpu_taints}\
-      startupTaints:
-        - key: git-cache-not-ready
-          value: "true"
-          effect: NoSchedule
+{startup_taints_block}\
 
 ---
 apiVersion: karpenter.k8s.aws/v1

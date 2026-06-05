@@ -365,7 +365,7 @@ def create_test_pod(
             # Tolerate all taints — the nodeSelector constrains placement;
             # tolerations just need to let the pod past whatever taints
             # exist on runner/buildkit nodes (instance-type, workload/*,
-            # git-cache-not-ready, nvidia.com/gpu, etc.).
+            # nvidia.com/gpu, etc.).
             tolerations=[Toleration(operator="Exists")],
             containers=[
                 Container(

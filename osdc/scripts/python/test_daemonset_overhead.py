@@ -450,7 +450,6 @@ class TestRealManifests:
 
         # These should always be discovered from raw YAML
         expected_yaml = {
-            "git-cache-warmer",
             "node-performance-tuning",
             "registry-mirror-config",
             "nvidia-device-plugin-daemonset",
@@ -477,7 +476,6 @@ class TestRealManifests:
         assert by_name["dcgm-exporter"].gpu_only is True
 
         # Not GPU-only
-        assert by_name["git-cache-warmer"].gpu_only is False
         assert by_name["node-performance-tuning"].gpu_only is False
         assert by_name["registry-mirror-config"].gpu_only is False
         assert by_name["runner-hooks-warmer"].gpu_only is False
@@ -486,10 +484,6 @@ class TestRealManifests:
         """Verify parsed values match what's in the actual manifests."""
         results = discover_daemonsets(upstream_dir)
         by_name = {ds.name: ds for ds in results}
-
-        # git-cache-warmer: 100m CPU, 256Mi
-        assert by_name["git-cache-warmer"].cpu_millicores == 100
-        assert by_name["git-cache-warmer"].memory_mib == 256
 
         # node-performance-tuning: 10m CPU, 32Mi (sleep container only)
         assert by_name["node-performance-tuning"].cpu_millicores == 10

@@ -3,9 +3,7 @@
 # external container registries and PyPI, forcing traffic through internal
 # caches (Harbor at harbor:30002, pypi-cache at localhost:8080).
 #
-# Runs only on runner nodes (workload-type: github-runner). The existing
-# git-cache-not-ready startup taint ensures iptables rules are in place
-# before any runner job pods can schedule.
+# Runs only on runner nodes (workload-type: github-runner).
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -43,9 +41,6 @@ spec:
           operator: Exists
           effect: NoSchedule
         - key: node-fleet
-          operator: Exists
-          effect: NoSchedule
-        - key: git-cache-not-ready
           operator: Exists
           effect: NoSchedule
         - key: nvidia.com/gpu
