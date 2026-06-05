@@ -294,12 +294,6 @@ data:
       echo "Configuration timestamp: $(cat $MARKER_FILE)"
     fi
 
-    # Remove the per-DS startup taint so workload pods can schedule on this node.
-    # Declared in modules/nodepools/scripts/python/generate_nodepools.py
-    # (MODULE_STARTUP_TAINTS registry — added in a follow-up PR). Idempotent:
-    # silent no-op when the taint isn't present.
-    python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/perf-tuning
-
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -436,18 +430,9 @@ spec:
             capabilities:
               add: ["SYS_ADMIN", "NET_ADMIN"]
 
-          env:
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-
           volumeMounts:
             - name: scripts
               mountPath: /scripts
-              readOnly: true
-            - name: taint-remover-lib
-              mountPath: /scripts/taint-remover
               readOnly: true
             - name: host-root
               mountPath: /host
@@ -478,11 +463,6 @@ spec:
         - name: scripts
           configMap:
             name: node-performance-tuning-script
-            defaultMode: 0755
-
-        - name: taint-remover-lib
-          configMap:
-            name: node-taint-remover-lib
             defaultMode: 0755
 
         - name: host-root
@@ -518,25 +498,3 @@ metadata:
   namespace: kube-system
   labels:
     app: node-performance-tuning
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: node-performance-tuning-taint-remover
-rules:
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "patch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: node-performance-tuning-taint-remover
-subjects:
-  - kind: ServiceAccount
-    name: node-performance-tuning
-    namespace: kube-system
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: node-performance-tuning-taint-remover

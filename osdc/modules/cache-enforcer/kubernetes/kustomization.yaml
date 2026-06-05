@@ -4,4 +4,3 @@ kind: Kustomization
 resources:
   - configmap.yaml
   - daemonset.yaml
-  - rbac.yaml
