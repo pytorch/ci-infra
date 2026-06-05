@@ -283,8 +283,11 @@ clusters:
     node_compactor:
       min_node_age_seconds: 900
     buildkit:
-      arm64_instance_type: c7gd.16xlarge
       amd64_instance_type: m6id.24xlarge
+      amd64_replicas: 32
+      arm64_instance_type: m7gd.16xlarge
+      arm64_replicas: 8
+      arm64_pods_per_node: 4
       pods_per_node: 2
     arc-runners:
       github_config_url: "https://github.com/pytorch"
