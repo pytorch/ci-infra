@@ -35,22 +35,41 @@ if _scripts_python not in sys.path:
 from instance_specs import INSTANCE_SPECS  # noqa: E402
 from nodepool_defs import is_excluded_for_region as _is_excluded_for_region  # noqa: E402
 
-# Maps module name -> list of startup taint dicts.
+# List of startup taint entries. Each entry is a dict with:
+#   - ``key``, ``value``, ``effect`` (all str) — the Karpenter startupTaint to emit
+#   - ``module`` (str | None) — module-name gate:
+#         str:  emit only when this name is in NODEPOOLS_ENABLED_MODULES (per-cluster module)
+#         None: always emit (base component, always deployed on every cluster)
+#   - ``applies_when`` (callable | absent) — optional predicate that receives the
+#         full ``nodepool_def`` dict; emission is skipped when it returns False.
 #
-# Each taint dict has the keys: ``key``, ``value``, ``effect`` (all str), and an
-# optional ``applies_when`` callable. The callable receives the full
-# ``nodepool_def`` dict and returns True if the taint should be emitted on that
-# NodePool. When ``applies_when`` is absent, the taint applies to every NodePool
-# whose module is enabled.
-#
-# A taint is emitted on a NodePool only if BOTH:
-#   1. its module name appears in NODEPOOLS_ENABLED_MODULES (enabled for the cluster), AND
-#   2. its optional applies_when(nodepool_def) returns True.
+# A taint is emitted on a NodePool only when BOTH:
+#   1. its ``module`` gate is satisfied (None, or name appears in NODEPOOLS_ENABLED_MODULES), AND
+#   2. its optional ``applies_when(nodepool_def)`` returns True.
 #
 # This guards against stuck taints: a startup taint must only be added when
 # there is a corresponding DaemonSet on the cluster and node that will remove
 # it at end-of-init.
-MODULE_STARTUP_TAINTS: dict[str, list[dict]] = {}
+STARTUP_TAINTS: list[dict] = [
+    {
+        "module": "cache-enforcer",
+        "key": "node-init.osdc.io/cache-enforcer",
+        "value": "true",
+        "effect": "NoSchedule",
+    },
+    {
+        "module": None,
+        "key": "node-init.osdc.io/registry-mirror",
+        "value": "true",
+        "effect": "NoSchedule",
+    },
+    {
+        "module": None,
+        "key": "node-init.osdc.io/perf-tuning",
+        "value": "true",
+        "effect": "NoSchedule",
+    },
+]
 
 # ANSI colors
 GREEN = "\033[0;32m"
@@ -270,16 +289,16 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     # to remove the taint at end-of-init.
     enabled_modules = set(os.environ.get("NODEPOOLS_ENABLED_MODULES", "").split())
     startup_taint_lines = []
-    for module, taints in MODULE_STARTUP_TAINTS.items():
-        if module not in enabled_modules:
+    for t in STARTUP_TAINTS:
+        module = t.get("module")
+        if module is not None and module not in enabled_modules:
             continue
-        for t in taints:
-            predicate = t.get("applies_when")
-            if predicate is not None and not predicate(nodepool_def):
-                continue
-            startup_taint_lines.append(
-                f'        - key: {t["key"]}\n          value: "{t["value"]}"\n          effect: {t["effect"]}\n'
-            )
+        predicate = t.get("applies_when")
+        if predicate is not None and not predicate(nodepool_def):
+            continue
+        startup_taint_lines.append(
+            f'        - key: {t["key"]}\n          value: "{t["value"]}"\n          effect: {t["effect"]}\n'
+        )
     startup_taints_block = "      startupTaints:\n" + "".join(startup_taint_lines) if startup_taint_lines else ""
 
     # ----- Build YAML -----
