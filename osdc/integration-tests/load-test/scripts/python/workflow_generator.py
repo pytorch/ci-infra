@@ -104,7 +104,7 @@ def _write_single_job(
     else:
         _write_arch_verify_step(lines, "x86_64")
 
-    # Checkout step (CPU/ARM only -- exercises git cache)
+    # Checkout step (CPU/ARM only)
     if not alloc.is_gpu:
         lines.append("      - name: Checkout pytorch")
         lines.append("        uses: actions/checkout@v4")

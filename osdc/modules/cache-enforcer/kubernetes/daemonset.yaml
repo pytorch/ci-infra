@@ -3,9 +3,7 @@
 # external container registries and PyPI, forcing traffic through internal
 # caches (Harbor at harbor:30002, pypi-cache at localhost:8080).
 #
-# Runs only on runner nodes (workload-type: github-runner). The existing
-# git-cache-not-ready startup taint ensures iptables rules are in place
-# before any runner job pods can schedule.
+# Runs only on runner nodes (workload-type: github-runner).
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -43,9 +41,6 @@ spec:
           operator: Exists
           effect: NoSchedule
         - key: node-fleet
-          operator: Exists
-          effect: NoSchedule
-        - key: git-cache-not-ready
           operator: Exists
           effect: NoSchedule
         - key: nvidia.com/gpu
@@ -99,12 +94,27 @@ spec:
           image: public.ecr.aws/amazonlinux/amazonlinux:2023
           command: ["/bin/bash", "-c"]
           args:
-            # hostPID gives access to host's PID 1 root filesystem.
-            # nsenter runs the script in the host's mount namespace where
-            # modprobe, iptables, and all kernel modules are available.
-            # stdin redirection reads the script from the container's
-            # ConfigMap mount before nsenter switches namespaces.
-            - /proc/1/root/usr/bin/nsenter -t 1 -m -u -i -n -- /bin/bash < /scripts/enforce-cache.sh
+            # Two-stage init:
+            #   1. nsenter into the host mount/PID/IPC/uts/net NS and run the
+            #      iptables script — modprobe + iptables + xt_string only
+            #      work in the host's mount namespace where kernel modules
+            #      are reachable.
+            #   2. Back in the container's mount NS, call taint_remover.py
+            #      from the node-taint-remover-lib ConfigMap mount and the
+            #      in-cluster ServiceAccount token (neither is reachable
+            #      from inside nsenter, where the host root is mounted).
+            # stdin redirection on the nsenter line reads the script from
+            # the container's ConfigMap mount before nsenter switches NS.
+            - |
+              set -e
+              /proc/1/root/usr/bin/nsenter -t 1 -m -u -i -n -- /bin/bash < /scripts/enforce-cache.sh
+              python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/cache-enforcer
+
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
 
           securityContext:
             privileged: true
@@ -112,6 +122,9 @@ spec:
           volumeMounts:
             - name: scripts
               mountPath: /scripts
+              readOnly: true
+            - name: taint-remover-lib
+              mountPath: /scripts/taint-remover
               readOnly: true
 
       containers:
@@ -135,6 +148,10 @@ spec:
           configMap:
             name: cache-enforcer-script
             defaultMode: 0755
+
+        - name: taint-remover-lib
+          configMap:
+            name: node-taint-remover-lib
 
 ---
 apiVersion: v1

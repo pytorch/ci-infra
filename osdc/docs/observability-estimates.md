@@ -5,7 +5,7 @@ Per-unit cost estimates for metrics cardinality and log volume. For architecture
 > **Stale estimates warning**: The numerical cardinality estimates in the "Estimated Metrics Load for arc-cbr-production" section below are stale for multiple reasons and should not be relied on without re-validation:
 > - **Per-source whitelists landed after the original calculation.** node-exporter is now ~4 series per node (was estimated at 200–400) and cAdvisor is restricted to control-plane namespaces (was estimated at 30–50 cluster-wide).
 > - **The kubelet ServiceMonitor is currently disabled** on IPv6-only EKS (`modules/monitoring/helm/values.yaml` `kubelet.enabled: false`). Both cAdvisor and `kubelet_*` series produce **zero** today. The per-source descriptions below describe the planned post-IPv6 state, not current behavior. See `observability.md` "Disabled scrapers (IPv6 migration)".
-> - **`arc-cbr-production` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, git-cache-central 15, BuildKit 10 (5/arch × 2), pypi-cache 40 (4 deployments × 10 replicas). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
+> - **`arc-cbr-production` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, BuildKit 10 (5/arch × 2), pypi-cache 40 (4 deployments × 10 replicas). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
 > - **Scale-set count is 50**, not 40 (42 upstream + 4 B200 + 4 H100).
 > - **`gha_capacity_*` family count is 16**, not 15.
 >
@@ -39,17 +39,16 @@ Every node managed by Karpenter runs several DaemonSets that produce metrics. Th
 | **cAdvisor** | Built-in (kubelet) | **Currently 0 series — kubelet ServiceMonitor disabled** (see kubelet row above). Planned post-IPv6 state: whitelisted to `container_memory_working_set_bytes` and `container_memory_rss`, then restricted by Alloy `cost_control` to control-plane namespaces only (`arc-systems\|karpenter\|harbor-system\|monitoring\|logging\|buildkit`). Runner nodes will contribute zero cAdvisor series even after re-enablement. | 0 per node (kubelet SM off) |
 | **kube-proxy** | DaemonSet (all nodes, EKS-managed) | Not scraped — no ServiceMonitor for `kube-proxy` metrics; logs collected via base pipeline. | 0 per node |
 | **aws-node (VPC-CNI)** | DaemonSet (all nodes, EKS-managed) | Not scraped — no ServiceMonitor; logs collected via base pipeline. | 0 per node |
-| **git-cache-warmer** | DaemonSet (all nodes) | Clone/fetch durations, cache sizes, rsync stats | ~10-20 |
 | **nodelocaldns** | DaemonSet (all nodes) | Two scrape ports: `:9253` exposes CoreDNS plugin metrics per zone (4 zones — `cluster.local`, `in-addr.arpa`, `ip6.arpa`, `.`) — request counts by type/proto/family, response codes, cache hits/misses/entries, forward stats, plus `_sum`/`_count` for duration histograms. `:9353` exposes the binary's `coredns_nodecache_setup_errors_total` (single series). Drops `go_*`, `process_*`, and `coredns_*_request_duration_seconds_bucket` at PodMonitor level (matches `coredns.yaml` convention). | ~40-60 per node (~10-15 per zone × 4 zones, plus 1 setup-errors series) |
 | **DCGM exporter** | DaemonSet (GPU nodes only) | 25 curated GPU metrics per GPU (Tier 1: 22, Tier 2: 3): utilization, memory, temp, power, ECC, XID errors, NVLink, PCIe, clocks, throttling | 25 per GPU |
 
 **Per-node totals** (varies by node type — see the stale-estimates warning at the top of this doc; the numbers below are pre-whitelist and overstate cardinality by 1–2 orders of magnitude. cAdvisor column is **currently 0 everywhere** because the kubelet ServiceMonitor is disabled for the IPv6 migration):
 
-| Node type | node-exporter | cAdvisor | git-cache-warmer | nodelocaldns | DCGM | Total per node |
-|-----------|:---:|:---:|:---:|:---:|:---:|:---:|
-| CPU runner node (~10 containers) | ~300 | 0 (SM off) | ~15 | ~50 | 0 | ~365 |
-| GPU node (8x GPUs, ~10 containers) | ~300 | 0 (SM off) | ~15 | ~50 | ~208 | ~573 |
-| Base infra node (~30 containers) | ~300 | 0 (SM off) | ~15 | ~50 | 0 | ~365 |
+| Node type | node-exporter | cAdvisor | nodelocaldns | DCGM | Total per node |
+|-----------|:---:|:---:|:---:|:---:|:---:|
+| CPU runner node (~10 containers) | ~300 | 0 (SM off) | ~50 | 0 | ~350 |
+| GPU node (8x GPUs, ~10 containers) | ~300 | 0 (SM off) | ~50 | ~208 | ~558 |
+| Base infra node (~30 containers) | ~300 | 0 (SM off) | ~50 | 0 | ~350 |
 
 ### Cluster-Wide (Fixed per Source)
 
@@ -65,7 +64,6 @@ These metrics come from centralized Deployments or StatefulSets. Series counts b
 | **Harbor exporter** | No positive whitelist — only `go_*\|process_*\|promhttp_*` are dropped at the ServiceMonitor level. Actual cardinality is the full Harbor metric set; estimate is approximate. | ~50-100 per replica (unverified upper bound) |
 | **BuildKit daemon** | Drops `go_*`, `process_*`, `promhttp_*`, `target_info`, and all `_bucket` histograms; no positive whitelist. Cardinality could be higher than this estimate depending on remaining `_sum/_count` series. | ~6-12 per replica (unverified) |
 | **BuildKit HAProxy** | Whitelisted to 4 metrics only: `haproxy_server_status`, `haproxy_server_current_sessions`, `haproxy_server_connection_errors_total`, `haproxy_backend_current_sessions`. No bytes in/out, rates, or queue depth. | small fixed set per replica |
-| **git-cache-central** | Clone/fetch counts, cache hit rates, rsync performance | ~4-10 per replica |
 | **node-compactor** | Compaction cycle counts, nodes tainted/untainted, utilization, burst events | ~10-20 total (single replica) |
 | **Pushgateway** | Hosts metrics pushed by CronJobs (zombie-cleanup, etc.). `honorLabels: true`. Volume depends on which jobs push and how many label combinations they emit. | varies (push-based, job-dependent) |
 | **pypi-cache nginx** | Whitelisted to `nginx_up`, `nginx_http_requests_total`, `nginx_connections_active` per nginx-exporter sidecar (one per pod — 4 deployments × N replicas per cluster). | small fixed set per pod |
@@ -132,7 +130,6 @@ Every Karpenter-managed node runs DaemonSets that produce logs. This is the per-
 | **kubelet** (journal) | System | 30-100 | Pod lifecycle, volume mounts, probes |
 | **containerd** (journal) | System | 20-80 | Container start/stop, image pulls |
 | **kernel** (journal) | System | 1-10 | OOM kills, hardware errors |
-| **git-cache-warmer** | Pod log | 2-10 | rsync from central every 300s |
 | **node-performance-tuning** | Pod log | ~0 | Init container only, main sleeps |
 | **registry-mirror-config** | Pod log | ~0 | Init container, main sleeps |
 | **kube-proxy** | Pod log | 1-5 | EKS-managed DaemonSet — runs on every node. klog format, level extracted. |
@@ -172,7 +169,6 @@ These run on tainted `CriticalAddonsOnly` base nodes. Rates are **per replica** 
 | **Harbor db** | 1-5 | PostgreSQL logs |
 | **Harbor redis** | 1-5 | Cache operation logs |
 | **Harbor exporter** | 1-5 | Metrics exporter logs |
-| **git-cache-central** | 2-10 | git fetch every 300s per replica |
 | **node-compactor** | 10-30 | Runs every 20s, logs taint/untaint decisions (single replica) |
 | **Karpenter controller** | 5-25 | Node provisioning/deprovisioning events |
 | **ARC controller** | 5-25 | Runner scale set reconciliation |
@@ -281,7 +277,6 @@ From `clusters.yaml` defaults plus `arc-cbr-production` overrides:
 | Harbor core | 4 | `defaults.harbor.core_replicas: 4` |
 | Harbor registry | 4 | `defaults.harbor.registry_replicas: 4` |
 | Harbor exporter / jobservice / portal / db / redis | 1 each | chart defaults |
-| git-cache-central | 15 | `arc-cbr-production.git_cache.central_replicas: 15` (default is 2) |
 | node-compactor | 1 | single replica |
 | Monitoring Alloy | 2 | Hard-coded in `modules/monitoring/helm/alloy-values.yaml` (`controller.replicas: 2`, `clustering.enabled: true`) — there is no `monitoring.alloy_replicas` config knob |
 | BuildKit daemon | 10 | `defaults.buildkit.replicas_per_arch: 5` × 2 archs |
@@ -305,10 +300,9 @@ Using midpoint of per-replica ranges from the [cluster-wide reference table](#cl
 | Harbor exporter | ~75 | 1 | ~75 |
 | BuildKit daemon | ~9 | 10 | ~90 |
 | BuildKit HAProxy | ~23 | 1 | ~23 |
-| git-cache-central | ~7 | 15 | ~105 |
 | node-compactor | ~15 | 1 | ~15 |
 | pypi-cache nginx (per-pod) | ~5 | 40 | ~200 |
-| **Total C_fixed** | | | **~1,622** |
+| **Total C_fixed** | | | **~1,517** |
 
 ### Peak cardinality calculation
 
@@ -403,9 +397,8 @@ Fixed overhead from centralized services. Uses service rates from the [base infr
 | Harbor (all components) | 6×93 + 4×15 + 4×28 + 1×6 + 1×3 + 1×3 + 1×3 + 1×3 = ~748 | ~0.22 |
 | ARC listeners (50 scale sets) | 50 × 3 = ~150 | ~0.04 |
 | ARC controller + Karpenter + CoreDNS | 4×15 + 4×15 + 6×30 = ~300 | ~0.09 |
-| git-cache-central (15 replicas) | 15 × 6 = ~90 | ~0.03 |
 | Other (node-compactor, KSM, Prom Operator, Alloy, HAProxy) | ~50 | ~0.01 |
-| **Total base services** | **~1,338** | **~0.39** |
+| **Total base services** | **~1,248** | **~0.36** |
 
 kube-proxy and aws-node (EKS-managed) are excluded here — they run as DaemonSets on every node and are accounted for in the per-node DaemonSet overhead.
 
