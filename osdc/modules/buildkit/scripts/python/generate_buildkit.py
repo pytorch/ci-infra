@@ -49,7 +49,7 @@ def log_error(msg):
 # Overhead constants (milliCPU and MiB)
 # ---------------------------------------------------------------------------
 # DaemonSet overhead measured from running clusters:
-#   karpenter, git-cache-warmer, kube-proxy, aws-node, nvidia-device-plugin (if GPU)
+#   karpenter, kube-proxy, aws-node, nvidia-device-plugin (if GPU)
 DAEMONSET_OVERHEAD_CPU_M = 300  # 300m total across all DaemonSets
 DAEMONSET_OVERHEAD_MEM_MI = 440  # 440Mi total across all DaemonSets
 
@@ -222,9 +222,6 @@ spec:
             - name: buildkit-cache
               mountPath: /var/lib/buildkit
               subPathExpr: $(POD_NAME)
-            - name: git-cache
-              mountPath: /opt/git-cache
-              readOnly: true
 
       volumes:
         - name: config
@@ -234,11 +231,6 @@ spec:
         - name: buildkit-cache
           hostPath:
             path: /mnt/k8s-disks/0/buildkit-cache
-            type: DirectoryOrCreate
-        # Git object cache (maintained by git-cache-warmer DaemonSet)
-        - name: git-cache
-          hostPath:
-            path: /mnt/k8s-disks/0/git-cache
             type: DirectoryOrCreate"""
 
     arm64_block = _deployment_block("arm64", arm64_instance, arm64_res["cpu"], arm64_res["memory_gi"])
@@ -331,11 +323,6 @@ spec:
           effect: NoSchedule
         - key: instance-type
           value: "{instance_type}"
-          effect: NoSchedule
-
-      startupTaints:
-        - key: git-cache-not-ready
-          value: "true"
           effect: NoSchedule
 
 ---

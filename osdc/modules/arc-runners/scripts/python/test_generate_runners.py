@@ -61,9 +61,6 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
           - key: instance-type
             operator: Exists
             effect: NoSchedule
-          - key: git-cache-not-ready
-            operator: Exists
-            effect: NoSchedule
     ---
     apiVersion: v1
     kind: ConfigMap
@@ -127,16 +124,9 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                   memory: "{{MEMORY}}"
                   ephemeral-storage: "{{DISK_SIZE}}"{{GPU_LIMIT}}
               volumeMounts:
-                - name: git-cache
-                  mountPath: /opt/git-cache
-                  readOnly: true
                 - name: dshm
                   mountPath: /dev/shm
           volumes:
-            - name: git-cache
-              hostPath:
-                path: /mnt/git-cache
-                type: DirectoryOrCreate
             - name: dshm
               emptyDir:
                 medium: Memory
@@ -1624,9 +1614,7 @@ class TestGenerateRunner:
 # invariants that recent rounds of changes locked in:
 #   - Runner pod uses priorityClassName: arc-runner and is pinned to the
 #     dedicated c7i-runner pool (literal string, not the templated fleet).
-#   - Runner pod has no GPU/runner-class wiring. Runner pod DOES tolerate
-#     git-cache-not-ready (the c7i-runner pool inherits the startupTaint
-#     and git-cache-warmer doesn't run there to clear it).
+#   - Runner pod has no GPU/runner-class wiring.
 #   - Workflow pod uses priorityClassName: arc-workflow and selects nodes by
 #     the def's node_fleet (g4dn, c7i, m8g, r7a, ...).
 #   - Workflow pod carries GPU tolerations + resources iff the def asks for
@@ -1762,23 +1750,6 @@ class TestRealTemplate:
         node_fleet_tols = [t for t in tolerations if t.get("key") == "node-fleet"]
         assert len(node_fleet_tols) == 1, f"expected exactly one node-fleet toleration, got {node_fleet_tols!r}"
         assert node_fleet_tols[0]["value"] == "c7i-runner"
-
-    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
-    def test_runner_pod_tolerates_git_cache_not_ready_for_c7i_runner_pool_compatibility(
-        self, real_template, tmp_path, variant
-    ):
-        """Runner pod must tolerate git-cache-not-ready: the c7i-runner NodePool inherits the
-        startupTaint from the unconditional generator emission, and git-cache-warmer does not
-        run on this pool — so the taint persists. Tolerating it lets runner pods schedule;
-        the runner pod itself does NOT use the git-cache mount.
-        """
-        helm, _, _ = _render_real(real_template, tmp_path, variant)
-        tolerations = helm["template"]["spec"]["tolerations"]
-        git_cache_tols = [t for t in tolerations if t.get("key") == "git-cache-not-ready"]
-        assert len(git_cache_tols) == 1, f"expected exactly one git-cache-not-ready toleration, got {git_cache_tols!r}"
-        assert git_cache_tols[0]["operator"] == "Exists"
-        assert "value" not in git_cache_tols[0], f"Exists toleration must omit value, got {git_cache_tols[0]!r}"
-        assert git_cache_tols[0]["effect"] == "NoSchedule"
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_runner_pod_has_no_wait_for_node_taints_env(self, real_template, tmp_path, variant):
