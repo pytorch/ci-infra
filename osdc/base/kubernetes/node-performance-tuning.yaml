@@ -348,11 +348,6 @@ spec:
           operator: Exists
           effect: NoSchedule
 
-        # Git cache startup taint (removed by git-cache-warmer after warm-up)
-        - key: git-cache-not-ready
-          operator: Exists
-          effect: NoSchedule
-
         # GPU taints
         - key: nvidia.com/gpu
           operator: Exists

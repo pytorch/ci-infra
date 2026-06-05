@@ -244,7 +244,7 @@ class TestCacheEnforcerPodSpec:
     def test_tolerates_runner_node_taints(self, ds_spec: dict) -> None:
         """Must tolerate all taints used by Karpenter runner nodepools.
 
-        At minimum: instance-type, git-cache-not-ready, nvidia.com/gpu.
+        At minimum: instance-type, nvidia.com/gpu.
         These taints are present on runner nodes and would prevent scheduling
         without matching tolerations.
         """
@@ -253,7 +253,6 @@ class TestCacheEnforcerPodSpec:
 
         required_keys = {
             "instance-type",
-            "git-cache-not-ready",
             "nvidia.com/gpu",
             "cpu-type",
             "CriticalAddonsOnly",

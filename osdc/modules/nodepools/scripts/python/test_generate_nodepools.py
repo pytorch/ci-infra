@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import generate_nodepools
 import pytest
 import yaml
 from generate_nodepools import (
@@ -311,14 +312,6 @@ class TestGenerateNodepoolYaml:
         docs = self._parse(output)
         ec2 = docs[1]
         assert "amiFamily" not in ec2["spec"]
-
-    def test_startup_taints_present(self):
-        nodepool_def = _make_nodepool_def()
-        output = generate_nodepool_yaml(nodepool_def, "nodepools")
-        docs = self._parse(output)
-        np = docs[0]
-        startup_taints = np["spec"]["template"]["spec"]["startupTaints"]
-        assert any(t["key"] == "git-cache-not-ready" for t in startup_taints)
 
     def test_cluster_name_placeholder(self):
         nodepool_def = _make_nodepool_def()
@@ -1415,3 +1408,109 @@ class TestExcludeRegions:
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
         assert "legacy-pool.yaml" not in generated
+
+
+# ============================================================================
+# Module-aware startup taints
+# ============================================================================
+
+
+class TestModuleStartupTaints:
+    """Tests for the MODULE_STARTUP_TAINTS registry and its emission gating."""
+
+    def _np_doc(self, output: str) -> dict:
+        return parse_all_yaml(output)[0]
+
+    def test_no_startup_taints_when_registry_empty(self, monkeypatch):
+        """With the empty registry, no startupTaints block ever appears."""
+        monkeypatch.setattr(generate_nodepools, "MODULE_STARTUP_TAINTS", {})
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer arc-runners nodepools")
+        output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
+        assert "startupTaints" not in output
+        assert "startupTaints" not in self._np_doc(output)["spec"]["template"]["spec"]
+
+    def test_no_startup_taints_when_module_disabled(self, monkeypatch):
+        """A registry entry for a disabled module emits nothing."""
+        fake_registry = {
+            "fake-module": [
+                {"key": "test.osdc.io/fake", "value": "true", "effect": "NoSchedule"},
+            ],
+        }
+        monkeypatch.setattr(generate_nodepools, "MODULE_STARTUP_TAINTS", fake_registry)
+        # fake-module is NOT in the enabled list
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "arc-runners nodepools")
+        output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
+        assert "startupTaints" not in output
+        assert "test.osdc.io/fake" not in output
+
+    def test_startup_taint_emitted_when_module_enabled(self, monkeypatch):
+        """A registry entry for an enabled module is emitted in startupTaints."""
+        fake_registry = {
+            "fake-module": [
+                {"key": "test.osdc.io/fake", "value": "true", "effect": "NoSchedule"},
+            ],
+        }
+        monkeypatch.setattr(generate_nodepools, "MODULE_STARTUP_TAINTS", fake_registry)
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "fake-module other-module")
+        output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
+        np = self._np_doc(output)
+        startup_taints = np["spec"]["template"]["spec"]["startupTaints"]
+        keys = [t["key"] for t in startup_taints]
+        assert "test.osdc.io/fake" in keys
+        emitted = next(t for t in startup_taints if t["key"] == "test.osdc.io/fake")
+        assert emitted["value"] == "true"
+        assert emitted["effect"] == "NoSchedule"
+
+    def test_unset_env_emits_no_startup_taints(self, monkeypatch):
+        """Unset NODEPOOLS_ENABLED_MODULES means no modules enabled, no taints emitted."""
+        fake_registry = {
+            "fake-module": [
+                {"key": "test.osdc.io/fake", "value": "true", "effect": "NoSchedule"},
+            ],
+        }
+        monkeypatch.setattr(generate_nodepools, "MODULE_STARTUP_TAINTS", fake_registry)
+        monkeypatch.delenv("NODEPOOLS_ENABLED_MODULES", raising=False)
+        output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
+        assert "startupTaints" not in output
+
+    def test_applies_when_predicate_excludes_nodepool(self, monkeypatch):
+        """A predicate that returns False suppresses emission for that nodepool_def."""
+        fake_registry = {
+            "fake-module": [
+                {
+                    "key": "test.osdc.io/scoped",
+                    "value": "true",
+                    "effect": "NoSchedule",
+                    "applies_when": lambda nd: nd.get("workload_type", "github-runner") == "github-runner",
+                },
+            ],
+        }
+        monkeypatch.setattr(generate_nodepools, "MODULE_STARTUP_TAINTS", fake_registry)
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "fake-module")
+
+        # Predicate-False nodepool: workload_type explicitly buildkit
+        excluded_def = _make_nodepool_def(workload_type="buildkit")
+        excluded_output = generate_nodepool_yaml(excluded_def, "nodepools")
+        assert "test.osdc.io/scoped" not in excluded_output
+        assert "startupTaints" not in excluded_output
+
+        # Predicate-True nodepool: default workload_type (github-runner)
+        included_def = _make_nodepool_def()
+        included_output = generate_nodepool_yaml(included_def, "nodepools")
+        np = self._np_doc(included_output)
+        startup_taints = np["spec"]["template"]["spec"]["startupTaints"]
+        assert any(t["key"] == "test.osdc.io/scoped" for t in startup_taints)
+
+    def test_regular_taints_block_unchanged_when_startup_taints_emitted(self, monkeypatch):
+        """The existing taints block must remain intact alongside startupTaints."""
+        fake_registry = {
+            "fake-module": [
+                {"key": "test.osdc.io/fake", "value": "true", "effect": "NoSchedule"},
+            ],
+        }
+        monkeypatch.setattr(generate_nodepools, "MODULE_STARTUP_TAINTS", fake_registry)
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "fake-module")
+        output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
+        np = self._np_doc(output)
+        taint_keys = [t["key"] for t in np["spec"]["template"]["spec"]["taints"]]
+        assert "instance-type" in taint_keys

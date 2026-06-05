@@ -56,9 +56,6 @@ spec:
         - key: instance-type
           operator: Exists
           effect: NoSchedule
-        - key: git-cache-not-ready
-          operator: Exists
-          effect: NoSchedule
       containers:
         - name: node-cache
           image: registry.k8s.io/dns/k8s-dns-node-cache:1.26.8
