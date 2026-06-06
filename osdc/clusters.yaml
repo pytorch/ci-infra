@@ -161,8 +161,9 @@ clusters:
       github_secret_name: pytorch-arc-staging
       runner_name_prefix: "c-mt-"
     buildkit:
-      replicas_per_arch: 2
+      amd64_replicas: 4
       arm64_instance_type: m7gd.16xlarge
+      arm64_replicas: 2
     pypi_cache:
       replicas: 1
     modules:
