@@ -289,6 +289,59 @@ class TestGenerateDeploymentYaml:
 
 
 # ============================================================================
+# per-arch replicas / pods_per_node
+# ============================================================================
+
+
+class TestPerArchOverrides:
+    """amd64/arm64 can take different replica counts and packing; omitting the
+    overrides falls back to the shared `replicas` / `pods_per_node`."""
+
+    def _by_name(self, output):
+        return {d["metadata"]["name"]: d for d in parse_all_yaml(output)}
+
+    def test_deployment_per_arch_replicas(self):
+        out = generate_deployment_yaml("m7gd.16xlarge", "m6id.24xlarge", 12, 2, amd64_replicas=32, arm64_replicas=8)
+        d = self._by_name(out)
+        assert d["buildkitd-amd64"]["spec"]["replicas"] == 32
+        assert d["buildkitd-arm64"]["spec"]["replicas"] == 8
+
+    def test_deployment_per_arch_pods_per_node_changes_pod_size(self):
+        # arm64 packed 4/node yields a smaller pod than amd64 at 2/node.
+        out = generate_deployment_yaml("m7gd.16xlarge", "m6id.24xlarge", 8, 2, arm64_pods_per_node=4)
+        d = self._by_name(out)
+        arm = d["buildkitd-arm64"]["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]
+        amd = d["buildkitd-amd64"]["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]
+        assert int(arm["cpu"]) == 14
+        assert arm["memory"] == "51Gi"
+        assert int(amd["cpu"]) == 42
+        assert amd["memory"] == "155Gi"
+
+    def test_fallback_to_shared_values(self):
+        # No overrides → both arches use the shared replicas/pods_per_node.
+        out = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 5, 2)
+        d = self._by_name(out)
+        assert d["buildkitd-amd64"]["spec"]["replicas"] == 5
+        assert d["buildkitd-arm64"]["spec"]["replicas"] == 5
+
+    def test_nodepool_limits_scale_per_arch(self):
+        out = generate_nodepools_yaml(
+            "m7gd.16xlarge",
+            "m6id.24xlarge",
+            12,
+            2,
+            amd64_replicas=32,
+            arm64_replicas=8,
+            arm64_pods_per_node=4,
+        )
+        np = {d["metadata"]["name"]: d for d in parse_all_yaml(out) if d["kind"] == "NodePool"}
+        # amd64: ceil(32/2)=16 nodes x2 headroom x96 vCPU = 3072
+        assert np["buildkit-amd64"]["spec"]["limits"]["cpu"] == "3072"
+        # arm64: ceil(8/4)=2 nodes x2 headroom x64 vCPU = 256
+        assert np["buildkit-arm64"]["spec"]["limits"]["cpu"] == "256"
+
+
+# ============================================================================
 # generate_nodepools_yaml
 # ============================================================================
 
