@@ -1,0 +1,49 @@
+# Scheduler-plugins — NUMA-aware secondary scheduler
+# Chart: https://github.com/kubernetes-sigs/scheduler-plugins/tree/master/charts/as-a-second-scheduler
+#
+# Deploys a second kube-scheduler named "numa-scheduler" with the
+# NodeResourceTopologyMatch plugin enabled. Pods that set
+# schedulerName: numa-scheduler will be filtered/scored by per-NUMA-zone
+# resource availability (read from NodeResourceTopology CRDs published
+# by the NFD topology-updater).
+#
+# Nothing uses this scheduler until runner definitions set
+# scheduler_name: numa-scheduler — deploying it is a no-op.
+
+scheduler:
+  name: numa-scheduler
+  replicaCount: 2
+
+  # Run on base-infrastructure nodes alongside other control plane components.
+  nodeSelector:
+    role: base-infrastructure
+
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Enable the NodeResourceTopologyMatch plugin for NUMA-aware filtering
+# and scoring. The plugin reads NodeResourceTopology CRDs (published by
+# NFD topology-updater) and ensures pods only land on nodes where a
+# single NUMA zone can satisfy the full resource request.
+plugins:
+  enabled:
+    - NodeResourceTopologyMatch
+
+pluginConfig:
+  - name: NodeResourceTopologyMatch
+    args:
+      scoringStrategy:
+        # Prefer NUMA zones with the most free resources to reduce
+        # future fragmentation.
+        type: LeastAllocated
