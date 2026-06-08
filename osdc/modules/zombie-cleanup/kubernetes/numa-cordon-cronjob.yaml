@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: numa-cordon
+  namespace: arc-runners
+  labels:
+    app.kubernetes.io/name: numa-cordon
+    app.kubernetes.io/part-of: osdc-zombie-cleanup
+spec:
+  # Run every 5 minutes to break the fragmentation livelock quickly.
+  # The zombie-cleanup CronJob runs hourly; this needs to be faster
+  # because 4 consecutive failures can happen in ~90s on a single node.
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: numa-cordon
+            app.kubernetes.io/part-of: osdc-zombie-cleanup
+        spec:
+          serviceAccountName: numa-cordon
+          restartPolicy: Never
+          nodeSelector:
+            role: base-infrastructure
+          tolerations:
+            - key: CriticalAddonsOnly
+              operator: Exists
+              effect: NoSchedule
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: numa-cordon
+              image: ZOMBIE_CLEANUP_IMAGE_PLACEHOLDER
+              command: ["python", "numa_cordon.py"]
+              env:
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: TARGET_NAMESPACE
+                  value: "arc-runners"
+                - name: DRY_RUN
+                  value: "NUMA_CORDON_DRY_RUN_PLACEHOLDER"
+                - name: UNCORDON_ENABLED
+                  value: "NUMA_CORDON_UNCORDON_PLACEHOLDER"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
