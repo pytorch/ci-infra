@@ -163,8 +163,11 @@ listenerTemplate:
             value: "{{PROACTIVE_CAPACITY}}"
           - name: CAPACITY_AWARE_MAX_BURST_CAPACITY
             value: "{{MAX_BURST_CAPACITY}}"
-          - name: CAPACITY_AWARE_RECALCULATE_INTERVAL
-            value: "30s"
+          # CAPACITY_AWARE_RECALCULATE_INTERVAL is intentionally unset so the
+          # listener's compiled-in default wins. Old chart (<= jeanschmidt.9):
+          # default is 30s. New chart (jeanschmidt.10+, after the PR at
+          # jeanschmidt/actions-runner-controller#5 lands): default is 60s plus
+          # startup jitter to desync the ~50 listeners after a rollout.
           - name: CAPACITY_AWARE_PLACEHOLDER_TIMEOUT
             value: "20m"
           - name: CAPACITY_AWARE_WORKFLOW_CPU
