@@ -49,6 +49,9 @@ RUNNING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.running_max_age_hours 
 DRY_RUN=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.dry_run "false")
 PUSHGATEWAY_URL=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pushgateway_url "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091")
 
+NUMA_CORDON_DRY_RUN=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.numa_cordon_dry_run "false")
+NUMA_CORDON_UNCORDON=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.numa_cordon_uncordon "true")
+
 # --- Compute content-based image tag ---
 TAG=$(find "$MODULE_DIR/docker" "$MODULE_DIR/scripts/python" \
   \( -name '*.py' -o -name 'Dockerfile' -o -name 'pyproject.toml' \) \
@@ -131,6 +134,7 @@ echo "Using ${IMAGE}:${TAG}"
 # --- Apply RBAC ---
 echo "  Applying RBAC..."
 kubectl_apply_if_changed -f "$MODULE_DIR/kubernetes/rbac.yaml"
+kubectl_apply_if_changed -f "$MODULE_DIR/kubernetes/numa-cordon-rbac.yaml"
 
 # --- Apply CronJob with config substitution ---
 echo "  Applying CronJob..."
@@ -141,5 +145,12 @@ sed \
   -e "s|DRY_RUN_PLACEHOLDER|${DRY_RUN}|" \
   -e "s|PUSHGATEWAY_URL_PLACEHOLDER|${PUSHGATEWAY_URL}|" \
   "$MODULE_DIR/kubernetes/cronjob.yaml" | kubectl_apply_if_changed -f -
+
+echo "  Applying numa-cordon CronJob..."
+sed \
+  -e "s|ZOMBIE_CLEANUP_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|" \
+  -e "s|NUMA_CORDON_DRY_RUN_PLACEHOLDER|${NUMA_CORDON_DRY_RUN}|" \
+  -e "s|NUMA_CORDON_UNCORDON_PLACEHOLDER|${NUMA_CORDON_UNCORDON}|" \
+  "$MODULE_DIR/kubernetes/numa-cordon-cronjob.yaml" | kubectl_apply_if_changed -f -
 
 echo "  zombie-cleanup deployed."
