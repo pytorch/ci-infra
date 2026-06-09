@@ -121,6 +121,7 @@ clusters:
     region: us-west-1
     cluster_name: pytorch-arc-staging
     recycle_karpenter_nodes: true
+    proactive_capacity_max: 0
     state_bucket: ciforge-tfstate-arc-staging
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
