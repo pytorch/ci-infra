@@ -113,12 +113,12 @@ defaults:
     target_manylinux: "2_28"
 
 clusters:
-  arc-staging:
+  meta-staging-aws-uw1:
     region: us-west-1
-    cluster_name: pytorch-arc-staging
+    cluster_name: meta-staging-aws-uw1
     recycle_karpenter_nodes: true
     proactive_capacity_max: 0  # disable warm-pool pre-provisioning — staging only creates pairs on demand for in-flight jobs
-    state_bucket: ciforge-tfstate-arc-staging
+    state_bucket: ciforge-tfstate-meta-staging-uw1
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
       cluster_admin_role_names:
@@ -154,9 +154,13 @@ clusters:
       gpu_consolidate_after: "10s"
       cpu_consolidate_after: "10s"
     arc-runners:
-      github_config_url: "https://github.com/pytorch/pytorch-canary"
-      github_secret_name: pytorch-arc-staging
-      runner_name_prefix: "c-mt-"
+      # Org-wide (was github.com/pytorch/pytorch-canary). A repo-scoped URL forces
+      # runner_group → "default" in generate_runners.py, so the org URL is required
+      # for the runner_group below to take effect.
+      github_config_url: "https://github.com/pytorch"
+      github_secret_name: meta-staging-aws-uw1
+      runner_name_prefix: "c-mt-"          # staging/testing prefix — keeps labels distinct from prod's "mt-"
+      runner_group: "meta-staging-aws-uw1"
     buildkit:
       arm64_instance_type: m7gd.16xlarge
       arm64_pods_per_node: 4

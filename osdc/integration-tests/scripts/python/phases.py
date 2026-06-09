@@ -142,15 +142,15 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
             run_cmd(["gh", "run", "cancel", str(r["databaseId"]), "--repo", CANARY_REPO], check=False)
 
 
-# ── Phase 1: Staging pool clear (arc-staging only) ─────────────────────
+# ── Phase 1: Staging pool clear (meta-staging-aws-uw1 only) ─────────────────────
 
 
 def clear_staging_pools(cluster_id: str, force: bool = False):
-    """Clear karpenter nodepools and runner pods for staging. Only for arc-staging."""
-    if cluster_id != "arc-staging":
+    """Clear karpenter nodepools and runner pods for staging. Only for meta-staging-aws-uw1."""
+    if cluster_id != "meta-staging-aws-uw1":
         return
 
-    log.info("Phase 1: Checking for active runner pods (arc-staging only)...")
+    log.info("Phase 1: Checking for active runner pods (meta-staging-aws-uw1 only)...")
     result = run_cmd(
         ["kubectl", "get", "pods", "-n", "arc-runners", "--no-headers"],
         check=False,
@@ -188,7 +188,7 @@ def clear_staging_pools(cluster_id: str, force: bool = False):
         time.sleep(10)
 
     log.info("  Re-deploying nodepools...")
-    run_cmd(["just", "deploy-module", "arc-staging", "nodepools"], check=False)
+    run_cmd(["just", "deploy-module", "meta-staging-aws-uw1", "nodepools"], check=False)
 
 
 # ── Phase 2: Prepare PR ────────────────────────────────────────────────

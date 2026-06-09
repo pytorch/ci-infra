@@ -56,10 +56,10 @@ The single source of truth for what gets deployed where:
 
 ```yaml
 clusters:
-  arc-staging:
+  meta-staging-aws-uw1:
     region: us-west-1
-    cluster_name: pytorch-arc-staging
-    state_bucket: ciforge-tfstate-arc-staging
+    cluster_name: meta-staging-aws-uw1
+    state_bucket: ciforge-tfstate-meta-staging-uw1
     base:
       vpc_cidr: "10.0.0.0/16"
       single_nat_gateway: true

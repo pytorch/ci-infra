@@ -6,7 +6,7 @@
 #
 # Per-cluster value: clusters.yaml -> harbor.pdb_max_unavailable
 #   default:     1       (conservative — at most 1 pod down per component)
-#   arc-staging: "100%"  (aggressive — staging has 1 replica each)
+#   meta-staging-aws-uw1: "100%"  (aggressive — staging has 1 replica each)
 #
 # Single-replica components (jobservice, portal, exporter, internal redis/db)
 # are intentionally NOT covered: a PDB on a 1-replica Deployment with

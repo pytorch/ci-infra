@@ -16,8 +16,8 @@ The justfile auto-detects and runs these in order:
 
 `deploy.sh` receives three positional arguments:
 ```bash
-$1 = cluster-id      # e.g. "arc-staging"
-$2 = cluster-name    # e.g. "pytorch-arc-staging"
+$1 = cluster-id      # e.g. "meta-staging-aws-uw1"
+$2 = cluster-name    # e.g. "meta-staging-aws-uw1"
 $3 = region           # e.g. "us-west-1"
 ```
 

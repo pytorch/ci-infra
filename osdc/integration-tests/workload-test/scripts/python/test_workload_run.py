@@ -20,7 +20,7 @@ from workload_run import (
 
 class TestBranchName:
     def test_basic(self):
-        assert branch_name("arc-staging") == "osdc-workload-test-arc-staging"
+        assert branch_name("meta-staging-aws-uw1") == "osdc-workload-test-meta-staging-aws-uw1"
 
     def test_production(self):
         assert branch_name("arc-cbr-production") == "osdc-workload-test-arc-cbr-production"
