@@ -148,12 +148,13 @@ COPY ssh_config /etc/ssh/sshd_config
 # Bump CLAUDE_CODE_BUILD to bust the layer cache and re-fetch the latest Claude Code
 # (the installer always grabs latest; without a bump Docker reuses the cached layer).
 USER root
-ARG CLAUDE_CODE_BUILD=2026-05-29
+ARG CLAUDE_CODE_BUILD=2026-06-09
 RUN echo "Claude Code build marker: $CLAUDE_CODE_BUILD" && \
     curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash || echo "Claude native install failed (non-fatal at build time)"
 RUN if [ -e /opt/claude/.local/bin/claude ]; then \
         ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude; \
         chmod -R a+rX /opt/claude; \
+        echo "Installed Claude Code (native): $(/usr/local/bin/claude --version 2>/dev/null || echo unknown)"; \
     fi
 
 # Set up npm global directory for dev user (kept for ad-hoc dev-installed CLIs).
