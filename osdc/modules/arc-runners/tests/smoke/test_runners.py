@@ -295,7 +295,7 @@ class TestListenerCapacityAwareEnvVars:
 
     The generated YAML is the single source of truth for what should be
     deployed: it already accounts for cluster-specific overrides such as
-    ``force_proactive_capacity_zero`` (staging) and any future generator
+    ``proactive_capacity_max`` (staging) and any future generator
     transformations. Comparing the deployed listener directly against the
     runner def would re-introduce knowledge of those overrides into the test.
     """
