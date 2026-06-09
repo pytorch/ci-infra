@@ -1436,6 +1436,337 @@
           }
         }
       }
+    },
+    "panel-12": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "refId": "A",
+                  "query": {
+                    "datasource": {
+                      "name": "grafanacloud-logs"
+                    },
+                    "group": "loki",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "sum by (cluster, reason, sourcecomponent) (count_over_time({job=\"loki.source.kubernetes_events\", type=\"Warning\", cluster=~\"$cluster\"} [$__range]))",
+                      "instant": true,
+                      "queryType": "instant",
+                      "range": false
+                    },
+                    "version": "v0"
+                  }
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "refId": "B",
+                  "query": {
+                    "datasource": {
+                      "name": "grafanacloud-logs"
+                    },
+                    "group": "loki",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "max by (cluster, reason, sourcecomponent) (max_over_time({job=\"loki.source.kubernetes_events\", type=\"Warning\", cluster=~\"$cluster\"} | json count=\"count\" | unwrap count [$__range]))",
+                      "instant": true,
+                      "queryType": "instant",
+                      "range": false
+                    },
+                    "version": "v0"
+                  }
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": [
+              {
+                "kind": "merge",
+                "spec": {
+                  "options": {}
+                }
+              },
+              {
+                "kind": "organize",
+                "spec": {
+                  "options": {
+                    "excludeByName": {
+                      "Time": true
+                    },
+                    "renameByName": {
+                      "Value #A": "Events",
+                      "Value #B": "Type"
+                    },
+                    "indexByName": {
+                      "cluster": 0,
+                      "reason": 1,
+                      "sourcecomponent": 2,
+                      "Value #A": 3,
+                      "Value #B": 4
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "description": "K8s Warning events by reason × cluster × component. Type — Exact: Events is a true occurrence count (one event per occurrence). Aggregated: k8s merged repeats onto one object (count>1), so Events is relative volume, not an exact tally.",
+        "id": 12,
+        "links": [],
+        "title": "K8s Warning Events: volume & count-type [cluster]",
+        "vizConfig": {
+          "group": "table",
+          "kind": "VizConfig",
+          "version": "13.1.0-25668120414",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "custom": {
+                  "align": "auto",
+                  "cellOptions": {
+                    "type": "auto"
+                  },
+                  "filterable": true,
+                  "inspect": false
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Events"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.cellOptions",
+                      "value": {
+                        "type": "gauge",
+                        "mode": "gradient"
+                      }
+                    },
+                    {
+                      "id": "custom.width",
+                      "value": 200
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Type"
+                  },
+                  "properties": [
+                    {
+                      "id": "mappings",
+                      "value": [
+                        {
+                          "type": "range",
+                          "options": {
+                            "from": 0,
+                            "to": 1,
+                            "result": {
+                              "text": "Exact",
+                              "color": "green",
+                              "index": 0
+                            }
+                          }
+                        },
+                        {
+                          "type": "range",
+                          "options": {
+                            "from": 2,
+                            "to": 1000000000,
+                            "result": {
+                              "text": "Aggregated",
+                              "color": "orange",
+                              "index": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "id": "custom.cellOptions",
+                      "value": {
+                        "type": "color-text"
+                      }
+                    },
+                    {
+                      "id": "custom.width",
+                      "value": 130
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "cellHeight": "sm",
+              "footer": {
+                "countRows": false,
+                "fields": "",
+                "reducer": [
+                  "sum"
+                ],
+                "show": false
+              },
+              "showHeader": true,
+              "sortBy": [
+                {
+                  "desc": true,
+                  "displayName": "Events"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "panel-14": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "refId": "A",
+                  "query": {
+                    "datasource": {
+                      "name": "grafanacloud-logs"
+                    },
+                    "group": "loki",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "sum by (cluster, reason) (count_over_time({job=\"loki.source.kubernetes_events\", type=\"Warning\", cluster=~\"$cluster\"} [$__interval]))",
+                      "instant": false,
+                      "queryType": "range",
+                      "range": true,
+                      "legendFormat": "{{cluster}} · {{reason}}"
+                    },
+                    "version": "v0"
+                  }
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "K8s Warning event frequency over time, one line per cluster · reason. Log y-axis; dots mark single events. Filter via $cluster or by clicking legend entries.",
+        "id": 14,
+        "links": [],
+        "title": "K8s Warning Event Frequency [cluster]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "version": "13.1.0-25668120414",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic",
+                  "seriesBy": "last"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "log",
+                    "log": 10
+                  },
+                  "showPoints": "auto",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                },
+                "min": 0.8
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [
+                  "lastNotNull",
+                  "max"
+                ],
+                "displayMode": "table",
+                "placement": "right",
+                "showLegend": true,
+                "sortBy": "Last *",
+                "sortDesc": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "desc"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "layout": {
@@ -1583,6 +1914,32 @@
             "width": 12,
             "x": 12,
             "y": 40
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-14"
+            },
+            "height": 11,
+            "width": 24,
+            "x": 0,
+            "y": 48
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-12"
+            },
+            "height": 12,
+            "width": 24,
+            "x": 0,
+            "y": 59
           }
         }
       ]
