@@ -1963,7 +1963,7 @@ analyze-utilization *args:
 
 # Generate ARC runner scale set YAMLs for a cluster (no validation, no apply).
 # Mirrors Step 1 of modules/arc-runners/deploy.sh — generation only. Used by
-# smoke tests to obtain post-override YAMLs (e.g. force_proactive_capacity_zero
+# smoke tests to obtain post-override YAMLs (e.g. proactive_capacity_max
 # on staging) without touching the cluster.
 generate-arc-runners cluster:
     #!/usr/bin/env bash

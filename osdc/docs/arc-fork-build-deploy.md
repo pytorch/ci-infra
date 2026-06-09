@@ -182,7 +182,7 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_HUD_API_URL` | _(built-in default URL)_ | hardcoded PyTorch HUD `queued_jobs_aggregate` URL | HUD endpoint for queued job counts |
 | `CAPACITY_AWARE_HUD_API_TOKEN` | _(empty)_ | from K8s secret `pytorch-hud-token` (optional mount) | PyTorch HUD API token for queued job counts |
 
-Currently enabled for all runners (`CAPACITY_AWARE_ENABLED=true` is hardcoded in the template). Note: `generate_runners.py` forces `proactive_capacity` to `0` for staging clusters (`force_proactive_capacity_zero` is set when the cluster id contains `staging`), so placeholders are not pre-provisioned in staging — only on-demand pairs created for in-flight jobs.
+Currently enabled for all runners (`CAPACITY_AWARE_ENABLED=true` is hardcoded in the template). Note: `generate_runners.py` caps `proactive_capacity` at `N` for clusters that set `proactive_capacity_max: N` in `clusters.yaml` — each scale set renders `min(def_proactive_capacity, N)`. The staging cluster sets `proactive_capacity_max: 0`, so no placeholders are pre-provisioned there — only on-demand pairs created for in-flight jobs.
 
 ## Creating the HUD API Secret
 
