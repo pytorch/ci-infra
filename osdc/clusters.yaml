@@ -118,7 +118,7 @@ clusters:
     cluster_name: meta-staging-aws-uw1
     recycle_karpenter_nodes: true
     proactive_capacity_max: 0  # disable warm-pool pre-provisioning — staging only creates pairs on demand for in-flight jobs
-    state_bucket: ciforge-tfstate-meta-staging-uw1
+    state_bucket: ciforge-tfstate-meta-staging-aws-uw1
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
       cluster_admin_role_names:

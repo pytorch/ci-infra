@@ -59,7 +59,7 @@ clusters:
   meta-staging-aws-uw1:
     region: us-west-1
     cluster_name: meta-staging-aws-uw1
-    state_bucket: ciforge-tfstate-meta-staging-uw1
+    state_bucket: ciforge-tfstate-meta-staging-aws-uw1
     base:
       vpc_cidr: "10.0.0.0/16"
       single_nat_gateway: true

@@ -272,7 +272,7 @@ To inspect state:
 ```bash
 cd modules/eks/terraform
 tofu init -reconfigure \
-    -backend-config="bucket=ciforge-tfstate-meta-staging-uw1" \
+    -backend-config="bucket=ciforge-tfstate-meta-staging-aws-uw1" \
     -backend-config="key=meta-staging-aws-uw1/base/terraform.tfstate" \
     -backend-config="region=us-west-2" \
     -backend-config="dynamodb_table=ciforge-terraform-locks"
