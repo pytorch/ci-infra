@@ -215,18 +215,20 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         return False
 
     if max_burst_capacity > 0 and proactive_capacity > 0 and max_burst_capacity < proactive_capacity:
-        log_warning(
+        log_error(
             f"In {def_file}: max_burst_capacity ({max_burst_capacity}) < proactive_capacity ({proactive_capacity}); "
             f"the cap will prevent the listener from reaching its proactive baseline. "
-            f"Consider raising max_burst_capacity."
+            f"Either raise max_burst_capacity or lower proactive_capacity."
         )
+        return False
 
     if max_burst_capacity > 0 and hud_failure_base_capacity > 0 and max_burst_capacity < hud_failure_base_capacity:
-        log_warning(
+        log_error(
             f"In {def_file}: max_burst_capacity ({max_burst_capacity}) < hud_failure_base_capacity ({hud_failure_base_capacity}); "
             f"the cap will prevent the listener from reaching its HUD-fallback baseline. "
             f"Either raise max_burst_capacity or lower hud_failure_base_capacity."
         )
+        return False
 
     try:
         node_fleet = derive_fleet_name(instance_type, override=node_fleet_override)

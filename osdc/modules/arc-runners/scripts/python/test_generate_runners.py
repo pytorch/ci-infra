@@ -1352,8 +1352,8 @@ class TestGenerateRunner:
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_MAX_BURST_CAPACITY"] == "0"
 
-    def test_max_burst_capacity_warning_when_below_proactive(self, tmp_path, capsys):
-        """Warn when max_burst_capacity (>0) is less than proactive_capacity — the cap
+    def test_max_burst_capacity_error_when_below_proactive(self, tmp_path, capsys):
+        """Error when max_burst_capacity (>0) is less than proactive_capacity — the cap
         would prevent the listener from reaching its proactive baseline.
         """
         def_file = make_def_file(
@@ -1367,7 +1367,7 @@ class TestGenerateRunner:
             "runner_name_prefix": "",
         }
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is False
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
@@ -1435,8 +1435,8 @@ class TestGenerateRunner:
         combined = captured.out + captured.err
         assert "max_burst_capacity" not in combined
 
-    def test_max_burst_capacity_less_than_hud_failure_base_capacity_warns(self, tmp_path, capsys):
-        """Warn when max_burst_capacity (>0) is less than hud_failure_base_capacity — the cap
+    def test_max_burst_capacity_less_than_hud_failure_base_capacity_errors(self, tmp_path, capsys):
+        """Error when max_burst_capacity (>0) is less than hud_failure_base_capacity — the cap
         would prevent the listener from reaching its HUD-fallback baseline.
         """
         def_file = make_def_file(
@@ -1456,7 +1456,7 @@ class TestGenerateRunner:
             "runner_name_prefix": "",
         }
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is False
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
