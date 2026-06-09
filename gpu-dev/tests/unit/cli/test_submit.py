@@ -19,10 +19,56 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gpu_dev_cli.cli import main
+from gpu_dev_cli.cli import main, _build_submit_remote_script
 
 
 USER_INFO = {"user_id": "u-123", "github_user": "octocat"}
+
+
+# ---------------------------------------------------------------------------
+# _build_submit_remote_script — the --ref staging-gate + rebuild preamble
+# (regression for Driss's footguns: root-owned tree + source/installed mismatch)
+# ---------------------------------------------------------------------------
+def test_remote_script_no_ref_is_plain_cd_run():
+    s = _build_submit_remote_script("/workspace/x", "python a.py", ref=None, no_build=False)
+    assert s == "cd /workspace/x && python a.py"
+    assert "pytorch-staging" not in s
+    assert "no-build-isolation" not in s
+
+
+def test_remote_script_with_ref_waits_and_rebuilds():
+    s = _build_submit_remote_script("/home/dev", "pytest q.py", ref="pr/123", no_build=False)
+    # waits for the background staging marker
+    assert "/home/dev/.pytorch-staging" in s
+    # only acts once staging actually completed
+    assert "/home/dev/.pytorch-ready" in s
+    # marks safe.directory for the dev user (fixes git "dubious ownership")
+    assert "safe.directory /home/dev/pytorch" in s
+    # rebuilds so installed torch matches the checked-out ref
+    assert "pip install -e . --no-build-isolation" in s
+    # user command still runs last, in the workdir
+    assert s.rstrip().endswith("cd /home/dev && pytest q.py")
+
+
+def test_remote_script_ref_no_build_skips_rebuild():
+    s = _build_submit_remote_script("/home/dev", "pytest q.py", ref="pr/123", no_build=True)
+    assert "/home/dev/.pytorch-staging" in s          # still waits for staging
+    assert "safe.directory /home/dev/pytorch" in s     # still fixes ownership
+    assert "no-build-isolation" not in s               # but no rebuild
+    assert s.rstrip().endswith("cd /home/dev && pytest q.py")
+
+
+def test_remote_script_quotes_workdir():
+    s = _build_submit_remote_script("/work space/x", "echo hi", ref=None, no_build=False)
+    assert "'/work space/x'" in s
+
+
+def test_no_build_flag_threaded_and_defaults_false(cli_runner):
+    # --no-build is accepted; with --ref it changes the rebuild preamble. Here we
+    # just assert the flag parses (reservation returns None -> exit 2).
+    res, rm = _run(cli_runner, ["--ref", "pr/1", "--no-build", "--", "x"])
+    assert res.exit_code == 2
+    rm.create_reservation.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

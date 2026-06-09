@@ -1724,6 +1724,47 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
                      "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86", "cpu-spot"]
 
 
+def _build_submit_remote_script(workdir: str, remote_cmd: str, ref: Optional[str],
+                                no_build: bool) -> str:
+    """Build the remote shell script `submit` runs over SSH (under `bash -lc`).
+
+    Without --ref this is just `cd <workdir> && <cmd>`. With --ref the pytorch
+    tree is staged in the *background* in-pod (stage-pytorch &), and the tree is
+    only chowned to dev + the ref fully checked out at the very end. Running the
+    user command before that finishes is the footgun Driss hit: a root-owned tree
+    (git "dubious ownership") and a source/installed-torch mismatch (the ref is
+    checked out but the prebuilt .so is the stale base build -> `import torch`
+    fails). So with --ref we prepend a preamble that:
+      1. waits for staging to finish (`.pytorch-staging` marker removed at end),
+      2. marks /home/dev/pytorch a git safe.directory for the dev user,
+      3. unless --no-build, rebuilds incrementally so installed torch == the
+         checked-out source (warm build/ -> ~tens of seconds; a rebuild failure
+         exits 90 before the user command runs).
+    The rebuild/safe.directory only touch pytorch when staging actually ran
+    (`.pytorch-ready` present), so --disk reservations (ref ignored, no staging)
+    are unaffected.
+    """
+    import shlex
+    cd_run = f"cd {shlex.quote(workdir)} && {remote_cmd}"
+    if not ref:
+        return cd_run
+    lines = [
+        'if [ -e /home/dev/.pytorch-staging ]; then',
+        '  echo "[gpu-dev] waiting for background pytorch --ref staging to finish…"',
+        '  for _i in $(seq 1 3600); do [ -e /home/dev/.pytorch-staging ] || break; sleep 1; done',
+        'fi',
+        'if [ -f /home/dev/.pytorch-ready ]; then',
+        '  git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true',
+    ]
+    if not no_build:
+        lines += [
+            '  echo "[gpu-dev] rebuilding torch to match --ref (pip install -e . --no-build-isolation)…"',
+            '  ( cd /home/dev/pytorch && pip install -e . --no-build-isolation ) || { echo "[gpu-dev] torch rebuild failed"; exit 90; }',
+        ]
+    lines += ['fi', cd_run]
+    return "\n".join(lines)
+
+
 @main.command(context_settings={"ignore_unknown_options": True})
 @click.option("--gpu-type", type=click.Choice(_SUBMIT_GPU_TYPES, case_sensitive=False), default="a100", show_default=True)
 @click.option("--gpus", type=int, default=1, show_default=True, help="GPU count (multinode if > per-node max).")
@@ -1743,6 +1784,8 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
 @click.option("--runtime", type=click.Path(exists=True, file_okay=False, resolve_path=True), default=None,
               help="Local directory to rsync to /workspace/submit-<id>/ on master node before run.")
 @click.option("--no-pull", is_flag=True, help="Skip syncing the remote workspace back to --runtime after the job finishes.")
+@click.option("--no-build", is_flag=True,
+              help="With --ref, skip the incremental torch rebuild before the command (Python-only PRs / quick checks). Default: rebuild so `import torch` reflects the ref.")
 @click.option("--keep-alive", is_flag=True, help="Don't cancel the reservation when the job exits.")
 @click.option("--name", type=str, default=None, help="Reservation name.")
 @click.option("--timeout", type=int, default=24 * 60, show_default=True,
@@ -1750,7 +1793,7 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
 @click.argument("command", nargs=-1, required=True)
 @click.pass_context
 def submit(ctx, gpu_type, gpus, hours, disk, ref, no_persistent_disk, spot, dockerfile, dockerimage, preserve_entrypoint,
-           runtime, no_pull, keep_alive, name, timeout, command):
+           runtime, no_pull, no_build, keep_alive, name, timeout, command):
     """Submit a job: reserve, sync code, run, sync results back, auto-cancel.
 
     \b
@@ -1961,11 +2004,15 @@ def submit(ctx, gpu_type, gpus, hours, disk, ref, no_persistent_disk, spot, dock
         else:
             workdir = "/home/dev"
 
-        # Run remote command via login shell so MULTINODE_* etc. are loaded
+        # Run remote command via login shell so MULTINODE_* etc. are loaded. With
+        # --ref, the script first waits for background pytorch staging + rebuilds
+        # so `import torch` matches the checked-out ref (see helper docstring).
         remote_cmd = " ".join(shlex.quote(c) for c in command)
         rprint(f"[cyan]🚀 Running on {ssh_alias}: {remote_cmd}[/cyan]\n")
-        ssh_run = ssh_base + [ssh_alias,
-                              f"cd {shlex.quote(workdir)} && bash -lc {shlex.quote(remote_cmd)}"]
+        if ref and not no_build:
+            rprint("[dim]   (--ref: will wait for staging + rebuild torch first; pass --no-build to skip)[/dim]")
+        remote_script = _build_submit_remote_script(workdir, remote_cmd, ref, no_build)
+        ssh_run = ssh_base + [ssh_alias, f"bash -lc {shlex.quote(remote_script)}"]
         rc = subprocess.call(ssh_run)
         rprint(f"\n[dim]Job exited with code {rc}[/dim]")
 
