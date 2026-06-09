@@ -337,7 +337,7 @@ clusters:
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue1
     pypi_cache:
-      replicas: 2
+      replicas: 6
     modules:
       - karpenter
       - arc
@@ -370,7 +370,7 @@ clusters:
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue2
     pypi_cache:
-      replicas: 2
+      replicas: 6
     modules:
       - karpenter
       - arc
