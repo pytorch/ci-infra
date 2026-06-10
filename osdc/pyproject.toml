@@ -23,6 +23,8 @@ testpaths = [
   "scripts/python",
   "base/node-compactor/scripts/python",
   "base/kubernetes/image-cache-janitor/scripts/python",
+  "base/kubernetes/node-taint-remover/lib",
+  "base/kubernetes/node-taint-remover/tests",
   "modules/nodepools/scripts/python",
   "modules/arc-runners/scripts/python",
   "modules/buildkit/scripts/python",
