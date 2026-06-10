@@ -9,5 +9,6 @@ runner:
   vcpu: 189
   memory: 704Gi
   gpu: 8
-  proactive_capacity: 5
+  proactive_capacity: 2
+  hud_failure_base_capacity: 15
   max_burst_capacity: 30
