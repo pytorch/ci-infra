@@ -11,25 +11,16 @@ set -euo pipefail
 # that the numa-scheduler reads to make NUMA-aware placement decisions.
 
 CLUSTER="$1"
-_CNAME="$2"  # unused but required by deploy-module interface
-_REGION="$3" # unused but required by deploy-module interface
+export CNAME="$2"
+export REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
-
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
-
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
-
-# --- Check if enabled ---
-ENABLED=$(uv run "$CFG" "$CLUSTER" nfd.enabled "false")
-if [[ "$ENABLED" != "true" ]]; then
-  echo "NFD disabled for cluster $CLUSTER, skipping."
-  exit 0
-fi
 
 NFD_VERSION=$(uv run "$CFG" "$CLUSTER" nfd.version "0.17.1")
 NFD_UPDATE_INTERVAL=$(uv run "$CFG" "$CLUSTER" nfd.update_interval "15s")

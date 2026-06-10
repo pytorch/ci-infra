@@ -12,25 +12,16 @@ set -euo pipefail
 # schedulerName: numa-scheduler get NUMA-aware placement.
 
 CLUSTER="$1"
-_CNAME="$2"  # unused but required by deploy-module interface
-_REGION="$3" # unused but required by deploy-module interface
+export CNAME="$2"
+export REGION="$3"
 MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${OSDC_ROOT:-$(cd "$MODULE_DIR/../.." && pwd)}"
 UPSTREAM_ROOT="${OSDC_UPSTREAM:-$REPO_ROOT}"
-
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
-
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
-
-# --- Check if enabled ---
-ENABLED=$(uv run "$CFG" "$CLUSTER" numa_scheduler.enabled "false")
-if [[ "$ENABLED" != "true" ]]; then
-  echo "numa-scheduler disabled for cluster $CLUSTER, skipping."
-  exit 0
-fi
 
 CHART_VERSION=$(uv run "$CFG" "$CLUSTER" numa_scheduler.chart_version "0.34.7")
 SCHEDULER_REPLICAS=$(uv run "$CFG" "$CLUSTER" numa_scheduler.replicas "2")
