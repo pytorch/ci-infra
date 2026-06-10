@@ -36,6 +36,12 @@ GREEN = "\033[0;32m"
 RED = "\033[0;31m"
 NC = "\033[0m"
 
+# Sentinel for optional template lines. An optional fragment is either its YAML
+# lines or this sentinel; lines equal to it are dropped when a block is assembled
+# (see _deployment_block). This lets every fragment sit on its own line in the
+# templates below instead of being concatenated onto an adjacent line.
+_OMIT = "<<omit>>"
+
 
 def log_info(msg):
     print(f"{GREEN}\u2192{NC} {msg}")
@@ -120,34 +126,32 @@ def generate_deployment_yaml(
     amd64_res = compute_pod_resources(amd64_instance, amd64_pods_per_node)
 
     # When KEDA owns the replica count, omit `replicas` and add a preStop drain
-    # that holds the pod open until its in-flight build finishes. `replicas_line`
-    # is computed per-arch inside _deployment_block (below).
-    grace_line = "      terminationGracePeriodSeconds: 8100\n" if autoscaling else ""
+    # that holds the pod open until its in-flight build finishes. Each fragment is
+    # either its YAML lines or _OMIT (dropped at assembly), so it sits on its own
+    # line in the template. (`replicas_line` is per-arch — computed below.)
+    grace_line = "      terminationGracePeriodSeconds: 8100" if autoscaling else _OMIT
     lifecycle_block = (
-        """
-          lifecycle:
+        """          lifecycle:
             preStop:
               exec:
                 command: ["/bin/sh", "/opt/drain/drain.sh"]"""
         if autoscaling
-        else ""
+        else _OMIT
     )
     drain_mount = (
-        """
-            - name: drain
+        """            - name: drain
               mountPath: /opt/drain
               readOnly: true"""
         if autoscaling
-        else ""
+        else _OMIT
     )
     drain_volume = (
-        """
-        - name: drain
+        """        - name: drain
           configMap:
             name: buildkitd-drain
             defaultMode: 0555"""
         if autoscaling
-        else ""
+        else _OMIT
     )
 
     log_info(
@@ -160,8 +164,8 @@ def generate_deployment_yaml(
     )
 
     def _deployment_block(arch, instance_type, cpu, memory_gi, replicas, pods_per_node):
-        replicas_line = "" if autoscaling else f"  replicas: {replicas}\n"
-        return f"""apiVersion: apps/v1
+        replicas_line = _OMIT if autoscaling else f"  replicas: {replicas}"
+        block = f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: buildkitd-{arch}
@@ -172,7 +176,8 @@ metadata:
     app.kubernetes.io/name: buildkitd
     app.kubernetes.io/component: build-service
 spec:
-{replicas_line}  strategy:
+{replicas_line}
+  strategy:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 0
@@ -187,7 +192,8 @@ spec:
         app: buildkitd
         arch: {arch}
     spec:
-{grace_line}      nodeSelector:
+{grace_line}
+      nodeSelector:
         workload-type: buildkit
         instance-type: "{instance_type}"
 
@@ -240,7 +246,8 @@ spec:
                   fieldPath: metadata.name
 
           securityContext:
-            privileged: true{lifecycle_block}
+            privileged: true
+{lifecycle_block}
 
           readinessProbe:
             exec:
@@ -269,7 +276,8 @@ spec:
               subPathExpr: $(POD_NAME)
             - name: git-cache
               mountPath: /opt/git-cache
-              readOnly: true{drain_mount}
+              readOnly: true
+{drain_mount}
 
       volumes:
         - name: config
@@ -284,7 +292,9 @@ spec:
         - name: git-cache
           hostPath:
             path: /mnt/k8s-disks/0/git-cache
-            type: DirectoryOrCreate{drain_volume}"""
+            type: DirectoryOrCreate
+{drain_volume}"""
+        return "\n".join(line for line in block.splitlines() if line != _OMIT)
 
     arm64_block = _deployment_block(
         "arm64", arm64_instance, arm64_res["cpu"], arm64_res["memory_gi"], arm64_replicas, arm64_pods_per_node
