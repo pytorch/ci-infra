@@ -4,8 +4,9 @@ Remote BuildKit build service: per-arch `buildkitd` Deployments behind an HAProx
 LB, on dedicated Karpenter NodePools. Clients build with
 `buildctl --addr tcp://buildkitd-<arch>.buildkit:1234`.
 
-Sizing is per-arch in `clusters.yaml` (`buildkit.{amd64,arm64}_{replicas,pods_per_node}`,
-`*_instance_type`); pod CPU/mem is computed by `scripts/python/generate_buildkit.py`.
+Sizing is per-arch in `clusters.yaml` (`buildkit.{amd64,arm64}_*` instance type,
+pods-per-node, and autoscaling `*_min` / `*_max`); pod CPU/mem is computed by
+`scripts/python/generate_buildkit.py`.
 
 ## Autoscaling (optional, `buildkit.autoscaling.enabled`)
 
@@ -18,10 +19,15 @@ back to a small warm baseline when idle.
   until a pod frees or the pool scales up.
 - **In-cluster scale signal** — KEDA `ScaledObject` per arch, `metrics-api`
   scraping the LB's own metrics (`haproxy_backend_current_sessions`) — no external
-  metrics backend.
+  metrics backend. If KEDA can't read the metric, a `fallback` (`*_fallback`,
+  e.g. 32/8 on prod) holds the proven fixed pool instead of freezing the count.
 - **Warm baseline** — `amd64_min` / `arm64_min` keep ≥1 node per arch up so the
   common case gets a free warm pod immediately. `*_max` caps the burst; NodePool
   limits are sized to `*_max`.
+- **No-flap scale-down** — KEDA holds a pod ~20 min after it goes idle
+  (`stabilizationWindowSeconds: 1200`), then sheds at most `max(10 pods, 20%)`
+  per 20 min, so a follow-up build reuses the pod's warm decompressed NVMe layer
+  cache. Node churn is left to Karpenter.
 - **Safe scale-down** — `preStop` drain (waits until the pod's `:1234` is idle)
   + long `terminationGracePeriodSeconds` + PDB, so a build is never killed
   mid-flight. Scale-down removes an arbitrary pod, which may be mid-build; the
@@ -67,4 +73,6 @@ new config. An unchanged config keeps the same hash, so routine deploys don't
 churn the LB. (The buildkitd worker pods do **not** yet have this, so a
 `buildkitd.toml` / `drain.sh` change needs a manual rollout to take effect.)
 
-Requires the `keda` module deployed before `buildkit` (provides the CRDs).
+Requires the `keda` module deployed before `buildkit` (provides the CRDs). The
+`monitoring` module scrapes the KEDA operator's metrics and ships
+buildkit-autoscaling alerts (scaler / fallback errors, queue backlog).
