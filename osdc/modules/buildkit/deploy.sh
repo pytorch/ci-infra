@@ -24,11 +24,16 @@ source "$UPSTREAM_ROOT/scripts/mise-activate.sh"
 source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
-# Read per-installation config
+# Read per-installation config. replicas_per_arch / pods_per_node are the
+# per-arch defaults; amd64_* / arm64_* override them when the arches differ.
 REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.replicas_per_arch 4)
 ARM64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_instance_type m8gd.24xlarge)
 AMD64_INSTANCE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_instance_type m6id.24xlarge)
 PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.pods_per_node 2)
+AMD64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_replicas "$REPLICAS")
+ARM64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_replicas "$REPLICAS")
+AMD64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_pods_per_node "$PODS_PER_NODE")
+ARM64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_pods_per_node "$PODS_PER_NODE")
 
 GENERATED_DIR="$MODULE_DIR/generated"
 
@@ -40,6 +45,10 @@ uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" \
   --amd64-instance-type "$AMD64_INSTANCE" \
   --replicas "$REPLICAS" \
   --pods-per-node "$PODS_PER_NODE" \
+  --amd64-replicas "$AMD64_REPLICAS" \
+  --arm64-replicas "$ARM64_REPLICAS" \
+  --amd64-pods-per-node "$AMD64_PODS_PER_NODE" \
+  --arm64-pods-per-node "$ARM64_PODS_PER_NODE" \
   --output-dir "$GENERATED_DIR"
 
 # --- Apply NodePools (with cluster name substitution) ---
