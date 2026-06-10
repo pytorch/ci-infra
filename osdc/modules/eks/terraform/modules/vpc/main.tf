@@ -9,6 +9,21 @@ terraform {
   }
 }
 
+locals {
+  secondary_eip_count = 7
+  nat_gateway_count   = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : length(var.azs)) : 0
+  nat_secondary_eips = var.enable_nat_gateway ? {
+    for pair in flatten([
+      for nat_idx in range(local.nat_gateway_count) : [
+        for sec_idx in range(local.secondary_eip_count) : {
+          key     = "${var.azs[nat_idx]}-${sec_idx}"
+          nat_idx = nat_idx
+        }
+      ]
+    ]) : pair.key => pair
+  } : {}
+}
+
 # VPC
 resource "aws_vpc" "this" {
   cidr_block                       = var.cidr
@@ -115,12 +130,29 @@ resource "aws_eip" "nat" {
   depends_on = [aws_internet_gateway.this]
 }
 
+# Secondary Elastic IPs for NAT Gateways (allows up to 8 total EIPs per NAT GW)
+resource "aws_eip" "nat_secondary" {
+  for_each = local.nat_secondary_eips
+  domain   = "vpc"
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.name}-nat-${each.value.nat_idx + 1}-sec-${each.key}"
+    }
+  )
+  depends_on = [aws_internet_gateway.this]
+}
+
 # NAT Gateways
 resource "aws_nat_gateway" "this" {
   count = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : length(var.azs)) : 0
 
   allocation_id = aws_eip.nat[count.index].id
-  subnet_id     = aws_subnet.public[count.index].id
+  secondary_allocation_ids = [
+    for sec in local.nat_secondary_eips : aws_eip.nat_secondary[sec.key].id
+    if sec.nat_idx == count.index
+  ]
+  subnet_id = aws_subnet.public[count.index].id
 
   tags = merge(
     var.tags,
