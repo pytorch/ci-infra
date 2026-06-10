@@ -217,22 +217,13 @@ template:
       workload-type: github-runner
       node-fleet: "c7i-runner"
 
-    # Tolerate node-fleet + instance-type taints. The c7i-runner NodePool
-    # inherits the git-cache-not-ready startupTaint from the unconditional
-    # generator emission. The git-cache-warmer DaemonSet runs on this pool
-    # (its nodeAffinity matches workload-type: github-runner) and clears
-    # the taint once the local cache is hydrated, but runner pods don't
-    # use the git-cache mount and tolerate the taint to schedule
-    # immediately without waiting for warmer hydration.
+    # Tolerate node-fleet + instance-type taints.
     tolerations:
       - key: node-fleet
         operator: Equal
         value: "c7i-runner"
         effect: NoSchedule
       - key: instance-type
-        operator: Exists
-        effect: NoSchedule
-      - key: git-cache-not-ready
         operator: Exists
         effect: NoSchedule
 
@@ -423,23 +414,7 @@ data:
 
       containers:
         - name: "$job"
-          # Git reference cache: workflow steps use the CHECKOUT_GIT_CACHE_DIR env
-          # var to compose a per-repo reference-repository path for actions/checkout.
-          # Examples:
-          #   reference-repository: $CHECKOUT_GIT_CACHE_DIR/pytorch      (non-bare, has submodules)
-          #   reference-repository: $CHECKOUT_GIT_CACHE_DIR/test-infra.git  (bare)
-          # The checkout action uses git alternates + dissociate to borrow objects
-          # from the local cache, then repacks locally so the checkout has no
-          # runtime dependency on the cache. The DaemonSet git-cache-warmer
-          # keeps the cache warm at /mnt/git-cache on each node.
-          #
-          # GIT_CONFIG_SYSTEM points to a gitconfig with safe.directory=* so that
-          # git trusts the root-owned cache repos when resolving alternates.
           env:
-            - name: CHECKOUT_GIT_CACHE_DIR
-              value: "/opt/git-cache/pytorch"
-            - name: GIT_CONFIG_SYSTEM
-              value: "/opt/git-cache/.gitconfig"
             - name: PIP_INDEX_URL
               value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/simple/"
             - name: PIP_TRUSTED_HOST
@@ -471,9 +446,6 @@ data:
               memory: "{{MEMORY}}"
               ephemeral-storage: "{{DISK_SIZE}}"{{GPU_LIMIT}}
           volumeMounts:
-            - name: git-cache
-              mountPath: /opt/git-cache
-              readOnly: true
             # K8s default /dev/shm is 64Mi (container runtime tmpfs). NCCL
             # blows past that on multi-GPU workloads; PyTorch docker-based CI
             # also runs with --shm-size=1g-2g, so match that ceiling for all
@@ -481,10 +453,6 @@ data:
             - name: dshm
               mountPath: /dev/shm
       volumes:
-        - name: git-cache
-          hostPath:
-            path: /mnt/git-cache
-            type: DirectoryOrCreate
         - name: dshm
           emptyDir:
             medium: Memory

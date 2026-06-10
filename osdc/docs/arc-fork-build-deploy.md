@@ -164,7 +164,7 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 |---------|--------------|----------------|-------------|
 | `CAPACITY_AWARE_ENABLED` | `false` | `true` | Enable the capacity monitor goroutine |
 | `CAPACITY_AWARE_PROACTIVE_CAPACITY` | `0` | `{{PROACTIVE_CAPACITY}}` (from runner def, capped by `proactive_capacity_max` in `clusters.yaml` when set — staging sets `0` to disable warm-pool pre-provisioning) | Number of placeholder pairs to maintain ahead of demand. Hard cap of `1000` (clamped); warning logged above `100`. |
-| `CAPACITY_AWARE_MAX_BURST_CAPACITY` | `0` | `{{MAX_BURST_CAPACITY}}` (from runner def) | Caps the maximum total placeholder pairs (running + pending) the provisioner will create per cycle. `0` means unlimited. Used to prevent burst node provisioning from overloading downstream services (git-cache, Harbor, pypi-cache) |
+| `CAPACITY_AWARE_MAX_BURST_CAPACITY` | `0` | `{{MAX_BURST_CAPACITY}}` (from runner def) | Caps the maximum total placeholder pairs (running + pending) the provisioner will create per cycle. `0` means unlimited. Used to prevent burst node provisioning from overloading downstream services (Harbor, pypi-cache) |
 | `CAPACITY_AWARE_RECALCULATE_INTERVAL` | `30s` | `30s` | Fallback reconciliation interval (event-driven is primary) |
 | `CAPACITY_AWARE_REPORT_INTERVAL` | `5s` | _(unset — uses code default)_ | How often the monitor reports state via `X-ScaleSetMaxCapacity` |
 | `CAPACITY_AWARE_PLACEHOLDER_TIMEOUT` | `5m` | `20m` | How long a placeholder can stay Pending before being deleted |

@@ -299,10 +299,6 @@ spec:
           value: "{instance_type}"
           effect: NoSchedule
 {gpu_taints}\
-      startupTaints:
-        - key: git-cache-not-ready
-          value: "true"
-          effect: NoSchedule
 
 ---
 apiVersion: karpenter.k8s.aws/v1

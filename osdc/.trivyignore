@@ -67,7 +67,6 @@ KSV-0010
 # readOnlyRootFilesystem=false: Multiple infrastructure containers legitimately
 # need writable root filesystems:
 #   - BuildKit: writes build cache, layer data, git objects to rootfs
-#   - git-cache: clones and updates bare git repos
 #   - NVIDIA device plugin: manages device files
 #   - HAProxy: writes runtime config and stats socket
 #   - DCGM exporter: writes profiling data
@@ -109,7 +108,7 @@ KSV-0053
 # No actual secrets are stored in ConfigMaps.
 KSV-0109
 
-# Default security context: Infrastructure workloads (git-cache, NVIDIA plugin,
+# Default security context: Infrastructure workloads (NVIDIA plugin,
 # BuildKit, HAProxy, DCGM exporter, registry-mirror-config) intentionally run
 # as root. These are system-level DaemonSets and Deployments that need root
 # to access host devices, modify kernel parameters, manage container storage,

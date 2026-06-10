@@ -394,10 +394,6 @@ deploy-base cluster:
     kubectl apply -k {{UPSTREAM}}/base/kubernetes/
 
     echo ""
-    echo "━━━ BASE: Deploy Git Cache Central ━━━"
-    {{UPSTREAM}}/base/kubernetes/git-cache/deploy.sh "$CLUSTER"
-
-    echo ""
     echo "━━━ BASE: Deploy ENIConfigs ━━━"
     {{UPSTREAM}}/base/kubernetes/eniconfigs/deploy.sh "$CLUSTER"
 

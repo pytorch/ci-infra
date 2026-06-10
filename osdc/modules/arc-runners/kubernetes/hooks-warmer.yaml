@@ -36,20 +36,13 @@ spec:
       nodeSelector:
         node-fleet: "c7i-runner"
 
-      # Tolerate node-fleet + instance-type taints carried by c7i-runner
-      # nodes. Also tolerate the git-cache-not-ready startupTaint inherited
-      # from the unconditional NodePool generator emission — git-cache-warmer
-      # does not run on this pool, so the taint persists; tolerating it lets
-      # the warmer schedule despite that.
+      # Tolerate node-fleet + instance-type taints carried by c7i-runner nodes.
       tolerations:
         - key: node-fleet
           operator: Equal
           value: "c7i-runner"
           effect: NoSchedule
         - key: instance-type
-          operator: Exists
-          effect: NoSchedule
-        - key: git-cache-not-ready
           operator: Exists
           effect: NoSchedule
 
