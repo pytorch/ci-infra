@@ -119,9 +119,7 @@ def generate_deployment_yaml(
     arm64_res = compute_pod_resources(arm64_instance, arm64_pods_per_node)
     amd64_res = compute_pod_resources(amd64_instance, amd64_pods_per_node)
 
-    # When KEDA owns the replica count, omit `replicas` and add a preStop drain
-    # that holds the pod open until its in-flight build finishes. `replicas_line`
-    # is computed per-arch inside _deployment_block (below).
+    # Under autoscaling KEDA owns replicas: omit `replicas`, add a preStop drain.
     grace_line = "      terminationGracePeriodSeconds: 8100\n" if autoscaling else ""
     lifecycle_block = (
         """

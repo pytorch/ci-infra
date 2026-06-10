@@ -13,9 +13,11 @@ Absorb bursts of concurrent builds without overloading existing pods, and scale
 back to a small warm baseline when idle.
 
 - **One build per pod** — HAProxy `server maxconn 1` (matches buildkitd
-  `max-parallelism = 1`). Excess builds **queue** in HAProxy (`timeout queue`)
-  instead of stacking on a busy pod; as new pods register (DNS), queued builds
-  flow onto them, so scaled-up pods never sit idle.
+  `max-parallelism = 1`). Excess builds **queue** in HAProxy instead of stacking
+  on a busy pod; as new pods register (DNS), queued builds flow onto them, so
+  scaled-up pods never sit idle. `timeout queue` must stay set and large enough
+  to outlast a node-provision cycle — if omitted it falls back to `timeout
+  connect` (5s), which would abort queued builds before pods scale up.
 - **In-cluster scale signal** — KEDA `ScaledObject` per arch, `metrics-api`
   scraping the LB's own metrics (`haproxy_backend_current_sessions`) — no external
   metrics backend.
@@ -25,6 +27,12 @@ back to a small warm baseline when idle.
 - **Safe scale-down** — `preStop` drain (waits until the pod's `:1234` is idle)
   + long `terminationGracePeriodSeconds` + PDB, so a build is never killed
   mid-flight.
+- **Node consolidation** — the NodePool uses Karpenter `consolidationPolicy:
+  WhenEmpty`: a node is reclaimed only once it has no buildkitd pod, never by
+  evicting a running build to bin-pack. So after a burst, scattered survivor
+  pods can leave nodes half-full (more nodes than the cold baseline) until they
+  drain naturally — a deliberate trade of some idle node cost for zero build
+  disruption.
 
 Build clients should retry the connect so a build can wait for a pod from a cold
 or queued pool.

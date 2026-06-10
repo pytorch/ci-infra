@@ -1,0 +1,4 @@
+# Schedule on base-infra nodes; all other nodes are reserved by taints.
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists

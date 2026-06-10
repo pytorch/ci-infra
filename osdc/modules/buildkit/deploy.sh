@@ -34,7 +34,7 @@ AMD64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_replicas "$REPLICAS")
 ARM64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_replicas "$REPLICAS")
 AMD64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_pods_per_node "$PODS_PER_NODE")
 ARM64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_pods_per_node "$PODS_PER_NODE")
-AUTOSCALING=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.enabled false)
+AUTOSCALING=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.enabled false | tr '[:upper:]' '[:lower:]')
 
 GENERATED_DIR="$MODULE_DIR/generated"
 
@@ -52,7 +52,7 @@ GEN_ARGS=(
   --arm64-pods-per-node "$ARM64_PODS_PER_NODE"
   --output-dir "$GENERATED_DIR"
 )
-if [[ "${AUTOSCALING,,}" == "true" ]]; then
+if [[ "$AUTOSCALING" == "true" ]]; then
   AMD64_MIN=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_min 2)
   AMD64_MAX=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_max 8)
   ARM64_MIN=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_min 4)
@@ -112,7 +112,7 @@ fi
 # --- KEDA autoscaling (optional) ---
 # Scales on the in-cluster buildkit LB metrics; no external metrics backend.
 
-if [[ "${AUTOSCALING,,}" == "true" ]]; then
+if [[ "$AUTOSCALING" == "true" ]]; then
   echo "Applying KEDA autoscaling manifests..."
   kubectl_apply_if_changed -f "$GENERATED_DIR/autoscaling.yaml"
 fi

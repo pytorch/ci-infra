@@ -45,6 +45,8 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                 value: "{{PROACTIVE_CAPACITY}}"
               - name: CAPACITY_AWARE_MAX_BURST_CAPACITY
                 value: "{{MAX_BURST_CAPACITY}}"
+              - name: CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY
+                value: "{{HUD_FAILURE_BASE_CAPACITY}}"
     template:
       spec:
         containers:
@@ -201,6 +203,7 @@ def make_def_file(
     max_runners=None,
     proactive_capacity=None,
     max_burst_capacity=None,
+    hud_failure_base_capacity=None,
     node_fleet=None,
 ):
     """Write a runner def YAML and return the path.
@@ -226,6 +229,8 @@ def make_def_file(
         runner["proactive_capacity"] = proactive_capacity
     if max_burst_capacity is not None:
         runner["max_burst_capacity"] = max_burst_capacity
+    if hud_failure_base_capacity is not None:
+        runner["hud_failure_base_capacity"] = hud_failure_base_capacity
     if node_fleet is not None:
         runner["node_fleet"] = node_fleet
     content = {"runner": runner}
@@ -1101,6 +1106,40 @@ class TestGenerateRunner:
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "10"
 
+    def test_hud_failure_base_capacity_default_zero(self, tmp_path):
+        """hud_failure_base_capacity defaults to 0 when not in the runner def."""
+        def_file = make_def_file(tmp_path, "hud-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "hud-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY"] == "0"
+
+    def test_hud_failure_base_capacity_nonzero(self, tmp_path):
+        """hud_failure_base_capacity: 25 renders as "25" in the listener env."""
+        def_file = make_def_file(tmp_path, "hud-warm-runner", "c7i.24xlarge", 4, 16, hud_failure_base_capacity=25)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "hud-warm-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY"] == "25"
+
     def test_proactive_capacity_capped_below_def(self, tmp_path):
         """proactive_capacity_max clamps a def value down to the cap."""
         def_file = make_def_file(tmp_path, "capped-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
@@ -1313,8 +1352,8 @@ class TestGenerateRunner:
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_MAX_BURST_CAPACITY"] == "0"
 
-    def test_max_burst_capacity_warning_when_below_proactive(self, tmp_path, capsys):
-        """Warn when max_burst_capacity (>0) is less than proactive_capacity — the cap
+    def test_max_burst_capacity_error_when_below_proactive(self, tmp_path, capsys):
+        """Error when max_burst_capacity (>0) is less than proactive_capacity — the cap
         would prevent the listener from reaching its proactive baseline.
         """
         def_file = make_def_file(
@@ -1328,7 +1367,7 @@ class TestGenerateRunner:
             "runner_name_prefix": "",
         }
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is False
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
@@ -1395,6 +1434,36 @@ class TestGenerateRunner:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert "max_burst_capacity" not in combined
+
+    def test_max_burst_capacity_less_than_hud_failure_base_capacity_errors(self, tmp_path, capsys):
+        """Error when max_burst_capacity (>0) is less than hud_failure_base_capacity — the cap
+        would prevent the listener from reaching its HUD-fallback baseline.
+        """
+        def_file = make_def_file(
+            tmp_path,
+            "hud-misconfig-runner",
+            "c7i.24xlarge",
+            4,
+            16,
+            hud_failure_base_capacity=25,
+            max_burst_capacity=10,
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is False
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "max_burst_capacity" in combined
+        assert "hud_failure_base_capacity" in combined
+        assert "10" in combined
+        assert "25" in combined
 
     def test_resource_values_match_def(self, tmp_path):
         def_file = make_def_file(tmp_path, "res-test", "c7i.24xlarge", 48, 96, disk_size=200)
