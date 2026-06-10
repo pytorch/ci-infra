@@ -153,9 +153,9 @@ loki.process "pod_logs" {
         }
     }
 
-    // git-cache and node-compactor (Python logging format)
+    // node-compactor (Python logging format)
     stage.match {
-        selector = "{namespace=\"kube-system\", container=~\"git-cache-central|git-cache-warmer|node-compactor\"}"
+        selector = "{namespace=\"kube-system\", container=\"node-compactor\"}"
         stage.regex {
             expression = "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3} - \\S+ - (?P<level>\\S+) -"
         }
