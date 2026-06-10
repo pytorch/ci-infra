@@ -134,7 +134,6 @@ prod traffic in the failover case, not just steady-state share.
 - **Harbor** — per-cluster pull-through cache, populated on first deploy.
 - **PyPI wheel cache** — per-cluster EFS wheelhouse; the upstream S3
   feeder must write to a bucket us-west-1 can read.
-- **Git cache** — per-cluster, clones independently.
 - **Monitoring/logging** — Grafana Cloud tenant is shared; clusters
   distinguished by `cluster_name` label.
 
