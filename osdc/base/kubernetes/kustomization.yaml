@@ -11,7 +11,6 @@ resources:
   - node-performance-tuning.yaml
   - nvidia-device-plugin.yaml
   - harbor-namespace.yaml
-  - git-cache/
   - registry-mirror-config.yaml
   - algif-mitigation.yaml
   - dirtyfrag-mitigation.yaml

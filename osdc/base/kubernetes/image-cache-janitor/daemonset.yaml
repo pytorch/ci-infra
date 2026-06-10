@@ -52,11 +52,6 @@ spec:
           operator: Exists
           effect: NoSchedule
 
-        # Git cache startup taint
-        - key: git-cache-not-ready
-          operator: Exists
-          effect: NoSchedule
-
         # GPU taints
         - key: nvidia.com/gpu
           operator: Exists
