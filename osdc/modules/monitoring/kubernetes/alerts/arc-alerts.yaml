@@ -14,6 +14,8 @@ spec:
           for: 15m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "ARC listener stalled — jobs queued but no progress"
             description: "ARC listener has {{ $value }} assigned jobs but the assignment rate has been zero for 15 minutes. Runners may not be picking up new jobs."

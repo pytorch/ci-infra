@@ -14,6 +14,8 @@ spec:
           for: 15m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "Node compactor reconciliation is failing persistently"
             description: "The node-compactor in namespace {{ $labels.namespace }} has had continuous reconciliation errors for 15 minutes. Burst-absorption (untainting nodes under scheduling pressure) is offline. Check for expired SA tokens (401) or RBAC issues."
