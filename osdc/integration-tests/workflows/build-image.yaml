@@ -38,18 +38,28 @@ jobs:
 
       - name: Build test image via BuildKit
         run: |
+          set -eu
           echo "=== BuildKit ${{ inputs.arch }} connectivity test ==="
           ENDPOINT="tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
           echo "Connecting to: $ENDPOINT"
 
-          buildctl --addr "$ENDPOINT" build \
-            --frontend dockerfile.v0 \
-            --local context=docker/test-buildkit \
-            --local dockerfile=docker/test-buildkit \
-            --output type=image,name=ghcr.io/${{ github.repository }}:integration-test-${{ inputs.arch }}-${{ github.sha }},push=false
-
-          echo "PASS: BuildKit ${{ inputs.arch }} built successfully"
-          echo "Endpoint: $ENDPOINT"
+          # The buildkit client dials with gRPC's ~20s connect timeout, so a
+          # busy / cold autoscaled pool drops the connection fast. Retry until a
+          # pod is free or the pool scales up.
+          for attempt in $(seq 1 15); do
+            if buildctl --addr "$ENDPOINT" build \
+                --frontend dockerfile.v0 \
+                --local context=docker/test-buildkit \
+                --local dockerfile=docker/test-buildkit \
+                --output type=image,name=ghcr.io/${{ github.repository }}:integration-test-${{ inputs.arch }}-${{ github.sha }},push=false; then
+              echo "PASS: BuildKit ${{ inputs.arch }} built on attempt ${attempt} ($ENDPOINT)"
+              exit 0
+            fi
+            echo "attempt ${attempt}/15 failed (BuildKit cold/queued); retrying in 15s..."
+            sleep 15
+          done
+          echo "FAIL: BuildKit ${{ inputs.arch }} build failed after retries" >&2
+          exit 1
 
       - name: Verify BuildKit endpoint info
         run: |
