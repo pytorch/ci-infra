@@ -57,12 +57,17 @@ if [[ "${AUTOSCALING,,}" == "true" ]]; then
   AMD64_MAX=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_max 8)
   ARM64_MIN=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_min 4)
   ARM64_MAX=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_max 8)
+  # Fallback replicas if KEDA can't read the scale metric (0 = no fallback).
+  AMD64_FALLBACK=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_fallback 0)
+  ARM64_FALLBACK=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_fallback 0)
   GEN_ARGS+=(
     --autoscaling
     --amd64-min "$AMD64_MIN"
     --amd64-max "$AMD64_MAX"
     --arm64-min "$ARM64_MIN"
     --arm64-max "$ARM64_MAX"
+    --amd64-fallback "$AMD64_FALLBACK"
+    --arm64-fallback "$ARM64_FALLBACK"
   )
 fi
 uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" "${GEN_ARGS[@]}"

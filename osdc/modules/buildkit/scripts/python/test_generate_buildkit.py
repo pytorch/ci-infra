@@ -400,6 +400,17 @@ class TestGenerateAutoscalingYaml:
             assert "buildkitd-lb-metrics.buildkit" in trig["metadata"]["url"]
             assert f'proxy="{backend}"' in trig["metadata"]["valueLocation"]
 
+    def test_no_fallback_by_default(self):
+        scaled = {d["metadata"]["name"]: d for d in self._docs() if d["kind"] == "ScaledObject"}
+        assert "fallback" not in scaled["buildkitd-amd64"]["spec"]
+        assert "fallback" not in scaled["buildkitd-arm64"]["spec"]
+
+    def test_fallback_replicas_when_set(self):
+        output = generate_autoscaling_yaml(2, 360, 4, 30, amd64_fallback=32, arm64_fallback=8)
+        scaled = {d["metadata"]["name"]: d for d in parse_all_yaml(output) if d["kind"] == "ScaledObject"}
+        assert scaled["buildkitd-amd64"]["spec"]["fallback"] == {"failureThreshold": 3, "replicas": 32}
+        assert scaled["buildkitd-arm64"]["spec"]["fallback"] == {"failureThreshold": 3, "replicas": 8}
+
 
 # ============================================================================
 # generate_nodepools_yaml
