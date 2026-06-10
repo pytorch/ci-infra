@@ -142,16 +142,20 @@ def _next_backoff(attempt: int) -> int:
     return BACKOFF_SCHEDULE[min(attempt, len(BACKOFF_SCHEDULE) - 1)]
 
 
-def _wait_for_instance_type_taint(token: str, ctx: ssl.SSLContext) -> dict:
+def _wait_for_instance_type_taint(ctx: ssl.SSLContext) -> dict:
     """Block until the node's instance-type taint is present (or label absent).
 
     Returns the freshly-fetched node dict. Retries forever on transient errors.
     Skipped (returns immediately) if the node does not have the instance-type
     label — e.g. base infrastructure nodes that aren't Karpenter-managed.
+
+    Re-reads the SA token on each iteration so kubelet's in-place rotation of
+    the projected token is picked up during long waits (e.g. Karpenter outage).
     """
     attempt = 0
     while True:
         try:
+            token = _read_token()
             node = _get_node(token, ctx)
             if not _has_instance_type_label(node):
                 log.info("Node has no '%s' label — skipping instance-type taint guard.", INSTANCE_TYPE_LABEL)
@@ -167,6 +171,10 @@ def _wait_for_instance_type_taint(token: str, ctx: ssl.SSLContext) -> dict:
             log.warning("Transient error during instance-type guard GET: %s — retrying.", e)
         except TransientApiError as e:
             log.warning("Transient API error during instance-type guard GET: %s — retrying.", e)
+        except PermanentApiError as e:
+            # 401 here usually means the cached token expired during a long wait.
+            # Loop will pick up a fresh token on the next iteration.
+            log.warning("Permanent-looking API error during instance-type guard GET: %s — retrying.", e)
         sleep_s = _next_backoff(attempt)
         time.sleep(sleep_s)
         attempt += 1
@@ -176,15 +184,18 @@ def remove_taint_forever(taint_key: str) -> None:
     """Remove `taint_key` from this node. Retries forever on transient errors.
 
     Exits the function (returns) once the taint is gone (or was never present).
-    Raises RuntimeError on permanent errors (HTTP 4xx other than 409).
+    Raises RuntimeError on permanent errors (HTTP 4xx other than 401/409/422).
     """
-    token = _read_token()
     ctx = _ssl_context()
 
     attempt = 0
     while True:
+        # Re-read on every iteration so kubelet's in-place rotation of the
+        # projected SA token is picked up on long retry sequences. Same
+        # rationale for 401 below.
+        token = _read_token()
         try:
-            _wait_for_instance_type_taint(token, ctx)
+            _wait_for_instance_type_taint(ctx)
 
             node = _get_node(token, ctx)
             index = _find_taint_index(node, taint_key)
@@ -196,8 +207,16 @@ def remove_taint_forever(taint_key: str) -> None:
             if status == 200:
                 log.info("Removed taint '%s' from node.", taint_key)
                 return
-            if status == 409:
-                log.info("Taint set changed concurrently (HTTP 409) — re-reading and retrying.")
+            if status in (409, 422):
+                # 409: resourceVersion conflict. 422: JSON Patch `test` op
+                # failed because the taint index shifted under us (Karpenter
+                # or kubelet mutated spec.taints concurrently). Both are
+                # benign — re-read the node and retry.
+                log.info("Taint set changed concurrently (HTTP %s) — re-reading and retrying.", status)
+                attempt = 0
+                continue
+            if status == 401:
+                log.info("Unauthorized (HTTP 401) — retrying with a fresh token.")
                 attempt = 0
                 continue
             if 500 <= status < 600:

@@ -91,6 +91,7 @@ def _validate_startup_taints_registry(modules_root: Path) -> None:
             f"Each ``module`` field must match a subdirectory under {modules_root}."
         )
 
+
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
