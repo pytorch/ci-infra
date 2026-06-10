@@ -1514,3 +1514,38 @@ class TestModuleStartupTaints:
         np = self._np_doc(output)
         taint_keys = [t["key"] for t in np["spec"]["template"]["spec"]["taints"]]
         assert "instance-type" in taint_keys
+
+
+class TestValidateModuleStartupTaintsRegistry:
+    """Tests for the typo-validation guard on MODULE_STARTUP_TAINTS keys."""
+
+    def _make_modules_root(self, tmp_path: Path, names: list[str]) -> Path:
+        modules_root = tmp_path / "modules"
+        modules_root.mkdir()
+        for n in names:
+            (modules_root / n).mkdir()
+        return modules_root
+
+    def test_empty_registry_always_valid(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(generate_nodepools, "MODULE_STARTUP_TAINTS", {})
+        modules_root = self._make_modules_root(tmp_path, ["nodepools"])
+        generate_nodepools._validate_module_startup_taints_registry(modules_root)
+
+    def test_all_keys_match_real_modules_passes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            generate_nodepools,
+            "MODULE_STARTUP_TAINTS",
+            {"cache-enforcer": [{"key": "k", "value": "v", "effect": "NoSchedule"}]},
+        )
+        modules_root = self._make_modules_root(tmp_path, ["cache-enforcer", "nodepools"])
+        generate_nodepools._validate_module_startup_taints_registry(modules_root)
+
+    def test_typo_in_key_raises_with_helpful_message(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            generate_nodepools,
+            "MODULE_STARTUP_TAINTS",
+            {"cache-enforcre": [{"key": "k", "value": "v", "effect": "NoSchedule"}]},
+        )
+        modules_root = self._make_modules_root(tmp_path, ["cache-enforcer", "nodepools"])
+        with pytest.raises(ValueError, match="cache-enforcre"):
+            generate_nodepools._validate_module_startup_taints_registry(modules_root)
