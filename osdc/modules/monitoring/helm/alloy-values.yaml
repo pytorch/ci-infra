@@ -114,6 +114,7 @@ alloy:
       mimir.rules.kubernetes "grafana_cloud" {
         address  = env("GCLOUD_BASE_URL")
         tenant_id = env("GCLOUD_RW_API_USER")
+        mimir_namespace_prefix = env("CLUSTER_NAME")
 
         basic_auth {
           username = env("GCLOUD_RW_API_USER")

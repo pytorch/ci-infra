@@ -502,6 +502,8 @@ def generate_autoscaling_yaml(
     amd64_max: int,
     arm64_min: int,
     arm64_max: int,
+    amd64_fallback: int = 0,
+    arm64_fallback: int = 0,
 ) -> str:
     """Generate per-arch KEDA ScaledObjects.
 
@@ -514,7 +516,12 @@ def generate_autoscaling_yaml(
 
     metrics_url = "http://buildkitd-lb-metrics.buildkit.svc.cluster.local:9404/metrics"
 
-    def _scaledobject(arch, backend, min_replicas, max_replicas):
+    def _scaledobject(arch, backend, min_replicas, max_replicas, fallback):
+        # If KEDA can't read the scale metric (e.g. LB metrics endpoint down),
+        # hold the proven fixed pool instead of letting the HPA freeze.
+        fallback_yaml = ""
+        if fallback:
+            fallback_yaml = f"\n  fallback:\n    failureThreshold: 3\n    replicas: {fallback}"
         return f"""apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -524,17 +531,23 @@ spec:
   scaleTargetRef:
     name: buildkitd-{arch}
   minReplicaCount: {min_replicas}
-  maxReplicaCount: {max_replicas}
-  cooldownPeriod: 600
+  maxReplicaCount: {max_replicas}{fallback_yaml}
+  cooldownPeriod: 1200
   advanced:
     horizontalPodAutoscalerConfig:
       behavior:
         scaleDown:
-          stabilizationWindowSeconds: 600
+          # No-flap: hold a pod ~20 min after idle (reuses its NVMe layer cache),
+          # then shed at most max(10 pods, 20%) per 20 min.
+          stabilizationWindowSeconds: 1200
           policies:
             - type: Pods
-              value: 1
-              periodSeconds: 120
+              value: 10
+              periodSeconds: 1200
+            - type: Percent
+              value: 20
+              periodSeconds: 1200
+          selectPolicy: Max
   triggers:
     - type: metrics-api
       metadata:
@@ -548,9 +561,9 @@ spec:
     return (
         header
         + "\n"
-        + _scaledobject("amd64", "bk_amd64", amd64_min, amd64_max)
+        + _scaledobject("amd64", "bk_amd64", amd64_min, amd64_max, amd64_fallback)
         + "\n---\n"
-        + _scaledobject("arm64", "bk_arm64", arm64_min, arm64_max)
+        + _scaledobject("arm64", "bk_arm64", arm64_min, arm64_max, arm64_fallback)
     )
 
 
@@ -570,6 +583,8 @@ def main():
     parser.add_argument("--amd64-max", type=int, default=0, help="KEDA maxReplicaCount for amd64")
     parser.add_argument("--arm64-min", type=int, default=0, help="KEDA minReplicaCount for arm64")
     parser.add_argument("--arm64-max", type=int, default=0, help="KEDA maxReplicaCount for arm64")
+    parser.add_argument("--amd64-fallback", type=int, default=0, help="KEDA fallback replicas for amd64 (0=off)")
+    parser.add_argument("--arm64-fallback", type=int, default=0, help="KEDA fallback replicas for arm64 (0=off)")
     args = parser.parse_args()
 
     if args.autoscaling and not (args.amd64_max and args.arm64_max):
@@ -648,6 +663,8 @@ def main():
             args.amd64_max,
             args.arm64_min,
             args.arm64_max,
+            amd64_fallback=args.amd64_fallback,
+            arm64_fallback=args.arm64_fallback,
         )
         autoscaling_path = output_dir / "autoscaling.yaml"
         autoscaling_path.write_text(autoscaling_yaml)
