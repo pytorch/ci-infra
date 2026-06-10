@@ -14,6 +14,8 @@ spec:
           for: 5m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "Node {{ $labels.node }} is NotReady"
             description: "Node {{ $labels.node }} has been in NotReady state for more than 5 minutes."
@@ -24,6 +26,8 @@ spec:
           for: 15m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
             description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last hour."
@@ -33,6 +37,8 @@ spec:
           for: 5m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "Harbor is down"
             description: "Harbor scrape target {{ $labels.instance }} has been down for more than 5 minutes. Image pulls through the proxy cache will fail."
@@ -45,6 +51,8 @@ spec:
           for: 15m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "Karpenter creating nodeclaims but no nodes joining"
             description: "Karpenter has created nodeclaims in the last 15 minutes but no new nodes have joined the cluster. Nodes may be failing to register."
