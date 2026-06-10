@@ -12,12 +12,6 @@ Environment:
 
 Uses RFC 6902 JSON Patch (test + remove by index) for race-safety vs other
 controllers (Karpenter, kubelet) that may add/remove taints concurrently.
-
-Before patching, the script verifies that the node's `instance-type` taint
-is present (if the node has an `instance-type` label) — this is the OSDC
-convention that ensures the node has fully registered with Karpenter
-before any controller starts modifying its taint set. The guard retries
-indefinitely with backoff.
 """
 
 from __future__ import annotations
@@ -34,9 +28,6 @@ from pathlib import Path
 
 TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
 CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-
-INSTANCE_TYPE_LABEL = "instance-type"
-INSTANCE_TYPE_TAINT_KEY = "instance-type"
 
 BACKOFF_SCHEDULE = (5, 10, 30)
 
@@ -108,17 +99,6 @@ def _get_node(token: str, ctx: ssl.SSLContext) -> dict:
     raise PermanentApiError(f"GET node returned HTTP {status}: {body!r}")
 
 
-def _has_instance_type_taint(node: dict) -> bool:
-    """True iff the node has a taint with key 'instance-type'."""
-    taints = node.get("spec", {}).get("taints", []) or []
-    return any(t.get("key") == INSTANCE_TYPE_TAINT_KEY for t in taints)
-
-
-def _has_instance_type_label(node: dict) -> bool:
-    labels = node.get("metadata", {}).get("labels", {}) or {}
-    return INSTANCE_TYPE_LABEL in labels
-
-
 def _find_taint_index(node: dict, key: str) -> int | None:
     taints = node.get("spec", {}).get("taints", []) or []
     for i, t in enumerate(taints):
@@ -142,44 +122,6 @@ def _next_backoff(attempt: int) -> int:
     return BACKOFF_SCHEDULE[min(attempt, len(BACKOFF_SCHEDULE) - 1)]
 
 
-def _wait_for_instance_type_taint(ctx: ssl.SSLContext) -> dict:
-    """Block until the node's instance-type taint is present (or label absent).
-
-    Returns the freshly-fetched node dict. Retries forever on transient errors.
-    Skipped (returns immediately) if the node does not have the instance-type
-    label — e.g. base infrastructure nodes that aren't Karpenter-managed.
-
-    Re-reads the SA token on each iteration so kubelet's in-place rotation of
-    the projected token is picked up during long waits (e.g. Karpenter outage).
-    """
-    attempt = 0
-    while True:
-        try:
-            token = _read_token()
-            node = _get_node(token, ctx)
-            if not _has_instance_type_label(node):
-                log.info("Node has no '%s' label — skipping instance-type taint guard.", INSTANCE_TYPE_LABEL)
-                return node
-            if _has_instance_type_taint(node):
-                return node
-            log.info(
-                "Node has '%s' label but no '%s' taint yet — waiting for Karpenter registration...",
-                INSTANCE_TYPE_LABEL,
-                INSTANCE_TYPE_TAINT_KEY,
-            )
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
-            log.warning("Transient error during instance-type guard GET: %s — retrying.", e)
-        except TransientApiError as e:
-            log.warning("Transient API error during instance-type guard GET: %s — retrying.", e)
-        except PermanentApiError as e:
-            # 401 here usually means the cached token expired during a long wait.
-            # Loop will pick up a fresh token on the next iteration.
-            log.warning("Permanent-looking API error during instance-type guard GET: %s — retrying.", e)
-        sleep_s = _next_backoff(attempt)
-        time.sleep(sleep_s)
-        attempt += 1
-
-
 def remove_taint_forever(taint_key: str) -> None:
     """Remove `taint_key` from this node. Retries forever on transient errors.
 
@@ -195,8 +137,6 @@ def remove_taint_forever(taint_key: str) -> None:
         # rationale for 401 below.
         token = _read_token()
         try:
-            _wait_for_instance_type_taint(ctx)
-
             node = _get_node(token, ctx)
             index = _find_taint_index(node, taint_key)
             if index is None:
