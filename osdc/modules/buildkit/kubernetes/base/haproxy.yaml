@@ -71,15 +71,15 @@ data:
     # resolution warnings.
     backend bk_arm64
       balance leastconn
-      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
+      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
     backend bk_amd64
       balance leastconn
-      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
+      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
     backend bk_all
       balance leastconn
-      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
+      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
 ---
 apiVersion: apps/v1
@@ -100,6 +100,12 @@ spec:
     metadata:
       labels:
         app: buildkitd-lb
+      annotations:
+        # HAProxy renders its config once at container start, so a ConfigMap
+        # change has no effect until this pod restarts. deploy.sh fills this in
+        # with a hash of haproxy.yaml, so the Deployment rolls automatically
+        # whenever the config changes (nothing else restarts the LB).
+        checksum/config: "__HAPROXY_CFG_CHECKSUM__"
     spec:
       # Runs on base-infra nodes (CriticalAddonsOnly taint)
       tolerations:
