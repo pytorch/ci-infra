@@ -276,15 +276,17 @@ def prepare_pr(
     # Write integration test workflow
     (workflows_dir / "integration-test.yaml").write_text(workflow_content)
 
-    # Copy build-image reusable workflow
-    build_wf_src = upstream_dir / "integration-tests" / "workflows" / "build-image.yaml"
-    (workflows_dir / "build-image.yaml").write_text(build_wf_src.read_text())
+    # Copy reusable BuildKit workflows
+    wf_root = upstream_dir / "integration-tests" / "workflows"
+    for wf in ("build-image.yaml", "build-image-scale.yaml"):
+        (workflows_dir / wf).write_text((wf_root / wf).read_text())
 
-    # Copy test Dockerfile
-    docker_dir = canary_path / "docker" / "test-buildkit"
-    docker_dir.mkdir(parents=True, exist_ok=True)
-    dockerfile_src = upstream_dir / "integration-tests" / "docker" / "test-buildkit" / "Dockerfile"
-    (docker_dir / "Dockerfile").write_text(dockerfile_src.read_text())
+    # Copy test Dockerfiles (connectivity + autoscaling scale test)
+    docker_root = upstream_dir / "integration-tests" / "docker"
+    for name in ("test-buildkit", "test-buildkit-scale"):
+        dst = canary_path / "docker" / name
+        dst.mkdir(parents=True, exist_ok=True)
+        (dst / "Dockerfile").write_text((docker_root / name / "Dockerfile").read_text())
 
     # Commit
     run_cmd(["git", "add", "-A"], cwd=canary_path)

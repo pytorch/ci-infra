@@ -1,0 +1,59 @@
+# Reusable workflow: BuildKit autoscaling scale test.
+# Launches a burst of 8 parallel builds against one arch's remote BuildKit, each
+# holding a slot (server maxconn=1) for ~10 min via a sleep. The warm baseline
+# (amd64_min / arm64_min) is below the burst, so the builds finish within
+# timeout-minutes only if KEDA scales the pool up. Without scale-up they
+# serialize through the baseline pods and the back of the queue times out — i.e.
+# this job FAILS when autoscaling does not happen.
+name: BuildKit Scale Test
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: "Target architecture (amd64 or arm64)"
+        required: true
+        type: string
+      runner_label:
+        description: "Runner label to use (includes cluster prefix)"
+        required: false
+        type: string
+        default: "l-x86iavx512-2-4"
+
+jobs:
+  scale:
+    # Runs on x86 — BuildKit is a *remote* builder; arch selects the endpoint.
+    # timeout-minutes is the gate: scaled-up ~18 min, serialized ~43 min.
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6, 7, 8]
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    steps:
+      - name: Install buildctl
+        run: |
+          BUILDKIT_VERSION="v0.29.0"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-amd64.tar.gz" \
+            | tar xz --strip-components=1 -C "$HOME/.local/bin" bin/buildctl
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/buildctl" --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Occupy a BuildKit slot (~10 min) to drive autoscaling
+        run: |
+          ENDPOINT="tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
+          echo "Build ${{ matrix.replica }} -> $ENDPOINT"
+          buildctl --addr "$ENDPOINT" build \
+            --frontend dockerfile.v0 \
+            --local context=docker/test-buildkit-scale \
+            --local dockerfile=docker/test-buildkit-scale \
+            --opt build-arg:CACHEBUST=${{ inputs.arch }}-${{ matrix.replica }}-${{ github.run_id }} \
+            --no-cache \
+            --output type=cacheonly
+          echo "PASS: build ${{ matrix.replica }} finished within timeout"
