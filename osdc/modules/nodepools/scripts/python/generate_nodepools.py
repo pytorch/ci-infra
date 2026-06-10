@@ -40,9 +40,14 @@ from nodepool_defs import is_excluded_for_region as _is_excluded_for_region  # n
 #   - ``module`` (str | None) — module-name gate:
 #         str:  emit only when this name is in NODEPOOLS_ENABLED_MODULES (per-cluster module)
 #         None: always emit (base component, always deployed on every cluster)
+#   - ``applies_when`` (callable | absent) — optional predicate that receives the
+#         full ``nodepool_def`` dict; emission is skipped when it returns False.
+#         Use this when the owning DaemonSet's affinity/selector excludes some
+#         nodepools — emitting the taint there would strand the node forever.
 #
-# A taint is emitted on a NodePool only when its ``module`` gate is satisfied
-# (None, or name appears in NODEPOOLS_ENABLED_MODULES).
+# A taint is emitted on a NodePool only when BOTH:
+#   1. its ``module`` gate is satisfied (None, or name appears in NODEPOOLS_ENABLED_MODULES), AND
+#   2. its optional ``applies_when(nodepool_def)`` returns True.
 #
 # This guards against stuck taints: a startup taint must only be added when
 # there is a corresponding DaemonSet on the cluster and node that will remove
@@ -53,6 +58,10 @@ STARTUP_TAINTS: list[dict] = [
         "key": "node-init.osdc.io/cache-enforcer",
         "value": "true",
         "effect": "NoSchedule",
+        # cache-enforcer DS has `osdc.io/runner-class DoesNotExist` nodeAffinity,
+        # so it never schedules on release-runner nodepools. Skip the taint for
+        # those — otherwise the node would be tainted with nothing to clear it.
+        "applies_when": lambda d: d.get("extra_labels", {}).get("osdc.io/runner-class") != "release",
     },
     {
         "module": None,
@@ -318,15 +327,19 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     )
 
     # ----- Module-aware startup taints -----
-    # Emit a startupTaint only when its owning module is in
-    # NODEPOOLS_ENABLED_MODULES for this cluster (or module=None for base
-    # components). This prevents stuck taints on clusters where no DaemonSet
-    # exists to remove the taint at end-of-init.
+    # Emit a startupTaint only when:
+    #   1. its module gate is satisfied (None, or in NODEPOOLS_ENABLED_MODULES), AND
+    #   2. its optional applies_when(nodepool_def) predicate returns True.
+    # This prevents stuck taints on clusters/nodepools where no DaemonSet exists
+    # to remove the taint at end-of-init.
     enabled_modules = set(os.environ.get("NODEPOOLS_ENABLED_MODULES", "").split())
     startup_taint_lines = []
     for t in STARTUP_TAINTS:
         module = t.get("module")
         if module is not None and module not in enabled_modules:
+            continue
+        predicate = t.get("applies_when")
+        if predicate is not None and not predicate(nodepool_def):
             continue
         startup_taint_lines.append(
             f'        - key: {t["key"]}\n          value: "{t["value"]}"\n          effect: {t["effect"]}\n'

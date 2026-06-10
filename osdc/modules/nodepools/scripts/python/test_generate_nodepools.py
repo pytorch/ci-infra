@@ -1629,3 +1629,26 @@ class TestRealStartupTaintsRegistry:
         assert "node-init.osdc.io/perf-tuning" in keys
         assert "node-init.osdc.io/algif-mitigation" in keys
         assert "node-init.osdc.io/dirtyfrag-mitigation" in keys
+
+    def test_real_registry_skips_cache_enforcer_on_release_runner_nodepool(self, monkeypatch):
+        """cache-enforcer DS excludes release runners by nodeAffinity — its taint must also be skipped there."""
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer")
+        release_def = _make_nodepool_def(extra_labels={"osdc.io/runner-class": "release"})
+        output = generate_nodepool_yaml(release_def, "nodepools")
+        np = parse_all_yaml(output)[0]
+        keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
+        # cache-enforcer DS won't schedule here (osdc.io/runner-class DoesNotExist),
+        # so emitting the taint would strand the node.
+        assert "node-init.osdc.io/cache-enforcer" not in keys
+        # Base taints still emitted.
+        assert "node-init.osdc.io/registry-mirror" in keys
+        assert "node-init.osdc.io/perf-tuning" in keys
+
+    def test_real_registry_emits_cache_enforcer_on_non_release_nodepool(self, monkeypatch):
+        """Non-release nodepool with cache-enforcer enabled gets the taint as expected."""
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer")
+        non_release_def = _make_nodepool_def(extra_labels={"osdc.io/runner-class": "main"})
+        output = generate_nodepool_yaml(non_release_def, "nodepools")
+        np = parse_all_yaml(output)[0]
+        keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
+        assert "node-init.osdc.io/cache-enforcer" in keys
