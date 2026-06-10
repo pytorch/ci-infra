@@ -73,7 +73,7 @@ def test_taint_already_absent():
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.return_value = _FakeResp(200, json.dumps(node).encode())
         taint_remover.remove_taint_forever("my-startup-taint")
-        # Only GETs were issued — no PATCH.
+        # Only a GET was issued — no PATCH.
         called_methods = [c.args[0].get_method() for c in urlopen.call_args_list]
         assert "PATCH" not in called_methods
 
@@ -83,12 +83,11 @@ def test_taint_removed_successfully():
     node = _node(taints=[_instance_type_taint(), target])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.side_effect = [
-            _FakeResp(200, json.dumps(node).encode()),  # instance-type guard GET
-            _FakeResp(200, json.dumps(node).encode()),  # main GET
+            _FakeResp(200, json.dumps(node).encode()),  # GET
             _FakeResp(200, b"{}"),  # PATCH
         ]
         taint_remover.remove_taint_forever("my-startup-taint")
-        assert urlopen.call_count == 3
+        assert urlopen.call_count == 2
         patch_req = urlopen.call_args_list[-1].args[0]
         assert patch_req.get_method() == "PATCH"
 
@@ -98,13 +97,12 @@ def test_retry_on_transient_url_error():
     node = _node(taints=[_instance_type_taint(), target])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.side_effect = [
-            urllib.error.URLError("timeout"),  # instance-type guard GET fails
-            _FakeResp(200, json.dumps(node).encode()),  # instance-type guard GET retry succeeds
-            _FakeResp(200, json.dumps(node).encode()),  # main GET
+            urllib.error.URLError("timeout"),  # GET fails
+            _FakeResp(200, json.dumps(node).encode()),  # GET retry succeeds
             _FakeResp(200, b"{}"),  # PATCH
         ]
         taint_remover.remove_taint_forever("my-startup-taint")
-        assert urlopen.call_count == 4
+        assert urlopen.call_count == 3
 
 
 def test_retry_on_http_500():
@@ -112,15 +110,13 @@ def test_retry_on_http_500():
     node = _node(taints=[_instance_type_taint(), target])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.side_effect = [
-            _FakeResp(200, json.dumps(node).encode()),  # guard GET
-            _FakeResp(200, json.dumps(node).encode()),  # main GET
+            _FakeResp(200, json.dumps(node).encode()),  # GET
             _http_error(500, b"server boom"),  # PATCH 500
-            _FakeResp(200, json.dumps(node).encode()),  # guard GET retry
-            _FakeResp(200, json.dumps(node).encode()),  # main GET retry
+            _FakeResp(200, json.dumps(node).encode()),  # GET retry
             _FakeResp(200, b"{}"),  # PATCH success
         ]
         taint_remover.remove_taint_forever("my-startup-taint")
-        assert urlopen.call_count == 6
+        assert urlopen.call_count == 4
 
 
 def test_permanent_error_on_http_403():
@@ -128,8 +124,7 @@ def test_permanent_error_on_http_403():
     node = _node(taints=[_instance_type_taint(), target])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.side_effect = [
-            _FakeResp(200, json.dumps(node).encode()),  # guard GET
-            _FakeResp(200, json.dumps(node).encode()),  # main GET
+            _FakeResp(200, json.dumps(node).encode()),  # GET
             _http_error(403, b"forbidden"),
         ]
         with pytest.raises(taint_remover.PermanentApiError, match="Permanent error"):
@@ -142,15 +137,13 @@ def test_retry_on_http_422_json_patch_test_failure():
     node = _node(taints=[_instance_type_taint(), target])
     with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
         urlopen.side_effect = [
-            _FakeResp(200, json.dumps(node).encode()),  # guard GET
-            _FakeResp(200, json.dumps(node).encode()),  # main GET
+            _FakeResp(200, json.dumps(node).encode()),  # GET
             _http_error(422, b"the test operation failed"),  # PATCH 422
-            _FakeResp(200, json.dumps(node).encode()),  # guard GET retry
-            _FakeResp(200, json.dumps(node).encode()),  # main GET retry
+            _FakeResp(200, json.dumps(node).encode()),  # GET retry
             _FakeResp(200, b"{}"),  # PATCH success
         ]
         taint_remover.remove_taint_forever("my-startup-taint")
-        assert urlopen.call_count == 6
+        assert urlopen.call_count == 4
 
 
 def test_retry_on_http_401_picks_up_rotated_token(tmp_path, monkeypatch):
@@ -167,16 +160,13 @@ def test_retry_on_http_401_picks_up_rotated_token(tmp_path, monkeypatch):
     def _capture(req, **_kwargs):
         auth_headers.append(req.get_header("Authorization"))
         if len(auth_headers) == 1:
-            # guard GET succeeds with old token
+            # GET succeeds with old token
             return _FakeResp(200, json.dumps(node).encode())
         if len(auth_headers) == 2:
-            # main GET succeeds with old token
-            return _FakeResp(200, json.dumps(node).encode())
-        if len(auth_headers) == 3:
             # PATCH returns 401 — simulate kubelet rotating the token here
             token_path.write_text("new-token")
             raise _http_error(401, b"unauthorized")
-        # Subsequent calls (guard GET, main GET, PATCH) should all use the new token
+        # Subsequent calls (GET, PATCH) should use the new token
         if req.get_method() == "PATCH":
             return _FakeResp(200, b"{}")
         return _FakeResp(200, json.dumps(node).encode())
@@ -184,30 +174,11 @@ def test_retry_on_http_401_picks_up_rotated_token(tmp_path, monkeypatch):
     with patch.object(taint_remover.urllib.request, "urlopen", side_effect=_capture):
         taint_remover.remove_taint_forever("my-startup-taint")
 
-    # First three requests used the old token, the rest used the rotated one.
+    # First two requests used the old token, the rest used the rotated one.
     assert auth_headers[0] == "Bearer old-token"
     assert auth_headers[1] == "Bearer old-token"
-    assert auth_headers[2] == "Bearer old-token"
-    assert auth_headers[3] == "Bearer new-token"
+    assert auth_headers[2] == "Bearer new-token"
     assert auth_headers[-1] == "Bearer new-token"
-
-
-def test_instance_type_guard_retries_until_present():
-    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
-    node_without = _node(taints=[target])  # label present, taint absent
-    node_with = _node(taints=[_instance_type_taint(), target])  # both present
-    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
-        urlopen.side_effect = [
-            _FakeResp(200, json.dumps(node_without).encode()),  # guard sees no taint
-            _FakeResp(200, json.dumps(node_with).encode()),  # guard sees taint
-            _FakeResp(200, json.dumps(node_with).encode()),  # main GET
-            _FakeResp(200, b"{}"),  # PATCH
-        ]
-        taint_remover.remove_taint_forever("my-startup-taint")
-        assert urlopen.call_count == 4
-        # No PATCH was issued during the first guard attempt.
-        first_req = urlopen.call_args_list[0].args[0]
-        assert first_req.get_method() == "GET"
 
 
 def test_missing_node_name_env(monkeypatch, capsys):
