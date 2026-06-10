@@ -1,20 +1,18 @@
 import * as core from '@actions/core'
 import * as crypto from 'crypto'
+import { Readable } from 'stream'
 import { sleep } from './utils'
-import {
-  execPodStep,
-  execPodStepOutput,
-  execPodStepOutputWithRetry,
-  getPodByName
-} from './index'
-import { RPC_SERVER_SCRIPT } from './rpc-server-script'
+import { execPodStep, execPodStepOutput, getPodByName } from './index'
+import { RPC_SERVER_AMD64, RPC_SERVER_ARM64 } from './rpc-server-script'
 
 interface RpcStatusResponse {
   // null when no job has run yet (server is in initial 'idle' state). The
   // Python server sets _job_id = None at startup and only assigns a value
   // when /exec accepts a job.
   id: string | null
-  status: 'idle' | 'running' | 'completed' | 'failed'
+  // 'starting'/'killing' are transient server-side states (job being launched
+  // or torn down); the poll loop treats them like 'running' and keeps waiting.
+  status: 'idle' | 'starting' | 'running' | 'killing' | 'completed' | 'failed'
   exit_code: number | null
 }
 
@@ -26,9 +24,6 @@ const HEARTBEAT_GRACE_MS = 60000
 const LOG_POLL_INTERVAL_MS = 200
 const FETCH_TIMEOUT_MS = 10000
 const KILL_TIMEOUT_MS = 5000
-const PORT_FILE = '/tmp/rpc-server.port'
-const PORT_DISCOVER_TIMEOUT_MS = 5000
-const PORT_DISCOVER_POLL_MS = 200
 const DIAGNOSTIC_TIMEOUT_MS = 15000
 const DIAGNOSTIC_EXEC_TIMEOUT_MS = 10000
 
@@ -37,52 +32,24 @@ function rpcUrl(podIp: string, port: number, path: string): string {
   return `http://${host}:${port}${path}`
 }
 
-async function healthCheck(
-  podName: string,
-  containerName: string,
-  port: number
-): Promise<boolean> {
+async function healthCheck(podIp: string, port: number): Promise<boolean> {
+  // Health-check from the hook side via outbound HTTP. Avoids depending on
+  // any in-pod tool (curl/wget/nc/python) — the binary listens on the pod IP
+  // and the hook process can reach it directly.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 2000)
   try {
-    const exitCode = await execPodStep(
-      [
-        'sh',
-        '-c',
-        `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:${port}/health')"`
-      ],
-      podName,
-      containerName
-    )
-    return exitCode === 0
+    const resp = await fetch(rpcUrl(podIp, port, '/health'), {
+      signal: controller.signal
+    })
+    return resp.ok
   } catch {
     return false
+  } finally {
+    // Always clear the timer — on the throw/abort path the success-only
+    // clearTimeout was skipped, leaking a pending timer across polls.
+    clearTimeout(timer)
   }
-}
-
-async function discoverPort(
-  podName: string,
-  containerName: string
-): Promise<number | null> {
-  const startTime = Date.now()
-  while (Date.now() - startTime < PORT_DISCOVER_TIMEOUT_MS) {
-    try {
-      const { exitCode, stdout } = await execPodStepOutput(
-        ['cat', PORT_FILE],
-        podName,
-        containerName
-      )
-      if (exitCode === 0 && stdout) {
-        const port = parseInt(stdout, 10)
-        if (!isNaN(port) && port > 0) {
-          core.debug(`Discovered RPC server port: ${port}`)
-          return port
-        }
-      }
-    } catch {
-      // Port file may not exist yet, keep polling
-    }
-    await sleep(PORT_DISCOVER_POLL_MS)
-  }
-  return null
 }
 
 export async function deployRpcServer(
@@ -96,36 +63,80 @@ export async function deployRpcServer(
     throw new Error(`Pod ${podName} has no IP address`)
   }
 
+  // Pick the right static binary for the pod's architecture. The binary is
+  // musl-linked so it runs on glibc, musl (Alpine), distroless and scratch
+  // alike — no python3/node/libc required in the image.
+  let arch: string
   try {
-    await execPodStepOutputWithRetry(
-      ['python3', '--version'],
+    const { stdout } = await execPodStepOutput(
+      ['uname', '-m'],
       podName,
-      containerName,
-      'check python3',
-      { retryOnNonZeroExit: true }
+      containerName
     )
+    arch = stdout.trim()
   } catch (err) {
     throw new Error(
-      `image not compatible: python3 is a required dependency (${err instanceof Error ? err.message : err})`
+      `RPC: failed to detect pod arch (${err instanceof Error ? err.message : err})`
     )
   }
 
-  const encoded = Buffer.from(RPC_SERVER_SCRIPT).toString('base64')
-  try {
-    await execPodStepOutputWithRetry(
-      [
-        'sh',
-        '-c',
-        `echo '${encoded}' | base64 -d > /tmp/rpc-server.py && chmod +x /tmp/rpc-server.py`
-      ],
-      podName,
-      containerName,
-      'write rpc server',
-      { retryOnNonZeroExit: true }
-    )
-  } catch (err) {
+  let binaryB64: string
+  if (arch === 'x86_64' || arch === 'amd64') {
+    binaryB64 = RPC_SERVER_AMD64
+  } else if (arch === 'aarch64' || arch === 'arm64') {
+    binaryB64 = RPC_SERVER_ARM64
+  } else {
     throw new Error(
-      `RPC server script write failed (${err instanceof Error ? err.message : err})`
+      `RPC: unsupported pod arch "${arch}" — only x86_64/amd64 and aarch64/arm64 are supported`
+    )
+  }
+
+  // rpc-server-script.ts ships with empty placeholders that CI overwrites with
+  // the real base64 during the build (prebuild -> build-rpc-server.sh +
+  // embed-rpc-server.js). If the package is consumed without that step, the
+  // blob is "" and we'd otherwise deploy a 0-byte /tmp/rpc-server that fails to
+  // exec — surfacing much later as a baffling "could not parse listening port"
+  // / health-check timeout. Fail fast with an actionable message instead.
+  if (!binaryB64) {
+    throw new Error(
+      `RPC: no embedded ${arch} server binary — run packages/k8s/scripts/build-rpc-server.sh ` +
+        `then scripts/embed-rpc-server.js (CI does this via the k8s package prebuild)`
+    )
+  }
+
+  // Stream the base64 blob over the exec's stdin and decode it in-pod, rather
+  // than inlining it as a shell argument. The blob is ~830 KB; passing it as
+  // argv (`echo '<base64>'`) blows past Linux's MAX_ARG_STRLEN (128 KiB per
+  // single argument), so the kernel fails to exec `sh` with "argument list too
+  // long" — and the failing exec then hangs the websocket until the 60s
+  // per-call timeout, six times over. stdin has no such size limit.
+  let wrote = false
+  let lastWriteErr: unknown
+  for (let attempt = 1; attempt <= MAX_DEPLOY_ATTEMPTS; attempt++) {
+    try {
+      // Fresh stream per attempt — a Readable can only be consumed once.
+      const stdin = Readable.from([Buffer.from(binaryB64)])
+      const exitCode = await execPodStep(
+        ['sh', '-c', 'base64 -d > /tmp/rpc-server && chmod +x /tmp/rpc-server'],
+        podName,
+        containerName,
+        stdin
+      )
+      if (exitCode === 0) {
+        wrote = true
+        break
+      }
+      lastWriteErr = new Error(`base64 decode exited ${exitCode}`)
+    } catch (err) {
+      lastWriteErr = err
+    }
+    if (attempt < MAX_DEPLOY_ATTEMPTS) {
+      await sleep(1000 * attempt)
+    }
+  }
+  if (!wrote) {
+    throw new Error(
+      `RPC server binary write failed (${lastWriteErr instanceof Error ? lastWriteErr.message : lastWriteErr})`
     )
   }
 
@@ -136,14 +147,10 @@ export async function deployRpcServer(
       `Starting RPC server (attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS})`
     )
 
-    // Kill any server from a previous failed attempt and clean up port file
+    // Kill any server left over from a previous failed attempt.
     try {
       await execPodStep(
-        [
-          'sh',
-          '-c',
-          `pkill -f 'python3 /tmp/rpc-server.py' 2>/dev/null; rm -f ${PORT_FILE}`
-        ],
+        ['sh', '-c', `pkill -f '/tmp/rpc-server' 2>/dev/null; true`],
         podName,
         containerName
       )
@@ -153,30 +160,31 @@ export async function deployRpcServer(
       )
     }
 
-    // Start server with port 0 — OS assigns a free port
+    // Start the server with --port 0 (OS picks a free port) and --daemonize:
+    // it prints "RPC server listening on [::]:PORT" to stdout, then forks into
+    // the background and detaches its stdio so this exec returns. We read the
+    // port straight from that line — no port file, no polling.
+    let port: number
     try {
-      await execPodStepOutputWithRetry(
-        [
-          'sh',
-          '-c',
-          `nohup python3 /tmp/rpc-server.py --port 0 --token ${token} > /tmp/rpc-server.log 2>&1 & echo $!`
-        ],
+      const { exitCode, stdout } = await execPodStepOutput(
+        ['/tmp/rpc-server', '--port', '0', '--token', token, '--daemonize'],
         podName,
-        containerName,
-        'start rpc server',
-        { retryOnNonZeroExit: true }
+        containerName
       )
+      // Match the full announcement line (multiline-anchored) rather than a
+      // bare "[::]:NNNN" substring, so unrelated stdout noise can't be
+      // mistaken for the port line.
+      const match = stdout.match(/^RPC server listening on \[::\]:(\d+)$/m)
+      const parsed = match ? parseInt(match[1], 10) : NaN
+      if (exitCode !== 0 || isNaN(parsed) || parsed <= 0) {
+        throw new Error(
+          `could not parse listening port from server output (exit ${exitCode}): ${stdout || '(empty)'}`
+        )
+      }
+      port = parsed
+      core.debug(`RPC server reported port ${port}`)
     } catch (err) {
       const msg = `attempt ${attempt}: server start failed: ${err instanceof Error ? err.message : err}`
-      core.warning(msg)
-      attemptErrors.push(msg)
-      continue
-    }
-
-    // Discover the actual port assigned by the OS
-    const port = await discoverPort(podName, containerName)
-    if (port === null) {
-      const msg = `attempt ${attempt}: port discovery timed out (${PORT_DISCOVER_TIMEOUT_MS}ms)`
       core.warning(msg)
       attemptErrors.push(msg)
       continue
@@ -185,7 +193,7 @@ export async function deployRpcServer(
     const startTime = Date.now()
     let healthy = false
     while (Date.now() - startTime < HEALTH_TIMEOUT_MS) {
-      if (await healthCheck(podName, containerName, port)) {
+      if (await healthCheck(podIp, port)) {
         core.debug(`RPC server healthy after ${Date.now() - startTime}ms`)
         healthy = true
         break

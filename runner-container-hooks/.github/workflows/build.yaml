@@ -12,11 +12,18 @@ jobs:
     name: Format & Lint Checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/k8s/rpc-server
       - run: npm ci
         name: Install dependencies
       - run: npm run bootstrap
@@ -28,32 +35,56 @@ jobs:
       - name: Check linter
         run: |
           npm run lint
-          git diff --exit-code -- . ':!packages/k8s/tests/test-kind.yaml'
+          # rpc-server-script.ts holds base64 of compiled binaries; CI
+          # regenerates it from source and the bytes aren't reproducible
+          # across rustc patch versions, so exclude it from the no-diff check.
+          git diff --exit-code -- . \
+            ':!packages/k8s/tests/test-kind.yaml' \
+            ':!packages/k8s/src/k8s/rpc-server-script.ts'
+      - name: Rust format check
+        working-directory: packages/k8s/rpc-server
+        run: cargo fmt --check
+      - name: Rust clippy
+        working-directory: packages/k8s/rpc-server
+        run: cargo clippy --all-targets -- -D warnings
 
-  python-tests:
-    name: Python RPC Server Tests
-    runs-on: ubuntu-latest
+  rust-tests:
+    name: Rust RPC Server Tests (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     needs: format-and-lint
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm is a free GitHub-hosted arm64 runner for public
+        # repos. Each runner builds + runs the binary for its native arch, so
+        # this exercises both the amd64 and the arm64 binary end-to-end.
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          python-version: '3.12'
-      - name: Install pytest
-        run: python -m pip install --upgrade pip && pip install pytest
-      - name: Run Python tests
-        run: python -m pytest -v packages/k8s/tests/python
+          workspaces: packages/k8s/rpc-server
+      - name: Run Rust integration tests
+        working-directory: packages/k8s/rpc-server
+        run: cargo test --release -- --test-threads=1
 
   docker-tests:
     name: Docker Hook Tests
     runs-on: ubuntu-latest
     needs: format-and-lint
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/k8s/rpc-server
       - run: npm ci
         name: Install dependencies
       - run: npm run bootstrap
@@ -68,14 +99,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: format-and-lint
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/k8s/rpc-server
       - run: sed -i "s|{{PATHTOREPO}}|$(pwd)|" packages/k8s/tests/test-kind.yaml
         name: Setup kind cluster yaml config
-      - uses: helm/kind-action@v1.12.0
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           config: packages/k8s/tests/test-kind.yaml
       - name: Route pod IPs to Kind node

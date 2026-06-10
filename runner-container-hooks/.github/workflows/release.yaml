@@ -10,12 +10,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
+      # The k8s package's prebuild cross-compiles the in-pod RPC server to
+      # static musl binaries and embeds them, so the release build needs the
+      # Rust toolchain and musl targets just like the CI build does.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/k8s/rpc-server
       - name: Install dependencies
         run: npm install
 
@@ -25,7 +34,7 @@ jobs:
       - name: Build packages
         run: npm run build-all
 
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         id: releaseVersion
         with:
           result-encoding: string
@@ -51,7 +60,7 @@ jobs:
 
       - name: Create release notes
         id: releaseNotes
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const fs = require('fs');
