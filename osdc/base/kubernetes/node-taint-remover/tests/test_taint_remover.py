@@ -136,6 +136,62 @@ def test_permanent_error_on_http_403():
             taint_remover.remove_taint_forever("my-startup-taint")
 
 
+def test_retry_on_http_422_json_patch_test_failure():
+    """HTTP 422 from a failed JSON Patch `test` op is a benign race — retry."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+    with patch.object(taint_remover.urllib.request, "urlopen") as urlopen:
+        urlopen.side_effect = [
+            _FakeResp(200, json.dumps(node).encode()),  # guard GET
+            _FakeResp(200, json.dumps(node).encode()),  # main GET
+            _http_error(422, b"the test operation failed"),  # PATCH 422
+            _FakeResp(200, json.dumps(node).encode()),  # guard GET retry
+            _FakeResp(200, json.dumps(node).encode()),  # main GET retry
+            _FakeResp(200, b"{}"),  # PATCH success
+        ]
+        taint_remover.remove_taint_forever("my-startup-taint")
+        assert urlopen.call_count == 6
+
+
+def test_retry_on_http_401_picks_up_rotated_token(tmp_path, monkeypatch):
+    """HTTP 401 triggers a retry; the SA token is re-read so kubelet rotation is picked up."""
+    target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
+    node = _node(taints=[_instance_type_taint(), target])
+
+    token_path = tmp_path / "rotating-token"
+    token_path.write_text("old-token")
+    monkeypatch.setattr(taint_remover, "TOKEN_PATH", token_path)
+
+    auth_headers: list[str] = []
+
+    def _capture(req, **_kwargs):
+        auth_headers.append(req.get_header("Authorization"))
+        if len(auth_headers) == 1:
+            # guard GET succeeds with old token
+            return _FakeResp(200, json.dumps(node).encode())
+        if len(auth_headers) == 2:
+            # main GET succeeds with old token
+            return _FakeResp(200, json.dumps(node).encode())
+        if len(auth_headers) == 3:
+            # PATCH returns 401 — simulate kubelet rotating the token here
+            token_path.write_text("new-token")
+            raise _http_error(401, b"unauthorized")
+        # Subsequent calls (guard GET, main GET, PATCH) should all use the new token
+        if req.get_method() == "PATCH":
+            return _FakeResp(200, b"{}")
+        return _FakeResp(200, json.dumps(node).encode())
+
+    with patch.object(taint_remover.urllib.request, "urlopen", side_effect=_capture):
+        taint_remover.remove_taint_forever("my-startup-taint")
+
+    # First three requests used the old token, the rest used the rotated one.
+    assert auth_headers[0] == "Bearer old-token"
+    assert auth_headers[1] == "Bearer old-token"
+    assert auth_headers[2] == "Bearer old-token"
+    assert auth_headers[3] == "Bearer new-token"
+    assert auth_headers[-1] == "Bearer new-token"
+
+
 def test_instance_type_guard_retries_until_present():
     target = {"key": "my-startup-taint", "value": "", "effect": "NoSchedule"}
     node_without = _node(taints=[target])  # label present, taint absent
