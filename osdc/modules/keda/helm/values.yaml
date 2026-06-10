@@ -1,0 +1,6 @@
+# Expose the KEDA operator's Prometheus metrics (keda_scaler_* /
+# keda_scaledobject_*) on :8080. The ServiceMonitor that scrapes it lives in the
+# monitoring module, so it applies after the monitoring.coreos.com CRDs exist.
+prometheus:
+  operator:
+    enabled: true
