@@ -127,9 +127,11 @@ def generate_deployment_yaml(
 
     # When KEDA owns the replica count, omit `replicas` and add a preStop drain
     # that holds the pod open until its in-flight build finishes. Each fragment is
-    # either its YAML lines or _OMIT (dropped at assembly), so it sits on its own
-    # line in the template. (`replicas_line` is per-arch — computed below.)
-    grace_line = "      terminationGracePeriodSeconds: 8100" if autoscaling else _OMIT
+    # either its YAML or _OMIT; _deployment_block drops _OMIT lines (matched after
+    # stripping), so single lines carry their indent in the template (e.g.
+    # `      {grace_line}`) while multi-line blocks self-indent. (`replicas_line`
+    # is per-arch — computed below.)
+    grace_line = "terminationGracePeriodSeconds: 8100" if autoscaling else _OMIT
     lifecycle_block = (
         """          lifecycle:
             preStop:
@@ -164,7 +166,7 @@ def generate_deployment_yaml(
     )
 
     def _deployment_block(arch, instance_type, cpu, memory_gi, replicas, pods_per_node):
-        replicas_line = _OMIT if autoscaling else f"  replicas: {replicas}"
+        replicas_line = _OMIT if autoscaling else f"replicas: {replicas}"
         block = f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -176,7 +178,7 @@ metadata:
     app.kubernetes.io/name: buildkitd
     app.kubernetes.io/component: build-service
 spec:
-{replicas_line}
+  {replicas_line}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -192,7 +194,7 @@ spec:
         app: buildkitd
         arch: {arch}
     spec:
-{grace_line}
+      {grace_line}
       nodeSelector:
         workload-type: buildkit
         instance-type: "{instance_type}"
@@ -294,7 +296,7 @@ spec:
             path: /mnt/k8s-disks/0/git-cache
             type: DirectoryOrCreate
 {drain_volume}"""
-        return "\n".join(line for line in block.splitlines() if line != _OMIT)
+        return "\n".join(line for line in block.splitlines() if line.strip() != _OMIT)
 
     arm64_block = _deployment_block(
         "arm64", arm64_instance, arm64_res["cpu"], arm64_res["memory_gi"], arm64_replicas, arm64_pods_per_node
