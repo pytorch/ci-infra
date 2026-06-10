@@ -29,6 +29,7 @@ EXPECTED_SERVICE_MONITORS = [
     "buildkit-haproxy",
     "harbor",
     "karpenter",
+    "keda",
     "node-compactor",
     "git-cache-central",
     "pypi-cache",
@@ -291,6 +292,7 @@ SCRAPE_TARGETS: dict[str, tuple[str, str | None]] = {
     "buildkit": ("buildkitd-pods", "buildkit"),
     "buildkit-haproxy": ("buildkitd-lb-metrics", "buildkit"),
     "karpenter": ("karpenter", "karpenter"),
+    "keda": ("keda-operator", "keda"),
     "node-compactor": ("node-compactor", None),
     "git-cache-central": ("git-cache-central-metrics", None),
     # arc-controller: skipped — ARC controller metrics Service varies by chart version
