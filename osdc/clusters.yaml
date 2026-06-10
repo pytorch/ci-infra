@@ -300,9 +300,11 @@ clusters:
       autoscaling:
         enabled: true
         amd64_min: 2   # 1x m6id.24xlarge (2 pods/node)
-        amd64_max: 128  # 14d peak 105; headroom to spare above it
+        amd64_max: 360  # ~90d peak ≈180, x2 for headroom
         arm64_min: 4   # 1x m7gd.16xlarge (4 pods/node)
-        arm64_max: 16  # 14d peak 8, likely capped by fixed pool; headroom
+        arm64_max: 30  # ~90d peak ≈15, x2 for headroom
+        amd64_fallback: 32  # if KEDA can't read metrics, hold the proven fixed pool
+        arm64_fallback: 8
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-cbr-production
@@ -328,6 +330,7 @@ clusters:
       - arc-runners
       - arc-runners-b200
       - arc-runners-h100
+      - keda
       - buildkit
       - pypi-cache
       - cache-enforcer
