@@ -1514,6 +1514,20 @@ jobs:
       arch: arm64
       runner_label: {{PREFIX}}l-x86iamx-8-32
 
+  # ── BuildKit Autoscaling Scale Test ───────────────────────────────────
+  # Bursts 8 parallel builds per arch; fails if KEDA does not scale the pool up.
+  buildkit-scale-amd64:
+    uses: ./.github/workflows/build-image-scale.yaml
+    with:
+      arch: amd64
+      runner_label: {{PREFIX}}l-x86iamx-8-32
+
+  buildkit-scale-arm64:
+    uses: ./.github/workflows/build-image-scale.yaml
+    with:
+      arch: arm64
+      runner_label: {{PREFIX}}l-x86iamx-8-32
+
   # ── Harbor Cache Test ─────────────────────────────────────────────────
   test-harbor:
     runs-on: {{PREFIX}}l-x86iamx-8-32
