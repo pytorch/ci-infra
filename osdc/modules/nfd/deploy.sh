@@ -34,6 +34,9 @@ fi
 NFD_VERSION=$(uv run "$CFG" "$CLUSTER" nfd.version "0.17.1")
 NFD_UPDATE_INTERVAL=$(uv run "$CFG" "$CLUSTER" nfd.update_interval "15s")
 
+helm repo add nfd https://kubernetes-sigs.github.io/node-feature-discovery/charts 2>/dev/null || true
+helm repo update nfd
+
 echo "Installing NFD topology-updater v${NFD_VERSION}..."
 helm_upgrade_if_changed nfd nfd \
   --create-namespace \
@@ -42,7 +45,7 @@ helm_upgrade_if_changed nfd nfd \
   --set topologyUpdater.updateInterval="${NFD_UPDATE_INTERVAL}" \
   --timeout 5m \
   --wait \
-  oci://ghcr.io/kubernetes-sigs/charts/node-feature-discovery \
+  nfd/node-feature-discovery \
   --version "${NFD_VERSION}"
 
 echo "NFD topology-updater deployed."

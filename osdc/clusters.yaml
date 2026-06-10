@@ -61,7 +61,7 @@ defaults:
     pdb_enabled: true
     pdb_min_available: 1
   arc:
-    chart_version: "0.14.1-jeanschmidt.11"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
+    chart_version: "0.14.1-jeanschmidt.12"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
     runner_image_tag: "2.334.0"  # ghcr.io/actions/actions-runner tag — pin to avoid :latest
     replica_count: 4
     log_level: info
@@ -121,6 +121,7 @@ clusters:
     region: us-west-1
     cluster_name: pytorch-arc-staging
     recycle_karpenter_nodes: true
+    proactive_capacity_max: 0  # disable warm-pool pre-provisioning — staging only creates pairs on demand for in-flight jobs
     state_bucket: ciforge-tfstate-arc-staging
     access_config:
       authentication_mode: API_AND_CONFIG_MAP

@@ -40,11 +40,9 @@ CHART_TGZ="scheduler-plugins-${CHART_VERSION}.tgz"
 CHART_DIR=$(mktemp -d)
 trap 'rm -rf "$CHART_DIR"' EXIT
 
+CHART_URL="https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/v${CHART_VERSION}/${CHART_TGZ}"
 echo "Downloading scheduler-plugins chart v${CHART_VERSION}..."
-gh release download "v${CHART_VERSION}" \
-  --repo kubernetes-sigs/scheduler-plugins \
-  --pattern "${CHART_TGZ}" \
-  --dir "$CHART_DIR"
+curl -fsSL "$CHART_URL" -o "${CHART_DIR}/${CHART_TGZ}"
 
 echo "Installing numa-scheduler (scheduler-plugins v${CHART_VERSION})..."
 helm_upgrade_if_changed numa-scheduler numa-scheduler \
