@@ -1,0 +1,25 @@
+# Cap voluntary disruptions (node consolidation, drains) to one builder per arch
+# at a time so evictions go through the preStop drain instead of killing builds.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: buildkitd-arm64
+  namespace: buildkit
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: buildkitd
+      arch: arm64
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: buildkitd-amd64
+  namespace: buildkit
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: buildkitd
+      arch: amd64
