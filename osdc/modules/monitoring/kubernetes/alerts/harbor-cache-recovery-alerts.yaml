@@ -25,6 +25,8 @@ spec:
           for: 15m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "harbor-cache-recovery cronjob is failing"
             description: >-
@@ -56,6 +58,8 @@ spec:
           for: 10m
           labels:
             severity: warning
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "harbor-cache-recovery pod was OOMKilled"
             description: >-
@@ -78,6 +82,8 @@ spec:
           for: 5m
           labels:
             severity: warning
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "harbor-cache-recovery has not completed successfully in >30m"
             description: >-
