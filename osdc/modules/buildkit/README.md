@@ -13,9 +13,9 @@ Absorb bursts of concurrent builds without overloading existing pods, and scale
 back to a small warm baseline when idle.
 
 - **One build per pod** — HAProxy `server maxconn 1` (matches buildkitd
-  `max-parallelism = 1`). Excess builds **queue** in HAProxy (`timeout queue`)
-  instead of stacking on a busy pod; as new pods register (DNS), queued builds
-  flow onto them, so scaled-up pods never sit idle.
+  `max-parallelism = 1`) so a build never stacks on a busy pod. When every pod is
+  busy the LB has no slot, so the client must **retry the connect** (see below)
+  until a pod frees or the pool scales up.
 - **In-cluster scale signal** — KEDA `ScaledObject` per arch, `metrics-api`
   scraping the LB's own metrics (`haproxy_backend_current_sessions`) — no external
   metrics backend.
@@ -39,28 +39,22 @@ back to a small warm baseline when idle.
   directly rather than via the eviction API, so it isn't PDB-gated — the drain +
   grace cap above is what protects that path.)
 
-## Build with `buildctl`, not `docker buildx`
+## Clients must retry the connect
 
-Clients must reach the pool with **`buildctl`** (`buildctl --addr
-tcp://buildkitd-<arch>.buildkit:1234 build ...`), not `docker buildx` against a
-remote builder.
+Build clients (both `docker buildx` and `buildctl`) use the `moby/buildkit` Go
+client, which dials with gRPC's default **~20s `MinConnectTimeout`** and
+**fail-fast** RPCs — there is no client-side flag to make it wait longer. During
+a burst, a build whose connection finds no free pod (`maxconn 1`) is dropped by
+the client after ~20s, well before KEDA/Karpenter can add a pod (minutes). An
+HAProxy-side `timeout queue` does **not** help: the client gives up at 20s
+regardless, so queueing on the LB is pointless (and was removed).
 
-The autoscaling design relies on a *patient* client: during a burst the build's
-connection sits in HAProxy's queue (above) for the minutes it takes KEDA +
-Karpenter to add a pod, and that pending connection is also what keeps the
-scale-up signal alive. `buildctl` does exactly this — its build call waits in
-the queue up to `timeout queue` with no separate connect deadline.
-
-`docker buildx` does **not**: before solving it "boots" the remote builder with
-a **hardcoded ~20s connect timeout** (`[internal] waiting for connection`), which
-is not configurable and far shorter than a cold scale-up. Under a burst the
-connection is still queued at 20s, buildx aborts with `context deadline
-exceeded`, and — because the connection then drops — the scale-up signal
-disappears before KEDA can act, so the pool never grows and every queued build
-fails. (`docker/setup-buildx-action` hits the same gate via `inspect
---bootstrap`; removing it doesn't help because `docker buildx build` re-runs the
-same boot.) This was confirmed on the staging cluster. So PyTorch's
-`.ci/docker/build.sh` uses `buildctl` whenever `REMOTE_BUILDKIT` is set.
+So the **client must retry the build** on connection failures until a pod is
+free or the pool has scaled up; the repeated attempts also keep the autoscaler's
+load signal alive. PyTorch's `.ci/docker/build.sh` does this when
+`REMOTE_BUILDKIT` is set, and the workflow creates the remote builder *without*
+`--bootstrap` (the `docker buildx inspect --bootstrap` health check hits the same
+20s gate at setup). This was confirmed on the staging cluster.
 
 ## HAProxy config changes roll the LB
 

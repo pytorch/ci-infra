@@ -24,10 +24,6 @@ data:
       timeout connect 5s
       timeout client 120m
       timeout server 120m
-      # Queue a build (server maxconn=1, below) while KEDA/Karpenter add pods,
-      # instead of stacking it on a busy pod. Keep <= 120m, the max time a
-      # docker build is allowed to run.
-      timeout queue 60m
       log global
       option tcplog
 
