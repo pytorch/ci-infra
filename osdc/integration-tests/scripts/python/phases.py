@@ -276,11 +276,10 @@ def prepare_pr(
     # Write integration test workflow
     (workflows_dir / "integration-test.yaml").write_text(workflow_content)
 
-    # Copy reusable BuildKit workflows (connectivity + autoscaling scale test).
-    # The scale test builds an inline Dockerfile, so it needs no copied context.
-    wf_root = upstream_dir / "integration-tests" / "workflows"
-    for wf in ("build-image.yaml", "build-image-scale.yaml"):
-        (workflows_dir / wf).write_text((wf_root / wf).read_text())
+    # Copy the reusable BuildKit workflow (connectivity + autoscaling scale jobs).
+    # The scale job builds an inline Dockerfile, so it needs no copied context.
+    build_wf_src = upstream_dir / "integration-tests" / "workflows" / "build-image.yaml"
+    (workflows_dir / "build-image.yaml").write_text(build_wf_src.read_text())
 
     # Copy test Dockerfile (connectivity test context)
     docker_dir = canary_path / "docker" / "test-buildkit"

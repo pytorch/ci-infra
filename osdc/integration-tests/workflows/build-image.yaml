@@ -1,6 +1,7 @@
-# Reusable workflow: Build a test image via OSDC BuildKit
-# Called by integration-test.yaml to validate BuildKit connectivity.
-# Uses buildctl directly — no Docker daemon required.
+# Reusable workflow: exercise OSDC BuildKit for one arch.
+# Called by integration-test.yaml. Two jobs:
+#   build  — single buildctl build (validates connectivity; buildctl route)
+#   scale  — burst of docker buildx builds (validates autoscaling; prod client)
 name: Build Test Image
 
 on:
@@ -66,3 +67,61 @@ jobs:
           ENDPOINT="tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
           buildctl --addr "$ENDPOINT" debug info || echo "WARN: debug info not available"
           echo "PASS: BuildKit ${{ inputs.arch }} endpoint is responsive"
+
+  scale:
+    # 8 parallel docker buildx builds (the prod client), each holding a BuildKit
+    # slot (server maxconn=1) ~10 min via a sleep. The warm baseline is below the
+    # burst, so they finish within timeout-minutes only if KEDA scales the pool
+    # up; otherwise the back of the burst serializes and the job times out — i.e.
+    # this FAILS if autoscaling does not happen.
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6, 7, 8]
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    steps:
+      - name: Set up Docker Buildx (remote, no bootstrap)
+        shell: bash
+        # NOT docker/setup-buildx-action: it runs `buildx inspect --bootstrap`,
+        # whose ~20s connect timeout fails at setup during a cold scale-up.
+        # `create` (no --bootstrap) just registers the builder; the build step
+        # retries to wait out scale-up.
+        run: |
+          set -ex
+          docker buildx create \
+            --name osdc-remote \
+            --driver remote \
+            --use \
+            "tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
+
+      - name: Occupy a BuildKit slot (~10 min) to drive autoscaling
+        shell: bash
+        run: |
+          set -eu
+          cat > Dockerfile.scale <<'EOF'
+          FROM alpine:3.21
+          ARG CACHEBUST
+          RUN echo "osdc buildkit scale-test ${CACHEBUST}" && sleep 600
+          EOF
+          # buildx boots the builder with a hardcoded ~20s connect timeout (gRPC
+          # MinConnectTimeout), so retry to wait out cold scale-up; the repeated
+          # attempts also keep KEDA's load signal alive. The 30-min job timeout
+          # still fails the test if scale-up never happens.
+          for attempt in $(seq 1 15); do
+            if docker buildx build \
+                --platform "linux/${{ inputs.arch }}" \
+                --build-arg "CACHEBUST=${{ inputs.arch }}-${{ matrix.replica }}-${{ github.run_id }}" \
+                --no-cache \
+                --output type=cacheonly \
+                -f Dockerfile.scale .; then
+              echo "build succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "attempt ${attempt}/15 failed (BuildKit cold/queued); retrying in 15s..."
+            sleep 15
+          done
+          echo "build failed after retries" >&2
+          exit 1
