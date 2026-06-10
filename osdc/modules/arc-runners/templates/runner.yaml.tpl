@@ -163,6 +163,8 @@ listenerTemplate:
             value: "{{PROACTIVE_CAPACITY}}"
           - name: CAPACITY_AWARE_MAX_BURST_CAPACITY
             value: "{{MAX_BURST_CAPACITY}}"
+          - name: CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY
+            value: "{{HUD_FAILURE_BASE_CAPACITY}}"
           - name: CAPACITY_AWARE_RECALCULATE_INTERVAL
             value: "30s"
           - name: CAPACITY_AWARE_PLACEHOLDER_TIMEOUT
