@@ -158,9 +158,11 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     max_runners = runner.get("max_runners")
     proactive_capacity = runner.get("proactive_capacity", 0)
     max_burst_capacity = runner.get("max_burst_capacity", 0)
+    hud_failure_base_capacity = runner.get("hud_failure_base_capacity", 0)
     node_fleet_override = runner.get("node_fleet")
-    if cluster_config.get("force_proactive_capacity_zero"):
-        proactive_capacity = 0
+    proactive_cap = cluster_config.get("proactive_capacity_max")
+    if proactive_cap is not None:
+        proactive_capacity = min(proactive_capacity, proactive_cap)
 
     if not runner_name or not instance_type:
         log_error(f"Invalid definition file: {def_file}")
@@ -190,6 +192,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     if cluster_config.get("pause_runners"):
         max_runners = 0
+        hud_failure_base_capacity = 0
 
     # Region-exclusion guard: if the backing nodepool/fleet excludes the
     # cluster's region (no underlying capacity), force advertised capacity to
@@ -198,10 +201,11 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         log_warning(
             f"{runner_name}: instance_type {instance_type} excluded in region "
             f"{cluster_config.get('region', '?')} via modules/nodepools/defs/ "
-            f"— forcing max_runners=0, proactive_capacity=0"
+            f"— forcing max_runners=0, proactive_capacity=0, hud_failure_base_capacity=0"
         )
         max_runners = 0
         proactive_capacity = 0
+        hud_failure_base_capacity = 0
 
     if max_burst_capacity is not None and (not isinstance(max_burst_capacity, int) or max_burst_capacity < 0):
         log_error(
@@ -211,11 +215,20 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         return False
 
     if max_burst_capacity > 0 and proactive_capacity > 0 and max_burst_capacity < proactive_capacity:
-        log_warning(
+        log_error(
             f"In {def_file}: max_burst_capacity ({max_burst_capacity}) < proactive_capacity ({proactive_capacity}); "
             f"the cap will prevent the listener from reaching its proactive baseline. "
-            f"Consider raising max_burst_capacity."
+            f"Either raise max_burst_capacity or lower proactive_capacity."
         )
+        return False
+
+    if max_burst_capacity > 0 and hud_failure_base_capacity > 0 and max_burst_capacity < hud_failure_base_capacity:
+        log_error(
+            f"In {def_file}: max_burst_capacity ({max_burst_capacity}) < hud_failure_base_capacity ({hud_failure_base_capacity}); "
+            f"the cap will prevent the listener from reaching its HUD-fallback baseline. "
+            f"Either raise max_burst_capacity or lower hud_failure_base_capacity."
+        )
+        return False
 
     try:
         node_fleet = derive_fleet_name(instance_type, override=node_fleet_override)
@@ -328,6 +341,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{RUNNER_CLASS}}": runner_class,
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
         "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
+        "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
     }
 
     for placeholder, value in replacements.items():
@@ -390,8 +404,20 @@ def main():
     runner_image_tag = resolve_value(cluster_cfg, defaults, "arc.runner_image_tag") or "2.333.1"
     cluster_config["runner_image"] = f"ghcr.io/actions/actions-runner:{runner_image_tag}"
 
-    # Staging clusters: force proactive_capacity to 0 regardless of runner def value
-    cluster_config["force_proactive_capacity_zero"] = "staging" in cluster_id
+    proactive_cap = cluster_cfg.get("proactive_capacity_max")
+    if proactive_cap is not None and (
+        isinstance(proactive_cap, bool) or not isinstance(proactive_cap, int) or proactive_cap < 0
+    ):
+        log_error(
+            f"proactive_capacity_max for cluster '{cluster_id}' must be a non-negative integer, got {proactive_cap!r}"
+        )
+        return 1
+    cluster_config["proactive_capacity_max"] = proactive_cap
+    if proactive_cap is not None:
+        log_warning(
+            f"proactive_capacity_max={proactive_cap} for cluster '{cluster_id}' — "
+            f"proactive_capacity capped at {proactive_cap} for all scale sets"
+        )
 
     cluster_config["pause_runners"] = bool(cluster_cfg.get("pause_runners"))
     if cluster_config["pause_runners"]:

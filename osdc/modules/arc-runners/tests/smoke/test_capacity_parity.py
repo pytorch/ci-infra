@@ -290,7 +290,7 @@ class TestPlaceholderSchedulingParity:
         # placeholders running. Use the GENERATED YAML's
         # CAPACITY_AWARE_PROACTIVE_CAPACITY env value (post-override) — not
         # the raw def — so cluster-specific overrides like
-        # `force_proactive_capacity_zero` on staging correctly skip all defs.
+        # `proactive_capacity_max` on staging correctly skip all defs.
         proactive_defs = {
             name: d
             for name, d in defs_by_name.items()
