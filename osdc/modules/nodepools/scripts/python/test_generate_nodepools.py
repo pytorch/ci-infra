@@ -1545,6 +1545,51 @@ class TestModuleStartupTaints:
         assert "test.osdc.io/foo" not in keys
 
 
+class TestValidateStartupTaintsRegistry:
+    """Tests for the typo-validation guard on STARTUP_TAINTS module names."""
+
+    def _make_modules_root(self, tmp_path: Path, names: list[str]) -> Path:
+        modules_root = tmp_path / "modules"
+        modules_root.mkdir()
+        for n in names:
+            (modules_root / n).mkdir()
+        return modules_root
+
+    def test_empty_registry_always_valid(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(generate_nodepools, "STARTUP_TAINTS", [])
+        modules_root = self._make_modules_root(tmp_path, ["nodepools"])
+        generate_nodepools._validate_startup_taints_registry(modules_root)
+
+    def test_all_module_names_match_real_modules_passes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            generate_nodepools,
+            "STARTUP_TAINTS",
+            [{"module": "cache-enforcer", "key": "k", "value": "v", "effect": "NoSchedule"}],
+        )
+        modules_root = self._make_modules_root(tmp_path, ["cache-enforcer", "nodepools"])
+        generate_nodepools._validate_startup_taints_registry(modules_root)
+
+    def test_module_none_entries_skip_validation(self, tmp_path, monkeypatch):
+        """Base-component entries (module=None) don't need a matching subdirectory."""
+        monkeypatch.setattr(
+            generate_nodepools,
+            "STARTUP_TAINTS",
+            [{"module": None, "key": "k", "value": "v", "effect": "NoSchedule"}],
+        )
+        modules_root = self._make_modules_root(tmp_path, [])
+        generate_nodepools._validate_startup_taints_registry(modules_root)
+
+    def test_typo_in_module_name_raises_with_helpful_message(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            generate_nodepools,
+            "STARTUP_TAINTS",
+            [{"module": "cache-enforcre", "key": "k", "value": "v", "effect": "NoSchedule"}],
+        )
+        modules_root = self._make_modules_root(tmp_path, ["cache-enforcer", "nodepools"])
+        with pytest.raises(ValueError, match="cache-enforcre"):
+            generate_nodepools._validate_startup_taints_registry(modules_root)
+
+
 class TestRealStartupTaintsRegistry:
     """Sanity tests guarding the real STARTUP_TAINTS registry entries."""
 

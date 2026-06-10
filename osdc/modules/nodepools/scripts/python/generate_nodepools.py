@@ -71,6 +71,26 @@ STARTUP_TAINTS: list[dict] = [
     },
 ]
 
+
+def _validate_startup_taints_registry(modules_root: Path) -> None:
+    """Fail fast if STARTUP_TAINTS names a module that doesn't exist.
+
+    The per-cluster gate (NODEPOOLS_ENABLED_MODULES) silently skips disabled
+    modules by design — clusters legitimately enable different module subsets.
+    But a typo in an entry's ``module`` field would also be silently skipped,
+    leaving the intended scheduling gate unwired with no signal. This check
+    catches that class of mistake at generation time. Entries with
+    ``module=None`` (base components) are unaffected.
+    """
+    valid_modules = {p.name for p in modules_root.iterdir() if p.is_dir()}
+    declared = {t["module"] for t in STARTUP_TAINTS if t.get("module") is not None}
+    unknown = sorted(declared - valid_modules)
+    if unknown:
+        raise ValueError(
+            f"STARTUP_TAINTS references unknown module(s): {unknown}. "
+            f"Each ``module`` field must match a subdirectory under {modules_root}."
+        )
+
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
@@ -584,6 +604,8 @@ def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, regi
 def main():
     script_dir = Path(__file__).parent
     module_dir = script_dir.parent.parent
+    modules_root = module_dir.parent
+    _validate_startup_taints_registry(modules_root)
     defs_dir = Path(os.environ["NODEPOOLS_DEFS_DIR"]) if "NODEPOOLS_DEFS_DIR" in os.environ else module_dir / "defs"
     output_dir = (
         Path(os.environ["NODEPOOLS_OUTPUT_DIR"]) if "NODEPOOLS_OUTPUT_DIR" in os.environ else module_dir / "generated"
