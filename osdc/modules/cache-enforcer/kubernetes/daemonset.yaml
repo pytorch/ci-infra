@@ -35,50 +35,16 @@ spec:
 
       priorityClassName: system-node-critical
 
-      # Tolerate ALL taints used by Karpenter nodepools
+      # Tolerate every taint. The DS gates on its own node-init.osdc.io/
+      # cache-enforcer startup taint AND must coexist with the other
+      # node-init.osdc.io/* startup taints Karpenter emits — listing each
+      # explicitly creates a chicken-and-egg deadlock if any sibling is
+      # missed. `operator: Exists` matches every taint and avoids that
+      # whole class of bug. Scheduling isolation is enforced by nodeAffinity
+      # below (workload-type=github-runner AND not a release runner), not by
+      # the toleration list.
       tolerations:
-        - key: instance-type
-          operator: Exists
-          effect: NoSchedule
-        - key: node-fleet
-          operator: Exists
-          effect: NoSchedule
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-        - key: cpu-type
-          operator: Exists
-          effect: NoSchedule
-        - key: karpenter.sh/unschedulable
-          operator: Exists
-          effect: NoSchedule
-        - key: CriticalAddonsOnly
-          operator: Exists
-          effect: NoSchedule
-        # Tolerate this DS's own startup taint so it can schedule onto a new
-        # node and clear it. Without this, the node stays tainted forever and
-        # workload pods can never schedule.
-        - key: node-init.osdc.io/cache-enforcer
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/not-ready
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/unreachable
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/disk-pressure
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/memory-pressure
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/pid-pressure
-          operator: Exists
-          effect: NoSchedule
-        - key: node.kubernetes.io/unschedulable
-          operator: Exists
-          effect: NoSchedule
+        - operator: Exists
 
       # Run on Karpenter-managed runner nodes only
       affinity:

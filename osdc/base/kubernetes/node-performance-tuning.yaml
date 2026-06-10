@@ -334,76 +334,16 @@ spec:
       # High priority to ensure it runs before workloads
       priorityClassName: system-node-critical
 
-      # Tolerate ALL taints used by Karpenter nodepools
+      # Tolerate every taint. The DS gates on its own node-init.osdc.io/
+      # perf-tuning startup taint AND must coexist with the other
+      # node-init.osdc.io/* startup taints Karpenter emits — listing each
+      # explicitly creates a chicken-and-egg deadlock if any sibling is
+      # missed. `operator: Exists` matches every taint and avoids that whole
+      # class of bug. Scheduling isolation is enforced by nodeAffinity below
+      # (workload-type in [github-runner, buildkit]), not by the toleration
+      # list.
       tolerations:
-        # Karpenter instance-type taints (used by all nodepools)
-        - key: instance-type
-          operator: Exists
-          effect: NoSchedule
-
-        # Karpenter node-fleet taints (used by all nodepools)
-        - key: node-fleet
-          operator: Exists
-          effect: NoSchedule
-
-        # BuildKit workload taints (service-specific isolation)
-        - key: workload/buildkit-arm64
-          operator: Exists
-          effect: NoSchedule
-        - key: workload/buildkit-amd64
-          operator: Exists
-          effect: NoSchedule
-
-        # GPU taints
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-
-        # CPU architecture taints
-        - key: cpu-type
-          operator: Exists
-          effect: NoSchedule
-
-        # Karpenter default taints
-        - key: karpenter.sh/unschedulable
-          operator: Exists
-          effect: NoSchedule
-
-        # System taints
-        - key: CriticalAddonsOnly
-          operator: Exists
-          effect: NoSchedule
-
-        # Tolerate this DS's own startup taint so it can schedule onto a new
-        # node and clear it. Without this, the node stays tainted forever and
-        # workload pods can never schedule.
-        - key: node-init.osdc.io/perf-tuning
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/not-ready
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/unreachable
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/disk-pressure
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/memory-pressure
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/pid-pressure
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/unschedulable
-          operator: Exists
-          effect: NoSchedule
+        - operator: Exists
 
       # Run on Karpenter-managed runner nodes and buildkit nodes
       affinity:
