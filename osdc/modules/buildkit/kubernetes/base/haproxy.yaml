@@ -104,6 +104,12 @@ spec:
     metadata:
       labels:
         app: buildkitd-lb
+      annotations:
+        # HAProxy renders its config once at container start, so a ConfigMap
+        # change has no effect until this pod restarts. deploy.sh fills this in
+        # with a hash of haproxy.yaml, so the Deployment rolls automatically
+        # whenever the config changes (nothing else restarts the LB).
+        checksum/config: "__HAPROXY_CFG_CHECKSUM__"
     spec:
       # Runs on base-infra nodes (CriticalAddonsOnly taint)
       tolerations:
