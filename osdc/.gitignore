@@ -22,3 +22,5 @@ modules/*/generated/
 
 # OS
 .DS_Store
+.env
+
