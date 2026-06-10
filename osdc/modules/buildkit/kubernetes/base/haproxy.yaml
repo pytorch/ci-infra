@@ -24,6 +24,10 @@ data:
       timeout connect 5s
       timeout client 120m
       timeout server 120m
+      # Queue a build (server maxconn=1, below) while KEDA/Karpenter add pods,
+      # instead of stacking it on a busy pod. The runner also retries the
+      # connect, so this is an upper bound, not the only safety net.
+      timeout queue 10m
       log global
       option tcplog
 
@@ -71,15 +75,15 @@ data:
     # resolution warnings.
     backend bk_arm64
       balance leastconn
-      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
+      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
     backend bk_amd64
       balance leastconn
-      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
+      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
     backend bk_all
       balance leastconn
-      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6
+      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
 ---
 apiVersion: apps/v1
