@@ -75,7 +75,15 @@ sed "s/CLUSTER_NAME_PLACEHOLDER/$CNAME/g" "$GENERATED_DIR/nodepools.yaml" | kube
 # --- Apply static k8s resources ---
 
 echo "Applying BuildKit static manifests..."
-kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/base/"
+# Stamp the buildkitd-lb pod template with a hash of haproxy.yaml. HAProxy reads
+# its config only at container start, and nothing else restarts the LB, so
+# without this a ConfigMap change (maxconn, timeouts, backends) would silently
+# not take effect until the pod happened to be recreated. Changing the hash
+# rolls the Deployment whenever the config changes.
+HAPROXY_SUM=$(shasum -a 256 "$MODULE_DIR/kubernetes/base/haproxy.yaml" | cut -c1-12)
+kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
+  | sed "s/__HAPROXY_CFG_CHECKSUM__/$HAPROXY_SUM/" \
+  | kubectl_apply_if_changed -f -
 
 # --- Apply generated Deployments (only if changed) ---
 

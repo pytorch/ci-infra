@@ -42,4 +42,15 @@ back to a small warm baseline when idle.
 Build clients should retry the connect so a build can wait for a pod from a cold
 or queued pool.
 
+## HAProxy config changes roll the LB
+
+HAProxy renders its config only at container start, and nothing else restarts
+the `buildkitd-lb` pod, so a bare ConfigMap update (`maxconn`, timeouts,
+backends) would silently not take effect. `deploy.sh` stamps the LB pod template
+with a `checksum/config` annotation = a hash of `haproxy.yaml`; when the config
+changes the hash changes, which rolls the Deployment so the new pod picks up the
+new config. An unchanged config keeps the same hash, so routine deploys don't
+churn the LB. (The buildkitd worker pods do **not** yet have this, so a
+`buildkitd.toml` / `drain.sh` change needs a manual rollout to take effect.)
+
 Requires the `keda` module deployed before `buildkit` (provides the CRDs).
