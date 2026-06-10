@@ -52,6 +52,24 @@ from nodepool_defs import is_excluded_for_region as _is_excluded_for_region  # n
 # it at end-of-init.
 MODULE_STARTUP_TAINTS: dict[str, list[dict]] = {}
 
+
+def _validate_module_startup_taints_registry(modules_root: Path) -> None:
+    """Fail fast if MODULE_STARTUP_TAINTS names a module that doesn't exist.
+
+    The per-cluster gate (NODEPOOLS_ENABLED_MODULES) silently skips disabled
+    modules by design — clusters legitimately enable different module subsets.
+    But a typo in a registry key would also be silently skipped, leaving the
+    intended scheduling gate unwired with no signal. This check catches that
+    class of mistake at generation time.
+    """
+    valid_modules = {p.name for p in modules_root.iterdir() if p.is_dir()}
+    unknown = sorted(set(MODULE_STARTUP_TAINTS) - valid_modules)
+    if unknown:
+        raise ValueError(
+            f"MODULE_STARTUP_TAINTS references unknown module(s): {unknown}. "
+            f"Each key must match a subdirectory under {modules_root}."
+        )
+
 # ANSI colors
 GREEN = "\033[0;32m"
 RED = "\033[0;31m"
@@ -565,6 +583,8 @@ def _process_fleet(fleet_data, def_file, defs_dir, output_dir, module_name, regi
 def main():
     script_dir = Path(__file__).parent
     module_dir = script_dir.parent.parent
+    modules_root = module_dir.parent
+    _validate_module_startup_taints_registry(modules_root)
     defs_dir = Path(os.environ["NODEPOOLS_DEFS_DIR"]) if "NODEPOOLS_DEFS_DIR" in os.environ else module_dir / "defs"
     output_dir = (
         Path(os.environ["NODEPOOLS_OUTPUT_DIR"]) if "NODEPOOLS_OUTPUT_DIR" in os.environ else module_dir / "generated"
