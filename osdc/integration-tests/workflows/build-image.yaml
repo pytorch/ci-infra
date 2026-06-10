@@ -44,10 +44,11 @@ jobs:
           ENDPOINT="tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
           echo "Connecting to: $ENDPOINT"
 
-          # The buildkit client dials with gRPC's ~20s connect timeout, so a
-          # busy / cold autoscaled pool drops the connection fast. Retry until a
-          # pod is free or the pool scales up.
-          for attempt in $(seq 1 15); do
+          # The buildkit client dials with gRPC's ~20s connect timeout, so a busy
+          # / cold pool drops the connection fast (no HAProxy queue holds it).
+          # Retry long enough to outlast a peer's ~10 min build when the pool is
+          # over-subscribed (9 builds > 8 pods): ~45 x (≈5s fail + 15s) ≈ 15 min.
+          for attempt in $(seq 1 45); do
             if buildctl --addr "$ENDPOINT" build \
                 --frontend dockerfile.v0 \
                 --local context=docker/test-buildkit \
@@ -56,7 +57,7 @@ jobs:
               echo "PASS: BuildKit ${{ inputs.arch }} built on attempt ${attempt} ($ENDPOINT)"
               exit 0
             fi
-            echo "attempt ${attempt}/15 failed (BuildKit cold/queued); retrying in 15s..."
+            echo "attempt ${attempt}/45 failed (BuildKit cold/queued); retrying in 15s..."
             sleep 15
           done
           echo "FAIL: BuildKit ${{ inputs.arch }} build failed after retries" >&2
@@ -74,6 +75,10 @@ jobs:
     # burst, so they finish within timeout-minutes only if KEDA scales the pool
     # up; otherwise the back of the burst serializes and the job times out — i.e.
     # this FAILS if autoscaling does not happen.
+    #
+    # Runs concurrently with `build`, so 9 builds contend for a max-8 pool: the
+    # odd one out has no pod until a peer's ~10 min build finishes, exercising
+    # the over-subscription wait (the retry below must outlast that).
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 30
     strategy:
@@ -107,10 +112,11 @@ jobs:
           RUN echo "osdc buildkit scale-test ${CACHEBUST}" && sleep 600
           EOF
           # buildx boots the builder with a hardcoded ~20s connect timeout (gRPC
-          # MinConnectTimeout), so retry to wait out cold scale-up; the repeated
-          # attempts also keep KEDA's load signal alive. The 30-min job timeout
-          # still fails the test if scale-up never happens.
-          for attempt in $(seq 1 15); do
+          # MinConnectTimeout), so retry to wait out cold scale-up and, when the
+          # pool is over-subscribed, a peer's ~10 min build; the repeated attempts
+          # also keep KEDA's load signal alive. ~45 x (≈5s fail + 15s) ≈ 15 min,
+          # within the 30-min job timeout (still fails if scale-up never happens).
+          for attempt in $(seq 1 45); do
             if docker buildx build \
                 --platform "linux/${{ inputs.arch }}" \
                 --build-arg "CACHEBUST=${{ inputs.arch }}-${{ matrix.replica }}-${{ github.run_id }}" \
@@ -120,7 +126,7 @@ jobs:
               echo "build succeeded on attempt ${attempt}"
               exit 0
             fi
-            echo "attempt ${attempt}/15 failed (BuildKit cold/queued); retrying in 15s..."
+            echo "attempt ${attempt}/45 failed (BuildKit cold/queued); retrying in 15s..."
             sleep 15
           done
           echo "build failed after retries" >&2
