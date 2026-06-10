@@ -17,9 +17,9 @@
 Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image (multi-arch `linux/amd64` + `linux/arm64`) and publishes the chart to GHCR.
 
 - **OCI registry**: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.11`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
+- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.12`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
 - **Image tags**: the workflow publishes two tags per build:
-  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.11` to match the chart)
+  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.12` to match the chart)
   - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>-<short_sha>` (immutable tag with the source commit baked in, useful for pinning and debugging)
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
@@ -137,14 +137,14 @@ This runs `modules/arc/deploy.sh`, which:
 3. **Applies RBAC** from `modules/arc/kubernetes/capacity-monitor-rbac.yaml`
 4. **Helm upgrade** of the fork chart:
    - Chart: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.11`)
+   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.12`)
    - Image: defaults to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<chart_version>`. Override with `arc.image_repository` / `arc.image_tag` in `clusters.yaml` for local Harbor builds.
 
 Other deploy.sh config knobs (all from `clusters.yaml`):
 
 | Key | Default | What |
 |-----|---------|------|
-| `arc.chart_version` | `0.14.1-jeanschmidt.11` | Helm chart version (fork) |
+| `arc.chart_version` | `0.14.1-jeanschmidt.12` | Helm chart version (fork) |
 | `arc.image_repository` | `ghcr.io/jeanschmidt/gha-runner-scale-set-controller` | Controller image repo (override for local Harbor builds) |
 | `arc.image_tag` | _(chart_version)_ | Controller image tag (override for local Harbor builds) |
 | `arc.replica_count` | `2` | Controller replicas |
@@ -163,7 +163,7 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | Env Var | Code default | Template value | Description |
 |---------|--------------|----------------|-------------|
 | `CAPACITY_AWARE_ENABLED` | `false` | `true` | Enable the capacity monitor goroutine |
-| `CAPACITY_AWARE_PROACTIVE_CAPACITY` | `0` | `{{PROACTIVE_CAPACITY}}` (from runner def, forced to `0` for staging clusters) | Number of placeholder pairs to maintain ahead of demand. Hard cap of `1000` (clamped); warning logged above `100`. |
+| `CAPACITY_AWARE_PROACTIVE_CAPACITY` | `0` | `{{PROACTIVE_CAPACITY}}` (from runner def, capped by `proactive_capacity_max` in `clusters.yaml` when set — staging sets `0` to disable warm-pool pre-provisioning) | Number of placeholder pairs to maintain ahead of demand. Hard cap of `1000` (clamped); warning logged above `100`. |
 | `CAPACITY_AWARE_MAX_BURST_CAPACITY` | `0` | `{{MAX_BURST_CAPACITY}}` (from runner def) | Caps the maximum total placeholder pairs (running + pending) the provisioner will create per cycle. `0` means unlimited. Used to prevent burst node provisioning from overloading downstream services (Harbor, pypi-cache) |
 | `CAPACITY_AWARE_RECALCULATE_INTERVAL` | `30s` | `30s` | Fallback reconciliation interval (event-driven is primary) |
 | `CAPACITY_AWARE_REPORT_INTERVAL` | `5s` | _(unset — uses code default)_ | How often the monitor reports state via `X-ScaleSetMaxCapacity` |
@@ -176,12 +176,13 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_RUNNER_MEMORY` | `512Mi` | `1Gi` | Runner placeholder memory request — **must match the runner container's actual memory request/limit**. The template value (`1Gi`) is the operative value; the code default (`512Mi`) would under-reserve and defeat the topology guarantee. |
 | `CAPACITY_AWARE_NODE_FLEET` | _(empty)_ | `{{NODE_FLEET}}` (from runner def) | Node fleet for placeholder-workflow scheduling (workflow pool, per-scale-set) |
 | `CAPACITY_AWARE_RUNNER_NODE_FLEET` | _(empty)_ | `c7i-runner` | **Required when `CAPACITY_AWARE_ENABLED=true`** — the cluster-wide runner-pool fleet for placeholder-runner scheduling (currently `c7i-runner`). `Validate()` returns an error if missing. Distinct from `CAPACITY_AWARE_NODE_FLEET` above: runner placeholders always land on the cluster-wide runner pool, while workflow placeholders land on the per-scale-set workflow pool. |
-| `CAPACITY_AWARE_HUD_FAILURE_MULTIPLIER` | `3` | _(unset — uses code default)_ | When the HUD API is unreachable, the capacity monitor over-provisions placeholders to `ProactiveCapacity * multiplier`. Outer caps (`MaxRunners` headroom, `MaxBurstCapacity`) bound the absolute blast radius. Clamped to a minimum of `1`. |
+| `CAPACITY_AWARE_HUD_FAILURE_MULTIPLIER` | `3` | _(unset — uses code default)_ | When the HUD API is unreachable, the capacity monitor over-provisions placeholders to `ProactiveCapacity * multiplier + HUDFailureBaseCapacity`. Outer caps (`MaxRunners` headroom, `MaxBurstCapacity`) bound the absolute blast radius. Clamped to a minimum of `1`. |
+| `CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY` | `0` | `{{HUD_FAILURE_BASE_CAPACITY}}` (from runner def; defaults to `0` — no def currently sets a non-zero value) | Additive baseline added to the HUD-failure fallback formula: `desiredPairs = ProactiveCapacity * HUDFailureMultiplier + HUDFailureBaseCapacity`. Lets operators run with `proactive_capacity: 0` and still surge a fixed floor of pairs when the HUD API is unreachable. Clamped to `[0, 1000]`; warning logged above `100`. |
 | `CAPACITY_AWARE_RUNNER_CLASS` | _(empty)_ | `{{RUNNER_CLASS}}` (from runner def) | Runner class for placeholder node selector |
 | `CAPACITY_AWARE_HUD_API_URL` | _(built-in default URL)_ | hardcoded PyTorch HUD `queued_jobs_aggregate` URL | HUD endpoint for queued job counts |
 | `CAPACITY_AWARE_HUD_API_TOKEN` | _(empty)_ | from K8s secret `pytorch-hud-token` (optional mount) | PyTorch HUD API token for queued job counts |
 
-Currently enabled for all runners (`CAPACITY_AWARE_ENABLED=true` is hardcoded in the template). Note: `generate_runners.py` forces `proactive_capacity` to `0` for staging clusters (`force_proactive_capacity_zero` is set when the cluster id contains `staging`), so placeholders are not pre-provisioned in staging — only on-demand pairs created for in-flight jobs.
+Currently enabled for all runners (`CAPACITY_AWARE_ENABLED=true` is hardcoded in the template). Note: `generate_runners.py` caps `proactive_capacity` at `N` for clusters that set `proactive_capacity_max: N` in `clusters.yaml` — each scale set renders `min(def_proactive_capacity, N)`. The staging cluster sets `proactive_capacity_max: 0`, so no placeholders are pre-provisioned there — only on-demand pairs created for in-flight jobs.
 
 ## Creating the HUD API Secret
 
