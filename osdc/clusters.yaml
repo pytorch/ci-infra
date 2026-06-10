@@ -294,11 +294,15 @@ clusters:
       min_node_age_seconds: 900
     buildkit:
       amd64_instance_type: m6id.24xlarge
-      amd64_replicas: 32
       amd64_pods_per_node: 2
       arm64_instance_type: m7gd.16xlarge
-      arm64_replicas: 8
       arm64_pods_per_node: 4
+      autoscaling:
+        enabled: true
+        amd64_min: 2   # 1x m6id.24xlarge (2 pods/node)
+        amd64_max: 128  # 14d peak 105; headroom to spare above it
+        arm64_min: 4   # 1x m7gd.16xlarge (4 pods/node)
+        arm64_max: 16  # 14d peak 8, likely capped by fixed pool; headroom
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: pytorch-arc-cbr-production
