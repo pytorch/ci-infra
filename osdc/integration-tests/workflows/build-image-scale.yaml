@@ -1,10 +1,12 @@
 # Reusable workflow: BuildKit autoscaling scale test.
-# Launches a burst of 8 parallel builds against one arch's remote BuildKit, each
-# holding a slot (server maxconn=1) for ~10 min via a sleep. The warm baseline
-# (amd64_min / arm64_min) is below the burst, so the builds finish within
-# timeout-minutes only if KEDA scales the pool up. Without scale-up they
-# serialize through the baseline pods and the back of the queue times out — i.e.
-# this job FAILS when autoscaling does not happen.
+# Mirrors the real .ci/docker/docker-builds.yml path — Docker Buildx with the
+# remote driver pointed at the per-arch buildkitd endpoint — but builds a
+# trivial image that just sleeps, so each of the 8 parallel jobs holds one
+# BuildKit slot (server maxconn=1) for ~10 min. The warm baseline is below the
+# burst, so the builds finish within timeout-minutes only if KEDA scales the
+# pool up; without scale-up they serialize through the baseline pods and the
+# back of the queue times out — i.e. this job FAILS when autoscaling does not
+# happen.
 name: BuildKit Scale Test
 
 on:
@@ -16,9 +18,8 @@ on:
         type: string
       runner_label:
         description: "Runner label to use (includes cluster prefix)"
-        required: false
+        required: true
         type: string
-        default: "l-x86iavx512-2-4"
 
 jobs:
   scale:
@@ -33,27 +34,26 @@ jobs:
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
-      - name: Install buildctl
-        run: |
-          BUILDKIT_VERSION="v0.29.0"
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-amd64.tar.gz" \
-            | tar xz --strip-components=1 -C "$HOME/.local/bin" bin/buildctl
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/buildctl" --version
-
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Set up Docker Buildx (remote)
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: remote
+          endpoint: tcp://buildkitd-${{ inputs.arch }}.buildkit:1234
 
       - name: Occupy a BuildKit slot (~10 min) to drive autoscaling
+        shell: bash
         run: |
-          ENDPOINT="tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
-          echo "Build ${{ matrix.replica }} -> $ENDPOINT"
-          buildctl --addr "$ENDPOINT" build \
-            --frontend dockerfile.v0 \
-            --local context=docker/test-buildkit-scale \
-            --local dockerfile=docker/test-buildkit-scale \
-            --opt build-arg:CACHEBUST=${{ inputs.arch }}-${{ matrix.replica }}-${{ github.run_id }} \
+          set -ex
+          cat > Dockerfile.scale <<'EOF'
+          FROM alpine:3.21
+          ARG CACHEBUST
+          RUN echo "osdc buildkit scale-test ${CACHEBUST}" && sleep 600
+          EOF
+          # --no-cache + a per-job CACHEBUST make each build distinct so it
+          # actually runs the sleep; cacheonly keeps it remote (no push/load).
+          docker buildx build \
+            --platform "linux/${{ inputs.arch }}" \
+            --build-arg "CACHEBUST=${{ inputs.arch }}-${{ matrix.replica }}-${{ github.run_id }}" \
             --no-cache \
-            --output type=cacheonly
-          echo "PASS: build ${{ matrix.replica }} finished within timeout"
+            --output type=cacheonly \
+            -f Dockerfile.scale .

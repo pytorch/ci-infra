@@ -112,13 +112,12 @@ def workflow_template(tmp_path):
     )
     (wf_dir / "integration-test.yaml.tpl").write_text(template)
 
-    # Also create reusable workflows and Dockerfiles for prepare_pr
+    # Also create reusable workflows and Dockerfile for prepare_pr
     (wf_dir / "build-image.yaml").write_text("name: build-image\n")
     (wf_dir / "build-image-scale.yaml").write_text("name: build-image-scale\n")
-    for name in ("test-buildkit", "test-buildkit-scale"):
-        docker_dir = upstream / "integration-tests" / "docker" / name
-        docker_dir.mkdir(parents=True)
-        (docker_dir / "Dockerfile").write_text("FROM alpine\n")
+    docker_dir = upstream / "integration-tests" / "docker" / "test-buildkit"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "Dockerfile").write_text("FROM alpine\n")
 
     return upstream
 
