@@ -14,6 +14,8 @@ spec:
           for: 1m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} has double-bit ECC errors"
             description: "GPU {{ $labels.gpu }} ({{ $labels.device }}) on node {{ $labels.node }} has new uncorrectable double-bit ECC errors. This GPU should be taken out of service."
@@ -23,6 +25,8 @@ spec:
           for: 1m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} has critical XID error {{ $value }}"
             description: "GPU {{ $labels.gpu }} reported XID error {{ $value }} (48=DBE, 79=GPU fallen off bus, 94/95=NVLink errors). Immediate investigation required."
@@ -32,6 +36,8 @@ spec:
           for: 1m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} has row remap failure"
             description: "GPU {{ $labels.gpu }} has a failed row remap, indicating irreparable memory damage. This GPU should be replaced."
@@ -41,6 +47,8 @@ spec:
           for: 5m
           labels:
             severity: critical
+            team: pytorch-dev-infra
+            priority: P3
           annotations:
             summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} temperature critical ({{ $value }}°C)"
             description: "GPU {{ $labels.gpu }} temperature has exceeded 95°C for 5 minutes. Sustained high temperatures cause throttling and hardware damage."

@@ -45,6 +45,8 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                 value: "{{PROACTIVE_CAPACITY}}"
               - name: CAPACITY_AWARE_MAX_BURST_CAPACITY
                 value: "{{MAX_BURST_CAPACITY}}"
+              - name: CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY
+                value: "{{HUD_FAILURE_BASE_CAPACITY}}"
     template:
       spec:
         containers:
@@ -201,6 +203,7 @@ def make_def_file(
     max_runners=None,
     proactive_capacity=None,
     max_burst_capacity=None,
+    hud_failure_base_capacity=None,
     node_fleet=None,
 ):
     """Write a runner def YAML and return the path.
@@ -226,6 +229,8 @@ def make_def_file(
         runner["proactive_capacity"] = proactive_capacity
     if max_burst_capacity is not None:
         runner["max_burst_capacity"] = max_burst_capacity
+    if hud_failure_base_capacity is not None:
+        runner["hud_failure_base_capacity"] = hud_failure_base_capacity
     if node_fleet is not None:
         runner["node_fleet"] = node_fleet
     content = {"runner": runner}
@@ -1066,8 +1071,8 @@ class TestGenerateRunner:
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
 
-    def test_proactive_capacity_forced_zero(self, tmp_path):
-        """force_proactive_capacity_zero overrides any def value to 0."""
+    def test_proactive_capacity_capped_to_zero(self, tmp_path):
+        """proactive_capacity_max=0 clamps any def value down to 0."""
         def_file = make_def_file(tmp_path, "forced-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -1075,7 +1080,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "force_proactive_capacity_zero": True,
+            "proactive_capacity_max": 0,
         }
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
@@ -1084,8 +1089,8 @@ class TestGenerateRunner:
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
 
-    def test_proactive_capacity_not_forced_when_false(self, tmp_path):
-        """force_proactive_capacity_zero=False preserves the def value."""
+    def test_proactive_capacity_uncapped(self, tmp_path):
+        """No proactive_capacity_max preserves the def value."""
         def_file = make_def_file(tmp_path, "kept-runner", "c7i.24xlarge", 4, 16, proactive_capacity=10)
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -1093,12 +1098,81 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "force_proactive_capacity_zero": False,
         }
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
 
         docs = list(yaml.safe_load_all((output_dir / "kept-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "10"
+
+    def test_hud_failure_base_capacity_default_zero(self, tmp_path):
+        """hud_failure_base_capacity defaults to 0 when not in the runner def."""
+        def_file = make_def_file(tmp_path, "hud-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "hud-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY"] == "0"
+
+    def test_hud_failure_base_capacity_nonzero(self, tmp_path):
+        """hud_failure_base_capacity: 25 renders as "25" in the listener env."""
+        def_file = make_def_file(tmp_path, "hud-warm-runner", "c7i.24xlarge", 4, 16, hud_failure_base_capacity=25)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "hud-warm-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY"] == "25"
+
+    def test_proactive_capacity_capped_below_def(self, tmp_path):
+        """proactive_capacity_max clamps a def value down to the cap."""
+        def_file = make_def_file(tmp_path, "capped-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "proactive_capacity_max": 5,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "capped-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "5"
+
+    def test_proactive_capacity_cap_above_def_noop(self, tmp_path):
+        """proactive_capacity_max higher than the def value is a no-op."""
+        def_file = make_def_file(tmp_path, "noop-runner", "c7i.24xlarge", 4, 16, proactive_capacity=10)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "proactive_capacity_max": 50,
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+
+        docs = list(yaml.safe_load_all((output_dir / "noop-runner.yaml").read_text()))
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "10"
 
@@ -1278,8 +1352,8 @@ class TestGenerateRunner:
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_MAX_BURST_CAPACITY"] == "0"
 
-    def test_max_burst_capacity_warning_when_below_proactive(self, tmp_path, capsys):
-        """Warn when max_burst_capacity (>0) is less than proactive_capacity — the cap
+    def test_max_burst_capacity_error_when_below_proactive(self, tmp_path, capsys):
+        """Error when max_burst_capacity (>0) is less than proactive_capacity — the cap
         would prevent the listener from reaching its proactive baseline.
         """
         def_file = make_def_file(
@@ -1293,7 +1367,7 @@ class TestGenerateRunner:
             "runner_name_prefix": "",
         }
 
-        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is True
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is False
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
@@ -1360,6 +1434,36 @@ class TestGenerateRunner:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert "max_burst_capacity" not in combined
+
+    def test_max_burst_capacity_less_than_hud_failure_base_capacity_errors(self, tmp_path, capsys):
+        """Error when max_burst_capacity (>0) is less than hud_failure_base_capacity — the cap
+        would prevent the listener from reaching its HUD-fallback baseline.
+        """
+        def_file = make_def_file(
+            tmp_path,
+            "hud-misconfig-runner",
+            "c7i.24xlarge",
+            4,
+            16,
+            hud_failure_base_capacity=25,
+            max_burst_capacity=10,
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners") is False
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "max_burst_capacity" in combined
+        assert "hud_failure_base_capacity" in combined
+        assert "10" in combined
+        assert "25" in combined
 
     def test_resource_values_match_def(self, tmp_path):
         def_file = make_def_file(tmp_path, "res-test", "c7i.24xlarge", 48, 96, disk_size=200)
@@ -2028,32 +2132,6 @@ class TestMain:
         with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
             assert main() == 1
 
-    def test_staging_forces_proactive_capacity_zero(self, tmp_path, monkeypatch):
-        """main() sets force_proactive_capacity_zero for staging clusters."""
-        p = tmp_path / "clusters.yaml"
-        p.write_text(yaml.dump(FAKE_CLUSTERS_YAML, default_flow_style=False))
-
-        defs_dir = tmp_path / "defs"
-        defs_dir.mkdir()
-        make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
-        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
-
-        output_dir = tmp_path / "out"
-
-        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
-        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
-        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
-        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
-
-        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
-
-        with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
-            assert main() == 0
-
-        docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
-        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
-        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
-
     def test_production_preserves_proactive_capacity(self, tmp_path, monkeypatch):
         """main() does NOT force proactive_capacity to zero for production clusters."""
         prod_config = {
@@ -2101,6 +2179,98 @@ class TestMain:
         docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
         listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
         assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "30"
+
+    def test_proactive_capacity_max_clusters_yaml(self, tmp_path, monkeypatch):
+        """main() honors proactive_capacity_max: 0 in clusters.yaml."""
+        prod_config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/prod-org",
+                    "github_secret_name": "prod-secret",
+                    "runner_name_prefix": "prod-",
+                },
+            },
+            "clusters": {
+                "arc-prod": {
+                    "cluster_name": "production",
+                    "region": "us-east-1",
+                    "modules": ["nodepools", "arc-runners"],
+                    "proactive_capacity_max": 0,
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/prod-org",
+                        "github_secret_name": "prod-secret",
+                        "runner_name_prefix": "prod-",
+                    },
+                },
+            },
+        }
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(prod_config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        output_dir = tmp_path / "out"
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "arc-prod"]):
+            assert main() == 0
+
+        docs = list(yaml.safe_load_all((output_dir / "warm-runner.yaml").read_text()))
+        listener_env = {e["name"]: e["value"] for e in docs[0]["listenerTemplate"]["spec"]["containers"][0]["env"]}
+        assert listener_env["CAPACITY_AWARE_PROACTIVE_CAPACITY"] == "0"
+
+    def test_proactive_capacity_max_invalid_clusters_yaml(self, tmp_path, monkeypatch):
+        """main() exits 1 when proactive_capacity_max is not a non-negative integer."""
+        invalid_config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/prod-org",
+                    "github_secret_name": "prod-secret",
+                    "runner_name_prefix": "prod-",
+                },
+            },
+            "clusters": {
+                "arc-prod": {
+                    "cluster_name": "production",
+                    "region": "us-east-1",
+                    "modules": ["nodepools", "arc-runners"],
+                    "proactive_capacity_max": -1,
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/prod-org",
+                        "github_secret_name": "prod-secret",
+                        "runner_name_prefix": "prod-",
+                    },
+                },
+            },
+        }
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(invalid_config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "warm-runner", "c7i.24xlarge", 4, 16, proactive_capacity=30)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(tmp_path / "out"))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "arc-prod"]):
+            assert main() == 1
 
     def test_pause_runners_forces_max_runners_zero(self, tmp_path, monkeypatch):
         """main() honors cluster-level pause_runners=true by forcing maxRunners: 0."""
