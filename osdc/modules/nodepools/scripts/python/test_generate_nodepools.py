@@ -1466,31 +1466,6 @@ class TestModuleStartupTaints:
         output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
         assert "startupTaints" not in output
 
-    def test_applies_when_predicate_excludes_nodepool(self, monkeypatch):
-        """A predicate that returns False suppresses emission for that nodepool_def."""
-        fake_registry = [
-            {
-                "module": "fake-module",
-                "key": "test.osdc.io/scoped",
-                "value": "true",
-                "effect": "NoSchedule",
-                "applies_when": lambda nd: nd.get("workload_type", "github-runner") == "github-runner",
-            },
-        ]
-        monkeypatch.setattr(generate_nodepools, "STARTUP_TAINTS", fake_registry)
-        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "fake-module")
-
-        excluded_def = _make_nodepool_def(workload_type="buildkit")
-        excluded_output = generate_nodepool_yaml(excluded_def, "nodepools")
-        assert "test.osdc.io/scoped" not in excluded_output
-        assert "startupTaints" not in excluded_output
-
-        included_def = _make_nodepool_def()
-        included_output = generate_nodepool_yaml(included_def, "nodepools")
-        np = self._np_doc(included_output)
-        startup_taints = np["spec"]["template"]["spec"]["startupTaints"]
-        assert any(t["key"] == "test.osdc.io/scoped" for t in startup_taints)
-
     def test_regular_taints_block_unchanged_when_startup_taints_emitted(self, monkeypatch):
         """The existing taints block must remain intact alongside startupTaints."""
         fake_registry = [
@@ -1617,8 +1592,22 @@ class TestRealStartupTaintsRegistry:
         assert entries[0]["value"] == "true"
         assert entries[0]["effect"] == "NoSchedule"
 
+    def test_real_registry_contains_algif_mitigation_taint(self):
+        entries = self._entries_for_key("node-init.osdc.io/algif-mitigation")
+        assert len(entries) == 1
+        assert entries[0]["module"] is None
+        assert entries[0]["value"] == "true"
+        assert entries[0]["effect"] == "NoSchedule"
+
+    def test_real_registry_contains_dirtyfrag_mitigation_taint(self):
+        entries = self._entries_for_key("node-init.osdc.io/dirtyfrag-mitigation")
+        assert len(entries) == 1
+        assert entries[0]["module"] is None
+        assert entries[0]["value"] == "true"
+        assert entries[0]["effect"] == "NoSchedule"
+
     def test_real_registry_renders_taints_in_nodepool(self, monkeypatch):
-        """End-to-end: with cache-enforcer enabled, all three taint keys appear."""
+        """End-to-end: with cache-enforcer enabled, all base + cache-enforcer taint keys appear."""
         monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "cache-enforcer")
         output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
         np = parse_all_yaml(output)[0]
@@ -1626,9 +1615,11 @@ class TestRealStartupTaintsRegistry:
         assert "node-init.osdc.io/cache-enforcer" in keys
         assert "node-init.osdc.io/registry-mirror" in keys
         assert "node-init.osdc.io/perf-tuning" in keys
+        assert "node-init.osdc.io/algif-mitigation" in keys
+        assert "node-init.osdc.io/dirtyfrag-mitigation" in keys
 
     def test_real_registry_skips_cache_enforcer_when_module_disabled(self, monkeypatch):
-        """With cache-enforcer disabled, only the two base taints appear."""
+        """With cache-enforcer disabled, only the base taints (module=None) appear."""
         monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "")
         output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
         np = parse_all_yaml(output)[0]
@@ -1636,3 +1627,5 @@ class TestRealStartupTaintsRegistry:
         assert "node-init.osdc.io/cache-enforcer" not in keys
         assert "node-init.osdc.io/registry-mirror" in keys
         assert "node-init.osdc.io/perf-tuning" in keys
+        assert "node-init.osdc.io/algif-mitigation" in keys
+        assert "node-init.osdc.io/dirtyfrag-mitigation" in keys

@@ -73,6 +73,26 @@ This ensures freshly provisioned nodes complete their full warm-up sequence (hoo
 
 **Failure mode without sufficient grace period**: If `min_node_age` is too short, the compactor can taint nodes while they are still in the warm-up window or running their first job. When combined with the Karpenter startup-taint deadlock (Karpenter ignores startup taints in provisioning decisions), this can leave workflow pods with no schedulable node — causing "backoff timeout" failures.
 
+## Startup Taints
+
+Karpenter NodePools emit a set of `node-init.osdc.io/*` startup taints on every new node. Workload pods do not tolerate these taints, so the scheduler holds them off the node until each owning DaemonSet has finished initialization and called the taint-remover to drop its taint.
+
+The registry of startup taints lives in `modules/nodepools/scripts/python/generate_nodepools.py` (`STARTUP_TAINTS`). Each entry declares a `module` gate: `None` means "emit on every cluster" (base component), a string means "emit only when this module name appears in the cluster's `NODEPOOLS_ENABLED_MODULES`".
+
+Current registry:
+
+| Taint Key | Module gate | Removed by |
+|-----------|-------------|------------|
+| `node-init.osdc.io/cache-enforcer` | `cache-enforcer` | `cache-enforcer` DaemonSet |
+| `node-init.osdc.io/registry-mirror` | base (`None`) | `registry-mirror-config` DaemonSet |
+| `node-init.osdc.io/perf-tuning` | base (`None`) | `node-performance-tuning` DaemonSet |
+| `node-init.osdc.io/algif-mitigation` | base (`None`) | `algif-mitigation` DaemonSet |
+| `node-init.osdc.io/dirtyfrag-mitigation` | base (`None`) | `dirtyfrag-mitigation` DaemonSet |
+
+The taint-remover library (`base/kubernetes/node-taint-remover/lib/taint_remover.py`) is mounted into each consuming DaemonSet's init container as a ConfigMap, runs after the per-DS init script, and uses RFC 6902 JSON Patch (test-then-remove by index) with retry on HTTP 409/422 to be race-safe against concurrent taint mutations by other init DaemonSets and Karpenter.
+
+When removing a CVE-mitigation DaemonSet because its kernel patch has rolled out (see `clusters.yaml` AMI-version gates), the corresponding registry entry MUST be removed in the same change. Leaving the registry entry without the DaemonSet would taint every new node with a taint nothing removes, blocking workload scheduling indefinitely.
+
 ## Non-Gating DaemonSets
 
 These DaemonSets also run on new nodes but do not block runner scheduling:
@@ -149,6 +169,11 @@ Sibling DaemonSet to `algif-mitigation`, same shape (privileged `nsenter` into P
 | `nvidia.com/gpu=true` | Permanent | `NoSchedule` | GPU NodePools only — applied by both the standard `generate_nodepools.py` (g4dn, g5, g6, p4d) and the specialized H100 (`modules/nodepools-h100`) and B200 (`modules/nodepools-b200`) generators. The `topology_manager_policy: single-numa-node` (scope `pod`) override is a per-def opt-in (set in the fleet YAML) and is used by p4d in the standard generator AND by H100/B200 in the specialized generators; other GPU pools inherit the runner default (`best-effort`/`container`). | Never (scheduling constraint) |
 | `node-compactor.osdc.io/consolidating=true` | Runtime (dynamic) | `NoSchedule` | Applied by node-compactor | node-compactor controller (protected by `min_node_age`: 900s) |
 | `CriticalAddonsOnly=true` | Permanent | `NoSchedule` | Base infrastructure nodes (EKS-managed) | Never |
+| `node-init.osdc.io/cache-enforcer=true` | Startup | `NoSchedule` | Karpenter NodePools on clusters that enable the `cache-enforcer` module | `cache-enforcer` DaemonSet via taint-remover at end-of-init |
+| `node-init.osdc.io/registry-mirror=true` | Startup | `NoSchedule` | All Karpenter NodePools | `registry-mirror-config` DaemonSet via taint-remover at end-of-init |
+| `node-init.osdc.io/perf-tuning=true` | Startup | `NoSchedule` | All Karpenter NodePools | `node-performance-tuning` DaemonSet via taint-remover at end-of-init |
+| `node-init.osdc.io/algif-mitigation=true` | Startup | `NoSchedule` | All Karpenter NodePools (until AL2023 kernel 6.12.85+ is rolled out, then this entry and the DaemonSet are deleted in lockstep) | `algif-mitigation` DaemonSet via taint-remover at end-of-init |
+| `node-init.osdc.io/dirtyfrag-mitigation=true` | Startup | `NoSchedule` | All Karpenter NodePools (until AL2023 kernel 6.1.170+ or 6.12.83+ is rolled out, then this entry and the DaemonSet are deleted in lockstep) | `dirtyfrag-mitigation` DaemonSet via taint-remover at end-of-init |
 
 ## Toleration Pattern
 
