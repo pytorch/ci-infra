@@ -34,39 +34,40 @@ jobs:
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
-      - name: Set up Docker Buildx (remote, no bootstrap)
+      - name: Install buildctl
         shell: bash
-        # NOT docker/setup-buildx-action: it always runs `buildx inspect
-        # --bootstrap`, whose remote-driver health check gives up after a
-        # hardcoded ~20s — shorter than a cold scale-up, so jobs fail at setup
-        # during a burst. `create` (no --bootstrap) just registers the builder;
-        # the build step below retries so the connection waits out scale-up.
+        # Build with buildctl, not docker buildx. buildx boots the remote builder
+        # with a hardcoded ~20s connect timeout that fails during a cold scale-up;
+        # buildctl streams the build over a connection that waits in HAProxy's
+        # queue until a pod is available, so it needs no retry.
         run: |
           set -ex
-          docker buildx create \
-            --name osdc-remote \
-            --driver remote \
-            --use \
-            "tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
+          BUILDKIT_VERSION="v0.29.0"
+          mkdir -p "${HOME}/.local/bin"
+          curl -sSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-amd64.tar.gz" \
+            | tar xz --strip-components=1 -C "${HOME}/.local/bin" bin/buildctl
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          "${HOME}/.local/bin/buildctl" --version
 
       - name: Occupy a BuildKit slot (~10 min) to drive autoscaling
         shell: bash
         run: |
           set -ex
-          cat > Dockerfile.scale <<'EOF'
+          mkdir -p ctx
+          cat > ctx/Dockerfile <<'EOF'
           FROM alpine:3.21
           ARG CACHEBUST
           RUN echo "osdc buildkit scale-test ${CACHEBUST}" && sleep 600
           EOF
           # --no-cache + a per-job CACHEBUST make each build distinct so it
-          # actually runs the sleep; cacheonly keeps it remote (no push/load).
-          # No retry needed: with the builder created above (no --bootstrap), the
-          # build connection waits in HAProxy's queue for a pod to free / scale up
-          # (bounded by `timeout queue`), instead of buildx's ~20s bootstrap gate.
-          # The 30-min job timeout still fails the test if scale-up never happens.
-          docker buildx build \
-            --platform "linux/${{ inputs.arch }}" \
-            --build-arg "CACHEBUST=${{ inputs.arch }}-${{ matrix.replica }}-${{ github.run_id }}" \
-            --no-cache \
-            --output type=cacheonly \
-            -f Dockerfile.scale .
+          # actually runs the sleep. No --output: the build runs but exports
+          # nothing. buildctl rides HAProxy's queue (no buildx ~20s bootstrap
+          # gate), so the build waits for a pod to free / the pool to scale up —
+          # no retry. The 30-min job timeout still fails the test if scale-up
+          # never happens.
+          buildctl --addr "tcp://buildkitd-${{ inputs.arch }}.buildkit:1234" build \
+            --frontend dockerfile.v0 \
+            --local context=ctx \
+            --local dockerfile=ctx \
+            --opt build-arg:CACHEBUST=${{ inputs.arch }}-${{ matrix.replica }}-${{ github.run_id }} \
+            --no-cache
