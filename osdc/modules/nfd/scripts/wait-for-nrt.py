@@ -17,7 +17,6 @@ Environment:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import ssl
@@ -30,7 +29,7 @@ from pathlib import Path
 # The shared taint-remover library is mounted at /scripts/taint-remover/
 sys.path.insert(0, "/scripts/taint-remover")
 
-from taint_remover import remove_taint_forever  # noqa: E402
+from taint_remover import remove_taint_forever
 
 TAINT_KEY = "node-init.osdc.io/nfd-topology"
 POLL_INTERVAL = 5  # seconds between NRT checks
@@ -63,7 +62,7 @@ def _get_nrt(node_name: str) -> int:
 
     url = f"{_k8s_api()}{NRT_API_PATH}/{node_name}"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    req = urllib.request.Request(url, method="GET", headers=headers)
+    req = urllib.request.Request(url, method="GET", headers=headers)  # noqa: S310
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:  # noqa: S310
             return resp.status
