@@ -36,6 +36,12 @@ GREEN = "\033[0;32m"
 RED = "\033[0;31m"
 NC = "\033[0m"
 
+# Sentinel for optional template lines. An optional fragment is either its YAML
+# lines or this sentinel; lines equal to it are dropped when a block is assembled
+# (see _deployment_block). This lets every fragment sit on its own line in the
+# templates below instead of being concatenated onto an adjacent line.
+_OMIT = "<<omit>>"
+
 
 def log_info(msg):
     print(f"{GREEN}\u2192{NC} {msg}")
@@ -103,6 +109,7 @@ def generate_deployment_yaml(
     arm64_replicas: int | None = None,
     amd64_pods_per_node: int | None = None,
     arm64_pods_per_node: int | None = None,
+    autoscaling: bool = False,
 ) -> str:
     """Generate the combined Deployment YAML for both architectures.
 
@@ -118,6 +125,37 @@ def generate_deployment_yaml(
     arm64_res = compute_pod_resources(arm64_instance, arm64_pods_per_node)
     amd64_res = compute_pod_resources(amd64_instance, amd64_pods_per_node)
 
+    # When KEDA owns the replica count, omit `replicas` and add a preStop drain
+    # that holds the pod open until its in-flight build finishes. Each fragment is
+    # either its YAML or _OMIT; _deployment_block drops _OMIT lines (matched after
+    # stripping), so single lines carry their indent in the template (e.g.
+    # `      {grace_line}`) while multi-line blocks self-indent. (`replicas_line`
+    # is per-arch — computed below.)
+    grace_line = "terminationGracePeriodSeconds: 8100" if autoscaling else _OMIT
+    lifecycle_block = (
+        """          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "/opt/drain/drain.sh"]"""
+        if autoscaling
+        else _OMIT
+    )
+    drain_mount = (
+        """            - name: drain
+              mountPath: /opt/drain
+              readOnly: true"""
+        if autoscaling
+        else _OMIT
+    )
+    drain_volume = (
+        """        - name: drain
+          configMap:
+            name: buildkitd-drain
+            defaultMode: 0555"""
+        if autoscaling
+        else _OMIT
+    )
+
     log_info(
         f"arm64 ({arm64_instance}): {arm64_res['cpu']} vCPU, {arm64_res['memory_gi']}Gi per pod "
         f"(allocatable: {arm64_res['allocatable_cpu_m']}m CPU, {arm64_res['allocatable_mem_mi']}Mi mem)"
@@ -128,7 +166,8 @@ def generate_deployment_yaml(
     )
 
     def _deployment_block(arch, instance_type, cpu, memory_gi, replicas, pods_per_node):
-        return f"""apiVersion: apps/v1
+        replicas_line = _OMIT if autoscaling else f"replicas: {replicas}"
+        block = f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: buildkitd-{arch}
@@ -139,7 +178,7 @@ metadata:
     app.kubernetes.io/name: buildkitd
     app.kubernetes.io/component: build-service
 spec:
-  replicas: {replicas}
+  {replicas_line}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -155,6 +194,7 @@ spec:
         app: buildkitd
         arch: {arch}
     spec:
+      {grace_line}
       nodeSelector:
         workload-type: buildkit
         instance-type: "{instance_type}"
@@ -209,6 +249,7 @@ spec:
 
           securityContext:
             privileged: true
+{lifecycle_block}
 
           readinessProbe:
             exec:
@@ -235,6 +276,7 @@ spec:
             - name: buildkit-cache
               mountPath: /var/lib/buildkit
               subPathExpr: $(POD_NAME)
+{drain_mount}
 
       volumes:
         - name: config
@@ -244,7 +286,9 @@ spec:
         - name: buildkit-cache
           hostPath:
             path: /mnt/k8s-disks/0/buildkit-cache
-            type: DirectoryOrCreate"""
+            type: DirectoryOrCreate
+{drain_volume}"""
+        return "\n".join(line for line in block.splitlines() if line.strip() != _OMIT)
 
     arm64_block = _deployment_block(
         "arm64", arm64_instance, arm64_res["cpu"], arm64_res["memory_gi"], arm64_replicas, arm64_pods_per_node
@@ -440,6 +484,76 @@ spec:
     return arm64_block + "\n\n---\n" + amd64_block + "\n"
 
 
+def generate_autoscaling_yaml(
+    amd64_min: int,
+    amd64_max: int,
+    arm64_min: int,
+    arm64_max: int,
+    amd64_fallback: int = 0,
+    arm64_fallback: int = 0,
+) -> str:
+    """Generate per-arch KEDA ScaledObjects.
+
+    Each arch scales on its HAProxy backend's active build count
+    (haproxy_backend_current_sessions), scraped in-cluster from the buildkit LB
+    metrics endpoint — no external metrics backend. With server maxconn=1, the LB
+    queues bursts while KEDA/Karpenter bring up pods; minReplicaCount keeps a warm
+    baseline so the common case has a free pod immediately.
+    """
+
+    metrics_url = "http://buildkitd-lb-metrics.buildkit.svc.cluster.local:9404/metrics"
+
+    def _scaledobject(arch, backend, min_replicas, max_replicas, fallback):
+        # If KEDA can't read the scale metric (e.g. LB metrics endpoint down),
+        # hold the proven fixed pool instead of letting the HPA freeze.
+        fallback_yaml = ""
+        if fallback:
+            fallback_yaml = f"\n  fallback:\n    failureThreshold: 3\n    replicas: {fallback}"
+        return f"""apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: buildkitd-{arch}
+  namespace: buildkit
+spec:
+  scaleTargetRef:
+    name: buildkitd-{arch}
+  minReplicaCount: {min_replicas}
+  maxReplicaCount: {max_replicas}{fallback_yaml}
+  cooldownPeriod: 1200
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # No-flap: hold a pod ~20 min after idle (reuses its NVMe layer cache),
+          # then shed at most max(10 pods, 20%) per 20 min.
+          stabilizationWindowSeconds: 1200
+          policies:
+            - type: Pods
+              value: 10
+              periodSeconds: 1200
+            - type: Percent
+              value: 20
+              periodSeconds: 1200
+          selectPolicy: Max
+  triggers:
+    - type: metrics-api
+      metadata:
+        url: "{metrics_url}"
+        format: "prometheus"
+        valueLocation: 'haproxy_backend_current_sessions{{proxy="{backend}"}}'
+        targetValue: "1"
+"""
+
+    header = "# KEDA autoscaling — auto-generated by generate_buildkit.py. Do not edit by hand.\n"
+    return (
+        header
+        + "\n"
+        + _scaledobject("amd64", "bk_amd64", amd64_min, amd64_max, amd64_fallback)
+        + "\n---\n"
+        + _scaledobject("arm64", "bk_arm64", arm64_min, arm64_max, arm64_fallback)
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate BuildKit Deployment and NodePool YAMLs")
     parser.add_argument("--arm64-instance-type", required=True, help="ARM64 instance type (e.g., m8gd.24xlarge)")
@@ -451,7 +565,18 @@ def main():
     parser.add_argument("--amd64-pods-per-node", type=int, default=None, help="Override amd64 pods per node")
     parser.add_argument("--arm64-pods-per-node", type=int, default=None, help="Override arm64 pods per node")
     parser.add_argument("--output-dir", required=True, help="Output directory for generated YAMLs")
+    parser.add_argument("--autoscaling", action="store_true", help="Generate KEDA autoscaling manifests")
+    parser.add_argument("--amd64-min", type=int, default=0, help="KEDA minReplicaCount for amd64")
+    parser.add_argument("--amd64-max", type=int, default=0, help="KEDA maxReplicaCount for amd64")
+    parser.add_argument("--arm64-min", type=int, default=0, help="KEDA minReplicaCount for arm64")
+    parser.add_argument("--arm64-max", type=int, default=0, help="KEDA maxReplicaCount for arm64")
+    parser.add_argument("--amd64-fallback", type=int, default=0, help="KEDA fallback replicas for amd64 (0=off)")
+    parser.add_argument("--arm64-fallback", type=int, default=0, help="KEDA fallback replicas for arm64 (0=off)")
     args = parser.parse_args()
+
+    if args.autoscaling and not (args.amd64_max and args.arm64_max):
+        log_error("--autoscaling requires --amd64-max and --arm64-max")
+        return 1
 
     # Validate instance types
     for it in [args.arm64_instance_type, args.amd64_instance_type]:
@@ -485,25 +610,52 @@ def main():
         arm64_replicas=args.arm64_replicas,
         amd64_pods_per_node=args.amd64_pods_per_node,
         arm64_pods_per_node=args.arm64_pods_per_node,
+        autoscaling=args.autoscaling,
     )
     deployment_path = output_dir / "deployment.yaml"
     deployment_path.write_text(deployment_yaml)
     log_info(f"Wrote {deployment_path}")
 
-    # Generate nodepools
-    nodepools_yaml = generate_nodepools_yaml(
-        args.arm64_instance_type,
-        args.amd64_instance_type,
-        args.replicas,
-        args.pods_per_node,
-        amd64_replicas=args.amd64_replicas,
-        arm64_replicas=args.arm64_replicas,
-        amd64_pods_per_node=args.amd64_pods_per_node,
-        arm64_pods_per_node=args.arm64_pods_per_node,
-    )
+    # Size NodePool limits for the peak: the per-arch autoscaling ceiling
+    # (amd64_max / arm64_max) when enabled, otherwise the per-arch replica counts.
+    if args.autoscaling:
+        nodepools_yaml = generate_nodepools_yaml(
+            args.arm64_instance_type,
+            args.amd64_instance_type,
+            args.replicas,
+            args.pods_per_node,
+            amd64_replicas=args.amd64_max,
+            arm64_replicas=args.arm64_max,
+            amd64_pods_per_node=args.amd64_pods_per_node,
+            arm64_pods_per_node=args.arm64_pods_per_node,
+        )
+    else:
+        nodepools_yaml = generate_nodepools_yaml(
+            args.arm64_instance_type,
+            args.amd64_instance_type,
+            args.replicas,
+            args.pods_per_node,
+            amd64_replicas=args.amd64_replicas,
+            arm64_replicas=args.arm64_replicas,
+            amd64_pods_per_node=args.amd64_pods_per_node,
+            arm64_pods_per_node=args.arm64_pods_per_node,
+        )
     nodepools_path = output_dir / "nodepools.yaml"
     nodepools_path.write_text(nodepools_yaml)
     log_info(f"Wrote {nodepools_path}")
+
+    if args.autoscaling:
+        autoscaling_yaml = generate_autoscaling_yaml(
+            args.amd64_min,
+            args.amd64_max,
+            args.arm64_min,
+            args.arm64_max,
+            amd64_fallback=args.amd64_fallback,
+            arm64_fallback=args.arm64_fallback,
+        )
+        autoscaling_path = output_dir / "autoscaling.yaml"
+        autoscaling_path.write_text(autoscaling_yaml)
+        log_info(f"Wrote {autoscaling_path}")
 
     return 0
 

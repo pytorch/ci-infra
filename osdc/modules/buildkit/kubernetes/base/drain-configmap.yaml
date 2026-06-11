@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-drain
+  namespace: buildkit
+data:
+  # preStop drain: block termination until no in-flight build remains. A build
+  # keeps an ESTABLISHED inbound connection on :1234 for its whole duration;
+  # require two consecutive idle polls so a transient health check can't be
+  # mistaken for "done". terminationGracePeriodSeconds caps the total wait.
+  drain.sh: |
+    #!/bin/sh
+    idle=0
+    while [ "$idle" -lt 2 ]; do
+      if netstat -tn 2>/dev/null | awk '$NF=="ESTABLISHED" && $4 ~ /:1234$/{f=1} END{exit !f}'; then
+        idle=0
+      else
+        idle=$((idle + 1))
+      fi
+      sleep 15
+    done

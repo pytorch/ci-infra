@@ -75,6 +75,10 @@ defaults:
     cpu_disruption_budget: "20%"
   buildkit:
     replicas_per_arch: 12
+    autoscaling:
+      enabled: false
+  keda:
+    chart_version: "2.16.1"
   monitoring:
     grafana_cloud_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom/push"
     grafana_cloud_read_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
@@ -154,8 +158,14 @@ clusters:
       github_secret_name: pytorch-arc-staging
       runner_name_prefix: "c-mt-"
     buildkit:
-      replicas_per_arch: 2
       arm64_instance_type: m7gd.16xlarge
+      arm64_pods_per_node: 4
+      autoscaling:
+        enabled: true
+        amd64_min: 2  # 1x m6id.24xlarge (2 pods/node)
+        amd64_max: 8
+        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
+        arm64_max: 8
     pypi_cache:
       replicas: 1
     modules:
@@ -163,6 +173,7 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - keda
       - buildkit
       - pypi-cache
       - cache-enforcer
