@@ -46,13 +46,24 @@ helm_upgrade_if_changed nfd nfd \
 echo "NFD topology-updater deployed."
 
 # --- Deploy taint-remover DaemonSet ---
-# Create ConfigMap from the shared taint_remover.py library, then apply
-# the DaemonSet that uses it to remove node-init.osdc.io/nfd-topology.
+# Two ConfigMaps:
+#   nfd-taint-remover-script — wait-for-nrt.py (polls for NRT, then removes taint)
+#   nfd-taint-remover-lib    — shared taint_remover.py library
+# Then apply the DaemonSet that mounts both.
 TAINT_REMOVER_LIB="$UPSTREAM_ROOT/base/kubernetes/node-taint-remover/lib/taint_remover.py"
+WAIT_SCRIPT="$MODULE_DIR/scripts/wait-for-nrt.py"
 if [[ ! -f "$TAINT_REMOVER_LIB" ]]; then
   echo "WARNING: taint_remover.py not found at $TAINT_REMOVER_LIB — skipping taint-remover deploy" >&2
+elif [[ ! -f "$WAIT_SCRIPT" ]]; then
+  echo "WARNING: wait-for-nrt.py not found at $WAIT_SCRIPT — skipping taint-remover deploy" >&2
 else
   echo "Deploying NFD taint-remover..."
+  kubectl create configmap nfd-taint-remover-script \
+    --from-file="wait-for-nrt.py=$WAIT_SCRIPT" \
+    -n nfd \
+    --dry-run=client \
+    -o yaml | kubectl apply -f -
+
   kubectl create configmap nfd-taint-remover-lib \
     --from-file="taint_remover.py=$TAINT_REMOVER_LIB" \
     -n nfd \
