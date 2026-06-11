@@ -205,6 +205,8 @@ clusters:
       - arc
       - nodepools
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
+      - nfd                   # NUMA topology data for p5 nodes
+      - numa-scheduler        # NUMA-aware secondary scheduler
       - arc-runners-h100
       - pypi-cache
       - cache-enforcer
@@ -285,6 +287,8 @@ clusters:
       - nodepools
       - nodepools-b200
       - nodepools-h100
+      - nfd                   # NUMA topology data for p5 nodes
+      - numa-scheduler        # NUMA-aware secondary scheduler
       - arc-runners
       - arc-runners-b200
       - arc-runners-h100

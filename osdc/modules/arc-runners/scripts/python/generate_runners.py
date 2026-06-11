@@ -314,6 +314,12 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
+    # Optional schedulerName for workflow pods. Per-runner-def value
+    # (e.g. scheduler_name: numa-scheduler on H100 4-GPU) takes precedence
+    # over the cluster-level default. Empty = default scheduler.
+    scheduler_name = runner.get("scheduler_name", "")
+    scheduler_name_line = f"      schedulerName: {scheduler_name}" if scheduler_name else ""
+
     # Replace all template placeholders
     output_content = template_content
     replacements = {
@@ -342,6 +348,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
         "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
+        "{{SCHEDULER_NAME_LINE}}": scheduler_name_line,
     }
 
     for placeholder, value in replacements.items():
