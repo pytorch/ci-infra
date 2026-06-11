@@ -1,0 +1,27 @@
+# RBAC for cache-enforcer to remove its own startup taint.
+# The cache-enforcer ServiceAccount is defined in daemonset.yaml; the
+# Role + Binding here grant it the minimum verbs (get/patch nodes) that
+# the shared taint_remover.py library at
+# base/kubernetes/node-taint-remover/lib/taint_remover.py requires.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cache-enforcer-taint-remover
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cache-enforcer-taint-remover
+subjects:
+  - kind: ServiceAccount
+    name: cache-enforcer
+    namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cache-enforcer-taint-remover
