@@ -39,10 +39,6 @@ spec:
         - key: node-fleet
           operator: Exists
           effect: NoSchedule
-        # Git cache may not be ready yet
-        - key: git-cache-not-ready
-          operator: Exists
-          effect: NoSchedule
       containers:
         - name: dcgm-exporter
           image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
