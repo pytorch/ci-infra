@@ -16,7 +16,7 @@
 #     scripts/    — deploy helpers
 #
 # The base always includes: VPC, EKS, Harbor,
-# base k8s resources, git-cache DaemonSet, NVIDIA device plugin, docker images.
+# base k8s resources, NVIDIA device plugin, docker images.
 # Harbor is NOT optional — every cluster gets a pull-through cache.
 
 defaults:
@@ -38,14 +38,6 @@ defaults:
   # --- CoreDNS sizing ---
   coredns:
     replicas: 6
-
-  # --- Git cache central ---
-  git_cache:
-    central_replicas: 2
-    central_cpu_request: "2"
-    central_cpu_limit: "2"
-    central_memory_request: "4Gi"
-    central_memory_limit: "8Gi"
 
   # --- Base component tuning ---
   harbor:
@@ -200,12 +192,6 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.8.0.0/16"
-    git_cache:
-      central_replicas: 15
-      central_cpu_request: "10"
-      central_cpu_limit: "15"
-      central_memory_request: "10Gi"
-      central_memory_limit: "50Gi"
     node_compactor:
       min_node_age_seconds: 900
     arc-runners:
@@ -228,6 +214,7 @@ clusters:
     modules:
       - karpenter
       - arc
+      - nodepools
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
       - arc-runners-h100
       - pypi-cache
@@ -247,12 +234,6 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
-    git_cache:
-      central_replicas: 15
-      central_cpu_request: "10"
-      central_cpu_limit: "15"
-      central_memory_request: "10Gi"
-      central_memory_limit: "50Gi"
     node_compactor:
       min_node_age_seconds: 900
     arc-runners:
@@ -284,12 +265,6 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
-    git_cache:
-      central_replicas: 15
-      central_cpu_request: "10"
-      central_cpu_limit: "15"
-      central_memory_request: "10Gi"
-      central_memory_limit: "50Gi"
     node_compactor:
       min_node_age_seconds: 900
     buildkit:

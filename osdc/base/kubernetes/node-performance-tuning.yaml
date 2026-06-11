@@ -294,6 +294,12 @@ data:
       echo "Configuration timestamp: $(cat $MARKER_FILE)"
     fi
 
+    # Remove the per-DS startup taint so workload pods can schedule on this node.
+    # Declared in modules/nodepools/scripts/python/generate_nodepools.py
+    # (MODULE_STARTUP_TAINTS registry — added in a follow-up PR). Idempotent:
+    # silent no-op when the taint isn't present.
+    python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/perf-tuning
+
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -328,74 +334,16 @@ spec:
       # High priority to ensure it runs before workloads
       priorityClassName: system-node-critical
 
-      # Tolerate ALL taints used by Karpenter nodepools
+      # Tolerate every taint. The DS gates on its own node-init.osdc.io/
+      # perf-tuning startup taint AND must coexist with the other
+      # node-init.osdc.io/* startup taints Karpenter emits — listing each
+      # explicitly creates a chicken-and-egg deadlock if any sibling is
+      # missed. `operator: Exists` matches every taint and avoids that whole
+      # class of bug. Scheduling isolation is enforced by nodeAffinity below
+      # (workload-type in [github-runner, buildkit]), not by the toleration
+      # list.
       tolerations:
-        # Karpenter instance-type taints (used by all nodepools)
-        - key: instance-type
-          operator: Exists
-          effect: NoSchedule
-
-        # Karpenter node-fleet taints (used by all nodepools)
-        - key: node-fleet
-          operator: Exists
-          effect: NoSchedule
-
-        # BuildKit workload taints (service-specific isolation)
-        - key: workload/buildkit-arm64
-          operator: Exists
-          effect: NoSchedule
-        - key: workload/buildkit-amd64
-          operator: Exists
-          effect: NoSchedule
-
-        # Git cache startup taint (removed by git-cache-warmer after warm-up)
-        - key: git-cache-not-ready
-          operator: Exists
-          effect: NoSchedule
-
-        # GPU taints
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-
-        # CPU architecture taints
-        - key: cpu-type
-          operator: Exists
-          effect: NoSchedule
-
-        # Karpenter default taints
-        - key: karpenter.sh/unschedulable
-          operator: Exists
-          effect: NoSchedule
-
-        # System taints
-        - key: CriticalAddonsOnly
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/not-ready
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/unreachable
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/disk-pressure
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/memory-pressure
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/pid-pressure
-          operator: Exists
-          effect: NoSchedule
-
-        - key: node.kubernetes.io/unschedulable
-          operator: Exists
-          effect: NoSchedule
+        - operator: Exists
 
       # Run on Karpenter-managed runner nodes and buildkit nodes
       affinity:
@@ -435,9 +383,18 @@ spec:
             capabilities:
               add: ["SYS_ADMIN", "NET_ADMIN"]
 
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
           volumeMounts:
             - name: scripts
               mountPath: /scripts
+              readOnly: true
+            - name: taint-remover-lib
+              mountPath: /scripts/taint-remover
               readOnly: true
             - name: host-root
               mountPath: /host
@@ -468,6 +425,11 @@ spec:
         - name: scripts
           configMap:
             name: node-performance-tuning-script
+            defaultMode: 0755
+
+        - name: taint-remover-lib
+          configMap:
+            name: node-taint-remover-lib
             defaultMode: 0755
 
         - name: host-root
@@ -503,3 +465,25 @@ metadata:
   namespace: kube-system
   labels:
     app: node-performance-tuning
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-performance-tuning-taint-remover
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-performance-tuning-taint-remover
+subjects:
+  - kind: ServiceAccount
+    name: node-performance-tuning
+    namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-performance-tuning-taint-remover

@@ -2,7 +2,7 @@
 # Downloads the patched runner-container-hooks zip once per node to NVMe,
 # so runner pods can mount it read-only without per-pod downloads.
 #
-# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.14
+# See: https://github.com/jeanschmidt/runner-container-hooks/releases/tag/v0.8.15
 # Remove this when upstream merges the fixes into actions/runner-container-hooks
 apiVersion: apps/v1
 kind: DaemonSet
@@ -36,20 +36,13 @@ spec:
       nodeSelector:
         node-fleet: "c7i-runner"
 
-      # Tolerate node-fleet + instance-type taints carried by c7i-runner
-      # nodes. Also tolerate the git-cache-not-ready startupTaint inherited
-      # from the unconditional NodePool generator emission — git-cache-warmer
-      # does not run on this pool, so the taint persists; tolerating it lets
-      # the warmer schedule despite that.
+      # Tolerate node-fleet + instance-type taints carried by c7i-runner nodes.
       tolerations:
         - key: node-fleet
           operator: Equal
           value: "c7i-runner"
           effect: NoSchedule
         - key: instance-type
-          operator: Exists
-          effect: NoSchedule
-        - key: git-cache-not-ready
           operator: Exists
           effect: NoSchedule
 
@@ -61,7 +54,7 @@ spec:
             - -c
             - |
               set -eu
-              HOOKS_VERSION="0.8.14"
+              HOOKS_VERSION="0.8.15"
               HOOKS_URL="https://github.com/jeanschmidt/runner-container-hooks/releases/download/v${HOOKS_VERSION}/actions-runner-hooks-k8s-${HOOKS_VERSION}.zip"
               DEST="/mnt/runner-container-hooks"
               MARKER="$DEST/.version"
