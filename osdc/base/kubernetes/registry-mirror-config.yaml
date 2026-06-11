@@ -210,6 +210,12 @@ data:
     mkdir -p /var/lib/registry-mirror-config || true
     echo "$(date -Iseconds 2>/dev/null || date)" > "$MARKER_FILE" || true
 
+    # Remove the per-DS startup taint so workload pods can schedule on this node.
+    # Declared in modules/nodepools/scripts/python/generate_nodepools.py
+    # (MODULE_STARTUP_TAINTS registry — added in a follow-up PR). Idempotent:
+    # silent no-op when the taint isn't present.
+    python3 /scripts/taint-remover/taint_remover.py node-init.osdc.io/registry-mirror
+
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -272,6 +278,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
 
           securityContext:
             privileged: true
@@ -279,6 +289,9 @@ spec:
           volumeMounts:
             - name: scripts
               mountPath: /scripts
+              readOnly: true
+            - name: taint-remover-lib
+              mountPath: /scripts/taint-remover
               readOnly: true
             - name: etc-containerd
               mountPath: /etc/containerd
@@ -306,6 +319,10 @@ spec:
             name: registry-mirror-config-script
             defaultMode: 0755
 
+        - name: taint-remover-lib
+          configMap:
+            name: node-taint-remover-lib
+
         - name: etc-containerd
           hostPath:
             path: /etc/containerd
@@ -329,3 +346,25 @@ metadata:
   namespace: kube-system
   labels:
     app: registry-mirror-config
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: registry-mirror-config-taint-remover
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: registry-mirror-config-taint-remover
+subjects:
+  - kind: ServiceAccount
+    name: registry-mirror-config
+    namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: registry-mirror-config-taint-remover
