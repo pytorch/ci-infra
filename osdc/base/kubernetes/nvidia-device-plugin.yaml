@@ -40,10 +40,6 @@ spec:
         - key: node-fleet
           operator: Exists
           effect: NoSchedule
-        # Git cache startup taint (removed by git-cache-warmer after warm-up)
-        - key: git-cache-not-ready
-          operator: Exists
-          effect: NoSchedule
       priorityClassName: system-node-critical
       containers:
         - image: nvcr.io/nvidia/k8s-device-plugin:v0.19.0

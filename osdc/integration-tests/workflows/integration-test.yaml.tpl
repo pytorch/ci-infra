@@ -82,13 +82,7 @@ jobs:
       - name: Verify environment
         run: |
           echo "=== Environment ==="
-          echo "CHECKOUT_GIT_CACHE_DIR=${CHECKOUT_GIT_CACHE_DIR:-NOT SET}"
-          echo "GIT_CONFIG_SYSTEM=${GIT_CONFIG_SYSTEM:-NOT SET}"
           echo "ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER=${ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER:-NOT SET}"
-          if [ -z "${CHECKOUT_GIT_CACHE_DIR:-}" ]; then
-            echo "FAIL: CHECKOUT_GIT_CACHE_DIR not set"
-            exit 1
-          fi
           echo "PASS: Required env vars present"
 
   test-cpu-x86-amx:
@@ -215,14 +209,6 @@ jobs:
             exit 1
           fi
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
-      - name: Verify environment
-        run: |
-          echo "CHECKOUT_GIT_CACHE_DIR=${CHECKOUT_GIT_CACHE_DIR:-NOT SET}"
-          if [ -z "${CHECKOUT_GIT_CACHE_DIR:-}" ]; then
-            echo "FAIL: CHECKOUT_GIT_CACHE_DIR not set"
-            exit 1
-          fi
-          echo "PASS: Required env vars present"
 
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
@@ -1330,58 +1316,6 @@ jobs:
           print(f'numpy location: {np.__file__}')
           print(f'PASS: numpy functional validation')
           "
-
-  # ── Git Cache Test ────────────────────────────────────────────────────
-  test-git-cache:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
-    container:
-      image: ghcr.io/actions/actions-runner:latest
-    steps:
-      - name: Verify cache mount
-        run: |
-          echo "=== Git Cache ==="
-          echo "CHECKOUT_GIT_CACHE_DIR=${CHECKOUT_GIT_CACHE_DIR:-NOT SET}"
-          if [ ! -d "${CHECKOUT_GIT_CACHE_DIR:-/nonexistent}" ]; then
-            echo "FAIL: Git cache directory not mounted"
-            exit 1
-          fi
-          echo "PASS: Git cache directory exists at $CHECKOUT_GIT_CACHE_DIR"
-          echo ""
-          echo "=== Cache contents ==="
-          ls -la "$CHECKOUT_GIT_CACHE_DIR/" || true
-      - name: Verify pytorch cache
-        run: |
-          CACHE_DIR="$CHECKOUT_GIT_CACHE_DIR/pytorch"
-          if [ ! -d "$CACHE_DIR/.git/objects" ]; then
-            echo "FAIL: pytorch/.git/objects not found"
-            echo "Cache dir contents:"
-            ls -la "$CHECKOUT_GIT_CACHE_DIR/" 2>/dev/null || echo "(empty)"
-            exit 1
-          fi
-          OBJ_COUNT=$(find "$CACHE_DIR/.git/objects" -type f 2>/dev/null | head -100 | wc -l)
-          echo "PASS: pytorch/pytorch cache has objects (sampled $OBJ_COUNT files)"
-      - name: Verify test-infra cache
-        run: |
-          CACHE_DIR="$CHECKOUT_GIT_CACHE_DIR/test-infra.git"
-          if [ ! -d "$CACHE_DIR/objects" ]; then
-            echo "FAIL: test-infra.git/objects not found"
-            exit 1
-          fi
-          echo "PASS: pytorch/test-infra cache present"
-      - name: Test fast checkout with cache
-        uses: actions/checkout@v4
-        with:
-          repository: pytorch/pytorch
-          ref: main
-          path: pytorch-checkout
-          fetch-depth: 1
-      - name: Verify checkout
-        run: |
-          if [ ! -f "pytorch-checkout/setup.py" ]; then
-            echo "FAIL: Checkout doesn't look like pytorch/pytorch"
-            exit 1
-          fi
-          echo "PASS: pytorch/pytorch checkout verified"
 
   # ── GPU Runner Tests ──────────────────────────────────────────────────
   test-gpu-t4:

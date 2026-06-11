@@ -341,6 +341,37 @@ class TestMain:
         code = run_main("staging", "has-module")
         assert code == 1
 
+    def test_enabled_modules_lists_all(self, capsys):
+        """enabled-modules prints the cluster's modules space-separated on one line."""
+        code = run_main("staging", "enabled-modules")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == "karpenter arc arc-runners"
+
+    def test_enabled_modules_production(self, capsys):
+        """enabled-modules works for a different cluster."""
+        code = run_main("production", "enabled-modules")
+        assert code == 0
+        out = capsys.readouterr().out.strip()
+        tokens = out.split()
+        assert tokens == ["karpenter", "arc", "arc-runners", "buildkit", "monitoring"]
+
+    def test_enabled_modules_empty_when_missing(self, capsys):
+        """A cluster without a 'modules:' key prints an empty line."""
+        cfg = {
+            "defaults": {},
+            "clusters": {"bare": {"cluster_name": "b", "region": "us-west-2"}},
+        }
+        with patch.object(cluster_config, "load_config", return_value=cfg):
+            code = run_main("bare", "enabled-modules")
+        assert code == 0
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_enabled_modules_unknown_cluster(self, capsys):
+        """enabled-modules on an unknown cluster exits non-zero with an error."""
+        code = run_main("nonexistent", "enabled-modules")
+        assert code == 1
+        assert "unknown cluster" in capsys.readouterr().err
+
     def test_tfvars_command(self, capsys):
         code = run_main("staging", "tfvars")
         assert code == 0
