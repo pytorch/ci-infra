@@ -7,3 +7,5 @@ runner:
   vcpu: 44
   memory: 500Gi
   gpu: 4
+  max_runners: 2  # TESTING: cap to 1 p4d node (2 NUMA zones × 4 GPUs)
+  scheduler_name: numa-scheduler  # TESTING: NUMA-aware scheduling
