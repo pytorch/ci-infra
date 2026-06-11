@@ -1,0 +1,115 @@
+# NFD startup-taint remover — removes node-init.osdc.io/nfd-topology
+# from p5 nodes after the NFD topology-updater DaemonSet starts.
+#
+# The NFD Helm chart doesn't support custom init containers, so we run
+# a separate minimal DaemonSet to remove the startup taint. The taint
+# is added by generate_nodepools.py (STARTUP_TAINTS registry) and
+# prevents workflow pods from scheduling before NRT data is available.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nfd-taint-remover
+  namespace: nfd
+  labels:
+    app: nfd-taint-remover
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nfd-taint-remover
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nfd-taint-remover
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nfd-taint-remover
+subjects:
+  - kind: ServiceAccount
+    name: nfd-taint-remover
+    namespace: nfd
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nfd-taint-remover
+  namespace: nfd
+  labels:
+    app: nfd-taint-remover
+spec:
+  selector:
+    matchLabels:
+      app: nfd-taint-remover
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+  template:
+    metadata:
+      labels:
+        app: nfd-taint-remover
+
+    spec:
+      priorityClassName: system-node-critical
+
+      # Match the same nodes as the NFD topology-updater.
+      nodeSelector:
+        node-fleet: p5
+
+      # Tolerate every taint — same rationale as node-performance-tuning:
+      # must coexist with all node-init.osdc.io/* startup taints without
+      # creating chicken-and-egg deadlocks.
+      tolerations:
+        - operator: Exists
+
+      serviceAccountName: nfd-taint-remover
+
+      initContainers:
+        - name: remove-taint
+          image: public.ecr.aws/docker/library/python:3.12-alpine
+          command: ["python3", "/scripts/taint-remover/taint_remover.py", "node-init.osdc.io/nfd-topology"]
+
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+          volumeMounts:
+            - name: taint-remover-lib
+              mountPath: /scripts/taint-remover
+              readOnly: true
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              cpu: 10m
+              memory: 16Mi
+
+      volumes:
+        - name: taint-remover-lib
+          configMap:
+            name: nfd-taint-remover-lib
+            defaultMode: 0755
