@@ -13,7 +13,7 @@ spec:
         # failureThreshold, KEDA drops to the fixed fallback pool instead of scaling.
         - alert: BuildkitKedaScalerErrors
           expr: |
-            sum by (scaledObject) (increase(keda_scaler_errors_total[15m])) > 0
+            sum by (scaledObject) (increase(keda_scaler_detail_errors_total[15m])) > 0
           for: 10m
           labels:
             severity: warning
@@ -25,7 +25,7 @@ spec:
 
         - alert: BuildkitKedaScaledObjectErrors
           expr: |
-            sum by (scaledObject) (increase(keda_scaledobject_errors_total[15m])) > 0
+            sum by (scaledObject) (increase(keda_scaled_object_errors_total[15m])) > 0
           for: 10m
           labels:
             severity: warning
