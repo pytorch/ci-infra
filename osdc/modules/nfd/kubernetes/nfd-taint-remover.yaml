@@ -1,10 +1,11 @@
-# NFD startup-taint remover — removes node-init.osdc.io/nfd-topology
-# from p5 nodes after the NFD topology-updater DaemonSet starts.
+# NFD startup-taint remover — waits for NFD to publish a
+# NodeResourceTopology object for this node, then removes the
+# node-init.osdc.io/nfd-topology startup taint.
 #
 # The NFD Helm chart doesn't support custom init containers, so we run
-# a separate minimal DaemonSet to remove the startup taint. The taint
-# is added by generate_nodepools.py (STARTUP_TAINTS registry) and
-# prevents workflow pods from scheduling before NRT data is available.
+# a separate DaemonSet. The taint is added by generate_nodepools.py
+# (STARTUP_TAINTS registry) and prevents workflow pods from scheduling
+# before NRT data is available for the numa-scheduler.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -22,6 +23,9 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "patch"]
+  - apiGroups: ["topology.node.k8s.io"]
+    resources: ["noderesourcetopologies"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -43,6 +47,8 @@ metadata:
   namespace: nfd
   labels:
     app: nfd-taint-remover
+    app.kubernetes.io/name: nfd-taint-remover
+    app.kubernetes.io/component: node-configuration
 spec:
   selector:
     matchLabels:
@@ -74,9 +80,11 @@ spec:
       serviceAccountName: nfd-taint-remover
 
       initContainers:
-        - name: remove-taint
-          image: public.ecr.aws/docker/library/python:3.12-alpine
-          command: ["python3", "/scripts/taint-remover/taint_remover.py", "node-init.osdc.io/nfd-topology"]
+        - name: wait-and-remove-taint
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          command: ["/bin/bash", "-c"]
+          args:
+            - python3 /scripts/wait-for-nrt.py
 
           env:
             - name: NODE_NAME
@@ -85,6 +93,9 @@ spec:
                   fieldPath: spec.nodeName
 
           volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
             - name: taint-remover-lib
               mountPath: /scripts/taint-remover
               readOnly: true
@@ -98,17 +109,24 @@ spec:
               memory: 64Mi
 
       containers:
-        - name: pause
-          image: registry.k8s.io/pause:3.9
+        - name: sleep
+          image: public.ecr.aws/docker/library/alpine:3.19
+          command: ["/bin/sh", "-c", "echo 'NFD taint removed. Sleeping...'; sleep infinity"]
+
           resources:
             requests:
-              cpu: 1m
-              memory: 8Mi
-            limits:
               cpu: 10m
-              memory: 16Mi
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
 
       volumes:
+        - name: scripts
+          configMap:
+            name: nfd-taint-remover-script
+            defaultMode: 0755
+
         - name: taint-remover-lib
           configMap:
             name: nfd-taint-remover-lib
