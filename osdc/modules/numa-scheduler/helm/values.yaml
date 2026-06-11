@@ -1,0 +1,57 @@
+# Scheduler-plugins — NUMA-aware secondary scheduler
+# Chart source: https://github.com/kubernetes-sigs/scheduler-plugins
+#   (vendored from manifests/install/charts/as-a-second-scheduler/)
+#
+# Deploys a second kube-scheduler named "numa-scheduler" with the
+# NodeResourceTopologyMatch plugin enabled. Pods that set
+# schedulerName: numa-scheduler will be filtered/scored by per-NUMA-zone
+# resource availability (read from NodeResourceTopology CRDs published
+# by the NFD topology-updater).
+#
+# Nothing uses this scheduler until runner definitions set
+# scheduler_name: numa-scheduler — deploying it is a no-op.
+
+scheduler:
+  name: numa-scheduler
+  image: registry.k8s.io/scheduler-plugins/kube-scheduler:v0.34.7
+  replicaCount: 2
+  leaderElect: true
+
+  # Run on base-infrastructure nodes alongside other control plane components.
+  nodeSelector:
+    role: base-infrastructure
+
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# The controller is needed for Coscheduling/CapacityScheduling plugins.
+# We only use NodeResourceTopologyMatch, so disable it.
+controller:
+  replicaCount: 0
+
+# Only enable NodeResourceTopologyMatch — we don't need Coscheduling,
+# CapacityScheduling, or other plugins.
+plugins:
+  enabled:
+    - NodeResourceTopologyMatch
+  disabled: []
+
+pluginConfig:
+  - name: NodeResourceTopologyMatch
+    args:
+      scoringStrategy:
+        # Pack pods onto already-busy NUMA zones so other zones stay
+        # fully free for large (4-GPU) requests. Without this, small
+        # pods spread across sockets and fragment both.
+        type: MostAllocated
