@@ -58,6 +58,8 @@ elif [[ ! -f "$WAIT_SCRIPT" ]]; then
   echo "WARNING: wait-for-nrt.py not found at $WAIT_SCRIPT — skipping taint-remover deploy" >&2
 else
   echo "Deploying NFD taint-remover..."
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$WAIT_SCRIPT"
+
   kubectl create configmap nfd-taint-remover-script \
     --from-file="wait-for-nrt.py=$WAIT_SCRIPT" \
     -n nfd \
