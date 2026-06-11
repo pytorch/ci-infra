@@ -35,15 +35,17 @@ spec:
             summary: "KEDA ScaledObject {{ $labels.scaledObject }} reconcile errors"
             description: "KEDA failed to reconcile ScaledObject {{ $labels.scaledObject }} in the last 15m; autoscaling for that arch may be stale."
 
-        # Builds stuck waiting for a pod — the pool isn't scaling up fast enough.
+        # A real backlog the pool can't keep up with. The >20 threshold (not >0)
+        # avoids firing on normal burst churn, where small batches keep the queue
+        # briefly non-zero but still drain within minutes as pods scale up.
         - alert: BuildkitQueueBacklog
           expr: |
-            haproxy_backend_current_queue{proxy=~"bk_amd64|bk_arm64"} > 0
+            haproxy_backend_current_queue{proxy=~"bk_amd64|bk_arm64"} > 20
           for: 15m
           labels:
             severity: warning
             team: pytorch-dev-infra
             priority: P3
           annotations:
-            summary: "BuildKit {{ $labels.proxy }} has builds queued for 15m"
-            description: "Builds have been waiting in the {{ $labels.proxy }} queue for 15m — the pool isn't scaling up fast enough (or is at max) to meet demand."
+            summary: "BuildKit {{ $labels.proxy }} backlog: >20 builds queued for 15m"
+            description: "More than 20 builds have been waiting in the {{ $labels.proxy }} queue for 15m — beyond normal burst churn; the pool isn't scaling up fast enough (or is at max)."
