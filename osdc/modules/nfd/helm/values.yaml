@@ -1,0 +1,50 @@
+# Node Feature Discovery — topology-updater only
+# Chart: https://github.com/kubernetes-sigs/node-feature-discovery/tree/master/deployment/helm/node-feature-discovery
+#
+# We only need the topology-updater component, which publishes
+# NodeResourceTopology CRDs per node. The NFD worker (feature detection)
+# and master (label reconciliation) are disabled — we don't need node
+# feature labels, just per-NUMA-zone resource visibility for the
+# numa-scheduler.
+
+master:
+  enable: false
+
+worker:
+  enable: false
+
+topologyUpdater:
+  enable: true
+
+  # Poll kubelet PodResources API every 15s (default 60s). Needs to be
+  # faster than the ARC capacity provisioner interval (30s) so NRT
+  # objects reflect current GPU allocations before placeholder pods are
+  # evaluated by the NUMA-aware scheduler.
+  updateInterval: 15s
+
+  # Scoped to H100 nodes (p5 fleet) where the packed pool uses
+  # single-numa-node topology policy. Only these multi-NUMA nodes
+  # need NRT data for the numa-scheduler to prevent
+  # TopologyAffinityError on 4-GPU jobs.
+  nodeSelector:
+    node-fleet: p5
+
+  # Tolerate every taint so the topology-updater schedules on p5
+  # nodes regardless of their taint set (node-fleet, instance-type,
+  # nvidia.com/gpu, startup taints). The nodeSelector above controls
+  # placement; tolerations just grant access.
+  tolerations:
+    - operator: Exists
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# The topology-updater needs the NRT CRD. The NFD chart installs it
+# when topologyUpdater is enabled.
+topologyGC:
+  enable: true
