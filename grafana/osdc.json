@@ -540,7 +540,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "(100 * (avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))[1h:]) - avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[1h:])) / avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[1h:])) and on(cluster) (avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[1h:]) > 0)",
+                      "expr": "(100 * (avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))[3h:]) - avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:])) / avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:])) and on(cluster) (avg_over_time((sum by(cluster) (gha_running_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:]) > 0)",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -556,10 +556,10 @@
             "transformations": []
           }
         },
-        "description": "Week-over-week percentage change in the 1-hour rolling average of running jobs.",
+        "description": "Week-over-week percentage change in the 3-hour rolling average of running jobs.",
         "id": 4,
         "links": [],
-        "title": "Running Jobs Week-over-Week % Change, 1h Avg [cluster, scale_set]",
+        "title": "Running Jobs Week-over-Week % Change, 3h Avg [cluster, scale_set]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -617,19 +617,19 @@
                     },
                     {
                       "color": "#EAB839",
-                      "value": -20
+                      "value": -35
                     },
                     {
                       "color": "rgba(255, 255, 255, 0)",
-                      "value": -10
+                      "value": -20
                     },
                     {
                       "color": "#EAB839",
-                      "value": 10
+                      "value": 80
                     },
                     {
                       "color": "red",
-                      "value": 20
+                      "value": 100
                     }
                   ]
                 },
@@ -678,7 +678,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "app": "grafana-assistant-app",
-                      "expr": "(100 * (avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))[1h:]) - avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[1h:])) / avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[1h:])) and on(cluster) (avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[1h:]) > 0)",
+                      "expr": "(100 * (avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"}))[3h:]) - avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:])) / avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:])) and on(cluster) (avg_over_time((sum by(cluster) (gha_assigned_jobs{cluster=~\"$cluster\", name=~\"$scale_set\"} offset 1w))[3h:]) > 0)",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -694,10 +694,10 @@
             "transformations": []
           }
         },
-        "description": "Week-over-week percentage change in the 1-hour rolling average of assigned jobs.",
+        "description": "Week-over-week percentage change in the 3-hour rolling average of assigned jobs.",
         "id": 5,
         "links": [],
-        "title": "Assigned Jobs Week-over-Week % Change, 1h Avg [cluster, scale_set]",
+        "title": "Assigned Jobs Week-over-Week % Change, 3h Avg [cluster, scale_set]",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -755,19 +755,19 @@
                     },
                     {
                       "color": "#EAB839",
-                      "value": -20
+                      "value": -35
                     },
                     {
                       "color": "rgba(255, 255, 255, 0)",
-                      "value": -10
+                      "value": -20
                     },
                     {
                       "color": "#EAB839",
-                      "value": 10
+                      "value": 80
                     },
                     {
                       "color": "red",
-                      "value": 20
+                      "value": 100
                     }
                   ]
                 },

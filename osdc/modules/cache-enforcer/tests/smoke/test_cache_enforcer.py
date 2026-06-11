@@ -244,21 +244,34 @@ class TestCacheEnforcerPodSpec:
     def test_tolerates_runner_node_taints(self, ds_spec: dict) -> None:
         """Must tolerate all taints used by Karpenter runner nodepools.
 
-        At minimum: instance-type, git-cache-not-ready, nvidia.com/gpu.
+        At minimum: instance-type, nvidia.com/gpu, cpu-type, CriticalAddonsOnly.
         These taints are present on runner nodes and would prevent scheduling
         without matching tolerations.
+
+        A toleration matches a taint if either:
+          - its `key` matches the taint key and operator is Exists or Equal, OR
+          - it has no `key` set (`""` or absent) and operator is Exists, which
+            is the K8s catch-all that matches every taint.
         """
         tolerations = ds_spec.get("tolerations", [])
-        toleration_keys = {t.get("key") for t in tolerations}
+
+        def tolerates(taint_key: str) -> bool:
+            for t in tolerations:
+                op = t.get("operator", "Equal")
+                t_key = t.get("key") or ""
+                if not t_key and op == "Exists":
+                    return True
+                if t_key == taint_key and op in ("Exists", "Equal"):
+                    return True
+            return False
 
         required_keys = {
             "instance-type",
-            "git-cache-not-ready",
             "nvidia.com/gpu",
             "cpu-type",
             "CriticalAddonsOnly",
         }
-        missing = required_keys - toleration_keys
+        missing = {k for k in required_keys if not tolerates(k)}
         assert not missing, (
             f"Missing tolerations for runner node taints: {missing}. "
             f"DaemonSet will not schedule on nodes with these taints."

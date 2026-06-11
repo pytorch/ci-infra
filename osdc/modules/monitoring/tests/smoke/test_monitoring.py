@@ -30,7 +30,6 @@ EXPECTED_SERVICE_MONITORS = [
     "harbor",
     "karpenter",
     "node-compactor",
-    "git-cache-central",
     "pypi-cache",
     "dcgm-exporter",
 ]
@@ -38,7 +37,6 @@ EXPECTED_SERVICE_MONITORS = [
 EXPECTED_POD_MONITORS = [
     "arc-listeners",
     "coredns",
-    "git-cache-daemonset",
 ]
 
 
@@ -292,12 +290,10 @@ SCRAPE_TARGETS: dict[str, tuple[str, str | None]] = {
     "buildkit-haproxy": ("buildkitd-lb-metrics", "buildkit"),
     "karpenter": ("karpenter", "karpenter"),
     "node-compactor": ("node-compactor", None),
-    "git-cache-central": ("git-cache-central-metrics", None),
     # arc-controller: skipped — ARC controller metrics Service varies by chart version
     # harbor: skipped — Harbor exporter Service name varies by chart version
     # dcgm-exporter: skipped — only runs on GPU nodes which may not exist
     # arc-listeners: skipped — ephemeral pods, too flaky
-    # git-cache-daemonset: skipped — PodMonitor, different job label format
     # pypi-cache: skipped — multiple Services per CUDA slug (pypi-cache-cpu, pypi-cache-cu121, etc.),
     #   job label is unpredictable. ServiceMonitor existence is verified in TestServiceMonitors.
 }

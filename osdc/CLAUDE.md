@@ -4,7 +4,7 @@ project-doc: enabled
 
 ## What This Is
 
-Modular Kubernetes infrastructure platform on AWS EKS. The `modules/eks/` module provisions the cluster (VPC, EKS, Harbor S3/IAM via tofu); `base/` layers cluster-wide k8s resources on top (Harbor Helm chart, git cache, NVIDIA device plugin, image-cache-janitor, node tuning, runner-base image). Optional `modules/` (ARC, runners, BuildKit, nodepools, pypi-cache, monitoring, logging, etc.) deploy on top. One codebase drives multiple clusters across regions via `clusters.yaml`.
+Modular Kubernetes infrastructure platform on AWS EKS. The `modules/eks/` module provisions the cluster (VPC, EKS, Harbor S3/IAM via tofu); `base/` layers cluster-wide k8s resources on top (Harbor Helm chart, NVIDIA device plugin, image-cache-janitor, node tuning, runner-base image). Optional `modules/` (ARC, runners, BuildKit, nodepools, pypi-cache, monitoring, logging, etc.) deploy on top. One codebase drives multiple clusters across regions via `clusters.yaml`.
 
 Working directory: `osdc/`. Run all commands from here.
 
@@ -47,7 +47,7 @@ Detailed instructions are broken into on-demand skills. Load the relevant skill 
 
 | Skill | What it covers | When to load |
 |-------|---------------|--------------|
-| `osdc-project-structure` | Architecture, directory tree, submodule pattern, design decisions, git cache, knowledge base, key files, docs index | Always load when working on OSDC |
+| `osdc-project-structure` | Architecture, directory tree, submodule pattern, design decisions, knowledge base, key files, docs index | Always load when working on OSDC |
 | `osdc-deployment` | Deploy workflow, just recipes, base/module deploy order, clusters.yaml, Terraform architecture, smoke tests | Deploying, adding modules, modifying deploy scripts |
 | `osdc-tooling-and-quality` | Tools (tofu/just/mise/uv), automation hierarchy, unit tests, code style, 13 linters, indentation rules, full Don't Do list | Writing code, running linters, adding scripts/tests |
 | `osdc-runners-nodepools` | Runners, NodePools, BuildKit, GitHub Actions constraints, node taints, image mirroring, change checklist | Modifying runners, nodepools, BuildKit, node configs |
