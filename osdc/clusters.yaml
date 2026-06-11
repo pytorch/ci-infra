@@ -299,9 +299,9 @@ clusters:
       arm64_pods_per_node: 4
       autoscaling:
         enabled: true
-        amd64_min: 2   # 1x m6id.24xlarge (2 pods/node)
+        amd64_min: 32  # warm baseline = proven fixed pool (16x m6id.24xlarge)
         amd64_max: 360  # ~90d peak ≈180, x2 for headroom
-        arm64_min: 4   # 1x m7gd.16xlarge (4 pods/node)
+        arm64_min: 8   # warm baseline = proven fixed pool (2x m7gd.16xlarge)
         arm64_max: 30  # ~90d peak ≈15, x2 for headroom
         amd64_fallback: 32  # if KEDA can't read metrics, hold the proven fixed pool
         arm64_fallback: 8
