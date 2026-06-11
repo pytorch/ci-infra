@@ -10,7 +10,6 @@ resources:
   - servicemonitors/arc-controller.yaml
   - servicemonitors/buildkit.yaml
   - servicemonitors/buildkit-haproxy.yaml
-  - servicemonitors/git-cache-central.yaml
   - servicemonitors/harbor.yaml
   - servicemonitors/karpenter.yaml
   - servicemonitors/keda.yaml
@@ -20,7 +19,6 @@ resources:
   # PodMonitors
   - podmonitors/arc-listeners.yaml
   - podmonitors/coredns.yaml
-  - podmonitors/git-cache-daemonset.yaml
   - podmonitors/nodelocaldns.yaml
   # DCGM ServiceMonitor (DaemonSet is in parent kustomization)
   - dcgm-servicemonitor.yaml
