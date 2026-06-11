@@ -15,6 +15,7 @@ worker:
 
 topologyUpdater:
   enable: true
+  createCRDs: true
 
   # Poll kubelet PodResources API every 15s (default 60s). Needs to be
   # faster than the ARC capacity provisioner interval (30s) so NRT
