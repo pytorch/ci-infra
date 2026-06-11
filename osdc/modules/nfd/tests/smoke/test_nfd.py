@@ -1,7 +1,7 @@
 """Smoke tests for NFD (Node Feature Discovery) topology-updater.
 
 Validates that the NFD namespace exists, the Helm release is deployed,
-the topology-updater DaemonSet is healthy on GPU nodes, and
+the topology-updater DaemonSet is healthy on all nodes, and
 NodeResourceTopology CRDs are being published.
 """
 
@@ -55,11 +55,7 @@ class TestNFDHelm:
 
 
 class TestTopologyUpdater:
-    """Verify topology-updater DaemonSet is healthy on GPU nodes.
-
-    allow_zero=True because the cluster may not have any GPU nodes
-    provisioned at test time (e.g. staging with no active GPU jobs).
-    """
+    """Verify topology-updater DaemonSet is healthy on p5 nodes."""
 
     def test_topology_updater_healthy(self, all_daemonsets: dict, all_nodes: dict) -> None:
         assert_daemonset_healthy(
@@ -67,7 +63,20 @@ class TestTopologyUpdater:
             all_nodes,
             NAMESPACE,
             name_contains="topology-updater",
-            allow_zero=True,
+            allow_zero=True,  # NFD targets p5 (H100) nodes only; clusters without p5 have 0 pods
+        )
+
+
+class TestTaintRemover:
+    """Verify nfd-taint-remover DaemonSet is healthy on p5 nodes."""
+
+    def test_taint_remover_healthy(self, all_daemonsets: dict, all_nodes: dict) -> None:
+        assert_daemonset_healthy(
+            all_daemonsets,
+            all_nodes,
+            NAMESPACE,
+            name_contains="taint-remover",
+            allow_zero=True,  # Same p5-only scope as topology-updater
         )
 
 

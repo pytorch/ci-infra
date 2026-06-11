@@ -262,7 +262,6 @@ class TestGenerateDeploymentYaml:
             mount_names = {vm["name"] for vm in container["volumeMounts"]}
             assert "config" in mount_names
             assert "buildkit-cache" in mount_names
-            assert "git-cache" in mount_names
 
     def test_debug_addr_flag_present(self):
         output = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
@@ -449,16 +448,7 @@ class TestGenerateNodepoolsYaml:
                 assert "workload/buildkit-arm64" in taint_keys
             else:
                 assert "workload/buildkit-amd64" in taint_keys
-            # instance-type taint satisfies git-cache-warmer guard
             assert "instance-type" in taint_keys
-
-    def test_startup_taints(self):
-        output = generate_nodepools_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
-        docs = self._parse_nodepools(output)
-        nodepools = [d for d in docs if d["kind"] == "NodePool"]
-        for np in nodepools:
-            startup_taints = np["spec"]["template"]["spec"]["startupTaints"]
-            assert any(t["key"] == "git-cache-not-ready" for t in startup_taints)
 
 
 # ============================================================================

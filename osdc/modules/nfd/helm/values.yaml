@@ -22,26 +22,19 @@ topologyUpdater:
   # evaluated by the NUMA-aware scheduler.
   updateInterval: 15s
 
-  # Only run on GPU nodes — non-GPU nodes don't have NUMA topology
-  # concerns and don't need NRT objects.
+  # Scoped to H100 nodes (p5 fleet) where the packed pool uses
+  # single-numa-node topology policy. Only these multi-NUMA nodes
+  # need NRT data for the numa-scheduler to prevent
+  # TopologyAffinityError on 4-GPU jobs.
   nodeSelector:
-    nvidia.com/gpu: "true"
+    node-fleet: p5
 
-  # Tolerate all GPU node taints so the topology-updater schedules
-  # at provisioning time, same as other GPU-node DaemonSets.
+  # Tolerate every taint so the topology-updater schedules on p5
+  # nodes regardless of their taint set (node-fleet, instance-type,
+  # nvidia.com/gpu, startup taints). The nodeSelector above controls
+  # placement; tolerations just grant access.
   tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    - key: node-fleet
-      operator: Exists
-      effect: NoSchedule
-    - key: instance-type
-      operator: Exists
-      effect: NoSchedule
-    - key: git-cache-not-ready
-      operator: Exists
-      effect: NoSchedule
+    - operator: Exists
 
   resources:
     requests:
