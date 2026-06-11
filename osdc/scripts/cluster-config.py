@@ -108,6 +108,8 @@ def main():
         module = sys.argv[3] if len(sys.argv) > 3 else ""
         modules = cluster_cfg.get("modules", [])
         sys.exit(0 if module in modules else 1)
+    elif cmd == "enabled-modules":
+        print(" ".join(cluster_cfg.get("modules", []) or []))
     elif cmd == "modules":
         for m in cluster_cfg.get("modules", []):
             print(m)

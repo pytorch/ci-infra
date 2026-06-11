@@ -240,23 +240,6 @@ Two modules need definitions: `nodepools` (compute) and `arc-runners` (ARC scale
    just deploy-module arc-staging arc-runners
    ```
 
-## Adding a cached git repository
-
-The git cache uses a two-tier architecture: a central StatefulSet clones repos from GitHub and serves them via rsync, while a DaemonSet on each node syncs locally.
-
-1. Edit the appropriate list in the `central.py` script inside `base/kubernetes/git-cache/central-configmap.yaml`. There are **two** lists — pick the right one:
-   - `REPOS_FULL` — repos with submodules. Cloned non-bare with `--recurse-submodules` so `.git/modules/<name>/objects/` is available for `actions/checkout` submodule alternates. Currently: `pytorch/pytorch`.
-   - `REPOS_BARE` — repos without submodules. Cloned bare (lightweight). Currently: `pytorch/test-infra`.
-
-   Adding a submodule-bearing repo to `REPOS_BARE` will break checkout — when in doubt, use `REPOS_FULL`.
-
-2. Redeploy:
-   ```bash
-   just deploy-base arc-staging
-   ```
-
-Note: Runner pods use `CHECKOUT_GIT_CACHE_DIR` (not `GIT_ALTERNATE_OBJECT_DIRECTORIES`) to find the cache. The `actions/checkout` action uses `reference-repository` to leverage the cache. No runner template changes are needed when adding a new repository.
-
 ## Terraform state management
 
 State is in S3 with DynamoDB locking:

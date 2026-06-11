@@ -81,14 +81,12 @@ The chart (v82.10.3) is used **only as a CRD + exporter bundle**:
 | ServiceMonitor | harbor | harbor-system | Harbor exporter metrics |
 | ServiceMonitor | karpenter | karpenter | Karpenter controller metrics |
 | ServiceMonitor | node-compactor | kube-system | Node compactor metrics |
-| ServiceMonitor | git-cache-central | kube-system | Git cache central pod metrics |
 | ServiceMonitor | dcgm-exporter | monitoring | NVIDIA GPU metrics (DCGM) |
 | ServiceMonitor | buildkit | buildkit | BuildKit daemon metrics |
 | ServiceMonitor | buildkit-haproxy | buildkit | BuildKit HAProxy LB metrics |
 | ServiceMonitor | pushgateway | monitoring | Prometheus Pushgateway (push-based metrics from short-lived jobs) |
 | ServiceMonitor | pypi-cache | pypi-cache | pypi-cache nginx metrics (`nginx_up`, requests, active connections) |
 | PodMonitor | coredns | kube-system | CoreDNS request rate, latency, cache hit/miss, errors |
-| PodMonitor | git-cache-daemonset | kube-system | Git cache DaemonSet metrics |
 | PodMonitor | nodelocaldns | kube-system | NodeLocal DNSCache — two endpoints: `:9253` (CoreDNS plugin metrics, `coredns_*`) and `:9353` (binary-emitted `coredns_nodecache_*` setup/error counters) |
 | PodMonitor | arc-listeners | arc-systems | ARC listener pods metrics |
 
