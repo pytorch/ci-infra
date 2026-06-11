@@ -121,8 +121,6 @@ The table below lists the **ServiceMonitor / PodMonitor name** alongside the **a
 | `coredns` PodMonitor | `monitoring/coredns` | DNS resolution metrics | All `coredns_*` except buckets, plus `go_*`/`process_*` dropped |
 | `nodelocaldns` PodMonitor | `monitoring/nodelocaldns` | Per-node NodeLocal DNSCache (NLD) DaemonSet metrics; scrapes both ports `9253` (CoreDNS plugin) and `9353` (binary `coredns_nodecache_setup_errors_total`) at 60s | All `coredns_*` except `coredns_*_request_duration_seconds_bucket`, plus `go_*`/`process_*` dropped |
 | `karpenter` | `karpenter` | Autoscaler counters and capacity | Only `karpenter_nodeclaims_created_total`, `karpenter_nodes_created_total`, `karpenter_nodes_terminated_total`, `karpenter_nodepools_usage`, `karpenter_nodepools_limit`, `karpenter_nodes_allocatable`, `karpenter_interruption_received_messages_total` |
-| `git-cache-central` | `git-cache-central-metrics` | Git cache central service metrics | No filter — all `git_cache_central_*` flow through |
-| `git-cache-daemonset` PodMonitor | `monitoring/git-cache-daemonset` | Per-node git cache metrics | No filter — all `git_cache_node_*` flow through |
 | `arc-listeners` PodMonitor | `monitoring/arc-listeners` | ARC runner-scale-set listener metrics | Keeps `gha_assigned_jobs`, `gha_completed_jobs_total`, `gha_started_jobs_total`, `gha_running_jobs`, `gha_job_*_duration_seconds_(sum\|count)`, `gha_capacity_*` |
 | `arc-controller` | (varies — Service name depends on ARC chart version) | ARC controller metrics | Keeps `gha_controller_.*` and `controller_runtime_reconcile_errors_total` only |
 | `harbor` | (varies — Harbor exporter emits per-component job labels: `core`, `registry`, `jobservice`, etc.) | Harbor registry exporter | All metrics except `go_*`/`process_*`/`promhttp_*` |
@@ -138,7 +136,7 @@ In addition, the `kube-prometheus-stack-operator` job exists but Alloy's `cost_c
 Job naming follows two conventions:
 
 - **ServiceMonitors**: the `job` label is the target Service name (e.g. `karpenter`, `kubernetes` for the API server, `buildkitd-pods` for BuildKit). This is why the "Monitor name" and "Actual `job=` label" columns above often differ.
-- **PodMonitors**: the `job` label is `<namespace>/<podmonitor-name>` (e.g. `monitoring/arc-listeners`, `monitoring/coredns`, `monitoring/git-cache-daemonset`).
+- **PodMonitors**: the `job` label is `<namespace>/<podmonitor-name>` (e.g. `monitoring/arc-listeners`, `monitoring/coredns`).
 
 Confirm exact job names by running `count(up{cluster="..."}) by (job)`.
 
@@ -150,7 +148,7 @@ All metrics include `cluster="pytorch-arc-cbr-production"` (set by Alloy as an e
 |-------|---------|-------|
 | `namespace` | `arc-runners`, `kube-system` | Kubernetes namespace |
 | `pod` | `runner-xyz-abc` | Pod name |
-| `container` | `runner`, `git-cache` | Container name |
+| `container` | `runner` | Container name |
 | `node` | `ip-10-4-154-0.us-east-2.compute.internal` | Node hostname (use `kube_pod_info` to map pod → node) |
 | `instance` | `[fd00:ec2::xxx]:9100` | Scrape target address. **IPv6 under IPv6-only EKS** — node-exporter binds the node's IPv6 hostIP via Downward API (`listenOnAllInterfaces: false`). |
 | `job` | `node-exporter`, `karpenter` | Scrape job name |
@@ -247,28 +245,6 @@ increase(karpenter_interruption_received_messages_total{cluster="pytorch-arc-cbr
 ```
 
 > **Note**: Only the seven karpenter metrics above are kept by the Karpenter ServiceMonitor. `karpenter_nodepools_allowed_disruptions`, `karpenter_nodes_total`, and `karpenter_provisioner_scheduling_duration_seconds` will return empty.
-
-### Git Cache
-
-```promql
-# Repo sizes (bytes) — central git cache
-git_cache_central_repo_size_bytes{cluster="pytorch-arc-cbr-production"}
-
-# Fetch errors in last hour — central git cache
-increase(git_cache_central_fetch_errors_total{cluster="pytorch-arc-cbr-production"}[1h])
-
-# Fetch duration — central git cache
-git_cache_central_fetch_duration_seconds{cluster="pytorch-arc-cbr-production"}
-
-# Per-node cache age (seconds since last sync)
-time() - git_cache_node_last_sync_timestamp{cluster="pytorch-arc-cbr-production"}
-
-# Per-node cache size (bytes)
-git_cache_node_cache_size_bytes{cluster="pytorch-arc-cbr-production"}
-
-# Per-node sync duration
-git_cache_node_sync_duration_seconds{cluster="pytorch-arc-cbr-production"}
-```
 
 ### ARC Listeners (Runner Scale Sets)
 
@@ -404,12 +380,6 @@ count(
 To find what metrics exist for a particular component, use a regex match on `__name__`:
 
 ```bash
-# Find all git_cache metrics
-curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
-    "$MIMIR_URL/api/v1/query" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", __name__=~"git_cache.*"}' \
-    | jq '[.data.result[] | .metric.__name__] | unique'
-
 # Find all karpenter metrics
 curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
     "$MIMIR_URL/api/v1/query" \

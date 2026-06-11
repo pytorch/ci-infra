@@ -13,7 +13,7 @@ Every cluster gets the same base infrastructure:
 - **VPC** — dual-stack (IPv4 + IPv6) public/private subnets, NAT gateways for IPv4, Egress-Only Internet Gateway for IPv6 outbound from private subnets, route tables. AZ-aware `private_subnets_by_az` output feeds the ENIConfig deploy step.
 - **EKS** — managed Kubernetes cluster with **IPv6-only pod networking** (`kubernetes_network_config.ip_family = "ipv6"`, immutable after cluster creation — see `docs/ipv6-cluster-recreation.md`). The Service CIDR is auto-assigned by EKS to a ULA in `fd00:ec2::/108`; pods receive IPv6 IPs from a `/80` prefix per node via VPC CNI prefix delegation (`ENABLE_PREFIX_DELEGATION=true`); IPv4 egress is enabled via SNAT (`ENABLE_V4_EGRESS=true`) so pods can reach IPv4-only external services (github.com, ghcr.io, nvcr.io). Includes OIDC for IRSA, addons (vpc-cni, coredns, kube-proxy, ebs-csi), KMS envelope encryption for secrets at rest (auto-rotated), CloudWatch control-plane logging (`api`, `audit`, `authenticator`, `controllerManager`, `scheduler`), EKS access entries for cluster admin roles, pinned CoreDNS topology (replica count set per-cluster, autoscaling disabled, zone/hostname spread, PDB), and a fixed-size base node group tainted `CriticalAddonsOnly=true:NoSchedule`.
 - **Harbor** — S3 bucket, IAM roles/user for pull-through container image cache
-- **Base k8s resources** — `osdc-system` namespace (used by deploy audit ConfigMaps), gp3 StorageClass, NVIDIA device plugin, node performance tuning DaemonSet, registry mirror config, git-cache (two-tier: central StatefulSet + rsync DaemonSet), Harbor namespace, image-cache-janitor (prunes stale image content from node disks), NodeLocal DNSCache (per-node CoreDNS DaemonSet binding `fd00::10`, intercepts pod DNS via iptables-mode NOTRACK), ENIConfigs (one per AZ; currently inert pending VPC CNI Custom Networking enablement), and two transient CVE-mitigation DaemonSets (`algif-mitigation` for CVE-2026-31431, `dirtyfrag-mitigation` for CVE-2026-43284) that will be removed once a kernel-patched AMI is in use.
+- **Base k8s resources** — `osdc-system` namespace (used by deploy audit ConfigMaps), gp3 StorageClass, NVIDIA device plugin, node performance tuning DaemonSet, registry mirror config, Harbor namespace, image-cache-janitor (prunes stale image content from node disks), NodeLocal DNSCache (per-node CoreDNS DaemonSet binding `fd00::10`, intercepts pod DNS via iptables-mode NOTRACK), ENIConfigs (one per AZ; currently inert pending VPC CNI Custom Networking enablement), and two transient CVE-mitigation DaemonSets (`algif-mitigation` for CVE-2026-31431, `dirtyfrag-mitigation` for CVE-2026-43284) that will be removed once a kernel-patched AMI is in use.
 - **Node compactor** — taints underutilized Karpenter nodes for workload consolidation; enabled by default and can be disabled per-cluster via `clusters.yaml`.
 - **Karpenter** — packaged as a module under `modules/karpenter/` but is a prerequisite for any compute-provisioning module; clusters list it first in their `modules:` block.
 
@@ -91,7 +91,6 @@ just deploy <cluster-id>
 │   ├── tofu apply (modules/eks/terraform/)         ← VPC, EKS, Harbor S3
 │   ├── mirror-images                               ← Harbor images to ECR
 │   ├── kubectl apply -k base/kubernetes/           ← StorageClass, NVIDIA, CVE-mitigation DaemonSets, etc.
-│   ├── git-cache/deploy.sh                         ← Git cache central StatefulSet
 │   ├── eniconfigs/deploy.sh                        ← AZ-named ENIConfig CRs (one per AZ from terraform output; currently inert)
 │   ├── deploy-harbor                               ← Helm install Harbor (pull-through cache)
 │   ├── node-compactor/deploy.sh                    ← if enabled in clusters.yaml
@@ -133,9 +132,9 @@ S3 bucket: ciforge-tfstate-<cluster-id>
 
 Every cluster needs a pull-through image cache. Without it, nodes pull directly from Docker Hub / ghcr.io / etc., hitting rate limits and adding latency. Harbor is foundational infrastructure, not optional.
 
-### Git cache + NVIDIA plugin in base
+### NVIDIA plugin in base
 
-These are universally needed. Any cluster running GPU workloads needs the NVIDIA plugin. Any cluster cloning repos benefits from git cache. Moving them to modules would mean every cluster config has to remember to include them.
+These are universally needed. Any cluster running GPU workloads needs the NVIDIA plugin. Moving it to a module would mean every cluster config has to remember to include it.
 
 ### Single terraform root, parameterized
 
