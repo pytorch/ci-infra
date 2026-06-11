@@ -298,11 +298,6 @@ def create_test_pod(
                     value=instance_type,
                     effect="NoSchedule",
                 ),
-                Toleration(
-                    key="git-cache-not-ready",
-                    operator="Exists",
-                    effect="NoSchedule",
-                ),
             ],
             containers=[
                 Container(

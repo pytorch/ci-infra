@@ -29,22 +29,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      osdc: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.osdc == 'true' }}
+      osdc: ${{ github.event_name == 'workflow_dispatch' || steps.code.outputs.code == 'true' || steps.workflows.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
+      # predicate-quantifier is per-step. This step uses 'every' so the
+      # negations act as AND-exclusions: matches osdc/** files that are NOT
+      # tests. Test-only changes already run via osdc-test.yml on the PR,
+      # so they shouldn't trigger the arc-staging battery.
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
-        id: filter
+        id: code
         with:
+          predicate-quantifier: 'every'
           filters: |
-            osdc:
+            code:
               - 'osdc/**'
-              # Skip staging deploy when the only osdc/ changes are tests.
-              # Unit tests already run on the PR via osdc-test.yml; spinning
-              # up arc-staging adds nothing for a test-only fix.
               - '!osdc/**/test_*.py'
               - '!osdc/**/*_test.py'
               - '!osdc/**/tests/**'
+
+      # Separate step with default ('some') quantifier so these workflow
+      # paths OR together independently of the code-vs-tests logic above.
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: workflows
+        with:
+          filters: |
+            workflows:
               - '.github/workflows/osdc-deploy-prod.yml'
               - '.github/workflows/osdc-pre-merge.yml'
               - '.github/workflows/_osdc-deploy.yml'
