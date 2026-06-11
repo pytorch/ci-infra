@@ -62,8 +62,9 @@ kubectl create configmap "$CM_NAME" \
 
 # Inject labels so the ConfigMap is identifiable like other base components.
 # kubectl create configmap doesn't accept --labels in older versions, so we
-# patch them in after rendering.
-python3 - "$MANIFEST" <<'PY'
+# patch them in after rendering. `uv run --with pyyaml` brings pyyaml into
+# scope on every host without depending on the project's mise/venv state.
+uv run --with pyyaml python3 - "$MANIFEST" <<'PY'
 import sys
 import yaml
 
