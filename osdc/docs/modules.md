@@ -194,7 +194,7 @@ Base AWS infrastructure. Always deployed as part of `deploy-base`, not as an opt
 
 ARC controller for GitHub Actions self-hosted runners.
 
-- **kubernetes/**: `arc-systems` + `arc-runners` namespaces, runner ServiceAccount, LimitRange, hooks ConfigMap, priority classes, capacity-monitor RBAC. Registry mirror config lives in `base/kubernetes/` (all clusters need it, not just ARC).
+- **kubernetes/**: `arc-systems` + `arc-runners` namespaces, runner ServiceAccount, LimitRange, hooks ConfigMap, priority classes, capacity-monitor RBAC, `hooks-warmer` DaemonSet (downloads patched runner-container-hooks to host NVMe on the `c7i-runner` fleet). Registry mirror config lives in `base/kubernetes/` (all clusters need it, not just ARC).
 - **helm/arc/**: ARC controller Helm values
 - **deploy.sh**: `helm upgrade --install` for the ARC controller chart
 
@@ -221,7 +221,6 @@ ARC runner scale sets for GitHub Actions self-hosted runners. Requires `arc` (co
 - **defs/**: Runner definitions (source of truth) — instance type, CPU, memory, GPU, default max runners
 - **templates/runner.yaml.tpl**: Multi-doc template: Helm values + job pod hook ConfigMap
 - **generated/**: Auto-generated ARC runner configs (from defs + template)
-- **kubernetes/**: `arc-runners` namespace, `hooks-warmer` Deployment (warms the runner-container-hooks image on every node), `kustomization.yaml` — auto-applied in Phase 2 because `kustomization.yaml` is present
 - **scripts/python/generate_runners.py**: Reads `defs/` + template + `clusters.yaml` → writes `generated/`
 - **scripts/python/validate_runner_qos.py**: Pre-deploy validation (Guaranteed QoS, requests == limits) — invoked via `uv run`
 - **deploy.sh**: Generates configs, validates QoS, applies the per-runner hook ConfigMaps and Helm releases (enforces `arc` module presence)
