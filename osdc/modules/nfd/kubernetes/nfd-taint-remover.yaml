@@ -67,9 +67,10 @@ spec:
     spec:
       priorityClassName: system-node-critical
 
-      # Match the same nodes as the NFD topology-updater.
+      # TESTING: p4d for arc-staging validation.
+      # Production: change to node-fleet: p5.
       nodeSelector:
-        node-fleet: p5
+        node-fleet: p4d
 
       # Tolerate every taint — same rationale as node-performance-tuning:
       # must coexist with all node-init.osdc.io/* startup taints without
