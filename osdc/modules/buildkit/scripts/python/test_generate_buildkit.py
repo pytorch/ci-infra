@@ -12,6 +12,7 @@ from generate_buildkit import (
     DAEMONSET_OVERHEAD_MEM_MI,
     MARGIN,
     compute_pod_resources,
+    generate_autoscaling_yaml,
     generate_deployment_yaml,
     generate_nodepools_yaml,
 )
@@ -341,6 +342,76 @@ class TestPerArchOverrides:
 
 
 # ============================================================================
+# autoscaling
+# ============================================================================
+
+
+class TestAutoscalingDeployment:
+    """When autoscaling=True the Deployment yields control of replicas to KEDA
+    and gains a preStop drain so scale-down never kills an in-flight build."""
+
+    def test_omits_replicas(self):
+        output = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, autoscaling=True)
+        for d in parse_all_yaml(output):
+            assert "replicas" not in d["spec"]
+
+    def test_keeps_replicas_when_disabled(self):
+        output = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2)
+        for d in parse_all_yaml(output):
+            assert d["spec"]["replicas"] == 4
+
+    def test_drain_prestop_and_grace(self):
+        output = generate_deployment_yaml("m8gd.24xlarge", "m6id.24xlarge", 4, 2, autoscaling=True)
+        for d in parse_all_yaml(output):
+            spec = d["spec"]["template"]["spec"]
+            assert spec["terminationGracePeriodSeconds"] == 8100
+            container = spec["containers"][0]
+            assert container["lifecycle"]["preStop"]["exec"]["command"] == ["/bin/sh", "/opt/drain/drain.sh"]
+            assert "drain" in {vm["name"] for vm in container["volumeMounts"]}
+            assert "drain" in {v["name"] for v in spec["volumes"]}
+
+
+class TestGenerateAutoscalingYaml:
+    """Tests for generate_autoscaling_yaml — in-cluster KEDA ScaledObjects."""
+
+    def _docs(self):
+        output = generate_autoscaling_yaml(2, 8, 4, 8)
+        return parse_all_yaml(output)
+
+    def test_only_scaledobjects_no_external_auth(self):
+        # In-cluster signal → no TriggerAuthentication / Grafana secret needed.
+        kinds = sorted(d["kind"] for d in self._docs())
+        assert kinds == ["ScaledObject", "ScaledObject"]
+
+    def test_per_arch_min_max(self):
+        scaled = {d["metadata"]["name"]: d for d in self._docs() if d["kind"] == "ScaledObject"}
+        assert set(scaled) == {"buildkitd-amd64", "buildkitd-arm64"}
+        assert scaled["buildkitd-amd64"]["spec"]["minReplicaCount"] == 2
+        assert scaled["buildkitd-amd64"]["spec"]["maxReplicaCount"] == 8
+        assert scaled["buildkitd-arm64"]["spec"]["minReplicaCount"] == 4
+        assert scaled["buildkitd-arm64"]["spec"]["maxReplicaCount"] == 8
+
+    def test_in_cluster_metrics_api_trigger(self):
+        scaled = {d["metadata"]["name"]: d for d in self._docs() if d["kind"] == "ScaledObject"}
+        for name, backend in [("buildkitd-amd64", "bk_amd64"), ("buildkitd-arm64", "bk_arm64")]:
+            trig = scaled[name]["spec"]["triggers"][0]
+            assert trig["type"] == "metrics-api"
+            assert "buildkitd-lb-metrics.buildkit" in trig["metadata"]["url"]
+            assert f'proxy="{backend}"' in trig["metadata"]["valueLocation"]
+
+    def test_no_fallback_by_default(self):
+        scaled = {d["metadata"]["name"]: d for d in self._docs() if d["kind"] == "ScaledObject"}
+        assert "fallback" not in scaled["buildkitd-amd64"]["spec"]
+        assert "fallback" not in scaled["buildkitd-arm64"]["spec"]
+
+    def test_fallback_replicas_when_set(self):
+        output = generate_autoscaling_yaml(2, 360, 4, 30, amd64_fallback=32, arm64_fallback=8)
+        scaled = {d["metadata"]["name"]: d for d in parse_all_yaml(output) if d["kind"] == "ScaledObject"}
+        assert scaled["buildkitd-amd64"]["spec"]["fallback"] == {"failureThreshold": 3, "replicas": 32}
+        assert scaled["buildkitd-arm64"]["spec"]["fallback"] == {"failureThreshold": 3, "replicas": 8}
+
+
+# ============================================================================
 # generate_nodepools_yaml
 # ============================================================================
 
@@ -509,6 +580,64 @@ class TestMain:
         deployment_text = (output_dir / "deployment.yaml").read_text()
         docs = parse_all_yaml(deployment_text)
         assert len(docs) == 2
+
+    def test_autoscaling_writes_manifests(self, tmp_path):
+        output_dir = tmp_path / "output"
+
+        import generate_buildkit
+
+        test_args = [
+            "generate_buildkit.py",
+            "--arm64-instance-type",
+            "m8gd.24xlarge",
+            "--amd64-instance-type",
+            "m6id.24xlarge",
+            "--replicas",
+            "1",
+            "--pods-per-node",
+            "2",
+            "--output-dir",
+            str(output_dir),
+            "--autoscaling",
+            "--amd64-min",
+            "2",
+            "--amd64-max",
+            "8",
+            "--arm64-min",
+            "4",
+            "--arm64-max",
+            "8",
+        ]
+        with patch.object(sys, "argv", test_args):
+            result = generate_buildkit.main()
+
+        assert result == 0
+        autoscaling = parse_all_yaml((output_dir / "autoscaling.yaml").read_text())
+        assert sorted(d["kind"] for d in autoscaling) == ["ScaledObject", "ScaledObject"]
+
+    def test_autoscaling_requires_params(self, tmp_path):
+        output_dir = tmp_path / "output"
+
+        import generate_buildkit
+
+        test_args = [
+            "generate_buildkit.py",
+            "--arm64-instance-type",
+            "m8gd.24xlarge",
+            "--amd64-instance-type",
+            "m6id.24xlarge",
+            "--replicas",
+            "1",
+            "--pods-per-node",
+            "2",
+            "--output-dir",
+            str(output_dir),
+            "--autoscaling",
+        ]
+        with patch.object(sys, "argv", test_args):
+            result = generate_buildkit.main()
+
+        assert result == 1
 
     def test_unknown_instance_type_fails(self, tmp_path):
         output_dir = tmp_path / "output"
