@@ -27,6 +27,7 @@ helm repo update kedacore >/dev/null 2>&1 || true
 helm_upgrade_if_changed keda "$NAMESPACE" \
   --create-namespace \
   --version "$CHART_VERSION" \
+  -f "$MODULE_DIR/helm/values.yaml" \
   --timeout 5m \
   --wait \
   kedacore/keda
