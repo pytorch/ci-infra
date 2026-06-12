@@ -112,7 +112,7 @@ def workflow_template(tmp_path):
     )
     (wf_dir / "integration-test.yaml.tpl").write_text(template)
 
-    # Also create build-image.yaml and Dockerfile for prepare_pr
+    # Also create reusable workflow and Dockerfile for prepare_pr
     (wf_dir / "build-image.yaml").write_text("name: build-image\n")
     docker_dir = upstream / "integration-tests" / "docker" / "test-buildkit"
     docker_dir.mkdir(parents=True)
