@@ -12,6 +12,7 @@ resources:
   - servicemonitors/buildkit-haproxy.yaml
   - servicemonitors/harbor.yaml
   - servicemonitors/karpenter.yaml
+  - servicemonitors/keda.yaml
   - servicemonitors/node-compactor.yaml
   - servicemonitors/pushgateway.yaml
   - servicemonitors/pypi-cache.yaml
