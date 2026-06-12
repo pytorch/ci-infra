@@ -1,0 +1,15 @@
+# ARC runner definition: l-bx86iavx512-11-43-t4-1 (1x NVIDIA T4)
+# Instance type: g4dn.metal — 1 of 8 T4 GPUs, 96c/384Gi node.
+# NUMA-test 1-GPU runner: a single GPU always fits one NUMA zone, so no scheduler_name
+# (mirrors the A100 1-GPU runner). Shares the g4dn-metal-numa pool; small 1-GPU pods can
+# fragment zones, which is exactly what the numa-scheduler must pack around for the 4-GPU.
+runner:
+  name: l-bx86iavx512-11-43-t4-1
+  instance_type: g4dn.metal
+  node_fleet: g4dn-metal-numa
+  disk_size: 150
+  vcpu: 11
+  memory: 43Gi
+  gpu: 1
+  max_runners:
+    default: 2  # TESTING
