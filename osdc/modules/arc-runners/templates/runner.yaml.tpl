@@ -383,7 +383,7 @@ data:
       # Priority 20 — preempts placeholder-workflow (10) so workflow pods
       # can claim the capacity reserved by the placeholders they replace.
       priorityClassName: arc-workflow
-
+{{SCHEDULER_NAME_LINE}}
       # Prefer scheduling job pods on same node fleet as runner.
       # Tolerations enforce node-fleet constraints (every NodePool taints
       # with node-fleet=<fleet>:NoSchedule), so nodeSelector is not needed.
