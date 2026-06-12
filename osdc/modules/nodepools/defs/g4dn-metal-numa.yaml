@@ -1,0 +1,29 @@
+# Karpenter NodePool fleet: g4dn-metal-numa — dedicated pool for NUMA-aware T4 runners
+# (1-GPU + 4-GPU). Cheap, on-demand stand-in for A100/p4d, which AWS does not offer in
+# us-west-1 (arc-staging's region).
+#
+# g4dn.metal is a 2-socket box: 8x T4 split 4-per-NUMA-zone — topologically identical to
+# p4d/p5 (2 NUMA x 4 GPU). topology_manager_policy=single-numa-node forces a 4-GPU pod to
+# fit within one NUMA zone, reproducing the TopologyAffinityError the numa-scheduler
+# prevents and exercising the full NFD -> NRT -> numa-scheduler pipeline.
+#
+# Kept SEPARATE from the best-effort `g4dn-metal` pool (which serves the live 8-GPU T4
+# runner): adding single-numa-node there would break that full-node runner (an 8-GPU pod
+# spans both zones). Separation is enforced by the node-fleet=g4dn-metal-numa taint.
+fleet:
+  name: g4dn-metal-numa
+  arch: amd64
+  gpu: true
+  instances:
+    - type: g4dn.metal
+      weight: 100
+      node_disk_size: 600
+      has_nvme: true
+      baremetal: true
+      topology_manager_policy: single-numa-node
+      topology_manager_scope: pod
+      # TESTING: cap the fleet to a SINGLE g4dn.metal node (8 GPUs = 1 node), so
+      # the 1-GPU + 4-GPU runners pack onto one 2-NUMA box for deterministic
+      # NUMA validation. Karpenter limits by resource, not node count.
+      limits:
+        nvidia.com/gpu: 8

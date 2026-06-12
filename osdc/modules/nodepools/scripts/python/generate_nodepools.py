@@ -98,10 +98,11 @@ STARTUP_TAINTS: list[dict] = [
         "key": "node-init.osdc.io/nfd-topology",
         "value": "true",
         "effect": "NoSchedule",
-        # NFD topology-updater only targets p5 nodes (nodeSelector: node-fleet: p5).
+        # TESTING: g4dn-metal-numa (T4) for arc-staging validation (p4d/A100 not in us-west-1).
         # Only emit the taint on nodepools where NFD actually runs — otherwise the
         # node would be tainted with nothing to remove it.
-        "applies_when": lambda d: d.get("fleet_name") == "p5",
+        # Production: restrict to fleet_name == "p5" only.
+        "applies_when": lambda d: d.get("fleet_name") in ("p5", "g4dn-metal-numa"),
     },
 ]
 
@@ -329,6 +330,14 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
 
     # ----- Fleet-specific YAML blocks -----
     weight_block = f"  weight: {weight}\n" if weight is not None else ""
+    # ----- Optional NodePool resource cap -----
+    # Karpenter limits by RESOURCE, not node count: set limits to one node's
+    # capacity (e.g. nvidia.com/gpu: 8 = a single g4dn.metal) to bound a fleet
+    # to one node. Absent = uncapped (bounded only by AWS availability).
+    limits = nodepool_def.get("limits")
+    limits_block = ""
+    if limits:
+        limits_block = "  limits:\n" + "".join(f'    {k}: "{v}"\n' for k, v in limits.items())
     fleet_label = f'        node-fleet: "{fleet_name}"\n' if fleet_name else ""
     fleet_taint = (
         (f'        - key: node-fleet\n          value: "{fleet_name}"\n          effect: NoSchedule\n')
@@ -369,6 +378,7 @@ metadata:
 {compactor_label}\
 spec:
 {weight_block}\
+{limits_block}\
   disruption:
     consolidationPolicy: {consolidation_policy}
     consolidateAfter: {consolidation_after}
@@ -562,7 +572,7 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
 
     # Only set optional keys when explicitly provided — leaving them absent
     # lets generate_nodepool_yaml() fall through to its own defaults.
-    for key in ("node_compactor", "topology_manager_policy", "topology_manager_scope", "user_data_script"):
+    for key in ("node_compactor", "topology_manager_policy", "topology_manager_scope", "user_data_script", "limits"):
         val = inst.get(key)
         if val is not None:
             nodepool_def[key] = val

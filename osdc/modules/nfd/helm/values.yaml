@@ -23,12 +23,11 @@ topologyUpdater:
   # evaluated by the NUMA-aware scheduler.
   updateInterval: 15s
 
-  # Scoped to H100 nodes (p5 fleet) where the packed pool uses
-  # single-numa-node topology policy. Only these multi-NUMA nodes
-  # need NRT data for the numa-scheduler to prevent
-  # TopologyAffinityError on 4-GPU jobs.
+  # TESTING: g4dn-metal-numa (T4, on-demand in us-west-1) for arc-staging validation.
+  # p4d/A100 isn't offered in us-west-1; g4dn.metal is the cheap 2-NUMA stand-in.
+  # Production: change to node-fleet: p5.
   nodeSelector:
-    node-fleet: p5
+    node-fleet: g4dn-metal-numa
 
   # Tolerate every taint so the topology-updater schedules on p5
   # nodes regardless of their taint set (node-fleet, instance-type,
