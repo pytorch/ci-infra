@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: keda
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: osdc-monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - keda
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keda-operator
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 60s
+      metricRelabelings:
+        # Keep only KEDA's own metrics (scaler/scaledobject values, errors,
+        # activity, latency) — this also drops the endpoint's go_/process_/
+        # controller-runtime series. Then drop histogram buckets.
+        - action: keep
+          sourceLabels: [__name__]
+          regex: "keda_.*"
+        - action: drop
+          sourceLabels: [__name__]
+          regex: ".*_bucket"

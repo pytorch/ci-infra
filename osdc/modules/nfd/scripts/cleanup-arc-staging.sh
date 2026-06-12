@@ -37,7 +37,6 @@ git checkout -- \
   modules/arc-runners/defs/l-x86iavx512-11-125-a100.yaml \
   modules/arc-runners/defs/l-x86iavx512-22-250-a100-2.yaml \
   modules/arc-runners/defs/l-x86iavx512-44-500-a100-4.yaml \
-  modules/arc-runners/defs/l-bx86iavx512-88-1000-a100-8.yaml \
   clusters.yaml
 
 # 4. Redeploy nodepools + arc-runners to restore original state on cluster
