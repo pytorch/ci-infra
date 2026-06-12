@@ -35,7 +35,7 @@ import yaml
 # generate_runners.py exactly or `resume-runners` will compute ARS names that
 # don't exist on the cluster. Both files live in the same directory so the
 # import is direct; pytest's testpaths puts this dir on sys.path too.
-from generate_runners import load_excluded_instance_types, resolve_value
+from generate_runners import load_excluded_instance_types, resolve_max_runners, resolve_value
 
 # The actions-runner-controller chart substitutes nil maxRunners with
 # math.MaxInt32 (controllers/actions.github.com/resourcebuilder.go:94-101 in
@@ -147,13 +147,14 @@ def compute_ars_name(prefix: str, runner_name: str) -> str:
     return (prefix + runner_name).replace("_", "-")
 
 
-def parse_def_file(def_file: Path) -> tuple[str, str | None, int | None]:
+def parse_def_file(def_file: Path, cluster_id: str) -> tuple[str, str | None, int | None]:
     """Read a runner def YAML and return (runner_name, instance_type, max_runners).
 
     max_runners is None when the def omits it (caller substitutes MAX_INT32).
+    Delegates to `resolve_max_runners` for the int-vs-mapping logic.
     instance_type is returned so the caller can apply the nodepool
     exclude_regions guard. Raises ValueError if `runner.name` is missing or
-    `max_runners` is invalid. Mirrors generate_runners.py:152,158,162-164.
+    `max_runners` is invalid.
     """
     with open(def_file) as f:
         data = yaml.safe_load(f) or {}
@@ -167,9 +168,7 @@ def parse_def_file(def_file: Path) -> tuple[str, str | None, int | None]:
     if instance_type is not None and not isinstance(instance_type, str):
         raise ValueError(f"Invalid def file {def_file}: instance_type must be a string, got {instance_type!r}")
 
-    max_runners = runner.get("max_runners")
-    if max_runners is not None and (not isinstance(max_runners, int) or max_runners < 1):
-        raise ValueError(f"Invalid def file {def_file}: max_runners must be a positive integer, got {max_runners!r}")
+    max_runners = resolve_max_runners(runner.get("max_runners"), def_file, cluster_id)
     return name, instance_type, max_runners
 
 
@@ -196,6 +195,10 @@ def build_max_runners_map(repo_root: Path, clusters_yaml: dict, cluster_id: str)
     cluster's region render with max_runners=0 — mirrors the same guard in
     generate_runners.py so `just resume-runners` does not patch excluded
     scale sets back to MAX_INT32 after a drain.
+
+    When the cluster has pause_runners=true, every ARS renders with
+    max_runners=0 — mirrors generate_runners.py so `just resume-runners` does
+    not silently undo a pause by patching scale sets back to their def values.
     """
     prefix = resolve_runner_name_prefix(clusters_yaml, cluster_id)
     modules = enabled_arc_runner_modules(clusters_yaml, cluster_id)
@@ -204,6 +207,7 @@ def build_max_runners_map(repo_root: Path, clusters_yaml: dict, cluster_id: str)
     region = cluster_cfg.get("region", "")
     nodepools_defs_dir = repo_root / "modules" / "nodepools" / "defs"
     excluded_instance_types = load_excluded_instance_types(nodepools_defs_dir, region)
+    paused = bool(cluster_cfg.get("pause_runners"))
 
     result: dict[str, int] = {}
     for module in modules:
@@ -212,9 +216,9 @@ def build_max_runners_map(repo_root: Path, clusters_yaml: dict, cluster_id: str)
             print(f"warning: module '{module}' has no def files at modules/{module}/defs/", file=sys.stderr)
             continue
         for def_file in def_files:
-            name, instance_type, max_runners = parse_def_file(def_file)
+            name, instance_type, max_runners = parse_def_file(def_file, cluster_id)
             ars_name = compute_ars_name(prefix, name)
-            if instance_type in excluded_instance_types:
+            if paused or instance_type in excluded_instance_types:
                 result[ars_name] = 0
             else:
                 result[ars_name] = max_runners if max_runners is not None else MAX_INT32

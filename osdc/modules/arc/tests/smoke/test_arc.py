@@ -28,6 +28,17 @@ class TestARCNamespaces:
         ns_names = [ns["metadata"]["name"] for ns in all_namespaces.get("items", [])]
         assert namespace in ns_names, f"Namespace '{namespace}' not found"
 
+    def test_arc_runners_namespace_part_of_label(self, all_namespaces: dict) -> None:
+        ns = next(
+            (item for item in all_namespaces.get("items", []) if item["metadata"]["name"] == NS_RUNNERS),
+            None,
+        )
+        assert ns is not None, f"Namespace '{NS_RUNNERS}' not found"
+        labels = ns.get("metadata", {}).get("labels", {})
+        assert labels.get("app.kubernetes.io/part-of") == "osdc-arc-runners", (
+            f"Namespace '{NS_RUNNERS}' missing label app.kubernetes.io/part-of=osdc-arc-runners, got: {labels}"
+        )
+
 
 # ============================================================================
 # Shared runner resources
