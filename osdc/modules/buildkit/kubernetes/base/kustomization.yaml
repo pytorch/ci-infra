@@ -5,6 +5,8 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - configmap.yaml
+  - drain-configmap.yaml
   - haproxy.yaml
   - service.yaml
   - networkpolicy.yaml
+  - poddisruptionbudget.yaml
