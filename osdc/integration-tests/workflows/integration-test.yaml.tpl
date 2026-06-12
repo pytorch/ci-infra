@@ -1436,13 +1436,15 @@ jobs:
   # END_B200
 
   # ── BuildKit Tests ────────────────────────────────────────────────────
-  build-amd64:
+  # Each call runs a buildctl connectivity build + an 8-wide docker buildx burst
+  # (fails if KEDA does not scale the pool up).
+  buildkit-amd64:
     uses: ./.github/workflows/build-image.yaml
     with:
       arch: amd64
       runner_label: {{PREFIX}}l-x86iamx-8-32
 
-  build-arm64:
+  buildkit-arm64:
     uses: ./.github/workflows/build-image.yaml
     with:
       arch: arm64
