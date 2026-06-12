@@ -98,10 +98,9 @@ STARTUP_TAINTS: list[dict] = [
         "key": "node-init.osdc.io/nfd-topology",
         "value": "true",
         "effect": "NoSchedule",
-        # NFD topology-updater only targets p5 nodes (nodeSelector: node-fleet: p5).
-        # Only emit the taint on nodepools where NFD actually runs — otherwise the
-        # node would be tainted with nothing to remove it.
-        "applies_when": lambda d: d.get("fleet_name") == "p5",
+        # TESTING: broadened to include p4d for arc-staging validation.
+        # Production: restrict to fleet_name == "p5" only.
+        "applies_when": lambda d: d.get("fleet_name") in ("p5", "p4d"),
     },
 ]
 
