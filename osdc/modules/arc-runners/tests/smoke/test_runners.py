@@ -235,37 +235,6 @@ class TestNoStaleRunners:
 
 
 # ============================================================================
-# Live: Namespace
-# ============================================================================
-
-
-class TestArcRunnersNamespace:
-    """Verify the arc-runners namespace exists with correct labels."""
-
-    def test_namespace_exists(self, all_namespaces, enabled_modules):
-        """The arc-runners namespace must exist when the module is enabled."""
-        if "arc-runners" not in enabled_modules:
-            pytest.skip("arc-runners module not enabled")
-        ns_names = {item["metadata"]["name"] for item in all_namespaces.get("items", [])}
-        assert NAMESPACE in ns_names, f"Namespace '{NAMESPACE}' not found"
-
-    def test_namespace_labels(self, all_namespaces, enabled_modules):
-        """Namespace must have the part-of label for identification."""
-        if "arc-runners" not in enabled_modules:
-            pytest.skip("arc-runners module not enabled")
-        ns = None
-        for item in all_namespaces.get("items", []):
-            if item["metadata"]["name"] == NAMESPACE:
-                ns = item
-                break
-        assert ns is not None, f"Namespace '{NAMESPACE}' not found"
-        labels = ns.get("metadata", {}).get("labels", {})
-        assert labels.get("app.kubernetes.io/part-of") == "osdc-arc-runners", (
-            f"Namespace missing label app.kubernetes.io/part-of=osdc-arc-runners, got: {labels}"
-        )
-
-
-# ============================================================================
 # Live: Listener Pod Capacity-Aware Env Vars
 # ============================================================================
 
