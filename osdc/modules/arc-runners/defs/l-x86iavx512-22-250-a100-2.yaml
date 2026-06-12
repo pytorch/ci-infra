@@ -7,3 +7,5 @@ runner:
   vcpu: 22
   memory: 250Gi
   gpu: 2
+  max_runners:
+    default: 2  # TESTING: limited for arc-staging NUMA test

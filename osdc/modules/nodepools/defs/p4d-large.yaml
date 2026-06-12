@@ -12,8 +12,8 @@ fleet:
   name: p4d-large
   arch: amd64
   gpu: true
-  exclude_regions:
-    - us-west-1
+  # exclude_regions:          # TESTING: temporarily allowing us-west-1 for arc-staging
+  #   - us-west-1
   instances:
     - type: p4d.24xlarge
       weight: 100
