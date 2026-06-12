@@ -195,6 +195,7 @@ def make_def_file(
     max_burst_capacity=None,
     hud_failure_base_capacity=None,
     node_fleet=None,
+    scheduler_name=None,
 ):
     """Write a runner def YAML and return the path.
 
@@ -223,6 +224,8 @@ def make_def_file(
         runner["hud_failure_base_capacity"] = hud_failure_base_capacity
     if node_fleet is not None:
         runner["node_fleet"] = node_fleet
+    if scheduler_name is not None:
+        runner["scheduler_name"] = scheduler_name
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -1906,6 +1909,47 @@ class TestRealTemplate:
         node_fleet_exprs = [e for e in match_exprs if e["key"] == "node-fleet"]
         assert len(node_fleet_exprs) == 1
         assert node_fleet_exprs[0]["values"] == [expected_fleet]
+
+    def test_workflow_pod_scheduler_name_from_def(self, real_template, tmp_path):
+        """Workflow pod gets schedulerName when the runner def sets scheduler_name."""
+        variant = {
+            "name": "numa-runner",
+            "instance_type": "p5.48xlarge",
+            "vcpu": 88,
+            "memory": 900,
+            "gpu": 4,
+            "disk_size": 200,
+            "scheduler_name": "numa-scheduler",
+            "expected_workflow_fleet": "p5",
+        }
+        def_kwargs = {
+            "tmp_path": tmp_path,
+            "name": variant["name"],
+            "instance_type": variant["instance_type"],
+            "vcpu": variant["vcpu"],
+            "memory": variant["memory"],
+            "gpu": variant["gpu"],
+            "disk_size": variant["disk_size"],
+            "scheduler_name": variant["scheduler_name"],
+        }
+        def_file = make_def_file(**def_kwargs)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+        }
+        assert generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners") is True
+        docs = list(yaml.safe_load_all((output_dir / "numa-runner.yaml").read_text()))
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert workflow_pod["spec"]["schedulerName"] == "numa-scheduler"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_workflow_pod_no_scheduler_name_by_default(self, real_template, tmp_path, variant):
+        """Workflow pod must NOT have schedulerName when the runner def omits scheduler_name."""
+        _, _, workflow_pod = _render_real(real_template, tmp_path, variant)
+        assert "schedulerName" not in workflow_pod["spec"]
 
     def test_gpu_workflow_pod_has_gpu_toleration_and_resources(self, real_template, tmp_path):
         """GPU runner's workflow pod must carry nvidia.com/gpu toleration and matching request/limit."""
