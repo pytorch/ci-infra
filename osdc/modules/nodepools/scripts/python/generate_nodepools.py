@@ -93,6 +93,16 @@ STARTUP_TAINTS: list[dict] = [
     # leaving the registry entry in place would taint every new node with a
     # taint nothing removes, hanging workload scheduling indefinitely. The
     # AMI-version gates in clusters.yaml track when both can be retired.
+    {
+        "module": "nfd",
+        "key": "node-init.osdc.io/nfd-topology",
+        "value": "true",
+        "effect": "NoSchedule",
+        # NFD topology-updater only targets p5 nodes (nodeSelector: node-fleet: p5).
+        # Only emit the taint on nodepools where NFD actually runs — otherwise the
+        # node would be tainted with nothing to remove it.
+        "applies_when": lambda d: d.get("fleet_name") == "p5",
+    },
 ]
 
 
