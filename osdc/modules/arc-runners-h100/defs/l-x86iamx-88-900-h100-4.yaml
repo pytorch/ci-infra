@@ -7,6 +7,10 @@ runner:
   vcpu: 88
   memory: 900Gi
   gpu: 4
+  # NUMA-aware scheduling: p5.48xlarge is a 2-NUMA-node box (4 H100 per zone).
+  # Without this, the default scheduler may place a 4-GPU pod on a node where
+  # both zones are partially used, causing TopologyAffinityError.
+  scheduler_name: numa-scheduler
   # Fixed-capacity cap: 1 reserved 8-GPU node / 4 GPUs per runner = 2 concurrent runners.
   max_runners:
     default: 2
