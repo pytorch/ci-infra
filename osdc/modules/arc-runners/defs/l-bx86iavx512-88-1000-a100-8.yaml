@@ -8,4 +8,5 @@ runner:
   vcpu: 88
   memory: 1000Gi
   gpu: 8
-  max_runners: 0  # TESTING: disabled for arc-staging NUMA test
+  max_runners:
+    default: 1  # TESTING: minimal for arc-staging NUMA test

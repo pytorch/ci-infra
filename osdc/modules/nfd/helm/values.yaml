@@ -45,5 +45,12 @@ topologyUpdater:
 
 # The topology-updater needs the NRT CRD. The NFD chart installs it
 # when topologyUpdater is enabled.
-topologyGC:
+gc:
   enable: true
+  nodeSelector:
+    role: base-infrastructure
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
