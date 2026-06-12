@@ -1,0 +1,13 @@
+# Schedule on the base-infra nodes (tainted CriticalAddonsOnly); every other node
+# is reserved by workload taints, so without this the keda pods stay Pending and
+# the install's --wait times out. Applies to operator, metrics server, webhooks.
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists
+
+# Expose the KEDA operator's Prometheus metrics (keda_scaler_* /
+# keda_scaledobject_*) on :8080. The ServiceMonitor that scrapes it lives in the
+# monitoring module, so it applies after the monitoring.coreos.com CRDs exist.
+prometheus:
+  operator:
+    enabled: true

@@ -34,22 +34,44 @@ AMD64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_replicas "$REPLICAS")
 ARM64_REPLICAS=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_replicas "$REPLICAS")
 AMD64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.amd64_pods_per_node "$PODS_PER_NODE")
 ARM64_PODS_PER_NODE=$(uv run "$CFG" "$CLUSTER" buildkit.arm64_pods_per_node "$PODS_PER_NODE")
+# Lowercase via tr (not ${VAR,,}) — deploy.sh runs under macOS bash 3.2 too.
+AUTOSCALING=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.enabled false | tr '[:upper:]' '[:lower:]')
 
 GENERATED_DIR="$MODULE_DIR/generated"
 
 # --- Generate manifests ---
 
 echo "Generating BuildKit manifests..."
-uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" \
-  --arm64-instance-type "$ARM64_INSTANCE" \
-  --amd64-instance-type "$AMD64_INSTANCE" \
-  --replicas "$REPLICAS" \
-  --pods-per-node "$PODS_PER_NODE" \
-  --amd64-replicas "$AMD64_REPLICAS" \
-  --arm64-replicas "$ARM64_REPLICAS" \
-  --amd64-pods-per-node "$AMD64_PODS_PER_NODE" \
-  --arm64-pods-per-node "$ARM64_PODS_PER_NODE" \
+GEN_ARGS=(
+  --arm64-instance-type "$ARM64_INSTANCE"
+  --amd64-instance-type "$AMD64_INSTANCE"
+  --replicas "$REPLICAS"
+  --pods-per-node "$PODS_PER_NODE"
+  --amd64-replicas "$AMD64_REPLICAS"
+  --arm64-replicas "$ARM64_REPLICAS"
+  --amd64-pods-per-node "$AMD64_PODS_PER_NODE"
+  --arm64-pods-per-node "$ARM64_PODS_PER_NODE"
   --output-dir "$GENERATED_DIR"
+)
+if [[ "$AUTOSCALING" == "true" ]]; then
+  AMD64_MIN=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_min 2)
+  AMD64_MAX=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_max 8)
+  ARM64_MIN=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_min 4)
+  ARM64_MAX=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_max 8)
+  # Fallback replicas if KEDA can't read the scale metric (0 = no fallback).
+  AMD64_FALLBACK=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.amd64_fallback 0)
+  ARM64_FALLBACK=$(uv run "$CFG" "$CLUSTER" buildkit.autoscaling.arm64_fallback 0)
+  GEN_ARGS+=(
+    --autoscaling
+    --amd64-min "$AMD64_MIN"
+    --amd64-max "$AMD64_MAX"
+    --arm64-min "$ARM64_MIN"
+    --arm64-max "$ARM64_MAX"
+    --amd64-fallback "$AMD64_FALLBACK"
+    --arm64-fallback "$ARM64_FALLBACK"
+  )
+fi
+uv run "$MODULE_DIR/scripts/python/generate_buildkit.py" "${GEN_ARGS[@]}"
 
 # --- Apply NodePools (with cluster name substitution) ---
 
@@ -59,7 +81,15 @@ sed "s/CLUSTER_NAME_PLACEHOLDER/$CNAME/g" "$GENERATED_DIR/nodepools.yaml" | kube
 # --- Apply static k8s resources ---
 
 echo "Applying BuildKit static manifests..."
-kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/base/"
+# Stamp the buildkitd-lb pod template with a hash of haproxy.yaml. HAProxy reads
+# its config only at container start, and nothing else restarts the LB, so
+# without this a ConfigMap change (maxconn, timeouts, backends) would silently
+# not take effect until the pod happened to be recreated. Changing the hash
+# rolls the Deployment whenever the config changes.
+HAPROXY_SUM=$(shasum -a 256 "$MODULE_DIR/kubernetes/base/haproxy.yaml" | cut -c1-12)
+kubectl kustomize "$MODULE_DIR/kubernetes/base/" \
+  | sed "s/__HAPROXY_CFG_CHECKSUM__/$HAPROXY_SUM/" \
+  | kubectl_apply_if_changed -f -
 
 # --- Apply generated Deployments (only if changed) ---
 
@@ -91,6 +121,14 @@ else
   echo "Waiting for buildkitd rollout..."
   kubectl rollout status deployment/buildkitd-arm64 -n buildkit --timeout=15m
   kubectl rollout status deployment/buildkitd-amd64 -n buildkit --timeout=15m
+fi
+
+# --- KEDA autoscaling (optional) ---
+# Scales on the in-cluster buildkit LB metrics; no external metrics backend.
+
+if [[ "$AUTOSCALING" == "true" ]]; then
+  echo "Applying KEDA autoscaling manifests..."
+  kubectl_apply_if_changed -f "$GENERATED_DIR/autoscaling.yaml"
 fi
 
 echo "BuildKit deployed."
