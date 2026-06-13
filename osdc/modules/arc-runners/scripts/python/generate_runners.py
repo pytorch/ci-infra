@@ -172,6 +172,35 @@ def resolve_max_runners(value, def_file, cluster_id):
     return value
 
 
+PYPI_CACHE_HOST = "pypi-cache-cpu.pypi-cache.svc.cluster.local"
+
+
+def render_pypi_cache_env(enabled):
+    """Render the pip/uv env entries that point installs at the pypi-cache.
+
+    Returns a string to substitute after `env:` (leading newline, 12-space
+    indent, no trailing newline), or "" when the cluster has no pypi-cache
+    module so runners fall back to public PyPI defaults.
+    """
+    if not enabled:
+        return ""
+    simple = f"http://{PYPI_CACHE_HOST}:8080/simple/"
+    whl = f"http://{PYPI_CACHE_HOST}:8080/whl/cpu/"
+    pairs = [
+        ("PIP_INDEX_URL", simple),
+        ("PIP_TRUSTED_HOST", PYPI_CACHE_HOST),
+        ("PIP_EXTRA_INDEX_URL", whl),
+        ("UV_DEFAULT_INDEX", simple),
+        ("UV_INSECURE_HOST", f"{PYPI_CACHE_HOST}:8080"),
+        ("UV_INDEX", whl),
+        ("UV_INDEX_STRATEGY", "unsafe-best-match"),
+        ("PYPI_CACHE_SIMPLE_URL", simple),
+        ("PYPI_CACHE_WHL_URL", whl),
+    ]
+    lines = [f'\n            - name: {name}\n              value: "{value}"' for name, value in pairs]
+    return "".join(lines)
+
+
 def generate_runner(def_file, template_content, cluster_config, output_dir, module_name):
     """Generate a single runner config from its definition."""
     with open(def_file) as f:
@@ -328,6 +357,11 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
+    # pypi-cache pip/uv env. Injected only when the cluster deploys the
+    # pypi-cache module; otherwise runners resolve against public PyPI and
+    # pointing these at the (absent) cache service would break installs.
+    pypi_cache_env = render_pypi_cache_env(cluster_config.get("pypi_cache_enabled", True))
+
     # Replace all template placeholders
     output_content = template_content
     replacements = {
@@ -356,6 +390,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
         "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
+        "{{PYPI_CACHE_ENV}}": pypi_cache_env,
     }
 
     for placeholder, value in replacements.items():
@@ -432,6 +467,11 @@ def main():
             f"proactive_capacity_max={proactive_cap} for cluster '{cluster_id}' — "
             f"proactive_capacity capped at {proactive_cap} for all scale sets"
         )
+
+    # Gate the pypi-cache pip env on whether this cluster deploys pypi-cache.
+    # Without the module the cache service does not exist, so runners must use
+    # public PyPI rather than a dead index URL.
+    cluster_config["pypi_cache_enabled"] = "pypi-cache" in (cluster_cfg.get("modules") or [])
 
     cluster_config["pause_runners"] = bool(cluster_cfg.get("pause_runners"))
     if cluster_config["pause_runners"]:

@@ -241,15 +241,16 @@ clusters:
       github_secret_name: meta-prod-aws-ue1
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-ue1"
-    pypi_cache:
-      replicas: 10
+    # ue1 runs without pypi-cache and cache-enforcer: runners install from
+    # public PyPI directly (no wheel cache, no SNI egress firewall). The
+    # arc-runners generator gates the pypi-cache pip env on pypi-cache module
+    # membership, so omitting the module also drops the PIP_INDEX_URL/UV_*
+    # injection -- otherwise pip would target a removed service.
     modules:
       - karpenter
       - arc
       - nodepools
       - arc-runners
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
