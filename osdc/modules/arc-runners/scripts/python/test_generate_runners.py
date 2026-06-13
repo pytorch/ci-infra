@@ -714,6 +714,54 @@ class TestGenerateRunner:
         assert "{{" not in content
         assert "}}" not in content
 
+    def test_pypi_cache_env_present_by_default(self, tmp_path, real_template):
+        """With pypi_cache_enabled unset (default) the cache pip env is injected."""
+        def_file = make_def_file(tmp_path, "test-runner", "c7i.24xlarge", 2, 4)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/org",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "pre-",
+        }
+
+        generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners")
+        content = (output_dir / "test-runner.yaml").read_text()
+        assert "PIP_INDEX_URL" in content
+        assert "pypi-cache-cpu.pypi-cache.svc.cluster.local" in content
+        # env block must still be valid and carry the non-cache var
+        assert "TORCH_CI_MAX_MEMORY" in content
+        list(yaml.safe_load_all(content))
+
+    def test_pypi_cache_env_omitted_when_disabled(self, tmp_path, real_template):
+        """With pypi_cache_enabled False (cluster lacks pypi-cache) the cache env is dropped."""
+        def_file = make_def_file(tmp_path, "test-runner", "c7i.24xlarge", 2, 4)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/org",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "pre-",
+            "pypi_cache_enabled": False,
+        }
+
+        generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners")
+        content = (output_dir / "test-runner.yaml").read_text()
+        for var in (
+            "PIP_INDEX_URL",
+            "PIP_TRUSTED_HOST",
+            "PIP_EXTRA_INDEX_URL",
+            "UV_DEFAULT_INDEX",
+            "UV_INDEX",
+            "PYPI_CACHE_SIMPLE_URL",
+            "PYPI_CACHE_WHL_URL",
+        ):
+            assert var not in content, f"{var} should be absent when pypi-cache is disabled"
+        assert "pypi-cache-cpu.pypi-cache.svc.cluster.local" not in content
+        # env block still renders the non-cache var and stays valid YAML
+        assert "TORCH_CI_MAX_MEMORY" in content
+        list(yaml.safe_load_all(content))
+
     def test_normalized_name_in_output(self, tmp_path):
         def_file = make_def_file(tmp_path, "runner.with_dots", "m6i.32xlarge", 4, 16)
         output_dir = tmp_path / "out"
