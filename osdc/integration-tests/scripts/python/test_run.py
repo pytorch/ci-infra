@@ -37,8 +37,8 @@ def clusters_yaml(tmp_path):
             "logging": {"namespace": "logging"},
         },
         "clusters": {
-            "arc-staging": {
-                "cluster_name": "pytorch-arc-staging",
+            "meta-staging-aws-uw1": {
+                "cluster_name": "meta-staging-aws-uw1",
                 "aws_region": "us-west-2",
                 "modules": ["eks", "karpenter", "nodepools", "arc", "arc-runners"],
                 "harbor": {"core_replicas": 1},
@@ -68,8 +68,8 @@ def clusters_yaml(tmp_path):
 
 @pytest.fixture
 def cfg_staging(clusters_yaml):
-    """Return loaded config for arc-staging."""
-    return load_cluster_config(clusters_yaml, "arc-staging")
+    """Return loaded config for meta-staging-aws-uw1."""
+    return load_cluster_config(clusters_yaml, "meta-staging-aws-uw1")
 
 
 @pytest.fixture
@@ -126,8 +126,8 @@ def workflow_template(tmp_path):
 
 class TestLoadClusterConfig:
     def test_valid_cluster(self, clusters_yaml):
-        cfg = load_cluster_config(clusters_yaml, "arc-staging")
-        assert cfg["cluster"]["cluster_name"] == "pytorch-arc-staging"
+        cfg = load_cluster_config(clusters_yaml, "meta-staging-aws-uw1")
+        assert cfg["cluster"]["cluster_name"] == "meta-staging-aws-uw1"
         assert cfg["cluster"]["aws_region"] == "us-west-2"
         assert "defaults" in cfg
 
@@ -158,7 +158,7 @@ class TestResolve:
         assert resolve(cfg_staging, "nonexistent.path") is None
 
     def test_top_level_key(self, cfg_staging):
-        assert resolve(cfg_staging, "cluster_name") == "pytorch-arc-staging"
+        assert resolve(cfg_staging, "cluster_name") == "meta-staging-aws-uw1"
 
 
 # ── has_module ────────────────────────────────────────────────────────────
@@ -196,8 +196,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             b200_enabled=False,
         )
         assert "b200-job" not in result
@@ -227,8 +227,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             b200_enabled=False,
             cache_enforcer_enabled=False,
         )
@@ -241,8 +241,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             b200_enabled=False,
             cache_enforcer_enabled=True,
         )
@@ -256,8 +256,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             b200_enabled=False,
             pypi_cache_slugs="cpu cu121 cu124",
         )
@@ -268,8 +268,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             b200_enabled=False,
         )
         # Default value should be substituted
@@ -279,8 +279,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             b200_enabled=False,
             pypi_cache_cuda_version="13.0",
         )
@@ -291,8 +291,8 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             b200_enabled=False,
         )
         # Default value should be substituted
@@ -347,7 +347,7 @@ class TestCleanupStalePrs:
             MagicMock(returncode=0),
         ]
 
-        cleanup_stale_prs("osdc-integration-test-arc-staging")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
 
         assert mock_run.call_count == 6
 
@@ -367,7 +367,7 @@ class TestCleanupStalePrs:
     @patch("phases.run_cmd")
     def test_handles_pr_list_failure(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stderr="auth required", stdout="")
-        cleanup_stale_prs("osdc-integration-test-arc-staging")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
         # Should not raise, just log and return
         assert mock_run.call_count == 1
 
@@ -382,7 +382,7 @@ class TestCleanupStalePrs:
             MagicMock(returncode=0, stdout=empty_runs),  # in_progress runs
         ]
 
-        cleanup_stale_prs("osdc-integration-test-arc-staging")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
         # pr list + 2 run list calls, no close/cancel calls
         assert mock_run.call_count == 3
 
@@ -409,7 +409,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=True,
         )
 
@@ -437,7 +437,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test workflow\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=True,
         )
 
@@ -472,7 +472,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=False,
         )
 
@@ -609,7 +609,7 @@ class TestEnsureCanaryRepo:
 
 
 def test_branch_name():
-    assert branch_name("arc-staging") == "osdc-integration-test-arc-staging"
+    assert branch_name("meta-staging-aws-uw1") == "osdc-integration-test-meta-staging-aws-uw1"
     assert branch_name("arc-cbr-production") == "osdc-integration-test-arc-cbr-production"
 
 
@@ -737,7 +737,7 @@ class TestParseArgs:
             [
                 "run.py",
                 "--cluster-id",
-                "arc-staging",
+                "meta-staging-aws-uw1",
                 "--clusters-yaml",
                 "/tmp/c.yaml",
                 "--upstream-dir",
@@ -747,7 +747,7 @@ class TestParseArgs:
             ],
         ):
             args = parse_args()
-        assert args.cluster_id == "arc-staging"
+        assert args.cluster_id == "meta-staging-aws-uw1"
         assert str(args.clusters_yaml) == "/tmp/c.yaml"
         assert str(args.upstream_dir) == "/tmp/upstream"
         assert str(args.root_dir) == "/tmp/root"
@@ -812,7 +812,7 @@ class TestClearStagingPools:
     def test_no_active_pods_skips(self, mock_run):
         """When no runner pods are found, skip pool clear."""
         mock_run.return_value = MagicMock(returncode=0, stdout="\n", stderr="")
-        clear_staging_pools("arc-staging")
+        clear_staging_pools("meta-staging-aws-uw1")
         # Only the initial kubectl get pods call
         assert mock_run.call_count == 1
 
@@ -824,7 +824,7 @@ class TestClearStagingPools:
             stdout="",
             stderr="connection refused",
         )
-        clear_staging_pools("arc-staging")
+        clear_staging_pools("meta-staging-aws-uw1")
         assert mock_run.call_count == 1
 
     @patch("phases.time.sleep")
@@ -846,7 +846,7 @@ class TestClearStagingPools:
             MagicMock(returncode=0, stdout="", stderr=""),
         ]
 
-        clear_staging_pools("arc-staging", force=True)
+        clear_staging_pools("meta-staging-aws-uw1", force=True)
 
         assert mock_run.call_count == 6
         # Verify delete pods call
@@ -873,7 +873,7 @@ class TestClearStagingPools:
             stdout="pod1 Running\n",
             stderr="",
         )
-        clear_staging_pools("arc-staging", force=False)
+        clear_staging_pools("meta-staging-aws-uw1", force=False)
         # Only the get-pods call, no delete/drain/redeploy
         assert mock_run.call_count == 1
 
@@ -895,7 +895,7 @@ class TestClearStagingPools:
             MagicMock(returncode=0, stdout="", stderr=""),
         ]
 
-        clear_staging_pools("arc-staging", force=False)
+        clear_staging_pools("meta-staging-aws-uw1", force=False)
 
         assert mock_run.call_count == 5
         # Verify the drain and redeploy happened
@@ -925,7 +925,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=True,
         )
 
@@ -954,7 +954,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: new test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=True,
         )
 
@@ -983,7 +983,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=False,
         )
 
@@ -1010,7 +1010,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="arc-staging",
+            cluster_id="meta-staging-aws-uw1",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1049,7 +1049,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="arc-staging",
+            cluster_id="meta-staging-aws-uw1",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1089,7 +1089,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="arc-staging",
+            cluster_id="meta-staging-aws-uw1",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1125,7 +1125,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="arc-staging",
+            cluster_id="meta-staging-aws-uw1",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
