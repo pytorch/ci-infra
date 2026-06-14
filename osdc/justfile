@@ -14,9 +14,9 @@
 #
 # Usage:
 #   just list                          # show clusters and their modules
-#   just deploy arc-staging            # full deploy (base + all modules)
-#   just deploy-base arc-staging       # base infra only
-#   just deploy-module arc-staging arc # single module
+#   just deploy meta-staging-aws-uw1            # full deploy (base + all modules)
+#   just deploy-base meta-staging-aws-uw1       # base infra only
+#   just deploy-module meta-staging-aws-uw1 arc # single module
 #   just test                            # run all tests
 #   just lint                            # lint all code
 
@@ -1153,7 +1153,7 @@ _arc-drift-report name='':
     NAME="{{name}}"
 
     # Stage kubectl outputs in tempfiles — combined JSON exceeds ARG_MAX on
-    # large clusters (~1.25MB ARS blob alone on arc-staging), so --argjson is
+    # large clusters (~1.25MB ARS blob alone on meta-staging-aws-uw1), so --argjson is
     # not viable. --slurpfile takes a file path instead.
     WORK=$(mktemp -d)
     trap 'rm -rf "$WORK"' EXIT

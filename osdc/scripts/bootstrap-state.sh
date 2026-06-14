@@ -9,7 +9,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/bootstrap-state.sh <cluster-id>
-#   ./scripts/bootstrap-state.sh arc-staging
+#   ./scripts/bootstrap-state.sh meta-staging-aws-uw1
 #   ./scripts/bootstrap-state.sh --all              # bootstrap all clusters
 #
 # Idempotent: safe to run multiple times.

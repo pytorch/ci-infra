@@ -3,7 +3,7 @@
 
 Runs a full integration test against an OSDC cluster by:
 1. Cleaning up stale PRs on pytorch/pytorch-canary
-2. Optionally clearing staging pools (arc-staging only)
+2. Optionally clearing staging pools (meta-staging-aws-uw1 only)
 3. Opening a PR with test workflows that exercise every cluster capability
 4. Optionally running smoke tests and node-compactor tests in parallel
 5. Collecting workflow results and reporting

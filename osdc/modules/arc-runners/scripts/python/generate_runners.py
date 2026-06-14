@@ -375,7 +375,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: generate_runners.py <cluster-id>")
         print()
-        print("Example: generate_runners.py arc-staging")
+        print("Example: generate_runners.py meta-staging-aws-uw1")
         return 1
 
     cluster_id = sys.argv[1]
