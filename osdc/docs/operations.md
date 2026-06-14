@@ -5,6 +5,7 @@
 - AWS CLI configured with credentials for an IAM principal mapped to one of the roles in the target cluster's `access_config.cluster_admin_role_names` (e.g. `osdc_gha_staging` for `meta-staging-aws-uw1`, `osdc_gha_prod` for `arc-cbr-production`). How those credentials are acquired (SSO, role assumption, static keys) is left to the operator's organization — the project does not prescribe a profile or login flow.
 - `mise` installed ([mise.jdx.dev](https://mise.jdx.dev))
 - `just` installed (not managed by `mise` — install separately)
+- Docker with **BuildKit** enabled — local deploys build container images (e.g. `image-cache-janitor`) and require BuildKit; see [Docker / BuildKit (local builds)](#docker--buildkit-local-builds) below
 - Working directory: `osdc/`
 
 `mise` auto-installs all other tools (tofu, kubectl, helm, crane, awscli, packer, `uv`, plus linters) on first run. Run `just setup` once to create the Python virtualenv (`uv sync`) used by `cluster-config.py` and other helpers.
@@ -21,6 +22,35 @@ export no_proxy="${no_proxy:-},.eks.amazonaws.com"
 ```
 
 Every `just` recipe that touches the EKS API inlines this bypass for you. The export above is only needed when invoking `aws`, `kubectl`, or `helm` directly — for example during the read-only debugging session below.
+
+### Docker / BuildKit (local builds)
+
+`just deploy` / `just deploy-base` build container images locally (e.g. `image-cache-janitor`) for both `amd64` and `arm64`. These builds **require BuildKit**: the Dockerfiles rely on the `TARGETARCH` build arg, which only BuildKit auto-populates. Under the legacy builder `TARGETARCH` is empty, so arch-specific downloads (crictl, etc.) resolve to a malformed URL and fail with HTTP 404.
+
+CI has BuildKit; a fresh local Docker (especially Colima on Apple Silicon) often does not. To wire it up:
+
+```bash
+# 1. Install the buildx CLI plugin (Homebrew example)
+brew install docker-buildx
+
+# 2. Register it where the Docker CLI looks for plugins
+mkdir -p ~/.docker/cli-plugins
+ln -sfn "$(brew --prefix)/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx
+docker buildx version   # verify
+
+# 3. Make BuildKit the default for plain `docker build` (deploy.sh uses it directly)
+export DOCKER_BUILDKIT=1   # add to your shell profile, or run `docker buildx install` once
+```
+
+On Apple Silicon, the `amd64` half of each build runs under emulation. With Colima this is handled by **Rosetta** — no manual binfmt registration is needed — as long as the VM uses `vmType: vz` with `rosetta: true` (e.g. `colima start --vm-type vz --vz-rosetta`) and Rosetta is installed on the host:
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+```
+
+Colima then registers the Rosetta handler in the VM automatically; you do **not** need `docker run --privileged tonistiigi/binfmt --install all` (that would install slower QEMU handlers instead).
+
+A BuildKit build shows `#5` / `#6 DONE`-style step output; the legacy builder shows `Step N/M` / `Running in <hash>` plus a `The requested image's platform ... does not match the detected host platform` warning. That platform warning is harmless on its own — the real failure is the empty `TARGETARCH`.
 
 ## First-time setup
 
