@@ -59,11 +59,11 @@ Each pod runs three containers:
   `8080` and `[::]:8080` so this works under IPv6-only EKS. Reverting to a
   single-stack IPv4 deployment would require changing the scrape URL.
 
-Replicas: default 2, override per-cluster (`arc-staging: 1`,
+Replicas: default 2, override per-cluster (`meta-staging-aws-uw1: 1`,
 `arc-cbr-production: 10`). Pods spread across nodes via `podAntiAffinity` on
 `kubernetes.io/hostname`. A per-slug `PodDisruptionBudget` with `minAvailable: 1`
 guards each Deployment, so voluntary disruptions (node drain, rolling update)
-block until a replacement pod is ready — on `arc-staging` with `replicas: 1`
+block until a replacement pod is ready — on `meta-staging-aws-uw1` with `replicas: 1`
 this means drains stall until the new pod schedules.
 
 Pods are scheduled on dedicated Karpenter nodes (`workload=pypi-cache:NoSchedule`

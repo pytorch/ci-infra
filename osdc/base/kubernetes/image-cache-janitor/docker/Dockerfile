@@ -1,5 +1,5 @@
 FROM public.ecr.aws/docker/library/python:3.12-alpine
-RUN apk add --no-cache util-linux=2.41.4-r0
+RUN apk add --no-cache util-linux=2.42-r0
 
 # Install crictl (CRI CLI) so the janitor is self-contained and does not
 # depend on the host AMI shipping crictl.
