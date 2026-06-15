@@ -414,9 +414,7 @@ def main():
         log_error(f"No 'arc-runners.github_config_url' configured for cluster '{cluster_id}' in clusters.yaml")
         return 1
 
-    # Resolve runner image tag from arc.runner_image_tag (shared with arc module)
-    runner_image_tag = resolve_value(cluster_cfg, defaults, "arc.runner_image_tag") or "2.333.1"
-    cluster_config["runner_image"] = f"ghcr.io/actions/actions-runner:{runner_image_tag}"
+    cluster_config["runner_image"] = os.environ["RUNNER_IMAGE"]
 
     proactive_cap = cluster_cfg.get("proactive_capacity_max")
     if proactive_cap is not None and (
