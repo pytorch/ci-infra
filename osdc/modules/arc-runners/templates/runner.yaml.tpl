@@ -179,6 +179,13 @@ listenerTemplate:
             value: "{{GPU_COUNT}}"
           - name: CAPACITY_AWARE_WORKFLOW_DISK
             value: "{{DISK_SIZE}}"
+          # Stamp the workflow placeholder (ph-w-*) with the same scheduler the
+          # real workflow pod uses (see {{SCHEDULER_NAME_LINE}} in the job-pod
+          # template). Empty = default-scheduler (the fork only sets
+          # .Spec.SchedulerName when non-empty), so packing/reservation stay
+          # consistent on NUMA nodes. Single source: the def's scheduler_name.
+          - name: CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME
+            value: "{{SCHEDULER_NAME}}"
           # Must match the runner container resources below (requests/limits)
           - name: CAPACITY_AWARE_RUNNER_CPU
             value: "750m"

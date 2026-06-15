@@ -4,12 +4,12 @@
 
 Operator-facing runbook for destroying and recreating an existing OSDC cluster. Use this whenever a planned change touches a property of `aws_eks_cluster` (or a directly-dependent resource) that AWS rejects in-place with a ForceNew plan — VPC / IP family / CIDR changes, encryption_config additions, or any other immutable field.
 
-**Per-cluster, never in parallel.** Do `arc-staging` (us-west-1) first; only promote to the new/changed production cluster after staging has soaked. 
+**Per-cluster, never in parallel.** Do `meta-staging-aws-uw1` (us-west-1) first; only promote to the new/changed production cluster after staging has soaked. 
 
 - This can change if you are deploying a new cluster with a tested configuration or migrating a cluster from one state to another:
  - Creating a new cluster: green signals on [osdc-pre-merge.yml](https://github.com/pytorch/ci-infra/blob/main/.github/workflows/osdc-pre-merge.yml) for the latest main version should be sufficient;
  - Fully destroying / recreating: same as for creating a new cluster;
- - Migrating / terraform network eks changes: please deploy `arc-staging` to your current version, then execute this procedure to it and follow the testing guidelines first;
+ - Migrating / terraform network eks changes: please deploy `meta-staging-aws-uw1` to your current version, then execute this procedure to it and follow the testing guidelines first;
 
 **Code change must already be on `main` with green CI.** `just deploy <cluster>` after destroy is the only path that brings up the new cluster shape.
 
@@ -136,9 +136,9 @@ Read `scripts/destroy-cluster.sh` if you need to bypass it (debugging partial st
 Add `pause_runners: true` at the top level of the cluster's entry in `clusters.yaml`:
 
 ```diff
- arc-staging:
+ meta-staging-aws-uw1:
    region: us-west-1
-   cluster_name: arc-staging
+   cluster_name: meta-staging-aws-uw1
 +  pause_runners: true
    modules:
      - karpenter
