@@ -19,17 +19,16 @@ from __future__ import annotations
 
 import logging
 import os
-import ssl
 import sys
 import time
 import urllib.error
-import urllib.request
-from pathlib import Path
 
-# The shared taint-remover library is mounted at /scripts/taint-remover/
+# The shared taint-remover library is mounted at /scripts/taint-remover/. We
+# reuse its in-cluster API plumbing (URL building, SA token, TLS context, and
+# the HTTP request helper) so this script only owns the NRT-specific polling.
 sys.path.insert(0, "/scripts/taint-remover")
 
-from taint_remover import remove_taint_forever
+from taint_remover import _k8s_api, _read_token, _request, _ssl_context, remove_taint_forever
 
 TAINT_KEY = "node-init.osdc.io/nfd-topology"
 POLL_INTERVAL = 5  # seconds between NRT checks
@@ -37,43 +36,27 @@ TIMEOUT_SECONDS = 600  # 10 minutes — fail open if exceeded
 NRT_API_VERSION = "v1alpha2"  # storage version for NFD 0.17.x
 NRT_API_PATH = f"/apis/topology.node.k8s.io/{NRT_API_VERSION}/noderesourcetopologies"
 
-TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
-CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-
 log = logging.getLogger("wait-for-nrt")
 
 
-def _k8s_api() -> str:
-    host = os.environ.get("KUBERNETES_SERVICE_HOST")
-    port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
-    if not host:
-        raise RuntimeError("KUBERNETES_SERVICE_HOST not set — not running inside a pod?")
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    return f"https://{host}:{port}"
-
-
 def _get_nrt(node_name: str) -> int:
-    """GET the NRT object for this node. Returns HTTP status code."""
-    token = TOKEN_PATH.read_text().strip()
-    ctx = ssl.create_default_context()
-    if CA_PATH.exists():
-        ctx.load_verify_locations(cafile=str(CA_PATH))
+    """GET the NRT object for this node. Returns the HTTP status code.
 
+    Transport errors (timeouts, connection resets) propagate to the caller,
+    which treats them as transient and retries. HTTP error responses come
+    back as their status code via the shared _request helper.
+    """
     url = f"{_k8s_api()}{NRT_API_PATH}/{node_name}"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    req = urllib.request.Request(url, method="GET", headers=headers)  # noqa: S310
-    try:
-        with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:  # noqa: S310
-            return resp.status
-    except urllib.error.HTTPError as e:
-        return e.code
+    status, _ = _request("GET", url, _read_token(), _ssl_context())
+    return status
 
 
-def _wait_for_nrt(node_name: str) -> bool:
-    """Poll until an NRT object exists for this node.
+def _wait_for_nrt(node_name: str) -> None:
+    """Poll until an NRT object exists for this node, or the timeout elapses.
 
-    Returns True if NRT was found, False if timeout was reached.
+    Logs the outcome (found, or fail-open on timeout) and returns. The caller
+    removes the taint unconditionally — failing open keeps a slow or broken
+    NFD from permanently stranding the node.
     """
     deadline = time.monotonic() + TIMEOUT_SECONDS
 
@@ -87,7 +70,7 @@ def _wait_for_nrt(node_name: str) -> bool:
             status = _get_nrt(node_name)
             if status == 200:
                 log.info("NRT object found for node '%s'.", node_name)
-                return True
+                return
             if status == 404:
                 log.info("NRT not yet published for '%s' — retrying in %ds.", node_name, POLL_INTERVAL)
             elif 500 <= status < 600 or status == 429:
@@ -104,7 +87,6 @@ def _wait_for_nrt(node_name: str) -> bool:
         TIMEOUT_SECONDS,
         node_name,
     )
-    return False
 
 
 def main() -> int:
