@@ -45,6 +45,11 @@ HELM_DAEMONSETS: list[DaemonSetOverhead] = [
     # Alloy logging DaemonSet
     # Values from modules/logging/helm/alloy-logging-values.yaml
     DaemonSetOverhead("alloy-logging", 100, 256, False, "constant:helm:alloy-logging"),
+    # NFD topology-updater — publishes NodeResourceTopology CRDs for the
+    # numa-scheduler. GPU fleet only (nodeSelector node-fleet: p5 in prod,
+    # g4dn-metal-numa in staging), so gpu_only=True. Requests, not limits.
+    # Values from modules/nfd/helm/values.yaml
+    DaemonSetOverhead("nfd-topology-updater", 50, 64, True, "constant:helm:node-feature-discovery"),
 ]
 
 # EKS-managed addon DaemonSets — not in our manifests at all
