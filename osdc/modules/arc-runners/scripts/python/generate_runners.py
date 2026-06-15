@@ -138,6 +138,40 @@ def resolve_value(cluster_cfg, defaults, dotpath):
     return dval
 
 
+def resolve_max_runners(value, def_file, cluster_id):
+    """Resolve a runner def's max_runners field to a concrete int or None.
+
+    Accepts:
+      - None: returns None (caller decides fallback, e.g., MAX_INT32 or chart default).
+      - A positive int (>= 1): returned as-is.
+      - A dict {"default": <int>, <cluster_id>: <int>, ...}: resolved via
+        value.get(cluster_id, value["default"]). The "default" key is required;
+        every dict value must be a positive int.
+
+    Raises ValueError on invalid input. `def_file` is used in error messages.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        if "default" not in value:
+            raise ValueError(
+                f"Invalid definition file {def_file}: max_runners mapping must include a "
+                f"`default` key for the baseline value, got keys {sorted(value)}"
+            )
+        for cid, v in value.items():
+            if not isinstance(v, int) or v < 1:
+                raise ValueError(
+                    f"Invalid definition file {def_file}: max_runners[{cid!r}] must be a positive integer, got {v!r}"
+                )
+        return value.get(cluster_id, value["default"])
+    if not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"Invalid definition file {def_file}: max_runners must be a positive integer or "
+            f"a mapping with a `default` key, got {value!r}"
+        )
+    return value
+
+
 def generate_runner(def_file, template_content, cluster_config, output_dir, module_name):
     """Generate a single runner config from its definition."""
     with open(def_file) as f:
@@ -168,27 +202,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         log_error(f"Invalid definition file: {def_file}")
         return False
 
-    if max_runners is not None:
-        if isinstance(max_runners, dict):
-            # Mapping form: one positive int per cluster, with `default` as the baseline.
-            if "default" not in max_runners:
-                raise ValueError(
-                    f"Invalid definition file {def_file}: max_runners mapping must include a "
-                    f"`default` key for the baseline value, got keys {sorted(max_runners)}"
-                )
-            for cid, value in max_runners.items():
-                if not isinstance(value, int) or value < 1:
-                    raise ValueError(
-                        f"Invalid definition file {def_file}: max_runners[{cid!r}] must be a "
-                        f"positive integer, got {value!r}"
-                    )
-            cluster_id = cluster_config.get("cluster_id")
-            max_runners = max_runners.get(cluster_id, max_runners["default"])
-        elif not isinstance(max_runners, int) or max_runners < 1:
-            raise ValueError(
-                f"Invalid definition file {def_file}: max_runners must be a positive integer or "
-                f"a mapping with a `default` key, got {max_runners!r}"
-            )
+    max_runners = resolve_max_runners(runner.get("max_runners"), def_file, cluster_config.get("cluster_id"))
 
     if cluster_config.get("pause_runners"):
         max_runners = 0
@@ -314,6 +328,20 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
+    # Optional schedulerName for workflow pods. Per-runner-def value
+    # (e.g. scheduler_name: numa-scheduler on H100 4-GPU) takes precedence
+    # over the cluster-level default. Empty = default scheduler.
+    #
+    # The same value feeds two places so the real workflow pod and its
+    # capacity placeholder (ph-w-*) agree on the scheduler:
+    #   - {{SCHEDULER_NAME_LINE}}: schedulerName on the real workflow pod spec.
+    #   - {{SCHEDULER_NAME}}: CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME on the
+    #     listener, which the ARC fork stamps onto the workflow placeholder.
+    # If they diverged, a NUMA-blind placeholder would reserve a slot the
+    # NUMA-aware real pod can't claim (broken reservation on NUMA nodes).
+    scheduler_name = runner.get("scheduler_name", "")
+    scheduler_name_line = f"      schedulerName: {scheduler_name}" if scheduler_name else ""
+
     # Replace all template placeholders
     output_content = template_content
     replacements = {
@@ -342,6 +370,8 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
         "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
+        "{{SCHEDULER_NAME_LINE}}": scheduler_name_line,
+        "{{SCHEDULER_NAME}}": scheduler_name,
     }
 
     for placeholder, value in replacements.items():
@@ -361,7 +391,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: generate_runners.py <cluster-id>")
         print()
-        print("Example: generate_runners.py arc-staging")
+        print("Example: generate_runners.py meta-staging-aws-uw1")
         return 1
 
     cluster_id = sys.argv[1]

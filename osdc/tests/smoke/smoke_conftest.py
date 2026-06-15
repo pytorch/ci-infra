@@ -69,7 +69,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "--cluster-id",
             action="store",
             required=True,
-            help="Cluster ID from clusters.yaml (e.g. arc-staging)",
+            help="Cluster ID from clusters.yaml (e.g. meta-staging-aws-uw1)",
         )
 
 
