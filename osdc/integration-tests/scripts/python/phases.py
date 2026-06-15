@@ -231,6 +231,7 @@ def generate_workflow(
     b200_enabled: bool,
     cache_enforcer_enabled: bool = False,
     release_enabled: bool = False,
+    pypi_cache_enabled: bool = False,
     pypi_cache_slugs: str = "cpu cu121 cu124",
     pypi_cache_cuda_version: str = "12.8",
 ) -> str:
@@ -249,6 +250,7 @@ def generate_workflow(
     content = _strip_conditional_block(content, "B200", keep=b200_enabled)
     content = _strip_conditional_block(content, "CACHE_ENFORCER", keep=cache_enforcer_enabled)
     content = _strip_conditional_block(content, "RELEASE", keep=release_enabled)
+    content = _strip_conditional_block(content, "PYPI_CACHE", keep=pypi_cache_enabled)
 
     return content
 
