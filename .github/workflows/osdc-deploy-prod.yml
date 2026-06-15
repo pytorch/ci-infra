@@ -1,10 +1,8 @@
 name: "OSDC: Deploy production"
 
-# Manual rollout for prod. Protected by per-account GitHub environments:
-#   - Meta clusters: `osdc-production` environment
-#   - LF clusters:   `osdc-lf-production` environment
-# Each environment's IAM role trusts only tokens carrying that environment
-# name in the sub claim, so IAM enforces the gate independently.
+# Manual rollout for prod. Protected by the `osdc-production` GitHub environment
+# for both Meta and LF clusters. LF clusters pass `use_lf_credentials: true` to
+# the reusable workflow, which selects LF_AWS_DEPLOY_ROLE_ARN over the Meta role.
 #
 # Default behavior (target = all): sequential rollout of all clusters.
 #   Meta: arc-cbr-production-uw1 → arc-cbr-production → meta-prod-aws-ue1
