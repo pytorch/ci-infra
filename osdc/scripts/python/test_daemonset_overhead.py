@@ -461,6 +461,7 @@ class TestRealManifests:
         # Helm constants
         assert "node-exporter" in names
         assert "alloy-logging" in names
+        assert "nfd-topology-updater" in names
 
         # EKS addon constants
         assert "kube-proxy" in names
@@ -474,6 +475,8 @@ class TestRealManifests:
         # GPU-only
         assert by_name["nvidia-device-plugin-daemonset"].gpu_only is True
         assert by_name["dcgm-exporter"].gpu_only is True
+        # NFD topology-updater runs on the GPU fleet (p5 / g4dn-metal-numa)
+        assert by_name["nfd-topology-updater"].gpu_only is True
 
         # Not GPU-only
         assert by_name["node-performance-tuning"].gpu_only is False
@@ -504,6 +507,10 @@ class TestRealManifests:
         # hooks-warmer: 10m CPU, 32Mi
         assert by_name["runner-hooks-warmer"].cpu_millicores == 10
         assert by_name["runner-hooks-warmer"].memory_mib == 32
+
+        # nfd-topology-updater: 50m CPU, 64Mi (Helm constant; requests, not limits)
+        assert by_name["nfd-topology-updater"].cpu_millicores == 50
+        assert by_name["nfd-topology-updater"].memory_mib == 64
 
 
 # ---------------------------------------------------------------------------
