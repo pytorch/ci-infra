@@ -211,6 +211,7 @@ def main():
     b200_enabled = has_module(cfg, "nodepools-b200") and has_module(cfg, "arc-runners-b200")
     cache_enforcer_enabled = has_module(cfg, "cache-enforcer")
     release_enabled = has_module(cfg, "arc-runners")
+    pypi_cache_enabled = has_module(cfg, "pypi-cache")
 
     # Build pypi-cache slug list: always "cpu", plus one per configured CUDA version
     cuda_versions = resolve(cfg, "pypi_cache.cuda_versions", [])
@@ -233,6 +234,7 @@ def main():
     log.info("  B200 enabled: %s", b200_enabled)
     log.info("  Release runners: %s", release_enabled)
     log.info("  Cache enforcer: %s", cache_enforcer_enabled)
+    log.info("  PyPI cache: %s", pypi_cache_enabled)
     log.info("  PyPI cache slugs: %s", pypi_cache_slugs)
     log.info("  Smoke tests: %s", "skip" if skip_smoke else "run")
     log.info("  Compactor tests: %s", "skip" if skip_compactor else "run")
@@ -264,6 +266,7 @@ def main():
             b200_enabled,
             cache_enforcer_enabled=cache_enforcer_enabled,
             release_enabled=release_enabled,
+            pypi_cache_enabled=pypi_cache_enabled,
             pypi_cache_slugs=pypi_cache_slugs,
             pypi_cache_cuda_version=pypi_cache_cuda_version,
         )
