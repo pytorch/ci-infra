@@ -2,7 +2,7 @@
 # which reads values from clusters.yaml.
 
 variable "cluster_name" {
-  description = "EKS cluster name (e.g. pytorch-arc-staging)"
+  description = "EKS cluster name (e.g. meta-staging-aws-uw1)"
   type        = string
 }
 

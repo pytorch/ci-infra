@@ -16,6 +16,7 @@ from generate_runners import (
     main,
     normalize_name,
     parse_memory_bytes,
+    resolve_max_runners,
     resolve_value,
 )
 
@@ -540,6 +541,33 @@ class TestResolveValue:
         cluster_cfg = {"region": "us-west-2"}
         defaults = {"region": "us-east-1"}
         assert resolve_value(cluster_cfg, defaults, "region") == "us-west-2"
+
+
+# ============================================================================
+# resolve_max_runners
+# ============================================================================
+
+
+class TestResolveMaxRunners:
+    def test_none_returns_none(self):
+        assert resolve_max_runners(None, Path("dummy"), "arc-x") is None
+
+    def test_positive_int_passes_through(self):
+        assert resolve_max_runners(7, Path("dummy"), "arc-x") == 7
+
+    def test_mapping_picks_cluster_override(self):
+        assert resolve_max_runners({"default": 1, "arc-x": 5}, Path("dummy"), "arc-x") == 5
+
+    def test_mapping_falls_back_to_default(self):
+        assert resolve_max_runners({"default": 1, "arc-x": 5}, Path("dummy"), "arc-y") == 1
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="max_runners must be a positive integer"):
+            resolve_max_runners(0, Path("dummy"), "arc-x")
+
+    def test_mapping_missing_default_raises(self):
+        with pytest.raises(ValueError, match="max_runners mapping must include a `default` key"):
+            resolve_max_runners({"arc-x": 5}, Path("dummy"), "arc-x")
 
 
 # ============================================================================
