@@ -61,7 +61,7 @@ class TestPrintReport:
             "compactor": {"status": "passed"},
         }
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+        result = self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", workflow_results, validation)
 
         assert result is True
         out = capsys.readouterr().out
@@ -83,7 +83,7 @@ class TestPrintReport:
             "compactor": {"status": "passed"},
         }
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+        result = self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", workflow_results, validation)
 
         assert result is False
 
@@ -94,7 +94,7 @@ class TestPrintReport:
             "compactor": {"status": "skipped"},
         }
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+        result = self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", workflow_results, validation)
 
         assert result is False
 
@@ -105,7 +105,7 @@ class TestPrintReport:
             "compactor": {"status": "skipped"},
         }
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+        result = self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", workflow_results, validation)
 
         assert result is True
 
@@ -119,7 +119,7 @@ class TestPrintReport:
         ]
         validation = {"smoke": {"status": "passed"}, "compactor": {"status": "passed"}}
 
-        self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+        self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", workflow_results, validation)
 
         out = capsys.readouterr().out
         assert "something broke" in out
@@ -132,7 +132,7 @@ class TestPrintReport:
             "compactor": {"status": "passed"},
         }
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+        result = self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", workflow_results, validation)
 
         assert result is False
         out = capsys.readouterr().out
@@ -146,14 +146,14 @@ class TestPrintReport:
             "compactor": {"status": "failed", "output": ""},
         }
 
-        result = self.print_report("arc-staging", "pytorch-arc-staging", workflow_results, validation)
+        result = self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", workflow_results, validation)
 
         assert result is False
 
     def test_interrupted_header(self, capsys):
         self.print_report(
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             [],
             {},
             interrupted=True,
@@ -167,8 +167,8 @@ class TestPrintReport:
             "compactor": {"status": "interrupted"},
         }
         result = self.print_report(
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             [],
             validation,
             interrupted=True,
@@ -189,8 +189,8 @@ class TestPrintReport:
         ]
         validation = {"smoke": {"status": "passed"}, "compactor": {"status": "passed"}}
         result = self.print_report(
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             workflow_results,
             validation,
             interrupted=True,
@@ -212,8 +212,8 @@ class TestPrintReport:
         ]
         validation = {"smoke": {"status": "passed"}, "compactor": {"status": "passed"}}
         result = self.print_report(
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             workflow_results,
             validation,
             interrupted=True,
@@ -228,7 +228,7 @@ class TestPrintReport:
             "smoke": {"status": "passed", "duration_s": 125.3},
             "compactor": {"status": "passed", "duration_s": 7.0},
         }
-        result = self.print_report("arc-staging", "pytorch-arc-staging", [], validation)
+        result = self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", [], validation)
         assert result is True
         out = capsys.readouterr().out
         assert "2m05s" in out  # 125s -> 2m05s
@@ -240,7 +240,7 @@ class TestPrintReport:
             "smoke": {"status": "passed"},
             "compactor": {"status": "skipped"},
         }
-        result = self.print_report("arc-staging", "pytorch-arc-staging", [], validation)
+        result = self.print_report("meta-staging-aws-uw1", "meta-staging-aws-uw1", [], validation)
         assert result is True
         out = capsys.readouterr().out
         # No duration suffix expected
@@ -263,8 +263,8 @@ class TestPrintReport:
             "compactor": {"status": "interrupted"},
         }
         result = self.print_report(
-            "arc-staging",
-            "pytorch-arc-staging",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             workflow_results,
             validation,
             interrupted=True,

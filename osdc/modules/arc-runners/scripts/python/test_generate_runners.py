@@ -16,6 +16,7 @@ from generate_runners import (
     main,
     normalize_name,
     parse_memory_bytes,
+    resolve_max_runners,
     resolve_value,
 )
 
@@ -543,6 +544,33 @@ class TestResolveValue:
         cluster_cfg = {"region": "us-west-2"}
         defaults = {"region": "us-east-1"}
         assert resolve_value(cluster_cfg, defaults, "region") == "us-west-2"
+
+
+# ============================================================================
+# resolve_max_runners
+# ============================================================================
+
+
+class TestResolveMaxRunners:
+    def test_none_returns_none(self):
+        assert resolve_max_runners(None, Path("dummy"), "arc-x") is None
+
+    def test_positive_int_passes_through(self):
+        assert resolve_max_runners(7, Path("dummy"), "arc-x") == 7
+
+    def test_mapping_picks_cluster_override(self):
+        assert resolve_max_runners({"default": 1, "arc-x": 5}, Path("dummy"), "arc-x") == 5
+
+    def test_mapping_falls_back_to_default(self):
+        assert resolve_max_runners({"default": 1, "arc-x": 5}, Path("dummy"), "arc-y") == 1
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="max_runners must be a positive integer"):
+            resolve_max_runners(0, Path("dummy"), "arc-x")
+
+    def test_mapping_missing_default_raises(self):
+        with pytest.raises(ValueError, match="max_runners mapping must include a `default` key"):
+            resolve_max_runners({"arc-x": 5}, Path("dummy"), "arc-x")
 
 
 # ============================================================================
@@ -1836,6 +1864,19 @@ def _render_real(real_template, tmp_path, variant):
     return helm, configmap, workflow_pod
 
 
+def _listener_env_value(helm, name):
+    """Return the value of a named env var on the listener container.
+
+    Returns None when the env var is absent so callers can distinguish
+    "missing" from "present but empty".
+    """
+    containers = helm["listenerTemplate"]["spec"]["containers"]
+    for entry in containers[0].get("env", []):
+        if entry.get("name") == name:
+            return entry.get("value")
+    return None
+
+
 class TestRealTemplate:
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_runner_pod_uses_arc_runner_priority_class(self, real_template, tmp_path, variant):
@@ -1942,14 +1983,21 @@ class TestRealTemplate:
         }
         assert generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners") is True
         docs = list(yaml.safe_load_all((output_dir / "numa-runner.yaml").read_text()))
+        helm = docs[0]
         workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
         assert workflow_pod["spec"]["schedulerName"] == "numa-scheduler"
+        # The capacity placeholder (ph-w-*) must use the SAME scheduler so it
+        # reserves a slot the real workflow pod can actually claim on NUMA nodes.
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == "numa-scheduler"
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_workflow_pod_no_scheduler_name_by_default(self, real_template, tmp_path, variant):
         """Workflow pod must NOT have schedulerName when the runner def omits scheduler_name."""
-        _, _, workflow_pod = _render_real(real_template, tmp_path, variant)
+        helm, _, workflow_pod = _render_real(real_template, tmp_path, variant)
         assert "schedulerName" not in workflow_pod["spec"]
+        # Placeholder scheduler env must be present-but-empty (the fork treats
+        # empty as default-scheduler), keeping it in sync with the workflow pod.
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == ""
 
     def test_gpu_workflow_pod_has_gpu_toleration_and_resources(self, real_template, tmp_path):
         """GPU runner's workflow pod must carry nvidia.com/gpu toleration and matching request/limit."""

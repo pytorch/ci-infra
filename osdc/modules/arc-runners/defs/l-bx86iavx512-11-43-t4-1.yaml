@@ -8,8 +8,15 @@ runner:
   instance_type: g4dn.metal
   node_fleet: g4dn-metal-numa
   disk_size: 150
-  vcpu: 11
+  # TESTING (topology A/B): 60 vCPU deliberately exceeds ONE NUMA zone (~48 logical CPUs
+  # on g4dn.metal) while still fitting the node (96). Under single-numa-node this can't
+  # align to one zone, so:
+  #   Phase 1 (no scheduler_name → default scheduler): binds then TopologyAffinityError
+  #   Phase 2 (add scheduler_name: numa-scheduler below): never binds → stays Pending
+  # Name/label kept as -11-43- so the canary workflow's runs-on still matches.
+  vcpu: 60
   memory: 43Gi
   gpu: 1
   max_runners:
-    default: 2  # TESTING
+    default: 1  # TESTING: one oversized runner for a clean observation
+  scheduler_name: numa-scheduler  # PHASE 2: scheduler refuses to bind (Pending) — no TopologyAffinityError
