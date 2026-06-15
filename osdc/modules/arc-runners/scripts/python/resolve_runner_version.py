@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -120,7 +121,24 @@ def write_history(client: Client, history: list[dict[str, str]], cm_exists: bool
 
 
 def build_client() -> Client:
+    _force_ipv4()
     return Client()
+
+
+def _force_ipv4() -> None:
+    # AWS EKS endpoints advertise AAAA records but reject IPv6 connects from
+    # many corporate/home networks. Python's default getaddrinfo returns IPv6
+    # first and socket.create_connection then blocks for the full OS timeout
+    # (~100s) before falling back. kubectl (Go) handles this with happy-eyeballs;
+    # stdlib socket does not. Pin to IPv4 to avoid the dead-end.
+    original = socket.getaddrinfo
+
+    def ipv4_only(host, port, family=0, *args, **kwargs):
+        if family in (0, socket.AF_UNSPEC):
+            family = socket.AF_INET
+        return original(host, port, family, *args, **kwargs)
+
+    socket.getaddrinfo = ipv4_only
 
 
 def now_utc() -> datetime:
@@ -129,6 +147,18 @@ def now_utc() -> datetime:
 
 def _run(cluster_id: str, client: Client) -> str:
     print(f"resolve_runner_version: cluster={cluster_id}", file=sys.stderr)
+
+    if os.environ.get("OSDC_RESOLVER_READONLY"):
+        history, _ = read_history(client)
+        if not history:
+            raise ValueError(
+                f"OSDC_RESOLVER_READONLY set but {CM_NAME} in {CM_NAMESPACE} has no entries — "
+                "deploy arc-runners first to populate the lock"
+            )
+        newest = history[0]
+        tag, digest = newest["tag"], newest["digest"]
+        print(f"resolve_runner_version: readonly, returning newest cached {tag}@{digest}", file=sys.stderr)
+        return f"{IMAGE_REPO}:{tag}@{digest}"
 
     token = os.environ.get("GITHUB_TOKEN") or None
     tag = fetch_latest_tag(token)
