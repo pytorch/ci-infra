@@ -338,7 +338,18 @@ clusters:
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue1
     buildkit:
-      replicas_per_arch: 8
+      amd64_instance_type: m6id.24xlarge
+      amd64_pods_per_node: 2
+      arm64_instance_type: m7gd.16xlarge
+      arm64_pods_per_node: 4
+      autoscaling:
+        enabled: true
+        amd64_min: 4
+        amd64_max: 64
+        arm64_min: 4
+        arm64_max: 64
+        amd64_fallback: 12
+        arm64_fallback: 4
     pypi_cache:
       replicas: 6
     modules:
@@ -374,7 +385,18 @@ clusters:
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue2
     buildkit:
-      replicas_per_arch: 8
+      amd64_instance_type: m6id.24xlarge
+      amd64_pods_per_node: 2
+      arm64_instance_type: m7gd.16xlarge
+      arm64_pods_per_node: 4
+      autoscaling:
+        enabled: true
+        amd64_min: 4
+        amd64_max: 64
+        arm64_min: 4
+        arm64_max: 64
+        amd64_fallback: 12
+        arm64_fallback: 4
     pypi_cache:
       replicas: 6
     modules:
