@@ -531,34 +531,254 @@ deploy-module cluster module force="":
     deploy_log_finish module "$CLUSTER" "$MODULE" "$DEPLOY_LOG_MOD_START"
     deploy_log_finish cmd "$CLUSTER" "deploy-module-$MODULE" "$DEPLOY_LOG_CMD_START"
 
-# Remove a module's resources from a cluster. Operator is expected to have
-# run `just drain-runners` first for runner modules. Deletes everything
-# labelled osdc.io/module=<module> (today: nodepools*, arc-runners*) and
-# helm-uninstalls matching arc-runners releases.
+# Operator is expected to have run `just drain-runners` first for runner modules.
+# Sweeps every namespaced and cluster-scoped kind labelled osdc.io/module=<module>,
+# helm-uninstalls matching arc-runners releases, drops the module namespace (if
+# labelled), and runs `tofu destroy` on the module's per-cluster terraform root
+# (if any). Honors OSDC_CONFIRM=yes|no|ask (default ask).
+# Remove a module's resources (kubernetes + per-cluster terraform) from a cluster.
 remove-module cluster module:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/state-config.sh"
+    : "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
     export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
     CLUSTER="{{cluster}}"
     MODULE="{{module}}"
+
+    if [[ -z "$CLUSTER" ]] || [[ -z "$MODULE" ]]; then
+        echo "Usage: just remove-module <cluster> <module>" >&2
+        exit 2
+    fi
+
     just kubeconfig "$CLUSTER"
 
-    echo "Removing all resources labelled osdc.io/module=$MODULE from $CLUSTER..."
+    CNAME=$(uv run {{CFG}} "$CLUSTER" cluster_name)
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
 
-    # arc-runners convention: arc-runner-hook-<n> ConfigMap → arc-<n> Helm release
-    while IFS=/ read -r ns name; do
-        [ -z "$name" ] && continue
-        [[ "$name" == arc-runner-hook-* ]] || continue
-        release="arc-${name#arc-runner-hook-}"
-        echo "  helm uninstall $release -n $ns"
-        helm uninstall "$release" -n "$ns" --ignore-not-found || true
-        kubectl delete secret -n "$ns" -l "owner=helm,name=$release" --ignore-not-found || true
-    done < <(kubectl get cm -A -l "osdc.io/module=$MODULE" \
-        -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}')
+    # Module resolution mirrors deploy-module: consumer first, then upstream.
+    MODULE_DIR=""
+    if [[ -d "$OSDC_ROOT/modules/$MODULE" ]]; then
+        MODULE_DIR="$OSDC_ROOT/modules/$MODULE"
+    elif [[ -d "$OSDC_UPSTREAM/modules/$MODULE" ]]; then
+        MODULE_DIR="$OSDC_UPSTREAM/modules/$MODULE"
+    fi
+    HAS_TF="no"
+    if [[ -n "$MODULE_DIR" ]] && [[ -f "$MODULE_DIR/terraform/main.tf" ]]; then
+        HAS_TF="yes"
+    fi
 
-    kubectl delete configmap,nodepool.karpenter.sh,ec2nodeclass.karpenter.k8s.aws \
-        -A -l "osdc.io/module=$MODULE" --ignore-not-found
+    NS_KINDS="deployment,daemonset,statefulset,service,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,pdb,pvc"
+    CLUSTER_KINDS=(
+        clusterrole
+        clusterrolebinding
+        storageclass
+        nodepool.karpenter.sh
+        ec2nodeclass.karpenter.k8s.aws
+    )
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "REMOVE MODULE: $MODULE from $CLUSTER ($CNAME)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "Selector: osdc.io/module=$MODULE"
+    echo ""
+
+    echo "── Planned actions ──"
+    echo "  1. helm uninstall arc-runner-hook-* matching releases (arc-runners convention)"
+    echo "  2. kubectl delete -A on namespaced kinds: $NS_KINDS"
+    echo "  3. kubectl delete on cluster-scoped kinds: ${CLUSTER_KINDS[*]}"
+    echo "  4. kubectl delete namespace (only if labelled osdc.io/module=$MODULE)"
+    if [[ "$HAS_TF" == "yes" ]]; then
+        echo "  5. tofu destroy: $MODULE_DIR/terraform (state key: $CLUSTER/$MODULE/terraform.tfstate)"
+    else
+        echo "  5. tofu destroy: (skipped — no $MODULE/terraform/main.tf)"
+    fi
+    echo ""
+
+    echo "── Resources currently matching osdc.io/module=$MODULE ──"
+    echo "  Namespaced ($NS_KINDS):"
+    kubectl get "$NS_KINDS" -A -l "osdc.io/module=$MODULE" --ignore-not-found 2>/dev/null \
+        | sed 's/^/    /' || echo "    (query failed or none found)"
+    echo ""
+    echo "  Cluster-scoped:"
+    for k in "${CLUSTER_KINDS[@]}"; do
+        OUT=$(kubectl get "$k" -l "osdc.io/module=$MODULE" --ignore-not-found 2>/dev/null || true)
+        if [[ -n "$OUT" ]]; then
+            echo "    [$k]"
+            echo "$OUT" | sed 's/^/      /'
+        fi
+    done
+    echo ""
+    echo "  Namespaces:"
+    kubectl get namespace -l "osdc.io/module=$MODULE" --ignore-not-found 2>/dev/null \
+        | sed 's/^/    /' || echo "    (none)"
+    echo ""
+
+    CONFIRM="${OSDC_CONFIRM:-ask}"
+    if [[ "$CONFIRM" == "yes" ]]; then
+        echo "Auto-confirmed (OSDC_CONFIRM=yes)"
+    elif [[ "$CONFIRM" == "no" ]]; then
+        echo "Cancelled (OSDC_CONFIRM=no)."
+        exit 1
+    else
+        read -p "Proceed with removal? [y/N] " -n 1 -r
+        echo
+        [[ $REPLY =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 1; }
+    fi
+    echo ""
+
+    PARTIAL=0
+
+    # ── Phase 1: arc-runner-hook helm uninstall ────────────────────────────
+    # arc-runners convention: arc-runner-hook-<n> ConfigMap → arc-<n> Helm release.
+    # Must run BEFORE the namespaced-kind sweep deletes those ConfigMaps,
+    # otherwise we lose the mapping to discover release names.
+    echo "── Phase 1: helm uninstall arc-runner-hook releases ──"
+    HOOK_CMS=$(kubectl get cm -A -l "osdc.io/module=$MODULE" \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' \
+        2>/dev/null || true)
+    if [[ -z "$HOOK_CMS" ]]; then
+        echo "  No arc-runner-hook ConfigMaps found for module $MODULE."
+    else
+        FOUND=0
+        while IFS=/ read -r ns name; do
+            [ -z "$name" ] && continue
+            [[ "$name" == arc-runner-hook-* ]] || continue
+            release="arc-${name#arc-runner-hook-}"
+            FOUND=$((FOUND + 1))
+            echo "  helm uninstall $release -n $ns"
+            helm uninstall "$release" -n "$ns" --ignore-not-found || PARTIAL=1
+            kubectl delete secret -n "$ns" -l "owner=helm,name=$release" --ignore-not-found || PARTIAL=1
+        done <<< "$HOOK_CMS"
+        [[ $FOUND -eq 0 ]] && echo "  No arc-runner-hook-* ConfigMaps among labelled CMs."
+    fi
+    echo ""
+
+    # ── Phase 2: namespaced kinds ──────────────────────────────────────────
+    echo "── Phase 2: delete namespaced kinds labelled osdc.io/module=$MODULE ──"
+    if ! kubectl delete "$NS_KINDS" -A -l "osdc.io/module=$MODULE" --ignore-not-found; then
+        PARTIAL=1
+    fi
+    echo ""
+
+    # ── Phase 3: cluster-scoped kinds ──────────────────────────────────────
+    echo "── Phase 3: delete cluster-scoped kinds labelled osdc.io/module=$MODULE ──"
+    for k in "${CLUSTER_KINDS[@]}"; do
+        if ! kubectl delete "$k" -l "osdc.io/module=$MODULE" --ignore-not-found; then
+            PARTIAL=1
+        fi
+    done
+    echo ""
+
+    # ── Phase 4: namespace (cascade defense in depth) ──────────────────────
+    # Only delete namespaces that carry the module label — never fabricate or
+    # guess names. Anything left in the namespace that lacked the per-resource
+    # label dies with the namespace.
+    echo "── Phase 4: delete namespace(s) labelled osdc.io/module=$MODULE ──"
+    if ! kubectl delete namespace -l "osdc.io/module=$MODULE" --ignore-not-found; then
+        PARTIAL=1
+    fi
+    echo ""
+
+    # ── Phase 5: tofu destroy (per-cluster terraform root, if any) ─────────
+    echo "── Phase 5: tofu destroy per-cluster terraform state ──"
+    if [[ "$HAS_TF" == "yes" ]]; then
+        echo "  Destroying $MODULE_DIR/terraform (state key: $CLUSTER/$MODULE/terraform.tfstate)"
+        cd "$MODULE_DIR/terraform"
+        if ! tofu init -reconfigure \
+            -backend-config="bucket=${BUCKET}" \
+            -backend-config="key=${CLUSTER}/${MODULE}/terraform.tfstate" \
+            -backend-config="region=${STATE_REGION}" \
+            -backend-config="dynamodb_table=ciforge-terraform-locks"; then
+            echo "  ERROR: tofu init failed for $MODULE." >&2
+            PARTIAL=1
+        else
+            # OSDC_CONFIRM=yes → -auto-approve; otherwise let tofu prompt.
+            DESTROY_ARGS=(
+                -lock-timeout=15m
+                -var="cluster_name=${CNAME}"
+                -var="aws_region=${REGION}"
+                -var="state_bucket=${BUCKET}"
+                -var="cluster_id=${CLUSTER}"
+            )
+            [[ "$CONFIRM" == "yes" ]] && DESTROY_ARGS+=(-auto-approve)
+            if ! tofu destroy "${DESTROY_ARGS[@]}"; then
+                echo "  ERROR: tofu destroy failed for $MODULE." >&2
+                PARTIAL=1
+            fi
+        fi
+        cd - >/dev/null
+    else
+        echo "  Skipped — module has no per-cluster terraform root."
+        echo "  (Sub-roots like $MODULE/terraform/<subdir>/main.tf are NOT touched by remove-module.)"
+    fi
+    echo ""
+
+    # ── Operator reminders (module-specific) ───────────────────────────────
+    if [[ "$MODULE" == "cache-enforcer" ]]; then
+        echo "━━━ OPERATOR WARNING: cache-enforcer requires nodepools redeploy ━━━"
+        echo "modules/nodepools/scripts/python/generate_nodepools.py gates the"
+        echo "node-init.osdc.io/cache-enforcer=true startup taint on the presence"
+        echo "of 'cache-enforcer' in the cluster's modules list. After dropping"
+        echo "cache-enforcer from clusters.yaml, the rendered NodePool spec on"
+        echo "the cluster still emits that taint until nodepools is redeployed."
+        echo "Fresh Karpenter nodes will be tainted with nothing to clear them"
+        echo "(the DaemonSet that removed the taint is now gone) and will never"
+        echo "schedule pods. Redeploy nodepools BEFORE recycling nodes:"
+        echo "  just deploy-module $CLUSTER nodepools"
+        echo ""
+        echo "━━━ OPERATOR WARNING: cache-enforcer iptables persistence ━━━"
+        echo "Removing the DaemonSet does NOT undo iptables rules already installed"
+        echo "on runner nodes. Every node that ever ran cache-enforcer still has the"
+        echo "CACHE_ENFORCER chain wired into OUTPUT (both iptables and ip6tables)."
+        echo ""
+        echo "Recommended: recycle the affected nodes so fresh nodes come up clean"
+        echo "(after the nodepools redeploy above):"
+        echo "  just recycle-nodes $CLUSTER"
+        echo ""
+        echo "Verify a node is still affected (any non-empty output = chain present):"
+        echo "  kubectl debug node/<node> -it --image=alpine -- chroot /host sh -c \\"
+        echo "    'iptables -S CACHE_ENFORCER 2>/dev/null; ip6tables -S CACHE_ENFORCER 2>/dev/null'"
+        echo ""
+    fi
+    if [[ "$MODULE" == "pypi-cache" ]]; then
+        echo "━━━ OPERATOR WARNING: stale env vars on existing runner pods ━━━"
+        echo "Workflow pods scheduled before this removal still carry PIP_INDEX_URL,"
+        echo "UV_DEFAULT_INDEX, and the rest of the pypi-cache env block pointing at"
+        echo "pypi-cache-cpu.pypi-cache.svc.cluster.local. The Service is gone, so"
+        echo "DNS will NXDOMAIN and pip/uv installs in those pods will fail."
+        echo "Drain in-flight runners and recycle nodes to roll fresh pods that get"
+        echo "the regenerated (pypi-cache-less) ConfigMap:"
+        echo "  just drain-runners $CLUSTER && just recycle-nodes $CLUSTER"
+        echo ""
+        echo "━━━ OPERATOR WARNING: EFS wheelhouse data dropped ━━━"
+        echo "tofu destroy wiped the per-cluster aws_efs_file_system.pypi_cache,"
+        echo "which held the cached .whl files. Recoverable: the shared S3 bucket"
+        echo "s3://pytorch-pypi-wheel-cache/{slug}/ (account-wide, NOT destroyed)"
+        echo "is the source of truth. On the next pypi-cache deploy, wheel-syncer"
+        echo "re-pulls everything from S3 — expect slow first-cache-warm and"
+        echo "elevated pip install latency on the first jobs after redeploy."
+        echo ""
+        echo "━━━ OPERATOR WARNING: pypi-cache leftovers in monitoring module ━━━"
+        echo "The 'monitoring' module owns modules/monitoring/.../pypi-cache.yaml"
+        echo "ServiceMonitor independently of the pypi-cache module. After this"
+        echo "removal it will go stale (no matching endpoints) — harmless, but"
+        echo "consider redeploying monitoring to drop the orphan once pypi-cache"
+        echo "is permanently gone from this cluster."
+        echo ""
+    fi
+
+    if [[ $PARTIAL -eq 0 ]]; then
+        echo "Module $MODULE removed from $CLUSTER."
+    else
+        echo "Module $MODULE partially removed from $CLUSTER — see errors above."
+        exit 1
+    fi
 
 # Run `tofu plan` for base + every terraform-backed module of a cluster.
 # Read-only: no apply, no k8s/helm side effects. Safe to run from CI on PRs.
