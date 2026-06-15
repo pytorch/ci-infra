@@ -196,6 +196,7 @@ def make_def_file(
     max_burst_capacity=None,
     hud_failure_base_capacity=None,
     node_fleet=None,
+    scheduler_name=None,
 ):
     """Write a runner def YAML and return the path.
 
@@ -224,6 +225,8 @@ def make_def_file(
         runner["hud_failure_base_capacity"] = hud_failure_base_capacity
     if node_fleet is not None:
         runner["node_fleet"] = node_fleet
+    if scheduler_name is not None:
+        runner["scheduler_name"] = scheduler_name
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -1861,6 +1864,19 @@ def _render_real(real_template, tmp_path, variant):
     return helm, configmap, workflow_pod
 
 
+def _listener_env_value(helm, name):
+    """Return the value of a named env var on the listener container.
+
+    Returns None when the env var is absent so callers can distinguish
+    "missing" from "present but empty".
+    """
+    containers = helm["listenerTemplate"]["spec"]["containers"]
+    for entry in containers[0].get("env", []):
+        if entry.get("name") == name:
+            return entry.get("value")
+    return None
+
+
 class TestRealTemplate:
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_runner_pod_uses_arc_runner_priority_class(self, real_template, tmp_path, variant):
@@ -1934,6 +1950,54 @@ class TestRealTemplate:
         node_fleet_exprs = [e for e in match_exprs if e["key"] == "node-fleet"]
         assert len(node_fleet_exprs) == 1
         assert node_fleet_exprs[0]["values"] == [expected_fleet]
+
+    def test_workflow_pod_scheduler_name_from_def(self, real_template, tmp_path):
+        """Workflow pod gets schedulerName when the runner def sets scheduler_name."""
+        variant = {
+            "name": "numa-runner",
+            "instance_type": "p5.48xlarge",
+            "vcpu": 88,
+            "memory": 900,
+            "gpu": 4,
+            "disk_size": 200,
+            "scheduler_name": "numa-scheduler",
+            "expected_workflow_fleet": "p5",
+        }
+        def_kwargs = {
+            "tmp_path": tmp_path,
+            "name": variant["name"],
+            "instance_type": variant["instance_type"],
+            "vcpu": variant["vcpu"],
+            "memory": variant["memory"],
+            "gpu": variant["gpu"],
+            "disk_size": variant["disk_size"],
+            "scheduler_name": variant["scheduler_name"],
+        }
+        def_file = make_def_file(**def_kwargs)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+        }
+        assert generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners") is True
+        docs = list(yaml.safe_load_all((output_dir / "numa-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert workflow_pod["spec"]["schedulerName"] == "numa-scheduler"
+        # The capacity placeholder (ph-w-*) must use the SAME scheduler so it
+        # reserves a slot the real workflow pod can actually claim on NUMA nodes.
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == "numa-scheduler"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_workflow_pod_no_scheduler_name_by_default(self, real_template, tmp_path, variant):
+        """Workflow pod must NOT have schedulerName when the runner def omits scheduler_name."""
+        helm, _, workflow_pod = _render_real(real_template, tmp_path, variant)
+        assert "schedulerName" not in workflow_pod["spec"]
+        # Placeholder scheduler env must be present-but-empty (the fork treats
+        # empty as default-scheduler), keeping it in sync with the workflow pod.
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == ""
 
     def test_gpu_workflow_pod_has_gpu_toleration_and_resources(self, real_template, tmp_path):
         """GPU runner's workflow pod must carry nvidia.com/gpu toleration and matching request/limit."""
