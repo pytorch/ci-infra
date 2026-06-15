@@ -2,7 +2,7 @@ name: "~ OSDC: Slow tests (reusable)"
 
 # NOTE: AWS region is hardcoded to us-west-1 in all jobs below, matching
 # _osdc-deploy.yml. This reusable is currently called only for the
-# arc-staging cluster (which lives in us-west-1). Re-using it for a
+# meta-staging-aws-uw1 cluster (which lives in us-west-1). Re-using it for a
 # cluster in a different region requires either parameterizing the
 # region from `just region "${{ inputs.cluster }}"` or adding an
 # aws_region input. Do not call this reusable for non-us-west-1
@@ -12,7 +12,7 @@ on:
   workflow_call:
     inputs:
       cluster:
-        description: "Cluster id from clusters.yaml (e.g. arc-staging, arc-cbr-production)"
+        description: "Cluster id from clusters.yaml (e.g. meta-staging-aws-uw1, arc-cbr-production)"
         required: true
         type: string
       environment:
