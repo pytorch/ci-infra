@@ -1,0 +1,22 @@
+# ARC runner definition: l-bx86iavx512-11-43-t4-1 (1x NVIDIA T4)
+# Instance type: g4dn.metal — 1 of 8 T4 GPUs, 96c/384Gi node.
+# NUMA-test 1-GPU runner: a single GPU always fits one NUMA zone, so no scheduler_name
+# (mirrors the A100 1-GPU runner). Shares the g4dn-metal-numa pool; small 1-GPU pods can
+# fragment zones, which is exactly what the numa-scheduler must pack around for the 4-GPU.
+runner:
+  name: l-bx86iavx512-11-43-t4-1
+  instance_type: g4dn.metal
+  node_fleet: g4dn-metal-numa
+  disk_size: 150
+  # TESTING (topology A/B): 60 vCPU deliberately exceeds ONE NUMA zone (~48 logical CPUs
+  # on g4dn.metal) while still fitting the node (96). Under single-numa-node this can't
+  # align to one zone, so:
+  #   Phase 1 (no scheduler_name → default scheduler): binds then TopologyAffinityError
+  #   Phase 2 (add scheduler_name: numa-scheduler below): never binds → stays Pending
+  # Name/label kept as -11-43- so the canary workflow's runs-on still matches.
+  vcpu: 60
+  memory: 43Gi
+  gpu: 1
+  max_runners:
+    default: 1  # TESTING: one oversized runner for a clean observation
+  scheduler_name: numa-scheduler  # PHASE 2: scheduler refuses to bind (Pending) — no TopologyAffinityError
