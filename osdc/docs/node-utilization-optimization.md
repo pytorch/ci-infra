@@ -20,7 +20,7 @@ Each node's allocatable resources are reduced by:
 
 1. **Kubelet reserved CPU**: 60m (core 1) + 10m (core 2) + 5m/core (cores 3-4) + 2.5m/core (cores 5+)
 2. **Kubelet reserved memory**: 255Mi + 11Mi per max_pod (ENI-based) + 100Mi eviction threshold
-3. **DaemonSet overhead**: 460m CPU / 1158Mi memory (non-GPU), 560m CPU / 1414Mi memory (GPU nodes). Includes NodeLocal DNSCache (NLD) at 25m CPU / 100Mi memory per node, deployed on every node via DaemonSet.
+3. **DaemonSet overhead**: 460m CPU / 1158Mi memory (non-GPU), 560m CPU / 1414Mi memory (GPU nodes). Includes NodeLocal DNSCache (NLD) at 25m CPU / 100Mi memory per node, deployed on every node via DaemonSet. **p5 (H100) nodes only** carry an additional 60m CPU / 96Mi memory — NFD topology-updater (50m/64Mi) + taint-remover (10m/32Mi), currently only pinned to `node-fleet: p5` for NUMA-aware scheduling — for 620m CPU / 1510Mi total on this GPU fleet type. Other GPU fleets (g5/g6) stay at 560m/1414Mi.
 
 Each workflow pod also includes runner-container-hooks containers (320m CPU + 522Mi memory) on top of the job container's resources. The runner-orchestrator pod itself (750m CPU / 1Gi memory) lives on the dedicated `c7i-runner` NodePool and does not consume resources on the workflow node — see `c7i-runner` notes below.
 
@@ -186,7 +186,7 @@ The savings compound: nodes with better packing serve more concurrent runners, r
 
 Some runners (46c/85Gi, 94c/192Gi, 48c/384Gi) consistently achieve only 74-76% utilization even on perfectly-matched instance types. This is because:
 
-1. **Overhead is fixed**: Kubelet + DaemonSet overhead (~700m CPU, ~1.6Gi memory non-GPU / ~1.9Gi GPU; includes NLD at 25m CPU / 100Mi memory per node) is constant regardless of instance size
+1. **Overhead is fixed**: Kubelet + DaemonSet overhead (~700m CPU, ~1.6Gi memory non-GPU / ~1.9Gi GPU, ~2.0Gi on p5 with NFD; includes NLD at 25m CPU / 100Mi memory per node) is constant regardless of instance size
 2. **Large runners don't divide evenly**: A 94c runner on a 128c node leaves 34c unused — only 1 pod fits
 3. **Hooks tax**: Each workflow pod adds 320m CPU + 522Mi memory for runner-container-hooks, which compounds at large sizes (the runner-orchestrator pod itself lives on `c7i-runner`, so workflow nodes are no longer charged the 750m/1Gi orchestrator)
 
