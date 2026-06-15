@@ -1,14 +1,16 @@
 name: "OSDC: Deploy production"
 
-# Manual rollout for prod. Protected by the `osdc-production` GitHub
-# environment (configure required reviewers in repo Settings → Environments) —
-# the prod IAM role additionally trusts only tokens with
-# `environment:osdc-production` in the sub claim, so IAM enforces the gate too.
+# Manual rollout for prod. Protected by per-account GitHub environments:
+#   - Meta clusters: `osdc-production` environment
+#   - LF clusters:   `osdc-lf-production` environment
+# Each environment's IAM role trusts only tokens carrying that environment
+# name in the sub claim, so IAM enforces the gate independently.
 #
-# Default behavior (target = all): sequential rollout.
-#   1. Deploy arc-cbr-production-uw1 + smoke.
-#   2. Deploy arc-cbr-production (ue2) + smoke.
-#   3. Deploy meta-prod-aws-ue1 + smoke.
+# Default behavior (target = all): sequential rollout of all clusters.
+#   Meta: arc-cbr-production-uw1 → arc-cbr-production → meta-prod-aws-ue1
+#   LF:   lf-prod-aws-ue1 → lf-prod-aws-ue2 (runs in parallel with Meta)
+#
+# Use `all-meta` or `all-lf` to deploy only one account's clusters.
 #
 # Picking a specific cluster from the dropdown bypasses the sequencing and
 # deploys only that one — useful for hotfixes or to recover from a partial
@@ -27,9 +29,13 @@ on:
         default: all
         options:
           - all
-          - meta-prod-aws-ue1
+          - all-meta
+          - all-lf
           - arc-cbr-production-uw1
           - arc-cbr-production
+          - meta-prod-aws-ue1
+          - lf-prod-aws-ue1
+          - lf-prod-aws-ue2
       taint_nodes:
         description: "Taint ARC runner nodes before deploy (graceful refresh)"
         required: false
@@ -55,8 +61,10 @@ permissions:
   contents: read
 
 jobs:
+  # --- Meta clusters ---
+
   deploy_uw1:
-    if: ${{ inputs.target == 'all' || inputs.target == 'arc-cbr-production-uw1' }}
+    if: ${{ inputs.target == 'all' || inputs.target == 'all-meta' || inputs.target == 'arc-cbr-production-uw1' }}
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
       cluster: arc-cbr-production-uw1
@@ -72,7 +80,7 @@ jobs:
     if: |
       !cancelled() && (
         inputs.target == 'arc-cbr-production' ||
-        (inputs.target == 'all' && needs.deploy_uw1.result == 'success')
+        ((inputs.target == 'all' || inputs.target == 'all-meta') && needs.deploy_uw1.result == 'success')
       )
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
@@ -89,12 +97,45 @@ jobs:
     if: |
       !cancelled() && (
         inputs.target == 'meta-prod-aws-ue1' ||
-        (inputs.target == 'all' && needs.deploy_ue2.result == 'success')
+        ((inputs.target == 'all' || inputs.target == 'all-meta') && needs.deploy_ue2.result == 'success')
       )
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
       cluster: meta-prod-aws-ue1
       environment: osdc-production
+      taint_nodes: ${{ inputs.taint_nodes }}
+      restart_listeners: ${{ inputs.restart_listeners }}
+      skip_lint_test: ${{ inputs.skip_lint_test }}
+      run_smoke: true
+    secrets: inherit
+
+  # --- LF clusters ---
+
+  deploy_lf_ue1:
+    if: ${{ inputs.target == 'all' || inputs.target == 'all-lf' || inputs.target == 'lf-prod-aws-ue1' }}
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: lf-prod-aws-ue1
+      environment: osdc-production
+      use_lf_credentials: true
+      taint_nodes: ${{ inputs.taint_nodes }}
+      restart_listeners: ${{ inputs.restart_listeners }}
+      skip_lint_test: ${{ inputs.skip_lint_test }}
+      run_smoke: true
+    secrets: inherit
+
+  deploy_lf_ue2:
+    needs: deploy_lf_ue1
+    if: |
+      !cancelled() && (
+        inputs.target == 'lf-prod-aws-ue2' ||
+        ((inputs.target == 'all' || inputs.target == 'all-lf') && needs.deploy_lf_ue1.result == 'success')
+      )
+    uses: ./.github/workflows/_osdc-deploy.yml
+    with:
+      cluster: lf-prod-aws-ue2
+      environment: osdc-production
+      use_lf_credentials: true
       taint_nodes: ${{ inputs.taint_nodes }}
       restart_listeners: ${{ inputs.restart_listeners }}
       skip_lint_test: ${{ inputs.skip_lint_test }}
