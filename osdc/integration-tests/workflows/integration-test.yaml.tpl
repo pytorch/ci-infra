@@ -210,6 +210,7 @@ jobs:
           fi
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
+  # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
   # download.pytorch.org proxy, URL rewriting, torch install, and
@@ -1316,6 +1317,7 @@ jobs:
           print(f'numpy location: {np.__file__}')
           print(f'PASS: numpy functional validation')
           "
+  # END_PYPI_CACHE
 
   # ── GPU Runner Tests ──────────────────────────────────────────────────
   test-gpu-t4:

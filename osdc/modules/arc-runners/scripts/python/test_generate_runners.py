@@ -9,6 +9,7 @@ import pytest
 import yaml
 from fleet_naming import derive_fleet_name
 from generate_runners import (
+    _strip_conditional_block,
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
@@ -2333,3 +2334,248 @@ class TestMain:
 
         with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
             assert main() == 1
+
+
+# ============================================================================
+# Conditional block stripping (pypi-cache cluster-scope gate)
+# ============================================================================
+
+
+# Names of the pypi-cache env vars injected on the workflow pod when the
+# pypi-cache module is enabled. When the module is disabled, NONE of these may
+# appear in the rendered runner config — otherwise jobs reach for a Service
+# that doesn't exist on this cluster and pip/uv install fails.
+PYPI_CACHE_ENV_VAR_NAMES = [
+    "PIP_INDEX_URL",
+    "PIP_TRUSTED_HOST",
+    "PIP_EXTRA_INDEX_URL",
+    "UV_DEFAULT_INDEX",
+    "UV_INSECURE_HOST",
+    "UV_INDEX",
+    "UV_INDEX_STRATEGY",
+    "PYPI_CACHE_SIMPLE_URL",
+    "PYPI_CACHE_WHL_URL",
+]
+
+
+class TestStripConditionalBlock:
+    def test_keep_true_removes_markers_preserves_content(self):
+        content = textwrap.dedent("""\
+            before
+                # BEGIN_FOO
+                inside
+                # END_FOO
+            after
+        """)
+        result = _strip_conditional_block(content, "FOO", keep=True)
+        assert "# BEGIN_FOO" not in result
+        assert "# END_FOO" not in result
+        assert "inside" in result
+        assert "before" in result
+        assert "after" in result
+
+    def test_keep_false_removes_markers_and_content(self):
+        content = textwrap.dedent("""\
+            before
+                # BEGIN_FOO
+                inside
+                # END_FOO
+            after
+        """)
+        result = _strip_conditional_block(content, "FOO", keep=False)
+        assert "# BEGIN_FOO" not in result
+        assert "# END_FOO" not in result
+        assert "inside" not in result
+        assert "before" in result
+        assert "after" in result
+
+    def test_no_markers_in_content_is_noop(self):
+        content = "just\nplain\ntext\n"
+        assert _strip_conditional_block(content, "FOO", keep=True) == content
+        assert _strip_conditional_block(content, "FOO", keep=False) == content
+
+    def test_indentation_does_not_matter(self):
+        """Markers are matched on stripped form so any indentation works."""
+        content = "x\n            # BEGIN_BAR\nkeepme\n            # END_BAR\ny\n"
+        out_keep = _strip_conditional_block(content, "BAR", keep=True)
+        assert "# BEGIN_BAR" not in out_keep
+        assert "keepme" in out_keep
+        out_strip = _strip_conditional_block(content, "BAR", keep=False)
+        assert "keepme" not in out_strip
+
+
+class TestPypiCacheConditional:
+    """Cluster-scoped gating of the PYPI_CACHE env-var block in the workflow pod."""
+
+    def test_pypi_cache_block_kept_when_module_enabled(self, tmp_path, real_template):
+        """With pypi-cache in the modules list, all 9 env vars render and the
+        marker comments are cleanly stripped from the output."""
+        def_file = make_def_file(tmp_path, "kept-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                pypi_cache_enabled=True,
+            )
+            is True
+        )
+
+        content = (output_dir / "kept-runner.yaml").read_text()
+        # Marker comments must NOT leak into the rendered output.
+        assert "# BEGIN_PYPI_CACHE" not in content
+        assert "# END_PYPI_CACHE" not in content
+
+        docs = list(yaml.safe_load_all(content))
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        container = cm_data["spec"]["containers"][0]
+        env_vars = {e["name"]: e["value"] for e in container["env"]}
+        for name in PYPI_CACHE_ENV_VAR_NAMES:
+            assert name in env_vars, f"{name} missing from rendered env when pypi-cache enabled"
+
+    def test_pypi_cache_block_stripped_when_module_disabled(self, tmp_path, real_template):
+        """With pypi-cache absent from the modules list, NONE of the 9 env vars
+        render and the marker comments are stripped."""
+        def_file = make_def_file(tmp_path, "stripped-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                pypi_cache_enabled=False,
+            )
+            is True
+        )
+
+        content = (output_dir / "stripped-runner.yaml").read_text()
+        # Marker comments must NOT leak into the rendered output.
+        assert "# BEGIN_PYPI_CACHE" not in content
+        assert "# END_PYPI_CACHE" not in content
+
+        docs = list(yaml.safe_load_all(content))
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        container = cm_data["spec"]["containers"][0]
+        env_vars = {e["name"]: e["value"] for e in container["env"]}
+        for name in PYPI_CACHE_ENV_VAR_NAMES:
+            assert name not in env_vars, f"{name} must NOT be present when pypi-cache disabled"
+        # Other env vars (e.g. TORCH_CI_MAX_MEMORY) must still be intact.
+        assert "TORCH_CI_MAX_MEMORY" in env_vars
+        # Belt-and-braces: the rendered config must not mention the Service host either.
+        assert "pypi-cache-cpu.pypi-cache.svc.cluster.local" not in content
+
+    def test_main_strips_when_cluster_lacks_pypi_cache_module(self, tmp_path, monkeypatch, real_template):
+        """End-to-end: main() reads modules from clusters.yaml and strips when pypi-cache is absent."""
+        config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/org",
+                    "github_secret_name": "secret",
+                    "runner_name_prefix": "p-",
+                },
+            },
+            "clusters": {
+                "no-cache-cluster": {
+                    "cluster_name": "no-cache",
+                    "region": "us-east-1",
+                    "modules": ["nodepools", "arc-runners"],  # no pypi-cache
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/org",
+                        "github_secret_name": "secret",
+                        "runner_name_prefix": "p-",
+                    },
+                },
+            },
+        }
+        (tmp_path / "clusters.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "runner-x", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        output_dir = tmp_path / "out"
+        tpl_file = tmp_path / "tpl.yaml"
+        tpl_file.write_text(real_template)
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        with patch.object(sys, "argv", ["generate_runners.py", "no-cache-cluster"]):
+            assert main() == 0
+
+        content = (output_dir / "runner-x.yaml").read_text()
+        for name in PYPI_CACHE_ENV_VAR_NAMES:
+            assert name not in content
+        assert "# BEGIN_PYPI_CACHE" not in content
+
+    def test_main_keeps_when_cluster_has_pypi_cache_module(self, tmp_path, monkeypatch, real_template):
+        """End-to-end: main() preserves the env vars when pypi-cache is in modules."""
+        config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/org",
+                    "github_secret_name": "secret",
+                    "runner_name_prefix": "p-",
+                },
+            },
+            "clusters": {
+                "with-cache-cluster": {
+                    "cluster_name": "with-cache",
+                    "region": "us-east-1",
+                    "modules": ["nodepools", "arc-runners", "pypi-cache"],
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/org",
+                        "github_secret_name": "secret",
+                        "runner_name_prefix": "p-",
+                    },
+                },
+            },
+        }
+        (tmp_path / "clusters.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "runner-y", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        output_dir = tmp_path / "out"
+        tpl_file = tmp_path / "tpl.yaml"
+        tpl_file.write_text(real_template)
+
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        with patch.object(sys, "argv", ["generate_runners.py", "with-cache-cluster"]):
+            assert main() == 0
+
+        content = (output_dir / "runner-y.yaml").read_text()
+        for name in PYPI_CACHE_ENV_VAR_NAMES:
+            assert name in content
+        assert "# BEGIN_PYPI_CACHE" not in content
+        assert "# END_PYPI_CACHE" not in content

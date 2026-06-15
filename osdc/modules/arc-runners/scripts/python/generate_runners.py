@@ -94,6 +94,33 @@ def parse_memory_bytes(memory_str):
     return int(s)
 
 
+def _strip_conditional_block(content: str, tag: str, keep: bool) -> str:
+    """Remove or keep a `# BEGIN_<tag>` / `# END_<tag>` conditional block.
+
+    When *keep* is False the block (markers + content between them) is stripped
+    entirely. When *keep* is True the marker comment lines are removed but the
+    content between them is preserved. Marker lines are matched on their stripped
+    form, so indentation doesn't matter.
+    """
+    begin = f"# BEGIN_{tag}"
+    end = f"# END_{tag}"
+    lines = content.split("\n")
+    filtered = []
+    inside = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == begin:
+            inside = True
+            continue
+        if stripped == end:
+            inside = False
+            continue
+        if not keep and inside:
+            continue
+        filtered.append(line)
+    return "\n".join(filtered)
+
+
 def load_clusters_yaml(repo_root):
     """Load clusters.yaml from the repository root."""
     config_path = repo_root / "clusters.yaml"
@@ -172,8 +199,14 @@ def resolve_max_runners(value, def_file, cluster_id):
     return value
 
 
-def generate_runner(def_file, template_content, cluster_config, output_dir, module_name):
-    """Generate a single runner config from its definition."""
+def generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled=True):
+    """Generate a single runner config from its definition.
+
+    pypi_cache_enabled controls whether the `# BEGIN_PYPI_CACHE` / `# END_PYPI_CACHE`
+    block in the template is preserved (True) or stripped (False). Strip when the
+    cluster does not deploy the pypi-cache module — the env vars would otherwise
+    point at a Service that doesn't exist on this cluster.
+    """
     with open(def_file) as f:
         data = yaml.safe_load(f)
 
@@ -330,6 +363,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     # Replace all template placeholders
     output_content = template_content
+    output_content = _strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
     replacements = {
         "{{GITHUB_CONFIG_URL}}": github_url,
         "{{GITHUB_SECRET_NAME}}": k8s_secret_ref,
@@ -488,9 +522,14 @@ def main():
         log_error(f"No definition files found in {defs_dir}")
         return 1
 
+    # pypi-cache module is cluster-scoped: when absent, strip the pypi-cache env
+    # vars from the workflow pod template so jobs don't try to reach a Service
+    # that doesn't exist on this cluster.
+    pypi_cache_enabled = "pypi-cache" in (cluster_cfg.get("modules") or [])
+
     count = 0
     for def_file in def_files:
-        if generate_runner(def_file, template_content, cluster_config, output_dir, module_name):
+        if generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled):
             count += 1
 
     print()

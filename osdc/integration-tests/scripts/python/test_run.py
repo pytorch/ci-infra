@@ -105,6 +105,13 @@ def workflow_template(tmp_path):
         "    steps:\n"
         "      - run: echo enforcer\n"
         "  # END_CACHE_ENFORCER\n"
+        "  # BEGIN_PYPI_CACHE\n"
+        "  pypi-cache-job:\n"
+        "    runs-on: {{PREFIX}}pypi-runner\n"
+        "    steps:\n"
+        "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
+        "      - run: echo {{PYPI_CACHE_CUDA_VERSION}}\n"
+        "  # END_PYPI_CACHE\n"
         "  pypi-job:\n"
         "    steps:\n"
         "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
@@ -251,6 +258,34 @@ class TestGenerateWorkflow:
         assert "runs-on: cbrenforcer-runner" in result
         assert "BEGIN_CACHE_ENFORCER" not in result
         assert "END_CACHE_ENFORCER" not in result
+
+    def test_pypi_cache_removed_when_disabled(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
+            b200_enabled=False,
+            pypi_cache_enabled=False,
+        )
+        assert "pypi-cache-job" not in result
+        assert "BEGIN_PYPI_CACHE" not in result
+        assert "END_PYPI_CACHE" not in result
+        assert "basic:" in result
+
+    def test_pypi_cache_preserved_when_enabled(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
+            b200_enabled=False,
+            pypi_cache_enabled=True,
+        )
+        assert "pypi-cache-job:" in result
+        assert "runs-on: cbrpypi-runner" in result
+        assert "BEGIN_PYPI_CACHE" not in result
+        assert "END_PYPI_CACHE" not in result
 
     def test_pypi_cache_slugs_substituted(self, workflow_template):
         result = generate_workflow(
