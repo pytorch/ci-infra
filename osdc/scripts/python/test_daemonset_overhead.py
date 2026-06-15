@@ -475,7 +475,6 @@ class TestRealManifests:
         # GPU-only
         assert by_name["nvidia-device-plugin-daemonset"].gpu_only is True
         assert by_name["dcgm-exporter"].gpu_only is True
-        # NFD topology-updater runs on the GPU fleet (p5 / g4dn-metal-numa)
         assert by_name["nfd-topology-updater"].gpu_only is True
 
         # Not GPU-only
