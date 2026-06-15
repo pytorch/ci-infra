@@ -6,6 +6,7 @@ metadata:
   name: pypi-cache-ingress
   namespace: pypi-cache
   labels:
+    osdc.io/module: pypi-cache
     app: pypi-cache
     app.kubernetes.io/name: pypi-cache
     app.kubernetes.io/component: package-cache

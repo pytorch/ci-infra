@@ -8,6 +8,7 @@ metadata:
   name: pypi-wants-collector
   namespace: __NAMESPACE__
   labels:
+    osdc.io/module: pypi-cache
     app: pypi-wants-collector
     app.kubernetes.io/name: pypi-wants-collector
     app.kubernetes.io/component: wants-collector
