@@ -285,6 +285,35 @@ class TestMain:
         assert rc == 2
         assert "usage" in capsys.readouterr().err
 
+    def test_readonly_returns_newest_cached(self, monkeypatch, capsys):
+        monkeypatch.setenv("OSDC_RESOLVER_READONLY", "1")
+        env = _Env(
+            monkeypatch,
+            history=[
+                {"tag": "2.336.0", "digest": "sha256:new", "resolved_at": "2026-06-10T00:00:00Z"},
+                {"tag": "2.335.0", "digest": "sha256:old", "resolved_at": "2026-05-01T00:00:00Z"},
+            ],
+        )
+        rc = rrv.main(["resolve_runner_version.py", "c"])
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert captured.out.strip() == "ghcr.io/actions/actions-runner:2.336.0@sha256:new"
+        assert env.fetched_token == []
+        assert env.crane_calls == []
+        env.client.create.assert_not_called()
+        env.client.replace.assert_not_called()
+
+    def test_readonly_empty_history_fails(self, monkeypatch, capsys):
+        monkeypatch.setenv("OSDC_RESOLVER_READONLY", "1")
+        env = _Env(monkeypatch, history=[], history_exists=False)
+        rc = rrv.main(["resolve_runner_version.py", "c"])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "OSDC_RESOLVER_READONLY" in captured.err
+        assert env.fetched_token == []
+        assert env.crane_calls == []
+        env.client.create.assert_not_called()
+
     def test_configmap_missing_first_deploy(self, monkeypatch, capsys):
         env = _Env(monkeypatch, history=[], history_exists=False)
         rc = rrv.main(["resolve_runner_version.py", "test-cluster"])
@@ -475,6 +504,7 @@ class TestModuleBoundaries:
         assert result.tzinfo is not None
 
     def test_build_client_constructs_client(self):
-        with patch.object(rrv, "Client") as mock_client_cls:
+        with patch.object(rrv, "Client") as mock_client_cls, patch.object(rrv, "_force_ipv4") as mock_force:
             rrv.build_client()
+            mock_force.assert_called_once_with()
             mock_client_cls.assert_called_once_with()
