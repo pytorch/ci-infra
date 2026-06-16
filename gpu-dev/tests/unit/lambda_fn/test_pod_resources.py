@@ -117,19 +117,28 @@ class TestMigSizing:
 # CPU-only SKUs: fixed limits/requests, no GPU resource, no EFA
 # --------------------------------------------------------------------------- #
 class TestCpuOnly:
-    def test_cpu_arm_limits_reserve_two_cpu_and_two_gib(self):
-        # cpu = cpus-2 = 30, memory = (memory_gb-2)Gi = 62Gi
+    def test_cpu_arm_limits_whole_node_sizing(self):
+        # cpu = int(32*0.85) = 27, memory = int(64*0.80)Gi = 51Gi (under allocatable)
         lim = index.get_pod_resource_limits(0, "cpu-arm")
-        assert lim == {"cpu": "30", "memory": "62Gi"}
+        assert lim == {"cpu": "27", "memory": "51Gi"}
 
-    def test_cpu_arm_requests_fixed(self):
-        req = index.get_pod_resource_requests(0, "cpu-arm")
-        assert req == {"cpu": "2", "memory": "4Gi"}
+    def test_cpu_request_equals_limit_guaranteed(self):
+        # Whole-node sizing: request == limit so the pod isn't on the eviction
+        # shortlist and a co-tenant can't pack on (no more node-pressure eviction).
+        for sku in ("cpu-arm", "cpu-x86", "cpu-spot"):
+            assert index.get_pod_resource_requests(0, sku) == index.get_pod_resource_limits(0, sku)
+
+    def test_cpu_request_blocks_second_pod(self):
+        # 2x the memory request must exceed the node's nominal capacity so only one
+        # dev pod schedules per CPU node.
+        for sku, mem_gb in (("cpu-arm", 64), ("cpu-x86", 64), ("cpu-spot", 16)):
+            req_mem = int(index.get_pod_resource_requests(0, sku)["memory"][:-2])
+            assert 2 * req_mem > mem_gb
 
     def test_cpu_spot_smaller_node(self):
-        # cpu-spot: cpus=8, memory_gb=16
+        # cpu-spot: cpus=8, memory_gb=16 -> int(8*0.85)=6, int(16*0.80)=12
         lim = index.get_pod_resource_limits(0, "cpu-spot")
-        assert lim == {"cpu": "6", "memory": "14Gi"}
+        assert lim == {"cpu": "6", "memory": "12Gi"}
 
     def test_cpu_has_no_gpu_resource(self):
         lim = index.get_pod_resource_limits(0, "cpu-x86")

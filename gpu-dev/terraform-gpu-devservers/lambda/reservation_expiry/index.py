@@ -45,6 +45,9 @@ DISKS_TABLE = os.environ.get("DISKS_TABLE_NAME", "pytorch-gpu-dev-disks")
 EKS_CLUSTER_NAME = os.environ["EKS_CLUSTER_NAME"]
 REGION = os.environ["REGION"]
 
+# Name of the main dev container in every reservation pod (the one users SSH into).
+MAIN_CONTAINER = "gpu-dev"
+
 # Global Kubernetes client (reused across Lambda execution)
 _k8s_client = None
 
@@ -499,18 +502,36 @@ def handler(event, context):
                                 f"Could not parse launched_at for reservation {reservation_id}: {e}"
                             )
 
-                    if not skip_pod_check and not check_pod_exists(pod_name):
-                        logger.warning(
-                            f"Pod {pod_name} for active reservation {reservation_id} no longer exists - marking as expired"
-                        )
-                        try:
-                            expire_reservation_due_to_missing_pod(reservation)
-                            expired_count += 1
-                            continue  # Skip warning processing for this reservation
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to expire reservation {reservation_id} due to missing pod: {e}"
+                    if not skip_pod_check:
+                        if not check_pod_exists(pod_name):
+                            logger.warning(
+                                f"Pod {pod_name} for active reservation {reservation_id} no longer exists - marking as expired"
                             )
+                            try:
+                                expire_reservation_due_to_missing_pod(reservation)
+                                expired_count += 1
+                                continue  # Skip warning processing for this reservation
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to expire reservation {reservation_id} due to missing pod: {e}"
+                                )
+                        else:
+                            # Pod exists but may have died in place (node-pressure
+                            # eviction / preemption). A container-level OOMKill is
+                            # recoverable (kubelet restarts it) and returns None here.
+                            dead_reason = check_pod_dead(pod_name)
+                            if dead_reason:
+                                logger.warning(
+                                    f"Pod {pod_name} for active reservation {reservation_id} is dead ({dead_reason}) - finalizing"
+                                )
+                                try:
+                                    expire_reservation_due_to_dead_pod(reservation, dead_reason)
+                                    expired_count += 1
+                                    continue  # Skip warning processing for this reservation
+                                except Exception as e:
+                                    logger.error(
+                                        f"Failed to finalize dead-pod reservation {reservation_id}: {e}"
+                                    )
 
                 minutes_until_expiry = (expires_at - current_time) // 60
                 warnings_sent = reservation.get("warnings_sent", {})
@@ -996,6 +1017,70 @@ def check_pod_oom_status(pod_name: str, namespace: str = "gpu-dev") -> dict:
         return result
 
 
+def check_pod_dead(pod_name: str, namespace: str = "gpu-dev") -> str | None:
+    """Return a human-readable reason if the pod is in a terminal, UNRECOVERABLE
+    state, else None.
+
+    The distinction that matters: a container-level OOMKill or crash is recoverable
+    — kubelet restarts the container in place (restartPolicy defaults to Always), so
+    SSH comes back and we must NOT clean these up. But a *pod-level* failure (node
+    memory/disk-pressure eviction, preemption, node loss) terminates the whole pod
+    and nothing recreates it (dev pods are bare V1Pods, not managed by a controller),
+    so the reservation would otherwise hang 'active' with a dead box until expiry.
+
+    Detected as dead:
+      - phase Failed/Succeeded (kubelet sets phase=Failed reason=Evicted on
+        node-pressure eviction)
+      - a DisruptionTarget condition (eviction/preemption) while the main container
+        is no longer running
+    Returns None for healthy, Pending, or merely-restarting pods.
+    """
+    try:
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+        pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            return None  # missing pod is handled by the separate missing-pod path
+        logger.warning(f"Error reading pod {pod_name} for dead check: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Error reading pod {pod_name} for dead check: {e}")
+        return None
+
+    status = pod.status
+    if not status:
+        return None
+
+    phase = status.phase or ""
+
+    def _short(msg: str) -> str:
+        msg = (msg or "").strip()
+        return msg.split("\n")[0][:300] if msg else ""
+
+    # Terminal phase: eviction (Failed/Evicted), node loss, or clean exit.
+    if phase in ("Failed", "Succeeded"):
+        reason = getattr(status, "reason", None) or phase
+        message = _short(getattr(status, "message", None))
+        return f"Pod {phase.lower()} ({reason}): {message}" if message else f"Pod {phase.lower()} ({reason})"
+
+    # Evicted/disrupted in place: the node flagged the pod for disruption and the
+    # main container is no longer running (kubelet would otherwise have restarted it).
+    conditions = {c.type: c for c in (status.conditions or [])}
+    disruption = conditions.get("DisruptionTarget")
+    if disruption is not None and getattr(disruption, "status", "") == "True":
+        main_running = any(
+            cs.name == MAIN_CONTAINER and cs.state and cs.state.running
+            for cs in (status.container_statuses or [])
+        )
+        if not main_running:
+            d_reason = getattr(disruption, "reason", None) or "Disrupted"
+            d_msg = _short(getattr(disruption, "message", None))
+            return f"Pod disrupted ({d_reason}): {d_msg}" if d_msg else f"Pod disrupted ({d_reason})"
+
+    return None
+
+
 def mark_disk_not_in_use(user_id: str, disk_name: str) -> None:
     """
     Mark a disk as not in use in the disks table.
@@ -1363,6 +1448,58 @@ def expire_reservation_due_to_missing_pod(reservation: dict[str, Any]) -> None:
         logger.error(
             f"Error marking reservation {reservation.get('reservation_id')} as expired: {str(e)}"
         )
+
+
+def expire_reservation_due_to_dead_pod(reservation: dict[str, Any], reason: str) -> None:
+    """Finalize an active reservation whose pod died in place (node-pressure
+    eviction / preemption / node loss). Snapshots the persistent disk so the user
+    keeps their data, cleans up the pod, marks the reservation 'failed' with a clear
+    reason (so the CLI surfaces *why* the box vanished), and frees the disk lock so
+    the user can immediately re-reserve and restore from the snapshot."""
+    reservation_id = reservation["reservation_id"]
+    logger.info(f"Finalizing reservation {reservation_id} as failed due to dead pod: {reason}")
+
+    now = datetime.utcnow().isoformat()
+    reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+
+    # Mark failed FIRST so the reservation leaves the active set even if cleanup
+    # partially fails (mirrors process_cancellation_request ordering).
+    reservations_table.update_item(
+        Key={"reservation_id": reservation_id},
+        UpdateExpression="SET #status = :status, failed_at = :failed_at, reservation_ended = :reservation_ended, failure_reason = :reason",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={
+            ":status": "failed",
+            ":failed_at": now,
+            ":reservation_ended": now,
+            ":reason": reason,
+        },
+    )
+
+    # Snapshot + delete the pod. cleanup_pod creates a shutdown snapshot of the EBS
+    # volume first (the volume still holds the user's data even though the container
+    # is dead; the kubectl-exec content capture just fails gracefully).
+    pod_name = reservation.get("pod_name")
+    if pod_name:
+        try:
+            cleanup_pod(pod_name, reservation.get("namespace", "gpu-dev"), reservation_data=reservation)
+            logger.info(f"Cleaned up dead pod {pod_name} for reservation {reservation_id}")
+        except Exception as cleanup_error:
+            logger.error(f"Pod cleanup failed for dead-pod reservation {reservation_id}: {cleanup_error}")
+
+    # Free the disk lock so the persistent disk can be reused right away.
+    user_id = reservation.get("user_id")
+    disk_name = reservation.get("disk_name")
+    if user_id and not disk_name:
+        disk_name = find_disk_by_reservation(user_id, reservation_id)
+    if user_id and disk_name:
+        try:
+            mark_disk_not_in_use(user_id, disk_name)
+            logger.info(f"Cleared disk lock for '{disk_name}' after dead-pod cleanup of {reservation_id[:8]}")
+        except Exception as e:
+            logger.warning(f"Failed to clear disk lock during dead-pod cleanup: {e}")
+
+    logger.info(f"Successfully finalized dead-pod reservation {reservation_id} as failed")
 
 
 def expire_stuck_preparing_reservation(reservation: dict[str, Any]) -> None:

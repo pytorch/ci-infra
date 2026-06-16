@@ -207,17 +207,18 @@ def test_limits_full_gpu_cpu_capped_at_node_cpus(lambda_index):
 
 # ── cpu-* branch ──────────────────────────────────────────────────────────────
 
-def test_limits_cpu_type_reserves_for_system(lambda_index):
-    # cpu-x86: cpus=32, mem=64 -> cpu = 30, memory = 62Gi (minus 2 each)
+def test_limits_cpu_type_whole_node(lambda_index):
+    # cpu-x86: cpus=32, mem=64 -> cpu = int(32*0.85)=27, memory = int(64*0.80)=51Gi
     lim = lambda_index.get_pod_resource_limits(0, "cpu-x86")
-    assert lim["cpu"] == "30"
-    assert lim["memory"] == "62Gi"
+    assert lim["cpu"] == "27"
+    assert lim["memory"] == "51Gi"
     assert "nvidia.com/gpu" not in lim
 
 
-def test_requests_cpu_type_fixed_small(lambda_index):
-    req = lambda_index.get_pod_resource_requests(0, "cpu-arm")
-    assert req == {"cpu": "2", "memory": "4Gi"}
+def test_requests_cpu_type_equals_limits(lambda_index):
+    # request == limit (whole-node Guaranteed-style sizing, no co-tenant eviction)
+    assert lambda_index.get_pod_resource_requests(0, "cpu-arm") == \
+        lambda_index.get_pod_resource_limits(0, "cpu-arm")
 
 
 # ── EFA gating: MIG must NOT get EFA even at "full" slice count ────────────────

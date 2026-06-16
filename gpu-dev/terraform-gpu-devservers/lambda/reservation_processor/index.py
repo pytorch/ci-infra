@@ -241,6 +241,15 @@ GPU_CONFIG = {
 }
 GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192, "efa_count": 0}
 
+# CPU dev pods get (nearly) a whole node each: request == limit, sized as a fraction
+# of nominal node capacity that stays under real allocatable (kube/system reserve
+# ~13% mem, ~12% cpu on c7i.8xlarge) yet is large enough that a second dev pod can't
+# co-schedule. This stops a co-tenant from triggering node-memory eviction — a CPU
+# pod that overruns its own limit gets a recoverable in-place OOMKill restart
+# instead of a terminal node eviction (matching GPU-pod behaviour).
+CPU_POD_CPU_FRACTION = 0.85
+CPU_POD_MEM_FRACTION = 0.80
+
 def get_gpu_resource_name(gpu_type: str) -> str:
     """Kubernetes resource name for this SKU (nvidia.com/gpu or nvidia.com/mig-*)."""
     return GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT).get("k8s_resource", "nvidia.com/gpu")
@@ -4661,10 +4670,12 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
     max_gpus = config["max_gpus"]
 
     if gpu_type.startswith("cpu-"):
-        # CPU instances get reasonable limits for dedicated nodes
+        # CPU instances get a whole node each (request == limit, see
+        # get_pod_resource_requests + CPU_POD_*_FRACTION). Sized under node
+        # allocatable so the pod still schedules but a second dev pod cannot.
         limits.update({
-            "cpu": str(config["cpus"] - 2),  # Reserve some for system
-            "memory": f"{config['memory_gb'] - 2}Gi"
+            "cpu": str(int(config["cpus"] * CPU_POD_CPU_FRACTION)),
+            "memory": f"{int(config['memory_gb'] * CPU_POD_MEM_FRACTION)}Gi"
         })
     else:
         # GPU instances get proportional CPU/memory based on GPU allocation
@@ -4719,7 +4730,13 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
     max_gpus = config["max_gpus"]
 
     if gpu_type.startswith("cpu-"):
-        requests.update({"cpu": "2", "memory": "4Gi"})
+        # Match the limits exactly so each CPU pod reserves (nearly) a whole node:
+        # request == limit keeps the main container off the node's eviction shortlist
+        # and the large request blocks co-tenants from packing on (1 dev pod/node).
+        requests.update({
+            "cpu": str(int(config["cpus"] * CPU_POD_CPU_FRACTION)),
+            "memory": f"{int(config['memory_gb'] * CPU_POD_MEM_FRACTION)}Gi"
+        })
     else:
         if gpu_count > 0:
             resource_name = config.get("k8s_resource", "nvidia.com/gpu")
