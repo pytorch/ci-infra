@@ -103,18 +103,24 @@ kubectl create configmap pypi-cache-nginx-config \
   --from-file=merge_indexes.js="$MODULE_DIR/kubernetes/merge_indexes.js" \
   -n "$NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
+kubectl label configmap pypi-cache-nginx-config -n "$NAMESPACE" \
+  osdc.io/module=pypi-cache --overwrite
 
 echo "[pypi-cache] Creating pypi-wants-collector-scripts ConfigMap..."
 kubectl create configmap pypi-wants-collector-scripts \
   --from-file=wants_collector.py="$MODULE_DIR/scripts/python/wants_collector.py" \
   -n "$NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
+kubectl label configmap pypi-wants-collector-scripts -n "$NAMESPACE" \
+  osdc.io/module=pypi-cache --overwrite
 
 echo "[pypi-cache] Creating pypi-wheel-syncer-scripts ConfigMap..."
 kubectl create configmap pypi-wheel-syncer-scripts \
   --from-file=wheel_syncer.py="$MODULE_DIR/scripts/python/wheel_syncer.py" \
   -n "$NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
+kubectl label configmap pypi-wheel-syncer-scripts -n "$NAMESPACE" \
+  osdc.io/module=pypi-cache --overwrite
 
 # --- Generate manifests from clusters.yaml config ---
 GENERATED_DIR="$MODULE_DIR/generated"
