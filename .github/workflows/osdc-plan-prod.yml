@@ -47,3 +47,27 @@ jobs:
       cluster: meta-prod-aws-ue1
       pr_number: ${{ github.event.pull_request.number }}
     secrets: inherit
+
+  plan_lf_ue1:
+    needs: plan_ue1
+    if: |
+      !cancelled() &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/_osdc-plan.yml
+    with:
+      cluster: lf-prod-aws-ue1
+      use_lf_credentials: true
+      pr_number: ${{ github.event.pull_request.number }}
+    secrets: inherit
+
+  plan_lf_ue2:
+    needs: plan_lf_ue1
+    if: |
+      !cancelled() &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/_osdc-plan.yml
+    with:
+      cluster: lf-prod-aws-ue2
+      use_lf_credentials: true
+      pr_number: ${{ github.event.pull_request.number }}
+    secrets: inherit
