@@ -43,6 +43,7 @@ def clusters_yaml(tmp_path):
                 "modules": ["eks", "karpenter", "nodepools", "arc", "arc-runners"],
                 "harbor": {"core_replicas": 1},
                 "monitoring": {"grafana_cloud_url": "https://staging.example.com"},
+                "arc-runners": {"runner_group": "meta-prod-rg"},
             },
             "arc-cbr-production": {
                 "cluster_name": "pytorch-arc-cbr-production",
@@ -90,21 +91,27 @@ def workflow_template(tmp_path):
         "on: push\n"
         "jobs:\n"
         "  basic:\n"
-        "    runs-on: {{CLUSTER_NAME}}\n"
+        "    runs-on: { group: \"{{RUNNER_GROUP}}\", labels: [\"{{CLUSTER_NAME}}\"] }\n"
         "    steps:\n"
         "      - run: echo {{CLUSTER_ID}}\n"
         "  # BEGIN_B200\n"
         "  b200-job:\n"
-        "    runs-on: {{PREFIX}}b200-runner\n"
+        "    runs-on: { group: \"{{RUNNER_GROUP}}\", labels: [\"{{PREFIX}}b200-runner\"] }\n"
         "    steps:\n"
         "      - run: echo B200\n"
         "  # END_B200\n"
         "  # BEGIN_CACHE_ENFORCER\n"
         "  cache-enforcer-job:\n"
-        "    runs-on: {{PREFIX}}enforcer-runner\n"
+        "    runs-on: { group: \"{{RUNNER_GROUP}}\", labels: [\"{{PREFIX}}enforcer-runner\"] }\n"
         "    steps:\n"
         "      - run: echo enforcer\n"
         "  # END_CACHE_ENFORCER\n"
+        "  # BEGIN_RELEASE\n"
+        "  release-job:\n"
+        "    runs-on: { group: \"{{RELEASE_RUNNER_GROUP}}\", labels: [\"{{PREFIX}}rel-runner\"] }\n"
+        "    steps:\n"
+        "      - run: echo release\n"
+        "  # END_RELEASE\n"
         "  pypi-job:\n"
         "    steps:\n"
         "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
@@ -187,10 +194,13 @@ class TestGenerateWorkflow:
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
             b200_enabled=True,
+            runner_group="my-rg",
         )
         assert "name: cbr integration test" in result
-        assert "runs-on: pytorch-arc-cbr-production" in result
+        assert "labels: [\"pytorch-arc-cbr-production\"]" in result
         assert "echo arc-cbr-production" in result
+        assert 'group: "my-rg"' in result
+        assert "{{RUNNER_GROUP}}" not in result
 
     def test_b200_removed_when_disabled(self, workflow_template):
         result = generate_workflow(
@@ -217,7 +227,7 @@ class TestGenerateWorkflow:
         assert "b200-job:" in result
         assert "echo B200" in result
         # Prefix must be substituted inside B200 block
-        assert "runs-on: cbrb200-runner" in result
+        assert "labels: [\"cbrb200-runner\"]" in result
         assert "{{PREFIX}}" not in result
         # Marker comments should be stripped
         assert "BEGIN_B200" not in result
@@ -248,7 +258,7 @@ class TestGenerateWorkflow:
         )
         assert "cache-enforcer-job:" in result
         assert "echo enforcer" in result
-        assert "runs-on: cbrenforcer-runner" in result
+        assert "labels: [\"cbrenforcer-runner\"]" in result
         assert "BEGIN_CACHE_ENFORCER" not in result
         assert "END_CACHE_ENFORCER" not in result
 
@@ -297,6 +307,75 @@ class TestGenerateWorkflow:
         )
         # Default value should be substituted
         assert "echo 12.8" in result
+
+    def test_runner_group_default(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            b200_enabled=False,
+        )
+        assert 'group: "default"' in result
+
+    def test_release_runner_group_default(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            b200_enabled=False,
+            release_enabled=True,
+        )
+        assert 'group: "release-runners"' in result
+        assert "{{RELEASE_RUNNER_GROUP}}" not in result
+
+    def test_release_runner_group_with_cluster_override(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            b200_enabled=False,
+            release_enabled=True,
+            runner_group="my-rg",
+            release_runner_group="my-rg",
+        )
+        assert 'group: "my-rg"' in result
+        assert 'group: "my-rg", labels: ["cbrrel-runner"]' in result
+        assert "{{RELEASE_RUNNER_GROUP}}" not in result
+
+    def test_release_runner_group_disabled_strips_block(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            b200_enabled=False,
+            release_enabled=False,
+        )
+        assert "release-job" not in result
+        assert "BEGIN_RELEASE" not in result
+        assert "END_RELEASE" not in result
+
+
+# ── Release runner group precedence (run.py logic) ────────────────────────
+
+
+class TestReleaseRunnerGroupResolution:
+    def test_cluster_with_override(self, cfg_staging):
+        cluster_runner_group = resolve(cfg_staging, "arc-runners.runner_group")
+        assert cluster_runner_group == "meta-prod-rg"
+        release_runner_group = cluster_runner_group or "release-runners"
+        assert release_runner_group == "meta-prod-rg"
+
+    def test_cluster_without_override(self, cfg_production):
+        cluster_runner_group = resolve(cfg_production, "arc-runners.runner_group")
+        assert cluster_runner_group is None
+        runner_group = cluster_runner_group or "default"
+        release_runner_group = cluster_runner_group or "release-runners"
+        assert runner_group == "default"
+        assert release_runner_group == "release-runners"
 
 
 # ── format_duration ───────────────────────────────────────────────────────
