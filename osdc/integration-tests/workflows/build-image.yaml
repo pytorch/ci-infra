@@ -70,17 +70,21 @@ jobs:
           echo "PASS: BuildKit ${{ inputs.arch }} endpoint is responsive"
 
   scale:
-    # 8 parallel docker buildx builds (the prod client), each holding a BuildKit
-    # slot (server maxconn=1) ~10 min via a sleep. The warm baseline is below the
-    # burst, so they finish within timeout-minutes only if KEDA scales the pool
-    # up; otherwise the back of the burst serializes and the job times out — i.e.
-    # this FAILS if autoscaling does not happen.
+    # 8 parallel docker buildx builds (the prod client), each occupying a
+    # BuildKit slot (server maxconn=1) while polling HAProxy's metrics endpoint
+    # for active backend pods. Each replica's build exits as soon as the pool
+    # reaches the target size (TARGET active backends behind bk_<arch>), so on
+    # a healthy cluster the job finishes in 2-4 min once KEDA + Karpenter have
+    # brought the pool up. If the pool never reaches TARGET within the 8-min
+    # per-build deadline, the build fails loudly with "only N/M after Xs" — so
+    # this FAILS if autoscaling stalls.
     #
     # Runs concurrently with `build`, so 9 builds contend for a max-8 pool: the
-    # odd one out has no pod until a peer's ~10 min build finishes, exercising
-    # the over-subscription wait (the retry below must outlast that).
+    # odd one out waits for HAProxy to add capacity, exercising the same
+    # autoscaling path. The buildx-client retry tolerates the gRPC connect race
+    # while the pool is coming up cold.
     runs-on: ${{ inputs.runner_label }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -102,23 +106,55 @@ jobs:
             --use \
             "tcp://buildkitd-${{ inputs.arch }}.buildkit:1234"
 
-      - name: Occupy a BuildKit slot (~10 min) to drive autoscaling
+      - name: Hold a BuildKit slot until pool scales to TARGET active backends
         shell: bash
+        env:
+          TARGET: 8
         run: |
           set -eu
+          # Single-quoted heredoc: $TARGET/$ARCH/$ACTIVE inside the Dockerfile
+          # RUN are Docker build-args / shell vars, NOT GHA expansions.
+          # No "# syntax=" directive — keeps the build self-contained (no
+          # frontend image pull) and uses a single multi-line RUN instead of
+          # heredoc RUN (which would require dockerfile:1.4+).
           cat > Dockerfile.scale <<'EOF'
           FROM alpine:3.21
+          ARG TARGET
+          ARG ARCH
           ARG CACHEBUST
-          RUN echo "osdc buildkit scale-test ${CACHEBUST}" && sleep 600
+          RUN set -eu; \
+              METRICS_URL="http://buildkitd-lb-metrics.buildkit.svc.cluster.local:9404/metrics"; \
+              PROXY="bk_${ARCH}"; \
+              DEADLINE=$(( $(date +%s) + 480 )); \
+              echo "cachebust=${CACHEBUST} target=${TARGET} proxy=${PROXY}"; \
+              while :; do \
+                ACTIVE=$(wget -q -T 5 -O - "$METRICS_URL" 2>/dev/null \
+                  | awk -v p="$PROXY" '$1 ~ /^haproxy_backend_active_servers\{/ && $1 ~ "proxy=\"" p "\"" {print $2; exit}'); \
+                ACTIVE="${ACTIVE:-0}"; \
+                ACTIVE="${ACTIVE%.*}"; \
+                echo "$(date -u +%H:%M:%S) $PROXY active_servers=${ACTIVE}/${TARGET}"; \
+                if [ "$ACTIVE" -ge "$TARGET" ]; then \
+                  echo "PASS: $PROXY reached ${ACTIVE}/${TARGET} active backends"; \
+                  exit 0; \
+                fi; \
+                NOW=$(date +%s); \
+                if [ "$NOW" -ge "$DEADLINE" ]; then \
+                  echo "FAIL: $PROXY only ${ACTIVE}/${TARGET} active backends after 8min" >&2; \
+                  exit 1; \
+                fi; \
+                sleep 5; \
+              done
           EOF
           # buildx boots the builder with a hardcoded ~20s connect timeout (gRPC
-          # MinConnectTimeout), so retry to wait out cold scale-up and, when the
-          # pool is over-subscribed, a peer's ~10 min build; the repeated attempts
-          # also keep KEDA's load signal alive. ~45 x (≈5s fail + 15s) ≈ 15 min,
-          # within the 30-min job timeout (still fails if scale-up never happens).
-          for attempt in $(seq 1 45); do
+          # MinConnectTimeout), so retry to wait out cold scale-up. With the
+          # conditional pool-poll inside the build, ~20 x (≈5s fail + 10s) ≈
+          # 3.5 min is plenty for buildx-client retry; the 8-min poll deadline
+          # inside the build is what actually waits for scale-up.
+          for attempt in $(seq 1 20); do
             if docker buildx build \
                 --platform "linux/${{ inputs.arch }}" \
+                --build-arg "TARGET=${TARGET}" \
+                --build-arg "ARCH=${{ inputs.arch }}" \
                 --build-arg "CACHEBUST=${{ inputs.arch }}-${{ matrix.replica }}-${{ github.run_id }}" \
                 --no-cache \
                 --output type=cacheonly \
@@ -126,8 +162,8 @@ jobs:
               echo "build succeeded on attempt ${attempt}"
               exit 0
             fi
-            echo "attempt ${attempt}/45 failed (BuildKit cold/queued); retrying in 15s..."
-            sleep 15
+            echo "attempt ${attempt}/20 failed (BuildKit cold/queued); retrying in 10s..."
+            sleep 10
           done
           echo "build failed after retries" >&2
           exit 1
