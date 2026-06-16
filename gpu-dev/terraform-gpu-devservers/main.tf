@@ -457,9 +457,7 @@ locals {
       # h200 = [
       #   { id = "cr-0c0a6073304dd5d03", instance_count = 1 }  # Expired - commented out
       # ]
-      h100 = [
-        { key = "cr0", id = "cr-04d3d1d84e127a562", instance_count = 2 }, # H100 reservation us-west-1c (starts Wed)
-      ]
+      # h100 removed 2026-06-11 — staging should not hold an H100 capacity reservation
     }
     prod = {
       # Production environment capacity reservations
@@ -557,7 +555,7 @@ locals {
       # Empty — no CRs in this workspace.
     }
     default = {
-      "cr-04d3d1d84e127a562" = "secondary" # us-west-1c
+      # Empty — no CRs in this workspace.
     }
     prod = {
       # B200 capacity reservations
