@@ -254,8 +254,6 @@ clusters:
       - arc-runners
       - keda
       - buildkit
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
