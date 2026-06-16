@@ -208,6 +208,9 @@ def main():
     cfg = load_cluster_config(args.clusters_yaml, args.cluster_id)
     cluster_name = resolve(cfg, "cluster_name")
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
+    cluster_runner_group = resolve(cfg, "arc-runners.runner_group")
+    runner_group = cluster_runner_group or "default"
+    release_runner_group = cluster_runner_group or "release-runners"
     b200_enabled = has_module(cfg, "nodepools-b200") and has_module(cfg, "arc-runners-b200")
     cache_enforcer_enabled = has_module(cfg, "cache-enforcer")
     release_enabled = has_module(cfg, "arc-runners")
@@ -230,6 +233,8 @@ def main():
 
     log.info("Integration test for cluster: %s (%s)", args.cluster_id, cluster_name)
     log.info("  Runner prefix: '%s'", prefix)
+    log.info("  Runner group: '%s'", runner_group)
+    log.info("  Release runner group: '%s'", release_runner_group)
     log.info("  B200 enabled: %s", b200_enabled)
     log.info("  Release runners: %s", release_enabled)
     log.info("  Cache enforcer: %s", cache_enforcer_enabled)
@@ -264,6 +269,8 @@ def main():
             b200_enabled,
             cache_enforcer_enabled=cache_enforcer_enabled,
             release_enabled=release_enabled,
+            runner_group=runner_group,
+            release_runner_group=release_runner_group,
             pypi_cache_slugs=pypi_cache_slugs,
             pypi_cache_cuda_version=pypi_cache_cuda_version,
         )
