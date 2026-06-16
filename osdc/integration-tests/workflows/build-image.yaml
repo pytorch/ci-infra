@@ -16,12 +16,19 @@ on:
         required: false
         type: string
         default: "l-x86iavx512-2-4"
+      runner_group:
+        description: "Runner group to target (cluster-scoped)"
+        required: false
+        type: string
+        default: "default"
 
 jobs:
   build:
     # NOTE: Always runs on x86 — BuildKit is a *remote* builder.
     # The arch input selects which BuildKit endpoint to connect to.
-    runs-on: ${{ inputs.runner_label }}
+    runs-on:
+      group: ${{ inputs.runner_group }}
+      labels: [ "${{ inputs.runner_label }}" ]
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -83,7 +90,9 @@ jobs:
     # odd one out waits for HAProxy to add capacity, exercising the same
     # autoscaling path. The buildx-client retry tolerates the gRPC connect race
     # while the pool is coming up cold.
-    runs-on: ${{ inputs.runner_label }}
+    runs-on:
+      group: ${{ inputs.runner_group }}
+      labels: [ "${{ inputs.runner_label }}" ]
     timeout-minutes: 15
     strategy:
       fail-fast: false
