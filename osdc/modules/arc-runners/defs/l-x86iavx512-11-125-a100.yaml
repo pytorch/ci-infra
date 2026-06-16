@@ -8,3 +8,7 @@ runner:
   vcpu: 11
   memory: 125Gi
   gpu: 1
+  # [TEST-ONLY] ue1 A100 NUMA validation. A 1-GPU pod always fits one zone, so this is
+  # a no-op for placement — it's the A/B knob: comment out to compare the default
+  # scheduler, or raise vcpu >48 to force an over-one-zone (TopologyAffinityError) test.
+  scheduler_name: numa-scheduler

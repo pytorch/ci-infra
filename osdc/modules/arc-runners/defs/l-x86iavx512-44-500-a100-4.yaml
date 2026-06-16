@@ -7,3 +7,7 @@ runner:
   vcpu: 44
   memory: 500Gi
   gpu: 4
+  # [TEST-ONLY] ue1 A100 NUMA validation — the 4-GPU case the numa-scheduler exists for
+  # (parallel to the H100 4-GPU). 4 GPU + 44 vCPU must align to ONE NUMA zone; the
+  # numa-scheduler reads NRT to place it, vs the default scheduler's bind-then-die.
+  scheduler_name: numa-scheduler

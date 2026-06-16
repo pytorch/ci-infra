@@ -67,9 +67,10 @@ spec:
     spec:
       priorityClassName: system-node-critical
 
-      # Match the same nodes as the NFD topology-updater.
+      # [TEST-ONLY] Match the NFD topology-updater selector — repointed to p4d
+      # (A100) for ue1 staging NUMA validation. Production: restore node-fleet: p5.
       nodeSelector:
-        node-fleet: p5
+        node-fleet: p4d
 
       # Tolerate every taint — same rationale as node-performance-tuning:
       # must coexist with all node-init.osdc.io/* startup taints without
