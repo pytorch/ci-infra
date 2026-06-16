@@ -6,6 +6,8 @@ apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
   name: pypi-cache
+  labels:
+    osdc.io/module: pypi-cache
 spec:
   limits:
     cpu: "__CPU_LIMIT__"

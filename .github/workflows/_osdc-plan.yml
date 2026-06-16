@@ -9,6 +9,16 @@ on:
       pr_number:
         required: true
         type: number
+      environment:
+        description: "GitHub environment for secrets/gating (default: osdc-staging)"
+        required: false
+        type: string
+        default: osdc-staging
+      use_lf_credentials:
+        description: "Use LF_AWS_PLAN_ROLE_ARN secret instead of Meta AWS credentials"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -23,7 +33,7 @@ jobs:
   plan:
     name: tofu plan (${{ inputs.cluster }})
     runs-on: ubuntu-latest
-    environment: osdc-staging
+    environment: ${{ inputs.environment }}
     timeout-minutes: 45
     # Serialize all tofu state-locking work per cluster. Shared with
     # _osdc-deploy.yml so plan and deploy against the same cluster never
@@ -50,7 +60,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_PLAN_ROLE }}
+          role-to-assume: ${{ inputs.use_lf_credentials && secrets.LF_AWS_PLAN_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID, secrets.META_AWS_DEPLOY_PLAN_ROLE) }}
           aws-region: us-west-2
           role-duration-seconds: 3600
 

@@ -12,6 +12,8 @@ kind: ConfigMap
 metadata:
   name: cache-enforcer-script
   namespace: kube-system
+  labels:
+    osdc.io/module: cache-enforcer
 data:
   enforce-cache.sh: |
     #!/bin/bash
