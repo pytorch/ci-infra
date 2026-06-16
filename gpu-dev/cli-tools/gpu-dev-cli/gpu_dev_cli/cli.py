@@ -3232,6 +3232,143 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
+def _print_recovery_hints(connection_info: dict) -> None:
+    """Tell the user how to unblock/recover their own reservation based on status."""
+    status = (connection_info.get("status") or "").lower()
+    disk_name = connection_info.get("disk_name") or ""
+    res_id = connection_info.get("reservation_id", "") or ""
+    short_id = res_id[:8] if res_id else "<id>"
+    hints = []
+    if status in ("failed", "expired", "cancelled"):
+        if disk_name:
+            hints.append(
+                f"Your data on disk '{disk_name}' is preserved — re-reserve with: "
+                f"gpu-dev reserve --disk {disk_name}")
+            hints.append(f"If that disk is stuck locked: gpu-dev disk unlock {disk_name}")
+        else:
+            hints.append("Re-reserve a new box with: gpu-dev reserve")
+    elif status == "active":
+        hints.append(
+            f"If status is 'active' but you can't SSH, the pod likely died (e.g. OOM). "
+            f"Free it (and your disk) with: gpu-dev cancel {short_id}  — then re-reserve.")
+        if disk_name:
+            hints.append(f"If the disk stays locked after cancel: gpu-dev disk unlock {disk_name}")
+    if hints:
+        rprint("\n[bold]Recovery:[/bold]")
+        for h in hints:
+            rprint(f"  • {h}")
+
+
+def _show_diagnostics(connection_info: dict) -> None:
+    """Render the extra diagnostics `gpu-dev debug` adds on top of the status panel:
+    failure reason, OOM events, the full status-history timeline, captured pod logs,
+    and recovery hints. All sourced from data the lambdas write to DynamoDB, so it
+    needs no cluster/lambda access."""
+    from rich.text import Text
+
+    status = (connection_info.get("status") or "").lower()
+
+    # Failure reason / latest detailed status — shown for ANY status (the normal
+    # `show` only surfaces failure_reason on 'failed'; for an active-but-dead pod
+    # this is exactly what the user needs).
+    failure_reason = (connection_info.get("failure_reason") or "").strip()
+    detailed = (connection_info.get("current_detailed_status") or "").strip()
+    if failure_reason:
+        rprint(f"\n[bold red]Why it ended:[/bold red] {failure_reason}")
+    elif detailed and status != "active":
+        rprint(f"\n[bold]Latest status:[/bold] {detailed}")
+
+    # OOM events
+    oom_count = int(connection_info.get("oom_count", 0) or 0)
+    if oom_count > 0:
+        last = connection_info.get("last_oom_at") or "unknown"
+        cont = connection_info.get("oom_container") or "?"
+        rprint(f"[red]⚠️  OOM:[/red] {oom_count} event(s) — last {last} (container: {cont})")
+
+    # Status-history timeline (the gold for "what happened to my reservation")
+    history = connection_info.get("status_history") or []
+    if history:
+        table = Table(title="Status timeline (most recent last)", show_header=True,
+                      header_style="bold", box=None, pad_edge=False)
+        table.add_column("Time", style="dim", no_wrap=True)
+        table.add_column("Event")
+        for entry in history[-40:]:
+            if isinstance(entry, dict):
+                table.add_row(str(entry.get("timestamp", "")), str(entry.get("message", "")))
+        console.print("")
+        console.print(table)
+    else:
+        rprint("\n[dim]No status history recorded for this reservation.[/dim]")
+
+    # Captured pod logs (lambda snapshot — last lines around the failure)
+    pod_logs = (connection_info.get("pod_logs") or "").strip()
+    if pod_logs:
+        console.print(Panel(Text(pod_logs[-4000:]), title="Captured pod logs (snapshot)",
+                            border_style="yellow"))
+
+    _print_recovery_hints(connection_info)
+
+
+@main.command()
+@click.argument("reservation_id", required=False)
+@click.pass_context
+def debug(ctx: click.Context, reservation_id: Optional[str]) -> None:
+    """Diagnose your own reservation — why a box died or won't connect.
+
+    Shows the status timeline, failure reason, OOM events, and captured pod logs,
+    plus recovery steps — all without needing cluster or lambda access.
+
+    \b
+    Examples:
+        gpu-dev debug                 # pick from your active reservations
+        gpu-dev debug abc12345        # a specific reservation (id prefix ok)
+
+    For a recently failed/expired box, find its id with 'gpu-dev list' then
+    'gpu-dev debug <id>'.
+    """
+    try:
+        config = load_config()
+        user_info = authenticate_user(config)
+        reservation_mgr = ReservationManager(config)
+
+        # In-pod fast path: the pod's own reservation id is on the env.
+        if reservation_id is None:
+            reservation_id = os.environ.get("GPU_DEV_RESERVATION_ID") or None
+
+        if reservation_id is None:
+            reservations = _fetch_reservations_cross_region(
+                reservation_mgr, user_info["user_id"],
+                ["active", "preparing", "queued", "pending"], config)
+            if not reservations:
+                rprint("[yellow]📋 No active reservations.[/yellow] To debug a recent "
+                       "failed/expired one, find its id with [bold]gpu-dev list[/bold] "
+                       "then run [bold]gpu-dev debug <id>[/bold].")
+                return
+            if len(reservations) == 1:
+                reservation_id = reservations[0].get("reservation_id")
+            else:
+                selected = select_reservation_interactive(reservations, "debug")
+                if not selected or selected in ("__QUIT__", "__ALL__"):
+                    rprint("[yellow]Cancelled.[/yellow]")
+                    return
+                reservation_id = selected
+
+        connection_info = reservation_mgr.get_connection_info(
+            reservation_id, user_info["user_id"])
+        if not connection_info:
+            rprint(f"[red]❌ No reservation found matching '{reservation_id}'[/red] "
+                   "(try a longer id prefix, or check 'gpu-dev list').")
+            return
+
+        _show_single_reservation(connection_info)
+        _show_diagnostics(connection_info)
+
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]")
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
 
 def _maybe_show_sdk_tip() -> None:
     """For a user's first few reservations, nudge them toward the Python SDK +

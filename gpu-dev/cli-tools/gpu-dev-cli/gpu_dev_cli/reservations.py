@@ -999,11 +999,19 @@ class ReservationManager:
                 "jupyter_enabled": reservation.get("jupyter_enabled", False),
                 "jupyter_error": reservation.get("jupyter_error", ""),
                 "ebs_volume_id": reservation.get("ebs_volume_id", ""),
+                "disk_name": reservation.get("disk_name", ""),
                 "secondary_users": reservation.get("secondary_users", []),
                 "warning": reservation.get("warning", ""),
                 "is_multinode": is_multinode,
                 "pod_ip": reservation.get("pod_ip", ""),
+                "node_ip": reservation.get("node_ip", ""),
+                "node_name": reservation.get("node_name", ""),
                 "fqdn": reservation.get("fqdn", ""),
+                # Health/diagnostics (surfaced by `gpu-dev debug`); written by the
+                # reservation + expiry lambdas. Present off the raw item, not always set.
+                "oom_count": int(reservation.get("oom_count", 0) or 0),
+                "last_oom_at": reservation.get("last_oom_at", ""),
+                "oom_container": reservation.get("oom_container", ""),
             }
 
             # If multi-node, fetch all nodes in the group
