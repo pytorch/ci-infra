@@ -428,6 +428,7 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - keda
       - buildkit
       - pypi-cache
       - cache-enforcer
@@ -474,6 +475,7 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - keda
       - buildkit
       - pypi-cache
       - cache-enforcer
