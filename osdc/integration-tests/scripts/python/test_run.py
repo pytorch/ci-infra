@@ -81,7 +81,7 @@ def cfg_production(clusters_yaml):
 
 @pytest.fixture
 def workflow_template(tmp_path):
-    """Create a minimal workflow template and return the upstream dir."""
+    """Create a minimal workflow template covering all TAG_REQUIREMENTS tags."""
     upstream = tmp_path / "upstream"
     wf_dir = upstream / "integration-tests" / "workflows"
     wf_dir.mkdir(parents=True)
@@ -90,42 +90,66 @@ def workflow_template(tmp_path):
         "name: {{PREFIX}} integration test\n"
         "on: push\n"
         "jobs:\n"
-        "  basic:\n"
-        "    runs-on: { group: \"{{RUNNER_GROUP}}\", labels: [\"{{CLUSTER_NAME}}\"] }\n"
+        "  # BEGIN_ARC_RUNNERS\n"
+        "  arc-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{CLUSTER_NAME}}"] }\n'
         "    steps:\n"
         "      - run: echo {{CLUSTER_ID}}\n"
+        "  # END_ARC_RUNNERS\n"
+        "  # BEGIN_PYPI_CACHE\n"
+        "  pypi-job:\n"
+        "    steps:\n"
+        "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
+        "      - run: echo {{PYPI_CACHE_CUDA_VERSION}}\n"
+        "  # END_PYPI_CACHE\n"
+        "  # BEGIN_GPU_T4\n"
+        "  gpu-t4-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}t4-runner"] }\n'
+        "    steps:\n"
+        "      - run: echo t4\n"
+        "  # END_GPU_T4\n"
+        "  # BEGIN_BUILDKIT\n"
+        "  buildkit-job:\n"
+        "    uses: ./.github/workflows/build-image.yaml\n"
+        "  # END_BUILDKIT\n"
         "  # BEGIN_B200\n"
         "  b200-job:\n"
-        "    runs-on: { group: \"{{RUNNER_GROUP}}\", labels: [\"{{PREFIX}}b200-runner\"] }\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}b200-runner"] }\n'
         "    steps:\n"
         "      - run: echo B200\n"
         "  # END_B200\n"
         "  # BEGIN_CACHE_ENFORCER\n"
         "  cache-enforcer-job:\n"
-        "    runs-on: { group: \"{{RUNNER_GROUP}}\", labels: [\"{{PREFIX}}enforcer-runner\"] }\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}enforcer-runner"] }\n'
         "    steps:\n"
         "      - run: echo enforcer\n"
         "  # END_CACHE_ENFORCER\n"
         "  # BEGIN_RELEASE\n"
         "  release-job:\n"
-        "    runs-on: { group: \"{{RELEASE_RUNNER_GROUP}}\", labels: [\"{{PREFIX}}rel-runner\"] }\n"
+        '    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-runner"] }\n'
         "    steps:\n"
         "      - run: echo release\n"
         "  # END_RELEASE\n"
-        "  pypi-job:\n"
-        "    steps:\n"
-        "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
-        "      - run: echo {{PYPI_CACHE_CUDA_VERSION}}\n"
     )
     (wf_dir / "integration-test.yaml.tpl").write_text(template)
 
-    # Also create reusable workflow and Dockerfile for prepare_pr
     (wf_dir / "build-image.yaml").write_text("name: build-image\n")
     docker_dir = upstream / "integration-tests" / "docker" / "test-buildkit"
     docker_dir.mkdir(parents=True)
     (docker_dir / "Dockerfile").write_text("FROM alpine\n")
 
     return upstream
+
+
+ALL_MODULES = [
+    "arc-runners",
+    "pypi-cache",
+    "nodepools",
+    "buildkit",
+    "arc-runners-b200",
+    "nodepools-b200",
+    "cache-enforcer",
+]
 
 
 # ── load_cluster_config ───────────────────────────────────────────────────
@@ -193,170 +217,285 @@ class TestGenerateWorkflow:
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            b200_enabled=True,
+            cluster_modules=ALL_MODULES,
             runner_group="my-rg",
         )
         assert "name: cbr integration test" in result
-        assert "labels: [\"pytorch-arc-cbr-production\"]" in result
+        assert 'labels: ["pytorch-arc-cbr-production"]' in result
         assert "echo arc-cbr-production" in result
         assert 'group: "my-rg"' in result
         assert "{{RUNNER_GROUP}}" not in result
+        assert "{{PREFIX}}" not in result
+        assert "{{CLUSTER_ID}}" not in result
+        assert "{{CLUSTER_NAME}}" not in result
 
-    def test_b200_removed_when_disabled(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
-            b200_enabled=False,
-        )
-        assert "b200-job" not in result
-        assert "BEGIN_B200" not in result
-        assert "END_B200" not in result
-        # The basic job should still be there
-        assert "basic:" in result
-
-    def test_b200_preserved_when_enabled(self, workflow_template):
+    def test_all_tags_kept_with_full_modules(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            b200_enabled=True,
+            cluster_modules=ALL_MODULES,
         )
-        assert "b200-job:" in result
-        assert "echo B200" in result
-        # Prefix must be substituted inside B200 block
-        assert "labels: [\"cbrb200-runner\"]" in result
-        assert "{{PREFIX}}" not in result
-        # Marker comments should be stripped
-        assert "BEGIN_B200" not in result
-        assert "END_B200" not in result
+        for job in (
+            "arc-job",
+            "pypi-job",
+            "gpu-t4-job",
+            "buildkit-job",
+            "b200-job",
+            "cache-enforcer-job",
+            "release-job",
+        ):
+            assert job in result, f"missing {job}"
+        assert "BEGIN_" not in result
+        assert "END_" not in result
 
-    def test_cache_enforcer_removed_when_disabled(self, workflow_template):
+    def test_buildkit_stripped_when_module_missing(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
-            b200_enabled=False,
-            cache_enforcer_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=[
+                "arc-runners",
+                "pypi-cache",
+                "nodepools",
+                "cache-enforcer",
+                "arc-runners-b200",
+                "nodepools-b200",
+            ],
+        )
+        assert "buildkit-job" not in result
+        assert "BEGIN_BUILDKIT" not in result
+        assert "END_BUILDKIT" not in result
+        assert "arc-job" in result
+        assert "b200-job" in result
+        assert "cache-enforcer-job" in result
+
+    def test_cache_enforcer_stripped(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=[m for m in ALL_MODULES if m != "cache-enforcer"],
         )
         assert "cache-enforcer-job" not in result
         assert "BEGIN_CACHE_ENFORCER" not in result
         assert "END_CACHE_ENFORCER" not in result
-        assert "basic:" in result
+        assert "arc-job" in result
 
-    def test_cache_enforcer_preserved_when_enabled(self, workflow_template):
+    def test_b200_requires_both_modules(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
-            b200_enabled=False,
-            cache_enforcer_enabled=True,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners", "arc-runners-b200"],
         )
-        assert "cache-enforcer-job:" in result
-        assert "echo enforcer" in result
-        assert "labels: [\"cbrenforcer-runner\"]" in result
-        assert "BEGIN_CACHE_ENFORCER" not in result
-        assert "END_CACHE_ENFORCER" not in result
+        assert "b200-job" not in result
+        assert "BEGIN_B200" not in result
+        assert "arc-job" in result
 
-    def test_pypi_cache_slugs_substituted(self, workflow_template):
+    def test_gpu_t4_requires_arc_runners_and_nodepools(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
-            b200_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners"],
+        )
+        assert "gpu-t4-job" not in result
+        assert "BEGIN_GPU_T4" not in result
+        assert "arc-job" in result
+        assert "release-job" in result
+
+    def test_pypi_cache_requires_pypi_cache_module(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners"],
+        )
+        assert "pypi-job" not in result
+        assert "BEGIN_PYPI_CACHE" not in result
+        assert "arc-job" in result
+
+    def test_release_kept_with_arc_runners(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners"],
+        )
+        assert "release-job" in result
+        assert "BEGIN_RELEASE" not in result
+        assert "END_RELEASE" not in result
+
+    def test_release_stripped_without_arc_runners(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["nodepools"],
+        )
+        assert "release-job" not in result
+        assert "BEGIN_RELEASE" not in result
+
+    def test_pypi_slugs_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
             pypi_cache_slugs="cpu cu121 cu124",
         )
         assert "echo cpu cu121 cu124" in result
         assert "{{PYPI_CACHE_SLUGS}}" not in result
 
-    def test_pypi_cache_slugs_default(self, workflow_template):
+    def test_pypi_slugs_default(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
-            b200_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
         )
-        # Default value should be substituted
         assert "echo cpu cu121 cu124" in result
 
-    def test_pypi_cache_cuda_version_substituted(self, workflow_template):
+    def test_pypi_cuda_version_substituted(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
-            b200_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
             pypi_cache_cuda_version="13.0",
         )
         assert "echo 13.0" in result
         assert "{{PYPI_CACHE_CUDA_VERSION}}" not in result
 
-    def test_pypi_cache_cuda_version_default(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-staging-aws-uw1",
-            "meta-staging-aws-uw1",
-            b200_enabled=False,
-        )
-        # Default value should be substituted
-        assert "echo 12.8" in result
-
-    def test_runner_group_default(self, workflow_template):
+    def test_pypi_cuda_version_default(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            b200_enabled=False,
+            cluster_modules=ALL_MODULES,
+        )
+        assert "echo 12.8" in result
+
+    def test_runner_group_default_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
         )
         assert 'group: "default"' in result
 
-    def test_release_runner_group_default(self, workflow_template):
+    @pytest.mark.parametrize("group", ["my-rg", "team-x", "release-runners"])
+    def test_runner_group_override(self, workflow_template, group):
         result = generate_workflow(
             workflow_template,
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            b200_enabled=False,
-            release_enabled=True,
+            cluster_modules=ALL_MODULES,
+            runner_group=group,
         )
-        assert 'group: "release-runners"' in result
+        assert f'group: "{group}"' in result
+        assert "{{RUNNER_GROUP}}" not in result
+
+    def test_release_runner_group_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+            runner_group="default",
+            release_runner_group="rel-rg",
+        )
+        assert 'group: "rel-rg", labels: ["cbrrel-runner"]' in result
         assert "{{RELEASE_RUNNER_GROUP}}" not in result
 
-    def test_release_runner_group_with_cluster_override(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "arc-cbr-production",
-            "pytorch-arc-cbr-production",
-            b200_enabled=False,
-            release_enabled=True,
-            runner_group="my-rg",
-            release_runner_group="my-rg",
-        )
-        assert 'group: "my-rg"' in result
-        assert 'group: "my-rg", labels: ["cbrrel-runner"]' in result
-        assert "{{RELEASE_RUNNER_GROUP}}" not in result
 
-    def test_release_runner_group_disabled_strips_block(self, workflow_template):
+class TestGenerateWorkflowNoopFallback:
+    def test_noop_when_cluster_modules_empty(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            b200_enabled=False,
-            release_enabled=False,
+            cluster_modules=[],
         )
-        assert "release-job" not in result
-        assert "BEGIN_RELEASE" not in result
-        assert "END_RELEASE" not in result
+        assert "no-op:" in result
+        assert "ubuntu-latest" in result
+        assert "No integration test suites match this cluster's modules" in result
+        assert "name: cbr integration test" in result
+        assert "on: push" in result
+
+    def test_noop_when_only_unmatched_module(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners-h100"],
+        )
+        assert "no-op:" in result
+        assert "arc-job" not in result
+        assert "b200-job" not in result
+
+    def test_noop_when_only_arc_runners_b200_without_nodepools_b200(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners-b200"],
+        )
+        assert "no-op:" in result
+        assert "b200-job" not in result
+        assert "arc-job" not in result
+
+    def test_noop_preserves_top_level_keys(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=[],
+        )
+        assert "name: cbr integration test" in result
+        assert "on: push" in result
+
+    def test_noop_jobs_section_format(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=[],
+        )
+        lines = result.split("\n")
+        jobs_idx = next(i for i, line in enumerate(lines) if line.rstrip() == "jobs:")
+        jobs_section = lines[jobs_idx:]
+        job_keys = [
+            line
+            for line in jobs_section
+            if line.startswith("  ") and not line.startswith("   ") and ":" in line and not line.strip().startswith("#")
+        ]
+        assert len(job_keys) == 1
+        assert job_keys[0].strip() == "no-op:"
+        assert any("runs-on: ubuntu-latest" in line for line in jobs_section)
+        assert any("echo" in line and "No integration test suites" in line for line in jobs_section)
 
 
 # ── Release runner group precedence (run.py logic) ────────────────────────

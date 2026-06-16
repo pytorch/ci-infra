@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   # ── CPU Runner Tests ──────────────────────────────────────────────────
+  # BEGIN_ARC_RUNNERS
   test-cpu-x86-avx512:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
@@ -209,7 +210,9 @@ jobs:
             exit 1
           fi
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
+  # END_ARC_RUNNERS
 
+  # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
   # download.pytorch.org proxy, URL rewriting, torch install, and
@@ -1316,7 +1319,9 @@ jobs:
           print(f'numpy location: {np.__file__}')
           print(f'PASS: numpy functional validation')
           "
+  # END_PYPI_CACHE
 
+  # BEGIN_GPU_T4
   # ── GPU Runner Tests ──────────────────────────────────────────────────
   test-gpu-t4:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-29-115-t4"] }
@@ -1400,6 +1405,7 @@ jobs:
             exit 1
           fi
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
+  # END_GPU_T4
 
   # BEGIN_B200
   test-gpu-b200-2:
@@ -1435,6 +1441,7 @@ jobs:
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
   # END_B200
 
+  # BEGIN_BUILDKIT
   # ── BuildKit Tests ────────────────────────────────────────────────────
   # Each call runs a buildctl connectivity build + an 8-wide docker buildx burst
   # (fails if KEDA does not scale the pool up).
@@ -1451,7 +1458,9 @@ jobs:
       arch: arm64
       runner_label: {{PREFIX}}l-x86iamx-8-32
       runner_group: "{{RUNNER_GROUP}}"
+  # END_BUILDKIT
 
+  # BEGIN_ARC_RUNNERS
   # ── Harbor Cache Test ─────────────────────────────────────────────────
   test-harbor:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
@@ -1472,6 +1481,7 @@ jobs:
             echo "INFO: /etc/containerd/certs.d not visible from container (expected)"
             echo "PASS: Container pulled successfully through Harbor"
           fi
+  # END_ARC_RUNNERS
 
   # BEGIN_CACHE_ENFORCER
   # ── Cache Enforcer Test ──────────────────────────────────────────────
