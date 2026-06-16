@@ -30,6 +30,7 @@ _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
+from conditional_blocks import strip_conditional_block  # noqa: E402
 from fleet_naming import derive_fleet_name  # noqa: E402
 from nodepool_defs import load_excluded_instance_types  # noqa: E402
 from runner_fleet_validator import validate_cluster_runner_fleets  # noqa: E402
@@ -172,8 +173,14 @@ def resolve_max_runners(value, def_file, cluster_id):
     return value
 
 
-def generate_runner(def_file, template_content, cluster_config, output_dir, module_name):
-    """Generate a single runner config from its definition."""
+def generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled=True):
+    """Generate a single runner config from its definition.
+
+    pypi_cache_enabled controls whether the `# BEGIN_PYPI_CACHE` / `# END_PYPI_CACHE`
+    block in the template is preserved (True) or stripped (False). Strip when the
+    cluster does not deploy the pypi-cache module — the env vars would otherwise
+    point at a Service that doesn't exist on this cluster.
+    """
     with open(def_file) as f:
         data = yaml.safe_load(f)
 
@@ -330,6 +337,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     # Replace all template placeholders
     output_content = template_content
+    output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
     replacements = {
         "{{GITHUB_CONFIG_URL}}": github_url,
         "{{GITHUB_SECRET_NAME}}": k8s_secret_ref,
@@ -488,9 +496,14 @@ def main():
         log_error(f"No definition files found in {defs_dir}")
         return 1
 
+    # pypi-cache module is cluster-scoped: when absent, strip the pypi-cache env
+    # vars from the workflow pod template so jobs don't try to reach a Service
+    # that doesn't exist on this cluster.
+    pypi_cache_enabled = "pypi-cache" in (cluster_cfg.get("modules") or [])
+
     count = 0
     for def_file in def_files:
-        if generate_runner(def_file, template_content, cluster_config, output_dir, module_name):
+        if generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled):
             count += 1
 
     print()
