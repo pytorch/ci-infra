@@ -1915,6 +1915,88 @@ def handle_direct_claim(event) -> dict:
     }})
 
 
+def handle_get_logs(body) -> dict:
+    """Function URL handler for `gpu-dev debug --logs`: run a CloudWatch Logs Insights
+    query for one reservation across the processor + expiry log groups and return the
+    matching lines. Ownership is enforced — find_reservation_by_prefix(user_id=...)
+    only ever resolves the caller's own reservations."""
+    def _resp(payload, code=200):
+        return {"statusCode": code, "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(payload)}
+
+    reservation_id = (body.get("reservation_id") or "").strip()
+    user_id = (body.get("user_id") or "").strip()
+    if not reservation_id or not user_id:
+        return _resp({"error": "reservation_id and user_id are required"}, 400)
+
+    try:
+        reservation = find_reservation_by_prefix(reservation_id, user_id=user_id)
+    except ValueError as ve:
+        return _resp({"error": str(ve)}, 404)
+    except Exception as e:
+        return _resp({"error": f"reservation lookup failed: {e}"}, 500)
+
+    full_id = reservation.get("reservation_id", reservation_id)
+    rid8 = full_id[:8]
+
+    def _ts(v):
+        try:
+            return int(datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp())
+        except Exception:
+            return None
+
+    now = int(time.time())
+    start = _ts(reservation.get("created_at")) or _ts(reservation.get("launched_at")) or (now - 14 * 86400)
+    end = (_ts(reservation.get("reservation_ended")) or _ts(reservation.get("expired_at"))
+           or _ts(reservation.get("cancelled_at")) or _ts(reservation.get("failed_at")) or now)
+    start = max(start - 120, now - 14 * 86400)  # small lead-in; cap to processor retention (14d)
+    end = min(end + 300, now)
+    if end <= start:
+        end = now
+
+    fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "")
+    prefix = fn[:-len("-reservation-processor")] if fn.endswith("-reservation-processor") else "pytorch-gpu-dev"
+    groups = [f"/aws/lambda/{prefix}-reservation-processor",
+              f"/aws/lambda/{prefix}-reservation-expiry"]
+    query = (f'fields @timestamp, @message | filter @message like "{rid8}" '
+             f'| sort @timestamp asc | limit 1000')
+
+    logs = boto3.client("logs")
+    try:
+        qid = logs.start_query(logGroupNames=groups, startTime=start, endTime=end,
+                               queryString=query, limit=1000)["queryId"]
+    except Exception as e:
+        # A log group may not exist in this workspace — retry with just the processor.
+        try:
+            qid = logs.start_query(logGroupNames=groups[:1], startTime=start, endTime=end,
+                                   queryString=query, limit=1000)["queryId"]
+        except Exception as e2:
+            return _resp({"error": f"could not start log query: {e2}", "lines": []}, 500)
+
+    result = None
+    for _ in range(45):
+        r = logs.get_query_results(queryId=qid)
+        if r.get("status") in ("Complete", "Failed", "Cancelled", "Timeout"):
+            result = r
+            break
+        time.sleep(1)
+
+    if not result or result.get("status") != "Complete":
+        try:
+            logs.stop_query(queryId=qid)
+        except Exception:
+            pass
+        st = result.get("status") if result else "timeout"
+        return _resp({"error": f"log query did not complete (status={st})", "lines": []})
+
+    lines = []
+    for row in result.get("results", []):
+        d = {f["field"]: f["value"] for f in row}
+        lines.append({"timestamp": d.get("@timestamp", ""),
+                      "message": (d.get("@message", "") or "").rstrip("\n")})
+    return _resp({"lines": lines, "reservation_id": full_id})
+
+
 def handler(event, context):
     """Main Lambda handler"""
     try:
@@ -1924,6 +2006,12 @@ def handler(event, context):
         # Returns the active reservation in the HTTP response — no SQS, no poll.
         # Only warm-eligible requests; anything else tells the CLI to use SQS.
         if event.get("requestContext", {}).get("http") or event.get("rawPath"):
+            try:
+                _fu_body = json.loads(event.get("body") or "{}")
+            except Exception:
+                _fu_body = {}
+            if _fu_body.get("action") == "get_logs":
+                return handle_get_logs(_fu_body)
             return handle_direct_claim(event)
 
         # Scheduled tick to keep the warm pool topped up.

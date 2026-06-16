@@ -613,7 +613,7 @@ class ReservationManager:
                 pass
         return self._direct_url or None
 
-    def _signed_post(self, url: str, payload: dict) -> Optional[dict]:
+    def _signed_post(self, url: str, payload: dict, timeout: int = 20) -> Optional[dict]:
         """SigV4-signed POST to the Function URL. Returns parsed JSON or None."""
         try:
             creds = self.config.session.get_credentials()
@@ -623,12 +623,28 @@ class ReservationManager:
             aws_req = AWSRequest(method="POST", url=url, data=data,
                                  headers={"Content-Type": "application/json"})
             SigV4Auth(creds, "lambda", self.config.aws_region).add_auth(aws_req)
-            resp = requests.post(url, data=data, headers=dict(aws_req.headers), timeout=20)
+            resp = requests.post(url, data=data, headers=dict(aws_req.headers), timeout=timeout)
             if resp.status_code != 200:
                 return None
             return resp.json()
         except Exception:
             return None
+
+    def get_reservation_logs(self, reservation_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a reservation's lambda logs (CloudWatch Logs Insights) via the
+        processor Function URL. Returns {"lines": [...]} / {"error": ...}, or None if
+        the backend/URL is unavailable. Used by `gpu-dev debug --logs`."""
+        url = self._get_direct_url()
+        if not url:
+            return None
+        payload = {
+            "action": "get_logs",
+            "reservation_id": reservation_id,
+            "user_id": user_id,
+            "version": get_version(),
+        }
+        # CloudWatch Logs Insights queries take longer than a claim — allow ~70s.
+        return self._signed_post(url, payload, timeout=70)
 
     def claim_direct(self, *, user_id: str, gpu_count: int, gpu_type: str,
                      duration_hours: Union[int, float], name: Optional[str] = None,

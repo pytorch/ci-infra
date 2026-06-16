@@ -156,6 +156,29 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
           "ecr:GetAuthorizationToken"
         ]
         Resource = "*"
+      },
+      {
+        # Read-only CloudWatch Logs Insights queries so `gpu-dev debug --logs` can
+        # return a reservation's own lambda logs. StartQuery is scoped to the two
+        # reservation log groups; GetQueryResults/StopQuery are not resource-scopable.
+        Effect = "Allow"
+        Action = [
+          "logs:StartQuery",
+          "logs:GetLogEvents",
+          "logs:FilterLogEvents"
+        ]
+        Resource = [
+          "arn:aws:logs:*:*:log-group:/aws/lambda/${var.prefix}-reservation-processor:*",
+          "arn:aws:logs:*:*:log-group:/aws/lambda/${var.prefix}-reservation-expiry:*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:GetQueryResults",
+          "logs:StopQuery"
+        ]
+        Resource = "*"
       }
     ]
   })
@@ -241,6 +264,20 @@ resource "aws_cloudwatch_log_group" "reservation_processor_log_group" {
 
   tags = {
     Name        = "${var.prefix}-reservation-processor-logs"
+    Environment = local.current_config.environment
+  }
+}
+
+# CloudWatch Log Group for the expiry lambda. AWS otherwise auto-creates it with NO
+# retention (it had grown to multiple GB unbounded). Manage it to cap retention.
+# NOTE: the group already exists in AWS, so import it once per workspace before apply:
+#   tofu import aws_cloudwatch_log_group.reservation_expiry_log_group /aws/lambda/${var.prefix}-reservation-expiry
+resource "aws_cloudwatch_log_group" "reservation_expiry_log_group" {
+  name              = "/aws/lambda/${var.prefix}-reservation-expiry"
+  retention_in_days = 30
+
+  tags = {
+    Name        = "${var.prefix}-reservation-expiry-logs"
     Environment = local.current_config.environment
   }
 }

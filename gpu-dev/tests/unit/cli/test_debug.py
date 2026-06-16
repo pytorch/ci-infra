@@ -123,3 +123,33 @@ def test_debug_no_id_auto_selects_single(cli_runner):
     out = _clean(res.output)
     assert res.exit_code == 0
     mgr.get_connection_info.assert_called_once_with("9b1466cc-aaa", "alice@example.com")
+
+
+def test_debug_logs_flag_renders_lines(cli_runner):
+    mgr = MagicMock()
+    mgr.get_connection_info.return_value = _ci(status="failed")
+    mgr.get_reservation_logs.return_value = {"lines": [
+        {"timestamp": "2026-06-09T20:07:30", "message": "Creating pod gpu-dev-9b1466cc"},
+        {"timestamp": "2026-06-09T20:55:00", "message": "Evicted: node low on memory"},
+    ]}
+    res = _invoke(cli_runner, mgr, ["9b1466cc", "--logs"])
+    out = _clean(res.output)
+    assert "Lambda logs" in out and "node low on memory" in out
+    mgr.get_reservation_logs.assert_called_once_with("9b1466cc-f272-40a6-90da-2bf0f4c1e599",
+                                                     "alice@example.com")
+
+
+def test_debug_logs_flag_backend_unavailable(cli_runner):
+    mgr = MagicMock()
+    mgr.get_connection_info.return_value = _ci(status="failed")
+    mgr.get_reservation_logs.return_value = None
+    res = _invoke(cli_runner, mgr, ["9b1466cc", "--logs"])
+    out = _clean(res.output)
+    assert "Could not reach the log backend" in out
+
+
+def test_debug_without_logs_flag_does_not_query(cli_runner):
+    mgr = MagicMock()
+    mgr.get_connection_info.return_value = _ci(status="failed")
+    _invoke(cli_runner, mgr, ["9b1466cc"])
+    mgr.get_reservation_logs.assert_not_called()

@@ -3309,19 +3309,45 @@ def _show_diagnostics(connection_info: dict) -> None:
     _print_recovery_hints(connection_info)
 
 
+def _show_lambda_logs(reservation_mgr, reservation_id: str, user_id: str) -> None:
+    """Fetch + render the raw lambda (CloudWatch) logs for a reservation."""
+    from rich.text import Text
+    rprint("\n[bold]Fetching lambda logs from CloudWatch…[/bold] [dim](a few seconds)[/dim]")
+    result = reservation_mgr.get_reservation_logs(reservation_id, user_id)
+    if result is None:
+        rprint("[yellow]Could not reach the log backend (it may not be deployed yet, "
+               "or you lack lambda:InvokeFunctionUrl access).[/yellow]")
+        return
+    if result.get("error"):
+        rprint(f"[yellow]Log query: {result['error']}[/yellow]")
+    lines = result.get("lines") or []
+    if not lines:
+        rprint("[dim]No lambda log lines found for this reservation (outside the "
+               "retention window, or none recorded).[/dim]")
+        return
+    body = "\n".join(f"{ln.get('timestamp','')}  {ln.get('message','')}".rstrip()
+                     for ln in lines)
+    console.print(Panel(Text(body[-16000:]),
+                        title=f"Lambda logs · {len(lines)} line(s)", border_style="cyan"))
+
+
 @main.command()
 @click.argument("reservation_id", required=False)
+@click.option("--logs", "show_logs", is_flag=True,
+              help="Also fetch the raw lambda logs for this reservation from CloudWatch.")
 @click.pass_context
-def debug(ctx: click.Context, reservation_id: Optional[str]) -> None:
+def debug(ctx: click.Context, reservation_id: Optional[str], show_logs: bool) -> None:
     """Diagnose your own reservation — why a box died or won't connect.
 
     Shows the status timeline, failure reason, OOM events, and captured pod logs,
-    plus recovery steps — all without needing cluster or lambda access.
+    plus recovery steps — all without needing cluster or lambda access. Add --logs
+    to also pull the raw reservation/expiry lambda logs from CloudWatch.
 
     \b
     Examples:
         gpu-dev debug                 # pick from your active reservations
         gpu-dev debug abc12345        # a specific reservation (id prefix ok)
+        gpu-dev debug abc12345 --logs # + raw lambda logs from CloudWatch
 
     For a recently failed/expired box, find its id with 'gpu-dev list' then
     'gpu-dev debug <id>'.
@@ -3362,6 +3388,9 @@ def debug(ctx: click.Context, reservation_id: Optional[str]) -> None:
 
         _show_single_reservation(connection_info)
         _show_diagnostics(connection_info)
+        if show_logs:
+            _show_lambda_logs(reservation_mgr, connection_info["reservation_id"],
+                              user_info["user_id"])
 
     except RuntimeError as e:
         rprint(f"[red]❌ {str(e)}[/red]")
