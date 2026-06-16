@@ -52,6 +52,8 @@ spec:
 
 ---
 # Allow monitoring namespace to scrape Prometheus metrics from HAProxy LB
+# Also allow buildkitd pods (same namespace) — the integration-test scale job
+# runs `wget` inside the BuildKit build sandbox to poll the autoscaling state.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -68,6 +70,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app: buildkitd
       ports:
         - protocol: TCP
           port: 9404

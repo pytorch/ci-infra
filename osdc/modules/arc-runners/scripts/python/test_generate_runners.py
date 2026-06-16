@@ -9,7 +9,6 @@ import pytest
 import yaml
 from fleet_naming import derive_fleet_name
 from generate_runners import (
-    _strip_conditional_block,
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
@@ -2356,52 +2355,6 @@ PYPI_CACHE_ENV_VAR_NAMES = [
     "PYPI_CACHE_SIMPLE_URL",
     "PYPI_CACHE_WHL_URL",
 ]
-
-
-class TestStripConditionalBlock:
-    def test_keep_true_removes_markers_preserves_content(self):
-        content = textwrap.dedent("""\
-            before
-                # BEGIN_FOO
-                inside
-                # END_FOO
-            after
-        """)
-        result = _strip_conditional_block(content, "FOO", keep=True)
-        assert "# BEGIN_FOO" not in result
-        assert "# END_FOO" not in result
-        assert "inside" in result
-        assert "before" in result
-        assert "after" in result
-
-    def test_keep_false_removes_markers_and_content(self):
-        content = textwrap.dedent("""\
-            before
-                # BEGIN_FOO
-                inside
-                # END_FOO
-            after
-        """)
-        result = _strip_conditional_block(content, "FOO", keep=False)
-        assert "# BEGIN_FOO" not in result
-        assert "# END_FOO" not in result
-        assert "inside" not in result
-        assert "before" in result
-        assert "after" in result
-
-    def test_no_markers_in_content_is_noop(self):
-        content = "just\nplain\ntext\n"
-        assert _strip_conditional_block(content, "FOO", keep=True) == content
-        assert _strip_conditional_block(content, "FOO", keep=False) == content
-
-    def test_indentation_does_not_matter(self):
-        """Markers are matched on stripped form so any indentation works."""
-        content = "x\n            # BEGIN_BAR\nkeepme\n            # END_BAR\ny\n"
-        out_keep = _strip_conditional_block(content, "BAR", keep=True)
-        assert "# BEGIN_BAR" not in out_keep
-        assert "keepme" in out_keep
-        out_strip = _strip_conditional_block(content, "BAR", keep=False)
-        assert "keepme" not in out_strip
 
 
 class TestPypiCacheConditional:
