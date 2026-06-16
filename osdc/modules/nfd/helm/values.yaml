@@ -23,12 +23,13 @@ topologyUpdater:
   # evaluated by the NUMA-aware scheduler.
   updateInterval: 15s
 
-  # Scoped to H100 nodes (p5 fleet) where the packed pool uses
-  # single-numa-node topology policy. Only these multi-NUMA nodes
-  # need NRT data for the numa-scheduler to prevent
-  # TopologyAffinityError on 4-GPU jobs.
+  # [TEST-ONLY] Repointed from p5 to p4d (A100) for NUMA validation on the
+  # meta-staging-aws-ue1 (us-east-1) staging cluster — real A100 hardware (the
+  # production target). p4d.24xlarge = 2 NUMA x 4 A100, single-numa-node. The
+  # existing p4d fleet is already single-numa-node, so no new pool is needed.
+  # Production: restore node-fleet: p5.
   nodeSelector:
-    node-fleet: p5
+    node-fleet: p4d
 
   # Tolerate every taint so the topology-updater schedules on p5
   # nodes regardless of their taint set (node-fleet, instance-type,
