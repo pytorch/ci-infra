@@ -11,6 +11,7 @@ metadata:
   name: cache-enforcer
   namespace: kube-system
   labels:
+    osdc.io/module: cache-enforcer
     app: cache-enforcer
     app.kubernetes.io/name: cache-enforcer
     app.kubernetes.io/component: node-configuration
@@ -132,4 +133,5 @@ metadata:
   name: cache-enforcer
   namespace: kube-system
   labels:
+    osdc.io/module: cache-enforcer
     app: cache-enforcer
