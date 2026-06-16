@@ -30,6 +30,7 @@ _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
+from conditional_blocks import strip_conditional_block  # noqa: E402
 from fleet_naming import derive_fleet_name  # noqa: E402
 from nodepool_defs import load_excluded_instance_types  # noqa: E402
 from runner_fleet_validator import validate_cluster_runner_fleets  # noqa: E402
@@ -92,33 +93,6 @@ def parse_memory_bytes(memory_str):
             if suffix in _K8S_MEMORY_SUFFIXES:
                 return int(s[:-suffix_len]) * _K8S_MEMORY_SUFFIXES[suffix]
     return int(s)
-
-
-def _strip_conditional_block(content: str, tag: str, keep: bool) -> str:
-    """Remove or keep a `# BEGIN_<tag>` / `# END_<tag>` conditional block.
-
-    When *keep* is False the block (markers + content between them) is stripped
-    entirely. When *keep* is True the marker comment lines are removed but the
-    content between them is preserved. Marker lines are matched on their stripped
-    form, so indentation doesn't matter.
-    """
-    begin = f"# BEGIN_{tag}"
-    end = f"# END_{tag}"
-    lines = content.split("\n")
-    filtered = []
-    inside = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == begin:
-            inside = True
-            continue
-        if stripped == end:
-            inside = False
-            continue
-        if not keep and inside:
-            continue
-        filtered.append(line)
-    return "\n".join(filtered)
 
 
 def load_clusters_yaml(repo_root):
@@ -363,7 +337,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     # Replace all template placeholders
     output_content = template_content
-    output_content = _strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
+    output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
     replacements = {
         "{{GITHUB_CONFIG_URL}}": github_url,
         "{{GITHUB_SECRET_NAME}}": k8s_secret_ref,

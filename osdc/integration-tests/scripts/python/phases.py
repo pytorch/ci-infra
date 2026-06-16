@@ -7,9 +7,13 @@ Phase 2: Generate workflow + prepare PR
 
 import logging
 import shutil
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
+from conditional_blocks import strip_conditional_block  # noqa: E402
 
 from run import (
     CANARY_REPO,
@@ -194,35 +198,6 @@ def clear_staging_pools(cluster_id: str, force: bool = False):
 # ── Phase 2: Prepare PR ────────────────────────────────────────────────
 
 
-def _strip_conditional_block(content: str, tag: str, keep: bool) -> str:
-    """Remove or keep a # BEGIN_<tag> / # END_<tag> conditional block.
-
-    When *keep* is False the block (markers + content) is stripped entirely.
-    When *keep* is True the content is kept but the marker comments are removed.
-    """
-    begin = f"# BEGIN_{tag}"
-    end = f"# END_{tag}"
-    if not keep:
-        lines = content.split("\n")
-        filtered = []
-        inside = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped == begin:
-                inside = True
-                continue
-            if stripped == end:
-                inside = False
-                continue
-            if not inside:
-                filtered.append(line)
-        return "\n".join(filtered)
-    # keep=True — remove markers, keep content
-    content = content.replace(f"  {begin}\n", "")
-    content = content.replace(f"  {end}\n", "")
-    return content
-
-
 def generate_workflow(
     upstream_dir: Path,
     prefix: str,
@@ -247,10 +222,10 @@ def generate_workflow(
     content = content.replace("{{PYPI_CACHE_CUDA_VERSION}}", pypi_cache_cuda_version)
 
     # Handle conditional blocks
-    content = _strip_conditional_block(content, "B200", keep=b200_enabled)
-    content = _strip_conditional_block(content, "CACHE_ENFORCER", keep=cache_enforcer_enabled)
-    content = _strip_conditional_block(content, "RELEASE", keep=release_enabled)
-    content = _strip_conditional_block(content, "PYPI_CACHE", keep=pypi_cache_enabled)
+    content = strip_conditional_block(content, "B200", keep=b200_enabled)
+    content = strip_conditional_block(content, "CACHE_ENFORCER", keep=cache_enforcer_enabled)
+    content = strip_conditional_block(content, "RELEASE", keep=release_enabled)
+    content = strip_conditional_block(content, "PYPI_CACHE", keep=pypi_cache_enabled)
 
     return content
 

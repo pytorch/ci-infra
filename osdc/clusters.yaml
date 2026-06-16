@@ -309,3 +309,97 @@ clusters:
       - harbor-cache-recovery
       - monitoring
       - logging
+
+  lf-prod-aws-ue1:
+    region: us-east-1
+    cluster_name: lf-prod-aws-ue1
+    proactive_capacity_max: 6
+    state_bucket: lf-osdc-tfstate-prod-ue1
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+      cluster_admin_role_names:
+        - lf_osdc_admin
+    base:
+      base_node_count: 4
+      vpc_cidr: "10.12.0.0/16"
+    node_compactor:
+      min_node_age_seconds: 900
+    arc-runners:
+      github_config_url: "https://github.com/pytorch"
+      github_secret_name: lf-prod-aws-ue1
+      runner_name_prefix: "lf-"
+      runner_group: lf-prod-aws-ue1
+    buildkit:
+      amd64_instance_type: m6id.24xlarge
+      amd64_pods_per_node: 2
+      arm64_instance_type: m7gd.16xlarge
+      arm64_pods_per_node: 4
+      autoscaling:
+        enabled: true
+        amd64_min: 4
+        amd64_max: 64
+        arm64_min: 4
+        arm64_max: 64
+        amd64_fallback: 12
+        arm64_fallback: 4
+    pypi_cache:
+      replicas: 6
+    modules:
+      - karpenter
+      - arc
+      - nodepools
+      - arc-runners
+      - buildkit
+      - pypi-cache
+      - cache-enforcer
+      - zombie-cleanup
+      - harbor-cache-recovery
+      - monitoring
+      - logging
+
+  lf-prod-aws-ue2:
+    region: us-east-2
+    cluster_name: lf-prod-aws-ue2
+    proactive_capacity_max: 6
+    state_bucket: lf-osdc-tfstate-prod-ue2
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+      cluster_admin_role_names:
+        - lf_osdc_admin
+    base:
+      base_node_count: 4
+      vpc_cidr: "10.16.0.0/16"
+    node_compactor:
+      min_node_age_seconds: 900
+    arc-runners:
+      github_config_url: "https://github.com/pytorch"
+      github_secret_name: lf-prod-aws-ue2
+      runner_name_prefix: "lf-"
+      runner_group: lf-prod-aws-ue2
+    buildkit:
+      amd64_instance_type: m6id.24xlarge
+      amd64_pods_per_node: 2
+      arm64_instance_type: m7gd.16xlarge
+      arm64_pods_per_node: 4
+      autoscaling:
+        enabled: true
+        amd64_min: 4
+        amd64_max: 64
+        arm64_min: 4
+        arm64_max: 64
+        amd64_fallback: 12
+        arm64_fallback: 4
+    pypi_cache:
+      replicas: 6
+    modules:
+      - karpenter
+      - arc
+      - nodepools
+      - arc-runners
+      - buildkit
+      - pypi-cache
+      - cache-enforcer
+      - zombie-cleanup
+      - harbor-cache-recovery
+      - monitoring
+      - logging
