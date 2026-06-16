@@ -321,7 +321,6 @@ clusters:
   lf-prod-aws-ue1:
     region: us-east-1
     cluster_name: lf-prod-aws-ue1
-    proactive_capacity_max: 4
     state_bucket: lf-osdc-tfstate-prod-ue1
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
@@ -368,7 +367,6 @@ clusters:
   lf-prod-aws-ue2:
     region: us-east-2
     cluster_name: lf-prod-aws-ue2
-    proactive_capacity_max: 4
     state_bucket: lf-osdc-tfstate-prod-ue2
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
