@@ -117,7 +117,6 @@ clusters:
     region: us-west-1
     cluster_name: meta-staging-aws-uw1
     recycle_karpenter_nodes: true
-    proactive_capacity_max: 0  # disable warm-pool pre-provisioning — staging only creates pairs on demand for in-flight jobs
     state_bucket: ciforge-tfstate-meta-staging-aws-uw1
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
@@ -321,7 +320,6 @@ clusters:
   lf-prod-aws-ue1:
     region: us-east-1
     cluster_name: lf-prod-aws-ue1
-    proactive_capacity_max: 4
     state_bucket: lf-osdc-tfstate-prod-ue1
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
@@ -368,7 +366,6 @@ clusters:
   lf-prod-aws-ue2:
     region: us-east-2
     cluster_name: lf-prod-aws-ue2
-    proactive_capacity_max: 4
     state_bucket: lf-osdc-tfstate-prod-ue2
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
