@@ -22,6 +22,16 @@ log = logging.getLogger("osdc-integration-test")
 
 SCRATCH_DIR_NAME = ".scratch"
 
+TAG_REQUIREMENTS: dict[str, list[str]] = {
+    "ARC_RUNNERS": ["arc-runners"],
+    "PYPI_CACHE": ["arc-runners", "pypi-cache"],
+    "GPU_T4": ["arc-runners", "nodepools"],
+    "BUILDKIT": ["arc-runners", "buildkit"],
+    "B200": ["arc-runners-b200", "nodepools-b200"],
+    "CACHE_ENFORCER": ["arc-runners", "cache-enforcer"],
+    "RELEASE": ["arc-runners"],
+}
+
 
 def ensure_canary_repo(upstream_dir: Path) -> Path:
     """Clone or update pytorch-canary into .scratch/ and return its path."""
@@ -223,14 +233,46 @@ def _strip_conditional_block(content: str, tag: str, keep: bool) -> str:
     return content
 
 
+def _has_any_job(content: str) -> bool:
+    lines = content.split("\n")
+    in_jobs = False
+    for line in lines:
+        if not in_jobs:
+            if line.rstrip() == "jobs:":
+                in_jobs = True
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line.startswith("  ") and not line.startswith("   "):
+            head = line[2:]
+            if head and head[0].isalpha() and ":" in head:
+                return True
+    return False
+
+
+def _replace_jobs_with_noop(content: str) -> str:
+    lines = content.split("\n")
+    out = []
+    for line in lines:
+        if line.rstrip() == "jobs:":
+            out.append("jobs:")
+            out.append("  no-op:")
+            out.append("    runs-on: ubuntu-latest")
+            out.append("    steps:")
+            out.append('      - run: echo "No integration test suites match this cluster\'s modules"')
+            break
+        out.append(line)
+    suffix = "\n" if content.endswith("\n") else ""
+    return "\n".join(out) + suffix
+
+
 def generate_workflow(
     upstream_dir: Path,
     prefix: str,
     cluster_id: str,
     cluster_name: str,
-    b200_enabled: bool,
-    cache_enforcer_enabled: bool = False,
-    release_enabled: bool = False,
+    cluster_modules: list[str],
     pypi_cache_slugs: str = "cpu cu121 cu124",
     pypi_cache_cuda_version: str = "12.8",
     runner_group: str = "default",
@@ -240,7 +282,6 @@ def generate_workflow(
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
     content = template_path.read_text()
 
-    # Substitute template variables
     content = content.replace("{{PREFIX}}", prefix)
     content = content.replace("{{RUNNER_GROUP}}", runner_group)
     content = content.replace("{{RELEASE_RUNNER_GROUP}}", release_runner_group)
@@ -249,10 +290,13 @@ def generate_workflow(
     content = content.replace("{{PYPI_CACHE_SLUGS}}", pypi_cache_slugs)
     content = content.replace("{{PYPI_CACHE_CUDA_VERSION}}", pypi_cache_cuda_version)
 
-    # Handle conditional blocks
-    content = _strip_conditional_block(content, "B200", keep=b200_enabled)
-    content = _strip_conditional_block(content, "CACHE_ENFORCER", keep=cache_enforcer_enabled)
-    content = _strip_conditional_block(content, "RELEASE", keep=release_enabled)
+    modules_set = set(cluster_modules)
+    for tag, required in TAG_REQUIREMENTS.items():
+        keep = all(m in modules_set for m in required)
+        content = _strip_conditional_block(content, tag, keep=keep)
+
+    if not _has_any_job(content):
+        content = _replace_jobs_with_noop(content)
 
     return content
 
