@@ -328,6 +328,20 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
+    # Optional schedulerName for workflow pods. Per-runner-def value
+    # (e.g. scheduler_name: numa-scheduler on H100 4-GPU) takes precedence
+    # over the cluster-level default. Empty = default scheduler.
+    #
+    # The same value feeds two places so the real workflow pod and its
+    # capacity placeholder (ph-w-*) agree on the scheduler:
+    #   - {{SCHEDULER_NAME_LINE}}: schedulerName on the real workflow pod spec.
+    #   - {{SCHEDULER_NAME}}: CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME on the
+    #     listener, which the ARC fork stamps onto the workflow placeholder.
+    # If they diverged, a NUMA-blind placeholder would reserve a slot the
+    # NUMA-aware real pod can't claim (broken reservation on NUMA nodes).
+    scheduler_name = runner.get("scheduler_name", "")
+    scheduler_name_line = f"      schedulerName: {scheduler_name}" if scheduler_name else ""
+
     # Replace all template placeholders
     output_content = template_content
     replacements = {
@@ -356,6 +370,8 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
         "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
+        "{{SCHEDULER_NAME_LINE}}": scheduler_name_line,
+        "{{SCHEDULER_NAME}}": scheduler_name,
     }
 
     for placeholder, value in replacements.items():
