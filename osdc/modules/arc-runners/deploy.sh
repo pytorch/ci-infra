@@ -47,6 +47,14 @@ if ! uv run "$CFG" "$CLUSTER" has-module arc; then
 fi
 
 # --- Step 1: Generate ARC runner configs ---
+EXPLICIT_TAG=$(uv run "$CFG" "$CLUSTER" arc.runner_image_tag "")
+if [[ -n "$EXPLICIT_TAG" ]]; then
+  RUNNER_IMAGE="ghcr.io/actions/actions-runner:$EXPLICIT_TAG"
+else
+  RUNNER_IMAGE=$(uv run "$MODULE_DIR/scripts/python/resolve_runner_version.py" "$CLUSTER")
+fi
+export RUNNER_IMAGE
+
 echo "Generating ARC runner configs from definitions..."
 ARC_RUNNERS_DEFS_DIR="$DEFS_DIR" \
   ARC_RUNNERS_OUTPUT_DIR="$OUTPUT_DIR" \
