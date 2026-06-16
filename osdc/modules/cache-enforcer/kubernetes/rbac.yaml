@@ -8,6 +8,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: cache-enforcer-taint-remover
+  labels:
+    osdc.io/module: cache-enforcer
 rules:
   - apiGroups: [""]
     resources: ["nodes"]
@@ -17,6 +19,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: cache-enforcer-taint-remover
+  labels:
+    osdc.io/module: cache-enforcer
 subjects:
   - kind: ServiceAccount
     name: cache-enforcer
