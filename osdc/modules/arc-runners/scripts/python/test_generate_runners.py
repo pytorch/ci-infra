@@ -152,9 +152,6 @@ def real_template():
 
 FAKE_CLUSTERS_YAML = {
     "defaults": {
-        "arc": {
-            "runner_image_tag": "2.333.1",
-        },
         "arc-runners": {
             "github_config_url": "https://github.com/default-org",
             "github_secret_name": "default-secret",
@@ -2068,6 +2065,13 @@ class TestRealTemplate:
 
 
 class TestMain:
+    @pytest.fixture(autouse=True)
+    def _runner_image_env(self, monkeypatch):
+        monkeypatch.setenv(
+            "RUNNER_IMAGE",
+            "ghcr.io/actions/actions-runner:2.333.1@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+
     def test_no_args_exits_1(self):
         with patch.object(sys, "argv", ["generate_runners.py"]):
             assert main() == 1
@@ -2144,6 +2148,33 @@ class TestMain:
         assert generated[0].name == "runner-a.yaml"
         assert generated[1].name == "runner-b.yaml"
 
+    def test_runner_image_from_env(self, tmp_path, monkeypatch):
+        """main() renders RUNNER_IMAGE env var into the runner template; no clusters.yaml key needed."""
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(FAKE_CLUSTERS_YAML, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
+        make_nodepool_defs(tmp_path, ["m6i.32xlarge"])
+
+        output_dir = tmp_path / "out"
+
+        explicit_ref = "ghcr.io/actions/actions-runner:2.999.0@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        monkeypatch.setenv("RUNNER_IMAGE", explicit_ref)
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
+            assert main() == 0
+
+        rendered = (output_dir / "runner-a.yaml").read_text()
+        assert explicit_ref in rendered
+
     def test_output_dir_cleaned(self, tmp_path, monkeypatch):
         """Output dir is cleaned before generation so stale files are removed."""
         p = tmp_path / "clusters.yaml"
@@ -2199,7 +2230,6 @@ class TestMain:
         """main() does NOT force proactive_capacity to zero for production clusters."""
         prod_config = {
             "defaults": {
-                "arc": {"runner_image_tag": "2.333.1"},
                 "arc-runners": {
                     "github_config_url": "https://github.com/prod-org",
                     "github_secret_name": "prod-secret",
@@ -2247,7 +2277,6 @@ class TestMain:
         """main() honors proactive_capacity_max: 0 in clusters.yaml."""
         prod_config = {
             "defaults": {
-                "arc": {"runner_image_tag": "2.333.1"},
                 "arc-runners": {
                     "github_config_url": "https://github.com/prod-org",
                     "github_secret_name": "prod-secret",
@@ -2296,7 +2325,6 @@ class TestMain:
         """main() exits 1 when proactive_capacity_max is not a non-negative integer."""
         invalid_config = {
             "defaults": {
-                "arc": {"runner_image_tag": "2.333.1"},
                 "arc-runners": {
                     "github_config_url": "https://github.com/prod-org",
                     "github_secret_name": "prod-secret",
@@ -2339,7 +2367,6 @@ class TestMain:
         """main() honors cluster-level pause_runners=true by forcing maxRunners: 0."""
         paused_config = {
             "defaults": {
-                "arc": {"runner_image_tag": "2.333.1"},
                 "arc-runners": {
                     "github_config_url": "https://github.com/prod-org",
                     "github_secret_name": "prod-secret",
