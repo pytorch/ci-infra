@@ -61,6 +61,27 @@ Related docs:
 | **PoC** | @jeanschmidt, @huydhn · Meta |
 | **Used by** | `_osdc-deploy.yml`, `_osdc-slow-tests.yml` — apply-capable OIDC IAM role in the Meta AWS account, used for `tofu apply` / smoke / integration-test jobs |
 
+
+### `LF_AWS_DEPLOY_ROLE_ARN`
+
+| | |
+|---|---|
+| **Environments** | osdc-production |
+| **Added by** | @zxiiro |
+| **Requested by** | @zxiiro |
+| **PoC** | @zxiiro, @jordanconway · Linux Foundation |
+| **Used by** | `osdc-deploy-prod.yml` via `_osdc-deploy.yml` — OIDC IAM role ARN in the LF AWS account (`391835788720`), assumed for `tofu apply` / smoke / integration-test jobs for `lf-prod-aws-ue1` and `lf-prod-aws-ue2` |
+
+### `LF_AWS_PLAN_ROLE_ARN`
+
+| | |
+|---|---|
+| **Environments** | osdc-staging |
+| **Added by** | @zxiiro |
+| **Requested by** | @zxiiro |
+| **PoC** | @zxiiro, @jordanconway · Linux Foundation |
+| **Used by** | `osdc-plan-prod.yml` via `_osdc-plan.yml` — OIDC IAM role ARN in the LF AWS account (`391835788720`), assumed for `tofu plan` on pull requests for `lf-prod-aws-ue1` and `lf-prod-aws-ue2` |
+
 ### `CRCR_GITHUB_APP_ID`
 
 | | |
