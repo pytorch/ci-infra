@@ -7,6 +7,7 @@ metadata:
   name: pypi-wheel-syncer
   namespace: __NAMESPACE__
   labels:
+    osdc.io/module: pypi-cache
     app: pypi-wheel-syncer
     app.kubernetes.io/name: pypi-wheel-syncer
     app.kubernetes.io/component: wheel-syncer
