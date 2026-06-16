@@ -8,6 +8,7 @@ metadata:
   name: pypi-cache-data
   namespace: __NAMESPACE__
   labels:
+    osdc.io/module: pypi-cache
     app: pypi-cache
     app.kubernetes.io/name: pypi-cache
     app.kubernetes.io/component: package-cache

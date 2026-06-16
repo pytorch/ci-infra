@@ -170,9 +170,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--upstream-dir", required=True, type=Path, help="OSDC upstream directory")
     parser.add_argument("--root-dir", required=True, type=Path, help="OSDC root directory (consumer or upstream)")
     parser.add_argument("--run-smoke", action="store_true", help="Run smoke tests (skipped by default)")
-    parser.add_argument("--run-compactor", action="store_true", help="Run node-compactor e2e tests (skipped by default)")
+    parser.add_argument(
+        "--run-compactor", action="store_true", help="Run node-compactor e2e tests (skipped by default)"
+    )
     parser.add_argument("--skip-smoke", action="store_true", help="Skip smoke tests (overrides --run-smoke)")
-    parser.add_argument("--skip-compactor", action="store_true", help="Skip node-compactor e2e tests (overrides --run-compactor)")
+    parser.add_argument(
+        "--skip-compactor", action="store_true", help="Skip node-compactor e2e tests (overrides --run-compactor)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Generate workflows but don't push/PR")
     parser.add_argument(
         "--keep-pr", action="store_true", help="Don't close PR after test (useful for debugging failures)"
@@ -208,15 +212,14 @@ def main():
     cfg = load_cluster_config(args.clusters_yaml, args.cluster_id)
     cluster_name = resolve(cfg, "cluster_name")
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
-    b200_enabled = has_module(cfg, "nodepools-b200") and has_module(cfg, "arc-runners-b200")
-    cache_enforcer_enabled = has_module(cfg, "cache-enforcer")
-    release_enabled = has_module(cfg, "arc-runners")
+    cluster_runner_group = resolve(cfg, "arc-runners.runner_group")
+    runner_group = cluster_runner_group or "default"
+    release_runner_group = cluster_runner_group or "release-runners"
+    cluster_modules = cfg["cluster"].get("modules", [])
 
     # Build pypi-cache slug list: always "cpu", plus one per configured CUDA version
     cuda_versions = resolve(cfg, "pypi_cache.cuda_versions", [])
-    pypi_cache_slugs = " ".join(
-        ["cpu"] + [cuda_slug(str(v)) for v in cuda_versions]
-    )
+    pypi_cache_slugs = " ".join(["cpu"] + [cuda_slug(str(v)) for v in cuda_versions])
     # First CUDA version for integration test action verification (major.minor only)
     raw_ver = str(cuda_versions[0]) if cuda_versions else "12.8"
     parts = raw_ver.split(".")
@@ -230,9 +233,9 @@ def main():
 
     log.info("Integration test for cluster: %s (%s)", args.cluster_id, cluster_name)
     log.info("  Runner prefix: '%s'", prefix)
-    log.info("  B200 enabled: %s", b200_enabled)
-    log.info("  Release runners: %s", release_enabled)
-    log.info("  Cache enforcer: %s", cache_enforcer_enabled)
+    log.info("  Runner group: '%s'", runner_group)
+    log.info("  Release runner group: '%s'", release_runner_group)
+    log.info("  Cluster modules: %s", ", ".join(cluster_modules) if cluster_modules else "(none)")
     log.info("  PyPI cache slugs: %s", pypi_cache_slugs)
     log.info("  Smoke tests: %s", "skip" if skip_smoke else "run")
     log.info("  Compactor tests: %s", "skip" if skip_compactor else "run")
@@ -261,9 +264,9 @@ def main():
             prefix,
             args.cluster_id,
             cluster_name,
-            b200_enabled,
-            cache_enforcer_enabled=cache_enforcer_enabled,
-            release_enabled=release_enabled,
+            cluster_modules,
+            runner_group=runner_group,
+            release_runner_group=release_runner_group,
             pypi_cache_slugs=pypi_cache_slugs,
             pypi_cache_cuda_version=pypi_cache_cuda_version,
         )
