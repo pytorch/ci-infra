@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: ""
+      use_lf_credentials:
+        description: "Use LF_AWS_DEPLOY_ROLE_ARN secret instead of Meta AWS credentials"
+        required: false
+        type: boolean
+        default: false
       taint_nodes:
         description: "Taint ARC runner nodes with NoSchedule before deploy for graceful refresh"
         required: false
@@ -84,7 +89,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          role-to-assume: ${{ inputs.use_lf_credentials && secrets.LF_AWS_DEPLOY_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID, secrets.META_AWS_DEPLOY_ROLE) }}
           aws-region: us-west-1
           role-duration-seconds: 7200
 
@@ -134,7 +139,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          role-to-assume: ${{ inputs.use_lf_credentials && secrets.LF_AWS_DEPLOY_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID, secrets.META_AWS_DEPLOY_ROLE) }}
           aws-region: us-west-1
           role-duration-seconds: 7200
 
@@ -175,7 +180,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.META_AWS_ACC_ID }}:role/${{ secrets.META_AWS_DEPLOY_ROLE }}
+          role-to-assume: ${{ inputs.use_lf_credentials && secrets.LF_AWS_DEPLOY_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID, secrets.META_AWS_DEPLOY_ROLE) }}
           aws-region: us-west-1
           role-duration-seconds: 7200
 
