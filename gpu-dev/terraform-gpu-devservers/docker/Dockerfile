@@ -46,19 +46,20 @@ RUN for attempt in 1 2 3; do \
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
 
-# Install older CUDA toolkits alongside base CUDA 13.2
+# Install additional CUDA toolkits alongside base CUDA 13.2 (13.3 is the latest, May 2026)
 # Base image already has NVIDIA repo configured, no need for cuda-keyring
 RUN apt-get update && apt-get install -y --no-install-recommends \
         cuda-toolkit-12-8 \
         cuda-toolkit-12-9 \
         cuda-toolkit-13-0 \
         cuda-toolkit-13-1 \
+        cuda-toolkit-13-3 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # CUDA 13.2 is the default (PyTorch 2.12 compiled against it)
-# All versions available at /usr/local/cuda-{12.8,12.9,13.0,13.1,13.2}/
-# Switch with: export CUDA_HOME=/usr/local/cuda-12.8
+# All versions available at /usr/local/cuda-{12.8,12.9,13.0,13.1,13.2,13.3}/
+# Switch with: export CUDA_HOME=/usr/local/cuda-13.3
 ENV CUDA_HOME=/usr/local/cuda-13.2
 ENV PATH=/usr/local/cuda-13.2/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:${LD_LIBRARY_PATH}
@@ -163,21 +164,32 @@ WORKDIR /home/dev
 RUN mkdir -p ~/.npm-global && \
     npm config set prefix ~/.npm-global
 
-# OpenAI Codex CLI on GPT-5.5 via AWS Bedrock (GA 2026-06-01). Installed system-wide
-# (parallels Claude above), then /usr/local/bin/codex is replaced with a thin wrapper that
-# auths via the pod IRSA — it mints a short-lived Bedrock bearer token (no per-user OpenAI
-# key) and pins the bedrock-mantle provider + GPT-5.5 metadata. Reasoning effort is set with
-# the CODEX_EFFORT env var (default high); the wrapper rewrites ~/.codex/config.toml each
-# launch (home is ephemeral) so a /model picker mishap self-heals on restart. IAM is already
-# in place (pod IRSA: bedrock-mantle:* + aws-marketplace:Subscribe).
+# OpenAI Codex CLI on OpenAI gpt-5.x via AWS Bedrock. Installed system-wide (parallels
+# Claude above), then /usr/local/bin/codex is replaced with a thin wrapper that auths via
+# the pod IRSA — it mints a short-lived Bedrock bearer token (AWS_BEARER_TOKEN_BEDROCK), no
+# per-user key. The wrapper uses codex's NATIVE `amazon-bedrock` model provider (the Bedrock
+# Mantle path serves the OpenAI Responses API for supported OpenAI models — per the official
+# Codex/Bedrock docs), so NO custom endpoint/wire_api config is needed. Model via CODEX_MODEL
+# (default openai.gpt-5.4), effort via CODEX_EFFORT (default high). The wrapper forces
+# AWS_REGION=us-east-1.
+#
+# Why gpt-5.4 default (2026-06-16): gpt-5.5 is mid-rollout on Bedrock us-east-1 — it works
+# intermittently but ~30% of calls still 404 "Engine not found" (us-east-2 fails outright).
+# gpt-5.4 is rock-solid in us-east-1. To switch to 5.5 once AWS's rollout stabilizes, change
+# the default above to openai.gpt-5.5 (one line) — region is already us-east-1. Users can opt
+# in early with CODEX_MODEL=openai.gpt-5.5. The wrapper rewrites ~/.codex/config.toml each
+# launch. IAM already in place (pod IRSA: bedrock-mantle:* — native Mantle path does NOT need
+# bedrock:CallWithBearerToken).
 USER root
+# Always install the latest codex (the native amazon-bedrock provider is stable across
+# releases, so no need to pin — each image rebuild tracks latest). Validated on 0.140.0.
 RUN npm install -g --prefix /usr/local @openai/codex || echo "Codex CLI install failed (non-fatal at build time)"
 # Bedrock wrapper, base64-embedded to avoid heredoc/quoting fragility. It execs the real
 # launcher at /usr/local/lib/node_modules/@openai/codex/bin/codex.js. CRITICAL: `npm install`
 # leaves /usr/local/bin/codex as a SYMLINK to that codex.js, so we must `rm -f` it first —
 # writing through the symlink would clobber codex.js itself, making the wrapper exec itself
 # (infinite recursion -> codex hangs on launch).
-RUN rm -f /usr/local/bin/codex && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaAojIENvZGV4IHdpcmVkIHRvIEdQVC01LjUgb24gQVdTIEJlZHJvY2sgKHVzLWVhc3QtMiBtYW50bGUgZW5kcG9pbnQpLgojIEF1dGggdmlhIHRoZSBwb2QgSVJTQSAtPiBzaG9ydC1saXZlZCAofjEyaCkgQmVkcm9jayBiZWFyZXIgdG9rZW47IG5vIHBlci11c2VyIGtleS4KIyBSZWFzb25pbmcgZWZmb3J0IHZpYSBDT0RFWF9FRkZPUlQgZW52IChkZWZhdWx0IGhpZ2gpLiBUaGUgY29uZmlnIGlzIChyZSl3cml0dGVuIG9uCiMgZXZlcnkgbGF1bmNoOiAvaG9tZS9kZXYgaXMgZXBoZW1lcmFsLCBhbmQgdGhpcyBhbHNvIHNlbGYtaGVhbHMgYSAvbW9kZWwgbWlzaGFwCiMgKHRoZSBwaWNrZXIgY2FuIGNvcnJ1cHQgdGhlIG1vZGVsIGlkOyByZXN0YXJ0aW5nIGNvZGV4IHJlc2V0cyBpdCkuCnNldCArZQpSRUFMPS91c3IvbG9jYWwvbGliL25vZGVfbW9kdWxlcy9Ab3BlbmFpL2NvZGV4L2Jpbi9jb2RleC5qcwpFRkZPUlQ9IiR7Q09ERVhfRUZGT1JUOi1oaWdofSIKbWtkaXIgLXAgIiRIT01FLy5jb2RleCIgMj4vZGV2L251bGwKY2F0ID4gIiRIT01FLy5jb2RleC9jb25maWcudG9tbCIgPDxDRkcKbW9kZWwgPSAib3BlbmFpLmdwdC01LjUiCm1vZGVsX3Byb3ZpZGVyID0gImJlZHJvY2siCndlYl9zZWFyY2ggPSAiZGlzYWJsZWQiCm1vZGVsX2NvbnRleHRfd2luZG93ID0gMjcyMDAwCm1vZGVsX21heF9vdXRwdXRfdG9rZW5zID0gMTI4MDAwCm1vZGVsX3JlYXNvbmluZ19lZmZvcnQgPSAiJEVGRk9SVCIKClttb2RlbF9wcm92aWRlcnMuYmVkcm9ja10KbmFtZSA9ICJBV1MgQmVkcm9jayAoR1BULTUuNSkiCmJhc2VfdXJsID0gImh0dHBzOi8vYmVkcm9jay1tYW50bGUudXMtZWFzdC0yLmFwaS5hd3Mvb3BlbmFpL3YxIgplbnZfa2V5ID0gIk9QRU5BSV9BUElfS0VZIgp3aXJlX2FwaSA9ICJyZXNwb25zZXMiCkNGRwpUT0s9IiQoL3Vzci9iaW4vcHl0aG9uMyAtYyAnZnJvbSBhd3NfYmVkcm9ja190b2tlbl9nZW5lcmF0b3IgaW1wb3J0IHByb3ZpZGVfdG9rZW47IHByaW50KHByb3ZpZGVfdG9rZW4ocmVnaW9uPSJ1cy1lYXN0LTIiKSknIDI+L2Rldi9udWxsKSIKWyAtbiAiJFRPSyIgXSAmJiBleHBvcnQgT1BFTkFJX0FQSV9LRVk9IiRUT0siCmV4ZWMgIiRSRUFMIiAiJEAiCg==' | base64 -d > /usr/local/bin/codex && chmod 0755 /usr/local/bin/codex
+RUN rm -f /usr/local/bin/codex && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaAojIENvZGV4IG9uIE9wZW5BSSBncHQtNS54IHZpYSBBV1MgQmVkcm9jayB1c2luZyBjb2RleCdzIE5BVElWRSBgYW1hem9uLWJlZHJvY2tgCiMgcHJvdmlkZXIuIFJlZ2lvbiB1cy1lYXN0LTEgKGdwdC01LnggTWFudGxlIHJlZ2lvbikuIEF1dGg6IGEgc2hvcnQtbGl2ZWQgQmVkcm9jawojIGJlYXJlciB0b2tlbiBtaW50ZWQgZnJvbSB0aGUgcG9kIElSU0EgKG5vIHBlci11c2VyIGtleSkuIE1vZGVsIHZpYSBDT0RFWF9NT0RFTAojIChkZWZhdWx0IG9wZW5haS5ncHQtNS40KSwgZWZmb3J0IHZpYSBDT0RFWF9FRkZPUlQgKGhpZ2gpLgojCiMgbW9kZWxfY29udGV4dF93aW5kb3cgaXMgc2V0IGV4cGxpY2l0bHkgYmVjYXVzZSBjb2RleCdzIGNhdGFsb2cgZG9lc24ndCBrbm93IHRoZQojIEJlZHJvY2stcHJlZml4ZWQgaWQgIm9wZW5haS5ncHQtNS54IiBhbmQgb3RoZXJ3aXNlIHdhcm5zICJNb2RlbCBtZXRhZGF0YSBub3QgZm91bmQsCiMgZGVmYXVsdGluZyB0byBmYWxsYmFjayBtZXRhZGF0YSIuIDI3MjAwMCBpcyBncHQtNS41J3MgYnVuZGxlZCBjb250ZXh0IHdpbmRvdy4KIwojIGdwdC01LjUgbm90ZSAoMjAyNi0wNi0xNik6IHByb3Zpc2lvbmVkIGluIHVzLWVhc3QtMSBidXQgbWlkLXJvbGxvdXQg4oCUIH4zMCUgb2YgY2FsbHMKIyBzdGlsbCA0MDQgIkVuZ2luZSBub3QgZm91bmQiLiBEZWZhdWx0IHN0YXlzIGdwdC01LjQgKHNvbGlkKTsgc3dpdGNoIHRoZSBkZWZhdWx0IHRvCiMgb3BlbmFpLmdwdC01LjUgb25jZSBBV1Mgc3RhYmlsaXplcywgb3Igb3B0IGluIG5vdyB3aXRoIENPREVYX01PREVMPW9wZW5haS5ncHQtNS41LgpzZXQgK2UKTU9ERUw9IiR7Q09ERVhfTU9ERUw6LW9wZW5haS5ncHQtNS40fSIKRUZGT1JUPSIke0NPREVYX0VGRk9SVDotaGlnaH0iCmV4cG9ydCBBV1NfUkVHSU9OPXVzLWVhc3QtMSBBV1NfREVGQVVMVF9SRUdJT049dXMtZWFzdC0xCm1rZGlyIC1wICIkSE9NRS8uY29kZXgiCmNhdCA+ICIkSE9NRS8uY29kZXgvY29uZmlnLnRvbWwiIDw8Q0ZHCm1vZGVsX3Byb3ZpZGVyID0gImFtYXpvbi1iZWRyb2NrIgptb2RlbCA9ICIkTU9ERUwiCm1vZGVsX3JlYXNvbmluZ19lZmZvcnQgPSAiJEVGRk9SVCIKbW9kZWxfY29udGV4dF93aW5kb3cgPSAyNzIwMDAKd2ViX3NlYXJjaCA9ICJkaXNhYmxlZCIKQ0ZHClRPSz0iJCgvdXNyL2Jpbi9weXRob24zIC1jICdmcm9tIGF3c19iZWRyb2NrX3Rva2VuX2dlbmVyYXRvciBpbXBvcnQgcHJvdmlkZV90b2tlbjsgcHJpbnQocHJvdmlkZV90b2tlbihyZWdpb249InVzLWVhc3QtMSIpKScgMj4vZGV2L251bGwpIgpbIC1uICIkVE9LIiBdICYmIGV4cG9ydCBBV1NfQkVBUkVSX1RPS0VOX0JFRFJPQ0s9IiRUT0siCmV4ZWMgL3Vzci9sb2NhbC9saWIvbm9kZV9tb2R1bGVzL0BvcGVuYWkvY29kZXgvYmluL2NvZGV4LmpzICIkQCIK' | base64 -d > /usr/local/bin/codex && chmod 0755 /usr/local/bin/codex
 
 USER dev
 
