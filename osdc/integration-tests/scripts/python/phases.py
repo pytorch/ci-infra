@@ -233,6 +233,8 @@ def generate_workflow(
     release_enabled: bool = False,
     pypi_cache_slugs: str = "cpu cu121 cu124",
     pypi_cache_cuda_version: str = "12.8",
+    runner_group: str = "default",
+    release_runner_group: str = "release-runners",
 ) -> str:
     """Generate the integration test workflow from template."""
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
@@ -240,6 +242,8 @@ def generate_workflow(
 
     # Substitute template variables
     content = content.replace("{{PREFIX}}", prefix)
+    content = content.replace("{{RUNNER_GROUP}}", runner_group)
+    content = content.replace("{{RELEASE_RUNNER_GROUP}}", release_runner_group)
     content = content.replace("{{CLUSTER_ID}}", cluster_id)
     content = content.replace("{{CLUSTER_NAME}}", cluster_name)
     content = content.replace("{{PYPI_CACHE_SLUGS}}", pypi_cache_slugs)
