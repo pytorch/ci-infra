@@ -9,10 +9,9 @@ name: "OSDC: Drain cluster"
 # workflows on the same cluster. Reverse with `osdc-undrain-prod.yml`.
 
 # ─── TEMPORARY: REMOVE BEFORE MERGING TO MAIN ─────────────────────────────
-# `push:` trigger below + env defaults block + conditional `environment:` on
-# the `drain` job exist only to dry-run this workflow against
-# meta-staging-aws-uw1 from the jeanschmidt/fix_drain-undrain branch.
-# Strip all three before merge and restore `environment: osdc-production`.
+# `push:` trigger below + the env defaults block on the `drain` job exist
+# only to dry-run this workflow against meta-staging-aws-uw1 from the
+# jeanschmidt/fix_drain-undrain branch. Strip both before merge.
 # ──────────────────────────────────────────────────────────────────────────
 on:
   push:
@@ -57,7 +56,7 @@ jobs:
   drain:
     name: Drain ${{ github.event_name == 'push' && 'meta-staging-aws-uw1' || inputs.cluster }}
     runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'push' && '' || 'osdc-production' }}
+    environment: osdc-production
     timeout-minutes: 90
     env:
       CLUSTER: ${{ github.event_name == 'push' && 'meta-staging-aws-uw1' || inputs.cluster }}
