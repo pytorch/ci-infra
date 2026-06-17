@@ -7,9 +7,13 @@ Phase 2: Generate workflow + prepare PR
 
 import logging
 import shutil
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
+from conditional_blocks import strip_conditional_block  # noqa: E402
 
 from run import (
     CANARY_REPO,
@@ -204,35 +208,6 @@ def clear_staging_pools(cluster_id: str, force: bool = False):
 # ── Phase 2: Prepare PR ────────────────────────────────────────────────
 
 
-def _strip_conditional_block(content: str, tag: str, keep: bool) -> str:
-    """Remove or keep a # BEGIN_<tag> / # END_<tag> conditional block.
-
-    When *keep* is False the block (markers + content) is stripped entirely.
-    When *keep* is True the content is kept but the marker comments are removed.
-    """
-    begin = f"# BEGIN_{tag}"
-    end = f"# END_{tag}"
-    if not keep:
-        lines = content.split("\n")
-        filtered = []
-        inside = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped == begin:
-                inside = True
-                continue
-            if stripped == end:
-                inside = False
-                continue
-            if not inside:
-                filtered.append(line)
-        return "\n".join(filtered)
-    # keep=True — remove markers, keep content
-    content = content.replace(f"  {begin}\n", "")
-    content = content.replace(f"  {end}\n", "")
-    return content
-
-
 def _has_any_job(content: str) -> bool:
     lines = content.split("\n")
     in_jobs = False
@@ -293,7 +268,7 @@ def generate_workflow(
     modules_set = set(cluster_modules)
     for tag, required in TAG_REQUIREMENTS.items():
         keep = all(m in modules_set for m in required)
-        content = _strip_conditional_block(content, tag, keep=keep)
+        content = strip_conditional_block(content, tag, keep=keep)
 
     if not _has_any_job(content):
         content = _replace_jobs_with_noop(content)
