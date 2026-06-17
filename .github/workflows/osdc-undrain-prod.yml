@@ -1,0 +1,96 @@
+name: "OSDC: Undrain cluster"
+
+# Reverses osdc-drain-prod.yml.
+#
+# Two independent checkboxes: untaint-nodes and resume-runners.
+# Default is both enabled (full undrain).
+#
+# Per-cluster concurrency group serializes against deploy/plan/drain
+# on the same cluster (shared osdc-tofu-<cluster> lock family).
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: "Cluster to undrain"
+        required: true
+        type: choice
+        default: "-- select cluster --"
+        options:
+          - "-- select cluster --"
+          - meta-staging-aws-uw1
+          - meta-staging-aws-ue1
+          - arc-cbr-production-uw1
+          - arc-cbr-production
+          - meta-prod-aws-ue1
+          - lf-prod-aws-ue1
+          - lf-prod-aws-ue2
+      run_untaint_nodes:
+        description: "Remove deploy.osdc.io/refresh-pending:NoSchedule taint from runner nodes"
+        required: false
+        type: boolean
+        default: true
+      run_resume_runners:
+        description: "Restore AutoscalingRunnerSet maxRunners from def files"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: osdc-tofu-${{ inputs.cluster }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  undrain:
+    name: Undrain ${{ inputs.cluster }}
+    runs-on: ubuntu-latest
+    environment: osdc-production
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: osdc
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ "${{ inputs.cluster }}" = "-- select cluster --" ]; then
+            echo "::error::No cluster selected. Pick a cluster from the dropdown before running."
+            exit 1
+          fi
+          if [ "${{ inputs.run_untaint_nodes }}" != "true" ] && [ "${{ inputs.run_resume_runners }}" != "true" ]; then
+            echo "::error::Both run_untaint_nodes and run_resume_runners are disabled — nothing to do."
+            exit 1
+          fi
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+
+      - name: Install mise
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          version: "2026.5.11"
+          install: true
+          working_directory: osdc
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ startsWith(inputs.cluster, 'lf-') && secrets.LF_AWS_DEPLOY_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID, secrets.META_AWS_DEPLOY_ROLE) }}
+          aws-region: us-west-1
+          role-duration-seconds: 7200
+
+      - name: Untaint runner nodes
+        if: ${{ inputs.run_untaint_nodes }}
+        run: just untaint-nodes "${{ inputs.cluster }}"
+
+      - name: Resume runners (restore maxRunners from def files)
+        if: ${{ inputs.run_resume_runners }}
+        run: just resume-runners "${{ inputs.cluster }}"
