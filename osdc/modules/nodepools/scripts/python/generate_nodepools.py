@@ -34,6 +34,7 @@ if _scripts_python not in sys.path:
 
 from instance_specs import INSTANCE_SPECS  # noqa: E402
 from nodepool_defs import is_excluded_for_region as _is_excluded_for_region  # noqa: E402
+from quantities import parse_memory_bytes  # noqa: E402
 
 # List of startup taint entries. Each entry is a dict with:
 #   - ``key``, ``value``, ``effect`` (all str) — the Karpenter startupTaint to emit
@@ -194,22 +195,6 @@ def _user_data_script_mime_part(indented_script):
 """
 
 
-def _parse_mem_quantity(value):
-    """Parse a Kubernetes memory quantity into an exact integer byte count.
-
-    Supports binary suffixes (Ki/Mi/Gi/Ti) and a bare integer (bytes). The
-    mantissa must be a whole number — fractional quantities (e.g. "4.5Gi") are
-    rejected so reservation math stays exact. Used to validate the Memory
-    Manager Static boot gate at generation time, in bytes, so a typo in the
-    per-NUMA split can never reach a node and stop the kubelet from starting.
-    """
-    s = str(value).strip()
-    for suffix, mult in (("Ki", 1024), ("Mi", 1024**2), ("Gi", 1024**3), ("Ti", 1024**4)):
-        if s.endswith(suffix):
-            return int(s[: -len(suffix)]) * mult
-    return int(s)  # bare integer = bytes
-
-
 def _memory_manager_block(nodepool_def, topology_policy):
     """Build the kubelet Memory Manager (Static) config block, or "".
 
@@ -269,10 +254,8 @@ def _memory_manager_block(nodepool_def, topology_policy):
             f"(the Memory Manager boot gate sums them)."
         )
 
-    gate = (
-        _parse_mem_quantity(kube_reserved) + _parse_mem_quantity(system_reserved) + _parse_mem_quantity(eviction_hard)
-    )
-    reserved_total = sum(_parse_mem_quantity(z["memory"]) for z in reserved_memory)
+    gate = parse_memory_bytes(kube_reserved) + parse_memory_bytes(system_reserved) + parse_memory_bytes(eviction_hard)
+    reserved_total = sum(parse_memory_bytes(z["memory"]) for z in reserved_memory)
     if reserved_total != gate:
         raise ValueError(
             f"{name}: reserved_memory sum ({reserved_total} bytes) must equal "
