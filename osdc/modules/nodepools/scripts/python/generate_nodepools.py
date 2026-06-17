@@ -194,6 +194,110 @@ def _user_data_script_mime_part(indented_script):
 """
 
 
+def _parse_mem_quantity(value):
+    """Parse a Kubernetes memory quantity into an exact integer byte count.
+
+    Supports binary suffixes (Ki/Mi/Gi/Ti) and a bare integer (bytes). The
+    mantissa must be a whole number — fractional quantities (e.g. "4.5Gi") are
+    rejected so reservation math stays exact. Used to validate the Memory
+    Manager Static boot gate at generation time, in bytes, so a typo in the
+    per-NUMA split can never reach a node and stop the kubelet from starting.
+    """
+    s = str(value).strip()
+    for suffix, mult in (("Ki", 1024), ("Mi", 1024**2), ("Gi", 1024**3), ("Ti", 1024**4)):
+        if s.endswith(suffix):
+            return int(s[: -len(suffix)]) * mult
+    return int(s)  # bare integer = bytes
+
+
+def _memory_manager_block(nodepool_def, topology_policy):
+    """Build the kubelet Memory Manager (Static) config block, or "".
+
+    Returns the indented YAML lines (10-space base, for the ``kubelet.config``
+    map) that pin ``memoryManagerPolicy`` plus every reservation that feeds the
+    Memory Manager boot gate, or an empty string when the def doesn't opt in.
+
+    Memory Manager Static surfaces per-NUMA memory into the NodeResourceTopology
+    so single-numa-node alignment can match native ``memory`` requests (without
+    it, the scheduler ANDs an empty bitmask and returns "cannot align pod"). The
+    kubelet enforces a hard invariant at boot:
+
+        sum(reservedMemory) == kubeReserved + systemReserved + evictionHard
+
+    or it refuses to start. We therefore pin all three right-hand terms in the
+    def so the sum is a self-contained constant immune to EKS AMI / maxPods
+    formula drift, and validate the equality here — a mismatch fails generation
+    instead of bricking a fresh node's boot.
+    """
+    name = nodepool_def["name"]
+    policy = nodepool_def.get("memory_manager_policy")
+    reservation_keys = (
+        "kube_reserved_memory",
+        "system_reserved_memory",
+        "eviction_hard_memory_available",
+        "reserved_memory",
+    )
+
+    if not policy:
+        # Reservation overrides only make sense alongside Static — flag stragglers.
+        if any(nodepool_def.get(k) is not None for k in reservation_keys):
+            raise ValueError(
+                f"{name}: {', '.join(reservation_keys)} are only valid when memory_manager_policy: Static is set."
+            )
+        return ""
+
+    if policy != "Static":
+        raise ValueError(
+            f"{name}: memory_manager_policy must be 'Static' (got '{policy}'); "
+            f"None is the kubelet default and needs no override."
+        )
+    if topology_policy != "single-numa-node":
+        raise ValueError(
+            f"{name}: memory_manager_policy: Static requires topology_manager_policy: "
+            f"single-numa-node (got '{topology_policy}'). Memory Manager Static is "
+            f"only needed to surface per-NUMA memory for single-numa-node alignment."
+        )
+
+    kube_reserved = nodepool_def.get("kube_reserved_memory")
+    system_reserved = nodepool_def.get("system_reserved_memory", "0")
+    eviction_hard = nodepool_def.get("eviction_hard_memory_available")
+    reserved_memory = nodepool_def.get("reserved_memory")
+    if not kube_reserved or not eviction_hard or not reserved_memory:
+        raise ValueError(
+            f"{name}: memory_manager_policy: Static requires kube_reserved_memory, "
+            f"eviction_hard_memory_available, and reserved_memory to be set "
+            f"(the Memory Manager boot gate sums them)."
+        )
+
+    gate = (
+        _parse_mem_quantity(kube_reserved) + _parse_mem_quantity(system_reserved) + _parse_mem_quantity(eviction_hard)
+    )
+    reserved_total = sum(_parse_mem_quantity(z["memory"]) for z in reserved_memory)
+    if reserved_total != gate:
+        raise ValueError(
+            f"{name}: reserved_memory sum ({reserved_total} bytes) must equal "
+            f"kube_reserved_memory + system_reserved_memory + "
+            f"eviction_hard_memory_available ({gate} bytes), or the kubelet will "
+            f"refuse to start. Adjust the per-NUMA split to total the reservation sum."
+        )
+
+    zones = "".join(
+        f"          - numaNode: {z['numa_node']}\n            limits:\n              memory: {z['memory']}\n"
+        for z in reserved_memory
+    )
+    return (
+        f"          memoryManagerPolicy: {policy}\n"
+        f"          kubeReserved:\n"
+        f"            memory: {kube_reserved}\n"
+        f"          systemReserved:\n"
+        f'            memory: "{system_reserved}"\n'
+        f"          evictionHard:\n"
+        f"            memory.available: {eviction_hard}\n"
+        f"          reservedMemory:\n"
+        f"{zones}"
+    )
+
+
 def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     """Generate a combined NodePool + EC2NodeClass YAML string."""
     name = nodepool_def["name"]
@@ -210,6 +314,10 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     # Per-def kubelet topology overrides (e.g. B200 needs single-numa-node/pod)
     topology_policy = nodepool_def.get("topology_manager_policy", "best-effort")
     topology_scope = nodepool_def.get("topology_manager_scope", "container")
+
+    # Per-def kubelet Memory Manager (Static) — gated to single-numa-node fleets.
+    # Validates the boot-gate reservation invariant; raises on misconfiguration.
+    mem_manager_block = _memory_manager_block(nodepool_def, topology_policy)
 
     # Read optional user data script for embedding as a MIME part
     indented_userdata = _read_user_data_script(user_data_script_path, defs_dir) if defs_dir else None
@@ -441,6 +549,7 @@ spec:
           topologyManagerPolicy: {topology_policy}
           topologyManagerScope: {topology_scope}
 {"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' + chr(10) if topology_policy in ("restricted", "best-effort") else ""}\
+{mem_manager_block}\
           containerLogMaxSize: 50Mi
           containerLogMaxFiles: 5
 {_user_data_script_mime_part(indented_userdata)}
@@ -552,7 +661,17 @@ def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=Non
 
     # Only set optional keys when explicitly provided — leaving them absent
     # lets generate_nodepool_yaml() fall through to its own defaults.
-    for key in ("node_compactor", "topology_manager_policy", "topology_manager_scope", "user_data_script"):
+    for key in (
+        "node_compactor",
+        "topology_manager_policy",
+        "topology_manager_scope",
+        "user_data_script",
+        "memory_manager_policy",
+        "kube_reserved_memory",
+        "system_reserved_memory",
+        "eviction_hard_memory_available",
+        "reserved_memory",
+    ):
         val = inst.get(key)
         if val is not None:
             nodepool_def[key] = val

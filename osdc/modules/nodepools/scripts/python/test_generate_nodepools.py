@@ -28,6 +28,22 @@ def parse_all_yaml(text: str) -> list[dict]:
     return [doc for doc in yaml.safe_load_all(text) if doc is not None]
 
 
+def _extract_node_config(userdata: str) -> dict:
+    """Pull the embedded EKS NodeConfig YAML out of the userData MIME blob.
+
+    Lets tests assert the kubelet config as a parsed structure (so YAML
+    indentation, not just substring presence, is validated).
+    """
+    lines = userdata.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.strip().startswith("apiVersion: node.eks.aws"))
+    body = []
+    for ln in lines[start:]:
+        if ln.strip().startswith("--==BOUNDARY=="):
+            break
+        body.append(ln)
+    return yaml.safe_load("\n".join(body))
+
+
 def _make_nodepool_def(**overrides) -> dict:
     """Build a minimal nodepool def dict with sensible defaults."""
     base = {
@@ -782,6 +798,123 @@ class TestBuildFleetNodepoolDef:
         assert "topology_manager_scope" not in result
         assert "user_data_script" not in result
         assert "node_compactor" not in result
+        assert "memory_manager_policy" not in result
+        assert "reserved_memory" not in result
+
+
+class TestMemoryManager:
+    """kubelet Memory Manager (Static) — the #696 Bug #2 fix for single-numa-node.
+
+    Static surfaces per-NUMA memory into the NRT so the scheduler can align
+    native ``memory`` requests; it also imposes a hard boot gate
+    (sum(reservedMemory) == kubeReserved + systemReserved + evictionHard) that
+    we validate at generation time.
+    """
+
+    def _static_def(self, **overrides) -> dict:
+        base = {
+            "topology_manager_policy": "single-numa-node",
+            "topology_manager_scope": "pod",
+            "memory_manager_policy": "Static",
+            "kube_reserved_memory": "8500Mi",
+            "system_reserved_memory": "0",
+            "eviction_hard_memory_available": "100Mi",
+            "reserved_memory": [
+                {"numa_node": 0, "memory": "4300Mi"},
+                {"numa_node": 1, "memory": "4300Mi"},
+            ],
+        }
+        base.update(overrides)
+        return _make_nodepool_def(**base)
+
+    def test_absent_by_default(self):
+        """No memory_manager_policy → no Memory Manager keys in userData."""
+        output = generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
+        userdata = parse_all_yaml(output)[1]["spec"]["userData"]
+        assert "memoryManagerPolicy" not in userdata
+        assert "reservedMemory" not in userdata
+        assert "kubeReserved" not in userdata
+
+    def test_static_emits_valid_config(self):
+        """Static emits a well-formed kubelet.config with all pinned reservations."""
+        output = generate_nodepool_yaml(self._static_def(), "nodepools")
+        userdata = parse_all_yaml(output)[1]["spec"]["userData"]
+        cfg = _extract_node_config(userdata)["spec"]["kubelet"]["config"]
+        assert cfg["memoryManagerPolicy"] == "Static"
+        assert cfg["kubeReserved"]["memory"] == "8500Mi"
+        assert cfg["systemReserved"]["memory"] == "0"
+        assert cfg["evictionHard"]["memory.available"] == "100Mi"
+        assert cfg["reservedMemory"] == [
+            {"numaNode": 0, "limits": {"memory": "4300Mi"}},
+            {"numaNode": 1, "limits": {"memory": "4300Mi"}},
+        ]
+        # topology knobs and log rotation must still be present and parseable
+        assert cfg["topologyManagerPolicy"] == "single-numa-node"
+        assert cfg["containerLogMaxSize"] == "50Mi"
+
+    def test_requires_single_numa(self):
+        """Static on a non-single-numa-node def is rejected."""
+        bad = self._static_def(topology_manager_policy="best-effort", topology_manager_scope="container")
+        with pytest.raises(ValueError, match="single-numa-node"):
+            generate_nodepool_yaml(bad, "nodepools")
+
+    def test_gate_sum_mismatch_raises(self):
+        """reserved_memory that doesn't total the reservation sum fails generation."""
+        bad = self._static_def(
+            reserved_memory=[
+                {"numa_node": 0, "memory": "4300Mi"},
+                {"numa_node": 1, "memory": "4000Mi"},  # 8300 != 8600
+            ]
+        )
+        with pytest.raises(ValueError, match="must equal"):
+            generate_nodepool_yaml(bad, "nodepools")
+
+    def test_gate_accepts_mixed_units(self):
+        """Gate math is exact across unit suffixes (8500Mi+0+100Mi == 8600Mi == ~8.39Gi+...)."""
+        # 8600Mi expressed as a single zone in Mi must validate against Mi reservations.
+        ok = self._static_def(
+            reserved_memory=[
+                {"numa_node": 0, "memory": "4Gi"},  # 4096Mi
+                {"numa_node": 1, "memory": "4504Mi"},  # 4096 + 4504 = 8600Mi
+            ]
+        )
+        output = generate_nodepool_yaml(ok, "nodepools")  # must not raise
+        assert "memoryManagerPolicy: Static" in parse_all_yaml(output)[1]["spec"]["userData"]
+
+    def test_invalid_policy_value_raises(self):
+        """memory_manager_policy must be exactly 'Static'."""
+        bad = self._static_def(memory_manager_policy="None")
+        with pytest.raises(ValueError, match="must be 'Static'"):
+            generate_nodepool_yaml(bad, "nodepools")
+
+    def test_reservations_without_policy_raise(self):
+        """Reservation keys without memory_manager_policy are a misconfig."""
+        bad = _make_nodepool_def(reserved_memory=[{"numa_node": 0, "memory": "100Mi"}])
+        with pytest.raises(ValueError, match="only valid when"):
+            generate_nodepool_yaml(bad, "nodepools")
+
+    def test_fleet_passthrough(self):
+        """_build_fleet_nodepool_def propagates the Memory Manager keys."""
+        fleet = {"name": "p4d", "arch": "amd64", "gpu": True}
+        inst = {
+            "type": "p4d.24xlarge",
+            "weight": 100,
+            "node_disk_size": 1000,
+            "topology_manager_policy": "single-numa-node",
+            "topology_manager_scope": "pod",
+            "memory_manager_policy": "Static",
+            "kube_reserved_memory": "8500Mi",
+            "system_reserved_memory": "0",
+            "eviction_hard_memory_available": "100Mi",
+            "reserved_memory": [
+                {"numa_node": 0, "memory": "4300Mi"},
+                {"numa_node": 1, "memory": "4300Mi"},
+            ],
+        }
+        result = _build_fleet_nodepool_def(fleet, inst)
+        assert result["memory_manager_policy"] == "Static"
+        assert result["kube_reserved_memory"] == "8500Mi"
+        assert result["reserved_memory"][1]["numa_node"] == 1
 
 
 # ============================================================================
