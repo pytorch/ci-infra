@@ -2,9 +2,11 @@
 
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from phases import (
     cleanup_stale_prs,
     clear_staging_pools,
@@ -95,6 +97,17 @@ def workflow_template(tmp_path):
         '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{CLUSTER_NAME}}"] }\n'
         "    steps:\n"
         "      - run: echo {{CLUSTER_ID}}\n"
+        "  # END_ARC_RUNNERS\n"
+        "  # BEGIN_ARC_RUNNERS\n"
+        "  ecr-pull-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }\n'
+        "    container:\n"
+        "      image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{{ECR_PULL_RESOLVED_TAG}}\n"
+        "    steps:\n"
+        "      - name: Show resolved image info\n"
+        "        run: echo SHA={{ECR_PULL_SHA}}\n"
+        "      - name: Verify container is running\n"
+        "        run: echo PASS\n"
         "  # END_ARC_RUNNERS\n"
         "  # BEGIN_PYPI_CACHE\n"
         "  pypi-job:\n"
@@ -424,6 +437,91 @@ class TestGenerateWorkflow:
         )
         assert 'group: "rel-rg", labels: ["cbrrel-runner"]' in result
         assert "{{RELEASE_RUNNER_GROUP}}" not in result
+
+    def test_ecr_pull_resolved_tag_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+            ecr_pull_resolved_tag="my-tag",
+            ecr_pull_sha="my-sha",
+        )
+        assert "image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:my-tag" in result
+        assert "{{ECR_PULL_RESOLVED_TAG}}" not in result
+        assert "SHA=my-sha" in result
+        assert "{{ECR_PULL_SHA}}" not in result
+
+    def test_ecr_pull_sha_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+            ecr_pull_resolved_tag="some-tag",
+            ecr_pull_sha="abc123",
+        )
+        assert "abc123" in result
+        assert "{{ECR_PULL_SHA}}" not in result
+
+    def test_unsubstituted_placeholder_raises(self, tmp_path):
+        """Any leftover {{...}} after substitution is a template/code-drift bug."""
+        upstream = tmp_path / "upstream"
+        wf_dir = upstream / "integration-tests" / "workflows"
+        wf_dir.mkdir(parents=True)
+        # Synthetic template with a placeholder generate_workflow never replaces.
+        template = (
+            "name: {{PREFIX}} test\n"
+            "on: push\n"
+            "jobs:\n"
+            "  # BEGIN_ARC_RUNNERS\n"
+            "  job:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: echo {{NEVER_REPLACED}}\n"
+            "  # END_ARC_RUNNERS\n"
+        )
+        (wf_dir / "integration-test.yaml.tpl").write_text(template)
+        with pytest.raises(RuntimeError, match=r"Unsubstituted template placeholders"):
+            generate_workflow(
+                upstream,
+                "cbr",
+                "arc-cbr-production",
+                "pytorch-arc-cbr-production",
+                cluster_modules=["arc-runners"],
+            )
+
+    def test_real_template_yaml_round_trip(self, tmp_path):
+        """generate_workflow against the real template must produce valid YAML."""
+        upstream = Path(__file__).resolve().parents[3]
+        result = generate_workflow(
+            upstream,
+            prefix="mt-",
+            cluster_id="x",
+            cluster_name="x",
+            cluster_modules=["arc-runners", "pypi-cache", "nodepools", "buildkit", "cache-enforcer"],
+            ecr_pull_resolved_tag="testtag",
+            ecr_pull_sha="testsha",
+        )
+        parsed = yaml.safe_load(result)
+        assert "jobs" in parsed
+        assert "test-ecr-pull" in parsed["jobs"]
+
+    def test_real_template_ecr_pull_stripped_without_arc_runners(self, tmp_path):
+        """test-ecr-pull must be gated on arc-runners — clusters without it can't satisfy the runner label."""
+        upstream = Path(__file__).resolve().parents[3]
+        result = generate_workflow(
+            upstream,
+            prefix="mt-",
+            cluster_id="x",
+            cluster_name="x",
+            cluster_modules=[],
+            ecr_pull_resolved_tag="testtag",
+            ecr_pull_sha="testsha",
+        )
+        assert "test-ecr-pull" not in result
 
 
 class TestGenerateWorkflowNoopFallback:
@@ -1015,6 +1113,44 @@ class TestParseArgs:
         with patch("sys.argv", ["run.py"]), pytest.raises(SystemExit):
             parse_args()
 
+    def test_ecr_pull_image_name_default(self):
+        with patch(
+            "sys.argv",
+            [
+                "run.py",
+                "--cluster-id",
+                "meta-staging-aws-uw1",
+                "--clusters-yaml",
+                "/tmp/c.yaml",
+                "--upstream-dir",
+                "/tmp/upstream",
+                "--root-dir",
+                "/tmp/root",
+            ],
+        ):
+            args = parse_args()
+        assert args.ecr_pull_image_name == "pytorch-linux-jammy-py3.10-clang18"
+
+    def test_ecr_pull_image_name_override(self):
+        with patch(
+            "sys.argv",
+            [
+                "run.py",
+                "--cluster-id",
+                "meta-staging-aws-uw1",
+                "--clusters-yaml",
+                "/tmp/c.yaml",
+                "--upstream-dir",
+                "/tmp/upstream",
+                "--root-dir",
+                "/tmp/root",
+                "--ecr-pull-image-name",
+                "foo",
+            ],
+        ):
+            args = parse_args()
+        assert args.ecr_pull_image_name == "foo"
+
 
 # ── clear_staging_pools ──────────────────────────────────────────────────
 
@@ -1246,6 +1382,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo"),
             patch("phases.generate_workflow", return_value="wf content"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch(
                 "phases.prepare_pr",
                 side_effect=subprocess.CalledProcessError(
@@ -1285,6 +1422,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=99),
             patch("phases_validation.run_parallel_validation", side_effect=KeyboardInterrupt),
             patch("phases_validation._fetch_latest_runs", return_value=[]),
@@ -1325,6 +1463,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=99),
             patch("phases_validation.run_parallel_validation", return_value={}),
             patch("phases_validation.wait_for_workflows", return_value=[]),
@@ -1362,6 +1501,7 @@ class TestMain:
             patch("phases.clear_staging_pools") as mock_clear,
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=None),
             patch("phases_validation.run_parallel_validation") as mock_validation,
             pytest.raises(SystemExit) as exc_info,
@@ -1372,3 +1512,136 @@ class TestMain:
         # dry_run skips drain and validation
         mock_clear.assert_not_called()
         mock_validation.assert_not_called()
+
+    @patch("run.parse_args")
+    def test_main_resolver_success(self, mock_parse_args, clusters_yaml, tmp_path, caplog):
+        """When resolver returns a SHA, generate_workflow gets both SHA and composed tag."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="meta-staging-aws-uw1",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+        )
+
+        import logging
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("run.resolve_ci_docker_hash", return_value="abc123") as mock_resolve,
+            patch("phases.generate_workflow", return_value="wf") as mock_gen,
+            patch("phases.prepare_pr", return_value=None),
+            caplog.at_level(logging.INFO),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 0
+        mock_resolve.assert_called_once_with()
+        kwargs = mock_gen.call_args.kwargs
+        assert kwargs["ecr_pull_sha"] == "abc123"
+        assert kwargs["ecr_pull_resolved_tag"] == "pytorch-linux-jammy-py3.10-clang18-abc123"
+        assert "tree-SHA: abc123" in caplog.text
+        assert (
+            "image URL: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:"
+            "pytorch-linux-jammy-py3.10-clang18-abc123"
+        ) in caplog.text
+
+    @patch("run.parse_args")
+    def test_main_resolver_skipped_without_arc_runners(self, mock_parse_args, tmp_path, caplog):
+        """Clusters without arc-runners must NOT hit the GitHub API resolver."""
+        from run import main
+
+        clusters_content = {
+            "defaults": {},
+            "clusters": {
+                "no-arc-cluster": {
+                    "cluster_name": "no-arc-cluster",
+                    "aws_region": "us-west-2",
+                    "modules": ["eks", "karpenter"],
+                },
+            },
+        }
+        clusters_yaml = tmp_path / "clusters.yaml"
+        clusters_yaml.write_text(yaml.dump(clusters_content))
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="no-arc-cluster",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+        )
+
+        import logging
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("run.resolve_ci_docker_hash") as mock_resolve,
+            patch("phases.generate_workflow", return_value="wf") as mock_gen,
+            patch("phases.prepare_pr", return_value=None),
+            caplog.at_level(logging.INFO),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 0
+        mock_resolve.assert_not_called()
+        kwargs = mock_gen.call_args.kwargs
+        assert kwargs["ecr_pull_sha"] == ""
+        assert kwargs["ecr_pull_resolved_tag"] == ""
+        assert "skipped (cluster has no arc-runners module)" in caplog.text
+
+    @patch("run.parse_args")
+    def test_main_resolver_hard_fails(self, mock_parse_args, clusters_yaml, tmp_path):
+        """When resolver raises RuntimeError, orchestrator exits 1."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="meta-staging-aws-uw1",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+        )
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("run.resolve_ci_docker_hash", side_effect=RuntimeError("no tag")),
+            patch("phases.generate_workflow") as mock_gen,
+            patch("phases_validation.print_report"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        mock_gen.assert_not_called()
