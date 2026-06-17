@@ -6,7 +6,7 @@ name: "OSDC: Drain cluster"
 # deploy.osdc.io/refresh-pending:NoSchedule to runner nodes so the scheduler
 # stops placing new pods on them. Default = both enabled (typical pre-maintenance
 # flow). Per-cluster concurrency group serializes against the deploy and plan
-# workflows on the same cluster. Reverse with `osdc-undrain-prod.yml`.
+# workflows on the same cluster. Reverse with `osdc-undrain.yml`.
 on:
   workflow_dispatch:
     inputs:

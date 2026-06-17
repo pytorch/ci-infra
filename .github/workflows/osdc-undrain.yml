@@ -1,6 +1,6 @@
 name: "OSDC: Undrain cluster"
 
-# Reverses osdc-drain-prod.yml.
+# Reverses osdc-drain.yml.
 #
 # Two independent checkboxes: untaint-nodes and resume-runners.
 # Default is both enabled (full undrain).
