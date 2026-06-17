@@ -2498,6 +2498,7 @@ class TestPypiCacheConditional:
         tpl_file = tmp_path / "tpl.yaml"
         tpl_file.write_text(real_template)
 
+        monkeypatch.setenv("RUNNER_IMAGE", "ghcr.io/actions/actions-runner:2.333.1")
         monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
         monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
         monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
@@ -2546,6 +2547,7 @@ class TestPypiCacheConditional:
         tpl_file = tmp_path / "tpl.yaml"
         tpl_file.write_text(real_template)
 
+        monkeypatch.setenv("RUNNER_IMAGE", "ghcr.io/actions/actions-runner:2.333.1")
         monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
         monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
         monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
