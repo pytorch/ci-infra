@@ -2064,6 +2064,9 @@ smoke cluster:
     # each variant's own deploy.sh, e.g. modules/arc-runners-b200/deploy.sh).
     # Generation must happen ONCE before any pytest worker starts —
     # previously the test fixture shelled out, which raced under pytest-xdist.
+    # OSDC_RESOLVER_READONLY: smoke must not mutate the lock ConfigMap or hit
+    # GitHub; it reads the newest cached entry the live deploy already wrote.
+    export OSDC_RESOLVER_READONLY=1
     for mod in $MODULES; do
         case "$mod" in
             arc-runners | arc-runners-*)
@@ -2076,6 +2079,7 @@ smoke cluster:
                 ;;
         esac
     done
+    unset OSDC_RESOLVER_READONLY
 
     export OSDC_ROOT="${ROOT}"
     export OSDC_UPSTREAM="${UPSTREAM}"
@@ -2211,6 +2215,15 @@ generate-arc-runners cluster:
     OUTPUT_DIR="${ARC_RUNNERS_OUTPUT_DIR:-$MODULE_DIR/generated}"
     TEMPLATE="${ARC_RUNNERS_TEMPLATE:-$MODULE_DIR/templates/runner.yaml.tpl}"
     MODULE_NAME="${ARC_RUNNERS_MODULE_NAME:-arc-runners}"
+
+    CFG="{{UPSTREAM}}/scripts/cluster-config.py"
+    EXPLICIT_TAG=$(uv run "$CFG" "$CLUSTER" arc.runner_image_tag "")
+    if [[ -n "$EXPLICIT_TAG" ]]; then
+      RUNNER_IMAGE="ghcr.io/actions/actions-runner:$EXPLICIT_TAG"
+    else
+      RUNNER_IMAGE=$(uv run "$MODULE_DIR/scripts/python/resolve_runner_version.py" "$CLUSTER")
+    fi
+    export RUNNER_IMAGE
 
     ARC_RUNNERS_DEFS_DIR="$DEFS_DIR" \
         ARC_RUNNERS_OUTPUT_DIR="$OUTPUT_DIR" \
