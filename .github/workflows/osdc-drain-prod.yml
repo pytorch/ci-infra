@@ -7,16 +7,7 @@ name: "OSDC: Drain cluster"
 # stops placing new pods on them. Default = both enabled (typical pre-maintenance
 # flow). Per-cluster concurrency group serializes against the deploy and plan
 # workflows on the same cluster. Reverse with `osdc-undrain-prod.yml`.
-
-# ─── TEMPORARY: REMOVE BEFORE MERGING TO MAIN ─────────────────────────────
-# `push:` trigger below + the env defaults block on the `drain` job exist
-# only to dry-run this workflow against meta-staging-aws-uw1 from the
-# jeanschmidt/fix_drain-undrain branch. Strip both before merge.
-# ──────────────────────────────────────────────────────────────────────────
 on:
-  push:
-    branches:
-      - jeanschmidt/fix_drain-undrain
   workflow_dispatch:
     inputs:
       cluster:
@@ -45,7 +36,7 @@ on:
         default: true
 
 concurrency:
-  group: osdc-tofu-${{ github.event_name == 'push' && 'meta-staging-aws-uw1' || inputs.cluster }}
+  group: osdc-tofu-${{ inputs.cluster }}
   cancel-in-progress: false
 
 permissions:
@@ -54,14 +45,10 @@ permissions:
 
 jobs:
   drain:
-    name: Drain ${{ github.event_name == 'push' && 'meta-staging-aws-uw1' || inputs.cluster }}
+    name: Drain ${{ inputs.cluster }}
     runs-on: ubuntu-latest
     environment: osdc-production
     timeout-minutes: 90
-    env:
-      CLUSTER: ${{ github.event_name == 'push' && 'meta-staging-aws-uw1' || inputs.cluster }}
-      RUN_DRAIN: ${{ github.event_name == 'push' && 'true' || inputs.run_drain_runners }}
-      RUN_TAINT: ${{ github.event_name == 'push' && 'true' || inputs.run_taint_nodes }}
     defaults:
       run:
         working-directory: osdc
@@ -69,11 +56,11 @@ jobs:
       - name: Validate inputs
         working-directory: ${{ github.workspace }}
         run: |
-          if [ "${{ env.CLUSTER }}" = "-- select cluster --" ]; then
+          if [ "${{ inputs.cluster }}" = "-- select cluster --" ]; then
             echo "::error::No cluster selected. Pick a cluster from the dropdown before running."
             exit 1
           fi
-          if [ "${{ env.RUN_DRAIN }}" != "true" ] && [ "${{ env.RUN_TAINT }}" != "true" ]; then
+          if [ "${{ inputs.run_drain_runners }}" != "true" ] && [ "${{ inputs.run_taint_nodes }}" != "true" ]; then
             echo "::error::Both run_drain_runners and run_taint_nodes are disabled — nothing to do."
             exit 1
           fi
@@ -96,20 +83,20 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: ${{ startsWith(env.CLUSTER, 'lf-') && secrets.LF_AWS_DEPLOY_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID, secrets.META_AWS_DEPLOY_ROLE) }}
+          role-to-assume: ${{ startsWith(inputs.cluster, 'lf-') && secrets.LF_AWS_DEPLOY_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}', secrets.META_AWS_ACC_ID, secrets.META_AWS_DEPLOY_ROLE) }}
           aws-region: us-west-1
           role-duration-seconds: 7200
 
       - name: Drain runners (maxRunners=0 + wait for in-flight pods)
-        if: ${{ env.RUN_DRAIN == 'true' }}
-        run: just drain-runners "${{ env.CLUSTER }}"
+        if: ${{ inputs.run_drain_runners }}
+        run: just drain-runners "${{ inputs.cluster }}"
         env:
           OSDC_TAINT_NODES: "no"
 
       - name: Sleep 180s for nodes to settle after drain
-        if: ${{ env.RUN_DRAIN == 'true' && env.RUN_TAINT == 'true' }}
+        if: ${{ inputs.run_drain_runners && inputs.run_taint_nodes }}
         run: sleep 180
 
       - name: Taint runner nodes (NoSchedule)
-        if: ${{ env.RUN_TAINT == 'true' }}
-        run: just taint-nodes "${{ env.CLUSTER }}"
+        if: ${{ inputs.run_taint_nodes }}
+        run: just taint-nodes "${{ inputs.cluster }}"
