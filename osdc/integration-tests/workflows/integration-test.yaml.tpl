@@ -1483,6 +1483,30 @@ jobs:
           fi
   # END_ARC_RUNNERS
 
+  # BEGIN_ARC_RUNNERS
+  # ── ECR Pull Test ──────────────────────────────────────────────────────
+  # Verifies runner pods can pull the pytorch CI image directly from
+  # account 308535385114 ECR. Image tag is resolved the same way pytorch's
+  # docker-builds.yml does (git tree-SHA of pytorch/pytorch:.ci/docker).
+  # If pytorch hasn't yet rebuilt the image for the current .ci/docker
+  # tree-SHA, this test will fail with ImagePullBackOff — that is correct
+  # behavior, surfacing the ECR rebuild lag as a real signal.
+  test-ecr-pull:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{{ECR_PULL_RESOLVED_TAG}}
+    steps:
+      - name: Show resolved image info
+        run: |
+          echo "=== ECR Pull Test ==="
+          echo "Pytorch .ci/docker tree-SHA: {{ECR_PULL_SHA}}"
+          echo "Image URL: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{{ECR_PULL_RESOLVED_TAG}}"
+      - name: Verify container is running
+        run: |
+          cat /etc/os-release
+          echo "PASS: pulled image from 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{{ECR_PULL_RESOLVED_TAG}}"
+  # END_ARC_RUNNERS
+
   # BEGIN_CACHE_ENFORCER
   # ── Cache Enforcer Test ──────────────────────────────────────────────
   test-cache-enforcer:

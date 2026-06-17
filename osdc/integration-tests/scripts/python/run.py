@@ -24,6 +24,7 @@ import yaml
 # Add pypi-cache module to path for cuda_slug import (single source of truth)
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "pypi-cache" / "scripts" / "python"))
 from generate_manifests import cuda_slug  # noqa: E402
+from resolve_pytorch_image import resolve_ci_docker_hash
 
 log = logging.getLogger("osdc-integration-test")
 
@@ -183,6 +184,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--force", action="store_true", help="Skip interactive prompts (e.g. staging pool clear)")
     parser.add_argument("--skip-drain", action="store_true", help="Skip staging pool drain entirely")
+    parser.add_argument(
+        "--ecr-pull-image-name",
+        default="pytorch-linux-jammy-py3.10-clang18",
+        help="ECR image name used by the test-ecr-pull job (debug override)",
+    )
     return parser.parse_args()
 
 
@@ -248,6 +254,27 @@ def main():
     validation_results = {}
     workflow_results = []
     try:
+        # Resolve ECR tag FIRST — failing fast avoids leaving the cluster drained.
+        # Skip when the cluster has no arc-runners module: the test-ecr-pull job is
+        # gated on ARC_RUNNERS and stripped from the workflow, so the tag is unused.
+        if "arc-runners" in cluster_modules:
+            ecr_image_name = args.ecr_pull_image_name
+            try:
+                ecr_pull_sha = resolve_ci_docker_hash()
+            except RuntimeError as exc:
+                log.error("Failed to resolve pytorch CI image tag: %s", exc)
+                sys.exit(1)
+            ecr_pull_resolved_tag = f"{ecr_image_name}-{ecr_pull_sha}"
+            ecr_pull_image_url = (
+                f"308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{ecr_pull_resolved_tag}"
+            )
+            log.info("ECR pull test — pytorch .ci/docker tree-SHA: %s", ecr_pull_sha)
+            log.info("ECR pull test — image URL: %s", ecr_pull_image_url)
+        else:
+            log.info("ECR pull test — skipped (cluster has no arc-runners module)")
+            ecr_pull_sha = ""
+            ecr_pull_resolved_tag = ""
+
         # Phase 0: Cleanup
         cleanup_stale_prs(branch)
 
@@ -269,6 +296,8 @@ def main():
             release_runner_group=release_runner_group,
             pypi_cache_slugs=pypi_cache_slugs,
             pypi_cache_cuda_version=pypi_cache_cuda_version,
+            ecr_pull_resolved_tag=ecr_pull_resolved_tag,
+            ecr_pull_sha=ecr_pull_sha,
         )
         pr_created_at = datetime.now(tz=UTC)
         pr_number = prepare_pr(canary_path, args.upstream_dir, workflow_content, args.dry_run, branch)

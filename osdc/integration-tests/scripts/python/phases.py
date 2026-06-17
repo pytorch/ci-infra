@@ -6,6 +6,7 @@ Phase 2: Generate workflow + prepare PR
 """
 
 import logging
+import re
 import shutil
 import sys
 import time
@@ -252,6 +253,8 @@ def generate_workflow(
     pypi_cache_cuda_version: str = "12.8",
     runner_group: str = "default",
     release_runner_group: str = "release-runners",
+    ecr_pull_resolved_tag: str = "",
+    ecr_pull_sha: str = "",
 ) -> str:
     """Generate the integration test workflow from template."""
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
@@ -264,6 +267,13 @@ def generate_workflow(
     content = content.replace("{{CLUSTER_NAME}}", cluster_name)
     content = content.replace("{{PYPI_CACHE_SLUGS}}", pypi_cache_slugs)
     content = content.replace("{{PYPI_CACHE_CUDA_VERSION}}", pypi_cache_cuda_version)
+    content = content.replace("{{ECR_PULL_RESOLVED_TAG}}", ecr_pull_resolved_tag)
+    content = content.replace("{{ECR_PULL_SHA}}", ecr_pull_sha)
+
+    # Guard: any "{{...}}" left after substitution is a template/code drift bug.
+    leftover = re.findall(r"\{\{[A-Z_]+\}\}", content)
+    if leftover:
+        raise RuntimeError(f"Unsubstituted template placeholders remain: {sorted(set(leftover))}")
 
     modules_set = set(cluster_modules)
     for tag, required in TAG_REQUIREMENTS.items():
