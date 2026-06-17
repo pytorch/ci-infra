@@ -1,17 +1,18 @@
-name: "OSDC: Drain cluster"
+name: "OSDC: Undrain cluster"
 
-# Manual cordon for an OSDC cluster before maintenance. Two independent
-# checkboxes: drain-runners scales every AutoscalingRunnerSet to maxRunners=0
-# and waits for in-flight runner pods to finish; taint-nodes applies
-# deploy.osdc.io/refresh-pending:NoSchedule to runner nodes so the scheduler
-# stops placing new pods on them. Default = both enabled (typical pre-maintenance
-# flow). Per-cluster concurrency group serializes against the deploy and plan
-# workflows on the same cluster. Reverse with `osdc-undrain-prod.yml`.
+# Reverses osdc-drain.yml.
+#
+# Two independent checkboxes: untaint-nodes and resume-runners.
+# Default is both enabled (full undrain).
+#
+# Per-cluster concurrency group serializes against deploy/plan/drain
+# on the same cluster (shared osdc-tofu-<cluster> lock family).
+
 on:
   workflow_dispatch:
     inputs:
       cluster:
-        description: "Cluster to drain"
+        description: "Cluster to undrain"
         required: true
         type: choice
         default: "-- select cluster --"
@@ -24,13 +25,13 @@ on:
           - meta-prod-aws-ue1
           - lf-prod-aws-ue1
           - lf-prod-aws-ue2
-      run_drain_runners:
-        description: "Patch AutoscalingRunnerSets to maxRunners=0 and wait for in-flight pods to drain"
+      run_untaint_nodes:
+        description: "Remove deploy.osdc.io/refresh-pending:NoSchedule taint from runner nodes"
         required: false
         type: boolean
         default: true
-      run_taint_nodes:
-        description: "Taint runner nodes with deploy.osdc.io/refresh-pending:NoSchedule to block new pod scheduling"
+      run_resume_runners:
+        description: "Restore AutoscalingRunnerSet maxRunners from def files"
         required: false
         type: boolean
         default: true
@@ -44,23 +45,24 @@ permissions:
   contents: read
 
 jobs:
-  drain:
-    name: Drain ${{ inputs.cluster }}
+  undrain:
+    name: Undrain ${{ inputs.cluster }}
     runs-on: ubuntu-latest
-    environment: osdc-production
-    timeout-minutes: 90
+    environment: ${{ contains(inputs.cluster, '-staging-') && 'osdc-staging' || 'osdc-production' }}
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: osdc
     steps:
       - name: Validate inputs
+        working-directory: ${{ github.workspace }}
         run: |
           if [ "${{ inputs.cluster }}" = "-- select cluster --" ]; then
             echo "::error::No cluster selected. Pick a cluster from the dropdown before running."
             exit 1
           fi
-          if [ "${{ inputs.run_drain_runners }}" != "true" ] && [ "${{ inputs.run_taint_nodes }}" != "true" ]; then
-            echo "::error::Both run_drain_runners and run_taint_nodes are disabled — nothing to do."
+          if [ "${{ inputs.run_untaint_nodes }}" != "true" ] && [ "${{ inputs.run_resume_runners }}" != "true" ]; then
+            echo "::error::Both run_untaint_nodes and run_resume_runners are disabled — nothing to do."
             exit 1
           fi
 
@@ -86,16 +88,10 @@ jobs:
           aws-region: us-west-1
           role-duration-seconds: 7200
 
-      - name: Drain runners (maxRunners=0 + wait for in-flight pods)
-        if: ${{ inputs.run_drain_runners }}
-        run: just drain-runners "${{ inputs.cluster }}"
-        env:
-          OSDC_TAINT_NODES: "no"
+      - name: Untaint runner nodes
+        if: ${{ inputs.run_untaint_nodes }}
+        run: just untaint-nodes "${{ inputs.cluster }}"
 
-      - name: Sleep 180s for nodes to settle after drain
-        if: ${{ inputs.run_drain_runners && inputs.run_taint_nodes }}
-        run: sleep 180
-
-      - name: Taint runner nodes (NoSchedule)
-        if: ${{ inputs.run_taint_nodes }}
-        run: just taint-nodes "${{ inputs.cluster }}"
+      - name: Resume runners (restore maxRunners from def files)
+        if: ${{ inputs.run_resume_runners }}
+        run: just resume-runners "${{ inputs.cluster }}"

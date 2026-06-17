@@ -1095,10 +1095,12 @@ resume-runners cluster:
     if [ -z "$ARS_NAMES" ]; then
         echo "  No AutoscalingRunnerSets found in arc-runners — nothing to resume."
         RESTORED=0
+        ALREADY=0
         WARNINGS=0
         RES_FAILED=0
     else
         RESTORED=0
+        ALREADY=0
         WARNINGS=0
         RES_FAILED=0
         for ars in $ARS_NAMES; do
@@ -1107,6 +1109,12 @@ resume-runners cluster:
                 echo "  $ars — WARNING: no matching def, leaving as-is"
                 WARNINGS=$((WARNINGS + 1))
                 EXIT_CODE=1
+                continue
+            fi
+            CURRENT=$(kubectl get autoscalingrunnerset "$ars" -n arc-runners -o jsonpath='{.spec.maxRunners}' 2>/dev/null || echo "")
+            if [ "$CURRENT" = "$DESIRED" ]; then
+                echo "  $ars — already at $DESIRED"
+                ALREADY=$((ALREADY + 1))
                 continue
             fi
             if PATCH_OUT=$(kubectl patch autoscalingrunnerset "$ars" -n arc-runners --type=merge -p "{\"spec\":{\"maxRunners\":$DESIRED}}" 2>&1); then
@@ -1126,6 +1134,9 @@ resume-runners cluster:
 
     echo ""
     echo "Summary: ${RESTORED} restored, ${WARNINGS} warnings, ${RES_FAILED} failures."
+    if [ "$ALREADY" -gt 0 ]; then
+        echo "Note: ${ALREADY} AutoscalingRunnerSet(s) were already at desired maxRunners."
+    fi
     if [ "$EXIT_CODE" -ne 0 ]; then
         echo "Action: investigate failures/warnings above. Run \`just deploy $CLUSTER\` to reconcile from def files."
     fi
