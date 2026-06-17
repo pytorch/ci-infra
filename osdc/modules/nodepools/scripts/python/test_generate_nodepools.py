@@ -835,6 +835,28 @@ class TestMemoryManager:
         assert "reservedMemory" not in userdata
         assert "kubeReserved" not in userdata
 
+    def test_no_keys_leaves_config_untouched(self):
+        """A def without Memory Manager keys emits the exact pre-feature
+        kubelet.config — the empty block must inject NOTHING: no stray keys and
+        no blank-line artifact at the injection point. This guards every existing
+        nodepool def against drift from this feature."""
+        d = _make_nodepool_def(topology_manager_policy="single-numa-node", topology_manager_scope="pod")
+        userdata = parse_all_yaml(generate_nodepool_yaml(d, "nodepools"))[1]["spec"]["userData"]
+        cfg = _extract_node_config(userdata)["spec"]["kubelet"]["config"]
+        # Exactly the pre-feature key set — nothing leaked from the Memory Manager path.
+        assert set(cfg) == {
+            "cpuManagerPolicy",
+            "topologyManagerPolicy",
+            "topologyManagerScope",
+            "containerLogMaxSize",
+            "containerLogMaxFiles",
+        }
+        # The empty block must not introduce a blank line where it would be injected
+        # (single-numa-node emits no topologyManagerPolicyOptions, so scope is
+        # immediately followed by the log-rotation keys). The parsed userData block
+        # scalar is dedented by 4 spaces, so config keys sit at 6-space indent.
+        assert "topologyManagerScope: pod\n      containerLogMaxSize: 50Mi" in userdata
+
     def test_static_emits_valid_config(self):
         """Static emits a well-formed kubelet.config with all pinned reservations."""
         output = generate_nodepool_yaml(self._static_def(), "nodepools")
@@ -852,11 +874,15 @@ class TestMemoryManager:
         assert cfg["topologyManagerPolicy"] == "single-numa-node"
         assert cfg["containerLogMaxSize"] == "50Mi"
 
-    def test_requires_single_numa(self):
-        """Static on a non-single-numa-node def is rejected."""
-        bad = self._static_def(topology_manager_policy="best-effort", topology_manager_scope="container")
-        with pytest.raises(ValueError, match="single-numa-node"):
-            generate_nodepool_yaml(bad, "nodepools")
+    def test_static_without_single_numa_warns_but_emits(self, capsys):
+        """Static is independent of the topology policy: it still emits and still
+        validates the boot gate, but warns (does not block) when not paired with
+        single-numa-node, since alignment only happens under single-numa-node."""
+        d = self._static_def(topology_manager_policy="best-effort", topology_manager_scope="container")
+        output = generate_nodepool_yaml(d, "nodepools")  # must NOT raise
+        userdata = parse_all_yaml(output)[1]["spec"]["userData"]
+        assert "memoryManagerPolicy: Static" in userdata
+        assert "single-numa-node" in capsys.readouterr().err  # warning emitted to stderr
 
     def test_gate_sum_mismatch_raises(self):
         """reserved_memory that doesn't total the reservation sum fails generation."""

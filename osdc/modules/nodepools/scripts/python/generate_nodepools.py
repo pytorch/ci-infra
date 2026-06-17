@@ -119,12 +119,17 @@ def _validate_startup_taints_registry(modules_root: Path) -> None:
 
 # ANSI colors
 GREEN = "\033[0;32m"
+YELLOW = "\033[0;33m"
 RED = "\033[0;31m"
 NC = "\033[0m"
 
 
 def log_info(msg):
     print(f"{GREEN}\u2192{NC} {msg}")
+
+
+def log_warning(msg):
+    print(f"{YELLOW}\u26a0{NC} {msg}", file=sys.stderr)
 
 
 def log_error(msg):
@@ -236,11 +241,17 @@ def _memory_manager_block(nodepool_def, topology_policy):
             f"{name}: memory_manager_policy must be 'Static' (got '{policy}'); "
             f"None is the kubelet default and needs no override."
         )
+    # memoryManagerPolicy is a kubelet knob independent of topologyManagerPolicy —
+    # the kubelet accepts Static under any topology policy, and the reservedMemory
+    # boot gate below applies regardless. But Static only yields scheduling benefit
+    # when Topology Manager actually aligns resources (single-numa-node), so warn
+    # (don't block) if it's enabled elsewhere — likely a misconfiguration that
+    # takes on boot-gate risk for no gain.
     if topology_policy != "single-numa-node":
-        raise ValueError(
-            f"{name}: memory_manager_policy: Static requires topology_manager_policy: "
-            f"single-numa-node (got '{topology_policy}'). Memory Manager Static is "
-            f"only needed to surface per-NUMA memory for single-numa-node alignment."
+        log_warning(
+            f"{name}: memory_manager_policy: Static with topology_manager_policy="
+            f"'{topology_policy}' (not single-numa-node) — memory will be NUMA-reserved "
+            f"but the scheduler won't align it; Static only helps under single-numa-node."
         )
 
     kube_reserved = nodepool_def.get("kube_reserved_memory")
@@ -298,8 +309,9 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     topology_policy = nodepool_def.get("topology_manager_policy", "best-effort")
     topology_scope = nodepool_def.get("topology_manager_scope", "container")
 
-    # Per-def kubelet Memory Manager (Static) — gated to single-numa-node fleets.
-    # Validates the boot-gate reservation invariant; raises on misconfiguration.
+    # Per-def kubelet Memory Manager (Static) — independent of the topology policy.
+    # Validates the boot-gate reservation invariant (raises on a bad sum); warns,
+    # but does not block, if enabled without single-numa-node.
     mem_manager_block = _memory_manager_block(nodepool_def, topology_policy)
 
     # Read optional user data script for embedding as a MIME part
