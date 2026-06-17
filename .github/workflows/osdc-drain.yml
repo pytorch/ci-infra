@@ -47,7 +47,7 @@ jobs:
   drain:
     name: Drain ${{ inputs.cluster }}
     runs-on: ubuntu-latest
-    environment: osdc-production
+    environment: ${{ contains(inputs.cluster, '-staging-') && 'osdc-staging' || 'osdc-production' }}
     timeout-minutes: 90
     defaults:
       run:
