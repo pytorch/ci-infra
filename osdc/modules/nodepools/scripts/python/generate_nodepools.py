@@ -200,96 +200,108 @@ def _user_data_script_mime_part(indented_script):
 """
 
 
-def _memory_manager_block(nodepool_def, topology_policy):
-    """Build the kubelet Memory Manager (Static) config block, or "".
+def _kubelet_memory_block(nodepool_def, topology_policy):
+    """Build the kubelet memory-reservation config block from per-def knobs, or "".
 
-    Returns the indented YAML lines (10-space base, for the ``kubelet.config``
-    map) that pin ``memoryManagerPolicy`` plus every reservation that feeds the
-    Memory Manager boot gate, or an empty string when the def doesn't opt in.
+    Each knob is independent and is emitted into ``kubelet.config`` ONLY when the
+    def specifies it:
+      - ``memory_manager_policy``          -> memoryManagerPolicy
+      - ``kube_reserved_memory``           -> kubeReserved.memory
+      - ``system_reserved_memory``         -> systemReserved.memory
+      - ``eviction_hard_memory_available`` -> evictionHard.memory.available
+      - ``reserved_memory``                -> reservedMemory (per-NUMA list)
 
-    Memory Manager Static surfaces per-NUMA memory into the NodeResourceTopology
-    so single-numa-node alignment can match native ``memory`` requests (without
-    it, the scheduler ANDs an empty bitmask and returns "cannot align pod"). The
-    kubelet enforces a hard invariant at boot:
+    kubeReserved / systemReserved / evictionHard are GENERAL kubelet settings
+    that take effect on their own (they change node-allocatable memory and the
+    eviction threshold); nodeadm deep-merges each onto the EKS defaults,
+    preserving sibling keys (cpu, ephemeral-storage, nodefs.*). reservedMemory
+    and the boot-gate invariant are specific to Memory Manager Static:
 
-        sum(reservedMemory) == kubeReserved + systemReserved + evictionHard
+        sum(reservedMemory) == kubeReserved.memory + systemReserved.memory
+                               + evictionHard.memory.available
 
-    or it refuses to start. We therefore pin all three right-hand terms in the
-    def so the sum is a self-contained constant immune to EKS AMI / maxPods
-    formula drift, and validate the equality here — a mismatch fails generation
-    instead of bricking a fresh node's boot.
+    or the kubelet refuses to start. We validate that equality here ONLY when all
+    three right-hand terms are pinned in the def (so it's self-contained); if any
+    is left to the EKS default — unknown at generation time — we warn that the
+    gate is unvalidated rather than guess.
     """
     name = nodepool_def["name"]
     policy = nodepool_def.get("memory_manager_policy")
-    reservation_keys = (
-        "kube_reserved_memory",
-        "system_reserved_memory",
-        "eviction_hard_memory_available",
-        "reserved_memory",
-    )
+    kube_reserved = nodepool_def.get("kube_reserved_memory")
+    system_reserved = nodepool_def.get("system_reserved_memory")
+    eviction_hard = nodepool_def.get("eviction_hard_memory_available")
+    reserved_memory = nodepool_def.get("reserved_memory")
 
-    if not policy:
-        # Reservation overrides only make sense alongside Static — flag stragglers.
-        if any(nodepool_def.get(k) is not None for k in reservation_keys):
-            raise ValueError(
-                f"{name}: {', '.join(reservation_keys)} are only valid when memory_manager_policy: Static is set."
-            )
-        return ""
-
-    if policy != "Static":
+    # ----- validation -----
+    if policy is not None and policy != "Static":
         raise ValueError(
             f"{name}: memory_manager_policy must be 'Static' (got '{policy}'); "
             f"None is the kubelet default and needs no override."
         )
-    # memoryManagerPolicy is a kubelet knob independent of topologyManagerPolicy —
-    # the kubelet accepts Static under any topology policy, and the reservedMemory
-    # boot gate below applies regardless. But Static only yields scheduling benefit
-    # when Topology Manager actually aligns resources (single-numa-node), so warn
-    # (don't block) if it's enabled elsewhere — likely a misconfiguration that
-    # takes on boot-gate risk for no gain.
-    if topology_policy != "single-numa-node":
-        log_warning(
-            f"{name}: memory_manager_policy: Static with topology_manager_policy="
-            f"'{topology_policy}' (not single-numa-node) — memory will be NUMA-reserved "
-            f"but the scheduler won't align it; Static only helps under single-numa-node."
-        )
-
-    kube_reserved = nodepool_def.get("kube_reserved_memory")
-    system_reserved = nodepool_def.get("system_reserved_memory", "0")
-    eviction_hard = nodepool_def.get("eviction_hard_memory_available")
-    reserved_memory = nodepool_def.get("reserved_memory")
-    if not kube_reserved or not eviction_hard or not reserved_memory:
+    # reservedMemory is consumed only by the Memory Manager — meaningless without Static.
+    if reserved_memory is not None and policy != "Static":
         raise ValueError(
-            f"{name}: memory_manager_policy: Static requires kube_reserved_memory, "
-            f"eviction_hard_memory_available, and reserved_memory to be set "
-            f"(the Memory Manager boot gate sums them)."
+            f"{name}: reserved_memory requires memory_manager_policy: Static "
+            f"(reservedMemory is consumed only by the kubelet Memory Manager)."
         )
 
-    gate = parse_memory_bytes(kube_reserved) + parse_memory_bytes(system_reserved) + parse_memory_bytes(eviction_hard)
-    reserved_total = sum(parse_memory_bytes(z["memory"]) for z in reserved_memory)
-    if reserved_total != gate:
-        raise ValueError(
-            f"{name}: reserved_memory sum ({reserved_total} bytes) must equal "
-            f"kube_reserved_memory + system_reserved_memory + "
-            f"eviction_hard_memory_available ({gate} bytes), or the kubelet will "
-            f"refuse to start. Adjust the per-NUMA split to total the reservation sum."
-        )
+    if policy == "Static":
+        if not reserved_memory:
+            raise ValueError(
+                f"{name}: memory_manager_policy: Static requires reserved_memory "
+                f"(the per-NUMA reservations the Memory Manager pins)."
+            )
+        # Static is independent of the topology policy, but only yields scheduling
+        # benefit under single-numa-node — warn (don't block) otherwise.
+        if topology_policy != "single-numa-node":
+            log_warning(
+                f"{name}: memory_manager_policy: Static with topology_manager_policy="
+                f"'{topology_policy}' (not single-numa-node) — memory will be NUMA-reserved "
+                f"but the scheduler won't align it; Static only helps under single-numa-node."
+            )
+        # Boot gate: validate the sum only when all three terms are pinned, so the
+        # equality is self-contained. Otherwise the unset term(s) fall back to EKS
+        # defaults we can't see at generation time.
+        if kube_reserved is not None and system_reserved is not None and eviction_hard is not None:
+            gate = (
+                parse_memory_bytes(kube_reserved)
+                + parse_memory_bytes(system_reserved)
+                + parse_memory_bytes(eviction_hard)
+            )
+            reserved_total = sum(parse_memory_bytes(z["memory"]) for z in reserved_memory)
+            if reserved_total != gate:
+                raise ValueError(
+                    f"{name}: reserved_memory sum ({reserved_total} bytes) must equal "
+                    f"kube_reserved_memory + system_reserved_memory + "
+                    f"eviction_hard_memory_available ({gate} bytes), or the kubelet will "
+                    f"refuse to start. Adjust the per-NUMA split to total the reservation sum."
+                )
+        else:
+            log_warning(
+                f"{name}: memory_manager_policy: Static — boot gate NOT validated at generation "
+                f"because kube_reserved_memory/system_reserved_memory/eviction_hard_memory_available "
+                f"are not all pinned. The kubelet requires sum(reservedMemory) == kubeReserved + "
+                f"systemReserved + evictionHard (EKS defaults apply where unset) or it will not "
+                f"boot — pin all three to validate here."
+            )
 
-    zones = "".join(
-        f"          - numaNode: {z['numa_node']}\n            limits:\n              memory: {z['memory']}\n"
-        for z in reserved_memory
-    )
-    return (
-        f"          memoryManagerPolicy: {policy}\n"
-        f"          kubeReserved:\n"
-        f"            memory: {kube_reserved}\n"
-        f"          systemReserved:\n"
-        f'            memory: "{system_reserved}"\n'
-        f"          evictionHard:\n"
-        f"            memory.available: {eviction_hard}\n"
-        f"          reservedMemory:\n"
-        f"{zones}"
-    )
+    # ----- emission: include each block only when its key is specified -----
+    parts = []
+    if policy is not None:
+        parts.append(f"          memoryManagerPolicy: {policy}\n")
+    if kube_reserved is not None:
+        parts.append(f"          kubeReserved:\n            memory: {kube_reserved}\n")
+    if system_reserved is not None:
+        parts.append(f'          systemReserved:\n            memory: "{system_reserved}"\n')
+    if eviction_hard is not None:
+        parts.append(f"          evictionHard:\n            memory.available: {eviction_hard}\n")
+    if reserved_memory is not None:
+        zones = "".join(
+            f"          - numaNode: {z['numa_node']}\n            limits:\n              memory: {z['memory']}\n"
+            for z in reserved_memory
+        )
+        parts.append(f"          reservedMemory:\n{zones}")
+    return "".join(parts)
 
 
 def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
@@ -309,10 +321,10 @@ def generate_nodepool_yaml(nodepool_def, module_name, defs_dir=None):
     topology_policy = nodepool_def.get("topology_manager_policy", "best-effort")
     topology_scope = nodepool_def.get("topology_manager_scope", "container")
 
-    # Per-def kubelet Memory Manager (Static) — independent of the topology policy.
-    # Validates the boot-gate reservation invariant (raises on a bad sum); warns,
-    # but does not block, if enabled without single-numa-node.
-    mem_manager_block = _memory_manager_block(nodepool_def, topology_policy)
+    # Per-def kubelet memory knobs (kubeReserved / systemReserved / evictionHard /
+    # memoryManagerPolicy / reservedMemory). Each is emitted only when specified;
+    # validates the Memory Manager Static boot gate when all terms are pinned.
+    kubelet_memory_block = _kubelet_memory_block(nodepool_def, topology_policy)
 
     # Read optional user data script for embedding as a MIME part
     indented_userdata = _read_user_data_script(user_data_script_path, defs_dir) if defs_dir else None
@@ -544,7 +556,7 @@ spec:
           topologyManagerPolicy: {topology_policy}
           topologyManagerScope: {topology_scope}
 {"          topologyManagerPolicyOptions:" + chr(10) + '            prefer-closest-numa-nodes: "true"' + chr(10) if topology_policy in ("restricted", "best-effort") else ""}\
-{mem_manager_block}\
+{kubelet_memory_block}\
           containerLogMaxSize: 50Mi
           containerLogMaxFiles: 5
 {_user_data_script_mime_part(indented_userdata)}

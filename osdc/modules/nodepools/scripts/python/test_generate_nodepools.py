@@ -803,12 +803,13 @@ class TestBuildFleetNodepoolDef:
 
 
 class TestMemoryManager:
-    """kubelet Memory Manager (Static) — the #696 Bug #2 fix for single-numa-node.
+    """kubelet memory knobs (#696 Bug #2) — independently settable per def.
 
-    Static surfaces per-NUMA memory into the NRT so the scheduler can align
-    native ``memory`` requests; it also imposes a hard boot gate
-    (sum(reservedMemory) == kubeReserved + systemReserved + evictionHard) that
-    we validate at generation time.
+    kubeReserved / systemReserved / evictionHard are general kubelet settings
+    emitted on their own; memoryManagerPolicy: Static + reservedMemory are the
+    Memory Manager pieces. When all three reservation terms are pinned alongside
+    Static, the boot gate (sum(reservedMemory) == kubeReserved + systemReserved +
+    evictionHard) is validated at generation time.
     """
 
     def _static_def(self, **overrides) -> dict:
@@ -913,10 +914,87 @@ class TestMemoryManager:
         with pytest.raises(ValueError, match="must be 'Static'"):
             generate_nodepool_yaml(bad, "nodepools")
 
-    def test_reservations_without_policy_raise(self):
-        """Reservation keys without memory_manager_policy are a misconfig."""
+    def test_reserved_memory_without_policy_raises(self):
+        """reservedMemory is Memory-Manager-only — invalid without Static."""
         bad = _make_nodepool_def(reserved_memory=[{"numa_node": 0, "memory": "100Mi"}])
-        with pytest.raises(ValueError, match="only valid when"):
+        with pytest.raises(ValueError, match="requires memory_manager_policy: Static"):
+            generate_nodepool_yaml(bad, "nodepools")
+
+    def test_kube_reserved_emits_independently(self):
+        """kubeReserved is a general kubelet knob — settable on its own, no Static."""
+        d = _make_nodepool_def(kube_reserved_memory="9Gi")
+        cfg = _extract_node_config(parse_all_yaml(generate_nodepool_yaml(d, "nodepools"))[1]["spec"]["userData"])[
+            "spec"
+        ]["kubelet"]["config"]
+        assert cfg["kubeReserved"]["memory"] == "9Gi"
+        # nothing else from the memory path leaked
+        for k in ("memoryManagerPolicy", "reservedMemory", "systemReserved", "evictionHard"):
+            assert k not in cfg
+
+    def test_eviction_hard_emits_independently(self):
+        """evictionHard.memory.available is settable on its own, no Static."""
+        d = _make_nodepool_def(eviction_hard_memory_available="250Mi")
+        cfg = _extract_node_config(parse_all_yaml(generate_nodepool_yaml(d, "nodepools"))[1]["spec"]["userData"])[
+            "spec"
+        ]["kubelet"]["config"]
+        assert cfg["evictionHard"]["memory.available"] == "250Mi"
+        for k in ("memoryManagerPolicy", "reservedMemory", "kubeReserved", "systemReserved"):
+            assert k not in cfg
+
+    def test_only_specified_blocks_included(self):
+        """Each knob is emitted only when present — a lone systemReserved override
+        adds exactly that block and nothing else."""
+        d = _make_nodepool_def(
+            topology_manager_policy="single-numa-node",
+            topology_manager_scope="pod",
+            system_reserved_memory="512Mi",
+        )
+        cfg = _extract_node_config(parse_all_yaml(generate_nodepool_yaml(d, "nodepools"))[1]["spec"]["userData"])[
+            "spec"
+        ]["kubelet"]["config"]
+        assert cfg["systemReserved"]["memory"] == "512Mi"
+        assert set(cfg) == {
+            "cpuManagerPolicy",
+            "topologyManagerPolicy",
+            "topologyManagerScope",
+            "systemReserved",
+            "containerLogMaxSize",
+            "containerLogMaxFiles",
+        }
+
+    def test_static_unpinned_terms_warn_but_emit(self, capsys):
+        """Static + reserved_memory but reservation terms NOT all pinned: emits
+        (reservedMemory only), and warns the boot gate can't be validated at
+        generation (the unset terms fall back to EKS defaults)."""
+        d = _make_nodepool_def(
+            topology_manager_policy="single-numa-node",
+            topology_manager_scope="pod",
+            memory_manager_policy="Static",
+            reserved_memory=[
+                {"numa_node": 0, "memory": "4Gi"},
+                {"numa_node": 1, "memory": "4Gi"},
+            ],
+        )
+        cfg = _extract_node_config(parse_all_yaml(generate_nodepool_yaml(d, "nodepools"))[1]["spec"]["userData"])[
+            "spec"
+        ]["kubelet"]["config"]
+        assert cfg["memoryManagerPolicy"] == "Static"
+        assert cfg["reservedMemory"] == [
+            {"numaNode": 0, "limits": {"memory": "4Gi"}},
+            {"numaNode": 1, "limits": {"memory": "4Gi"}},
+        ]
+        # unpinned terms are NOT emitted (left to EKS defaults)
+        assert "kubeReserved" not in cfg
+        assert "boot gate" in capsys.readouterr().err.lower()
+
+    def test_static_without_reserved_memory_raises(self):
+        """Static requires reserved_memory (the Memory Manager needs per-NUMA pins)."""
+        bad = _make_nodepool_def(
+            topology_manager_policy="single-numa-node",
+            topology_manager_scope="pod",
+            memory_manager_policy="Static",
+        )
+        with pytest.raises(ValueError, match="requires reserved_memory"):
             generate_nodepool_yaml(bad, "nodepools")
 
     def test_fleet_passthrough(self):
