@@ -1012,9 +1012,15 @@ drain-runners cluster:
     fi
 
     echo ""
-    echo "Applying refresh taint to runner nodes..."
-    just taint-nodes "$CLUSTER"
-    TAINTED_NODES=$(kubectl get nodes -l workload-type=github-runner --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${OSDC_TAINT_NODES:-yes}" = "yes" ]; then
+        echo "Applying refresh taint to runner nodes..."
+        just taint-nodes "$CLUSTER"
+        TAINTED_NODES=$(kubectl get nodes -l workload-type=github-runner --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        TAINTED_NODES_MSG="${TAINTED_NODES} nodes tainted"
+    else
+        echo "Skipping refresh taint step (OSDC_TAINT_NODES=${OSDC_TAINT_NODES})."
+        TAINTED_NODES_MSG="taint skipped"
+    fi
 
     echo ""
     # Default 1h covers typical PyTorch suite duration; override via OSDC_DRAIN_TIMEOUT_SECS for longer/shorter windows.
@@ -1055,7 +1061,7 @@ drain-runners cluster:
     fi
 
     echo ""
-    echo "Summary: ${DRAINED} AutoscalingRunnerSets drained, ${TAINTED_NODES} nodes tainted, ${STRAGGLERS_MSG}."
+    echo "Summary: ${DRAINED} AutoscalingRunnerSets drained, ${TAINTED_NODES_MSG}, ${STRAGGLERS_MSG}."
     if [ "$ARS_FAILED" -gt 0 ]; then
         echo "Warning: ${ARS_FAILED} AutoscalingRunnerSet(s) failed to patch."
     fi
