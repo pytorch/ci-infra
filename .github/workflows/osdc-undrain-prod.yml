@@ -55,6 +55,7 @@ jobs:
         working-directory: osdc
     steps:
       - name: Validate inputs
+        working-directory: ${{ github.workspace }}
         run: |
           if [ "${{ inputs.cluster }}" = "-- select cluster --" ]; then
             echo "::error::No cluster selected. Pick a cluster from the dropdown before running."
