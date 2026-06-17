@@ -169,8 +169,6 @@ clusters:
         amd64_max: 8
         arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
         arm64_max: 8
-    pypi_cache:
-      replicas: 1
     modules:
       - karpenter
       - arc
@@ -178,8 +176,6 @@ clusters:
       - arc-runners
       - keda
       - buildkit
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -370,8 +366,6 @@ clusters:
       # max_runners are sized assuming this count.
       capacity_reservation_ids:
         - cr-0b15c0b3163f09d26
-    pypi_cache:
-      replicas: 10
     modules:
       - karpenter
       - arc
@@ -383,8 +377,6 @@ clusters:
       - arc-runners-h100
       - keda
       - buildkit
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
