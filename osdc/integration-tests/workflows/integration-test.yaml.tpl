@@ -212,6 +212,29 @@ jobs:
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
   # END_ARC_RUNNERS
 
+  # BEGIN_NO_CACHE_ENFORCER
+  test-pip-install-upstream:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify pip install from upstream pypi.org
+        run: |
+          echo "=== Upstream pip install Test ==="
+          pip install --no-cache-dir six packaging typing-extensions
+          python -c "import six, packaging, typing_extensions; print('PASS: pip install + import from upstream pypi.org')"
+
+      - name: Install uv
+        run: pip install --no-cache-dir uv
+
+      - name: Verify uv pip install from upstream pypi.org
+        run: |
+          echo "=== Upstream uv pip install Test ==="
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          uv pip install --system --no-cache six packaging typing-extensions
+          python -c "import six, packaging, typing_extensions; print('PASS: uv pip install + import from upstream pypi.org')"
+  # END_NO_CACHE_ENFORCER
+
   # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,

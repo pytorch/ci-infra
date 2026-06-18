@@ -37,6 +37,10 @@ TAG_REQUIREMENTS: dict[str, list[str]] = {
     "RELEASE": ["arc-runners"],
 }
 
+INVERSE_TAG_EXCLUSIONS: dict[str, list[str]] = {
+    "NO_CACHE_ENFORCER": ["cache-enforcer"],
+}
+
 
 def ensure_canary_repo(upstream_dir: Path) -> Path:
     """Clone or update pytorch-canary into .scratch/ and return its path."""
@@ -278,6 +282,10 @@ def generate_workflow(
     modules_set = set(cluster_modules)
     for tag, required in TAG_REQUIREMENTS.items():
         keep = all(m in modules_set for m in required)
+        content = strip_conditional_block(content, tag, keep=keep)
+
+    for tag, excluded in INVERSE_TAG_EXCLUSIONS.items():
+        keep = not any(m in modules_set for m in excluded)
         content = strip_conditional_block(content, tag, keep=keep)
 
     if not _has_any_job(content):

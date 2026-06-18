@@ -98,6 +98,17 @@ up.
    GitHub API call, no `crane` call, ConfigMap untouched. Removing
    the key on a later deploy returns the cluster to auto-resolution.
 
+## Read-only mode (smoke tests)
+
+Setting `OSDC_RESOLVER_READONLY=1` disables every write path: no GitHub
+API call, no `crane` call, no ConfigMap mutation. The resolver prefers
+an exact match for the current OSDC SHA; if the SHA is not in the lock
+(e.g. when iterating on test code without a fresh deploy) it falls back
+to the newest entry in the history and prints a warning to stderr
+naming the fallback SHA. If the history is empty it errors out — there
+is nothing to fall back to. This mode is set by `just smoke` so smoke
+runs exercise whatever the live deploy already pinned.
+
 ## Failure modes
 
 Each of these aborts the deploy with a non-zero exit and a single-line

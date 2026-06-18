@@ -128,6 +128,9 @@ class TestRunnerConfigMapEnvVars:
         if "arc-runners" not in enabled_modules:
             pytest.skip("arc-runners module not enabled")
 
+        if "pypi-cache" not in enabled_modules:
+            pytest.skip("pypi-cache module not enabled — env vars are intentionally stripped from runner ConfigMaps")
+
         # Scope to arc-runners* modules actually enabled on this cluster — defs
         # from unenabled-but-present-in-codebase variants would otherwise be
         # expected as CMs that genuinely don't exist on this cluster.

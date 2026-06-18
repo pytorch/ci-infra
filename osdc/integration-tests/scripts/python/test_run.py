@@ -137,6 +137,12 @@ def workflow_template(tmp_path):
         "    steps:\n"
         "      - run: echo enforcer\n"
         "  # END_CACHE_ENFORCER\n"
+        "  # BEGIN_NO_CACHE_ENFORCER\n"
+        "  no-cache-enforcer-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}upstream-runner"] }\n'
+        "    steps:\n"
+        "      - run: echo upstream\n"
+        "  # END_NO_CACHE_ENFORCER\n"
         "  # BEGIN_RELEASE\n"
         "  release-job:\n"
         '    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-runner"] }\n'
@@ -293,10 +299,35 @@ class TestGenerateWorkflow:
             "pytorch-arc-cbr-production",
             cluster_modules=[m for m in ALL_MODULES if m != "cache-enforcer"],
         )
-        assert "cache-enforcer-job" not in result
+        assert "  cache-enforcer-job:" not in result
         assert "BEGIN_CACHE_ENFORCER" not in result
         assert "END_CACHE_ENFORCER" not in result
         assert "arc-job" in result
+
+    def test_no_cache_enforcer_kept_when_cache_enforcer_absent(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=[m for m in ALL_MODULES if m != "cache-enforcer"],
+        )
+        assert "no-cache-enforcer-job" in result
+        assert "BEGIN_NO_CACHE_ENFORCER" not in result
+        assert "END_NO_CACHE_ENFORCER" not in result
+
+    def test_no_cache_enforcer_stripped_when_cache_enforcer_present(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+        )
+        assert "no-cache-enforcer-job" not in result
+        assert "BEGIN_NO_CACHE_ENFORCER" not in result
+        assert "END_NO_CACHE_ENFORCER" not in result
+        assert "cache-enforcer-job" in result
 
     def test_b200_requires_both_modules(self, workflow_template):
         result = generate_workflow(
@@ -531,7 +562,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            cluster_modules=[],
+            cluster_modules=["cache-enforcer"],
         )
         assert "no-op:" in result
         assert "ubuntu-latest" in result
@@ -545,7 +576,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            cluster_modules=["arc-runners-h100"],
+            cluster_modules=["arc-runners-h100", "cache-enforcer"],
         )
         assert "no-op:" in result
         assert "arc-job" not in result
@@ -557,7 +588,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            cluster_modules=["arc-runners-b200"],
+            cluster_modules=["arc-runners-b200", "cache-enforcer"],
         )
         assert "no-op:" in result
         assert "b200-job" not in result
@@ -569,7 +600,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            cluster_modules=[],
+            cluster_modules=["cache-enforcer"],
         )
         assert "name: cbr integration test" in result
         assert "on: push" in result
@@ -580,7 +611,7 @@ class TestGenerateWorkflowNoopFallback:
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            cluster_modules=[],
+            cluster_modules=["cache-enforcer"],
         )
         lines = result.split("\n")
         jobs_idx = next(i for i, line in enumerate(lines) if line.rstrip() == "jobs:")

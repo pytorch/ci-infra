@@ -561,18 +561,19 @@ class TestMain:
         env.client.create.assert_not_called()
         env.client.replace.assert_not_called()
 
-    def test_readonly_with_unknown_sha_fails(self, monkeypatch, capsys):
+    def test_readonly_with_unknown_sha_falls_back_to_newest(self, monkeypatch, capsys):
         monkeypatch.setenv("OSDC_RESOLVER_READONLY", "1")
-        env = _Env(
-            monkeypatch,
-            sha=_SHA_C,
-            history=[_entry(_SHA_A, "2.335.0", "sha256:a", "2026-05-01T00:00:00Z")],
-        )
+        newest = _entry(_SHA_A, "2.336.0", "sha256:newest", "2026-06-10T00:00:00Z")
+        older = _entry(_SHA_B, "2.335.0", "sha256:older", "2026-05-01T00:00:00Z")
+        env = _Env(monkeypatch, sha=_SHA_C, history=[newest, older])
         rc = rrv.main(["resolve_runner_version.py", "c"])
         captured = capsys.readouterr()
-        assert rc == 1
+        assert rc == 0
+        assert captured.out.strip() == "ghcr.io/actions/actions-runner:2.336.0@sha256:newest"
         assert "OSDC_RESOLVER_READONLY" in captured.err
-        assert _SHA_C in captured.err
+        assert "falling back to newest entry" in captured.err
+        assert _SHA_A in captured.err
+        assert "2026-06-10T00:00:00Z" in captured.err
         assert env.fetched_token == []
         assert env.crane_calls == []
         env.client.create.assert_not_called()
