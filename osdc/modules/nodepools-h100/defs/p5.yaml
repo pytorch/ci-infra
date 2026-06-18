@@ -9,8 +9,11 @@ nodepool:
   node_disk_size: 1000
   gpu: true
   has_nvme: true
-  topology_manager_policy: single-numa-node
-  topology_manager_scope: pod
+  # TODO: reintroduce topology constraints when NUMA-aware scheduling is available.
+  # 4xH100 jobs are susceptible to TopologyAffinityError as described in
+  # https://github.com/pytorch/ci-infra/issues/696.
+  # topology_manager_policy: single-numa-node
+  # topology_manager_scope: pod
   capacity_type: reserved
   # capacity_reservation_ids are cluster-specific (different reservations in
   # us-east-2 vs us-west-1) and live under clusters.<id>.nodepools-h100 in
