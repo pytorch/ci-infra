@@ -11,8 +11,9 @@ concurrency:
 
 jobs:
   # ── CPU Runner Tests ──────────────────────────────────────────────────
+  # BEGIN_ARC_RUNNERS
   test-cpu-x86-avx512:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -86,7 +87,7 @@ jobs:
           echo "PASS: Required env vars present"
 
   test-cpu-x86-amx:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -152,7 +153,7 @@ jobs:
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
   test-cpu-arm64:
-    runs-on: {{PREFIX}}l-arm64g3-16-62
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-arm64g3-16-62"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -209,13 +210,38 @@ jobs:
             exit 1
           fi
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
+  # END_ARC_RUNNERS
 
+  # BEGIN_NO_CACHE_ENFORCER
+  test-pip-install-upstream:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify pip install from upstream pypi.org
+        run: |
+          echo "=== Upstream pip install Test ==="
+          pip install --no-cache-dir six packaging typing-extensions
+          python -c "import six, packaging, typing_extensions; print('PASS: pip install + import from upstream pypi.org')"
+
+      - name: Install uv
+        run: pip install --no-cache-dir uv
+
+      - name: Verify uv pip install from upstream pypi.org
+        run: |
+          echo "=== Upstream uv pip install Test ==="
+          pip uninstall -y six packaging typing-extensions >/dev/null 2>&1 || true
+          uv pip install --system --no-cache six packaging typing-extensions
+          python -c "import six, packaging, typing_extensions; print('PASS: uv pip install + import from upstream pypi.org')"
+  # END_NO_CACHE_ENFORCER
+
+  # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
   # download.pytorch.org proxy, URL rewriting, torch install, and
   # numpy wheel cache — all without the setup-pypi-cache composite action.
   test-pypi-cache-defaults:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
       image: python:3.12-slim
     steps:
@@ -570,7 +596,7 @@ jobs:
   # Validates the composite action overrides pod-level defaults correctly
   # for CPU configuration. Runs the full test battery.
   test-pypi-cache-action-cpu:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
       image: python:3.12-slim
     steps:
@@ -931,7 +957,7 @@ jobs:
   # pypi-cache service and pytorch wheel index. Runs the full test
   # battery on a GPU runner.
   test-pypi-cache-action-cuda:
-    runs-on: {{PREFIX}}l-x86iavx512-29-115-t4
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-29-115-t4"] }
     container:
       image: python:3.12-slim
     steps:
@@ -1316,10 +1342,12 @@ jobs:
           print(f'numpy location: {np.__file__}')
           print(f'PASS: numpy functional validation')
           "
+  # END_PYPI_CACHE
 
+  # BEGIN_GPU_T4
   # ── GPU Runner Tests ──────────────────────────────────────────────────
   test-gpu-t4:
-    runs-on: {{PREFIX}}l-x86iavx512-29-115-t4
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-29-115-t4"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -1366,7 +1394,7 @@ jobs:
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
 
   test-gpu-t4-multi:
-    runs-on: {{PREFIX}}l-x86iavx512-45-172-t4-4
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-45-172-t4-4"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -1400,10 +1428,11 @@ jobs:
             exit 1
           fi
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
+  # END_GPU_T4
 
   # BEGIN_B200
   test-gpu-b200-2:
-    runs-on: {{PREFIX}}l-x86iamx-44-450-b200-2
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-44-450-b200-2"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -1435,6 +1464,7 @@ jobs:
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
   # END_B200
 
+  # BEGIN_BUILDKIT
   # ── BuildKit Tests ────────────────────────────────────────────────────
   # Each call runs a buildctl connectivity build + an 8-wide docker buildx burst
   # (fails if KEDA does not scale the pool up).
@@ -1443,16 +1473,20 @@ jobs:
     with:
       arch: amd64
       runner_label: {{PREFIX}}l-x86iamx-8-32
+      runner_group: "{{RUNNER_GROUP}}"
 
   buildkit-arm64:
     uses: ./.github/workflows/build-image.yaml
     with:
       arch: arm64
       runner_label: {{PREFIX}}l-x86iamx-8-32
+      runner_group: "{{RUNNER_GROUP}}"
+  # END_BUILDKIT
 
+  # BEGIN_ARC_RUNNERS
   # ── Harbor Cache Test ─────────────────────────────────────────────────
   test-harbor:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -1470,11 +1504,36 @@ jobs:
             echo "INFO: /etc/containerd/certs.d not visible from container (expected)"
             echo "PASS: Container pulled successfully through Harbor"
           fi
+  # END_ARC_RUNNERS
+
+  # BEGIN_ARC_RUNNERS
+  # ── ECR Pull Test ──────────────────────────────────────────────────────
+  # Verifies runner pods can pull the pytorch CI image directly from
+  # account 308535385114 ECR. Image tag is resolved the same way pytorch's
+  # docker-builds.yml does (git tree-SHA of pytorch/pytorch:.ci/docker).
+  # If pytorch hasn't yet rebuilt the image for the current .ci/docker
+  # tree-SHA, this test will fail with ImagePullBackOff — that is correct
+  # behavior, surfacing the ECR rebuild lag as a real signal.
+  test-ecr-pull:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{{ECR_PULL_RESOLVED_TAG}}
+    steps:
+      - name: Show resolved image info
+        run: |
+          echo "=== ECR Pull Test ==="
+          echo "Pytorch .ci/docker tree-SHA: {{ECR_PULL_SHA}}"
+          echo "Image URL: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{{ECR_PULL_RESOLVED_TAG}}"
+      - name: Verify container is running
+        run: |
+          cat /etc/os-release
+          echo "PASS: pulled image from 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{{ECR_PULL_RESOLVED_TAG}}"
+  # END_ARC_RUNNERS
 
   # BEGIN_CACHE_ENFORCER
   # ── Cache Enforcer Test ──────────────────────────────────────────────
   test-cache-enforcer:
-    runs-on: {{PREFIX}}l-x86iamx-8-32
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:
@@ -1562,7 +1621,7 @@ jobs:
   # BEGIN_RELEASE
   # ── Release Runner Tests ───────────────────────────────────────────────
   test-release-arm64:
-    runs-on: {{PREFIX}}rel-l-arm64g4-16-62
+    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-l-arm64g4-16-62"] }
     container:
       image: ghcr.io/actions/actions-runner:latest
     steps:

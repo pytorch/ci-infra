@@ -35,7 +35,7 @@ readonly _DEPLOY_LOG_HISTORY_MAX=50
 # Record the start of a deploy. Prints epoch timestamp to stdout.
 # Args: <scope> <cluster> <name>
 #   scope:   "module" or "cmd"
-#   cluster: cluster ID (e.g., arc-staging)
+#   cluster: cluster ID (e.g., meta-staging-aws-uw1)
 #   name:    module name or command name
 deploy_log_start() {
   local scope="$1" cluster="$2" name="$3"

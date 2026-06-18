@@ -3,7 +3,7 @@
 
 Runs a full integration test against an OSDC cluster by:
 1. Cleaning up stale PRs on pytorch/pytorch-canary
-2. Optionally clearing staging pools (arc-staging only)
+2. Optionally clearing staging pools (meta-staging-aws-uw1 only)
 3. Opening a PR with test workflows that exercise every cluster capability
 4. Optionally running smoke tests and node-compactor tests in parallel
 5. Collecting workflow results and reporting
@@ -24,6 +24,7 @@ import yaml
 # Add pypi-cache module to path for cuda_slug import (single source of truth)
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "pypi-cache" / "scripts" / "python"))
 from generate_manifests import cuda_slug  # noqa: E402
+from resolve_pytorch_image import resolve_ci_docker_hash
 
 log = logging.getLogger("osdc-integration-test")
 
@@ -170,15 +171,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--upstream-dir", required=True, type=Path, help="OSDC upstream directory")
     parser.add_argument("--root-dir", required=True, type=Path, help="OSDC root directory (consumer or upstream)")
     parser.add_argument("--run-smoke", action="store_true", help="Run smoke tests (skipped by default)")
-    parser.add_argument("--run-compactor", action="store_true", help="Run node-compactor e2e tests (skipped by default)")
+    parser.add_argument(
+        "--run-compactor", action="store_true", help="Run node-compactor e2e tests (skipped by default)"
+    )
     parser.add_argument("--skip-smoke", action="store_true", help="Skip smoke tests (overrides --run-smoke)")
-    parser.add_argument("--skip-compactor", action="store_true", help="Skip node-compactor e2e tests (overrides --run-compactor)")
+    parser.add_argument(
+        "--skip-compactor", action="store_true", help="Skip node-compactor e2e tests (overrides --run-compactor)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Generate workflows but don't push/PR")
     parser.add_argument(
         "--keep-pr", action="store_true", help="Don't close PR after test (useful for debugging failures)"
     )
     parser.add_argument("--force", action="store_true", help="Skip interactive prompts (e.g. staging pool clear)")
     parser.add_argument("--skip-drain", action="store_true", help="Skip staging pool drain entirely")
+    parser.add_argument(
+        "--ecr-pull-image-name",
+        default="pytorch-linux-jammy-py3.10-clang18",
+        help="ECR image name used by the test-ecr-pull job (debug override)",
+    )
     return parser.parse_args()
 
 
@@ -208,15 +218,14 @@ def main():
     cfg = load_cluster_config(args.clusters_yaml, args.cluster_id)
     cluster_name = resolve(cfg, "cluster_name")
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
-    b200_enabled = has_module(cfg, "nodepools-b200") and has_module(cfg, "arc-runners-b200")
-    cache_enforcer_enabled = has_module(cfg, "cache-enforcer")
-    release_enabled = has_module(cfg, "arc-runners")
+    cluster_runner_group = resolve(cfg, "arc-runners.runner_group")
+    runner_group = cluster_runner_group or "default"
+    release_runner_group = cluster_runner_group or "release-runners"
+    cluster_modules = cfg["cluster"].get("modules", [])
 
     # Build pypi-cache slug list: always "cpu", plus one per configured CUDA version
     cuda_versions = resolve(cfg, "pypi_cache.cuda_versions", [])
-    pypi_cache_slugs = " ".join(
-        ["cpu"] + [cuda_slug(str(v)) for v in cuda_versions]
-    )
+    pypi_cache_slugs = " ".join(["cpu"] + [cuda_slug(str(v)) for v in cuda_versions])
     # First CUDA version for integration test action verification (major.minor only)
     raw_ver = str(cuda_versions[0]) if cuda_versions else "12.8"
     parts = raw_ver.split(".")
@@ -230,9 +239,9 @@ def main():
 
     log.info("Integration test for cluster: %s (%s)", args.cluster_id, cluster_name)
     log.info("  Runner prefix: '%s'", prefix)
-    log.info("  B200 enabled: %s", b200_enabled)
-    log.info("  Release runners: %s", release_enabled)
-    log.info("  Cache enforcer: %s", cache_enforcer_enabled)
+    log.info("  Runner group: '%s'", runner_group)
+    log.info("  Release runner group: '%s'", release_runner_group)
+    log.info("  Cluster modules: %s", ", ".join(cluster_modules) if cluster_modules else "(none)")
     log.info("  PyPI cache slugs: %s", pypi_cache_slugs)
     log.info("  Smoke tests: %s", "skip" if skip_smoke else "run")
     log.info("  Compactor tests: %s", "skip" if skip_compactor else "run")
@@ -245,6 +254,27 @@ def main():
     validation_results = {}
     workflow_results = []
     try:
+        # Resolve ECR tag FIRST — failing fast avoids leaving the cluster drained.
+        # Skip when the cluster has no arc-runners module: the test-ecr-pull job is
+        # gated on ARC_RUNNERS and stripped from the workflow, so the tag is unused.
+        if "arc-runners" in cluster_modules:
+            ecr_image_name = args.ecr_pull_image_name
+            try:
+                ecr_pull_sha = resolve_ci_docker_hash()
+            except RuntimeError as exc:
+                log.error("Failed to resolve pytorch CI image tag: %s", exc)
+                sys.exit(1)
+            ecr_pull_resolved_tag = f"{ecr_image_name}-{ecr_pull_sha}"
+            ecr_pull_image_url = (
+                f"308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{ecr_pull_resolved_tag}"
+            )
+            log.info("ECR pull test — pytorch .ci/docker tree-SHA: %s", ecr_pull_sha)
+            log.info("ECR pull test — image URL: %s", ecr_pull_image_url)
+        else:
+            log.info("ECR pull test — skipped (cluster has no arc-runners module)")
+            ecr_pull_sha = ""
+            ecr_pull_resolved_tag = ""
+
         # Phase 0: Cleanup
         cleanup_stale_prs(branch)
 
@@ -261,11 +291,13 @@ def main():
             prefix,
             args.cluster_id,
             cluster_name,
-            b200_enabled,
-            cache_enforcer_enabled=cache_enforcer_enabled,
-            release_enabled=release_enabled,
+            cluster_modules,
+            runner_group=runner_group,
+            release_runner_group=release_runner_group,
             pypi_cache_slugs=pypi_cache_slugs,
             pypi_cache_cuda_version=pypi_cache_cuda_version,
+            ecr_pull_resolved_tag=ecr_pull_resolved_tag,
+            ecr_pull_sha=ecr_pull_sha,
         )
         pr_created_at = datetime.now(tz=UTC)
         pr_number = prepare_pr(canary_path, args.upstream_dir, workflow_content, args.dry_run, branch)
