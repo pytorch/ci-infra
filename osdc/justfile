@@ -2262,6 +2262,38 @@ generate-arc-runners cluster:
     fi
     echo "Generated ARC runner configs in ${OUTPUT_DIR} (${elapsed})"
 
+# Render a single nodepool def to stdout (generation only, no cluster required).
+# Useful for previewing the generated userData / kubelet config before deploying.
+#   just render-nodepool p4d                    # renders defs/p4d.yaml
+#   just render-nodepool p4d nfd                # with nfd startup taint enabled
+render-nodepool def *modules:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    DEF="{{def}}"
+    MODULES="{{modules}}"
+    MODULE_DIR="{{UPSTREAM}}/modules/nodepools"
+    DEFS_DIR="$MODULE_DIR/defs"
+    DEF_FILE="$DEFS_DIR/${DEF}.yaml"
+    if [[ ! -f "$DEF_FILE" ]]; then
+        echo "ERROR: $DEF_FILE not found" >&2
+        echo "Available defs:" >&2
+        ls "$DEFS_DIR"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/\.yaml$//' | sed 's/^/  /' >&2
+        exit 1
+    fi
+    TMPDEF=$(mktemp -d)
+    TMPOUT=$(mktemp -d)
+    trap 'rm -rf "$TMPDEF" "$TMPOUT"' EXIT
+    cp "$DEF_FILE" "$TMPDEF/"
+    NODEPOOLS_DEFS_DIR="$TMPDEF" \
+        NODEPOOLS_OUTPUT_DIR="$TMPOUT" \
+        NODEPOOLS_ENABLED_MODULES="$MODULES" \
+        uv run "$MODULE_DIR/scripts/python/generate_nodepools.py" >&2
+    for f in "$TMPOUT"/*.yaml; do
+        echo "--- # $(basename "$f")"
+        cat "$f"
+    done
+
 # Monte Carlo cluster simulation for PyTorch CI load
 simulate-cluster *args:
     @export OSDC_ROOT="{{ROOT}}"; \

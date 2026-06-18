@@ -205,6 +205,18 @@ def _user_data_script_mime_part(indented_script):
 # kubelet settings (they change node-allocatable memory / the eviction threshold,
 # and take effect on their own). nodeadm deep-merges each onto the EKS defaults,
 # preserving sibling keys (cpu, ephemeral-storage, nodefs.*).
+#
+# NODEADM DEEP-MERGE ASSUMPTION: setting e.g. kubeReserved.memory preserves the
+# EKS-default kubeReserved.cpu and kubeReserved.ephemeral-storage (likewise
+# evictionHard.memory.available preserves nodefs.available and nodefs.inodesFree).
+# Validated empirically on EKS AL2023 AMI (2026-06-17, p4d ip-10-20-26-82).
+# This is a nodeadm implementation detail, NOT a contractual API guarantee — a
+# future AMI/nodeadm version could change to replace-merge.  Re-verify sibling
+# preservation on every AMI update by checking ``kubectl get --raw
+# /api/v1/nodes/<node>/proxy/configz`` on the first rolled node.  If siblings
+# are ever dropped, the mitigation is to emit all sibling keys explicitly here
+# (pin kubeReserved.cpu / ephemeral-storage / evictionHard.nodefs.* alongside
+# the memory keys).
 _KUBELET_MEMORY_RESERVATIONS = (
     ("kube_reserved_memory", "kubeReserved", "memory", False),
     ("system_reserved_memory", "systemReserved", "memory", True),  # quote so "0" stays a string
