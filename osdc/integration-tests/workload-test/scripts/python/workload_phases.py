@@ -140,6 +140,7 @@ def instrument_workflows(
     canary_path: Path,
     target_prefix: str,
     keep_workflows: list[str] | None = None,
+    pypi_cache_enabled: bool = True,
 ) -> None:
     """Run all instrumentation steps on the mirrored canary repo."""
     if keep_workflows is None:
@@ -192,11 +193,14 @@ def instrument_workflows(
     )
 
     # 3g: Inject PyPI cache setup into all workflows with steps
-    log.info("  3g: Injecting PyPI cache setup (auto-detect from build-environment)...")
-    apply_to_all_workflows(
-        workflows_dir,
-        lambda c: inject_pypi_cache_step(c, PYPI_CACHE_ACTION_REF),
-    )
+    if pypi_cache_enabled:
+        log.info("  3g: Injecting PyPI cache setup (auto-detect from build-environment)...")
+        apply_to_all_workflows(
+            workflows_dir,
+            lambda c: inject_pypi_cache_step(c, PYPI_CACHE_ACTION_REF),
+        )
+    else:
+        log.info("  3g: Skipping PyPI cache injection (cluster does not deploy pypi-cache module)")
 
 
 # ── Phase 4: Create PR ───────────────────────────────────────────────

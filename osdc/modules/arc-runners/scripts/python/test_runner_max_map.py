@@ -326,12 +326,12 @@ class TestParseDefFile:
         f.write_text(
             yaml.safe_dump({"runner": {"name": "linux-cpu", "instance_type": "c7i.4xlarge", "max_runners": 8}})
         )
-        assert parse_def_file(f) == ("linux-cpu", "c7i.4xlarge", 8)
+        assert parse_def_file(f, "arc-x") == ("linux-cpu", "c7i.4xlarge", 8)
 
     def test_max_runners_omitted_returns_none(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"name": "linux-cpu", "instance_type": "c7i.4xlarge"}}))
-        name, instance_type, max_runners = parse_def_file(f)
+        name, instance_type, max_runners = parse_def_file(f, "arc-x")
         assert name == "linux-cpu"
         assert instance_type == "c7i.4xlarge"
         assert max_runners is None
@@ -339,68 +339,101 @@ class TestParseDefFile:
     def test_instance_type_omitted_returns_none(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"name": "linux-cpu", "max_runners": 4}}))
-        assert parse_def_file(f) == ("linux-cpu", None, 4)
+        assert parse_def_file(f, "arc-x") == ("linux-cpu", None, 4)
 
     def test_non_string_instance_type_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"name": "x", "instance_type": 42}}))
         with pytest.raises(ValueError, match=r"instance_type must be a string"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_missing_runner_section_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text("other_key: 1\n")
         with pytest.raises(ValueError, match=r"missing required 'runner\.name'"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_missing_name_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"instance_type": "m5.large"}}))
         with pytest.raises(ValueError, match=r"missing required 'runner\.name'"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_empty_name_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"name": ""}}))
         with pytest.raises(ValueError, match=r"missing required 'runner\.name'"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_non_string_name_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"name": 42}}))
         with pytest.raises(ValueError, match=r"missing required 'runner\.name'"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_zero_max_runners_raises(self, tmp_path):
         # Mirrors generate_runners.py:162 — max_runners must be POSITIVE.
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"name": "x", "max_runners": 0}}))
         with pytest.raises(ValueError, match=r"max_runners must be a positive integer"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_negative_max_runners_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"name": "x", "max_runners": -1}}))
         with pytest.raises(ValueError, match=r"max_runners must be a positive integer"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_string_max_runners_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text(yaml.safe_dump({"runner": {"name": "x", "max_runners": "8"}}))
         with pytest.raises(ValueError, match=r"max_runners must be a positive integer"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_empty_yaml_file_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text("")
         with pytest.raises(ValueError, match=r"missing required 'runner\.name'"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
 
     def test_null_runner_section_raises(self, tmp_path):
         f = tmp_path / "r.yaml"
         f.write_text("runner: null\n")
         with pytest.raises(ValueError, match=r"missing required 'runner\.name'"):
-            parse_def_file(f)
+            parse_def_file(f, "arc-x")
+
+    def test_max_runners_mapping_per_cluster_override(self, tmp_path):
+        f = tmp_path / "r.yaml"
+        f.write_text(yaml.safe_dump({"runner": {"name": "h100", "max_runners": {"default": 1, "my-cluster": 5}}}))
+        assert parse_def_file(f, "my-cluster") == ("h100", None, 5)
+
+    def test_max_runners_mapping_falls_back_to_default(self, tmp_path):
+        f = tmp_path / "r.yaml"
+        f.write_text(yaml.safe_dump({"runner": {"name": "h100", "max_runners": {"default": 1, "my-cluster": 5}}}))
+        assert parse_def_file(f, "other-cluster") == ("h100", None, 1)
+
+    def test_max_runners_mapping_missing_default_raises(self, tmp_path):
+        f = tmp_path / "r.yaml"
+        f.write_text(yaml.safe_dump({"runner": {"name": "h100", "max_runners": {"my-cluster": 5}}}))
+        with pytest.raises(ValueError, match=r"max_runners mapping must include a .default. key"):
+            parse_def_file(f, "my-cluster")
+
+    def test_max_runners_mapping_non_positive_value_raises(self, tmp_path):
+        f = tmp_path / "r.yaml"
+        f.write_text(yaml.safe_dump({"runner": {"name": "h100", "max_runners": {"default": 0, "my-cluster": 1}}}))
+        with pytest.raises(ValueError, match=r"max_runners\[.default.\] must be a positive integer"):
+            parse_def_file(f, "my-cluster")
+
+    def test_max_runners_mapping_non_int_value_raises(self, tmp_path):
+        f = tmp_path / "r.yaml"
+        f.write_text(yaml.safe_dump({"runner": {"name": "h100", "max_runners": {"default": 1, "my-cluster": "lots"}}}))
+        with pytest.raises(ValueError, match=r"max_runners\[.my-cluster.\] must be a positive integer"):
+            parse_def_file(f, "my-cluster")
+
+    def test_max_runners_scalar_valid_returns_value(self, tmp_path):
+        f = tmp_path / "r.yaml"
+        f.write_text(yaml.safe_dump({"runner": {"name": "x", "max_runners": 7}}))
+        assert parse_def_file(f, "arc-x") == ("x", None, 7)
 
 
 # ============================================================================
@@ -623,6 +656,26 @@ class TestBuildMaxRunnersMap:
         repo = make_repo(tmp_path, clusters_yaml, {})
         assert build_max_runners_map(repo, clusters_yaml, "arc-x") == {}
 
+    def test_pause_runners_forces_zero(self, tmp_path):
+        """pause_runners=true on the cluster forces every ARS to max_runners=0,
+        even when the def specifies a positive value — mirrors generate_runners.py
+        so `just resume-runners` cannot silently undo a pause.
+        """
+        clusters_yaml = {
+            "defaults": {},
+            "clusters": {
+                "arc-x": {
+                    "arc-runners": {"runner_name_prefix": ""},
+                    "modules": ["arc-runners"],
+                    "pause_runners": True,
+                }
+            },
+        }
+        modules = {"arc-runners": {"capped": {"name": "capped", "max_runners": 7}}}
+        repo = make_repo(tmp_path, clusters_yaml, modules)
+        result = build_max_runners_map(repo, clusters_yaml, "arc-x")
+        assert result == {"capped": 0}
+
 
 # ============================================================================
 # main() — CLI surface
@@ -805,7 +858,7 @@ class TestEndToEnd:
               max_burst_capacity: 2000
         """)
         (defs_dir / "l-x86iamx-8-16.yaml").write_text(full_def)
-        name, instance_type, max_runners = parse_def_file(defs_dir / "l-x86iamx-8-16.yaml")
+        name, instance_type, max_runners = parse_def_file(defs_dir / "l-x86iamx-8-16.yaml", "arc-x")
         assert name == "l-x86iamx-8-16"
         assert instance_type == "c7i.12xlarge"
         assert max_runners is None

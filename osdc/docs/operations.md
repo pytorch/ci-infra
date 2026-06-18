@@ -2,9 +2,10 @@
 
 ## Prerequisites
 
-- AWS CLI configured with credentials for an IAM principal mapped to one of the roles in the target cluster's `access_config.cluster_admin_role_names` (e.g. `osdc_gha_staging` for `arc-staging`, `osdc_gha_prod` for `arc-cbr-production`). How those credentials are acquired (SSO, role assumption, static keys) is left to the operator's organization — the project does not prescribe a profile or login flow.
+- AWS CLI configured with credentials for an IAM principal mapped to one of the roles in the target cluster's `access_config.cluster_admin_role_names` (e.g. `osdc_gha_staging` for `meta-staging-aws-uw1`, `osdc_gha_prod` for `arc-cbr-production`). How those credentials are acquired (SSO, role assumption, static keys) is left to the operator's organization — the project does not prescribe a profile or login flow.
 - `mise` installed ([mise.jdx.dev](https://mise.jdx.dev))
 - `just` installed (not managed by `mise` — install separately)
+- Docker with **BuildKit** enabled — local deploys build container images (e.g. `image-cache-janitor`) and require BuildKit; see [Docker / BuildKit (local builds)](#docker--buildkit-local-builds) below
 - Working directory: `osdc/`
 
 `mise` auto-installs all other tools (tofu, kubectl, helm, crane, awscli, packer, `uv`, plus linters) on first run. Run `just setup` once to create the Python virtualenv (`uv sync`) used by `cluster-config.py` and other helpers.
@@ -22,6 +23,35 @@ export no_proxy="${no_proxy:-},.eks.amazonaws.com"
 
 Every `just` recipe that touches the EKS API inlines this bypass for you. The export above is only needed when invoking `aws`, `kubectl`, or `helm` directly — for example during the read-only debugging session below.
 
+### Docker / BuildKit (local builds)
+
+`just deploy` / `just deploy-base` build container images locally (e.g. `image-cache-janitor`) for both `amd64` and `arm64`. These builds **require BuildKit**: the Dockerfiles rely on the `TARGETARCH` build arg, which only BuildKit auto-populates. Under the legacy builder `TARGETARCH` is empty, so arch-specific downloads (crictl, etc.) resolve to a malformed URL and fail with HTTP 404.
+
+CI has BuildKit; a fresh local Docker (especially Colima on Apple Silicon) often does not. To wire it up:
+
+```bash
+# 1. Install the buildx CLI plugin (Homebrew example)
+brew install docker-buildx
+
+# 2. Register it where the Docker CLI looks for plugins
+mkdir -p ~/.docker/cli-plugins
+ln -sfn "$(brew --prefix)/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx
+docker buildx version   # verify
+
+# 3. Make BuildKit the default for plain `docker build` (deploy.sh uses it directly)
+export DOCKER_BUILDKIT=1   # add to your shell profile, or run `docker buildx install` once
+```
+
+On Apple Silicon, the `amd64` half of each build runs under emulation. With Colima this is handled by **Rosetta** — no manual binfmt registration is needed — as long as the VM uses `vmType: vz` with `rosetta: true` (e.g. `colima start --vm-type vz --vz-rosetta`) and Rosetta is installed on the host:
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+```
+
+Colima then registers the Rosetta handler in the VM automatically; you do **not** need `docker run --privileged tonistiigi/binfmt --install all` (that would install slower QEMU handlers instead).
+
+A BuildKit build shows `#5` / `#6 DONE`-style step output; the legacy builder shows `Step N/M` / `Running in <hash>` plus a `The requested image's platform ... does not match the detected host platform` warning. That platform warning is harmless on its own — the real failure is the empty `TARGETARCH`.
+
 ## First-time setup
 
 ### 1. Bootstrap state storage
@@ -30,7 +60,7 @@ Each cluster needs an S3 bucket for tofu state and a shared DynamoDB lock table.
 
 ```bash
 # Single cluster
-just bootstrap arc-staging
+just bootstrap meta-staging-aws-uw1
 
 # All clusters defined in clusters.yaml
 just bootstrap-all
@@ -42,21 +72,21 @@ Idempotent — safe to run multiple times.
 
 ```bash
 # Full deploy (base + all modules)
-just deploy arc-staging
+just deploy meta-staging-aws-uw1
 
 # Or step by step
-just deploy-base arc-staging
-just deploy-module arc-staging karpenter
-just deploy-module arc-staging arc
-just deploy-module arc-staging nodepools
-just deploy-module arc-staging arc-runners
-just deploy-module arc-staging buildkit
-just deploy-module arc-staging pypi-cache
-just deploy-module arc-staging cache-enforcer
-just deploy-module arc-staging zombie-cleanup
-just deploy-module arc-staging harbor-cache-recovery
-just deploy-module arc-staging monitoring
-just deploy-module arc-staging logging
+just deploy-base meta-staging-aws-uw1
+just deploy-module meta-staging-aws-uw1 karpenter
+just deploy-module meta-staging-aws-uw1 arc
+just deploy-module meta-staging-aws-uw1 nodepools
+just deploy-module meta-staging-aws-uw1 arc-runners
+just deploy-module meta-staging-aws-uw1 buildkit
+just deploy-module meta-staging-aws-uw1 pypi-cache
+just deploy-module meta-staging-aws-uw1 cache-enforcer
+just deploy-module meta-staging-aws-uw1 zombie-cleanup
+just deploy-module meta-staging-aws-uw1 harbor-cache-recovery
+just deploy-module meta-staging-aws-uw1 monitoring
+just deploy-module meta-staging-aws-uw1 logging
 ```
 
 The full per-cluster module list lives in `clusters.yaml` under `clusters.<id>.modules`. Production clusters add GPU pools (`nodepools-h100`, `nodepools-b200`) and matching runners (`arc-runners-h100`, `arc-runners-b200`).
@@ -68,11 +98,11 @@ For the module contract (directory layout, deploy phases, adding a new module) s
 ### Deploy a specific module
 
 ```bash
-just deploy-module arc-staging nodepools
-just deploy-module arc-staging arc-runners
+just deploy-module meta-staging-aws-uw1 nodepools
+just deploy-module meta-staging-aws-uw1 arc-runners
 
 # Force a Helm upgrade even when the release looks unchanged
-just deploy-module arc-staging arc force
+just deploy-module meta-staging-aws-uw1 arc force
 ```
 
 ### Preview changes without applying
@@ -80,13 +110,13 @@ just deploy-module arc-staging arc force
 `just plan <cluster>` runs `tofu plan` for the base and every terraform-backed module. Read-only: no apply, no Kubernetes side effects, safe to run from CI on PRs.
 
 ```bash
-just plan arc-staging
+just plan meta-staging-aws-uw1
 ```
 
 ### Inspect cluster state
 
 ```bash
-just show arc-staging        # config, modules, tofu vars
+just show meta-staging-aws-uw1        # config, modules, tofu vars
 just list                    # all clusters and their modules
 ```
 
@@ -95,18 +125,18 @@ just list                    # all clusters and their modules
 The deploy commands write an audit log into ConfigMaps in the `osdc-system` namespace.
 
 ```bash
-just deploy-history arc-staging              # list of deploy entries (oldest → newest)
-just deploy-status arc-staging               # current versions + recent history (all)
-just deploy-status arc-staging arc-runners   # narrow to a single module/command
+just deploy-history meta-staging-aws-uw1              # list of deploy entries (oldest → newest)
+just deploy-status meta-staging-aws-uw1               # current versions + recent history (all)
+just deploy-status meta-staging-aws-uw1 arc-runners   # narrow to a single module/command
 ```
 
 ### Post-deploy validation
 
 ```bash
-just smoke arc-staging              # pytest-based smoke suite (per-module)
-just integration-test arc-staging   # full integration suite
-just load-test arc-staging          # synthetic load
-just workload-test arc-staging      # production workload replay
+just smoke meta-staging-aws-uw1              # pytest-based smoke suite (per-module)
+just integration-test meta-staging-aws-uw1   # full integration suite
+just load-test meta-staging-aws-uw1          # synthetic load
+just workload-test meta-staging-aws-uw1      # production workload replay
 ```
 
 `just deploy` itself prompts to run smoke at the end (skipped when `OSDC_SMOKE=no`).
@@ -116,8 +146,8 @@ just workload-test arc-staging      # production workload replay
 To roll new runner configurations or AMIs without aborting in-flight CI jobs:
 
 ```bash
-just drain-runners arc-staging      # patch maxRunners=0, taint nodes, wait for in-flight pods
-just resume-runners arc-staging     # restore maxRunners from def files, remove the taint
+just drain-runners meta-staging-aws-uw1      # patch maxRunners=0, taint nodes, wait for in-flight pods
+just resume-runners meta-staging-aws-uw1     # restore maxRunners from def files, remove the taint
 ```
 
 `drain-runners` waits up to `OSDC_DRAIN_TIMEOUT_SECS` (default `3600`) for runner pods to finish before declaring stragglers. The default 1h matches typical PyTorch suite duration — raise it for longer test windows.
@@ -149,7 +179,7 @@ Set these to suppress the interactive prompts in `just deploy` — required for 
 
 ## Adding a new cluster
 
-1. Pick a cluster ID, region, VPC CIDR, and decide which modules. The VPC CIDR sizes only the IPv4 footprint (nodes, NAT, ENI primary IPs) — pod IPs come from an AWS-allocated /56 IPv6 block, so a `/16` is more than enough even for very large fleets. Module names must match a directory under `modules/` — see the existing `arc-staging` and `arc-cbr-production` entries in `clusters.yaml` for full, working examples. Minimal skeleton:
+1. Pick a cluster ID, region, VPC CIDR, and decide which modules. The VPC CIDR sizes only the IPv4 footprint (nodes, NAT, ENI primary IPs) — pod IPs come from an AWS-allocated /56 IPv6 block, so a `/16` is more than enough even for very large fleets. Module names must match a directory under `modules/` — see the existing `meta-staging-aws-uw1` and `arc-cbr-production` entries in `clusters.yaml` for full, working examples. Minimal skeleton:
 
    ```yaml
    # clusters.yaml
@@ -236,9 +266,26 @@ Two modules need definitions: `nodepools` (compute) and `arc-runners` (ARC scale
 
 3. Deploy:
    ```bash
-   just deploy-module arc-staging nodepools
-   just deploy-module arc-staging arc-runners
+   just deploy-module meta-staging-aws-uw1 nodepools
+   just deploy-module meta-staging-aws-uw1 arc-runners
    ```
+
+## Adding a cached git repository
+
+The git cache uses a two-tier architecture: a central StatefulSet clones repos from GitHub and serves them via rsync, while a DaemonSet on each node syncs locally.
+
+1. Edit the appropriate list in the `central.py` script inside `base/kubernetes/git-cache/central-configmap.yaml`. There are **two** lists — pick the right one:
+   - `REPOS_FULL` — repos with submodules. Cloned non-bare with `--recurse-submodules` so `.git/modules/<name>/objects/` is available for `actions/checkout` submodule alternates. Currently: `pytorch/pytorch`.
+   - `REPOS_BARE` — repos without submodules. Cloned bare (lightweight). Currently: `pytorch/test-infra`.
+
+   Adding a submodule-bearing repo to `REPOS_BARE` will break checkout — when in doubt, use `REPOS_FULL`.
+
+2. Redeploy:
+   ```bash
+   just deploy-base meta-staging-aws-uw1
+   ```
+
+Note: Runner pods use `CHECKOUT_GIT_CACHE_DIR` (not `GIT_ALTERNATE_OBJECT_DIRECTORIES`) to find the cache. The `actions/checkout` action uses `reference-repository` to leverage the cache. No runner template changes are needed when adding a new repository.
 
 ## Terraform state management
 
@@ -255,8 +302,8 @@ To inspect state:
 ```bash
 cd modules/eks/terraform
 tofu init -reconfigure \
-    -backend-config="bucket=ciforge-tfstate-arc-staging" \
-    -backend-config="key=arc-staging/base/terraform.tfstate" \
+    -backend-config="bucket=ciforge-tfstate-meta-staging-aws-uw1" \
+    -backend-config="key=meta-staging-aws-uw1/base/terraform.tfstate" \
     -backend-config="region=us-west-2" \
     -backend-config="dynamodb_table=ciforge-terraform-locks"
 tofu state list

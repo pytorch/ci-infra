@@ -182,7 +182,7 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_HUD_API_URL` | _(built-in default URL)_ | hardcoded PyTorch HUD `queued_jobs_aggregate` URL | HUD endpoint for queued job counts |
 | `CAPACITY_AWARE_HUD_API_TOKEN` | _(empty)_ | from K8s secret `pytorch-hud-token` (optional mount) | PyTorch HUD API token for queued job counts |
 
-Currently enabled for all runners (`CAPACITY_AWARE_ENABLED=true` is hardcoded in the template). Note: `generate_runners.py` caps `proactive_capacity` at `N` for clusters that set `proactive_capacity_max: N` in `clusters.yaml` — each scale set renders `min(def_proactive_capacity, N)`. The staging cluster sets `proactive_capacity_max: 0`, so no placeholders are pre-provisioned there — only on-demand pairs created for in-flight jobs.
+Currently enabled for all runners (`CAPACITY_AWARE_ENABLED=true` is hardcoded in the template). Note: `generate_runners.py` caps `proactive_capacity` at `N` for clusters that set `proactive_capacity_max: N` in `clusters.yaml` — each scale set renders `min(def_proactive_capacity, N)`. The staging cluster sets `proactive_capacity_max: 0`, so no placeholders are pre-provisioned there — only on-demand pairs created for in-flight jobs. Other clusters do not set the cap and use def values directly.
 
 ## Creating the HUD API Secret
 
@@ -222,18 +222,18 @@ CPU/T4/A10G/L4/A100 runner defs currently do not set `max_runners`.
 
 ## Load Testing the Capacity Monitor
 
-To verify the capacity monitor and HUD integration on arc-staging:
+To verify the capacity monitor and HUD integration on meta-staging-aws-uw1:
 
 ```bash
-just load-test arc-staging --label l-x86iamx-8-16:400
+just load-test meta-staging-aws-uw1 --label l-x86iamx-8-16:400
 ```
 
-**Why `--label l-x86iamx-8-16:400`**: arc-staging runs in us-west-1 where `c7a` instances are not available. The default distribution assigns most jobs to `l-x86iavx512-8-16` (node-fleet `c7a`), which will never schedule. `l-x86iamx-8-16` uses node-fleet `c7i`, which is available in us-west-1.
+**Why `--label l-x86iamx-8-16:400`**: meta-staging-aws-uw1 runs in us-west-1 where `c7a` instances are not available. The default distribution assigns most jobs to `l-x86iavx512-8-16` (node-fleet `c7a`), which will never schedule. `l-x86iamx-8-16` uses node-fleet `c7i`, which is available in us-west-1.
 
 To exercise multiple runner types in parallel (e.g., CPU + GPU), repeat `--label`:
 
 ```bash
-just load-test arc-staging --label l-x86iamx-8-16:400 --label l-x86iavx512-29-115-t4:200
+just load-test meta-staging-aws-uw1 --label l-x86iamx-8-16:400 --label l-x86iavx512-29-115-t4:200
 ```
 
 **GPU labels in us-west-1**: g5 (A10G) and g6 (L4) fleets have `exclude_regions: [us-west-1]`. Only g4dn (T4) is available — pick from `l-x86iavx512-29-115-t4` (1×T4), `l-x86iavx512-45-172-t4-4` (4×T4), or `l-bx86iavx512-94-344-t4-8` (8×T4, bare-metal). Scale sets for excluded instance types still deploy but render with `maxRunners: 0`, so picking one of them in `--label` is a no-op.

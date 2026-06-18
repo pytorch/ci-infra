@@ -36,10 +36,12 @@ mise run push --folder "..."
   | `default`, `release-runners` | `pytorch-arc-cbr-production` |
   | `arc-cbr-prod-uw1` | `pytorch-arc-cbr-production-uw1` |
   | `meta-prod-aws-ue1` | `meta-prod-aws-ue1` |
+  | `lf-prod-aws-ue1` | `lf-prod-aws-ue1` |
+  | `lf-prod-aws-ue2` | `lf-prod-aws-ue2` |
 
   `workflow_job` data doesn't carry the Prometheus cluster name — only `runner_group_name` — so each panel hardcodes the mapping above.
 
-  **Agents: before editing any panel that uses this mapping (or adding a new one), verify the table above is still current.** Query ClickHouse for `SELECT DISTINCT runner_group_name FROM default.workflow_job WHERE arrayExists(label -> match(label, '^mt-(rel-)?l-'), labels) AND started_at > now() - INTERVAL 7 DAY` and cross-check against the Prometheus cluster list (`label_values(gha_assigned_jobs{cluster=~".*arc.*production.*|meta-prod-aws-.*"},cluster)`). If either side has values not represented in the table, update this table AND every panel query that hardcodes the mapping (find them by grepping all dashboard JSONs for `runner_group_name IN` and `runner_group_name =`). Do not assume the table is complete just because it covers the most recent cluster you added.
+  **Agents: before editing any panel that uses this mapping (or adding a new one), verify the table above is still current.** Query ClickHouse for `SELECT DISTINCT runner_group_name FROM default.workflow_job WHERE arrayExists(label -> match(label, '^(mt|lf)-(rel-)?l-'), labels) AND started_at > now() - INTERVAL 7 DAY` and cross-check against the Prometheus cluster list (`label_values(gha_assigned_jobs{cluster=~".*arc.*production.*|meta-prod-aws-.*|lf-prod-aws-.*"},cluster)`). If either side has values not represented in the table, update this table AND every panel query that hardcodes the mapping (find them by grepping all dashboard JSONs for `runner_group_name IN` and `runner_group_name =`). Do not assume the table is complete just because it covers the most recent cluster you added.
 
 ## Datasources
 
