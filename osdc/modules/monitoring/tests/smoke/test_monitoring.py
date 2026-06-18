@@ -22,23 +22,23 @@ from helpers import (
 
 pytestmark = [pytest.mark.live]
 
-EXPECTED_SERVICE_MONITORS = [
-    "apiserver",
-    "arc-controller",
-    "buildkit",
-    "buildkit-haproxy",
-    "harbor",
-    "karpenter",
-    "keda",
-    "node-compactor",
-    "pypi-cache",
-    "dcgm-exporter",
-]
+EXPECTED_SERVICE_MONITORS: dict[str, str | None] = {
+    "apiserver": None,
+    "arc-controller": "arc",
+    "buildkit": "buildkit",
+    "buildkit-haproxy": "buildkit",
+    "harbor": None,
+    "karpenter": "karpenter",
+    "keda": "keda",
+    "node-compactor": None,
+    "pypi-cache": "pypi-cache",
+    "dcgm-exporter": None,
+}
 
-EXPECTED_POD_MONITORS = [
-    "arc-listeners",
-    "coredns",
-]
+EXPECTED_POD_MONITORS: dict[str, str | None] = {
+    "arc-listeners": "arc",
+    "coredns": None,
+}
 
 
 @pytest.fixture
@@ -120,11 +120,16 @@ class TestPrometheusOperator:
 class TestServiceMonitors:
     """Verify expected ServiceMonitors exist."""
 
-    def test_service_monitors_exist(self, mon_ns: str) -> None:
+    def test_service_monitors_exist(self, mon_ns: str, enabled_modules: list[str]) -> None:
         result = run_kubectl(["get", "servicemonitors"], namespace=mon_ns)
         sm_names = {item["metadata"]["name"] for item in result.get("items", [])}
 
-        missing = [name for name in EXPECTED_SERVICE_MONITORS if name not in sm_names]
+        expected = [
+            name
+            for name, required_module in EXPECTED_SERVICE_MONITORS.items()
+            if required_module is None or required_module in enabled_modules
+        ]
+        missing = [name for name in expected if name not in sm_names]
         assert not missing, f"Missing ServiceMonitors in '{mon_ns}': {missing}"
 
 
@@ -136,11 +141,16 @@ class TestServiceMonitors:
 class TestPodMonitors:
     """Verify expected PodMonitors exist."""
 
-    def test_pod_monitors_exist(self, mon_ns: str) -> None:
+    def test_pod_monitors_exist(self, mon_ns: str, enabled_modules: list[str]) -> None:
         result = run_kubectl(["get", "podmonitors"], namespace=mon_ns)
         pm_names = {item["metadata"]["name"] for item in result.get("items", [])}
 
-        missing = [name for name in EXPECTED_POD_MONITORS if name not in pm_names]
+        expected = [
+            name
+            for name, required_module in EXPECTED_POD_MONITORS.items()
+            if required_module is None or required_module in enabled_modules
+        ]
+        missing = [name for name in expected if name not in pm_names]
         assert not missing, f"Missing PodMonitors in '{mon_ns}': {missing}"
 
 
