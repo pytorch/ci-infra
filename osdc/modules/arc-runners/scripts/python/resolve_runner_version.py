@@ -206,10 +206,22 @@ def _run(cluster_id: str, client: Client) -> str:
         return f"{IMAGE_REPO}:{tag}@{digest}"
 
     if os.environ.get("OSDC_RESOLVER_READONLY"):
-        raise ValueError(
-            f"OSDC_RESOLVER_READONLY set but {CM_NAME} has no entry for osdc_sha={sha}. "
-            "Run a normal deploy (without OSDC_RESOLVER_READONLY) to populate it first."
+        if not history:
+            raise ValueError(
+                f"OSDC_RESOLVER_READONLY set but {CM_NAME} has no entry for osdc_sha={sha}. "
+                "Run a normal deploy (without OSDC_RESOLVER_READONLY) to populate it first."
+            )
+        newest = history[0]
+        newest_sha = newest.get("osdc_sha", "<unknown>")
+        newest_resolved_at = newest.get("resolved_at", "<unknown>")
+        print(
+            f"resolve_runner_version: OSDC_RESOLVER_READONLY set, no cache entry for "
+            f"osdc_sha={sha}; falling back to newest entry {newest_sha} resolved at "
+            f"{newest_resolved_at}. To pin to your exact SHA, run a normal deploy first.",
+            file=sys.stderr,
         )
+        tag, digest = newest["tag"], newest["digest"]
+        return f"{IMAGE_REPO}:{tag}@{digest}"
 
     token = os.environ.get("GITHUB_TOKEN") or None
     tag = fetch_latest_tag(token)

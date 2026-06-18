@@ -2081,8 +2081,10 @@ smoke cluster:
     # each variant's own deploy.sh, e.g. modules/arc-runners-b200/deploy.sh).
     # Generation must happen ONCE before any pytest worker starts —
     # previously the test fixture shelled out, which raced under pytest-xdist.
-    # OSDC_RESOLVER_READONLY: smoke must not mutate the lock ConfigMap or hit
-    # GitHub; it reads the newest cached entry the live deploy already wrote.
+    # OSDC_RESOLVER_READONLY: smoke must not mutate the lock ConfigMap or hit GitHub.
+    # Prefers an exact match for the current osdc SHA; falls back to the newest
+    # entry when the current SHA isn't in the lock (e.g. when iterating on test
+    # code without a fresh deploy).
     export OSDC_RESOLVER_READONLY=1
     for mod in $MODULES; do
         case "$mod" in
