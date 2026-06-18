@@ -143,7 +143,7 @@ def main() -> None:
 
     # Phase 3: Instrument workflows
     log.info("Phase 3: Instrumenting workflows...")
-    instrument_workflows(canary_path, prefix)
+    instrument_workflows(canary_path, prefix, pypi_cache_enabled=has_module(cfg, "pypi-cache"))
 
     # Phase 4: Create PR
     pr_created_at = datetime.now(tz=UTC)

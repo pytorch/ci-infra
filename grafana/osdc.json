@@ -964,7 +964,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n  toStartOfInterval(created_at, INTERVAL 5 MINUTE) AS time,\n  uniqExact(id) AS jobs\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n  AND arrayExists(label -> match(label, '^mt-(rel-)?l-'), labels)\n  AND (\n    (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n  )\n  AND $__timeFilter(created_at)\nGROUP BY time\nORDER BY time ASC"
+                      "rawSql": "SELECT\n  toStartOfInterval(created_at, INTERVAL 5 MINUTE) AS time,\n  uniqExact(id) AS jobs\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n  AND arrayExists(label -> match(label, '^(mt|lf)-(rel-)?l-'), labels)\n  AND (\n    (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'lf-prod-aws-ue1' AND match('lf-prod-aws-ue1', '^(${cluster:regex})$'))\n    OR (runner_group_name = 'lf-prod-aws-ue2' AND match('lf-prod-aws-ue2', '^(${cluster:regex})$'))\n  )\n  AND $__timeFilter(created_at)\nGROUP BY time\nORDER BY time ASC"
                     },
                     "version": "v0"
                   },
@@ -1215,7 +1215,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND match(extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$'), '^(${runner_name_prefix:regex})$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > created_at\nORDER BY started_at"
+                      "rawSql": "SELECT\n    bucket_time AS time,\n    dateDiff('second', j_created_at, bucket_time) / 60.0 AS queue_minutes\nFROM (\n    SELECT\n        argMax(created_at, started_at) AS j_created_at,\n        argMax(status, started_at) AS j_status,\n        argMax(runner_group_name, started_at) AS j_runner_group_name,\n        argMax(labels, started_at) AS j_labels,\n        max(_inserted_at) AS j_last_insert,\n        if(argMax(status, started_at) IN ('queued', 'waiting'), now64(9), argMax(started_at, started_at)) AS j_queue_end\n    FROM default.workflow_job\n    PREWHERE created_at <= $__toTime\n        AND created_at >= $__fromTime - INTERVAL 24 HOUR\n    WHERE arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-') OR startsWith(x, 'lf-l-') OR startsWith(x, 'lf-rel-l-'), labels)\n        AND match(repository_full_name, '^(${repository:regex})$')\n    GROUP BY id\n    HAVING NOT arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, j_labels)\n        AND arrayExists(x -> match(x, '^(${runner_name_prefix:regex})$'), j_labels)\n        AND (\n          (j_runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = 'lf-prod-aws-ue1' AND match('lf-prod-aws-ue1', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = 'lf-prod-aws-ue2' AND match('lf-prod-aws-ue2', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = '' AND j_status IN ('queued', 'waiting') AND j_last_insert > now() - INTERVAL 3 HOUR)\n        )\n        AND j_queue_end >= $__fromTime\n) ARRAY JOIN\n    arrayDistinct(arrayConcat(\n        arrayFilter(\n            t -> t >= j_created_at AND t >= $__fromTime AND t <= $__toTime,\n            arrayMap(x -> toDateTime64(x, 9),\n                range(\n                    toUInt32(intDiv(toUInt32(greatest(j_created_at, $__fromTime)), 300) * 300),\n                    toUInt32(intDiv(toUInt32(least(j_queue_end, $__toTime)), 300) * 300) + 300,\n                    300\n                )\n            )\n        ),\n        if(j_queue_end >= $__fromTime AND j_queue_end <= $__toTime, [j_queue_end], [])\n    )) AS bucket_time\nWHERE bucket_time <= j_queue_end\nORDER BY bucket_time"
                     },
                     "version": "v0"
                   },
@@ -1227,10 +1227,10 @@
             "transformations": []
           }
         },
-        "description": "Per-job queue time distribution over time for OSDC production runners, excluding capacity-constrained GPU runners (h100, b200, gb200, a100). Y-axis log scale, minutes.",
+        "description": "Per-job queue time distribution over time for OSDC production runners, excluding capacity-constrained GPU runners (h100, b200, gb200, a100). Each 5-minute bucket between a job's created_at and started_at (or now, if still queued) contributes a point at its current accumulated queue duration, so a long-queued job shows rising values across every bucket of its wait instead of a single point at start. Y-axis log scale, minutes.",
         "id": 10,
         "links": [],
-        "title": "Queue Time Distribution (excl. capacity-constrained instances) [cluster, repository, scale_set, runner_name_prefix]",
+        "title": "Queue Time Distribution (excl. capacity-constrained instances) [cluster, repository, runner_name_prefix]",
         "vizConfig": {
           "group": "heatmap",
           "kind": "VizConfig",
@@ -1342,7 +1342,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n    started_at AS time,\n    dateDiff('second', created_at, started_at) / 60.0 AS queue_minutes\nFROM default.workflow_job\nWHERE match(repository_full_name, '^(${repository:regex})$')\n    AND arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels)\n    AND arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, labels)\n    AND match(runner_name, '^(${scale_set:regex})-runner-[^-]+$')\n    AND match(extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$'), '^(${runner_name_prefix:regex})$')\n    AND (\n      (runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n      OR (runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n    )\n    AND $__timeFilter(started_at)\n    AND started_at > created_at\nORDER BY started_at"
+                      "rawSql": "SELECT\n    bucket_time AS time,\n    dateDiff('second', j_created_at, bucket_time) / 60.0 AS queue_minutes\nFROM (\n    SELECT\n        argMax(created_at, started_at) AS j_created_at,\n        argMax(status, started_at) AS j_status,\n        argMax(runner_group_name, started_at) AS j_runner_group_name,\n        argMax(labels, started_at) AS j_labels,\n        max(_inserted_at) AS j_last_insert,\n        if(argMax(status, started_at) IN ('queued', 'waiting'), now64(9), argMax(started_at, started_at)) AS j_queue_end\n    FROM default.workflow_job\n    PREWHERE created_at <= $__toTime\n        AND created_at >= $__fromTime - INTERVAL 24 HOUR\n    WHERE arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-') OR startsWith(x, 'lf-l-') OR startsWith(x, 'lf-rel-l-'), labels)\n        AND match(repository_full_name, '^(${repository:regex})$')\n    GROUP BY id\n    HAVING arrayExists(x -> position(x, 'h100') > 0 OR position(x, 'b200') > 0 OR position(x, 'gb200') > 0 OR position(x, 'a100') > 0, j_labels)\n        AND arrayExists(x -> match(x, '^(${runner_name_prefix:regex})$'), j_labels)\n        AND (\n          (j_runner_group_name IN ('default', 'release-runners') AND match('pytorch-arc-cbr-production', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = 'arc-cbr-prod-uw1' AND match('pytorch-arc-cbr-production-uw1', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = 'meta-prod-aws-ue1' AND match('meta-prod-aws-ue1', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = 'lf-prod-aws-ue1' AND match('lf-prod-aws-ue1', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = 'lf-prod-aws-ue2' AND match('lf-prod-aws-ue2', '^(${cluster:regex})$'))\n          OR (j_runner_group_name = '' AND j_status IN ('queued', 'waiting') AND j_last_insert > now() - INTERVAL 3 HOUR)\n        )\n        AND j_queue_end >= $__fromTime\n) ARRAY JOIN\n    arrayDistinct(arrayConcat(\n        arrayFilter(\n            t -> t >= j_created_at AND t >= $__fromTime AND t <= $__toTime,\n            arrayMap(x -> toDateTime64(x, 9),\n                range(\n                    toUInt32(intDiv(toUInt32(greatest(j_created_at, $__fromTime)), 300) * 300),\n                    toUInt32(intDiv(toUInt32(least(j_queue_end, $__toTime)), 300) * 300) + 300,\n                    300\n                )\n            )\n        ),\n        if(j_queue_end >= $__fromTime AND j_queue_end <= $__toTime, [j_queue_end], [])\n    )) AS bucket_time\nWHERE bucket_time <= j_queue_end\nORDER BY bucket_time"
                     },
                     "version": "v0"
                   },
@@ -1354,10 +1354,10 @@
             "transformations": []
           }
         },
-        "description": "Per-job queue time distribution over time for OSDC production runners, ONLY capacity-constrained GPU runners (h100, b200, gb200, a100). Y-axis log scale, minutes.",
+        "description": "Per-job queue time distribution over time for OSDC production runners, ONLY capacity-constrained GPU runners (h100, b200, gb200, a100). Each 5-minute bucket between a job's created_at and started_at (or now, if still queued) contributes a point at its current accumulated queue duration, so a long-queued job shows rising values across every bucket of its wait instead of a single point at start. Y-axis log scale, minutes.",
         "id": 11,
         "links": [],
-        "title": "Queue Time Distribution (capacity-constrained instances only) [cluster, repository, scale_set, runner_name_prefix]",
+        "title": "Queue Time Distribution (capacity-constrained instances only) [cluster, repository, runner_name_prefix]",
         "vizConfig": {
           "group": "heatmap",
           "kind": "VizConfig",
@@ -1634,7 +1634,7 @@
             "$__all"
           ]
         },
-        "definition": "label_values(gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*\"},cluster)",
+        "definition": "label_values(gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*|lf-prod-aws-.*\"},cluster)",
         "hide": "dontHide",
         "includeAll": true,
         "label": "Cluster",
@@ -1649,7 +1649,7 @@
           "kind": "DataQuery",
           "spec": {
             "qryType": 1,
-            "query": "label_values(gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*\"},cluster)",
+            "query": "label_values(gha_assigned_jobs{cluster=~\".*arc.*production.*|meta-prod-aws-.*|lf-prod-aws-.*\"},cluster)",
             "refId": "PrometheusVariableQueryEditor-VariableQuery"
           },
           "version": "v0"
@@ -1672,7 +1672,7 @@
             "$__all"
           ]
         },
-        "definition": "SELECT DISTINCT extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') AS prefix FROM default.workflow_job WHERE arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels) AND started_at > now() - INTERVAL 7 DAY AND runner_group_name IN ('default', 'release-runners', 'arc-cbr-prod-uw1', 'meta-prod-aws-ue1') AND extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') != '' ORDER BY prefix",
+        "definition": "SELECT DISTINCT extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') AS prefix FROM default.workflow_job WHERE arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-') OR startsWith(x, 'lf-l-') OR startsWith(x, 'lf-rel-l-'), labels) AND started_at > now() - INTERVAL 7 DAY AND runner_group_name IN ('default', 'release-runners', 'arc-cbr-prod-uw1', 'meta-prod-aws-ue1', 'lf-prod-aws-ue1', 'lf-prod-aws-ue2') AND extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') != '' ORDER BY prefix",
         "hide": "dontHide",
         "includeAll": true,
         "label": "Runner name",
@@ -1689,7 +1689,7 @@
             "editorType": "sql",
             "format": 1,
             "queryType": "table",
-            "rawSql": "SELECT DISTINCT extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') AS prefix FROM default.workflow_job WHERE arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-'), labels) AND started_at > now() - INTERVAL 7 DAY AND runner_group_name IN ('default', 'release-runners', 'arc-cbr-prod-uw1', 'meta-prod-aws-ue1') AND extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') != '' ORDER BY prefix"
+            "rawSql": "SELECT DISTINCT extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') AS prefix FROM default.workflow_job WHERE arrayExists(x -> startsWith(x, 'mt-l-') OR startsWith(x, 'mt-rel-l-') OR startsWith(x, 'lf-l-') OR startsWith(x, 'lf-rel-l-'), labels) AND started_at > now() - INTERVAL 7 DAY AND runner_group_name IN ('default', 'release-runners', 'arc-cbr-prod-uw1', 'meta-prod-aws-ue1', 'lf-prod-aws-ue1', 'lf-prod-aws-ue2') AND extract(runner_name, '^(.+)-[^-]+-runner-[^-]+$') != '' ORDER BY prefix"
           },
           "version": "v0"
         },

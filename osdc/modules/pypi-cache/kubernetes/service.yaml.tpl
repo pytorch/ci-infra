@@ -8,6 +8,7 @@ metadata:
   name: pypi-cache-__CUDA_SLUG__
   namespace: __NAMESPACE__
   labels:
+    osdc.io/module: pypi-cache
     app: pypi-cache
     cuda-version: __CUDA_SLUG__
     app.kubernetes.io/name: pypi-cache

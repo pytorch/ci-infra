@@ -6,10 +6,15 @@ Phase 2: Generate workflow + prepare PR
 """
 
 import logging
+import re
 import shutil
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
+from conditional_blocks import strip_conditional_block  # noqa: E402
 
 from run import (
     CANARY_REPO,
@@ -21,6 +26,20 @@ from run import (
 log = logging.getLogger("osdc-integration-test")
 
 SCRATCH_DIR_NAME = ".scratch"
+
+TAG_REQUIREMENTS: dict[str, list[str]] = {
+    "ARC_RUNNERS": ["arc-runners"],
+    "PYPI_CACHE": ["arc-runners", "pypi-cache"],
+    "GPU_T4": ["arc-runners", "nodepools"],
+    "BUILDKIT": ["arc-runners", "buildkit"],
+    "B200": ["arc-runners-b200", "nodepools-b200"],
+    "CACHE_ENFORCER": ["arc-runners", "cache-enforcer"],
+    "RELEASE": ["arc-runners"],
+}
+
+INVERSE_TAG_EXCLUSIONS: dict[str, list[str]] = {
+    "NO_CACHE_ENFORCER": ["cache-enforcer"],
+}
 
 
 def ensure_canary_repo(upstream_dir: Path) -> Path:
@@ -142,15 +161,15 @@ def cleanup_stale_prs(branch: str, pr_title_prefix: str = PR_TITLE_PREFIX):
             run_cmd(["gh", "run", "cancel", str(r["databaseId"]), "--repo", CANARY_REPO], check=False)
 
 
-# ── Phase 1: Staging pool clear (arc-staging only) ─────────────────────
+# ── Phase 1: Staging pool clear (meta-staging-aws-uw1 only) ─────────────────────
 
 
 def clear_staging_pools(cluster_id: str, force: bool = False):
-    """Clear karpenter nodepools and runner pods for staging. Only for arc-staging."""
-    if cluster_id != "arc-staging":
+    """Clear karpenter nodepools and runner pods for staging. Only for meta-staging-aws-uw1."""
+    if cluster_id != "meta-staging-aws-uw1":
         return
 
-    log.info("Phase 1: Checking for active runner pods (arc-staging only)...")
+    log.info("Phase 1: Checking for active runner pods (meta-staging-aws-uw1 only)...")
     result = run_cmd(
         ["kubectl", "get", "pods", "-n", "arc-runners", "--no-headers"],
         check=False,
@@ -188,39 +207,44 @@ def clear_staging_pools(cluster_id: str, force: bool = False):
         time.sleep(10)
 
     log.info("  Re-deploying nodepools...")
-    run_cmd(["just", "deploy-module", "arc-staging", "nodepools"], check=False)
+    run_cmd(["just", "deploy-module", "meta-staging-aws-uw1", "nodepools"], check=False)
 
 
 # ── Phase 2: Prepare PR ────────────────────────────────────────────────
 
 
-def _strip_conditional_block(content: str, tag: str, keep: bool) -> str:
-    """Remove or keep a # BEGIN_<tag> / # END_<tag> conditional block.
+def _has_any_job(content: str) -> bool:
+    lines = content.split("\n")
+    in_jobs = False
+    for line in lines:
+        if not in_jobs:
+            if line.rstrip() == "jobs:":
+                in_jobs = True
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line.startswith("  ") and not line.startswith("   "):
+            head = line[2:]
+            if head and head[0].isalpha() and ":" in head:
+                return True
+    return False
 
-    When *keep* is False the block (markers + content) is stripped entirely.
-    When *keep* is True the content is kept but the marker comments are removed.
-    """
-    begin = f"# BEGIN_{tag}"
-    end = f"# END_{tag}"
-    if not keep:
-        lines = content.split("\n")
-        filtered = []
-        inside = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped == begin:
-                inside = True
-                continue
-            if stripped == end:
-                inside = False
-                continue
-            if not inside:
-                filtered.append(line)
-        return "\n".join(filtered)
-    # keep=True — remove markers, keep content
-    content = content.replace(f"  {begin}\n", "")
-    content = content.replace(f"  {end}\n", "")
-    return content
+
+def _replace_jobs_with_noop(content: str) -> str:
+    lines = content.split("\n")
+    out = []
+    for line in lines:
+        if line.rstrip() == "jobs:":
+            out.append("jobs:")
+            out.append("  no-op:")
+            out.append("    runs-on: ubuntu-latest")
+            out.append("    steps:")
+            out.append('      - run: echo "No integration test suites match this cluster\'s modules"')
+            break
+        out.append(line)
+    suffix = "\n" if content.endswith("\n") else ""
+    return "\n".join(out) + suffix
 
 
 def generate_workflow(
@@ -228,27 +252,44 @@ def generate_workflow(
     prefix: str,
     cluster_id: str,
     cluster_name: str,
-    b200_enabled: bool,
-    cache_enforcer_enabled: bool = False,
-    release_enabled: bool = False,
+    cluster_modules: list[str],
     pypi_cache_slugs: str = "cpu cu121 cu124",
     pypi_cache_cuda_version: str = "12.8",
+    runner_group: str = "default",
+    release_runner_group: str = "release-runners",
+    ecr_pull_resolved_tag: str = "",
+    ecr_pull_sha: str = "",
 ) -> str:
     """Generate the integration test workflow from template."""
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
     content = template_path.read_text()
 
-    # Substitute template variables
     content = content.replace("{{PREFIX}}", prefix)
+    content = content.replace("{{RUNNER_GROUP}}", runner_group)
+    content = content.replace("{{RELEASE_RUNNER_GROUP}}", release_runner_group)
     content = content.replace("{{CLUSTER_ID}}", cluster_id)
     content = content.replace("{{CLUSTER_NAME}}", cluster_name)
     content = content.replace("{{PYPI_CACHE_SLUGS}}", pypi_cache_slugs)
     content = content.replace("{{PYPI_CACHE_CUDA_VERSION}}", pypi_cache_cuda_version)
+    content = content.replace("{{ECR_PULL_RESOLVED_TAG}}", ecr_pull_resolved_tag)
+    content = content.replace("{{ECR_PULL_SHA}}", ecr_pull_sha)
 
-    # Handle conditional blocks
-    content = _strip_conditional_block(content, "B200", keep=b200_enabled)
-    content = _strip_conditional_block(content, "CACHE_ENFORCER", keep=cache_enforcer_enabled)
-    content = _strip_conditional_block(content, "RELEASE", keep=release_enabled)
+    # Guard: any "{{...}}" left after substitution is a template/code drift bug.
+    leftover = re.findall(r"\{\{[A-Z_]+\}\}", content)
+    if leftover:
+        raise RuntimeError(f"Unsubstituted template placeholders remain: {sorted(set(leftover))}")
+
+    modules_set = set(cluster_modules)
+    for tag, required in TAG_REQUIREMENTS.items():
+        keep = all(m in modules_set for m in required)
+        content = strip_conditional_block(content, tag, keep=keep)
+
+    for tag, excluded in INVERSE_TAG_EXCLUSIONS.items():
+        keep = not any(m in modules_set for m in excluded)
+        content = strip_conditional_block(content, tag, keep=keep)
+
+    if not _has_any_job(content):
+        content = _replace_jobs_with_noop(content)
 
     return content
 
