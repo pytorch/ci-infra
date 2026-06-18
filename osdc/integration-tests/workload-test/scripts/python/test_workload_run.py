@@ -20,7 +20,7 @@ from workload_run import (
 
 class TestBranchName:
     def test_basic(self):
-        assert branch_name("arc-staging") == "osdc-workload-test-arc-staging"
+        assert branch_name("meta-staging-aws-uw1") == "osdc-workload-test-meta-staging-aws-uw1"
 
     def test_production(self):
         assert branch_name("arc-cbr-production") == "osdc-workload-test-arc-cbr-production"
@@ -981,7 +981,7 @@ class TestMain:
             with pytest.raises(SystemExit):
                 main()
 
-        mock_instrument.assert_called_once_with(canary, "cbr-")
+        mock_instrument.assert_called_once_with(canary, "cbr-", pypi_cache_enabled=False)
 
     @patch("workload_run.close_pr")
     @patch("workload_run.print_workload_report")
@@ -1218,7 +1218,7 @@ class TestMain:
                 main()
 
         # instrument_workflows should receive "" as prefix
-        mock_instrument.assert_called_once_with(Path("/tmp/canary"), "")
+        mock_instrument.assert_called_once_with(Path("/tmp/canary"), "", pypi_cache_enabled=False)
 
 
 # ── Constants ───────────────────────────────────────────────────────────

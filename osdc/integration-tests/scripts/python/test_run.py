@@ -2,9 +2,11 @@
 
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from phases import (
     cleanup_stale_prs,
     clear_staging_pools,
@@ -37,12 +39,13 @@ def clusters_yaml(tmp_path):
             "logging": {"namespace": "logging"},
         },
         "clusters": {
-            "arc-staging": {
-                "cluster_name": "pytorch-arc-staging",
+            "meta-staging-aws-uw1": {
+                "cluster_name": "meta-staging-aws-uw1",
                 "aws_region": "us-west-2",
                 "modules": ["eks", "karpenter", "nodepools", "arc", "arc-runners"],
                 "harbor": {"core_replicas": 1},
                 "monitoring": {"grafana_cloud_url": "https://staging.example.com"},
+                "arc-runners": {"runner_group": "meta-prod-rg"},
             },
             "arc-cbr-production": {
                 "cluster_name": "pytorch-arc-cbr-production",
@@ -68,8 +71,8 @@ def clusters_yaml(tmp_path):
 
 @pytest.fixture
 def cfg_staging(clusters_yaml):
-    """Return loaded config for arc-staging."""
-    return load_cluster_config(clusters_yaml, "arc-staging")
+    """Return loaded config for meta-staging-aws-uw1."""
+    return load_cluster_config(clusters_yaml, "meta-staging-aws-uw1")
 
 
 @pytest.fixture
@@ -80,7 +83,7 @@ def cfg_production(clusters_yaml):
 
 @pytest.fixture
 def workflow_template(tmp_path):
-    """Create a minimal workflow template and return the upstream dir."""
+    """Create a minimal workflow template covering all TAG_REQUIREMENTS tags."""
     upstream = tmp_path / "upstream"
     wf_dir = upstream / "integration-tests" / "workflows"
     wf_dir.mkdir(parents=True)
@@ -89,30 +92,66 @@ def workflow_template(tmp_path):
         "name: {{PREFIX}} integration test\n"
         "on: push\n"
         "jobs:\n"
-        "  basic:\n"
-        "    runs-on: {{CLUSTER_NAME}}\n"
+        "  # BEGIN_ARC_RUNNERS\n"
+        "  arc-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{CLUSTER_NAME}}"] }\n'
         "    steps:\n"
         "      - run: echo {{CLUSTER_ID}}\n"
+        "  # END_ARC_RUNNERS\n"
+        "  # BEGIN_ARC_RUNNERS\n"
+        "  ecr-pull-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }\n'
+        "    container:\n"
+        "      image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:{{ECR_PULL_RESOLVED_TAG}}\n"
+        "    steps:\n"
+        "      - name: Show resolved image info\n"
+        "        run: echo SHA={{ECR_PULL_SHA}}\n"
+        "      - name: Verify container is running\n"
+        "        run: echo PASS\n"
+        "  # END_ARC_RUNNERS\n"
+        "  # BEGIN_PYPI_CACHE\n"
+        "  pypi-job:\n"
+        "    steps:\n"
+        "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
+        "      - run: echo {{PYPI_CACHE_CUDA_VERSION}}\n"
+        "  # END_PYPI_CACHE\n"
+        "  # BEGIN_GPU_T4\n"
+        "  gpu-t4-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}t4-runner"] }\n'
+        "    steps:\n"
+        "      - run: echo t4\n"
+        "  # END_GPU_T4\n"
+        "  # BEGIN_BUILDKIT\n"
+        "  buildkit-job:\n"
+        "    uses: ./.github/workflows/build-image.yaml\n"
+        "  # END_BUILDKIT\n"
         "  # BEGIN_B200\n"
         "  b200-job:\n"
-        "    runs-on: {{PREFIX}}b200-runner\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}b200-runner"] }\n'
         "    steps:\n"
         "      - run: echo B200\n"
         "  # END_B200\n"
         "  # BEGIN_CACHE_ENFORCER\n"
         "  cache-enforcer-job:\n"
-        "    runs-on: {{PREFIX}}enforcer-runner\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}enforcer-runner"] }\n'
         "    steps:\n"
         "      - run: echo enforcer\n"
         "  # END_CACHE_ENFORCER\n"
-        "  pypi-job:\n"
+        "  # BEGIN_NO_CACHE_ENFORCER\n"
+        "  no-cache-enforcer-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}upstream-runner"] }\n'
         "    steps:\n"
-        "      - run: echo {{PYPI_CACHE_SLUGS}}\n"
-        "      - run: echo {{PYPI_CACHE_CUDA_VERSION}}\n"
+        "      - run: echo upstream\n"
+        "  # END_NO_CACHE_ENFORCER\n"
+        "  # BEGIN_RELEASE\n"
+        "  release-job:\n"
+        '    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-runner"] }\n'
+        "    steps:\n"
+        "      - run: echo release\n"
+        "  # END_RELEASE\n"
     )
     (wf_dir / "integration-test.yaml.tpl").write_text(template)
 
-    # Also create reusable workflow and Dockerfile for prepare_pr
     (wf_dir / "build-image.yaml").write_text("name: build-image\n")
     docker_dir = upstream / "integration-tests" / "docker" / "test-buildkit"
     docker_dir.mkdir(parents=True)
@@ -121,13 +160,24 @@ def workflow_template(tmp_path):
     return upstream
 
 
+ALL_MODULES = [
+    "arc-runners",
+    "pypi-cache",
+    "nodepools",
+    "buildkit",
+    "arc-runners-b200",
+    "nodepools-b200",
+    "cache-enforcer",
+]
+
+
 # ── load_cluster_config ───────────────────────────────────────────────────
 
 
 class TestLoadClusterConfig:
     def test_valid_cluster(self, clusters_yaml):
-        cfg = load_cluster_config(clusters_yaml, "arc-staging")
-        assert cfg["cluster"]["cluster_name"] == "pytorch-arc-staging"
+        cfg = load_cluster_config(clusters_yaml, "meta-staging-aws-uw1")
+        assert cfg["cluster"]["cluster_name"] == "meta-staging-aws-uw1"
         assert cfg["cluster"]["aws_region"] == "us-west-2"
         assert "defaults" in cfg
 
@@ -158,7 +208,7 @@ class TestResolve:
         assert resolve(cfg_staging, "nonexistent.path") is None
 
     def test_top_level_key(self, cfg_staging):
-        assert resolve(cfg_staging, "cluster_name") == "pytorch-arc-staging"
+        assert resolve(cfg_staging, "cluster_name") == "meta-staging-aws-uw1"
 
 
 # ── has_module ────────────────────────────────────────────────────────────
@@ -186,117 +236,414 @@ class TestGenerateWorkflow:
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            b200_enabled=True,
+            cluster_modules=ALL_MODULES,
+            runner_group="my-rg",
         )
         assert "name: cbr integration test" in result
-        assert "runs-on: pytorch-arc-cbr-production" in result
+        assert 'labels: ["pytorch-arc-cbr-production"]' in result
         assert "echo arc-cbr-production" in result
+        assert 'group: "my-rg"' in result
+        assert "{{RUNNER_GROUP}}" not in result
+        assert "{{PREFIX}}" not in result
+        assert "{{CLUSTER_ID}}" not in result
+        assert "{{CLUSTER_NAME}}" not in result
 
-    def test_b200_removed_when_disabled(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
-            b200_enabled=False,
-        )
-        assert "b200-job" not in result
-        assert "BEGIN_B200" not in result
-        assert "END_B200" not in result
-        # The basic job should still be there
-        assert "basic:" in result
-
-    def test_b200_preserved_when_enabled(self, workflow_template):
+    def test_all_tags_kept_with_full_modules(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
             "arc-cbr-production",
             "pytorch-arc-cbr-production",
-            b200_enabled=True,
+            cluster_modules=ALL_MODULES,
         )
-        assert "b200-job:" in result
-        assert "echo B200" in result
-        # Prefix must be substituted inside B200 block
-        assert "runs-on: cbrb200-runner" in result
-        assert "{{PREFIX}}" not in result
-        # Marker comments should be stripped
+        for job in (
+            "arc-job",
+            "pypi-job",
+            "gpu-t4-job",
+            "buildkit-job",
+            "b200-job",
+            "cache-enforcer-job",
+            "release-job",
+        ):
+            assert job in result, f"missing {job}"
+        assert "BEGIN_" not in result
+        assert "END_" not in result
+
+    def test_buildkit_stripped_when_module_missing(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=[
+                "arc-runners",
+                "pypi-cache",
+                "nodepools",
+                "cache-enforcer",
+                "arc-runners-b200",
+                "nodepools-b200",
+            ],
+        )
+        assert "buildkit-job" not in result
+        assert "BEGIN_BUILDKIT" not in result
+        assert "END_BUILDKIT" not in result
+        assert "arc-job" in result
+        assert "b200-job" in result
+        assert "cache-enforcer-job" in result
+
+    def test_cache_enforcer_stripped(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=[m for m in ALL_MODULES if m != "cache-enforcer"],
+        )
+        assert "  cache-enforcer-job:" not in result
+        assert "BEGIN_CACHE_ENFORCER" not in result
+        assert "END_CACHE_ENFORCER" not in result
+        assert "arc-job" in result
+
+    def test_no_cache_enforcer_kept_when_cache_enforcer_absent(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=[m for m in ALL_MODULES if m != "cache-enforcer"],
+        )
+        assert "no-cache-enforcer-job" in result
+        assert "BEGIN_NO_CACHE_ENFORCER" not in result
+        assert "END_NO_CACHE_ENFORCER" not in result
+
+    def test_no_cache_enforcer_stripped_when_cache_enforcer_present(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+        )
+        assert "no-cache-enforcer-job" not in result
+        assert "BEGIN_NO_CACHE_ENFORCER" not in result
+        assert "END_NO_CACHE_ENFORCER" not in result
+        assert "cache-enforcer-job" in result
+
+    def test_b200_requires_both_modules(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners", "arc-runners-b200"],
+        )
+        assert "b200-job" not in result
         assert "BEGIN_B200" not in result
-        assert "END_B200" not in result
+        assert "arc-job" in result
 
-    def test_cache_enforcer_removed_when_disabled(self, workflow_template):
+    def test_gpu_t4_requires_arc_runners_and_nodepools(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
-            b200_enabled=False,
-            cache_enforcer_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners"],
         )
-        assert "cache-enforcer-job" not in result
-        assert "BEGIN_CACHE_ENFORCER" not in result
-        assert "END_CACHE_ENFORCER" not in result
-        assert "basic:" in result
+        assert "gpu-t4-job" not in result
+        assert "BEGIN_GPU_T4" not in result
+        assert "arc-job" in result
+        assert "release-job" in result
 
-    def test_cache_enforcer_preserved_when_enabled(self, workflow_template):
+    def test_pypi_cache_requires_pypi_cache_module(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
-            b200_enabled=False,
-            cache_enforcer_enabled=True,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners"],
         )
-        assert "cache-enforcer-job:" in result
-        assert "echo enforcer" in result
-        assert "runs-on: cbrenforcer-runner" in result
-        assert "BEGIN_CACHE_ENFORCER" not in result
-        assert "END_CACHE_ENFORCER" not in result
+        assert "pypi-job" not in result
+        assert "BEGIN_PYPI_CACHE" not in result
+        assert "arc-job" in result
 
-    def test_pypi_cache_slugs_substituted(self, workflow_template):
+    def test_release_kept_with_arc_runners(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
-            b200_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners"],
+        )
+        assert "release-job" in result
+        assert "BEGIN_RELEASE" not in result
+        assert "END_RELEASE" not in result
+
+    def test_release_stripped_without_arc_runners(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["nodepools"],
+        )
+        assert "release-job" not in result
+        assert "BEGIN_RELEASE" not in result
+
+    def test_pypi_slugs_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
             pypi_cache_slugs="cpu cu121 cu124",
         )
         assert "echo cpu cu121 cu124" in result
         assert "{{PYPI_CACHE_SLUGS}}" not in result
 
-    def test_pypi_cache_slugs_default(self, workflow_template):
+    def test_pypi_slugs_default(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
-            b200_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
         )
-        # Default value should be substituted
         assert "echo cpu cu121 cu124" in result
 
-    def test_pypi_cache_cuda_version_substituted(self, workflow_template):
+    def test_pypi_cuda_version_substituted(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
-            b200_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
             pypi_cache_cuda_version="13.0",
         )
         assert "echo 13.0" in result
         assert "{{PYPI_CACHE_CUDA_VERSION}}" not in result
 
-    def test_pypi_cache_cuda_version_default(self, workflow_template):
+    def test_pypi_cuda_version_default(self, workflow_template):
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "arc-staging",
-            "pytorch-arc-staging",
-            b200_enabled=False,
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
         )
-        # Default value should be substituted
         assert "echo 12.8" in result
+
+    def test_runner_group_default_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+        )
+        assert 'group: "default"' in result
+
+    @pytest.mark.parametrize("group", ["my-rg", "team-x", "release-runners"])
+    def test_runner_group_override(self, workflow_template, group):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+            runner_group=group,
+        )
+        assert f'group: "{group}"' in result
+        assert "{{RUNNER_GROUP}}" not in result
+
+    def test_release_runner_group_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+            runner_group="default",
+            release_runner_group="rel-rg",
+        )
+        assert 'group: "rel-rg", labels: ["cbrrel-runner"]' in result
+        assert "{{RELEASE_RUNNER_GROUP}}" not in result
+
+    def test_ecr_pull_resolved_tag_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+            ecr_pull_resolved_tag="my-tag",
+            ecr_pull_sha="my-sha",
+        )
+        assert "image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:my-tag" in result
+        assert "{{ECR_PULL_RESOLVED_TAG}}" not in result
+        assert "SHA=my-sha" in result
+        assert "{{ECR_PULL_SHA}}" not in result
+
+    def test_ecr_pull_sha_substituted(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=ALL_MODULES,
+            ecr_pull_resolved_tag="some-tag",
+            ecr_pull_sha="abc123",
+        )
+        assert "abc123" in result
+        assert "{{ECR_PULL_SHA}}" not in result
+
+    def test_unsubstituted_placeholder_raises(self, tmp_path):
+        """Any leftover {{...}} after substitution is a template/code-drift bug."""
+        upstream = tmp_path / "upstream"
+        wf_dir = upstream / "integration-tests" / "workflows"
+        wf_dir.mkdir(parents=True)
+        # Synthetic template with a placeholder generate_workflow never replaces.
+        template = (
+            "name: {{PREFIX}} test\n"
+            "on: push\n"
+            "jobs:\n"
+            "  # BEGIN_ARC_RUNNERS\n"
+            "  job:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: echo {{NEVER_REPLACED}}\n"
+            "  # END_ARC_RUNNERS\n"
+        )
+        (wf_dir / "integration-test.yaml.tpl").write_text(template)
+        with pytest.raises(RuntimeError, match=r"Unsubstituted template placeholders"):
+            generate_workflow(
+                upstream,
+                "cbr",
+                "arc-cbr-production",
+                "pytorch-arc-cbr-production",
+                cluster_modules=["arc-runners"],
+            )
+
+    def test_real_template_yaml_round_trip(self, tmp_path):
+        """generate_workflow against the real template must produce valid YAML."""
+        upstream = Path(__file__).resolve().parents[3]
+        result = generate_workflow(
+            upstream,
+            prefix="mt-",
+            cluster_id="x",
+            cluster_name="x",
+            cluster_modules=["arc-runners", "pypi-cache", "nodepools", "buildkit", "cache-enforcer"],
+            ecr_pull_resolved_tag="testtag",
+            ecr_pull_sha="testsha",
+        )
+        parsed = yaml.safe_load(result)
+        assert "jobs" in parsed
+        assert "test-ecr-pull" in parsed["jobs"]
+
+    def test_real_template_ecr_pull_stripped_without_arc_runners(self, tmp_path):
+        """test-ecr-pull must be gated on arc-runners — clusters without it can't satisfy the runner label."""
+        upstream = Path(__file__).resolve().parents[3]
+        result = generate_workflow(
+            upstream,
+            prefix="mt-",
+            cluster_id="x",
+            cluster_name="x",
+            cluster_modules=[],
+            ecr_pull_resolved_tag="testtag",
+            ecr_pull_sha="testsha",
+        )
+        assert "test-ecr-pull" not in result
+
+
+class TestGenerateWorkflowNoopFallback:
+    def test_noop_when_cluster_modules_empty(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["cache-enforcer"],
+        )
+        assert "no-op:" in result
+        assert "ubuntu-latest" in result
+        assert "No integration test suites match this cluster's modules" in result
+        assert "name: cbr integration test" in result
+        assert "on: push" in result
+
+    def test_noop_when_only_unmatched_module(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners-h100", "cache-enforcer"],
+        )
+        assert "no-op:" in result
+        assert "arc-job" not in result
+        assert "b200-job" not in result
+
+    def test_noop_when_only_arc_runners_b200_without_nodepools_b200(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["arc-runners-b200", "cache-enforcer"],
+        )
+        assert "no-op:" in result
+        assert "b200-job" not in result
+        assert "arc-job" not in result
+
+    def test_noop_preserves_top_level_keys(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["cache-enforcer"],
+        )
+        assert "name: cbr integration test" in result
+        assert "on: push" in result
+
+    def test_noop_jobs_section_format(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "cbr",
+            "arc-cbr-production",
+            "pytorch-arc-cbr-production",
+            cluster_modules=["cache-enforcer"],
+        )
+        lines = result.split("\n")
+        jobs_idx = next(i for i, line in enumerate(lines) if line.rstrip() == "jobs:")
+        jobs_section = lines[jobs_idx:]
+        job_keys = [
+            line
+            for line in jobs_section
+            if line.startswith("  ") and not line.startswith("   ") and ":" in line and not line.strip().startswith("#")
+        ]
+        assert len(job_keys) == 1
+        assert job_keys[0].strip() == "no-op:"
+        assert any("runs-on: ubuntu-latest" in line for line in jobs_section)
+        assert any("echo" in line and "No integration test suites" in line for line in jobs_section)
+
+
+# ── Release runner group precedence (run.py logic) ────────────────────────
+
+
+class TestReleaseRunnerGroupResolution:
+    def test_cluster_with_override(self, cfg_staging):
+        cluster_runner_group = resolve(cfg_staging, "arc-runners.runner_group")
+        assert cluster_runner_group == "meta-prod-rg"
+        release_runner_group = cluster_runner_group or "release-runners"
+        assert release_runner_group == "meta-prod-rg"
+
+    def test_cluster_without_override(self, cfg_production):
+        cluster_runner_group = resolve(cfg_production, "arc-runners.runner_group")
+        assert cluster_runner_group is None
+        runner_group = cluster_runner_group or "default"
+        release_runner_group = cluster_runner_group or "release-runners"
+        assert runner_group == "default"
+        assert release_runner_group == "release-runners"
 
 
 # ── format_duration ───────────────────────────────────────────────────────
@@ -347,7 +694,7 @@ class TestCleanupStalePrs:
             MagicMock(returncode=0),
         ]
 
-        cleanup_stale_prs("osdc-integration-test-arc-staging")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
 
         assert mock_run.call_count == 6
 
@@ -367,7 +714,7 @@ class TestCleanupStalePrs:
     @patch("phases.run_cmd")
     def test_handles_pr_list_failure(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stderr="auth required", stdout="")
-        cleanup_stale_prs("osdc-integration-test-arc-staging")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
         # Should not raise, just log and return
         assert mock_run.call_count == 1
 
@@ -382,7 +729,7 @@ class TestCleanupStalePrs:
             MagicMock(returncode=0, stdout=empty_runs),  # in_progress runs
         ]
 
-        cleanup_stale_prs("osdc-integration-test-arc-staging")
+        cleanup_stale_prs("osdc-integration-test-meta-staging-aws-uw1")
         # pr list + 2 run list calls, no close/cancel calls
         assert mock_run.call_count == 3
 
@@ -409,7 +756,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=True,
         )
 
@@ -437,7 +784,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test workflow\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=True,
         )
 
@@ -472,7 +819,7 @@ class TestPreparePr:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=False,
         )
 
@@ -609,7 +956,7 @@ class TestEnsureCanaryRepo:
 
 
 def test_branch_name():
-    assert branch_name("arc-staging") == "osdc-integration-test-arc-staging"
+    assert branch_name("meta-staging-aws-uw1") == "osdc-integration-test-meta-staging-aws-uw1"
     assert branch_name("arc-cbr-production") == "osdc-integration-test-arc-cbr-production"
 
 
@@ -737,7 +1084,7 @@ class TestParseArgs:
             [
                 "run.py",
                 "--cluster-id",
-                "arc-staging",
+                "meta-staging-aws-uw1",
                 "--clusters-yaml",
                 "/tmp/c.yaml",
                 "--upstream-dir",
@@ -747,7 +1094,7 @@ class TestParseArgs:
             ],
         ):
             args = parse_args()
-        assert args.cluster_id == "arc-staging"
+        assert args.cluster_id == "meta-staging-aws-uw1"
         assert str(args.clusters_yaml) == "/tmp/c.yaml"
         assert str(args.upstream_dir) == "/tmp/upstream"
         assert str(args.root_dir) == "/tmp/root"
@@ -797,6 +1144,44 @@ class TestParseArgs:
         with patch("sys.argv", ["run.py"]), pytest.raises(SystemExit):
             parse_args()
 
+    def test_ecr_pull_image_name_default(self):
+        with patch(
+            "sys.argv",
+            [
+                "run.py",
+                "--cluster-id",
+                "meta-staging-aws-uw1",
+                "--clusters-yaml",
+                "/tmp/c.yaml",
+                "--upstream-dir",
+                "/tmp/upstream",
+                "--root-dir",
+                "/tmp/root",
+            ],
+        ):
+            args = parse_args()
+        assert args.ecr_pull_image_name == "pytorch-linux-jammy-py3.10-clang18"
+
+    def test_ecr_pull_image_name_override(self):
+        with patch(
+            "sys.argv",
+            [
+                "run.py",
+                "--cluster-id",
+                "meta-staging-aws-uw1",
+                "--clusters-yaml",
+                "/tmp/c.yaml",
+                "--upstream-dir",
+                "/tmp/upstream",
+                "--root-dir",
+                "/tmp/root",
+                "--ecr-pull-image-name",
+                "foo",
+            ],
+        ):
+            args = parse_args()
+        assert args.ecr_pull_image_name == "foo"
+
 
 # ── clear_staging_pools ──────────────────────────────────────────────────
 
@@ -812,7 +1197,7 @@ class TestClearStagingPools:
     def test_no_active_pods_skips(self, mock_run):
         """When no runner pods are found, skip pool clear."""
         mock_run.return_value = MagicMock(returncode=0, stdout="\n", stderr="")
-        clear_staging_pools("arc-staging")
+        clear_staging_pools("meta-staging-aws-uw1")
         # Only the initial kubectl get pods call
         assert mock_run.call_count == 1
 
@@ -824,7 +1209,7 @@ class TestClearStagingPools:
             stdout="",
             stderr="connection refused",
         )
-        clear_staging_pools("arc-staging")
+        clear_staging_pools("meta-staging-aws-uw1")
         assert mock_run.call_count == 1
 
     @patch("phases.time.sleep")
@@ -846,7 +1231,7 @@ class TestClearStagingPools:
             MagicMock(returncode=0, stdout="", stderr=""),
         ]
 
-        clear_staging_pools("arc-staging", force=True)
+        clear_staging_pools("meta-staging-aws-uw1", force=True)
 
         assert mock_run.call_count == 6
         # Verify delete pods call
@@ -873,7 +1258,7 @@ class TestClearStagingPools:
             stdout="pod1 Running\n",
             stderr="",
         )
-        clear_staging_pools("arc-staging", force=False)
+        clear_staging_pools("meta-staging-aws-uw1", force=False)
         # Only the get-pods call, no delete/drain/redeploy
         assert mock_run.call_count == 1
 
@@ -895,7 +1280,7 @@ class TestClearStagingPools:
             MagicMock(returncode=0, stdout="", stderr=""),
         ]
 
-        clear_staging_pools("arc-staging", force=False)
+        clear_staging_pools("meta-staging-aws-uw1", force=False)
 
         assert mock_run.call_count == 5
         # Verify the drain and redeploy happened
@@ -925,7 +1310,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=True,
         )
 
@@ -954,7 +1339,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: new test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=True,
         )
 
@@ -983,7 +1368,7 @@ class TestPreparePrAdditional:
             canary_path=canary,
             upstream_dir=workflow_template,
             workflow_content="name: test\n",
-            branch="osdc-integration-test-arc-staging",
+            branch="osdc-integration-test-meta-staging-aws-uw1",
             dry_run=False,
         )
 
@@ -1010,7 +1395,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="arc-staging",
+            cluster_id="meta-staging-aws-uw1",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1028,6 +1413,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo"),
             patch("phases.generate_workflow", return_value="wf content"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch(
                 "phases.prepare_pr",
                 side_effect=subprocess.CalledProcessError(
@@ -1049,7 +1435,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="arc-staging",
+            cluster_id="meta-staging-aws-uw1",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1067,6 +1453,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=99),
             patch("phases_validation.run_parallel_validation", side_effect=KeyboardInterrupt),
             patch("phases_validation._fetch_latest_runs", return_value=[]),
@@ -1089,7 +1476,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="arc-staging",
+            cluster_id="meta-staging-aws-uw1",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1107,6 +1494,7 @@ class TestMain:
             patch("phases.cleanup_stale_prs"),
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=99),
             patch("phases_validation.run_parallel_validation", return_value={}),
             patch("phases_validation.wait_for_workflows", return_value=[]),
@@ -1125,7 +1513,7 @@ class TestMain:
         from run import main
 
         mock_parse_args.return_value = MagicMock(
-            cluster_id="arc-staging",
+            cluster_id="meta-staging-aws-uw1",
             clusters_yaml=clusters_yaml,
             upstream_dir=tmp_path,
             root_dir=tmp_path,
@@ -1144,6 +1532,7 @@ class TestMain:
             patch("phases.clear_staging_pools") as mock_clear,
             patch("phases.ensure_canary_repo", return_value=tmp_path),
             patch("phases.generate_workflow", return_value="wf"),
+            patch("run.resolve_ci_docker_hash", return_value="abc"),
             patch("phases.prepare_pr", return_value=None),
             patch("phases_validation.run_parallel_validation") as mock_validation,
             pytest.raises(SystemExit) as exc_info,
@@ -1154,3 +1543,136 @@ class TestMain:
         # dry_run skips drain and validation
         mock_clear.assert_not_called()
         mock_validation.assert_not_called()
+
+    @patch("run.parse_args")
+    def test_main_resolver_success(self, mock_parse_args, clusters_yaml, tmp_path, caplog):
+        """When resolver returns a SHA, generate_workflow gets both SHA and composed tag."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="meta-staging-aws-uw1",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+        )
+
+        import logging
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("run.resolve_ci_docker_hash", return_value="abc123") as mock_resolve,
+            patch("phases.generate_workflow", return_value="wf") as mock_gen,
+            patch("phases.prepare_pr", return_value=None),
+            caplog.at_level(logging.INFO),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 0
+        mock_resolve.assert_called_once_with()
+        kwargs = mock_gen.call_args.kwargs
+        assert kwargs["ecr_pull_sha"] == "abc123"
+        assert kwargs["ecr_pull_resolved_tag"] == "pytorch-linux-jammy-py3.10-clang18-abc123"
+        assert "tree-SHA: abc123" in caplog.text
+        assert (
+            "image URL: 308535385114.dkr.ecr.us-east-1.amazonaws.com/pytorch/ci-image:"
+            "pytorch-linux-jammy-py3.10-clang18-abc123"
+        ) in caplog.text
+
+    @patch("run.parse_args")
+    def test_main_resolver_skipped_without_arc_runners(self, mock_parse_args, tmp_path, caplog):
+        """Clusters without arc-runners must NOT hit the GitHub API resolver."""
+        from run import main
+
+        clusters_content = {
+            "defaults": {},
+            "clusters": {
+                "no-arc-cluster": {
+                    "cluster_name": "no-arc-cluster",
+                    "aws_region": "us-west-2",
+                    "modules": ["eks", "karpenter"],
+                },
+            },
+        }
+        clusters_yaml = tmp_path / "clusters.yaml"
+        clusters_yaml.write_text(yaml.dump(clusters_content))
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="no-arc-cluster",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+        )
+
+        import logging
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("run.resolve_ci_docker_hash") as mock_resolve,
+            patch("phases.generate_workflow", return_value="wf") as mock_gen,
+            patch("phases.prepare_pr", return_value=None),
+            caplog.at_level(logging.INFO),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 0
+        mock_resolve.assert_not_called()
+        kwargs = mock_gen.call_args.kwargs
+        assert kwargs["ecr_pull_sha"] == ""
+        assert kwargs["ecr_pull_resolved_tag"] == ""
+        assert "skipped (cluster has no arc-runners module)" in caplog.text
+
+    @patch("run.parse_args")
+    def test_main_resolver_hard_fails(self, mock_parse_args, clusters_yaml, tmp_path):
+        """When resolver raises RuntimeError, orchestrator exits 1."""
+        from run import main
+
+        mock_parse_args.return_value = MagicMock(
+            cluster_id="meta-staging-aws-uw1",
+            clusters_yaml=clusters_yaml,
+            upstream_dir=tmp_path,
+            root_dir=tmp_path,
+            run_smoke=False,
+            run_compactor=False,
+            skip_smoke=True,
+            skip_compactor=True,
+            dry_run=True,
+            keep_pr=False,
+            force=True,
+            skip_drain=True,
+            ecr_pull_image_name="pytorch-linux-jammy-py3.10-clang18",
+        )
+
+        with (
+            patch("phases.cleanup_stale_prs"),
+            patch("phases.ensure_canary_repo", return_value=tmp_path),
+            patch("run.resolve_ci_docker_hash", side_effect=RuntimeError("no tag")),
+            patch("phases.generate_workflow") as mock_gen,
+            patch("phases_validation.print_report"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        mock_gen.assert_not_called()

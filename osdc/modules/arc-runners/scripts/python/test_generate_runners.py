@@ -16,6 +16,7 @@ from generate_runners import (
     main,
     normalize_name,
     parse_memory_bytes,
+    resolve_max_runners,
     resolve_value,
 )
 
@@ -151,9 +152,6 @@ def real_template():
 
 FAKE_CLUSTERS_YAML = {
     "defaults": {
-        "arc": {
-            "runner_image_tag": "2.333.1",
-        },
         "arc-runners": {
             "github_config_url": "https://github.com/default-org",
             "github_secret_name": "default-secret",
@@ -540,6 +538,33 @@ class TestResolveValue:
         cluster_cfg = {"region": "us-west-2"}
         defaults = {"region": "us-east-1"}
         assert resolve_value(cluster_cfg, defaults, "region") == "us-west-2"
+
+
+# ============================================================================
+# resolve_max_runners
+# ============================================================================
+
+
+class TestResolveMaxRunners:
+    def test_none_returns_none(self):
+        assert resolve_max_runners(None, Path("dummy"), "arc-x") is None
+
+    def test_positive_int_passes_through(self):
+        assert resolve_max_runners(7, Path("dummy"), "arc-x") == 7
+
+    def test_mapping_picks_cluster_override(self):
+        assert resolve_max_runners({"default": 1, "arc-x": 5}, Path("dummy"), "arc-x") == 5
+
+    def test_mapping_falls_back_to_default(self):
+        assert resolve_max_runners({"default": 1, "arc-x": 5}, Path("dummy"), "arc-y") == 1
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="max_runners must be a positive integer"):
+            resolve_max_runners(0, Path("dummy"), "arc-x")
+
+    def test_mapping_missing_default_raises(self):
+        with pytest.raises(ValueError, match="max_runners mapping must include a `default` key"):
+            resolve_max_runners({"arc-x": 5}, Path("dummy"), "arc-x")
 
 
 # ============================================================================
@@ -1976,6 +2001,13 @@ class TestRealTemplate:
 
 
 class TestMain:
+    @pytest.fixture(autouse=True)
+    def _runner_image_env(self, monkeypatch):
+        monkeypatch.setenv(
+            "RUNNER_IMAGE",
+            "ghcr.io/actions/actions-runner:2.333.1@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+
     def test_no_args_exits_1(self):
         with patch.object(sys, "argv", ["generate_runners.py"]):
             assert main() == 1
@@ -2052,6 +2084,33 @@ class TestMain:
         assert generated[0].name == "runner-a.yaml"
         assert generated[1].name == "runner-b.yaml"
 
+    def test_runner_image_from_env(self, tmp_path, monkeypatch):
+        """main() renders RUNNER_IMAGE env var into the runner template; no clusters.yaml key needed."""
+        p = tmp_path / "clusters.yaml"
+        p.write_text(yaml.dump(FAKE_CLUSTERS_YAML, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "runner-a", "m6i.32xlarge", 2, 4)
+        make_nodepool_defs(tmp_path, ["m6i.32xlarge"])
+
+        output_dir = tmp_path / "out"
+
+        explicit_ref = "ghcr.io/actions/actions-runner:2.999.0@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        monkeypatch.setenv("RUNNER_IMAGE", explicit_ref)
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tmp_path / "tpl.yaml"))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        (tmp_path / "tpl.yaml").write_text(MINIMAL_TEMPLATE)
+
+        with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
+            assert main() == 0
+
+        rendered = (output_dir / "runner-a.yaml").read_text()
+        assert explicit_ref in rendered
+
     def test_output_dir_cleaned(self, tmp_path, monkeypatch):
         """Output dir is cleaned before generation so stale files are removed."""
         p = tmp_path / "clusters.yaml"
@@ -2107,7 +2166,6 @@ class TestMain:
         """main() does NOT force proactive_capacity to zero for production clusters."""
         prod_config = {
             "defaults": {
-                "arc": {"runner_image_tag": "2.333.1"},
                 "arc-runners": {
                     "github_config_url": "https://github.com/prod-org",
                     "github_secret_name": "prod-secret",
@@ -2155,7 +2213,6 @@ class TestMain:
         """main() honors proactive_capacity_max: 0 in clusters.yaml."""
         prod_config = {
             "defaults": {
-                "arc": {"runner_image_tag": "2.333.1"},
                 "arc-runners": {
                     "github_config_url": "https://github.com/prod-org",
                     "github_secret_name": "prod-secret",
@@ -2204,7 +2261,6 @@ class TestMain:
         """main() exits 1 when proactive_capacity_max is not a non-negative integer."""
         invalid_config = {
             "defaults": {
-                "arc": {"runner_image_tag": "2.333.1"},
                 "arc-runners": {
                     "github_config_url": "https://github.com/prod-org",
                     "github_secret_name": "prod-secret",
@@ -2247,7 +2303,6 @@ class TestMain:
         """main() honors cluster-level pause_runners=true by forcing maxRunners: 0."""
         paused_config = {
             "defaults": {
-                "arc": {"runner_image_tag": "2.333.1"},
                 "arc-runners": {
                     "github_config_url": "https://github.com/prod-org",
                     "github_secret_name": "prod-secret",
@@ -2305,3 +2360,204 @@ class TestMain:
 
         with patch.object(sys, "argv", ["generate_runners.py", "staging"]):
             assert main() == 1
+
+
+# ============================================================================
+# Conditional block stripping (pypi-cache cluster-scope gate)
+# ============================================================================
+
+
+# Names of the pypi-cache env vars injected on the workflow pod when the
+# pypi-cache module is enabled. When the module is disabled, NONE of these may
+# appear in the rendered runner config — otherwise jobs reach for a Service
+# that doesn't exist on this cluster and pip/uv install fails.
+PYPI_CACHE_ENV_VAR_NAMES = [
+    "PIP_INDEX_URL",
+    "PIP_TRUSTED_HOST",
+    "PIP_EXTRA_INDEX_URL",
+    "UV_DEFAULT_INDEX",
+    "UV_INSECURE_HOST",
+    "UV_INDEX",
+    "UV_INDEX_STRATEGY",
+    "PYPI_CACHE_SIMPLE_URL",
+    "PYPI_CACHE_WHL_URL",
+]
+
+
+class TestPypiCacheConditional:
+    """Cluster-scoped gating of the PYPI_CACHE env-var block in the workflow pod."""
+
+    def test_pypi_cache_block_kept_when_module_enabled(self, tmp_path, real_template):
+        """With pypi-cache in the modules list, all 9 env vars render and the
+        marker comments are cleanly stripped from the output."""
+        def_file = make_def_file(tmp_path, "kept-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                pypi_cache_enabled=True,
+            )
+            is True
+        )
+
+        content = (output_dir / "kept-runner.yaml").read_text()
+        # Marker comments must NOT leak into the rendered output.
+        assert "# BEGIN_PYPI_CACHE" not in content
+        assert "# END_PYPI_CACHE" not in content
+
+        docs = list(yaml.safe_load_all(content))
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        container = cm_data["spec"]["containers"][0]
+        env_vars = {e["name"]: e["value"] for e in container["env"]}
+        for name in PYPI_CACHE_ENV_VAR_NAMES:
+            assert name in env_vars, f"{name} missing from rendered env when pypi-cache enabled"
+
+    def test_pypi_cache_block_stripped_when_module_disabled(self, tmp_path, real_template):
+        """With pypi-cache absent from the modules list, NONE of the 9 env vars
+        render and the marker comments are stripped."""
+        def_file = make_def_file(tmp_path, "stripped-runner", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "url",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                pypi_cache_enabled=False,
+            )
+            is True
+        )
+
+        content = (output_dir / "stripped-runner.yaml").read_text()
+        # Marker comments must NOT leak into the rendered output.
+        assert "# BEGIN_PYPI_CACHE" not in content
+        assert "# END_PYPI_CACHE" not in content
+
+        docs = list(yaml.safe_load_all(content))
+        cm_data = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        container = cm_data["spec"]["containers"][0]
+        env_vars = {e["name"]: e["value"] for e in container["env"]}
+        for name in PYPI_CACHE_ENV_VAR_NAMES:
+            assert name not in env_vars, f"{name} must NOT be present when pypi-cache disabled"
+        # Other env vars (e.g. TORCH_CI_MAX_MEMORY) must still be intact.
+        assert "TORCH_CI_MAX_MEMORY" in env_vars
+        # Belt-and-braces: the rendered config must not mention the Service host either.
+        assert "pypi-cache-cpu.pypi-cache.svc.cluster.local" not in content
+
+    def test_main_strips_when_cluster_lacks_pypi_cache_module(self, tmp_path, monkeypatch, real_template):
+        """End-to-end: main() reads modules from clusters.yaml and strips when pypi-cache is absent."""
+        config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/org",
+                    "github_secret_name": "secret",
+                    "runner_name_prefix": "p-",
+                },
+            },
+            "clusters": {
+                "no-cache-cluster": {
+                    "cluster_name": "no-cache",
+                    "region": "us-east-1",
+                    "modules": ["nodepools", "arc-runners"],  # no pypi-cache
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/org",
+                        "github_secret_name": "secret",
+                        "runner_name_prefix": "p-",
+                    },
+                },
+            },
+        }
+        (tmp_path / "clusters.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "runner-x", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        output_dir = tmp_path / "out"
+        tpl_file = tmp_path / "tpl.yaml"
+        tpl_file.write_text(real_template)
+
+        monkeypatch.setenv("RUNNER_IMAGE", "ghcr.io/actions/actions-runner:2.333.1")
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        with patch.object(sys, "argv", ["generate_runners.py", "no-cache-cluster"]):
+            assert main() == 0
+
+        content = (output_dir / "runner-x.yaml").read_text()
+        for name in PYPI_CACHE_ENV_VAR_NAMES:
+            assert name not in content
+        assert "# BEGIN_PYPI_CACHE" not in content
+
+    def test_main_keeps_when_cluster_has_pypi_cache_module(self, tmp_path, monkeypatch, real_template):
+        """End-to-end: main() preserves the env vars when pypi-cache is in modules."""
+        config = {
+            "defaults": {
+                "arc": {"runner_image_tag": "2.333.1"},
+                "arc-runners": {
+                    "github_config_url": "https://github.com/org",
+                    "github_secret_name": "secret",
+                    "runner_name_prefix": "p-",
+                },
+            },
+            "clusters": {
+                "with-cache-cluster": {
+                    "cluster_name": "with-cache",
+                    "region": "us-east-1",
+                    "modules": ["nodepools", "arc-runners", "pypi-cache"],
+                    "arc-runners": {
+                        "github_config_url": "https://github.com/org",
+                        "github_secret_name": "secret",
+                        "runner_name_prefix": "p-",
+                    },
+                },
+            },
+        }
+        (tmp_path / "clusters.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        make_def_file(defs_dir, "runner-y", "c7i.24xlarge", 4, 16)
+        make_nodepool_defs(tmp_path, ["c7i.24xlarge"])
+
+        output_dir = tmp_path / "out"
+        tpl_file = tmp_path / "tpl.yaml"
+        tpl_file.write_text(real_template)
+
+        monkeypatch.setenv("RUNNER_IMAGE", "ghcr.io/actions/actions-runner:2.333.1")
+        monkeypatch.setenv("OSDC_ROOT", str(tmp_path))
+        monkeypatch.setenv("ARC_RUNNERS_DEFS_DIR", str(defs_dir))
+        monkeypatch.setenv("ARC_RUNNERS_TEMPLATE", str(tpl_file))
+        monkeypatch.setenv("ARC_RUNNERS_OUTPUT_DIR", str(output_dir))
+
+        with patch.object(sys, "argv", ["generate_runners.py", "with-cache-cluster"]):
+            assert main() == 0
+
+        content = (output_dir / "runner-y.yaml").read_text()
+        for name in PYPI_CACHE_ENV_VAR_NAMES:
+            assert name in content
+        assert "# BEGIN_PYPI_CACHE" not in content
+        assert "# END_PYPI_CACHE" not in content

@@ -14,7 +14,7 @@ Usage:
         --base-pipeline base.alloy \
         --modules-dir /path/to/consumer/modules \
         --upstream-modules-dir /path/to/upstream/modules \
-        --cluster arc-staging \
+        --cluster meta-staging-aws-uw1 \
         --clusters-yaml /path/to/clusters.yaml \
         --namespace logging \
         --output generated/alloy-config.yaml

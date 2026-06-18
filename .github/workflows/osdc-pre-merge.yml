@@ -11,7 +11,7 @@ permissions:
   actions: write
 
 # Workflow-level concurrency. Serializes the ENTIRE battery (fast + slow)
-# per workflow invocation against arc-staging. cancel-in-progress: false
+# per workflow invocation against meta-staging-aws-uw1. cancel-in-progress: false
 # so a later run waits for the prior run's slow jobs to finish before
 # deploy/smoke/integration even start — protects test fixtures from
 # interleaving.
@@ -44,6 +44,9 @@ jobs:
           filters: |
             code:
               - 'osdc/**'
+              # Skip staging deploy when the only osdc/ changes are tests.
+              # Unit tests already run on the PR via osdc-test.yml; spinning
+              # up meta-staging-aws-uw1 adds nothing for a test-only fix.
               - '!osdc/**/test_*.py'
               - '!osdc/**/*_test.py'
               - '!osdc/**/tests/**'
@@ -69,7 +72,7 @@ jobs:
     if: needs.changes.outputs.osdc == 'true'
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
-      cluster: arc-staging
+      cluster: meta-staging-aws-uw1
       # Environment gate: the staging role trusts only tokens with
       # environment:osdc-staging in the sub, which blocks fork PRs.
       environment: osdc-staging
@@ -92,7 +95,7 @@ jobs:
     if: needs.changes.outputs.osdc == 'true' && needs.deploy-fast.result == 'success'
     uses: ./.github/workflows/_osdc-slow-tests.yml
     with:
-      cluster: arc-staging
+      cluster: meta-staging-aws-uw1
       environment: osdc-staging
     secrets: inherit
 

@@ -40,7 +40,7 @@ Node provisioned by Karpenter
 
 Runner pods include an init container that polls for a file on the host filesystem before the runner container can start. This file is placed by a DaemonSet.
 
-**DaemonSet**: `runner-hooks-warmer` (`modules/arc-runners/kubernetes/hooks-warmer.yaml`)
+**DaemonSet**: `runner-hooks-warmer` (`modules/arc/kubernetes/hooks-warmer.yaml`)
 - Downloads patched `runner-container-hooks` v0.8.13 from GitHub releases
 - Extracts to `/mnt/runner-container-hooks/dist/` on host NVMe
 - Validates `dist/index.js` exists after extraction
@@ -213,7 +213,7 @@ This ensures DaemonSet pods schedule on nodes immediately at provisioning time, 
 
 | File | Role |
 |------|------|
-| `modules/arc-runners/kubernetes/hooks-warmer.yaml` | Hooks-warmer DaemonSet (downloads patched hooks) |
+| `modules/arc/kubernetes/hooks-warmer.yaml` | Hooks-warmer DaemonSet (downloads patched hooks) |
 | `modules/arc-runners/templates/runner.yaml.tpl` | Runner pod template with `wait-for-hooks` init container |
 | `base/kubernetes/registry-mirror-config.yaml` | Containerd registry mirror DaemonSet |
 | `base/kubernetes/node-performance-tuning.yaml` | CPU/GPU tuning DaemonSet |

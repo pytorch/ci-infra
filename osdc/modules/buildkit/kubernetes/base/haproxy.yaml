@@ -69,17 +69,22 @@ data:
     # server-line keyword (not valid inside the `resolvers` section) so it goes
     # on each server-template — keeps HAProxy from logging benign A-family
     # resolution warnings.
+    #
+    # The server-template count is the max pods HAProxy can route to for that
+    # backend, so it must stay >= the autoscaling *_max — otherwise pods scaled
+    # past the count are unreachable and builds beyond it stall on "waiting for
+    # connection". Sized above prod (amd64_max=360 / arm64_max=30).
     backend bk_arm64
       balance leastconn
-      server-template arm 10 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
+      server-template arm 40 buildkitd-arm64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
     backend bk_amd64
       balance leastconn
-      server-template amd 10 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
+      server-template amd 400 buildkitd-amd64-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
     backend bk_all
       balance leastconn
-      server-template all 20 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
+      server-template all 440 buildkitd-pods.buildkit.svc.cluster.local:1234 check resolvers k8s init-addr none resolve-prefer ipv6 maxconn 1
 
 ---
 apiVersion: apps/v1

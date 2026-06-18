@@ -30,6 +30,7 @@ _scripts_python = str(Path(__file__).resolve().parents[4] / "scripts" / "python"
 if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
+from conditional_blocks import strip_conditional_block  # noqa: E402
 from fleet_naming import derive_fleet_name  # noqa: E402
 from nodepool_defs import load_excluded_instance_types  # noqa: E402
 from runner_fleet_validator import validate_cluster_runner_fleets  # noqa: E402
@@ -138,8 +139,48 @@ def resolve_value(cluster_cfg, defaults, dotpath):
     return dval
 
 
-def generate_runner(def_file, template_content, cluster_config, output_dir, module_name):
-    """Generate a single runner config from its definition."""
+def resolve_max_runners(value, def_file, cluster_id):
+    """Resolve a runner def's max_runners field to a concrete int or None.
+
+    Accepts:
+      - None: returns None (caller decides fallback, e.g., MAX_INT32 or chart default).
+      - A positive int (>= 1): returned as-is.
+      - A dict {"default": <int>, <cluster_id>: <int>, ...}: resolved via
+        value.get(cluster_id, value["default"]). The "default" key is required;
+        every dict value must be a positive int.
+
+    Raises ValueError on invalid input. `def_file` is used in error messages.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        if "default" not in value:
+            raise ValueError(
+                f"Invalid definition file {def_file}: max_runners mapping must include a "
+                f"`default` key for the baseline value, got keys {sorted(value)}"
+            )
+        for cid, v in value.items():
+            if not isinstance(v, int) or v < 1:
+                raise ValueError(
+                    f"Invalid definition file {def_file}: max_runners[{cid!r}] must be a positive integer, got {v!r}"
+                )
+        return value.get(cluster_id, value["default"])
+    if not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"Invalid definition file {def_file}: max_runners must be a positive integer or "
+            f"a mapping with a `default` key, got {value!r}"
+        )
+    return value
+
+
+def generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled=True):
+    """Generate a single runner config from its definition.
+
+    pypi_cache_enabled controls whether the `# BEGIN_PYPI_CACHE` / `# END_PYPI_CACHE`
+    block in the template is preserved (True) or stripped (False). Strip when the
+    cluster does not deploy the pypi-cache module — the env vars would otherwise
+    point at a Service that doesn't exist on this cluster.
+    """
     with open(def_file) as f:
         data = yaml.safe_load(f)
 
@@ -168,27 +209,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         log_error(f"Invalid definition file: {def_file}")
         return False
 
-    if max_runners is not None:
-        if isinstance(max_runners, dict):
-            # Mapping form: one positive int per cluster, with `default` as the baseline.
-            if "default" not in max_runners:
-                raise ValueError(
-                    f"Invalid definition file {def_file}: max_runners mapping must include a "
-                    f"`default` key for the baseline value, got keys {sorted(max_runners)}"
-                )
-            for cid, value in max_runners.items():
-                if not isinstance(value, int) or value < 1:
-                    raise ValueError(
-                        f"Invalid definition file {def_file}: max_runners[{cid!r}] must be a "
-                        f"positive integer, got {value!r}"
-                    )
-            cluster_id = cluster_config.get("cluster_id")
-            max_runners = max_runners.get(cluster_id, max_runners["default"])
-        elif not isinstance(max_runners, int) or max_runners < 1:
-            raise ValueError(
-                f"Invalid definition file {def_file}: max_runners must be a positive integer or "
-                f"a mapping with a `default` key, got {max_runners!r}"
-            )
+    max_runners = resolve_max_runners(runner.get("max_runners"), def_file, cluster_config.get("cluster_id"))
 
     if cluster_config.get("pause_runners"):
         max_runners = 0
@@ -316,6 +337,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
 
     # Replace all template placeholders
     output_content = template_content
+    output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
     replacements = {
         "{{GITHUB_CONFIG_URL}}": github_url,
         "{{GITHUB_SECRET_NAME}}": k8s_secret_ref,
@@ -361,7 +383,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: generate_runners.py <cluster-id>")
         print()
-        print("Example: generate_runners.py arc-staging")
+        print("Example: generate_runners.py meta-staging-aws-uw1")
         return 1
 
     cluster_id = sys.argv[1]
@@ -400,9 +422,7 @@ def main():
         log_error(f"No 'arc-runners.github_config_url' configured for cluster '{cluster_id}' in clusters.yaml")
         return 1
 
-    # Resolve runner image tag from arc.runner_image_tag (shared with arc module)
-    runner_image_tag = resolve_value(cluster_cfg, defaults, "arc.runner_image_tag") or "2.333.1"
-    cluster_config["runner_image"] = f"ghcr.io/actions/actions-runner:{runner_image_tag}"
+    cluster_config["runner_image"] = os.environ["RUNNER_IMAGE"]
 
     proactive_cap = cluster_cfg.get("proactive_capacity_max")
     if proactive_cap is not None and (
@@ -474,9 +494,14 @@ def main():
         log_error(f"No definition files found in {defs_dir}")
         return 1
 
+    # pypi-cache module is cluster-scoped: when absent, strip the pypi-cache env
+    # vars from the workflow pod template so jobs don't try to reach a Service
+    # that doesn't exist on this cluster.
+    pypi_cache_enabled = "pypi-cache" in (cluster_cfg.get("modules") or [])
+
     count = 0
     for def_file in def_files:
-        if generate_runner(def_file, template_content, cluster_config, output_dir, module_name):
+        if generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled):
             count += 1
 
     print()
