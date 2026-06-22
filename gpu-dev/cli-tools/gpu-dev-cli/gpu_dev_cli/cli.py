@@ -1524,9 +1524,13 @@ def reserve(
 @click.argument("ref", required=False)
 @click.argument("test_args", nargs=-1, required=False)
 @click.option("--lint", is_flag=True, default=False,
-              help="Run a PyTorch lint job (lintrunner) on a CPU box instead of a python test. "
-                   "Defaults to --gpu-type cpu-x86 and skips the torch build. Extra args go to "
-                   "lintrunner (default: --merge-base-with origin/main, i.e. the PR diff like CI).")
+              help="Run a PyTorch lint job (lintrunner) on a CPU box instead of a python test — "
+                   "mirrors CI's lint (.github/scripts/lintrunner.sh): regenerates version/type "
+                   "stubs then runs the python/general linters. Defaults to --gpu-type cpu-x86, "
+                   "no torch build. PR ref lints its diff; main lints all files; extra args override scope.")
+@click.option("--clang", is_flag=True, default=False,
+              help="With --lint, also run the C++ linters (CLANGTIDY/CLANGFORMAT). CI runs these in a "
+                   "separate job — they generate clang build files and are heavy on a full tree.")
 @click.option("--gpu-type", default=None, help="GPU type for the repro box (default: b200; cpu-x86 with --lint).")
 @click.option("--gpus", type=int, default=1, show_default=True)
 @click.option("--hours", type=float, default=3.0, show_default=True,
@@ -1536,7 +1540,7 @@ def reserve(
 @click.option("--keep", is_flag=True, default=False,
               help="Never cancel the box (skip the cancel prompt / auto-cancel).")
 @click.pass_context
-def repro(ctx, ref, test_args, lint, gpu_type, gpus, hours, no_connect, keep):
+def repro(ctx, ref, test_args, lint, clang, gpu_type, gpus, hours, no_connect, keep):
     """Reserve a box, check out a PR/commit, run a test (or lint), then drop you in.
 
     By default (in a terminal) repro runs the test and then **connects you into the
@@ -1551,11 +1555,13 @@ def repro(ctx, ref, test_args, lint, gpu_type, gpus, hours, no_connect, keep):
 
       gpu-dev repro pr/185264 test/inductor/test_flex_attention.py TestFlexAttentionCUDA.test_large_kv_int64_pointer_math_cuda
 
-    --lint runs lintrunner on a CPU box instead (no GPU, no torch build), e.g.
+    --lint runs lintrunner on a CPU box instead (no GPU, no torch build), mirroring
+    CI's lint (regenerate version/type stubs, then the python/general linters), e.g.
 
       gpu-dev repro --lint                          # lint main (all files)
       gpu-dev repro --lint pr/185264                # lint the PR diff (CI-equivalent)
       gpu-dev repro --lint pr/185264 --all-files    # lint everything
+      gpu-dev repro --lint --clang pr/185264        # also run C++ clang-tidy/format
 
     The box stays up after the run: on a TTY you're dropped in and prompted to
     cancel on exit (use --keep to leave it running; --no-connect auto-cancels).
@@ -1663,16 +1669,29 @@ def repro(ctx, ref, test_args, lint, gpu_type, gpus, hours, no_connect, keep):
 
     runlabel, rerun_hint = "test", f"python {testcmd}"
     if lint:
-        # Lint needs the source tree at the ref but NO torch build. Most pods already
-        # have /home/dev/pytorch; CPU pods may not, so clone (partial) as a fallback.
-        # origin/main is fetched so --merge-base-with works (the PR-diff scope CI lints).
-        # PR ref -> lint the diff (CI-equivalent); main/branch/sha -> lint everything
-        # (merge-base-with origin/main would be empty when you ARE main).
-        lint_default = "--merge-base-with origin/main" if prnum else "--all-files"
-        lintargs = " ".join(shlex.quote(a) for a in test_args) or lint_default
-        runlabel, rerun_hint = "lint", f"lintrunner {lintargs}"
+        # Mirror pytorch CI's lint (.github/scripts/lintrunner.sh): regenerate version +
+        # type stubs (so mypy/pyrefly are accurate), then run the python/general linters.
+        # CLANGTIDY/CLANGFORMAT are a separate CI job (need generated build files, very
+        # heavy on a full tree) -> opt-in via --clang. No torch build. Source-only tree
+        # (cloned if a CPU pod doesn't have one). Scope mirrors CI: a PR lints its diff
+        # (merge-base), main lints all files; extra args override the scope.
+        if test_args:
+            scope = " ".join(test_args)
+        elif prnum:
+            scope = "--merge-base-with origin/main"
+        else:
+            scope = "--all-files"
+        runlabel = "lint"
+        rerun_hint = f"lintrunner --skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT {scope}"
+        clang_block = (
+            "echo '[lint] === C++ linters (CLANGTIDY/CLANGFORMAT) — generating clang build files (heavy)… ==='; "
+            "python -m tools.linter.clang_tidy.generate_build_files 2>/dev/null || true; "
+            f"lintrunner --force-color --take CLANGTIDY,CLANGFORMAT {scope}; rr=$?; [ $rr -ne 0 ] && RC=$rr; "
+        ) if clang else (
+            "echo '[lint] C++ linters (CLANGTIDY/CLANGFORMAT) skipped — add --clang to run them'; "
+        )
         remote = (
-            "set -e; "
+            "set +e; "
             "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
             "if [ ! -d /home/dev/pytorch/.git ]; then echo '[lint] no pytorch tree on this pod — cloning (partial)…'; "
             "rm -rf /home/dev/pytorch; git clone --filter=blob:none https://github.com/pytorch/pytorch.git /home/dev/pytorch; fi; "
@@ -1683,9 +1702,17 @@ def repro(ctx, ref, test_args, lint, gpu_type, gpus, hours, no_connect, keep):
             "echo \"[lint] checking out $FREF\"; " + checkout + "; "
             "echo \"[lint] HEAD $(git rev-parse --short HEAD)\"; "
             "command -v lintrunner >/dev/null 2>&1 || pip install --break-system-packages -q lintrunner; "
-            "echo '[lint] lintrunner init (downloading linters)…'; lintrunner init; "
-            f"echo '[lint] running: lintrunner {lintargs}'; "
-            f"lintrunner {lintargs}"
+            # CI codegen so mypy/pyrefly see generated files (version.py + type stubs)
+            "echo '[lint] regenerating version + type stubs (CI parity)…'; "
+            "python -m tools.generate_torch_version --is-debug=false 2>/dev/null || true; "
+            "python -m tools.pyi.gen_pyi --native-functions-path aten/src/ATen/native/native_functions.yaml "
+            "--tags-path aten/src/ATen/native/tags.yaml --deprecated-functions-path tools/autograd/deprecated.yaml 2>/dev/null || true; "
+            "python torch/utils/data/datapipes/gen_pyi.py 2>/dev/null || true; "
+            "echo '[lint] lintrunner init…'; lintrunner init; RC=0; "
+            f"echo '[lint] === python/general linters: lintrunner {scope} ==='; "
+            f"lintrunner --force-color --skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT {scope}; rr=$?; [ $rr -ne 0 ] && RC=$rr; "
+            + clang_block +
+            "exit $RC"
         )
 
     # Reserve — warm claim (instant) first, else cold ephemeral. Always no-persist

@@ -457,21 +457,34 @@ def test_lint_defaults_to_cpu_x86_with_zero_gpus(cli_runner):
     assert kwargs["name"] == "repro"
 
 
-def test_lint_remote_runs_lintrunner_default_merge_base(cli_runner):
+def test_lint_remote_mirrors_ci_pr_diff_no_clang(cli_runner):
     res, rm, run = _run(cli_runner, ["--lint", "pr/1"], claim_result=WARM)
     cmd = _remote_str(run)
     assert "lintrunner init" in cmd
-    assert "lintrunner --merge-base-with origin/main" in cmd
+    # CI codegen (version + type stubs) so mypy/pyrefly are accurate
+    assert "tools.generate_torch_version" in cmd
+    assert "tools.pyi.gen_pyi" in cmd
+    # python/general linters on the PR diff, clang linters skipped by default
+    assert "--skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT --merge-base-with origin/main" in cmd
+    assert "--take CLANGTIDY,CLANGFORMAT" not in cmd
+    assert "add --clang to run them" in cmd
     # no torch build / no python test on the lint path
     assert "pip install --break-system-packages -e ." not in cmd
     assert "PYTHONPATH=/home/dev/pytorch python" not in cmd
 
 
-def test_lint_passes_extra_args_to_lintrunner(cli_runner):
-    # extra args (ignore_unknown_options) flow straight to lintrunner, overriding the default.
+def test_lint_clang_flag_runs_cpp_linters(cli_runner):
+    res, rm, run = _run(cli_runner, ["--lint", "--clang", "pr/1"], claim_result=WARM)
+    cmd = _remote_str(run)
+    assert "tools.linter.clang_tidy.generate_build_files" in cmd
+    assert "--take CLANGTIDY,CLANGFORMAT --merge-base-with origin/main" in cmd
+
+
+def test_lint_passes_extra_args_as_scope(cli_runner):
+    # extra args (ignore_unknown_options) override the scope.
     res, rm, run = _run(cli_runner, ["--lint", "pr/1", "--all-files"], claim_result=WARM)
     cmd = _remote_str(run)
-    assert "lintrunner --all-files" in cmd
+    assert "--skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT --all-files" in cmd
     assert "--merge-base-with" not in cmd
 
 
@@ -498,7 +511,7 @@ def test_lint_no_ref_lints_main_all_files(cli_runner):
     assert kwargs["gpu_type"] == "cpu-x86"
     assert kwargs["gpu_count"] == 0
     cmd = _remote_str(run)
-    assert "lintrunner --all-files" in cmd
+    assert "--skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT --all-files" in cmd
     assert "--merge-base-with" not in cmd
 
 
@@ -506,7 +519,7 @@ def test_lint_branch_ref_defaults_to_all_files(cli_runner):
     # a non-PR ref (branch/sha) lints everything, not the empty merge-base diff.
     res, rm, run = _run(cli_runner, ["--lint", "main"], claim_result=WARM)
     cmd = _remote_str(run)
-    assert "lintrunner --all-files" in cmd
+    assert "--skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT --all-files" in cmd
 
 
 def test_test_path_requires_ref(cli_runner):
