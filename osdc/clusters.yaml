@@ -246,6 +246,7 @@ clusters:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler    # MostAllocated secondary scheduler; inert until a def opts in
       - arc-runners
       - keda
       - buildkit
