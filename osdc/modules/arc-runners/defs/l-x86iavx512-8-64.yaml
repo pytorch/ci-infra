@@ -10,3 +10,5 @@ runner:
   proactive_capacity: 5
   hud_failure_base_capacity: 90
   max_burst_capacity: 2000
+  # Pilot: pack workflow pods onto the fullest node (vs default spread).
+  scheduler_name: bin-pack-scheduler
