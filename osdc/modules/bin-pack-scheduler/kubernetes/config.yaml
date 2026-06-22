@@ -1,0 +1,23 @@
+# KubeSchedulerConfiguration for the bin-pack-scheduler secondary scheduler.
+# Stock upstream kube-scheduler; only NodeResourcesFit scoring is overridden to
+# MostAllocated (pack onto the fullest node). Every other plugin/default is
+# inherited. EKS's managed default scheduler can't be reconfigured, hence a
+# second scheduler that pods opt into via spec.schedulerName.
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+leaderElection:
+  leaderElect: true
+  # MUST differ from the managed scheduler's lease ("kube-scheduler").
+  resourceName: bin-pack-scheduler
+  resourceNamespace: kube-system
+profiles:
+  - schedulerName: bin-pack-scheduler
+    pluginConfig:
+      - name: NodeResourcesFit
+        args:
+          scoringStrategy:
+            type: MostAllocated
+            resources:
+              - {name: cpu, weight: 1}
+              - {name: memory, weight: 1}
+              - {name: nvidia.com/gpu, weight: 5}  # fill GPUs first on GPU nodes
