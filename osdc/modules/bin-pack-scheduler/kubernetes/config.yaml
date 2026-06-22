@@ -16,8 +16,9 @@ profiles:
       - name: NodeResourcesFit
         args:
           scoringStrategy:
+            # cpu/memory weights match the upstream default, so `type` is the
+            # only delta from the managed default-scheduler.
             type: MostAllocated
             resources:
               - {name: cpu, weight: 1}
               - {name: memory, weight: 1}
-              - {name: nvidia.com/gpu, weight: 5}  # fill GPUs first on GPU nodes
