@@ -335,7 +335,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
-    # Optional schedulerName for workflow pods (e.g. scheduler_name: bin-pack-scheduler).
+    # Optional schedulerName for workflow pods (per-def scheduler_name).
     # Empty = default scheduler. The same value feeds two places so the real
     # workflow pod and its capacity placeholder (ph-w-*) agree on the scheduler:
     #   {{SCHEDULER_NAME_LINE}} -> schedulerName on the workflow pod spec

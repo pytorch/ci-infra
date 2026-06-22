@@ -1,5 +1,6 @@
 # bin-pack-scheduler: a stock kube-scheduler run as a secondary scheduler.
-# Image tracks eks_version (clusters.yaml); ±1 minor skew is tolerated.
+# Image tracks eks_version (clusters.yaml); a guard test enforces the minor
+# matches. ±1 minor skew is tolerated, so bump on EKS upgrade.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

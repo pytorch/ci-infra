@@ -41,6 +41,24 @@ subjects:
     name: bin-pack-scheduler
     namespace: kube-system
 ---
+# Lets the scheduler read the extension-apiserver-authentication ConfigMap so
+# its HTTPS serving port (10259) can set up delegated auth cleanly on startup.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bin-pack-scheduler-auth-reader
+  namespace: kube-system
+  labels:
+    osdc.io/module: bin-pack-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: bin-pack-scheduler
+    namespace: kube-system
+---
 # Lease create is already granted cluster-wide by system:kube-scheduler;
 # get/update on our custom lease name is not, so grant it here.
 apiVersion: rbac.authorization.k8s.io/v1
