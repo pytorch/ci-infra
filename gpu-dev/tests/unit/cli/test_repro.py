@@ -488,6 +488,20 @@ def test_lint_passes_extra_args_as_scope(cli_runner):
     assert "--merge-base-with" not in cmd
 
 
+def test_lint_run_uses_pty_for_progress(cli_runner):
+    # lint runs over an SSH PTY (-t) so lintrunner renders its live progress bar.
+    res, rm, run = _run(cli_runner, ["--lint", "pr/1"], claim_result=WARM)
+    cmd = _remote_str(run)
+    assert "ssh -t " in cmd
+
+
+def test_test_run_has_no_pty(cli_runner):
+    # the python-test path must NOT allocate a PTY for the run.
+    res, rm, run = _run(cli_runner, ["pr/1", "test/foo.py"], claim_result=WARM)
+    cmd = _remote_str(run)
+    assert "ssh -t " not in cmd
+
+
 def test_lint_explicit_cpu_arm_keeps_zero_gpus(cli_runner):
     res, rm, run = _run(cli_runner, ["--lint", "--gpu-type", "cpu-arm", "pr/1"], claim_result=WARM)
     kwargs = rm.claim_direct.call_args.kwargs

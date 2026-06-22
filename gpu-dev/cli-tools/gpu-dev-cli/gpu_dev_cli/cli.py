@@ -1748,9 +1748,16 @@ def repro(ctx, ref, test_args, lint, clang, gpu_type, gpus, hours, no_connect, k
         ssh_cmd = ssh_cmd.replace("ssh ", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ", 1)
     rprint(f"[dim]→ {ssh_cmd}[/dim]\n")
     rid8 = str(rid)[:8]
+    # lintrunner only renders its live progress bar to a TTY -> run lint over an SSH
+    # PTY (-t) so you see per-linter progress instead of silence. (-t is polite: in a
+    # non-TTY CI run it just proceeds without a PTY.)
+    run_ssh = ssh_cmd.replace("ssh ", "ssh -t ", 1) if lint else ssh_cmd
+    if lint and "--all-files" in (scope or ""):
+        rprint("[yellow]note:[/yellow] full-tree lint (ruff/mypy/pyrefly over ALL files) — several minutes. "
+               "Lint a PR (gpu-dev repro --lint pr/N) for a fast diff-only run.\n")
     rc = 1
     try:
-        rc = subprocess.run(f"{ssh_cmd} {shlex.quote(remote)}", shell=True).returncode
+        rc = subprocess.run(f"{run_ssh} {shlex.quote(remote)}", shell=True).returncode
     except KeyboardInterrupt:
         rprint("\n[yellow]interrupted[/yellow]"); rc = 130
 
