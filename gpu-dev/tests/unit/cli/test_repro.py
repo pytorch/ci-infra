@@ -437,11 +437,85 @@ def test_auth_failure_returns_without_reserving(cli_runner):
 
 
 def test_test_args_required(cli_runner):
-    # test_args has required=True -> missing -> click usage error (exit 2)
+    # no test_args and no --lint -> bail with exit 2
     patches, rm, run = _patch_env(claim_result=WARM)
     with _Ctx(patches, rm, run):
         res = cli_runner.invoke(main, ["repro", "pr/1"])
     assert res.exit_code == 2
+    rm.claim_direct.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# --lint (CPU lintrunner path)
+# ---------------------------------------------------------------------------
+def test_lint_defaults_to_cpu_x86_with_zero_gpus(cli_runner):
+    # --lint with no extra args: CPU box, gpu_count must be 0 (lambda rejects CPU+gpus>0).
+    res, rm, run = _run(cli_runner, ["--lint", "pr/1"], claim_result=WARM)
+    kwargs = rm.claim_direct.call_args.kwargs
+    assert kwargs["gpu_type"] == "cpu-x86"
+    assert kwargs["gpu_count"] == 0
+    assert kwargs["name"] == "repro"
+
+
+def test_lint_remote_runs_lintrunner_default_merge_base(cli_runner):
+    res, rm, run = _run(cli_runner, ["--lint", "pr/1"], claim_result=WARM)
+    cmd = _remote_str(run)
+    assert "lintrunner init" in cmd
+    assert "lintrunner --merge-base-with origin/main" in cmd
+    # no torch build / no python test on the lint path
+    assert "pip install --break-system-packages -e ." not in cmd
+    assert "PYTHONPATH=/home/dev/pytorch python" not in cmd
+
+
+def test_lint_passes_extra_args_to_lintrunner(cli_runner):
+    # extra args (ignore_unknown_options) flow straight to lintrunner, overriding the default.
+    res, rm, run = _run(cli_runner, ["--lint", "pr/1", "--all-files"], claim_result=WARM)
+    cmd = _remote_str(run)
+    assert "lintrunner --all-files" in cmd
+    assert "--merge-base-with" not in cmd
+
+
+def test_lint_explicit_cpu_arm_keeps_zero_gpus(cli_runner):
+    res, rm, run = _run(cli_runner, ["--lint", "--gpu-type", "cpu-arm", "pr/1"], claim_result=WARM)
+    kwargs = rm.claim_direct.call_args.kwargs
+    assert kwargs["gpu_type"] == "cpu-arm"
+    assert kwargs["gpu_count"] == 0
+
+
+def test_lint_verdict_says_lint(cli_runner):
+    patches, rm, run = _patch_env(claim_result=WARM, isatty=False)
+    run.return_value = MagicMock(returncode=5)
+    with _Ctx(patches, rm, run):
+        res = cli_runner.invoke(main, ["repro", "--lint", "pr/1", "--no-connect"])
+    assert res.exit_code == 5
+    assert "lint failed" in res.output
+
+
+def test_lint_no_ref_lints_main_all_files(cli_runner):
+    # bare `repro --lint` -> ref defaults to main, scope defaults to --all-files.
+    res, rm, run = _run(cli_runner, ["--lint"], claim_result=WARM)
+    kwargs = rm.claim_direct.call_args.kwargs
+    assert kwargs["gpu_type"] == "cpu-x86"
+    assert kwargs["gpu_count"] == 0
+    cmd = _remote_str(run)
+    assert "lintrunner --all-files" in cmd
+    assert "--merge-base-with" not in cmd
+
+
+def test_lint_branch_ref_defaults_to_all_files(cli_runner):
+    # a non-PR ref (branch/sha) lints everything, not the empty merge-base diff.
+    res, rm, run = _run(cli_runner, ["--lint", "main"], claim_result=WARM)
+    cmd = _remote_str(run)
+    assert "lintrunner --all-files" in cmd
+
+
+def test_test_path_requires_ref(cli_runner):
+    # without --lint, a missing ref bails (exit 2) before reserving anything.
+    patches, rm, run = _patch_env(claim_result=WARM)
+    with _Ctx(patches, rm, run):
+        res = cli_runner.invoke(main, ["repro"])
+    assert res.exit_code == 2
+    rm.claim_direct.assert_not_called()
 
 
 def test_cancel_failure_in_ci_is_caught(cli_runner):

@@ -1521,19 +1521,23 @@ def reserve(
 
 
 @main.command(context_settings={"ignore_unknown_options": True})
-@click.argument("ref")
-@click.argument("test_args", nargs=-1, required=True)
-@click.option("--gpu-type", default="b200", show_default=True, help="GPU type for the repro box.")
+@click.argument("ref", required=False)
+@click.argument("test_args", nargs=-1, required=False)
+@click.option("--lint", is_flag=True, default=False,
+              help="Run a PyTorch lint job (lintrunner) on a CPU box instead of a python test. "
+                   "Defaults to --gpu-type cpu-x86 and skips the torch build. Extra args go to "
+                   "lintrunner (default: --merge-base-with origin/main, i.e. the PR diff like CI).")
+@click.option("--gpu-type", default=None, help="GPU type for the repro box (default: b200; cpu-x86 with --lint).")
 @click.option("--gpus", type=int, default=1, show_default=True)
 @click.option("--hours", type=float, default=3.0, show_default=True,
               help="Lifetime ceiling for the box.")
 @click.option("--no-connect", is_flag=True, default=False,
-              help="CI mode: run the test, auto-cancel, exit code = test result. Default (on a TTY) drops you into the box to iterate.")
+              help="CI mode: run the test/lint, auto-cancel, exit code = result. Default (on a TTY) drops you into the box to iterate.")
 @click.option("--keep", is_flag=True, default=False,
               help="Never cancel the box (skip the cancel prompt / auto-cancel).")
 @click.pass_context
-def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
-    """Reserve a GPU, check out a PR/commit, run a test, then drop you into the box.
+def repro(ctx, ref, test_args, lint, gpu_type, gpus, hours, no_connect, keep):
+    """Reserve a box, check out a PR/commit, run a test (or lint), then drop you in.
 
     By default (in a terminal) repro runs the test and then **connects you into the
     box** at ~/pytorch — the ref is checked out, so you can fix and re-run. The box
@@ -1546,10 +1550,30 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
     TEST_ARGS are passed straight to `python` inside ~/pytorch, e.g.
 
       gpu-dev repro pr/185264 test/inductor/test_flex_attention.py TestFlexAttentionCUDA.test_large_kv_int64_pointer_math_cuda
+
+    --lint runs lintrunner on a CPU box instead (no GPU, no torch build), e.g.
+
+      gpu-dev repro --lint                          # lint main (all files)
+      gpu-dev repro --lint pr/185264                # lint the PR diff (CI-equivalent)
+      gpu-dev repro --lint pr/185264 --all-files    # lint everything
+
+    The box stays up after the run: on a TTY you're dropped in and prompted to
+    cancel on exit (use --keep to leave it running; --no-connect auto-cancels).
     """
     import shlex
     import subprocess
     import sys
+    if not ref:
+        if not lint:
+            rprint("[red]❌ Provide a REF (pr/N, branch, or commit) — or use --lint to lint main.[/red]")
+            sys.exit(2)
+        ref = "main"  # bare `repro --lint` lints current main
+    if not lint and not test_args:
+        rprint("[red]❌ Provide a test, e.g. gpu-dev repro pr/123 test/foo.py — or pass --lint for a lint job.[/red]")
+        sys.exit(2)
+    gpu_type = (gpu_type or ("cpu-x86" if lint else "b200")).lower()
+    if gpu_type.startswith("cpu"):
+        gpus = 0  # CPU reservations must have gpu_count=0
     config = load_config()
     reservation_mgr = ReservationManager(config)
     try:
@@ -1637,9 +1661,37 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
         f"PYTHONPATH=/home/dev/pytorch python {testcmd}"
     )
 
+    runlabel, rerun_hint = "test", f"python {testcmd}"
+    if lint:
+        # Lint needs the source tree at the ref but NO torch build. Most pods already
+        # have /home/dev/pytorch; CPU pods may not, so clone (partial) as a fallback.
+        # origin/main is fetched so --merge-base-with works (the PR-diff scope CI lints).
+        # PR ref -> lint the diff (CI-equivalent); main/branch/sha -> lint everything
+        # (merge-base-with origin/main would be empty when you ARE main).
+        lint_default = "--merge-base-with origin/main" if prnum else "--all-files"
+        lintargs = " ".join(shlex.quote(a) for a in test_args) or lint_default
+        runlabel, rerun_hint = "lint", f"lintrunner {lintargs}"
+        remote = (
+            "set -e; "
+            "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
+            "if [ ! -d /home/dev/pytorch/.git ]; then echo '[lint] no pytorch tree on this pod — cloning (partial)…'; "
+            "rm -rf /home/dev/pytorch; git clone --filter=blob:none https://github.com/pytorch/pytorch.git /home/dev/pytorch; fi; "
+            "cd /home/dev/pytorch; "
+            + resolve +
+            "echo \"[lint] target ${WANT:-?}\"; "
+            "git fetch origin main 2>/dev/null || true; "
+            "echo \"[lint] checking out $FREF\"; " + checkout + "; "
+            "echo \"[lint] HEAD $(git rev-parse --short HEAD)\"; "
+            "command -v lintrunner >/dev/null 2>&1 || pip install --break-system-packages -q lintrunner; "
+            "echo '[lint] lintrunner init (downloading linters)…'; lintrunner init; "
+            f"echo '[lint] running: lintrunner {lintargs}'; "
+            f"lintrunner {lintargs}"
+        )
+
     # Reserve — warm claim (instant) first, else cold ephemeral. Always no-persist
     # (so the prebuilt tree is staged; a default disk would skip staging).
-    rprint(f"[cyan]🔬 repro: reserving {gpus}x {gpu_type} (warm if available)…[/cyan]")
+    desc = f"{gpus}x {gpu_type}" if gpus else gpu_type
+    rprint(f"[cyan]🔬 repro: reserving {desc} (warm if available)…[/cyan]")
     rid = ssh_cmd = None
     try:
         res = reservation_mgr.claim_direct(
@@ -1675,14 +1727,14 @@ def repro(ctx, ref, test_args, gpu_type, gpus, hours, no_connect, keep):
     except KeyboardInterrupt:
         rprint("\n[yellow]interrupted[/yellow]"); rc = 130
 
-    verdict = "[green]✓ test passed[/green]" if rc == 0 else f"[red]✗ test failed (exit {rc})[/red]"
+    verdict = f"[green]✓ {runlabel} passed[/green]" if rc == 0 else f"[red]✗ {runlabel} failed (exit {rc})[/red]"
 
     # Default (TTY): drop into the box so you can fix and re-run. --no-connect is the
     # CI path: auto-cancel and exit with the test's code.
     connect = (not no_connect) and sys.stdout.isatty()
     if connect:
         rprint(f"\n{verdict} — dropping you into the box at ~/pytorch ({ref} checked out).")
-        rprint(f"[dim]  re-run:  python {testcmd}[/dim]")
+        rprint(f"[dim]  re-run:  {rerun_hint}[/dim]")
         rprint(f"[dim]  finish:  gpu-dev cancel  (from inside)  •  or exit this shell[/dim]\n")
         shell_cmd = f"{ssh_cmd} -t {shlex.quote('cd /home/dev/pytorch 2>/dev/null; exec ${SHELL:-bash} -l')}"
         try:
