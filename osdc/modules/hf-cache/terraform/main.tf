@@ -41,9 +41,12 @@ locals {
   oidc_provider_arn = data.terraform_remote_state.base.outputs.oidc_provider_arn
   oidc_provider     = data.terraform_remote_state.base.outputs.oidc_provider
 
-  namespace   = "hf-cache"
-  bucket_arn  = "arn:aws:s3:::${var.hf_cache_bucket}"
-  objects_arn = "arn:aws:s3:::${var.hf_cache_bucket}/*"
+  namespace  = "hf-cache"
+  bucket_arn = "arn:aws:s3:::${var.hf_cache_bucket}"
+  # Each cluster reads/writes only its own prefix in the shared bucket, so
+  # per-cluster refresh jobs never contend over the same keys. (ListBucket stays
+  # bucket-wide for simplicity; object access is scoped to the cluster prefix.)
+  objects_arn = "arn:aws:s3:::${var.hf_cache_bucket}/${var.cluster_id}/*"
 
   tags = {
     Cluster = var.cluster_name
