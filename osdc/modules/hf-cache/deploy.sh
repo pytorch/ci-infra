@@ -83,10 +83,14 @@ kubectl create configmap hf-cache-models \
 kubectl label configmap hf-cache-models -n "$NAMESPACE" \
   osdc.io/module=hf-cache --overwrite
 
+# Each cluster reads/writes only its own prefix (s3://<bucket>/<cluster_id>/hub)
+# so per-cluster refresh jobs never contend over the same keys.
+
 # --- Render + apply the mount DaemonSet ---
 echo "[hf-cache] Applying mount DaemonSet..."
 sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
   -e "s|__BUCKET__|${BUCKET}|g" \
+  -e "s|__CLUSTER__|${CLUSTER}|g" \
   -e "s|__REGION__|${BUCKET_REGION}|g" \
   -e "s|__RCLONE_IMAGE__|${RCLONE_IMAGE}|g" \
   -e "s|__VFS_CACHE_MAX_SIZE__|${VFS_CACHE_MAX_SIZE}|g" \
@@ -97,6 +101,7 @@ sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
 echo "[hf-cache] Applying refresh CronJob..."
 sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
   -e "s|__BUCKET__|${BUCKET}|g" \
+  -e "s|__CLUSTER__|${CLUSTER}|g" \
   -e "s|__REGION__|${BUCKET_REGION}|g" \
   -e "s|__RCLONE_IMAGE__|${RCLONE_IMAGE}|g" \
   -e "s|__SCHEDULE__|${REFRESH_SCHEDULE}|g" \

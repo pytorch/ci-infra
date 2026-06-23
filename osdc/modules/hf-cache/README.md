@@ -7,14 +7,18 @@ weights from a local cache instead of downloading from the Hub on every run.
 ## Design in one paragraph
 
 The model cache is stored as **plain, symlink-free HuggingFace cache-layout files
-in a single shared S3 bucket** (the portable source of truth — any object store
-can host the same layout). A privileged per-node **rclone FUSE mount**
-(`mount-daemonset`) exposes that bucket **read-only** at the host path
+in a shared S3 bucket** (the portable source of truth — any object store can host
+the same layout). Each cluster uses its **own prefix** in that bucket
+(`s3://pytorch-hf-model-cache/<cluster_id>/hub`), so the per-cluster refresh
+writers never contend over the same keys — mirroring how `pypi-cache` partitions
+per-cluster writes with `wants/<cluster_id>.txt`. A privileged per-node **rclone
+FUSE mount** (`mount-daemonset`) exposes that prefix **read-only** at the host path
 `/mnt/hf_cache`; reads are lazy and cached on node-local NVMe, so a cold Karpenter
 node only pulls the models its jobs touch. Job pods (ARC kubernetes mode) get the
 path bind-mounted via the gated `# BEGIN_HF_CACHE` block in
 `modules/arc-runners/templates/runner.yaml.tpl`. A **refresh CronJob** is the only
-writer: it downloads the curated model set and publishes a symlink-free copy to S3.
+writer for its cluster's prefix: it downloads the curated model set and publishes a
+symlink-free copy to S3.
 
 No metadata engine, no EFS — just S3 + rclone, which keeps it cloud-portable.
 
@@ -71,7 +75,9 @@ for clusters that don't enable it.
   enabling on a real cluster.
 - The mount DaemonSet is **privileged** (FUSE + Bidirectional propagation); confirm
   this is acceptable under the cluster's Pod Security posture.
-- Single shared bucket in `us-east-2` means cross-region S3 reads for other regions
-  (node-local cache absorbs repeats). Per-region buckets / replication is a follow-up.
+- Multiple clusters are isolated by prefix (`<cluster_id>/hub`) in one bucket, so
+  writes don't contend. The bucket lives in `us-east-2`, so clusters in other
+  regions do cross-region S3 reads (node-local cache absorbs repeats). Moving to
+  per-region buckets (which also kills the cross-region cost) is a follow-up.
 - Strict-offline (`HF_HUB_OFFLINE=1`): an uncached model errors out (matches EC2).
   Graceful online fallback (overlay) is a possible enhancement.
