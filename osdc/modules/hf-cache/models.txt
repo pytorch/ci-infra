@@ -1,0 +1,20 @@
+# Curated HuggingFace model manifest for the shared OSDC cache.
+#
+# One entry per line: `repo_id` or `repo_id@revision`. Blank lines and `#`
+# comments (full-line or trailing) are ignored. The refresh CronJob downloads
+# every listed repo and publishes it to the shared S3 bucket; runners then read
+# these models offline from /mnt/hf_cache.
+#
+# Keep this in sync with the model pins that drive pytorch/pytorch CI's
+# `ci-refresh-hf-cache` label:
+#   .github/ci_commit_pins/vllm.txt
+#   .ci/docker/ci_commit_pins/timm.txt
+#   .ci/docker/ci_commit_pins/huggingface-requirements.txt
+#   .ci/docker/ci_commit_pins/torchbench.txt
+#
+# Gated/private repos require a token — see README.md (hf-cache-token Secret).
+#
+# Examples (uncomment / extend as the consuming workflows require):
+# meta-llama/Llama-3.1-8B-Instruct
+# Qwen/Qwen2.5-7B-Instruct
+# openai/clip-vit-base-patch32
