@@ -110,6 +110,16 @@ defaults:
       - "x86_64"
       - "aarch64"
     target_manylinux: "2_28"
+  hf_cache:
+    # Shared HuggingFace model cache (modules/hf-cache). Not enabled on any
+    # cluster by default — add "hf-cache" to a cluster's modules list to turn it
+    # on. The model data lives in a single shared, private S3 bucket
+    # (pytorch-hf-model-cache in us-east-2); these are just the knobs.
+    namespace: hf-cache
+    bucket_region: us-east-2          # region of the shared model-cache bucket
+    rclone_image: "rclone/rclone:1.69.1"
+    vfs_cache_max_size: 200G          # per-node NVMe cap for the rclone read cache
+    refresh_schedule: "0 7 * * *"     # daily 07:00 UTC
 
 clusters:
   meta-staging-aws-uw1:
