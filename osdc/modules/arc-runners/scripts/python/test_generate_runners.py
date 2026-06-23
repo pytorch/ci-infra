@@ -193,6 +193,7 @@ def make_def_file(
     max_burst_capacity=None,
     hud_failure_base_capacity=None,
     node_fleet=None,
+    scheduler_name=None,
 ):
     """Write a runner def YAML and return the path.
 
@@ -221,6 +222,8 @@ def make_def_file(
         runner["hud_failure_base_capacity"] = hud_failure_base_capacity
     if node_fleet is not None:
         runner["node_fleet"] = node_fleet
+    if scheduler_name is not None:
+        runner["scheduler_name"] = scheduler_name
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -1858,6 +1861,19 @@ def _render_real(real_template, tmp_path, variant):
     return helm, configmap, workflow_pod
 
 
+def _listener_env_value(helm, name):
+    """Return the value of a named env var on the listener container.
+
+    Returns None when the env var is absent so callers can distinguish
+    "missing" from "present but empty".
+    """
+    containers = helm["listenerTemplate"]["spec"]["containers"]
+    for entry in containers[0].get("env", []):
+        if entry.get("name") == name:
+            return entry.get("value")
+    return None
+
+
 class TestRealTemplate:
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_runner_pod_uses_arc_runner_priority_class(self, real_template, tmp_path, variant):
@@ -1870,6 +1886,43 @@ class TestRealTemplate:
         """Runner pod nodeSelector must use the literal c7i-runner pool, not the def's fleet."""
         helm, _, _ = _render_real(real_template, tmp_path, variant)
         assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "c7i-runner"
+
+    def test_workflow_pod_scheduler_name_from_def(self, real_template, tmp_path):
+        """Workflow pod gets schedulerName when the runner def sets scheduler_name."""
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name="packed-runner",
+            instance_type="r7a.48xlarge",
+            vcpu=8,
+            memory=64,
+            gpu=0,
+            disk_size=200,
+            scheduler_name="bin-pack-scheduler",
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+        }
+        assert generate_runner(def_file, real_template, cluster_config, output_dir, "arc-runners") is True
+        docs = list(yaml.safe_load_all((output_dir / "packed-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert workflow_pod["spec"]["schedulerName"] == "bin-pack-scheduler"
+        # The capacity placeholder (ph-w-*) must use the SAME scheduler so it
+        # reserves a slot the real workflow pod can actually claim.
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == "bin-pack-scheduler"
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_workflow_pod_no_scheduler_name_by_default(self, real_template, tmp_path, variant):
+        """Workflow pod must NOT have schedulerName when the runner def omits scheduler_name."""
+        helm, _, workflow_pod = _render_real(real_template, tmp_path, variant)
+        assert "schedulerName" not in workflow_pod["spec"]
+        # Placeholder scheduler env must be present-but-empty (the fork treats
+        # empty as default-scheduler), keeping it in sync with the workflow pod.
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == ""
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_runner_pod_tolerates_c7i_runner_node_fleet(self, real_template, tmp_path, variant):
