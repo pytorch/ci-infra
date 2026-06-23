@@ -246,7 +246,6 @@ clusters:
       - karpenter
       - arc
       - nodepools
-      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
