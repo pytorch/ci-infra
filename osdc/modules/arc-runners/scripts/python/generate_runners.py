@@ -343,6 +343,11 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     #                             listener, which the fork stamps onto ph-w-*.
     # If they diverged, the placeholder would reserve a slot the real pod can't claim.
     scheduler_name = runner.get("scheduler_name", "")
+    # Cluster-wide default: a def without its own scheduler_name inherits
+    # arc-runners.scheduler_name from clusters.yaml, so a cluster can route all
+    # workflow pods to a secondary scheduler from one place (per-def value wins).
+    if not scheduler_name:
+        scheduler_name = cluster_config.get("scheduler_name", "")
     scheduler_name_line = f"      schedulerName: {scheduler_name}" if scheduler_name else ""
 
     # Replace all template placeholders
