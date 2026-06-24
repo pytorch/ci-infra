@@ -282,50 +282,49 @@ jobs:
           fi
           echo "PASS: /mnt/hf_cache rejected a write (read-only)"
 
-  test-hf-cache-offline-load:
+  # Read path: how normal CI test jobs use the cache — HF_HOME=/mnt/hf_cache
+  # (injected) + offline flags, load a small model via huggingface_hub. Skips if
+  # the model isn't cached yet (the refresh-sync job / ci-refresh-hf-cache
+  # populates it).
+  test-hf-cache-offline-read:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
       image: python:3.12-slim
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     steps:
-      - name: Detect cached models
+      - name: Load a small model offline from /mnt/hf_cache
         run: |
-          echo "=== Detect Cached Models ==="
-          if ls -d /mnt/hf_cache/hub/models--* >/dev/null 2>&1; then
-            ls -d /mnt/hf_cache/hub/models--* | head
-            echo "SKIP_OFFLINE=false" >> "$GITHUB_ENV"
-          else
-            echo "::warning::No models cached under /mnt/hf_cache/hub yet — skipping offline-load validation"
-            echo "SKIP_OFFLINE=true" >> "$GITHUB_ENV"
+          echo "=== Offline Read (mirrors normal CI jobs) ==="
+          MODEL="prajjwal1/bert-tiny"
+          CACHE_DIR="/mnt/hf_cache/hub/models--${MODEL//\//--}"
+          if [ ! -d "$CACHE_DIR" ]; then
+            echo "::warning::$MODEL not in the cache yet (no refresh has populated it) — skipping"
+            exit 0
           fi
-
-      - name: Load a cached model offline (validates symlink-free layout)
-        if: env.SKIP_OFFLINE != 'true'
-        run: |
-          echo "=== Offline Load ==="
           pip install --no-cache-dir 'huggingface_hub>=0.24'
-          DIR=$(ls -d /mnt/hf_cache/hub/models--* | head -1)
-          REPO=$(basename "$DIR" | sed 's/^models--//; s/--/\//g')
-          echo "Resolving '$REPO' offline from the read-only cache..."
-          HF_HUB_OFFLINE=1 REPO="$REPO" python3 -c "
+          MODEL="$MODEL" python3 -c "
           import os, sys
           from huggingface_hub import snapshot_download
-          repo = os.environ['REPO']
-          path = snapshot_download(repo, local_files_only=True)
+          model = os.environ['MODEL']
+          path = snapshot_download(model, local_files_only=True)
           files = os.listdir(path)
           if not files:
               print('FAIL: empty snapshot at', path)
               sys.exit(1)
-          print('PASS: resolved', repo, 'offline at', path, '(' + str(len(files)) + ' entries)')
+          print('PASS: loaded', model, 'offline from', path, '(' + str(len(files)) + ' files)')
           "
   # END_HF_CACHE
 
   # BEGIN_HF_CACHE_OIDC
-  # ── HF Cache: OIDC write round-trip ─────────────────────────────────
-  # Validates the write path: assume the gha_workflow_hf-cache-write role via
-  # OIDC and round-trip an object to the bucket. Fail-soft — if the role can't
-  # be assumed (the 'hf-cache-write' environment / role-trust for this repo is
-  # not set up), it warns and skips rather than failing the suite.
-  test-hf-cache-oidc-write:
+  # ── HF Cache: refresh (online download → sync to S3) ─────────────────
+  # Mirrors ci-refresh-hf-cache: assume the OIDC writer role, download a small
+  # model from the HF Hub (online), then aws s3 sync the artifacts to the
+  # cluster's bucket. Fail-soft — if the role can't be assumed (the
+  # 'hf-cache-write' environment / role-trust for this repo isn't set up), it
+  # warns and skips rather than failing the suite.
+  test-hf-cache-refresh-sync:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     environment: hf-cache-write
     permissions:
@@ -334,8 +333,8 @@ jobs:
     container:
       image: python:3.12-slim
     steps:
-      - name: Install awscli
-        run: pip install --no-cache-dir awscli
+      - name: Install huggingface_hub + awscli
+        run: pip install --no-cache-dir 'huggingface_hub>=0.24' awscli
 
       - name: Configure AWS credentials (OIDC)
         id: creds
@@ -345,28 +344,35 @@ jobs:
           role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_hf-cache-write
           aws-region: ${{ env.HF_CACHE_S3_REGION }}
 
-      - name: Write + read-back round trip
+      - name: Download from HF Hub (online) then sync to S3
         if: steps.creds.outcome == 'success'
         run: |
-          echo "=== OIDC Write Round-Trip ==="
-          KEY="hub/.integration-test/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
-          PROBE="hf-cache-oidc-probe-${GITHUB_RUN_ID}"
-          echo "$PROBE" > /tmp/probe.txt
-          echo "Uploading s3://$HF_CACHE_S3_BUCKET/$KEY"
-          aws s3 cp /tmp/probe.txt "s3://$HF_CACHE_S3_BUCKET/$KEY" --region "$HF_CACHE_S3_REGION"
-          GOT=$(aws s3 cp "s3://$HF_CACHE_S3_BUCKET/$KEY" - --region "$HF_CACHE_S3_REGION")
-          aws s3 rm "s3://$HF_CACHE_S3_BUCKET/$KEY" --region "$HF_CACHE_S3_REGION" || true
-          if [ "$GOT" = "$PROBE" ]; then
-            echo "PASS: OIDC write + read-back round trip succeeded"
-          else
-            echo "FAIL: read-back mismatch (got '$GOT', expected '$PROBE')"
+          echo "=== Refresh: online download + sync to S3 ==="
+          MODEL="prajjwal1/bert-tiny"
+          STAGING="${RUNNER_TEMP:-/tmp}/hf-refresh"
+          mkdir -p "$STAGING/hub"
+          # Online download into a writable dir (NOT the read-only /mnt/hf_cache).
+          MODEL="$MODEL" STAGING="$STAGING" python3 -c "
+          import os
+          from huggingface_hub import snapshot_download
+          p = snapshot_download(os.environ['MODEL'], cache_dir=os.path.join(os.environ['STAGING'], 'hub'))
+          print('downloaded', os.environ['MODEL'], 'to', p)
+          "
+          # Publish like the refresh job; aws s3 sync follows symlinks -> symlink-free in S3.
+          aws s3 sync "$STAGING/hub" "s3://$HF_CACHE_S3_BUCKET/hub" --region "$HF_CACHE_S3_REGION" --no-progress
+          PREFIX="hub/models--${MODEL//\//--}/"
+          COUNT=$(aws s3 ls "s3://$HF_CACHE_S3_BUCKET/$PREFIX" --region "$HF_CACHE_S3_REGION" --recursive | wc -l | tr -d ' ')
+          echo "Synced objects under $PREFIX: $COUNT"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "FAIL: nothing synced for $MODEL"
             exit 1
           fi
+          echo "PASS: downloaded $MODEL from HF Hub and synced $COUNT objects to s3://$HF_CACHE_S3_BUCKET/$PREFIX"
 
       - name: Note when OIDC unavailable
         if: steps.creds.outcome != 'success'
         run: |
-          echo "::warning::Skipped OIDC write round-trip — could not assume gha_workflow_hf-cache-write."
+          echo "::warning::Skipped refresh-sync — could not assume gha_workflow_hf-cache-write."
           echo "Needs the 'hf-cache-write' environment on this repo and the role trusting its OIDC subject."
   # END_HF_CACHE_OIDC
 
