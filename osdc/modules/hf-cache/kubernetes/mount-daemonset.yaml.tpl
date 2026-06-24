@@ -1,7 +1,7 @@
-# Per-node rclone FUSE mount of the cluster's S3 cache (read-write) at host
+# Per-node rclone FUSE mount of the cluster's S3 cache (read-only) at host
 # /mnt/hf_cache. Job pods hostPath-mount it (HostToContainer); see BEGIN_HF_CACHE
 # in modules/arc-runners/templates/runner.yaml.tpl. Reads are lazy and cached on
-# NVMe (LRU, --vfs-cache-max-size); writes (ci-refresh-hf-cache runs) upload to S3.
+# NVMe (LRU). Writes go via the GitHub-OIDC refresh path, not this mount.
 #
 # Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
 # __VFS_CACHE_MAX_SIZE__
@@ -70,10 +70,11 @@ spec:
               mkdir -p "$MOUNT" "$CACHE"
 
               # Credentials via IRSA (env_auth). /mnt/hf_cache/hub maps to
-              # s3://__BUCKET__/hub. umask 000 so job pods (any uid) can write.
+              # s3://__BUCKET__/hub.
               exec rclone mount \
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
+                --read-only \
                 --allow-other \
                 --dir-cache-time 1h \
                 --poll-interval 0 \
@@ -83,7 +84,7 @@ spec:
                 --vfs-read-chunk-size 128M \
                 --cache-dir "$CACHE" \
                 --no-modtime \
-                --umask 000 \
+                --umask 022 \
                 --log-level INFO
           lifecycle:
             preStop:

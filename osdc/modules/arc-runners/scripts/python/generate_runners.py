@@ -370,6 +370,10 @@ def generate_runner(
         "{{GPU_LIMIT}}": gpu_limit,
         "{{MODULE_NAME}}": module_name,
         "{{RUNNER_IMAGE}}": runner_image,
+        # HF cache write target (used by the ci-refresh-hf-cache workflow's OIDC
+        # upload); read path is the /mnt/hf_cache mount. Bucket is per-cluster.
+        "{{HF_CACHE_BUCKET}}": f"pytorch-hf-model-cache-{cluster_config.get('cluster_id', '')}",
+        "{{HF_CACHE_REGION}}": cluster_config.get("region", ""),
         "{{RUNNER_GROUP}}": runner_group,
         "{{RUNNER_CLASS_JOB_AFFINITY}}": runner_class_job_affinity,
         "{{MAX_RUNNERS_LINE}}": max_runners_line,
