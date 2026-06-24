@@ -28,6 +28,7 @@ on every classification call, so you can edit them without restarting.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import gzip
 import json
@@ -40,7 +41,7 @@ import subprocess
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +55,8 @@ if _cleared_localhost_proxy:
     os.environ["NO_PROXY"] = "*"
     os.environ["no_proxy"] = "*"
 
-import clickhouse_connect
-import requests
+import clickhouse_connect  # noqa: E402  (must come after proxy env scrub above)
+import requests  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 STATE_FILE = HERE / ".watch.classification.json"
@@ -95,22 +96,38 @@ CLASSIFIER_ENV = {
 }
 
 CLASSIFIER_ENV_PASSTHROUGH = (
-    "HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "TERM",
-    "NO_PROXY", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-    "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_API_KEY",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "PATH",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "NO_PROXY",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_API_KEY",
 )
 
-CLASSIFIER_ENV_DENY_CLAUDE_CODE = frozenset({
-    "CLAUDE_CODE_CHILD_SESSION",
-    "CLAUDE_CODE_CURRENT_SESSION_ID",
-    "CLAUDE_CODE_CURRENT_TRANSCRIPT_PATH",
-    "CLAUDE_CODE_EXECPATH",
-    "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_TEAMMATE_COMMAND",
-    "CLAUDE_CODE_TMPDIR",
-    "CLAUDE_CODE_ENTRYPOINT",
-    "CLAUDE_LAUNCHER_SESSION_FILE",
-})
+CLASSIFIER_ENV_DENY_CLAUDE_CODE = frozenset(
+    {
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_CURRENT_SESSION_ID",
+        "CLAUDE_CODE_CURRENT_TRANSCRIPT_PATH",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_TEAMMATE_COMMAND",
+        "CLAUDE_CODE_TMPDIR",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_LAUNCHER_SESSION_FILE",
+    }
+)
 
 INTERNET_MODE_MARKER = ".claude/internet-mode-used_DO_NOT_REMOVE_MANUALLY_SECURITY_RISK"
 
@@ -128,6 +145,7 @@ def clear_internet_mode_markers(start: Path) -> None:
         if d.parent == d:
             break
         d = d.parent
+
 
 ERROR_PATTERNS = [
     re.compile(r"##\[error\]", re.IGNORECASE),
@@ -159,7 +177,7 @@ ORDER BY completed_at DESC
 
 
 def log(msg: str) -> None:
-    print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[{datetime.now(UTC).strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def load_state() -> dict[str, Any]:
@@ -188,7 +206,7 @@ def acquire_lock():
     except BlockingIOError:
         lock_fd.close()
         return None
-    lock_fd.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n")
+    lock_fd.write(f"pid={os.getpid()} started={datetime.now(UTC).isoformat()}\n")
     lock_fd.flush()
     return lock_fd
 
@@ -209,7 +227,7 @@ def query_failed_jobs(client, runner_prefix: str) -> list[dict[str, Any]]:
         parameters={"lookback": LOOKBACK_MINUTES, "runner_pat": f"{runner_prefix}%"},
     )
     cols = result.column_names
-    return [dict(zip(cols, row)) for row in result.result_rows]
+    return [dict(zip(cols, row, strict=False)) for row in result.result_rows]
 
 
 def fetch_log(url: str) -> str:
@@ -218,10 +236,8 @@ def fetch_log(url: str) -> str:
         raise RuntimeError(f"HTTP {r.status_code} fetching {url}")
     body = r.content
     if r.headers.get("Content-Encoding") == "gzip" or body[:2] == b"\x1f\x8b":
-        try:
+        with contextlib.suppress(gzip.BadGzipFile):
             body = gzip.decompress(body)
-        except gzip.BadGzipFile:
-            pass
     try:
         return body.decode("utf-8", errors="replace")
     except Exception:
@@ -369,7 +385,7 @@ Do not write the JSON anywhere else.
 
 
 def render(job: dict[str, Any], cls: dict[str, Any]) -> tuple[str, str | None]:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     cat = str(cls.get("category", "unknown")).upper()
     conf = cls.get("confidence", "?")
     summary = cls.get("summary", "")
@@ -434,7 +450,7 @@ def process_one(job: dict[str, Any], state: dict[str, Any]) -> float | None:
         log(f"  log is HUD mirror rate-limit stub ({len(full_log)} bytes); skipping (real log may appear later)")
         return None
     if not full_log.strip():
-        log(f"  log empty; marking as unknown")
+        log("  log empty; marking as unknown")
         cls = {
             "category": "unknown",
             "confidence": "low",
@@ -452,7 +468,7 @@ def process_one(job: dict[str, Any], state: dict[str, Any]) -> float | None:
     append_output(entry, infra_entry)
     state[job_id] = {
         "classification": cls,
-        "posted_at": datetime.now(timezone.utc).isoformat(),
+        "posted_at": datetime.now(UTC).isoformat(),
         "runner_name": job["runner_name"],
         "classify_secs": round(classify_secs, 2),
     }
@@ -499,12 +515,10 @@ def main(runner_prefix: str) -> int:
     log(f"poll every {POLL_INTERVAL_SEC}s, lookback {LOOKBACK_MINUTES}min")
 
     if not OUTPUT_FILE.exists():
-        OUTPUT_FILE.write_text(
-            f"# LF Runner Failures Watch\n\nStarted {datetime.now(timezone.utc).isoformat()}\n\n"
-        )
+        OUTPUT_FILE.write_text(f"# LF Runner Failures Watch\n\nStarted {datetime.now(UTC).isoformat()}\n\n")
     if not INFRA_OUTPUT_FILE.exists():
         INFRA_OUTPUT_FILE.write_text(
-            f"# LF Runner Failures Watch — INFRA only\n\nStarted {datetime.now(timezone.utc).isoformat()}\n\n"
+            f"# LF Runner Failures Watch — INFRA only\n\nStarted {datetime.now(UTC).isoformat()}\n\n"
         )
 
     client = ch_client()
@@ -533,7 +547,9 @@ def main(runner_prefix: str) -> int:
             if durations:
                 avg = sum(durations) / len(durations)
                 breakdown = ", ".join(f"{c}={n}" for c, n in sorted(categories.items(), key=lambda x: -x[1]))
-                log(f"  classified {len(durations)} jobs this iter: avg={avg:.1f}s min={min(durations):.1f}s max={max(durations):.1f}s (timeout={CLASSIFIER_TIMEOUT_SEC}s)")
+                log(
+                    f"  classified {len(durations)} jobs this iter: avg={avg:.1f}s min={min(durations):.1f}s max={max(durations):.1f}s (timeout={CLASSIFIER_TIMEOUT_SEC}s)"
+                )
                 log(f"  by category: {breakdown}")
         except Exception:
             log("poll crashed:")
@@ -588,7 +604,7 @@ if __name__ == "__main__":
             "AND completed_at > now() - INTERVAL 6 HOUR ORDER BY completed_at DESC LIMIT 1"
         )
         cols = probe.column_names
-        job = dict(zip(cols, probe.result_rows[0]))
+        job = dict(zip(cols, probe.result_rows[0], strict=False))
         print(f"probe job: {job['id']} {job['name']}")
         txt = fetch_log(job["log_url"])
         sliced = slice_log(txt)
