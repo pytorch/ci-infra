@@ -4,11 +4,11 @@
 # HuggingFace Hub and publishes a symlink-free copy to the shared S3 bucket,
 # which the mount DaemonSet then serves to runners. This is the only writer.
 #
-# Writes only this cluster's prefix (s3://__BUCKET__/__CLUSTER__/hub) so the
-# per-cluster refresh jobs never contend over the same keys.
+# Publishes the curated model set to this cluster's own bucket
+# (s3://__BUCKET__/hub). Only writer for that bucket.
 #
-# Placeholders substituted by deploy.sh: __NAMESPACE__ __BUCKET__ __CLUSTER__
-# __REGION__ __RCLONE_IMAGE__ __SCHEDULE__
+# Placeholders substituted by deploy.sh: __NAMESPACE__ __BUCKET__ __REGION__
+# __RCLONE_IMAGE__ __SCHEDULE__
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -67,7 +67,7 @@ spec:
                     --bucket "$HF_CACHE_BUCKET" \
                     --region "$AWS_REGION" \
                     --cache-dir /work/hub \
-                    --prefix __CLUSTER__/hub
+                    --prefix hub
               env:
                 - name: HF_CACHE_BUCKET
                   value: "__BUCKET__"
