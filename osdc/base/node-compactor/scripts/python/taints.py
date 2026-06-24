@@ -22,6 +22,37 @@ log = logging.getLogger("compactor")
 # (e.g., amd64 image on arm64 node → ImagePullBackOff).
 INSTANCE_TYPE_TAINT_KEY = "instance-type"
 
+# Taints that pods are not expected to tolerate — kube-system transient
+# state, Karpenter disruption signals, and OSDC startup taints removed by
+# node-taint-remover DaemonSets once the node is ready. Including these in
+# the tolerations check would reject matches whenever a node is briefly
+# unreachable or mid-startup, even though the compactor's job is to surface
+# "would this pod fit once our taint is gone?" — not "is the node healthy
+# this exact second?".
+_IGNORED_TAINT_KEYS = frozenset(
+    {
+        # OSDC startup taints (removed by node-taint-remover init containers)
+        "node-init.osdc.io/cache-enforcer",
+        "node-init.osdc.io/registry-mirror",
+        "node-init.osdc.io/perf-tuning",
+        "node-init.osdc.io/algif-mitigation",
+        "node-init.osdc.io/dirtyfrag-mitigation",
+        # Karpenter startup taint (NoExecute on brand-new nodes, removed once
+        # the kubelet registers). karpenter.sh/disrupted is intentionally NOT
+        # ignored — it marks a node Karpenter has committed to terminating,
+        # and pods scheduled there will die with the node.
+        "karpenter.sh/unregistered",
+        # Kubernetes built-in transient taints
+        "node.kubernetes.io/not-ready",
+        "node.kubernetes.io/unreachable",
+        "node.kubernetes.io/network-unavailable",
+        "node.kubernetes.io/unschedulable",
+        "node.kubernetes.io/memory-pressure",
+        "node.kubernetes.io/disk-pressure",
+        "node.kubernetes.io/pid-pressure",
+    }
+)
+
 
 def _pod_matches_node(pod, node_state: NodeState) -> bool:
     """Check if a pending pod could run on a given node.
@@ -38,21 +69,27 @@ def _pod_matches_node(pod, node_state: NodeState) -> bool:
     # --- 1. Taint tolerations ---
     tolerations = pod.spec.tolerations or []
     for taint in node_state.node_taints:
+        if taint.key in _IGNORED_TAINT_KEYS:
+            continue
+        if taint.effect not in ("NoSchedule", "NoExecute"):
+            continue
         tolerated = False
         for tol in tolerations:
-            # A toleration matches if the key matches (or key is empty with Exists operator)
             if tol.operator == "Exists" and not tol.key:
                 tolerated = True
                 break
-            if tol.key == taint.key:
-                if tol.operator == "Exists":
-                    tolerated = True
-                    break
-                if tol.effect and tol.effect != taint.effect:
-                    continue
-                if getattr(tol, "value", None) == getattr(taint, "value", None):
-                    tolerated = True
-                    break
+            if tol.key != taint.key:
+                continue
+            if tol.effect and tol.effect != taint.effect:
+                continue
+            if tol.operator == "Exists":
+                tolerated = True
+                break
+            tol_value = getattr(tol, "value", None)
+            taint_value = getattr(taint, "value", None)
+            if tol_value is None or tol_value == taint_value:
+                tolerated = True
+                break
         if not tolerated:
             return False
 

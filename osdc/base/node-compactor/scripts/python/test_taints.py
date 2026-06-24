@@ -216,6 +216,76 @@ class TestPodMatchesNode(unittest.TestCase):
         node = make_node_state(node_taints=taints)
         self.assertFalse(_pod_matches_node(pod, node))
 
+    def test_ignored_startup_taint(self):
+        """Pod with no tolerations still matches node carrying OSDC startup taint."""
+        taint = make_taint(key="node-init.osdc.io/cache-enforcer", value="true", effect="NoSchedule")
+        pod = make_pod(tolerations=None)
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_karpenter_disrupted_taint_still_rejects(self):
+        """karpenter.sh/disrupted marks a node committed to termination — must reject untolerated pods so they don't land on a dying instance."""
+        taint = make_taint(key="karpenter.sh/disrupted", value="true", effect="NoSchedule")
+        pod = make_pod(tolerations=None)
+        node = make_node_state(node_taints=[taint])
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_ignored_karpenter_unregistered_taint(self):
+        """karpenter.sh/unregistered (startup taint on brand-new nodes) is ignored — pod matches."""
+        taint = make_taint(key="karpenter.sh/unregistered", value="true", effect="NoExecute")
+        pod = make_pod(tolerations=None)
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_ignored_k8s_transient_taint(self):
+        """Pod with no tolerations still matches node carrying k8s unreachable taint."""
+        taint = make_taint(key="node.kubernetes.io/unreachable", value=None, effect="NoSchedule")
+        pod = make_pod(tolerations=None)
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_prefer_no_schedule_taint_ignored(self):
+        """PreferNoSchedule taints never block matching, even with unknown keys."""
+        taint = make_taint(key="foo", value="bar", effect="PreferNoSchedule")
+        pod = make_pod(tolerations=None)
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_non_ignored_no_schedule_taint_still_rejects(self):
+        """Custom NoSchedule taints still block matching when not tolerated."""
+        taint = make_taint(key="custom-team-taint", value="true", effect="NoSchedule")
+        pod = make_pod(tolerations=None)
+        node = make_node_state(node_taints=[taint])
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_equal_toleration_no_value_matches_taint_no_value(self):
+        """Equal toleration with unset value treated as wildcard for taint with no value."""
+        taint = make_taint(key="team", value=None, effect="NoSchedule")
+        tol = make_toleration(key="team", operator="Equal", value=None, effect="NoSchedule")
+        pod = make_pod(tolerations=[tol])
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_matches_node(pod, node))
+
+
+class TestPodMatchesNodeMultipleIgnoredTaintsCheckPending(unittest.TestCase):
+    def test_check_pending_pods_with_stacked_ignored_taints(self):
+        """check_pending_pods path: compactor taint stripped, others ignored, pod matches."""
+        cfg = make_config()
+        compactor_taint = make_taint(key=cfg.taint_key, value="true", effect="NoSchedule")
+        karpenter_taint = make_taint(key="karpenter.sh/unregistered", value="true", effect="NoExecute")
+        startup_taint = make_taint(key="node-init.osdc.io/cache-enforcer", value="true", effect="NoSchedule")
+        ns = make_node_state(
+            name="node-a",
+            is_tainted=True,
+            node_taints=[compactor_taint, karpenter_taint, startup_taint],
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * GiB,
+            pods=[],
+        )
+        pod = make_pod(tolerations=None, cpu="1", memory="1Gi")
+        result = check_pending_pods(cfg, {"node-a": ns}, [pod])
+        self.assertEqual(result, {"node-a"})
+
 
 # ============================================================================
 # _pod_matches_node tests — nodeSelector checks
