@@ -1,21 +1,10 @@
-# HF cache mount DaemonSet.
+# Per-node rclone FUSE mount of the cluster's S3 cache (read-write) at host
+# /mnt/hf_cache. Job pods hostPath-mount it (HostToContainer); see BEGIN_HF_CACHE
+# in modules/arc-runners/templates/runner.yaml.tpl. Reads are lazy and cached on
+# NVMe (LRU, --vfs-cache-max-size); writes (ci-refresh-hf-cache runs) upload to S3.
 #
-# Runs one rclone FUSE mount per node that can host workflow (job) pods,
-# exposing the shared S3 model cache read-only at the host path /mnt/hf_cache.
-# Job pods hostPath-mount that path (HostToContainer propagation) so the cache
-# appears inside the job container — see the BEGIN_HF_CACHE block in
-# modules/arc-runners/templates/runner.yaml.tpl.
-#
-# Reads are lazy: rclone fetches a file from S3 on first open and caches it on
-# node-local NVMe (--cache-dir), bounded by --vfs-cache-max-size with LRU
-# eviction. A cold Karpenter node therefore only pulls the models its jobs
-# actually touch, never the whole bucket.
-#
-# Each cluster has its own bucket (__BUCKET__), mounted read-only at the host
-# /mnt/hf_cache; /mnt/hf_cache/hub maps to s3://__BUCKET__/hub.
-#
-# Placeholders substituted by deploy.sh: __NAMESPACE__ __BUCKET__ __REGION__
-# __RCLONE_IMAGE__ __VFS_CACHE_MAX_SIZE__
+# Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
+# __VFS_CACHE_MAX_SIZE__
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -44,13 +33,11 @@ spec:
       serviceAccountName: hf-cache-mount
       priorityClassName: system-node-critical
 
-      # Run on every node that can host workflow/job pods. ARC runner and
-      # workflow nodes are labelled workload-type=github-runner.
+      # Runner/workflow nodes are labelled workload-type=github-runner.
       nodeSelector:
         workload-type: github-runner
 
-      # Tolerate every taint a runner/workflow node may carry, including the
-      # graceful-refresh taint, so the mount is present before jobs land.
+      # Tolerate all runner/workflow node taints so the mount precedes jobs.
       tolerations:
         - key: node-fleet
           operator: Exists
@@ -70,8 +57,7 @@ spec:
       containers:
         - name: rclone
           image: __RCLONE_IMAGE__
-          # FUSE mount requires /dev/fuse and the ability to share the mount
-          # back to the host (Bidirectional propagation) — both need privileged.
+          # FUSE + Bidirectional propagation need privileged.
           securityContext:
             privileged: true
           command:
@@ -83,13 +69,11 @@ spec:
               CACHE=/mnt/hf-cache-vfs
               mkdir -p "$MOUNT" "$CACHE"
 
-              # IRSA supplies credentials via the AWS SDK env chain (env_auth).
-              # Mount the cluster's bucket; /mnt/hf_cache/hub maps to
-              # s3://__BUCKET__/hub.
+              # Credentials via IRSA (env_auth). /mnt/hf_cache/hub maps to
+              # s3://__BUCKET__/hub. umask 000 so job pods (any uid) can write.
               exec rclone mount \
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
-                --read-only \
                 --allow-other \
                 --dir-cache-time 1h \
                 --poll-interval 0 \
@@ -99,7 +83,7 @@ spec:
                 --vfs-read-chunk-size 128M \
                 --cache-dir "$CACHE" \
                 --no-modtime \
-                --umask 022 \
+                --umask 000 \
                 --log-level INFO
           lifecycle:
             preStop:
@@ -108,8 +92,7 @@ spec:
                   - /bin/sh
                   - -c
                   - "fusermount -uz /mnt/hf_cache || umount -l /mnt/hf_cache || true"
-          # A hung FUSE mount makes this exec block until the probe times out,
-          # which restarts the pod and re-establishes the mount.
+          # A hung mount blocks this until timeout → pod restart.
           livenessProbe:
             exec:
               command:

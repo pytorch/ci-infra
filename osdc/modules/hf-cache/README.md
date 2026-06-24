@@ -1,77 +1,58 @@
 # hf-cache — shared HuggingFace model cache
 
-Gives OSDC runners a shared, read-only HuggingFace model cache at `/mnt/hf_cache`,
-the OSDC equivalent of the old EC2 CI `/mnt/hf_cache` mount. Jobs read model
-weights from a local cache instead of downloading from the Hub on every run.
+Read-mostly HuggingFace model cache at `/mnt/hf_cache` for OSDC runners — the
+OSDC equivalent of the old EC2 `/mnt/hf_cache` mount.
 
-## Design in one paragraph
+## Design
 
-The model cache is stored as **plain, symlink-free HuggingFace cache-layout files
-in S3** (the portable source of truth — any object store can host the same layout).
-Each cluster gets its **own private bucket** (`pytorch-hf-model-cache-<cluster_id>`)
-in the cluster's region, created by the module's own per-cluster terraform — so
-`just deploy-module <cluster> hf-cache` provisions everything with no separate
-bucket step, reads stay in-region, and there's no cross-cluster write contention to
-reason about. A privileged per-node **rclone FUSE mount** (`mount-daemonset`)
-exposes the bucket **read-only** at the host path `/mnt/hf_cache`; reads are lazy
-and cached on node-local NVMe, so a cold Karpenter node only pulls the models its
-jobs touch. Job pods (ARC kubernetes mode) get the path bind-mounted via the gated
-`# BEGIN_HF_CACHE` block in `modules/arc-runners/templates/runner.yaml.tpl`. A
-**refresh CronJob** is the only writer: it downloads the curated model set and
-publishes a symlink-free copy to `s3://<bucket>/hub`.
+Each cluster gets its own private S3 bucket (`pytorch-hf-model-cache-<cluster_id>`,
+in the cluster's region), provisioned by the module's terraform. A privileged
+per-node **rclone FUSE mount** (`mount-daemonset`) exposes it **read-write** at
+host `/mnt/hf_cache`; reads are lazy and cached on node-local NVMe (LRU), so a
+cold node only pulls the models its jobs touch. Job pods (ARC kubernetes mode)
+get the path bind-mounted via the gated `# BEGIN_HF_CACHE` block in
+`modules/arc-runners/templates/runner.yaml.tpl`.
+
+Writes follow the existing pytorch CI model: the cache is writable, but jobs run
+offline (read-only) except on `ci-refresh-hf-cache` runs (triggered by trusted,
+write-access contributors / model-pin bumps), which go online and write new
+models through to S3. The **workflow** owns that offline gating — the module just
+provides the writable mount. No separate writer/refresh job.
 
 No metadata engine, no EFS — just S3 + rclone, which keeps it cloud-portable.
+HF writes land symlink-free (rclone mounts don't support symlinks, so
+huggingface_hub falls back to plain files), so the S3 layout stays portable.
 
 ## Components
 
 | Component | What it does |
 |-----------|--------------|
-| `terraform/` | Per-cluster private S3 bucket `pytorch-hf-model-cache-<cluster_id>` + IRSA roles `hf-cache-mount` (read-only) and `hf-cache-refresh` (read/write). Applied automatically by `deploy-module`. |
-| `kubernetes/mount-daemonset.yaml.tpl` | rclone FUSE mount → read-only `/mnt/hf_cache` on every runner/workflow node |
-| `kubernetes/refresh-cronjob.yaml.tpl` | Downloads `models.txt` from the Hub, publishes symlink-free to S3 |
-| `scripts/python/refresh_cache.py` | Refresh driver (download + `rclone copy -L`, dropping `blobs/`) |
-| `models.txt` | Curated model manifest (kept in sync with pytorch/pytorch CI pins) |
+| `terraform/` | Per-cluster private bucket + a read-write IRSA role (`hf-cache-mount` SA). Applied by `deploy-module`. |
+| `kubernetes/mount-daemonset.yaml.tpl` | rclone FUSE mount → `/mnt/hf_cache` on every runner/workflow node |
+| `deploy.sh` | Annotates the SA with the role and rolls out the DaemonSet |
 
 ## Runner consumption
 
-When `hf-cache` is in a cluster's `modules:` list, `generate_runners.py` keeps the
-`# BEGIN_HF_CACHE` block, which adds to every job pod:
-
-- volume + read-only `hostPath` mount of `/mnt/hf_cache` (`HostToContainer` propagation)
-- env: `HF_HOME=/mnt/hf_cache`, `HF_HUB_CACHE=/mnt/hf_cache/hub`, `HF_HUB_OFFLINE=1`,
-  `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`
-
-`from_pretrained(...)` / `vllm.LLM(model=...)` then resolve from the cache with no
-code changes. When the module is absent the block is stripped, so this is a no-op
-for clusters that don't enable it.
+When `hf-cache` is in a cluster's `modules:`, `generate_runners.py` keeps the
+`# BEGIN_HF_CACHE` block, which adds to every job pod a `/mnt/hf_cache` hostPath
+mount (`HostToContainer`) and `HF_HOME`/`HF_HUB_CACHE`. Offline flags are left to
+the workflow. When the module is absent the block is stripped (no-op).
 
 ## Enable on a cluster
 
-1. Add `hf-cache` to the cluster's `modules:` list in `clusters.yaml` (after
-   `arc-runners`), then deploy — this provisions the bucket + IRSA, the mount
-   DaemonSet, and the refresh CronJob:
-   ```
-   just deploy-module <cluster> hf-cache
-   just deploy-module <cluster> arc-runners   # re-render job pods with the HF_CACHE block
-   ```
-2. (Optional) create the gated/private-model token Secret, then re-run the refresh:
-   ```
-   kubectl create secret generic hf-cache-token -n hf-cache --from-literal=token=hf_xxx
-   ```
-3. Populate the cache immediately (otherwise it waits for the CronJob):
-   ```
-   kubectl create job -n hf-cache --from=cronjob/hf-cache-refresh hf-cache-refresh-manual
-   ```
+```
+# add "hf-cache" to the cluster's modules: list (after arc-runners), then:
+just deploy-module <cluster> hf-cache
+just deploy-module <cluster> arc-runners   # re-render job pods with the mount
+```
 
 ## Open items (see PR description)
 
-- **Symlink-free layout** is assumed to resolve transparently via `from_pretrained`
-  from an `rclone -L`, `blobs/`-excluded layout — needs a validation spike before
-  enabling on a real cluster.
-- The mount DaemonSet is **privileged** (FUSE + Bidirectional propagation); confirm
-  this is acceptable under the cluster's Pod Security posture.
-- Each cluster has its own bucket, so there's no cross-cluster write contention and
-  reads stay in-region. The trade-off is no cross-cluster dedup — every cluster
-  downloads and stores its own copy of the models (acceptable; S3 storage is cheap).
-- Strict-offline (`HF_HUB_OFFLINE=1`): an uncached model errors out (matches EC2).
-  Graceful online fallback (overlay) is a possible enhancement.
+- **Symlink-free layout**: confirm `from_pretrained`/vLLM read back correctly from
+  the (symlink-free, copy-fallback) layout HF writes over rclone.
+- The mount DaemonSet is **privileged** (FUSE + Bidirectional propagation);
+  confirm it's acceptable under the cluster's Pod Security posture.
+- Writable shared mount: writes are gated only by the workflow offline flag (a
+  policy control), not by infra — acceptable given writers are trusted
+  (write-access contributors). The RO-mount + dedicated-refresh alternative trades
+  that for infra-enforced confinement.
