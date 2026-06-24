@@ -18,8 +18,6 @@ variable "cluster_id" {
   type        = string
 }
 
-variable "hf_cache_bucket" {
-  description = "Shared S3 bucket holding the HuggingFace model cache (plain files). Managed by terraform/hf-cache-bucket/, referenced here only for IAM scoping."
-  type        = string
-  default     = "pytorch-hf-model-cache"
-}
+# The model-cache bucket name is derived from aws_region
+# (pytorch-hf-model-cache-<region>, see locals in main.tf) and provisioned by
+# terraform/hf-cache-bucket/, so it needs no variable here.
