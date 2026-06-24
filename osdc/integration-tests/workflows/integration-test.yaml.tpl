@@ -319,6 +319,57 @@ jobs:
           "
   # END_HF_CACHE
 
+  # BEGIN_HF_CACHE_OIDC
+  # ── HF Cache: OIDC write round-trip ─────────────────────────────────
+  # Validates the write path: assume the gha_workflow_hf-cache-write role via
+  # OIDC and round-trip an object to the bucket. Fail-soft — if the role can't
+  # be assumed (the 'hf-cache-write' environment / role-trust for this repo is
+  # not set up), it warns and skips rather than failing the suite.
+  test-hf-cache-oidc-write:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    environment: hf-cache-write
+    permissions:
+      id-token: write
+      contents: read
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Install awscli
+        run: pip install --no-cache-dir awscli
+
+      - name: Configure AWS credentials (OIDC)
+        id: creds
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_hf-cache-write
+          aws-region: ${{ env.HF_CACHE_S3_REGION }}
+
+      - name: Write + read-back round trip
+        if: steps.creds.outcome == 'success'
+        run: |
+          echo "=== OIDC Write Round-Trip ==="
+          KEY="hub/.integration-test/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          PROBE="hf-cache-oidc-probe-${GITHUB_RUN_ID}"
+          echo "$PROBE" > /tmp/probe.txt
+          echo "Uploading s3://$HF_CACHE_S3_BUCKET/$KEY"
+          aws s3 cp /tmp/probe.txt "s3://$HF_CACHE_S3_BUCKET/$KEY" --region "$HF_CACHE_S3_REGION"
+          GOT=$(aws s3 cp "s3://$HF_CACHE_S3_BUCKET/$KEY" - --region "$HF_CACHE_S3_REGION")
+          aws s3 rm "s3://$HF_CACHE_S3_BUCKET/$KEY" --region "$HF_CACHE_S3_REGION" || true
+          if [ "$GOT" = "$PROBE" ]; then
+            echo "PASS: OIDC write + read-back round trip succeeded"
+          else
+            echo "FAIL: read-back mismatch (got '$GOT', expected '$PROBE')"
+            exit 1
+          fi
+
+      - name: Note when OIDC unavailable
+        if: steps.creds.outcome != 'success'
+        run: |
+          echo "::warning::Skipped OIDC write round-trip — could not assume gha_workflow_hf-cache-write."
+          echo "Needs the 'hf-cache-write' environment on this repo and the role trusting its OIDC subject."
+  # END_HF_CACHE_OIDC
+
   # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
