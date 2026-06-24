@@ -438,16 +438,12 @@ data:
               value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
             # END_PYPI_CACHE
             # BEGIN_HF_CACHE
+            # Offline gating (TRANSFORMERS_OFFLINE etc.) is owned by the workflow:
+            # ci-refresh-hf-cache runs go online and write through to the cache.
             - name: HF_HOME
               value: "/mnt/hf_cache"
             - name: HF_HUB_CACHE
               value: "/mnt/hf_cache/hub"
-            - name: HF_HUB_OFFLINE
-              value: "1"
-            - name: TRANSFORMERS_OFFLINE
-              value: "1"
-            - name: HF_DATASETS_OFFLINE
-              value: "1"
             # END_HF_CACHE
             - name: TORCH_CI_MAX_MEMORY
               value: "{{MEMORY_BYTES}}"
@@ -463,12 +459,11 @@ data:
               ephemeral-storage: "{{DISK_SIZE}}"{{GPU_LIMIT}}
           volumeMounts:
             # BEGIN_HF_CACHE
-            # Shared HuggingFace model cache. The hf-cache mount DaemonSet keeps
-            # this FUSE mount alive on the host; HostToContainer propagation lets
-            # the job pod see it. Read-only — refresh is a separate writer job.
+            # Shared HF cache from the hf-cache mount DaemonSet (host FUSE mount,
+            # HostToContainer propagation). Writable: ci-refresh-hf-cache runs
+            # write through to S3.
             - name: hf-cache
               mountPath: /mnt/hf_cache
-              readOnly: true
               mountPropagation: HostToContainer
             # END_HF_CACHE
             # K8s default /dev/shm is 64Mi (container runtime tmpfs). NCCL

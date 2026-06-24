@@ -111,17 +111,12 @@ defaults:
       - "aarch64"
     target_manylinux: "2_28"
   hf_cache:
-    # Shared HuggingFace model cache (modules/hf-cache). Not enabled on any
-    # cluster by default — add "hf-cache" to a cluster's modules list to turn it
-    # on. Each cluster gets its own private S3 bucket
-    # (pytorch-hf-model-cache-<cluster_id>) in its region, provisioned by the
-    # module's terraform via deploy-module (no separate bucket step), so reads
-    # stay in-region and there's no cross-cluster write contention. These are
-    # just the knobs.
+    # Shared HF model cache (modules/hf-cache). Off by default — add "hf-cache"
+    # to a cluster's modules list to enable. Each cluster gets its own private
+    # bucket (pytorch-hf-model-cache-<cluster_id>) in its region. Knobs:
     namespace: hf-cache
     rclone_image: "rclone/rclone:1.69.1"
-    vfs_cache_max_size: 200G          # per-node NVMe cap for the rclone read cache
-    refresh_schedule: "0 7 * * *"     # daily 07:00 UTC
+    vfs_cache_max_size: 200G          # per-node NVMe cap for the rclone cache
 
 clusters:
   meta-staging-aws-uw1:

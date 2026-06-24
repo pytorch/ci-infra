@@ -17,7 +17,3 @@ variable "cluster_id" {
   description = "Cluster identifier in clusters.yaml (e.g. meta-staging-aws-uw1)"
   type        = string
 }
-
-# The model-cache bucket name is derived from aws_region
-# (pytorch-hf-model-cache-<region>, see locals in main.tf) and provisioned by
-# terraform/hf-cache-bucket/, so it needs no variable here.
