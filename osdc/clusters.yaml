@@ -181,6 +181,7 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - hf-cache
       - keda
       - buildkit
       - zombie-cleanup
@@ -254,6 +255,7 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - hf-cache
       - keda
       - buildkit
       - zombie-cleanup
