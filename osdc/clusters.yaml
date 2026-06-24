@@ -291,8 +291,6 @@ clusters:
       - nodepools
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
       - arc-runners-h100
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
