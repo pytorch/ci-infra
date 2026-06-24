@@ -321,9 +321,9 @@ jobs:
   # ── HF Cache: refresh (online download → sync to S3) ─────────────────
   # Mirrors ci-refresh-hf-cache: assume the OIDC writer role, download a small
   # model from the HF Hub (online), then aws s3 sync the artifacts to the
-  # cluster's bucket. Fail-soft — if the role can't be assumed (the
-  # 'hf-cache-write' environment / role-trust for this repo isn't set up), it
-  # warns and skips rather than failing the suite.
+  # cluster's bucket. FAILS if the OIDC role can't be assumed — that means the
+  # 'hf-cache-write' environment / role-trust isn't set up, which must be fixed,
+  # not silently skipped.
   test-hf-cache-refresh-sync:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     environment: hf-cache-write
@@ -337,15 +337,12 @@ jobs:
         run: pip install --no-cache-dir 'huggingface_hub>=0.24' awscli
 
       - name: Configure AWS credentials (OIDC)
-        id: creds
-        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_hf-cache-write
           aws-region: ${{ env.HF_CACHE_S3_REGION }}
 
       - name: Download from HF Hub (online) then sync to S3
-        if: steps.creds.outcome == 'success'
         run: |
           echo "=== Refresh: online download + sync to S3 ==="
           MODEL="prajjwal1/bert-tiny"
@@ -368,12 +365,6 @@ jobs:
             exit 1
           fi
           echo "PASS: downloaded $MODEL from HF Hub and synced $COUNT objects to s3://$HF_CACHE_S3_BUCKET/$PREFIX"
-
-      - name: Note when OIDC unavailable
-        if: steps.creds.outcome != 'success'
-        run: |
-          echo "::warning::Skipped refresh-sync — could not assume gha_workflow_hf-cache-write."
-          echo "Needs the 'hf-cache-write' environment on this repo and the role trusting its OIDC subject."
   # END_HF_CACHE_OIDC
 
   # BEGIN_PYPI_CACHE
