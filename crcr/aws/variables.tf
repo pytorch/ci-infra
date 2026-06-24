@@ -71,4 +71,9 @@ variable "sweeper_interval_minutes" {
   description = "How often EventBridge triggers the callback lambda to reap timed-out jobs (minutes)"
   type        = number
   default     = 10
+
+  validation {
+    condition     = var.sweeper_interval_minutes >= 2
+    error_message = "sweeper_interval_minutes must be >= 2; more frequent sweeps reap too few zombies to be worthwhile."
+  }
 }
