@@ -235,6 +235,141 @@ jobs:
           python -c "import six, packaging, typing_extensions; print('PASS: uv pip install + import from upstream pypi.org')"
   # END_NO_CACHE_ENFORCER
 
+  # BEGIN_HF_CACHE
+  # ── HF Cache: read-only mount, env, and offline model load ──────────
+  test-hf-cache-mount:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify /mnt/hf_cache is mounted
+        run: |
+          echo "=== HF Cache Mount ==="
+          if [ ! -d /mnt/hf_cache ]; then
+            echo "FAIL: /mnt/hf_cache does not exist"
+            exit 1
+          fi
+          if ! grep -q ' /mnt/hf_cache ' /proc/mounts; then
+            echo "FAIL: /mnt/hf_cache is not a mountpoint"
+            grep hf_cache /proc/mounts || true
+            exit 1
+          fi
+          ls -la /mnt/hf_cache || true
+          echo "PASS: /mnt/hf_cache is mounted"
+
+      - name: Verify HF cache env vars
+        run: |
+          echo "=== HF Cache Env ==="
+          FAIL=0
+          [ "$HF_HOME" = "/mnt/hf_cache" ] || { echo "FAIL: HF_HOME='$HF_HOME'"; FAIL=1; }
+          [ "$HF_HUB_CACHE" = "/mnt/hf_cache/hub" ] || { echo "FAIL: HF_HUB_CACHE='$HF_HUB_CACHE'"; FAIL=1; }
+          EXPECTED_BUCKET="pytorch-hf-model-cache-{{CLUSTER_ID}}"
+          [ "$HF_CACHE_S3_BUCKET" = "$EXPECTED_BUCKET" ] \
+            || { echo "FAIL: HF_CACHE_S3_BUCKET='$HF_CACHE_S3_BUCKET' (expected $EXPECTED_BUCKET)"; FAIL=1; }
+          [ -n "$HF_CACHE_S3_REGION" ] || { echo "FAIL: HF_CACHE_S3_REGION is empty"; FAIL=1; }
+          echo "HF_HOME=$HF_HOME HF_HUB_CACHE=$HF_HUB_CACHE"
+          echo "HF_CACHE_S3_BUCKET=$HF_CACHE_S3_BUCKET HF_CACHE_S3_REGION=$HF_CACHE_S3_REGION"
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: HF cache env vars are correct"
+
+      - name: Verify mount is read-only
+        run: |
+          echo "=== Read-only Enforcement ==="
+          if touch /mnt/hf_cache/.integration-write-probe 2>/dev/null; then
+            echo "FAIL: wrote to /mnt/hf_cache — the cache mount must be read-only for job pods"
+            rm -f /mnt/hf_cache/.integration-write-probe 2>/dev/null || true
+            exit 1
+          fi
+          echo "PASS: /mnt/hf_cache rejected a write (read-only)"
+
+  test-hf-cache-offline-load:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Detect cached models
+        run: |
+          echo "=== Detect Cached Models ==="
+          if ls -d /mnt/hf_cache/hub/models--* >/dev/null 2>&1; then
+            ls -d /mnt/hf_cache/hub/models--* | head
+            echo "SKIP_OFFLINE=false" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No models cached under /mnt/hf_cache/hub yet — skipping offline-load validation"
+            echo "SKIP_OFFLINE=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Load a cached model offline (validates symlink-free layout)
+        if: env.SKIP_OFFLINE != 'true'
+        run: |
+          echo "=== Offline Load ==="
+          pip install --no-cache-dir 'huggingface_hub>=0.24'
+          DIR=$(ls -d /mnt/hf_cache/hub/models--* | head -1)
+          REPO=$(basename "$DIR" | sed 's/^models--//; s/--/\//g')
+          echo "Resolving '$REPO' offline from the read-only cache..."
+          HF_HUB_OFFLINE=1 REPO="$REPO" python3 -c "
+          import os, sys
+          from huggingface_hub import snapshot_download
+          repo = os.environ['REPO']
+          path = snapshot_download(repo, local_files_only=True)
+          files = os.listdir(path)
+          if not files:
+              print('FAIL: empty snapshot at', path)
+              sys.exit(1)
+          print('PASS: resolved', repo, 'offline at', path, '(' + str(len(files)) + ' entries)')
+          "
+  # END_HF_CACHE
+
+  # BEGIN_HF_CACHE_OIDC
+  # ── HF Cache: OIDC write round-trip ─────────────────────────────────
+  # Validates the write path: assume the gha_workflow_hf-cache-write role via
+  # OIDC and round-trip an object to the bucket. Fail-soft — if the role can't
+  # be assumed (the 'hf-cache-write' environment / role-trust for this repo is
+  # not set up), it warns and skips rather than failing the suite.
+  test-hf-cache-oidc-write:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    environment: hf-cache-write
+    permissions:
+      id-token: write
+      contents: read
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Install awscli
+        run: pip install --no-cache-dir awscli
+
+      - name: Configure AWS credentials (OIDC)
+        id: creds
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_hf-cache-write
+          aws-region: ${{ env.HF_CACHE_S3_REGION }}
+
+      - name: Write + read-back round trip
+        if: steps.creds.outcome == 'success'
+        run: |
+          echo "=== OIDC Write Round-Trip ==="
+          KEY="hub/.integration-test/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          PROBE="hf-cache-oidc-probe-${GITHUB_RUN_ID}"
+          echo "$PROBE" > /tmp/probe.txt
+          echo "Uploading s3://$HF_CACHE_S3_BUCKET/$KEY"
+          aws s3 cp /tmp/probe.txt "s3://$HF_CACHE_S3_BUCKET/$KEY" --region "$HF_CACHE_S3_REGION"
+          GOT=$(aws s3 cp "s3://$HF_CACHE_S3_BUCKET/$KEY" - --region "$HF_CACHE_S3_REGION")
+          aws s3 rm "s3://$HF_CACHE_S3_BUCKET/$KEY" --region "$HF_CACHE_S3_REGION" || true
+          if [ "$GOT" = "$PROBE" ]; then
+            echo "PASS: OIDC write + read-back round trip succeeded"
+          else
+            echo "FAIL: read-back mismatch (got '$GOT', expected '$PROBE')"
+            exit 1
+          fi
+
+      - name: Note when OIDC unavailable
+        if: steps.creds.outcome != 'success'
+        run: |
+          echo "::warning::Skipped OIDC write round-trip — could not assume gha_workflow_hf-cache-write."
+          echo "Needs the 'hf-cache-write' environment on this repo and the role trusting its OIDC subject."
+  # END_HF_CACHE_OIDC
+
   # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
