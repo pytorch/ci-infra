@@ -7,9 +7,10 @@
 # ]
 # ///
 """
-Watch for failed jobs on lf-* runners (the new OSDC LF cluster), fetch their
-logs from HUD's S3, ask Claude to classify them, and append the infra-flagged
-ones to a markdown file that's friendly to `tail -f`.
+Watch for failed jobs on runners matching a configurable name prefix (default
+`lf-`, the OSDC LF cluster), fetch their logs from HUD's S3, ask Claude to
+classify them, and append the infra-flagged ones to a markdown file that's
+friendly to `tail -f`.
 
 Run:
     cd ~/meta/agent_space/lf-runner-watch
@@ -202,10 +203,10 @@ def ch_client():
     )
 
 
-def query_failed_jobs(client) -> list[dict[str, Any]]:
+def query_failed_jobs(client, runner_prefix: str) -> list[dict[str, Any]]:
     result = client.query(
         CH_QUERY,
-        parameters={"lookback": LOOKBACK_MINUTES, "runner_pat": "lf-%"},
+        parameters={"lookback": LOOKBACK_MINUTES, "runner_pat": f"{runner_prefix}%"},
     )
     cols = result.column_names
     return [dict(zip(cols, row)) for row in result.result_rows]
@@ -468,7 +469,7 @@ def _sig(_signum, _frame):
     log("signal received, shutting down after this iteration")
 
 
-def main() -> int:
+def main(runner_prefix: str) -> int:
     for var in (
         "CLICKHOUSE_HOST",
         "CLICKHOUSE_PORT",
