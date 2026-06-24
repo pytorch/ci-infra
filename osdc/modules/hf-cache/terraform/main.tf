@@ -89,9 +89,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "hf_cache" {
   }
 }
 
-# --- IRSA role for the rclone mount (read-write) ---
-# Single role: runners read the cache and, on ci-refresh-hf-cache runs, write
-# through to S3 via the node's rclone mount.
+# --- IRSA role for the rclone mount (read-only) ---
+# Runners only read the cache. Writes go through a GitHub-OIDC role in
+# pytorch-gha-infra (gha_workflow_hf-cache-write), assumed by ci-refresh-hf-cache
+# runs — so untrusted job pods can't write.
 
 resource "aws_iam_role" "hf_cache" {
   name = "${var.cluster_name}-hf-cache-role"
@@ -125,8 +126,6 @@ resource "aws_iam_policy" "hf_cache" {
       Effect = "Allow"
       Action = [
         "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
         "s3:ListBucket",
       ]
       Resource = [
