@@ -189,20 +189,6 @@ bootstrap cluster:
 bootstrap-all:
     @OSDC_ROOT="{{ROOT}}" OSDC_UPSTREAM="{{UPSTREAM}}" CLUSTERS_YAML="{{CLUSTERS_YAML}}" {{SCRIPTS}}/bootstrap-state.sh --all
 
-# One-time: provision the per-region HuggingFace model-cache S3 bucket
-# (pytorch-hf-model-cache-<region>) used by the hf-cache module. Run once per
-# region that will run hf-cache, BEFORE deploying the module to a cluster there.
-# Local state, isolated per region via a tofu workspace.
-hf-cache-bucket region:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{UPSTREAM}}/scripts/mise-activate.sh"
-    REGION="{{region}}"
-    cd "{{UPSTREAM}}/modules/hf-cache/terraform/hf-cache-bucket"
-    tofu init -reconfigure
-    tofu workspace select "$REGION" 2>/dev/null || tofu workspace new "$REGION"
-    tofu apply -var "region=$REGION"
-
 # ============================================================================
 # DEPLOY
 # ============================================================================
