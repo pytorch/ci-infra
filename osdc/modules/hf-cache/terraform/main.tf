@@ -1,9 +1,12 @@
-# HF Cache module: per-cluster IAM (IRSA) for the shared HuggingFace model cache.
+# HF Cache module: per-cluster S3 bucket + IAM (IRSA) for the HuggingFace cache.
 #
-# The model cache data lives in a single shared S3 bucket (managed out-of-band by
-# terraform/hf-cache-bucket/). This per-cluster root only creates the two IRSA
-# roles that the in-cluster service accounts assume:
+# Each cluster gets its OWN private bucket (pytorch-hf-model-cache-<cluster_id>)
+# in the cluster's region, created here in the cluster's own terraform state —
+# so `just deploy-module <cluster> hf-cache` provisions everything; there is no
+# separate, manual bucket-apply step. Because the bucket is cluster-scoped, no
+# prefix partitioning is needed and reads stay in-region.
 #
+# Plus the two IRSA roles the in-cluster service accounts assume:
 #   * hf-cache-mount    — read-only. The rclone-mount DaemonSet uses it to expose
 #                         the bucket as a read-only FUSE mount on each node.
 #   * hf-cache-refresh  — read/write. The refresh CronJob uses it to publish newly
@@ -42,18 +45,65 @@ locals {
   oidc_provider     = data.terraform_remote_state.base.outputs.oidc_provider
 
   namespace = "hf-cache"
-  # Per-region bucket (matches terraform/hf-cache-bucket/). Clusters in a region
-  # share one bucket but each uses its own <cluster_id>/ prefix, so per-cluster
-  # refresh writers never contend over the same keys.
-  bucket     = "pytorch-hf-model-cache-${var.aws_region}"
-  bucket_arn = "arn:aws:s3:::${local.bucket}"
-  # ListBucket stays bucket-wide for simplicity; object access is scoped to the
-  # cluster prefix.
-  objects_arn = "arn:aws:s3:::${local.bucket}/${var.cluster_id}/*"
+  # One private bucket per cluster (globally-unique name from cluster_id),
+  # created below in this cluster's own state. No prefix partitioning needed.
+  bucket      = "pytorch-hf-model-cache-${var.cluster_id}"
+  bucket_arn  = "arn:aws:s3:::${local.bucket}"
+  objects_arn = "arn:aws:s3:::${local.bucket}/*"
 
   tags = {
     Cluster = var.cluster_name
     Project = "ciforge"
+  }
+}
+
+# --- Model-cache S3 bucket (one per cluster, in the cluster's region) ---
+#
+# Holds the cache as plain symlink-free HuggingFace cache-layout files — the
+# portable source of truth (any object store / cloud can host the same layout
+# and be `rclone sync`'d here or away). Private; access only via the IRSA roles
+# below. force_destroy stays false so `remove-module` won't silently wipe a
+# populated cache (tofu destroy fails on a non-empty bucket; empty it manually
+# if you really mean to delete it).
+
+resource "aws_s3_bucket" "hf_cache" {
+  bucket = local.bucket
+
+  tags = local.tags
+}
+
+resource "aws_s3_bucket_public_access_block" "hf_cache" {
+  bucket = aws_s3_bucket.hf_cache.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "hf_cache" {
+  bucket = aws_s3_bucket.hf_cache.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Reap incomplete multipart uploads left behind by interrupted refresh runs.
+resource "aws_s3_bucket_lifecycle_configuration" "hf_cache" {
+  bucket = aws_s3_bucket.hf_cache.id
+
+  rule {
+    id     = "abort-incomplete-multipart"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
 }
 

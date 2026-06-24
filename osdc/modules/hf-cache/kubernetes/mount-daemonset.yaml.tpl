@@ -11,11 +11,11 @@
 # eviction. A cold Karpenter node therefore only pulls the models its jobs
 # actually touch, never the whole bucket.
 #
-# Each cluster mounts only its own prefix in the shared bucket
-# (s3://__BUCKET__/__CLUSTER__) so per-cluster refresh writers never collide.
+# Each cluster has its own bucket (__BUCKET__), mounted read-only at the host
+# /mnt/hf_cache; /mnt/hf_cache/hub maps to s3://__BUCKET__/hub.
 #
-# Placeholders substituted by deploy.sh: __NAMESPACE__ __BUCKET__ __CLUSTER__
-# __REGION__ __RCLONE_IMAGE__ __VFS_CACHE_MAX_SIZE__
+# Placeholders substituted by deploy.sh: __NAMESPACE__ __BUCKET__ __REGION__
+# __RCLONE_IMAGE__ __VFS_CACHE_MAX_SIZE__
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -84,10 +84,10 @@ spec:
               mkdir -p "$MOUNT" "$CACHE"
 
               # IRSA supplies credentials via the AWS SDK env chain (env_auth).
-              # Mount this cluster's own prefix; /mnt/hf_cache/hub then maps to
-              # s3://__BUCKET__/__CLUSTER__/hub.
+              # Mount the cluster's bucket; /mnt/hf_cache/hub maps to
+              # s3://__BUCKET__/hub.
               exec rclone mount \
-                ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__/__CLUSTER__" \
+                ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
                 --read-only \
                 --allow-other \
