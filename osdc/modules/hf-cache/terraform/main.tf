@@ -1,18 +1,6 @@
-# HF Cache module: per-cluster S3 bucket + IAM (IRSA) for the HuggingFace cache.
-#
-# Each cluster gets its OWN private bucket (pytorch-hf-model-cache-<cluster_id>)
-# in the cluster's region, created here in the cluster's own terraform state —
-# so `just deploy-module <cluster> hf-cache` provisions everything; there is no
-# separate, manual bucket-apply step. Because the bucket is cluster-scoped, no
-# prefix partitioning is needed and reads stay in-region.
-#
-# Plus the two IRSA roles the in-cluster service accounts assume:
-#   * hf-cache-mount    — read-only. The rclone-mount DaemonSet uses it to expose
-#                         the bucket as a read-only FUSE mount on each node.
-#   * hf-cache-refresh  — read/write. The refresh CronJob uses it to publish newly
-#                         downloaded models back to the bucket.
-#
-# Reads base infrastructure outputs (OIDC provider) via terraform_remote_state.
+# Per-cluster private S3 bucket (pytorch-hf-model-cache-<cluster_id>, in the
+# cluster's region) + a read-write IRSA role for the rclone mount. Created in the
+# cluster's own state, so `just deploy-module <cluster> hf-cache` provisions it.
 
 terraform {
   required_version = ">= 1.7"
@@ -45,8 +33,7 @@ locals {
   oidc_provider     = data.terraform_remote_state.base.outputs.oidc_provider
 
   namespace = "hf-cache"
-  # One private bucket per cluster (globally-unique name from cluster_id),
-  # created below in this cluster's own state. No prefix partitioning needed.
+  # One private bucket per cluster; name from cluster_id (globally unique).
   bucket      = "pytorch-hf-model-cache-${var.cluster_id}"
   bucket_arn  = "arn:aws:s3:::${local.bucket}"
   objects_arn = "arn:aws:s3:::${local.bucket}/*"
@@ -57,14 +44,9 @@ locals {
   }
 }
 
-# --- Model-cache S3 bucket (one per cluster, in the cluster's region) ---
-#
-# Holds the cache as plain symlink-free HuggingFace cache-layout files — the
-# portable source of truth (any object store / cloud can host the same layout
-# and be `rclone sync`'d here or away). Private; access only via the IRSA roles
-# below. force_destroy stays false so `remove-module` won't silently wipe a
-# populated cache (tofu destroy fails on a non-empty bucket; empty it manually
-# if you really mean to delete it).
+# --- Per-cluster model-cache bucket ---
+# Plain symlink-free HF cache files (portable source of truth). Private.
+# force_destroy=false so remove-module won't wipe a populated cache.
 
 resource "aws_s3_bucket" "hf_cache" {
   bucket = local.bucket
@@ -91,7 +73,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "hf_cache" {
   }
 }
 
-# Reap incomplete multipart uploads left behind by interrupted refresh runs.
+# Reap incomplete multipart uploads.
 resource "aws_s3_bucket_lifecycle_configuration" "hf_cache" {
   bucket = aws_s3_bucket.hf_cache.id
 
@@ -107,10 +89,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "hf_cache" {
   }
 }
 
-# --- Mount (reader) IAM Role (IRSA) ---
+# --- IRSA role for the rclone mount (read-write) ---
+# Single role: runners read the cache and, on ci-refresh-hf-cache runs, write
+# through to S3 via the node's rclone mount.
 
-resource "aws_iam_role" "mount" {
-  name = "${var.cluster_name}-hf-cache-mount-role"
+resource "aws_iam_role" "hf_cache" {
+  name = "${var.cluster_name}-hf-cache-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -132,59 +116,8 @@ resource "aws_iam_role" "mount" {
   tags = local.tags
 }
 
-resource "aws_iam_policy" "mount" {
-  name = "${var.cluster_name}-hf-cache-mount-s3"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "s3:GetObject",
-        "s3:ListBucket",
-      ]
-      Resource = [
-        local.bucket_arn,
-        local.objects_arn,
-      ]
-    }]
-  })
-
-  tags = local.tags
-}
-
-resource "aws_iam_role_policy_attachment" "mount" {
-  policy_arn = aws_iam_policy.mount.arn
-  role       = aws_iam_role.mount.name
-}
-
-# --- Refresh (writer) IAM Role (IRSA) ---
-
-resource "aws_iam_role" "refresh" {
-  name = "${var.cluster_name}-hf-cache-refresh-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRoleWithWebIdentity"
-      Effect = "Allow"
-      Principal = {
-        Federated = local.oidc_provider_arn
-      }
-      Condition = {
-        StringEquals = {
-          "${local.oidc_provider}:aud" = "sts.amazonaws.com"
-          "${local.oidc_provider}:sub" = "system:serviceaccount:${local.namespace}:hf-cache-refresh"
-        }
-      }
-    }]
-  })
-
-  tags = local.tags
-}
-
-resource "aws_iam_policy" "refresh" {
-  name = "${var.cluster_name}-hf-cache-refresh-s3"
+resource "aws_iam_policy" "hf_cache" {
+  name = "${var.cluster_name}-hf-cache-s3"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -206,7 +139,7 @@ resource "aws_iam_policy" "refresh" {
   tags = local.tags
 }
 
-resource "aws_iam_role_policy_attachment" "refresh" {
-  policy_arn = aws_iam_policy.refresh.arn
-  role       = aws_iam_role.refresh.name
+resource "aws_iam_role_policy_attachment" "hf_cache" {
+  policy_arn = aws_iam_policy.hf_cache.arn
+  role       = aws_iam_role.hf_cache.name
 }
