@@ -1,16 +1,20 @@
-# Standalone terraform root for the shared HuggingFace model-cache S3 bucket.
+# Standalone terraform root for a per-region HuggingFace model-cache S3 bucket.
 #
-# This bucket is shared across all clusters — it lives outside the per-cluster
-# terraform state to avoid multiple states managing the same resource. It holds
-# the model cache as plain HuggingFace cache-layout files (symlink-free), which
-# are the portable source of truth: any object store / cloud can host the same
-# layout and be `rclone sync`'d here or away.
+# One bucket per region (pytorch-hf-model-cache-<region>), shared by all clusters
+# in that region — it lives outside per-cluster state because multiple clusters
+# share it. Each cluster reads/writes only its own <cluster_id>/ prefix, so the
+# per-cluster refresh writers never contend. A same-region bucket means runners
+# read without cross-region S3 egress/latency.
+#
+# It holds the model cache as plain HuggingFace cache-layout files (symlink-free),
+# the portable source of truth: any object store / cloud can host the same layout
+# and be `rclone sync`'d here or away.
 #
 # Unlike the pypi wheel cache, this bucket is PRIVATE — access is granted only
 # through the per-cluster IRSA roles in ../main.tf. No public read.
 #
-# One-time setup:
-#   tofu init -backend-config=... && tofu apply
+# Apply once per region (local state, isolated per region via a tofu workspace):
+#   just hf-cache-bucket <region>
 
 terraform {
   required_version = ">= 1.7"
@@ -24,11 +28,11 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-east-2"
+  region = var.region
 }
 
 resource "aws_s3_bucket" "hf_cache" {
-  bucket = "pytorch-hf-model-cache"
+  bucket = "pytorch-hf-model-cache-${var.region}"
 }
 
 resource "aws_s3_bucket_public_access_block" "hf_cache" {
