@@ -1,0 +1,73 @@
+# bin-pack-scheduler: a stock kube-scheduler run as a secondary scheduler.
+# Image tracks eks_version (clusters.yaml); a guard test enforces the minor
+# matches. ±1 minor skew is tolerated, so bump on EKS upgrade.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bin-pack-scheduler
+  namespace: kube-system
+  labels:
+    osdc.io/module: bin-pack-scheduler
+    app: bin-pack-scheduler
+spec:
+  replicas: 2  # HA via leader election; only one schedules at a time
+  selector:
+    matchLabels:
+      app: bin-pack-scheduler
+  template:
+    metadata:
+      labels:
+        app: bin-pack-scheduler
+        osdc.io/module: bin-pack-scheduler
+    spec:
+      serviceAccountName: bin-pack-scheduler
+      priorityClassName: system-cluster-critical
+      # Run on stable infra nodes, not ephemeral runner/workflow nodes.
+      nodeSelector:
+        role: base-infrastructure
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      # Spread the 2 replicas across nodes so a single node loss keeps a leader.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: bin-pack-scheduler
+      containers:
+        - name: kube-scheduler
+          image: registry.k8s.io/kube-scheduler:v1.35.0
+          command:
+            - kube-scheduler
+            - --config=/etc/kubernetes/bin-pack-scheduler/config.yaml
+            - --v=2
+          ports:
+            - name: https
+              containerPort: 10259
+              protocol: TCP
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          livenessProbe:
+            httpGet: {path: /healthz, port: 10259, scheme: HTTPS}
+            initialDelaySeconds: 15
+          readinessProbe:
+            httpGet: {path: /readyz, port: 10259, scheme: HTTPS}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kubernetes/bin-pack-scheduler
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: bin-pack-scheduler-config  # kustomize rewrites to the hashed name
