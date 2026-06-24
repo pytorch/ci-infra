@@ -1,5 +1,5 @@
 output "role_arn" {
-  description = "IRSA role ARN for the hf-cache-mount service account (read-write)"
+  description = "IRSA role ARN for the hf-cache-mount service account (read-only)"
   value       = aws_iam_role.hf_cache.arn
 }
 
