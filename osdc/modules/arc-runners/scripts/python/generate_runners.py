@@ -173,13 +173,26 @@ def resolve_max_runners(value, def_file, cluster_id):
     return value
 
 
-def generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled=True):
+def generate_runner(
+    def_file,
+    template_content,
+    cluster_config,
+    output_dir,
+    module_name,
+    pypi_cache_enabled=True,
+    hf_cache_enabled=False,
+):
     """Generate a single runner config from its definition.
 
     pypi_cache_enabled controls whether the `# BEGIN_PYPI_CACHE` / `# END_PYPI_CACHE`
     block in the template is preserved (True) or stripped (False). Strip when the
     cluster does not deploy the pypi-cache module — the env vars would otherwise
     point at a Service that doesn't exist on this cluster.
+
+    hf_cache_enabled does the same for the `# BEGIN_HF_CACHE` / `# END_HF_CACHE`
+    block (HF_HOME env + the read-only /mnt/hf_cache hostPath mount). Strip when the
+    cluster does not deploy the hf-cache module — the hostPath would otherwise be
+    empty and HF_HUB_OFFLINE=1 would make every model load fail.
     """
     with open(def_file) as f:
         data = yaml.safe_load(f)
@@ -338,6 +351,7 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Replace all template placeholders
     output_content = template_content
     output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
+    output_content = strip_conditional_block(output_content, "HF_CACHE", keep=hf_cache_enabled)
     replacements = {
         "{{GITHUB_CONFIG_URL}}": github_url,
         "{{GITHUB_SECRET_NAME}}": k8s_secret_ref,
@@ -356,6 +370,10 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{GPU_LIMIT}}": gpu_limit,
         "{{MODULE_NAME}}": module_name,
         "{{RUNNER_IMAGE}}": runner_image,
+        # HF cache write target (used by the ci-refresh-hf-cache workflow's OIDC
+        # upload); read path is the /mnt/hf_cache mount. Bucket is per-cluster.
+        "{{HF_CACHE_BUCKET}}": f"pytorch-hf-model-cache-{cluster_config.get('cluster_id', '')}",
+        "{{HF_CACHE_REGION}}": cluster_config.get("region", ""),
         "{{RUNNER_GROUP}}": runner_group,
         "{{RUNNER_CLASS_JOB_AFFINITY}}": runner_class_job_affinity,
         "{{MAX_RUNNERS_LINE}}": max_runners_line,
@@ -499,9 +517,22 @@ def main():
     # that doesn't exist on this cluster.
     pypi_cache_enabled = "pypi-cache" in (cluster_cfg.get("modules") or [])
 
+    # hf-cache module is cluster-scoped: when absent, strip the HF_CACHE env vars
+    # and the /mnt/hf_cache hostPath mount from the workflow pod template so jobs
+    # don't mount an empty path and fail offline model loads.
+    hf_cache_enabled = "hf-cache" in (cluster_cfg.get("modules") or [])
+
     count = 0
     for def_file in def_files:
-        if generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled):
+        if generate_runner(
+            def_file,
+            template_content,
+            cluster_config,
+            output_dir,
+            module_name,
+            pypi_cache_enabled,
+            hf_cache_enabled,
+        ):
             count += 1
 
     print()
