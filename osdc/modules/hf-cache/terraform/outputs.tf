@@ -9,6 +9,6 @@ output "refresh_role_arn" {
 }
 
 output "hf_cache_bucket" {
-  description = "Shared S3 bucket holding the HuggingFace model cache"
-  value       = var.hf_cache_bucket
+  description = "Per-region S3 bucket holding the HuggingFace model cache for this cluster"
+  value       = local.bucket
 }

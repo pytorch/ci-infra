@@ -33,7 +33,10 @@ CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 
 # --- Read hf_cache config (with defaults) ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" hf_cache.namespace hf-cache)
-BUCKET_REGION=$(uv run "$CFG" "$CLUSTER" hf_cache.bucket_region us-east-2)
+# The model-cache bucket is per-region and lives in the cluster's own region, so
+# runners read it without cross-region S3 egress. rclone's S3 region therefore
+# matches the cluster region (passed as $3).
+BUCKET_REGION="$REGION"
 RCLONE_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_image "rclone/rclone:1.69.1")
 VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size 200G)
 REFRESH_SCHEDULE=$(uv run "$CFG" "$CLUSTER" hf_cache.refresh_schedule "0 7 * * *")

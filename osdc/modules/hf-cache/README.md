@@ -7,11 +7,14 @@ weights from a local cache instead of downloading from the Hub on every run.
 ## Design in one paragraph
 
 The model cache is stored as **plain, symlink-free HuggingFace cache-layout files
-in a shared S3 bucket** (the portable source of truth — any object store can host
-the same layout). Each cluster uses its **own prefix** in that bucket
-(`s3://pytorch-hf-model-cache/<cluster_id>/hub`), so the per-cluster refresh
-writers never contend over the same keys — mirroring how `pypi-cache` partitions
-per-cluster writes with `wants/<cluster_id>.txt`. A privileged per-node **rclone
+in a per-region S3 bucket** (the portable source of truth — any object store can
+host the same layout). There is one bucket per region
+(`pytorch-hf-model-cache-<region>`), shared by the clusters in that region, and
+each cluster uses its **own prefix** within it
+(`s3://pytorch-hf-model-cache-<region>/<cluster_id>/hub`), so the per-cluster
+refresh writers never contend over the same keys — mirroring how `pypi-cache`
+partitions per-cluster writes with `wants/<cluster_id>.txt`. A same-region bucket
+also means runners read without cross-region S3 egress. A privileged per-node **rclone
 FUSE mount** (`mount-daemonset`) exposes that prefix **read-only** at the host path
 `/mnt/hf_cache`; reads are lazy and cached on node-local NVMe, so a cold Karpenter
 node only pulls the models its jobs touch. Job pods (ARC kubernetes mode) get the
@@ -26,7 +29,7 @@ No metadata engine, no EFS — just S3 + rclone, which keeps it cloud-portable.
 
 | Component | What it does |
 |-----------|--------------|
-| `terraform/hf-cache-bucket/` | Shared, private S3 bucket `pytorch-hf-model-cache` (one-time, manual apply) |
+| `terraform/hf-cache-bucket/` | Per-region private S3 bucket `pytorch-hf-model-cache-<region>` (one-time, via `just hf-cache-bucket <region>`) |
 | `terraform/` | Per-cluster IRSA roles: `hf-cache-mount` (read-only), `hf-cache-refresh` (read/write) |
 | `kubernetes/mount-daemonset.yaml.tpl` | rclone FUSE mount → read-only `/mnt/hf_cache` on every runner/workflow node |
 | `kubernetes/refresh-cronjob.yaml.tpl` | Downloads `models.txt` from the Hub, publishes symlink-free to S3 |
@@ -48,10 +51,9 @@ for clusters that don't enable it.
 
 ## Enable on a cluster
 
-1. One-time (per account): apply the shared bucket
+1. One-time (per region): provision the model-cache bucket for the cluster's region
    ```
-   cd modules/hf-cache/terraform/hf-cache-bucket
-   tofu init -backend-config=... && tofu apply
+   just hf-cache-bucket <region>     # e.g. us-east-1; safe to skip if already done for that region
    ```
 2. (Optional) create the gated/private-model token Secret:
    ```
@@ -75,9 +77,9 @@ for clusters that don't enable it.
   enabling on a real cluster.
 - The mount DaemonSet is **privileged** (FUSE + Bidirectional propagation); confirm
   this is acceptable under the cluster's Pod Security posture.
-- Multiple clusters are isolated by prefix (`<cluster_id>/hub`) in one bucket, so
-  writes don't contend. The bucket lives in `us-east-2`, so clusters in other
-  regions do cross-region S3 reads (node-local cache absorbs repeats). Moving to
-  per-region buckets (which also kills the cross-region cost) is a follow-up.
+- Multiple clusters are isolated by prefix (`<cluster_id>/hub`) within a per-region
+  bucket, so writes don't contend and reads stay in-region. Same-region clusters
+  still each store their own copy under their prefix; collapsing that to one shared
+  prefix per region (single designated writer) is a possible later optimization.
 - Strict-offline (`HF_HUB_OFFLINE=1`): an uncached model errors out (matches EC2).
   Graceful online fallback (overlay) is a possible enhancement.
