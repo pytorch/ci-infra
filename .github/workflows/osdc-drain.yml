@@ -20,7 +20,7 @@ on:
           - meta-staging-aws-uw1
           - meta-staging-aws-ue1
           - meta-prod-aws-uw1
-          - arc-cbr-production
+          - meta-prod-aws-ue2
           - meta-prod-aws-ue1
           - lf-prod-aws-ue1
           - lf-prod-aws-ue2
