@@ -235,6 +235,90 @@ jobs:
           python -c "import six, packaging, typing_extensions; print('PASS: uv pip install + import from upstream pypi.org')"
   # END_NO_CACHE_ENFORCER
 
+  # BEGIN_HF_CACHE
+  # ── HF Cache: read-only mount, env, and offline model load ──────────
+  test-hf-cache-mount:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify /mnt/hf_cache is mounted
+        run: |
+          echo "=== HF Cache Mount ==="
+          if [ ! -d /mnt/hf_cache ]; then
+            echo "FAIL: /mnt/hf_cache does not exist"
+            exit 1
+          fi
+          if ! grep -q ' /mnt/hf_cache ' /proc/mounts; then
+            echo "FAIL: /mnt/hf_cache is not a mountpoint"
+            grep hf_cache /proc/mounts || true
+            exit 1
+          fi
+          ls -la /mnt/hf_cache || true
+          echo "PASS: /mnt/hf_cache is mounted"
+
+      - name: Verify HF cache env vars
+        run: |
+          echo "=== HF Cache Env ==="
+          FAIL=0
+          [ "$HF_HOME" = "/mnt/hf_cache" ] || { echo "FAIL: HF_HOME='$HF_HOME'"; FAIL=1; }
+          [ "$HF_HUB_CACHE" = "/mnt/hf_cache/hub" ] || { echo "FAIL: HF_HUB_CACHE='$HF_HUB_CACHE'"; FAIL=1; }
+          EXPECTED_BUCKET="pytorch-hf-model-cache-{{CLUSTER_ID}}"
+          [ "$HF_CACHE_S3_BUCKET" = "$EXPECTED_BUCKET" ] \
+            || { echo "FAIL: HF_CACHE_S3_BUCKET='$HF_CACHE_S3_BUCKET' (expected $EXPECTED_BUCKET)"; FAIL=1; }
+          [ -n "$HF_CACHE_S3_REGION" ] || { echo "FAIL: HF_CACHE_S3_REGION is empty"; FAIL=1; }
+          echo "HF_HOME=$HF_HOME HF_HUB_CACHE=$HF_HUB_CACHE"
+          echo "HF_CACHE_S3_BUCKET=$HF_CACHE_S3_BUCKET HF_CACHE_S3_REGION=$HF_CACHE_S3_REGION"
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: HF cache env vars are correct"
+
+      - name: Verify mount is read-only
+        run: |
+          echo "=== Read-only Enforcement ==="
+          if touch /mnt/hf_cache/.integration-write-probe 2>/dev/null; then
+            echo "FAIL: wrote to /mnt/hf_cache — the cache mount must be read-only for job pods"
+            rm -f /mnt/hf_cache/.integration-write-probe 2>/dev/null || true
+            exit 1
+          fi
+          echo "PASS: /mnt/hf_cache rejected a write (read-only)"
+
+  test-hf-cache-offline-load:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Detect cached models
+        run: |
+          echo "=== Detect Cached Models ==="
+          if ls -d /mnt/hf_cache/hub/models--* >/dev/null 2>&1; then
+            ls -d /mnt/hf_cache/hub/models--* | head
+            echo "SKIP_OFFLINE=false" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No models cached under /mnt/hf_cache/hub yet — skipping offline-load validation"
+            echo "SKIP_OFFLINE=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Load a cached model offline (validates symlink-free layout)
+        if: env.SKIP_OFFLINE != 'true'
+        run: |
+          echo "=== Offline Load ==="
+          pip install --no-cache-dir 'huggingface_hub>=0.24'
+          DIR=$(ls -d /mnt/hf_cache/hub/models--* | head -1)
+          REPO=$(basename "$DIR" | sed 's/^models--//; s/--/\//g')
+          echo "Resolving '$REPO' offline from the read-only cache..."
+          HF_HUB_OFFLINE=1 REPO="$REPO" python3 -c "
+          import os, sys
+          from huggingface_hub import snapshot_download
+          repo = os.environ['REPO']
+          path = snapshot_download(repo, local_files_only=True)
+          files = os.listdir(path)
+          if not files:
+              print('FAIL: empty snapshot at', path)
+              sys.exit(1)
+          print('PASS: resolved', repo, 'offline at', path, '(' + str(len(files)) + ' entries)')
+          "
+  # END_HF_CACHE
+
   # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
