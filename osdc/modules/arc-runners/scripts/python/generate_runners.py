@@ -335,6 +335,21 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
+    # Optional schedulerName for workflow pods (per-def scheduler_name).
+    # Empty = default scheduler. The same value feeds two places so the real
+    # workflow pod and its capacity placeholder (ph-w-*) agree on the scheduler:
+    #   {{SCHEDULER_NAME_LINE}} -> schedulerName on the workflow pod spec
+    #   {{SCHEDULER_NAME}}      -> CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME on the
+    #                             listener, which the fork stamps onto ph-w-*.
+    # If they diverged, the placeholder would reserve a slot the real pod can't claim.
+    scheduler_name = runner.get("scheduler_name", "")
+    # Cluster-wide default: a def without its own scheduler_name inherits
+    # arc-runners.scheduler_name from clusters.yaml, so a cluster can route all
+    # workflow pods to a secondary scheduler from one place (per-def value wins).
+    if not scheduler_name:
+        scheduler_name = cluster_config.get("scheduler_name", "")
+    scheduler_name_line = f"      schedulerName: {scheduler_name}" if scheduler_name else ""
+
     # Replace all template placeholders
     output_content = template_content
     output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
@@ -364,6 +379,8 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
         "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
+        "{{SCHEDULER_NAME_LINE}}": scheduler_name_line,
+        "{{SCHEDULER_NAME}}": scheduler_name,
     }
 
     for placeholder, value in replacements.items():
