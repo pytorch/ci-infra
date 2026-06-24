@@ -55,15 +55,18 @@ spec:
               value: "true"
             - name: DCGM_EXPORTER_LISTEN
               value: ":9400"
+            # Soft Go heap ceiling below the hard limit; native DCGM (cgo)
+            # allocations sit on top and scale with GPU count.
             - name: GOMEMLIMIT
-              value: "450MiB"
+              value: "768MiB"
           resources:
             requests:
               cpu: 100m
               memory: 256Mi
             limits:
               cpu: 200m
-              memory: 512Mi
+              # 1Gi: 512Mi OOMKills on 8-GPU nodes (one pod reads every GPU).
+              memory: 1Gi
           securityContext:
             runAsNonRoot: false
             runAsUser: 0
