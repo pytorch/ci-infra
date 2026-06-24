@@ -68,5 +68,5 @@ kubectl rollout status daemonset hf-cache-mount \
   echo "[hf-cache] Check: kubectl get pods -n $NAMESPACE -l app=hf-cache-mount"
 }
 
-echo "[hf-cache] Deployed — rclone mount serving /mnt/hf_cache on runner nodes."
-echo "[hf-cache] Cache is populated by ci-refresh-hf-cache CI runs (writes through to S3)."
+echo "[hf-cache] Deployed — rclone read-only mount serving /mnt/hf_cache on runner nodes."
+echo "[hf-cache] Cache is populated by ci-refresh-hf-cache runs (GitHub OIDC write role)."
