@@ -411,6 +411,7 @@ clusters:
         - lf_osdc_admin
     base:
       base_node_count: 4
+      base_node_instance_type: m7i.8xlarge
       vpc_cidr: "10.12.0.0/16"
     node_compactor:
       min_node_age_seconds: 900
@@ -454,6 +455,7 @@ clusters:
         - lf_osdc_admin
     base:
       base_node_count: 4
+      base_node_instance_type: m7i.8xlarge
       vpc_cidr: "10.16.0.0/16"
     node_compactor:
       min_node_age_seconds: 900
