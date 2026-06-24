@@ -173,6 +173,7 @@ clusters:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
@@ -437,6 +438,7 @@ clusters:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
@@ -480,6 +482,7 @@ clusters:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
