@@ -37,10 +37,6 @@ controller:
     # Use global STS endpoint instead of regional (more reliable)
     - name: AWS_STS_REGIONAL_ENDPOINTS
       value: "legacy"
-    - name: BATCH_MAX_DURATION
-      value: "45s"
-    - name: BATCH_IDLE_DURATION
-      value: "45s"
   # Metrics
   metrics:
     port: 8000
