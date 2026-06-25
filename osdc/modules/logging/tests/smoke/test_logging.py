@@ -23,6 +23,7 @@ from helpers import (
     get_recently_stable_node_names,
     get_unstable_node_names,
     loki_read_url,
+    pod_within_startup_grace,
     query_loki,
     retry_with_backoff,
     run_kubectl,
@@ -154,14 +155,24 @@ class TestAlloyLogging:
             known_node_names = get_all_node_names(nodes)
             unstable_names = get_unstable_node_names(nodes)
             recently_stable_names = get_recently_stable_node_names(nodes)
-            not_running = [
-                p["metadata"]["name"]
-                for p in pods
-                if p["status"].get("phase") != "Running"
-                and p["spec"].get("nodeName") in known_node_names  # skip pods on disappeared nodes
-                and p["spec"].get("nodeName") not in unstable_names
-                and not (p["status"].get("phase") == "Pending" and p["spec"].get("nodeName") in recently_stable_names)
-            ]
+            young_pod_count = 0
+            not_running = []
+            for p in pods:
+                if p["status"].get("phase") == "Running":
+                    continue
+                node_name = p["spec"].get("nodeName")
+                if node_name not in known_node_names:
+                    continue  # pod on disappeared node — counted separately
+                if node_name in unstable_names:
+                    continue
+                if p["status"].get("phase") == "Pending" and node_name in recently_stable_names:
+                    continue
+                if pod_within_startup_grace(p):
+                    # Pod still inside its startup grace window — image pull
+                    # or init may not be done yet, regardless of node age.
+                    young_pod_count += 1
+                    continue
+                not_running.append(p["metadata"]["name"])
             disappeared = sum(
                 1
                 for p in pods
@@ -171,6 +182,7 @@ class TestAlloyLogging:
                 f"Alloy pods not Running on stable nodes: {not_running} "
                 f"({len(unstable_names)} unstable nodes excluded, "
                 f"{len(recently_stable_names)} recently-stable nodes with Pending pods tolerated, "
+                f"{young_pod_count} pods within startup grace tolerated, "
                 f"{disappeared} pods on disappeared nodes excluded, "
                 f"after {BACKOFF_ATTEMPTS} attempts)"
             )
@@ -304,6 +316,15 @@ class TestLoggingPerSourceVerification:
             pytest.skip("No grafana-cloud-credentials for logging")
         self.loki_user, self.loki_key = creds
         self.read_url = loki_read_url(self.loki_write_url)
+
+    @pytest.fixture(autouse=True)
+    def _require_alloy_daemonset_healthy(self, all_daemonsets: dict, all_nodes: dict, logging_ns: str):
+        """Fail fast with a shipper-side error instead of blaming Loki when
+        alloy-logging hasn't converged. Without this, missing logs in Loki burn
+        the full ~10-min remote retry budget before failing — and the failure
+        message points at Loki, not at the DaemonSet that's actually broken.
+        """
+        assert_daemonset_healthy(all_daemonsets, all_nodes, logging_ns, name_contains="alloy-logging")
 
     def test_pod_logs_arriving(self, resolve_config) -> None:
         """Verify pod logs are being collected (kube-system always has pods).

@@ -10,11 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tests" /
 
 from helpers import (
     BACKOFF_ATTEMPTS,
+    POD_STARTUP_GRACE_SECONDS,
     _count_unstable_nodes,
     _parse_k8s_timestamp,
     assert_daemonset_healthy,
     loki_read_url,
     mimir_read_url,
+    pod_within_startup_grace,
 )
 
 
@@ -274,3 +276,42 @@ class TestAssertDaemonsetHealthy:
             name="my-ds",
             node_selector={"workload-type": ["github-runner"]},
         )
+
+
+# ---------------------------------------------------------------------------
+# pod_within_startup_grace
+# ---------------------------------------------------------------------------
+
+
+def _make_pod(creation_ts: str | None = "2020-01-01T00:00:00Z") -> dict:
+    """Build a minimal pod dict for testing."""
+    meta: dict = {}
+    if creation_ts is not None:
+        meta["creationTimestamp"] = creation_ts
+    return {"metadata": meta, "status": {}, "spec": {}}
+
+
+class TestPodWithinStartupGrace:
+    def test_old_pod_outside_grace(self):
+        # Created in 2020, far older than POD_STARTUP_GRACE_SECONDS.
+        assert pod_within_startup_grace(_make_pod()) is False
+
+    def test_young_pod_inside_grace(self):
+        # 60s ago — well within the default 15-min window.
+        recent_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60))
+        assert pod_within_startup_grace(_make_pod(recent_ts)) is True
+
+    def test_pod_just_outside_grace(self):
+        # Just past the grace window — must NOT be tolerated.
+        past_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - POD_STARTUP_GRACE_SECONDS - 10))
+        assert pod_within_startup_grace(_make_pod(past_ts)) is False
+
+    def test_pod_no_creation_timestamp(self):
+        # Missing timestamp → can't compute age → conservative False.
+        assert pod_within_startup_grace(_make_pod(creation_ts=None)) is False
+
+    def test_custom_grace_seconds(self):
+        # 30s ago — outside a 10s custom grace.
+        recent_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 30))
+        assert pod_within_startup_grace(_make_pod(recent_ts), grace_seconds=10) is False
+        assert pod_within_startup_grace(_make_pod(recent_ts), grace_seconds=60) is True
