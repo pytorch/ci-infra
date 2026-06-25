@@ -49,6 +49,29 @@ spec:
       tolerations:
         - operator: Exists
 
+      # Make /mnt/hf_cache a shared mount point in the HOST mount namespace before
+      # rclone mounts. A plain hostPath dir is not a mount point, so the rclone
+      # container's Bidirectional FUSE has no shared host peer to propagate into
+      # and job pods (HostToContainer) only ever see the empty dir. Init runs to
+      # completion before the rclone container binds the volume, so the bind then
+      # joins the shared peer group and the FUSE propagates to the host. Same
+      # /proc/1/root nsenter-into-host pattern as cache-enforcer.
+      initContainers:
+        - name: prepare-host-mount
+          image: __TAINT_REMOVER_IMAGE__
+          securityContext:
+            privileged: true
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              exec /proc/1/root/usr/bin/nsenter -t 1 -m -- /bin/sh -c '
+                mkdir -p /mnt/hf_cache /mnt/hf-cache-vfs
+                grep -q " /mnt/hf_cache " /proc/mounts || mount --bind /mnt/hf_cache /mnt/hf_cache
+                mount --make-rshared /mnt/hf_cache
+              '
+
       containers:
         - name: rclone
           image: __RCLONE_IMAGE__
@@ -63,9 +86,10 @@ spec:
               MOUNT=/mnt/hf_cache
               CACHE=/mnt/hf-cache-vfs
               # A crashed/killed container can't run preStop, so a stale FUSE mount
-              # is left on the host and rclone then fails with "directory already
-              # mounted". Clear it before remounting so restarts recover.
-              fusermount -uz "$MOUNT" 2>/dev/null || umount -l "$MOUNT" 2>/dev/null || true
+              # is left and rclone then fails with "directory already mounted".
+              # Clear only the FUSE (fusermount), never `umount` — that would tear
+              # down the host bind mount the initContainer set up for propagation.
+              fusermount -uz "$MOUNT" 2>/dev/null || true
               mkdir -p "$MOUNT" "$CACHE"
 
               # Credentials via IRSA (env_auth). /mnt/hf_cache/hub maps to
@@ -92,7 +116,7 @@ spec:
                 command:
                   - /bin/sh
                   - -c
-                  - "fusermount -uz /mnt/hf_cache || umount -l /mnt/hf_cache || true"
+                  - "fusermount -uz /mnt/hf_cache || true"
           # A hung mount blocks this until timeout → pod restart.
           livenessProbe:
             exec:
