@@ -158,6 +158,8 @@ ERROR_PATTERNS = [
     re.compile(r"\bException\b"),
 ]
 
+VALID_CATEGORIES = frozenset({"infra_issue", "user", "unknown"})
+
 MUST_INCLUDE_PATTERNS = [
     re.compile(r"\[OSDC\] Step script exited with code"),
     re.compile(r"This is a script/workflow error, not an infrastructure issue"),
@@ -430,6 +432,10 @@ Prefer targeted `Grep` over a full Read.
             continue
         if not isinstance(parsed, dict) or "category" not in parsed:
             last_err = f"missing 'category' field: {parsed!r}"
+            log(f"  classify attempt {attempt}: {last_err}")
+            continue
+        if parsed["category"] not in VALID_CATEGORIES:
+            last_err = f"category {parsed['category']!r} not in {sorted(VALID_CATEGORIES)}"
             log(f"  classify attempt {attempt}: {last_err}")
             continue
         return parsed

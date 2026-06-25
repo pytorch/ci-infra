@@ -9,7 +9,7 @@ JSON. Schema:
 
 ```
 {
-  "category":          "infra_issue" | "test" | "user_code" | "flaky" | "unknown",
+  "category":          "infra_issue" | "user" | "unknown",
   "confidence":        "high"  | "medium" | "low",
   "summary":           "<= 200 chars, one-line root cause">,
   "suggested_action":  "<= 200 chars, what a human reviewer should do next"
@@ -20,13 +20,16 @@ JSON. Schema:
 
 When ANY of the following appear in the log slice, the failure is NOT
 infra_issue, regardless of other symptoms. Classify per the indicated
-category and STOP.
+category and STOP. Non-infra signals all collapse to category `user` in
+the JSON output; the per-signal labels below describe the *reason* and
+should appear in `summary`.
 
 1. **OSDC hook self-tag.** If the runner-container-hooks fork prints
    `##[error][OSDC] Step script exited with code 1. This is a script/workflow error, not an infrastructure issue.`
    the hook has already classified this as a workflow problem. Classify
-   `user_code` with `high` confidence. The hook only emits this string when
-   it has positively identified the failure as non-infra.
+   `user` with `high` confidence (reason: user_code — OSDC hook self-tag).
+   The hook only emits this string when it has positively identified the
+   failure as non-infra.
 
 2. **Fork-PR OIDC failure.** If `aws-actions/configure-aws-credentials`
    prints either of:
@@ -39,12 +42,12 @@ category and STOP.
    intentionally withholds OIDC tokens from fork PRs even with
    `id-token: write` declared. A small minority of cases are workflows that
    genuinely forgot `permissions: id-token: write`. Either way: NOT
-   infra_issue. Classify `user_code` with `high` confidence. Downstream
-   symptoms ("Missing credentials in config", "Unable to locate credentials",
-   "ExpiredToken" from boto3 in `upload-test-artifacts.py`, sccache write
-   errors, S3 upload 403s) are the SAME failure surfaced at the SDK layer —
-   do NOT re-classify as infra_issue just because the SDK error came later
-   in the log.
+   infra_issue. Classify `user` with `high` confidence (reason: fork-PR
+   OIDC). Downstream symptoms ("Missing credentials in config", "Unable to
+   locate credentials", "ExpiredToken" from boto3 in
+   `upload-test-artifacts.py`, sccache write errors, S3 upload 403s) are
+   the SAME failure surfaced at the SDK layer — do NOT re-classify as
+   infra_issue just because the SDK error came later in the log.
 
 3. **ARM64 SVE256 CMake failure.** Look for the trio:
    `Performing Test CXX_SVE256_FOUND - Failed`,
@@ -53,7 +56,7 @@ category and STOP.
    PyTorch's CMake checks for 256-bit SVE; AWS Graviton 4 (m8g, runner
    `l-arm64g4-*`) has only 128-bit SVE2. This is a missing workflow env var
    (`BUILD_IGNORE_SVE_UNAVAILABLE=1`), not a runner failure. Classify
-   `user_code` with `high` confidence.
+   `user` with `high` confidence (reason: SVE256 missing env var).
 
 4. **Workflow `timeout-minutes` exhaustion.** If the step duration is at or
    near a round-number (e.g. exactly 60 / 120 / 270 minutes) and the kill is
@@ -61,19 +64,30 @@ category and STOP.
    reason, and especially if every shard of the same matrix died at the
    same wall-clock moment, this is GHA enforcing the workflow's own
    `timeout-minutes`. NOT infra_issue. Classify `unknown` (we skip) or
-   `flaky` if the test is known-slow. Do NOT classify as infra_issue unless
-   the cancel reason explicitly names GHA service issues.
+   `user` with `medium` confidence if the test is known-slow (reason:
+   flaky — slow test hit workflow timeout). Do NOT classify as infra_issue
+   unless the cancel reason explicitly names GHA service issues.
 
 5. **`seemethere/download-artifact-s3` bare `aborted`.** A line of just
    `##[error]aborted` from `download-artifact-s3` with no preceding network
    error (no `ECONNRESET`, no `ETIMEDOUT`, no TLS error, no DNS error) is
    the known aws-sdk-js v2 + Node 24 socket-handling bug in that action.
-   NOT infra_issue. Classify `flaky` with `medium` confidence.
+   NOT infra_issue. Classify `user` with `medium` confidence (reason:
+   flaky — download-artifact-s3 / Node 24 socket bug).
 
 If none of these signatures match, proceed to the category definitions
 below.
 
 ## Category definitions
+
+There are only three values the `category` field may take in the JSON
+output:
+
+- `infra_issue` — see below
+- `user` — covers every non-infra, non-unknown sub-kind (test failures,
+  user code failures, flaky tests). The sub-kind goes in `summary`, not in
+  `category`. Use the sub-categories below as judgment aids ONLY.
+- `unknown` — see below
 
 - **infra_issue**: The job failed for a reason that has nothing to do with the
   code under test. The LF/ARC cluster, runner host, container runtime,
@@ -116,21 +130,32 @@ below.
   - GHA artifact upload/download failures due to GHA service issues
   - RPC errors, timeouts, etc
 
+### Sub-categories (all emit `category: "user"` in JSON)
+
+The following are all classifications you should use when reasoning, to
+help you decide between `infra_issue` and `user`. They all map to the
+same output category `user`, but knowing which sub-kind applies improves
+your `summary` and `suggested_action`.
+
 - **test**: A specific PyTorch test failed in a way that points at the code
   being tested (assertion failures, numerical mismatches, real Python
-  exceptions inside the test body). Do not log these prominently.
+  exceptions inside the test body). Do not log these prominently. Emit
+  `category: "user"`; mention "test failure" in `summary`.
 
 - **user_code**: Build errors, lint errors, type errors, import errors that
   are clearly the PR author's fault (syntax errors, missing symbols,
-  undeclared dependencies in setup.py, etc.). Do not log prominently.
+  undeclared dependencies in setup.py, etc.). Do not log prominently. Emit
+  `category: "user"`; mention "user_code" in `summary`.
 
 - **flaky**: A known-flaky test that retried/failed in a way that matches the
   usual flaky-test fingerprint (e.g. timeout in distributed test, NCCL hang,
   random seed sensitivity). Distinguish from infra_issue: flaky tests are
-  intermittent test bugs, not cluster bugs.
+  intermittent test bugs, not cluster bugs. Emit `category: "user"`;
+  mention "flaky" in `summary`.
 
 - **unknown**: You genuinely cannot tell from the log slice. Use this
-  sparingly — prefer guessing with low confidence over `unknown`.
+  sparingly — prefer guessing with low confidence over `unknown`. This is
+  the only sub-category that maps to its own output value (`unknown`).
 
 ## Confidence guidance
 
@@ -145,28 +170,34 @@ below.
 
 - A test process being OOM-killed by the kernel cgroup is **infra_issue** if
   the test memory budget should have fit (i.e., the runner gave us less RAM
-  than expected). It is **test** if the test itself genuinely allocates
-  more than the runner type advertises.
+  than expected). It is **user** (sub-kind: test) if the test itself
+  genuinely allocates more than the runner type advertises.
 - Network errors during `git fetch` / `pip install` at job-setup time are
   **infra_issue**. The same errors mid-test could be either; lean
-  infra_issue if the endpoint is an AWS/GitHub service and test if the test
-  was hitting an external endpoint as part of its own logic.
-- A failing CUDA kernel with a clear Python stack inside a test is **test**.
-  A failing CUDA init at job startup (`no CUDA-capable device is detected`)
-  on a runner that's supposed to have a GPU is **infra_issue**.
+  infra_issue if the endpoint is an AWS/GitHub service and **user** (sub-
+  kind: test) if the test was hitting an external endpoint as part of its
+  own logic.
+- A failing CUDA kernel with a clear Python stack inside a test is **user**
+  (sub-kind: test). A failing CUDA init at job startup
+  (`no CUDA-capable device is detected`) on a runner that's supposed to
+  have a GPU is **infra_issue**.
 - "Cancelled" jobs that show up as failure because GHA killed them due to
   another job in the workflow failing: **infra_issue** if the cancel reason
   is visible and points at GHA itself, otherwise **unknown** (we'll skip
   those).
-- Timeouts in distributed/NCCL tests are **flaky** unless the log clearly
-  shows the underlying transport/network was the cause (then
-  **infra_issue**).
+- Timeouts in distributed/NCCL tests are **user** (sub-kind: flaky) unless
+  the log clearly shows the underlying transport/network was the cause
+  (then **infra_issue**).
 
 ## Output discipline
 
 - One line. Valid JSON. Nothing else.
+- `category` MUST be one of `infra_issue`, `user`, `unknown`.
 - Keep `summary` and `suggested_action` short and concrete. Name the
   service/component when you can (`ECR`, `STS`, `containerd`, `kubelet`).
+  When emitting `user`, prefix `summary` with the sub-kind (`test:`,
+  `user_code:`, `flaky:`) so downstream readers know which non-infra
+  bucket this falls into.
 - If `category` is `infra_issue` and `confidence` is `high`,
   `suggested_action` should name a place to look (e.g. "check ARC node DNS
   / VPC endpoint for ecr.us-east-1.amazonaws.com").
