@@ -252,9 +252,9 @@ def fetch_log(url: str) -> str:
         with contextlib.suppress(gzip.BadGzipFile):
             body = gzip.decompress(body)
     try:
-        return body.decode("utf-8", errors="replace")
+        return body.decode("utf-8", errors="replace").replace("\x00", "")
     except Exception:
-        return body.decode("latin-1", errors="replace")
+        return body.decode("latin-1", errors="replace").replace("\x00", "")
 
 
 def _find_must_include_lines(lines: list[str]) -> list[int]:
