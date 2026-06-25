@@ -9,7 +9,7 @@ JSON. Schema:
 
 ```
 {
-  "category":          "infra" | "test" | "user_code" | "flaky" | "unknown",
+  "category":          "infra_issue" | "test" | "user_code" | "flaky" | "unknown",
   "confidence":        "high"  | "medium" | "low",
   "summary":           "<= 200 chars, one-line root cause">,
   "suggested_action":  "<= 200 chars, what a human reviewer should do next"
@@ -18,13 +18,16 @@ JSON. Schema:
 
 ## Category definitions
 
-- **infra**: The job failed for a reason that has nothing to do with the code
-  under test. The LF/ARC cluster, runner host, container runtime, networking,
-  storage, DNS, image pulls, IAM/auth to AWS/GitHub, Kubernetes scheduling,
-  EBS/EFS mounts, GPU driver, or any other piece of CI infrastructure broke.
-  These are the failures we WANT to surface — a human should look at them.
+- **infra_issue**: The job failed for a reason that has nothing to do with the
+  code under test. The LF/ARC cluster, runner host, container runtime,
+  networking, storage, DNS, image pulls, IAM/auth to AWS/GitHub, Kubernetes
+  scheduling, EBS/EFS mounts, GPU driver, or any other piece of CI
+  infrastructure broke. These are the failures we WANT to surface — a human
+  should look at them. Name kept in sync with the pytorch autorevert advisor
+  (`infra_issue` in test-infra#8213) so both systems share one vocabulary for
+  this judgment.
 
-  Examples that qualify as infra:
+  Examples that qualify as infra_issue:
   - ECR pull failures, image pull timeouts, ImagePullBackOff
   - DNS resolution errors (`getaddrinfo`, `Temporary failure in name resolution`)
   - Networking timeouts to AWS services (S3, ECR, STS, EC2 metadata)
@@ -42,7 +45,7 @@ JSON. Schema:
     or connection errors (HTTP 429, 403, 5xx, `Connection refused`,
     `Connection reset`, TLS handshake failures, DNS failures targeting
     `pypi.org`, `files.pythonhosted.org`, `download.pytorch.org`). Two
-    deployment shapes exist and both are **infra**:
+    deployment shapes exist and both are **infra_issue**:
       - **Cache present** (most OSDC runners): pip is pointed at the
         in-cluster `pypi-cache-{slug}` proxy via
         `PIP_INDEX_URL=http://pypi-cache-{slug}.pypi-cache.svc.cluster.local:8080/simple/`,
@@ -66,7 +69,7 @@ JSON. Schema:
 
 - **flaky**: A known-flaky test that retried/failed in a way that matches the
   usual flaky-test fingerprint (e.g. timeout in distributed test, NCCL hang,
-  random seed sensitivity). Distinguish from infra: flaky tests are
+  random seed sensitivity). Distinguish from infra_issue: flaky tests are
   intermittent test bugs, not cluster bugs.
 
 - **unknown**: You genuinely cannot tell from the log slice. Use this
@@ -83,31 +86,33 @@ JSON. Schema:
 
 ## Edge cases
 
-- A test process being OOM-killed by the kernel cgroup is **infra** if the
-  test memory budget should have fit (i.e., the runner gave us less RAM
+- A test process being OOM-killed by the kernel cgroup is **infra_issue** if
+  the test memory budget should have fit (i.e., the runner gave us less RAM
   than expected). It is **test** if the test itself genuinely allocates
   more than the runner type advertises.
 - Network errors during `git fetch` / `pip install` at job-setup time are
-  **infra**. The same errors mid-test could be either; lean infra if the
-  endpoint is an AWS/GitHub service and test if the test was hitting an
-  external endpoint as part of its own logic.
+  **infra_issue**. The same errors mid-test could be either; lean
+  infra_issue if the endpoint is an AWS/GitHub service and test if the test
+  was hitting an external endpoint as part of its own logic.
 - A failing CUDA kernel with a clear Python stack inside a test is **test**.
   A failing CUDA init at job startup (`no CUDA-capable device is detected`)
-  on a runner that's supposed to have a GPU is **infra**.
+  on a runner that's supposed to have a GPU is **infra_issue**.
 - "Cancelled" jobs that show up as failure because GHA killed them due to
-  another job in the workflow failing: **infra** if the cancel reason is
-  visible and points at GHA itself, otherwise **unknown** (we'll skip those).
+  another job in the workflow failing: **infra_issue** if the cancel reason
+  is visible and points at GHA itself, otherwise **unknown** (we'll skip
+  those).
 - Timeouts in distributed/NCCL tests are **flaky** unless the log clearly
-  shows the underlying transport/network was the cause (then **infra**).
+  shows the underlying transport/network was the cause (then
+  **infra_issue**).
 
 ## Output discipline
 
 - One line. Valid JSON. Nothing else.
 - Keep `summary` and `suggested_action` short and concrete. Name the
   service/component when you can (`ECR`, `STS`, `containerd`, `kubelet`).
-- If `category` is `infra` and `confidence` is `high`, `suggested_action`
-  should name a place to look (e.g. "check ARC node DNS / VPC endpoint for
-  ecr.us-east-1.amazonaws.com").
+- If `category` is `infra_issue` and `confidence` is `high`,
+  `suggested_action` should name a place to look (e.g. "check ARC node DNS
+  / VPC endpoint for ecr.us-east-1.amazonaws.com").
 
 Load all osdc-* skills on (../.claude/skills/osdc-*) for understanding the 
 scope of errors and better get a grasp of what is infra, and what is not. Specifically:

@@ -403,9 +403,9 @@ def render(job: dict[str, Any], cls: dict[str, Any]) -> tuple[str, str | None]:
         f"- action:   {action}\n"
         f"---\n"
     )
-    if cat == "INFRA":
+    if cat == "INFRA_ISSUE":
         return infra_block, infra_block
-    short = f"- {ts} {cat:<10s} ({conf}) job {job_id} {workflow} -- {summary} ({url})\n"
+    short = f"- {ts} {cat:<12s} ({conf}) job {job_id} {workflow} -- {summary} ({url})\n"
     return short, None
 
 
@@ -485,6 +485,9 @@ def _sig(_signum, _frame):
     log("signal received, shutting down after this iteration")
 
 
+DEFAULT_RUNNER_PREFIX = "lf-"
+
+
 def main(runner_prefix: str) -> int:
     for var in (
         "CLICKHOUSE_HOST",
@@ -512,6 +515,7 @@ def main(runner_prefix: str) -> int:
     log(f"state:        {STATE_FILE}")
     log(f"instructions: {INSTRUCTIONS_FILE} (reloaded every classify)")
     log(f"model:        {CLASSIFIER_MODEL}")
+    log(f"runner prefix: {runner_prefix!r}")
     log(f"poll every {POLL_INTERVAL_SEC}s, lookback {LOOKBACK_MINUTES}min")
 
     if not OUTPUT_FILE.exists():
@@ -527,7 +531,7 @@ def main(runner_prefix: str) -> int:
 
     while not _stop:
         try:
-            jobs = query_failed_jobs(client)
+            jobs = query_failed_jobs(client, runner_prefix)
             new = [j for j in jobs if str(j["id"]) not in state]
             log(f"poll: {len(jobs)} failures in last {LOOKBACK_MINUTES}min, {len(new)} new")
             durations: list[float] = []
@@ -567,11 +571,31 @@ def main(runner_prefix: str) -> int:
     return 0
 
 
+def _parse_runner_prefix(argv: list[str]) -> tuple[str, list[str]]:
+    rest: list[str] = []
+    prefix = DEFAULT_RUNNER_PREFIX
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--runner-prefix" and i + 1 < len(argv):
+            prefix = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--runner-prefix="):
+            prefix = a.split("=", 1)[1]
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return prefix, rest
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+    runner_prefix, args = _parse_runner_prefix(sys.argv[1:])
+    if args and args[0] == "--selftest":
         c = ch_client()
-        rows = query_failed_jobs(c)
-        print(f"OK: ClickHouse lf-* query returned {len(rows)} rows")
+        rows = query_failed_jobs(c, runner_prefix)
+        print(f"OK: ClickHouse {runner_prefix!r} query returned {len(rows)} rows")
         probe = c.query(
             "SELECT id, log_url FROM default.workflow_job "
             "WHERE conclusion = 'failure' AND repository_full_name = 'pytorch/pytorch' "
@@ -586,8 +610,8 @@ if __name__ == "__main__":
             print(f"OK: slice len={len(sliced)} bytes (preview):")
             print(sliced[:500])
         sys.exit(0)
-    if len(sys.argv) > 1 and sys.argv[1] == "--like-probe":
-        prefix = sys.argv[2] if len(sys.argv) > 2 else "mt-"
+    if args and args[0] == "--like-probe":
+        prefix = args[1] if len(args) > 1 else runner_prefix
         c = ch_client()
         q = """SELECT count() FROM default.workflow_job
                WHERE runner_name LIKE %(pat)s
@@ -595,7 +619,7 @@ if __name__ == "__main__":
         r = c.query(q, parameters={"pat": f"{prefix}%"})
         print(f"runner_name LIKE '{prefix}%' (last 1h): {r.result_rows[0][0]} rows")
         sys.exit(0)
-    if len(sys.argv) > 1 and sys.argv[1] == "--classify-probe":
+    if args and args[0] == "--classify-probe":
         c = ch_client()
         probe = c.query(
             "SELECT id, workflow_name, name, runner_name, html_url, log_url, completed_at "
@@ -620,4 +644,4 @@ if __name__ == "__main__":
             print("---infra stream---")
             print(infra_entry)
         sys.exit(0)
-    sys.exit(main())
+    sys.exit(main(runner_prefix))
