@@ -75,11 +75,13 @@ class TestParseK8sTimestamp:
 # ---------------------------------------------------------------------------
 
 
-def _make_node(name, ready="True", creation_ts="2020-01-01T00:00:00Z", deletion_ts=None):
+def _make_node(name, ready="True", creation_ts="2020-01-01T00:00:00Z", deletion_ts=None, labels=None):
     """Build a minimal K8s node dict for testing."""
     meta = {"name": name, "creationTimestamp": creation_ts}
     if deletion_ts:
         meta["deletionTimestamp"] = deletion_ts
+    if labels:
+        meta["labels"] = labels
     return {
         "metadata": meta,
         "status": {
@@ -152,9 +154,19 @@ class TestAssertDaemonsetHealthy:
         # Should pass without error
         assert_daemonset_healthy(ds, nodes, namespace="kube-system", name="my-ds")
 
-    def test_zero_zero_allow_zero_false(self):
+    @patch("helpers.retry.time.sleep")
+    @patch("helpers.k8s_asserts.run_kubectl")
+    def test_zero_zero_allow_zero_false(self, mock_kubectl, mock_sleep):
         ds = _make_ds_data("my-ds", "kube-system", 0, 0)
         nodes = _make_nodes_data()
+        # 0/0 with no selector → _has_matching_nodes returns True (conservative);
+        # drops into the retry loop. Stub kubectl to keep returning 0/0 so the
+        # retry budget exhausts and the assertion fails.
+        mock_kubectl.side_effect = [
+            {"status": {"desiredNumberScheduled": 0, "numberReady": 0}},
+            _make_nodes_data(),
+        ] * (BACKOFF_ATTEMPTS + 1)
+
         import pytest
 
         with pytest.raises(AssertionError, match="0 desired pods"):
@@ -196,3 +208,69 @@ class TestAssertDaemonsetHealthy:
         ds = _make_ds_data("my-ds", "kube-system", 3, 4)
         nodes = _make_nodes_data(unstable_count=2, stable_count=3)
         assert_daemonset_healthy(ds, nodes, namespace="kube-system", name="my-ds")
+
+    @patch("helpers.retry.time.sleep")
+    @patch("helpers.k8s_asserts.run_kubectl")
+    def test_zero_desired_with_eligible_nodes_retries_until_controller_catches_up(self, mock_kubectl, mock_sleep):
+        # Post-deploy transient: DaemonSet still shows 0/0 but matching nodes
+        # exist. Previously terminal-failed; now retries and succeeds once the
+        # controller observes the eligible nodes and scales desired up.
+        ds = _make_ds_data("my-ds", "kube-system", 0, 0)
+        labels = {"workload-type": "github-runner"}
+        nodes = {"items": [_make_node("n1", labels=labels)]}
+
+        # First refresh still 0/0, second refresh shows 1/1 (controller caught up).
+        mock_kubectl.side_effect = [
+            {"status": {"desiredNumberScheduled": 0, "numberReady": 0}},
+            {"items": [_make_node("n1", labels=labels)]},
+            {"status": {"desiredNumberScheduled": 1, "numberReady": 1}},
+            {"items": [_make_node("n1", labels=labels)]},
+        ]
+
+        assert_daemonset_healthy(
+            ds,
+            nodes,
+            namespace="kube-system",
+            name="my-ds",
+            node_selector={"workload-type": ["github-runner"]},
+        )
+
+    @patch("helpers.retry.time.sleep")
+    @patch("helpers.k8s_asserts.run_kubectl")
+    def test_zero_desired_with_eligible_nodes_fails_after_retries(self, mock_kubectl, mock_sleep):
+        # Same transient shape but the controller never catches up — must fail
+        # loudly after the retry budget. Confirms the new retry path doesn't
+        # silently mask persistent 0-desired bugs.
+        ds = _make_ds_data("my-ds", "kube-system", 0, 0)
+        labels = {"workload-type": "github-runner"}
+        nodes = {"items": [_make_node("n1", labels=labels)]}
+
+        fresh_ds = {"status": {"desiredNumberScheduled": 0, "numberReady": 0}}
+        fresh_nodes = {"items": [_make_node("n1", labels=labels)]}
+        mock_kubectl.side_effect = [fresh_ds, fresh_nodes] * (BACKOFF_ATTEMPTS + 1)
+
+        import pytest
+
+        with pytest.raises(AssertionError, match="0 desired pods"):
+            assert_daemonset_healthy(
+                ds,
+                nodes,
+                namespace="kube-system",
+                name="my-ds",
+                node_selector={"workload-type": ["github-runner"]},
+            )
+
+    def test_zero_desired_with_no_eligible_nodes_terminal_passes(self):
+        # node_selector has no matches → no nodes to schedule on → 0/0 is
+        # legitimately healthy, no retry, no failure. Guards the cheap-exit
+        # path so we don't poll for ~10 minutes on scaled-to-zero pools.
+        ds = _make_ds_data("my-ds", "kube-system", 0, 0)
+        # Stable node but with a DIFFERENT label → no match.
+        nodes = {"items": [_make_node("n1", labels={"workload-type": "other"})]}
+        assert_daemonset_healthy(
+            ds,
+            nodes,
+            namespace="kube-system",
+            name="my-ds",
+            node_selector={"workload-type": ["github-runner"]},
+        )
