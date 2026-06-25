@@ -179,9 +179,9 @@ clusters:
     modules:
       - karpenter
       - arc
+      - hf-cache
       - nodepools
       - arc-runners
-      - hf-cache
       - keda
       - buildkit
       - zombie-cleanup
@@ -253,9 +253,9 @@ clusters:
     modules:
       - karpenter
       - arc
+      - hf-cache
       - nodepools
       - arc-runners
-      - hf-cache
       - keda
       - buildkit
       - zombie-cleanup
