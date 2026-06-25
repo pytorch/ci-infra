@@ -336,9 +336,10 @@ jobs:
       TRANSFORMERS_OFFLINE: "1"
       MODEL: "Qwen/Qwen2.5-7B-Instruct"
       # Upper bound on load time. The mount fetches only this model's shards lazily
-      # (warm: from node NVMe; cold: ~15GB from S3 in-region). Blowing past this means
-      # the cache isn't serving efficiently — re-downloading, or pulling beyond the model.
-      MAX_LOAD_SECONDS: "300"
+      # (warm: from node NVMe; cold: ~15GB from S3 in-region — observed ~430s on a
+      # cold GPU nodepool). Generous so a cold fetch passes; still catches the
+      # pathological case (re-downloading, or pulling far beyond this one model).
+      MAX_LOAD_SECONDS: "900"
     steps:
       - name: Load the model offline from /mnt/hf_cache and run inference
         run: |
