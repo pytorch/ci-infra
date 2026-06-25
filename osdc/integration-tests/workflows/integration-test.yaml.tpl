@@ -354,11 +354,12 @@ jobs:
           model.eval()
           print('loaded', mid, 'in', round(time.time() - t0), 's', flush=True)
           prompt = 'In one sentence, what is PyTorch?'
-          inputs = tok.apply_chat_template([{'role': 'user', 'content': prompt}], add_generation_prompt=True, return_tensors='pt')
+          inputs = tok.apply_chat_template([{'role': 'user', 'content': prompt}], add_generation_prompt=True, return_tensors='pt', return_dict=True)
+          input_len = inputs['input_ids'].shape[1]
           t1 = time.time()
           with torch.no_grad():
-              out = model.generate(inputs, max_new_tokens=16, do_sample=False)
-          reply = tok.decode(out[0][inputs.shape[1]:], skip_special_tokens=True).strip()
+              out = model.generate(**inputs, max_new_tokens=16, do_sample=False)
+          reply = tok.decode(out[0][input_len:], skip_special_tokens=True).strip()
           print('generated in', round(time.time() - t1), 's', flush=True)
           print('PROMPT:', prompt)
           print('OUTPUT:', reply)
