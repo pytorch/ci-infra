@@ -7,3 +7,4 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - serviceaccounts.yaml
+  - rbac.yaml
