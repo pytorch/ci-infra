@@ -336,19 +336,13 @@ jobs:
       - name: Install huggingface_hub + awscli
         run: pip install --no-cache-dir 'huggingface_hub>=0.24' awscli
 
-      # HF_CACHE_S3_* are injected as container env vars, which the run: shell
-      # sees but the GitHub Actions ${{ env.* }} context does not. Promote them
-      # into $GITHUB_ENV so the action input below can read the region.
-      - name: Promote HF cache env into the workflow env context
-        run: |
-          echo "HF_CACHE_S3_REGION=$HF_CACHE_S3_REGION" >> "$GITHUB_ENV"
-          echo "HF_CACHE_S3_BUCKET=$HF_CACHE_S3_BUCKET" >> "$GITHUB_ENV"
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_hf-cache-write
-          aws-region: ${{ env.HF_CACHE_S3_REGION }}
+          # STS/default region only — the S3 ops below pass --region
+          # "$HF_CACHE_S3_REGION" (the per-cluster bucket region) explicitly.
+          aws-region: us-east-1
 
       - name: Download from HF Hub (online) then sync to S3
         run: |
