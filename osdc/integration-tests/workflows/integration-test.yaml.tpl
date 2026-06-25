@@ -323,7 +323,10 @@ jobs:
   # exercises only the cache. FAILS if the model isn't cached or won't run — seed
   # it once with `scripts/hf-cache-seed.py <cluster> Qwen/Qwen2.5-7B-Instruct`.
   test-hf-cache-large-read:
-    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    # 64GB: the 7B weights are mmap'd (~15GB) and CPU generation adds activations on
+    # top; 32GB OOMs mid-generate with a SIGBUS (file-backed mmap can't fault back in
+    # under memory pressure). 8 vCPU keeps CPU decode slow but bounded.
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-64"] }
     container:
       image: python:3.12-slim
     env:
