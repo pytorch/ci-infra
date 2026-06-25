@@ -87,7 +87,22 @@ class TestHfCacheMountDaemonSet:
     def test_hostpid_enabled(self, mount_pod_spec: dict) -> None:
         """taint-remover reads the host mount table (/proc/1/mounts) to confirm the FUSE is live."""
         assert mount_pod_spec.get("hostPID") is True, (
-            "mount DaemonSet needs hostPID for the taint-remover host-mount check."
+            "mount DaemonSet needs hostPID for the host-mount prep + taint-remover host-mount check."
+        )
+
+    def test_prepare_host_mount_init(self, mount_pod_spec: dict) -> None:
+        """An init container must make /mnt/hf_cache an rshared host mount point.
+
+        Without it the rclone Bidirectional FUSE has no shared host peer and never
+        propagates to job pods (they see an empty dir).
+        """
+        inits = mount_pod_spec.get("initContainers", [])
+        prep = [c for c in inits if c.get("name") == "prepare-host-mount"]
+        assert prep, "mount DaemonSet must run the prepare-host-mount initContainer (rshared host mount point)."
+        cmd = " ".join(prep[0].get("command", []))
+        assert "make-rshared" in cmd, "prepare-host-mount must make /mnt/hf_cache rshared on the host."
+        assert prep[0].get("securityContext", {}).get("privileged") is True, (
+            "prepare-host-mount must be privileged to nsenter the host and mount."
         )
 
     def test_taint_remover_lib_volume(self, mount_pod_spec: dict) -> None:
