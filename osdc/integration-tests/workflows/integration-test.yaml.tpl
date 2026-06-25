@@ -298,7 +298,7 @@ jobs:
         run: |
           echo "=== Offline Read (mirrors normal CI jobs) ==="
           MODEL="prajjwal1/bert-tiny"
-          CACHE_DIR="/mnt/hf_cache/hub/models--${MODEL//\//--}"
+          CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
           if [ ! -d "$CACHE_DIR" ]; then
             echo "::warning::$MODEL not in the cache yet (no refresh has populated it) — skipping"
             exit 0
@@ -363,7 +363,7 @@ jobs:
           "
           # Publish like the refresh job; aws s3 sync follows symlinks -> symlink-free in S3.
           aws s3 sync "$HF_HOME/hub" "s3://$HF_CACHE_S3_BUCKET/hub" --region "$HF_CACHE_S3_REGION" --no-progress
-          PREFIX="hub/models--${MODEL//\//--}/"
+          PREFIX="hub/models--$(echo "$MODEL" | sed 's|/|--|g')/"
           COUNT=$(aws s3 ls "s3://$HF_CACHE_S3_BUCKET/$PREFIX" --region "$HF_CACHE_S3_REGION" --recursive | wc -l | tr -d ' ')
           echo "Synced objects under $PREFIX: $COUNT"
           if [ "$COUNT" -lt 1 ]; then
