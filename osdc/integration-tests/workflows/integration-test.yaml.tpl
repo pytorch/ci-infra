@@ -323,10 +323,12 @@ jobs:
   # exercises only the cache. FAILS if the model isn't cached or won't run — seed
   # it once with `scripts/hf-cache-seed.py <cluster> Qwen/Qwen2.5-7B-Instruct`.
   test-hf-cache-large-read:
-    # 64GB: the 7B weights are mmap'd (~15GB) and CPU generation adds activations on
-    # top; 32GB OOMs mid-generate with a SIGBUS (file-backed mmap can't fault back in
-    # under memory pressure). 8 vCPU keeps CPU decode slow but bounded.
-    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-64"] }
+    # GPU runner. CPU loading keeps the weights as mmap views into the rclone FUSE
+    # mount, so generate() SIGBUSes faulting those pages (reproduced on 32GB and 64GB,
+    # with low_cpu_mem_usage False — transformers still assigns mmap-backed tensors).
+    # On GPU the weights are copied into VRAM at load, so generate never touches the
+    # FUSE. A single A100 has ample VRAM for a 7B bf16 model.
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-11-125-a100"] }
     container:
       image: python:3.12-slim
     env:
@@ -346,31 +348,30 @@ jobs:
             echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — seed it with scripts/hf-cache-seed.py"
             exit 1
           fi
-          pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+          pip install --no-cache-dir torch  # default CUDA build for the GPU runner
           pip install --no-cache-dir 'transformers>=4.45' 'huggingface_hub>=0.24' accelerate
-          # Load + generate entirely offline. low_cpu_mem_usage=False forces the
-          # weights to be COPIED into anonymous RAM instead of kept as zero-copy
-          # mmap views into the rclone FUSE mount — otherwise generate() faults
-          # FUSE-backed pages and dies with a SIGBUS (bus error) that no amount of
-          # node RAM fixes. ~15GB bf16 resident, ~28GB peak during the copy (hence
-          # the 64GB runner). Greedy decode for a deterministic, bounded run.
+          # Load onto the GPU and generate offline. device_map='cuda' streams the weights
+          # from the cache into VRAM at load time, so generate() runs entirely on the GPU
+          # and never faults the rclone FUSE mmap (the CPU-load path does, and SIGBUSes).
+          # Greedy decode for a deterministic, bounded run.
           MODEL="$MODEL" python3 -c "
           import os, sys, time
           import torch
           from transformers import AutoModelForCausalLM, AutoTokenizer
+          assert torch.cuda.is_available(), 'CUDA not available on this runner'
           mid = os.environ['MODEL']
           max_load = float(os.environ.get('MAX_LOAD_SECONDS', '300'))
           t0 = time.time()
           tok = AutoTokenizer.from_pretrained(mid)
-          model = AutoModelForCausalLM.from_pretrained(mid, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False)
+          model = AutoModelForCausalLM.from_pretrained(mid, torch_dtype=torch.bfloat16, device_map='cuda')
           model.eval()
           load_s = time.time() - t0
-          print('loaded', mid, 'in', round(load_s), 's (limit', round(max_load), 's)', flush=True)
+          print('loaded', mid, 'on', torch.cuda.get_device_name(0), 'in', round(load_s), 's (limit', round(max_load), 's)', flush=True)
           if load_s > max_load:
               print('FAIL: load took', round(load_s), 's >', round(max_load), 's — cache not serving efficiently (re-downloading from S3?)')
               sys.exit(1)
           prompt = 'In one sentence, what is PyTorch?'
-          inputs = tok.apply_chat_template([{'role': 'user', 'content': prompt}], add_generation_prompt=True, return_tensors='pt', return_dict=True)
+          inputs = tok.apply_chat_template([{'role': 'user', 'content': prompt}], add_generation_prompt=True, return_tensors='pt', return_dict=True).to('cuda')
           input_len = inputs['input_ids'].shape[1]
           t1 = time.time()
           with torch.no_grad():
