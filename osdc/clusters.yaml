@@ -254,9 +254,11 @@ clusters:
       - monitoring
       - logging
 
-  arc-cbr-production-uw1:
-    cluster_name: pytorch-arc-cbr-production-uw1
+  meta-prod-aws-uw1:
+    cluster_name: meta-prod-aws-uw1
     region: us-west-1
+    # state_bucket kept on the legacy arc-cbr name to avoid an S3 migration
+    # (mirrors meta-prod-aws-ue1, which also kept ciforge-tfstate-arc-cbr-prod-ue1).
     state_bucket: ciforge-tfstate-arc-cbr-prod-uw1
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
@@ -268,9 +270,9 @@ clusters:
       min_node_age_seconds: 900
     arc-runners:
       github_config_url: "https://github.com/pytorch"
-      github_secret_name: pytorch-arc-cbr-production
+      github_secret_name: meta-prod-aws-uw1
       runner_name_prefix: "mt-"
-      runner_group: "arc-cbr-prod-uw1"   # distinct from us-east-2's "default" — see doc
+      runner_group: "meta-prod-aws-uw1"   # distinct from us-east-2's "default" — see doc
     nodepools-h100:
       # us-west-1 H100 capacity reservations (p5.48xlarge, 8× H100 each):
       #   cr-04d3d1d84e127a562 — 2 nodes (16 H100 GPUs)
@@ -289,8 +291,6 @@ clusters:
       - nodepools
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
       - arc-runners-h100
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring

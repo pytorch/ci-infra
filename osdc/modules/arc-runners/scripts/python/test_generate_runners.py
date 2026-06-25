@@ -788,7 +788,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+            max_runners={"default": 8, "meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -796,7 +796,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production-uw1",
+            "cluster_id": "meta-prod-aws-uw1",
         }
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is True
@@ -813,7 +813,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+            max_runners={"default": 8, "meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -838,7 +838,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"arc-cbr-production-uw1": 48},
+            max_runners={"meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -846,7 +846,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production-uw1",
+            "cluster_id": "meta-prod-aws-uw1",
         }
 
         with pytest.raises(ValueError, match="max_runners mapping must include a `default` key"):
@@ -861,7 +861,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+            max_runners={"default": 8, "meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -869,7 +869,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production-uw1",
+            "cluster_id": "meta-prod-aws-uw1",
             "pause_runners": True,
         }
 
@@ -887,7 +887,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+            max_runners={"default": 8, "meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -895,7 +895,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production-uw1",
+            "cluster_id": "meta-prod-aws-uw1",
             "excluded_instance_types": {"p5.48xlarge"},
             "region": "us-west-1",
         }
@@ -1599,17 +1599,17 @@ class TestGenerateRunner:
         def_file = make_def_file(tmp_path, "ovr-def", "m6i.32xlarge", 4, 16, runner_group="release-runners")
         output_dir = tmp_path / "out"
         output_dir.mkdir()
-        # ...but the cluster config says "arc-cbr-prod-uw1" — cluster wins.
+        # ...but the cluster config says "meta-prod-aws-uw1" — cluster wins.
         cluster_config = {
             "github_config_url": "https://github.com/pytorch",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "runner_group": "arc-cbr-prod-uw1",
+            "runner_group": "meta-prod-aws-uw1",
         }
 
         generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
         docs = list(yaml.safe_load_all((output_dir / "ovr-def.yaml").read_text()))
-        assert docs[0]["runnerGroup"] == "arc-cbr-prod-uw1"
+        assert docs[0]["runnerGroup"] == "meta-prod-aws-uw1"
 
     def test_runner_group_cluster_override_no_def_value(self, tmp_path):
         """Cluster-level runner_group applies even when the def doesn't set one."""
@@ -1620,12 +1620,12 @@ class TestGenerateRunner:
             "github_config_url": "https://github.com/pytorch",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "runner_group": "arc-cbr-prod-uw1",
+            "runner_group": "meta-prod-aws-uw1",
         }
 
         generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
         docs = list(yaml.safe_load_all((output_dir / "ovr-nodef.yaml").read_text()))
-        assert docs[0]["runnerGroup"] == "arc-cbr-prod-uw1"
+        assert docs[0]["runnerGroup"] == "meta-prod-aws-uw1"
 
     def test_runner_group_cluster_override_repo_scope_guard_still_wins(self, tmp_path):
         """Repo-scoped URL still forces 'default' even when cluster sets a custom group."""
