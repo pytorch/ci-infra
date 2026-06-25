@@ -158,6 +158,17 @@ ERROR_PATTERNS = [
     re.compile(r"\bException\b"),
 ]
 
+MUST_INCLUDE_PATTERNS = [
+    re.compile(r"\[OSDC\] Step script exited with code"),
+    re.compile(r"This is a script/workflow error, not an infrastructure issue"),
+    re.compile(r"Did you mean to set the id-token permission\?"),
+    re.compile(r"Performing Test CXX_SVE256_FOUND - Failed"),
+    re.compile(r"No SVE support on this machine\. Set BUILD_IGNORE_SVE_UNAVAILABLE"),
+    re.compile(r"FindARM\.cmake:\d+"),
+    re.compile(r"seemethere/download-artifact-s3"),
+    re.compile(r"Container .* was OOMKilled"),
+]
+
 CH_QUERY = """
 SELECT
     id,
@@ -244,9 +255,36 @@ def fetch_log(url: str) -> str:
         return body.decode("latin-1", errors="replace")
 
 
+def _find_must_include_lines(lines: list[str]) -> list[int]:
+    hits: list[int] = []
+    seen: set[int] = set()
+    for pat in MUST_INCLUDE_PATTERNS:
+        for i, line in enumerate(lines):
+            if i in seen:
+                continue
+            if pat.search(line):
+                seen.add(i)
+                hits.append(i)
+    hits.sort()
+    return hits
+
+
+def _render_must_include_block(lines: list[str], hits: list[int]) -> str:
+    if not hits:
+        return ""
+    chunks: list[str] = []
+    for i in hits:
+        lo = max(0, i - 5)
+        hi = min(len(lines), i + 6)
+        chunks.append(f"--- line {i + 1} (+/- 5) ---\n" + "\n".join(lines[lo:hi]))
+    return "=== TRUSTED SIGNALS (must-read, never truncated) ===\n" + "\n".join(chunks)
+
+
 def slice_log(full: str) -> str:
     tail = full[-LOG_TAIL_BYTES:] if len(full) > LOG_TAIL_BYTES else full
     lines = full.splitlines()
+    must_hits = _find_must_include_lines(lines)
+    must_block = _render_must_include_block(lines, must_hits)
     match_lines: list[int] = []
     seen: set[int] = set()
     for pat in ERROR_PATTERNS:
@@ -265,31 +303,36 @@ def slice_log(full: str) -> str:
         hi = min(len(lines), i + ERROR_CONTEXT_LINES // 2 + 1)
         context_indices.update(range(lo, hi))
     if not context_indices:
-        return f"=== TAIL ({len(tail)} bytes) ===\n{tail}"
-    ranges: list[tuple[int, int]] = []
-    cur_start = cur_end = None
-    for i in sorted(context_indices):
-        if cur_start is None:
-            cur_start = cur_end = i
-        elif i == cur_end + 1:
-            cur_end = i
-        else:
+        body = f"=== TAIL ({len(tail)} bytes) ===\n{tail}"
+    else:
+        ranges: list[tuple[int, int]] = []
+        cur_start = cur_end = None
+        for i in sorted(context_indices):
+            if cur_start is None:
+                cur_start = cur_end = i
+            elif i == cur_end + 1:
+                cur_end = i
+            else:
+                ranges.append((cur_start, cur_end))
+                cur_start = cur_end = i
+        if cur_start is not None:
             ranges.append((cur_start, cur_end))
-            cur_start = cur_end = i
-    if cur_start is not None:
-        ranges.append((cur_start, cur_end))
-    chunks = []
-    for lo, hi in ranges:
-        chunks.append(f"=== lines {lo + 1}-{hi + 1} ===")
-        chunks.append("\n".join(lines[lo : hi + 1]))
-    context = "\n".join(chunks)
-    out = f"=== TAIL ({len(tail)} bytes) ===\n{tail}\n\n=== ERROR CONTEXT ({len(match_lines)} matches) ===\n{context}"
-    if len(out) > SLICE_MAX_BYTES:
-        out = out[:SLICE_MAX_BYTES] + f"\n\n[... truncated to {SLICE_MAX_BYTES} bytes ...]"
-    return out
+        chunks = []
+        for lo, hi in ranges:
+            chunks.append(f"=== lines {lo + 1}-{hi + 1} ===")
+            chunks.append("\n".join(lines[lo : hi + 1]))
+        context = "\n".join(chunks)
+        body = (
+            f"=== TAIL ({len(tail)} bytes) ===\n{tail}\n\n=== ERROR CONTEXT ({len(match_lines)} matches) ===\n{context}"
+        )
+    if len(body) > SLICE_MAX_BYTES:
+        body = body[:SLICE_MAX_BYTES] + f"\n\n[... body truncated to {SLICE_MAX_BYTES} bytes ...]"
+    if must_block:
+        return must_block + "\n\n" + body
+    return body
 
 
-def classify(job: dict[str, Any], log_slice: str) -> dict[str, Any]:
+def classify(job: dict[str, Any], log_slice: str, full_log_path: Path) -> dict[str, Any]:
     instructions = INSTRUCTIONS_FILE.read_text()
     last_err: str | None = None
     for attempt in range(1, CLASSIFIER_MAX_RETRIES + 1):
@@ -315,24 +358,38 @@ Do not write the JSON anywhere else.
 - html_url:      {job["html_url"]}
 - completed_at:  {job["completed_at"]}
 
-## Log slice (tail + error context)
+## Log slice (tail + trusted signals + error context)
 ```
 {log_slice}
 ```
+
+## Full job log (use ONLY if the slice is insufficient)
+The complete job log is on disk at:
+
+    {full_log_path}
+
+If the slice already answers the question, do NOT read this file — it can
+be many MB. Read it (or `Grep` it) only when:
+  - the slice mentions an error you cannot map to a category, AND
+  - you need surrounding context that was cut, OR
+  - you want to confirm whether a different signal (OSDC hook self-tag,
+    SVE256 trio, OIDC strings, OOMKilled message) appears anywhere in the
+    full log before deciding category.
+
+Prefer targeted `Grep` over a full Read.
 """
         cmd = [
             CLAUDE_BIN,
-            "--dangerously-skip-permissions",
             "--verbose",
             "-p",
             prompt,
             "--model",
             CLASSIFIER_MODEL,
             "--allowedTools",
-            "Write,Read",
+            "Write,Read,Grep",
         ]
         if sys.platform == "darwin":
-            cmd[1:1] = ["--dangerously-disable-osx-sandbox", "--internet"]
+            cmd[1:1] = ["--dangerously-disable-osx-sandbox"]
         env = {k: v for k, v in os.environ.items() if k in CLASSIFIER_ENV_PASSTHROUGH}
         for k, v in os.environ.items():
             if k.startswith("CLAUDE_CODE_") and k not in CLASSIFIER_ENV_DENY_CLAUDE_CODE:
@@ -460,9 +517,14 @@ def process_one(job: dict[str, Any], state: dict[str, Any]) -> float | None:
         classify_secs = 0.0
     else:
         sliced = slice_log(full_log)
-        t0 = time.time()
-        cls = classify(job, sliced)
-        classify_secs = time.time() - t0
+        full_path = Path(f"/tmp/lf-classify-fulllog-{job_id}-{secrets.token_hex(4)}.log")
+        full_path.write_text(full_log)
+        try:
+            t0 = time.time()
+            cls = classify(job, sliced, full_path)
+            classify_secs = time.time() - t0
+        finally:
+            full_path.unlink(missing_ok=True)
     log(f"  -> {cls.get('category')} ({cls.get('confidence')}) in {classify_secs:.1f}s: {cls.get('summary', '')[:120]}")
     entry, infra_entry = render(job, cls)
     append_output(entry, infra_entry)
@@ -632,9 +694,14 @@ if __name__ == "__main__":
         print(f"probe job: {job['id']} {job['name']}")
         txt = fetch_log(job["log_url"])
         sliced = slice_log(txt)
-        print(f"slice {len(sliced)} bytes, invoking classifier...")
+        full_path = Path(f"/tmp/lf-classify-fulllog-{job['id']}-{secrets.token_hex(4)}.log")
+        full_path.write_text(txt)
+        print(f"slice {len(sliced)} bytes, full log at {full_path}, invoking classifier...")
         t0 = time.time()
-        cls = classify(job, sliced)
+        try:
+            cls = classify(job, sliced, full_path)
+        finally:
+            full_path.unlink(missing_ok=True)
         print(f"classified in {time.time() - t0:.1f}s:")
         print(json.dumps(cls, indent=2))
         print("---rendered---")

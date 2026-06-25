@@ -16,6 +16,63 @@ JSON. Schema:
 }
 ```
 
+## Trusted not-infra_issue signals (check FIRST — these override the category heuristics below)
+
+When ANY of the following appear in the log slice, the failure is NOT
+infra_issue, regardless of other symptoms. Classify per the indicated
+category and STOP.
+
+1. **OSDC hook self-tag.** If the runner-container-hooks fork prints
+   `##[error][OSDC] Step script exited with code 1. This is a script/workflow error, not an infrastructure issue.`
+   the hook has already classified this as a workflow problem. Classify
+   `user_code` with `high` confidence. The hook only emits this string when
+   it has positively identified the failure as non-infra.
+
+2. **Fork-PR OIDC failure.** If `aws-actions/configure-aws-credentials`
+   prints either of:
+   - `It looks like you might be trying to authenticate with OIDC. Did you mean to set the id-token permission?`
+   - `Could not load credentials from any providers` immediately after the
+     configure-aws-credentials step (no STS call, no IAM error, no IRSA
+     mention)
+   then GitHub did not issue an OIDC `id-token` to this job. The dominant
+   cause is `pull_request` events from **forked** repos — GitHub
+   intentionally withholds OIDC tokens from fork PRs even with
+   `id-token: write` declared. A small minority of cases are workflows that
+   genuinely forgot `permissions: id-token: write`. Either way: NOT
+   infra_issue. Classify `user_code` with `high` confidence. Downstream
+   symptoms ("Missing credentials in config", "Unable to locate credentials",
+   "ExpiredToken" from boto3 in `upload-test-artifacts.py`, sccache write
+   errors, S3 upload 403s) are the SAME failure surfaced at the SDK layer —
+   do NOT re-classify as infra_issue just because the SDK error came later
+   in the log.
+
+3. **ARM64 SVE256 CMake failure.** Look for the trio:
+   `Performing Test CXX_SVE256_FOUND - Failed`,
+   `FindARM.cmake:31`, and
+   `No SVE support on this machine. Set BUILD_IGNORE_SVE_UNAVAILABLE`.
+   PyTorch's CMake checks for 256-bit SVE; AWS Graviton 4 (m8g, runner
+   `l-arm64g4-*`) has only 128-bit SVE2. This is a missing workflow env var
+   (`BUILD_IGNORE_SVE_UNAVAILABLE=1`), not a runner failure. Classify
+   `user_code` with `high` confidence.
+
+4. **Workflow `timeout-minutes` exhaustion.** If the step duration is at or
+   near a round-number (e.g. exactly 60 / 120 / 270 minutes) and the kill is
+   a bare `##[error]The operation was canceled.` / SIGINT with no cancel
+   reason, and especially if every shard of the same matrix died at the
+   same wall-clock moment, this is GHA enforcing the workflow's own
+   `timeout-minutes`. NOT infra_issue. Classify `unknown` (we skip) or
+   `flaky` if the test is known-slow. Do NOT classify as infra_issue unless
+   the cancel reason explicitly names GHA service issues.
+
+5. **`seemethere/download-artifact-s3` bare `aborted`.** A line of just
+   `##[error]aborted` from `download-artifact-s3` with no preceding network
+   error (no `ECONNRESET`, no `ETIMEDOUT`, no TLS error, no DNS error) is
+   the known aws-sdk-js v2 + Node 24 socket-handling bug in that action.
+   NOT infra_issue. Classify `flaky` with `medium` confidence.
+
+If none of these signatures match, proceed to the category definitions
+below.
+
 ## Category definitions
 
 - **infra_issue**: The job failed for a reason that has nothing to do with the
@@ -114,21 +171,21 @@ JSON. Schema:
   `suggested_action` should name a place to look (e.g. "check ARC node DNS
   / VPC endpoint for ecr.us-east-1.amazonaws.com").
 
-Load all osdc-* skills on (../.claude/skills/osdc-*) for understanding the 
-scope of errors and better get a grasp of what is infra, and what is not. Specifically:
+Load skills on ./skills/osdc-* for understanding scope of errors and better
+get a grasp of what is infra, and what is not. Specifically:
 
-- osdc-cli-debugging/SKILL.md
-- osdc-deployment/SKILL.md
-- osdc-harbor/SKILL.md
-- osdc-nodelocaldns/SKILL.md
-- osdc-observability/SKILL.md
-- osdc-project-structure/SKILL.md
-- osdc-pypi-cache/SKILL.md
-- osdc-runners-nodepools/SKILL.md
-- osdc-tooling-and-quality/SKILL.md
+- ./skills/osdc-cli-debugging/SKILL.md
+- ./skills/osdc-deployment/SKILL.md
+- ./skills/osdc-harbor/SKILL.md
+- ./skills/osdc-nodelocaldns/SKILL.md
+- ./skills/osdc-observability/SKILL.md
+- ./skills/osdc-project-structure/SKILL.md
+- ./skills/osdc-pypi-cache/SKILL.md
+- ./skills/osdc-runners-nodepools/SKILL.md
+- ./skills/osdc-tooling-and-quality/SKILL.md
 
-It might be helpful in some situation to load pytorch-runners-routing/SKILL.md
-to understand a bit how runners are routed in pytorch/pytorch repo (if necessary).
+It might be helpful in some situation to load ./skills/pytorch-runners-routing/SKILL.md
+to understand a bit how runners are routed (if necessary).
 
 Paths above are relative to the lf-runner-watch project directory
 (`~/meta/agent_space/lf-runner-watch`). Read them with the Read tool.
