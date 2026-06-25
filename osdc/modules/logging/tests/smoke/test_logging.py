@@ -306,12 +306,20 @@ class TestLoggingPerSourceVerification:
         self.read_url = loki_read_url(self.loki_write_url)
 
     def test_pod_logs_arriving(self, resolve_config) -> None:
-        """Verify pod logs are being collected (kube-system always has pods)."""
+        """Verify pod logs are being collected (kube-system always has pods).
+
+        Requires the `container` label so this only matches actual pod logs
+        (loki.source.file). Without it, the query also matches Kubernetes
+        *events* (loki.source.kubernetes_events), which carry a `namespace`
+        label but no `container` — that made the test pass on busy clusters
+        even when pod-log collection was completely broken (no files tailed),
+        and only fail on quiet clusters with no recent events.
+        """
         cluster_name = resolve_config("cluster_name", "")
         if not cluster_name:
             pytest.skip("cluster_name not set in config")
 
-        logql = f'{{cluster="{cluster_name}", namespace="kube-system"}}'
+        logql = f'{{cluster="{cluster_name}", namespace="kube-system", container=~".+"}}'
         assert_logs_fresh_in_loki(
             self.read_url,
             logql,
