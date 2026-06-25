@@ -31,6 +31,7 @@ TAG_REQUIREMENTS: dict[str, list[str]] = {
     "ARC_RUNNERS": ["arc-runners"],
     "PYPI_CACHE": ["arc-runners", "pypi-cache"],
     "HF_CACHE": ["arc-runners", "hf-cache"],
+    "HF_CACHE_OIDC": ["arc-runners", "hf-cache"],
     "GPU_T4": ["arc-runners", "nodepools"],
     "BUILDKIT": ["arc-runners", "buildkit"],
     "B200": ["arc-runners-b200", "nodepools-b200"],

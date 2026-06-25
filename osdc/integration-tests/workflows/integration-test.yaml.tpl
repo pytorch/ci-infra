@@ -357,6 +357,61 @@ jobs:
           echo "PASS: $MODEL (${GB}GiB) read offline from the cache in ${ELAPSED}s"
   # END_HF_CACHE
 
+  # BEGIN_HF_CACHE_OIDC
+  # ── HF Cache: refresh (online download → sync to S3) ─────────────────
+  # Mirrors ci-refresh-hf-cache: assume the OIDC writer role, download a small
+  # model from the HF Hub (online), then aws s3 sync the artifacts to the
+  # cluster's bucket. FAILS if the OIDC role can't be assumed — that means the
+  # 'hf-cache-write' environment / role-trust isn't set up, which must be fixed,
+  # not silently skipped.
+  test-hf-cache-refresh-sync:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    environment: hf-cache-write
+    permissions:
+      id-token: write
+      contents: read
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Install huggingface_hub + awscli
+        run: pip install --no-cache-dir 'huggingface_hub>=0.24' awscli
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_hf-cache-write
+          # STS/default region only — the S3 ops below pass --region
+          # "$HF_CACHE_S3_REGION" (the per-cluster bucket region) explicitly.
+          aws-region: us-east-1
+
+      - name: Download from HF Hub (online) then sync to S3
+        env:
+          # The pod injects HF_HOME=/mnt/hf_cache (the read-only mount). The
+          # hf-xet downloader writes its cache/logs under $HF_HOME, so point it
+          # at a writable scratch dir — the refresh writes to S3, not the mount.
+          HF_HOME: ${{ runner.temp }}/hf-refresh
+        run: |
+          echo "=== Refresh: online download + sync to S3 ==="
+          MODEL="prajjwal1/bert-tiny"
+          mkdir -p "$HF_HOME/hub"
+          # Online download into the writable HF_HOME (NOT the read-only mount).
+          MODEL="$MODEL" python3 -c "
+          import os
+          from huggingface_hub import snapshot_download
+          p = snapshot_download(os.environ['MODEL'], cache_dir=os.path.join(os.environ['HF_HOME'], 'hub'))
+          print('downloaded', os.environ['MODEL'], 'to', p)
+          "
+          # Publish like the refresh job; aws s3 sync follows symlinks -> symlink-free in S3.
+          aws s3 sync "$HF_HOME/hub" "s3://$HF_CACHE_S3_BUCKET/hub" --region "$HF_CACHE_S3_REGION" --no-progress
+          PREFIX="hub/models--$(echo "$MODEL" | sed 's|/|--|g')/"
+          COUNT=$(aws s3 ls "s3://$HF_CACHE_S3_BUCKET/$PREFIX" --region "$HF_CACHE_S3_REGION" --recursive | wc -l | tr -d ' ')
+          echo "Synced objects under $PREFIX: $COUNT"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "FAIL: nothing synced for $MODEL"
+            exit 1
+          fi
+          echo "PASS: downloaded $MODEL from HF Hub and synced $COUNT objects to s3://$HF_CACHE_S3_BUCKET/$PREFIX"
+  # END_HF_CACHE_OIDC
 
   # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
