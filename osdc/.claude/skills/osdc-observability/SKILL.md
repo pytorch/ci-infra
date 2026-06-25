@@ -2,7 +2,7 @@
 name: osdc-observability
 description: >
   OSDC observability: monitoring (metrics) and logging pipelines, three-Alloy architecture,
-  Grafana Cloud Loki + Mimir queries, label strategy, module pipeline discovery, credential setup,
+  Grafana Cloud Loki + Mimir queries, label strategy, credential setup,
   and troubleshooting.
   Applies to ~/meta/ci-infra/osdc.
   Load when working on monitoring, logging, Alloy, or querying logs.
@@ -114,42 +114,15 @@ Dashboards no longer live under version control inside `osdc/`. They were moved 
 
 ## Logging (log collection pipeline)
 
-`modules/logging/` collects pod logs, system journal entries, and Kubernetes events, pushing to Grafana Cloud Loki.
+`modules/logging/` collects system journal entries and Kubernetes events, pushing to Grafana Cloud Loki. **Container stdout/stderr is intentionally NOT shipped** — the runner-job log volume was too costly relative to the value (GitHub Actions stores full workflow logs already), and a long-broken Alloy file-discovery path made the absence invisible until smoke tests were hardened.
 
-Three log sources:
-- **Pod logs**: `loki.source.file` reading CRI-format `/var/log/pods/` — DaemonSet `alloy-logging`
-- **System journal**: `loki.source.journal` from `/var/log/journal` — DaemonSet, units `kubelet.service|containerd.service|kernel|nvidia-fabricmanager.service|nvidia-persistenced.service`
+Two log sources:
+- **System journal**: `loki.source.journal` from `/var/log/journal` — DaemonSet `alloy-logging`, units `kubelet.service|containerd.service|kernel|nvidia-fabricmanager.service|nvidia-persistenced.service`
 - **Kubernetes events**: `loki.source.kubernetes_events` — single-replica Deployment `alloy-events` with its own inline config (JSON parsing, label promotion, structured metadata, plus its own feedback-loop drop for the `logging` namespace)
 
-### Base Pipeline Drop Stages
+### Journal Pipeline
 
-`modules/logging/pipelines/base.alloy` drops the following BEFORE any module pipelines run:
-- **Completed pods**: pods in `Succeeded|Failed` phase (drop at discovery via `__meta_kubernetes_pod_phase`)
-- **Feedback-loop prevention**: all pods in `logging` namespace (drop at discovery — prevents Alloy ingesting its own output)
-- **DEBUG/TRACE log lines**: word-boundary match `(?i)(?:^|\s)(?:DEBUG|TRACE)(?:\s|:|$)` — `drop_counter_reason = "low_log_level"`
-- **Oversized lines**: `longer_than = "16KB"` — `drop_counter_reason = "oversized_line"` (binary spam, large stack dumps)
-- **Health probes**: lines matching `kube-probe/`
-
-Plus base parsers for kube-system services (CoreDNS, kube-proxy, aws-node, node-compactor) extracting `level`.
-
-### Level Normalization (Runs After Module Pipelines)
-
-After the `// MODULE_PIPELINES` marker, `base.alloy` runs a multi-stage level-normalization pipeline: lowercase via `stage.template`, then `stage.replace` aliases (`err|e`→`error`, `warning|w`→`warn`, `information|i`→`info`, `dbg|d`→`debug`, `f`→`fatal`). Modules that extract a `level` label get this normalization for free.
-
-The **journal pipeline** maps RFC 5424 syslog priorities to levels (0-3→`error`, 4→`warn`, 5-6→`info`, 7→`debug`) and **drops** priority-7 (`level=debug`) entries with `drop_counter_reason="journal_debug"`.
-
-### Per-Module Pipelines
-
-Module pipelines run AFTER the base drop stages and BEFORE level normalization. Used for parsing, sampling, and structured-metadata extraction:
-- **ARC** (`modules/arc/logging/pipeline.alloy`): non-error logs sampled at **10%** (errors/warns always kept). Then extracts `workflow_run_id` and promotes to **structured metadata** for queryability without indexing cost.
-- **BuildKit** (`modules/buildkit/logging/pipeline.alloy`): non-error logs sampled at **50%**.
-- **Karpenter** (`modules/karpenter/logging/pipeline.alloy`): JSON-parses zap logs and promotes `level`. No sampling.
-- **Monitoring** (`modules/monitoring/logging/pipeline.alloy`): the monitoring module owns its own pipeline (so it parses things it deploys). Contents:
-  - `kube-prometheus-stack-operator` — controller-runtime JSON, extracts `level`
-  - `kube-state-metrics` — klog format (`I/W/E/F\d{4}`), extracts `level`
-  - **Harbor** core/registry/jobservice/trivy — JSON, extracts `level`
-  - **Harbor nginx** — drops `GET /api/v2.0/health` health-check probes, extracts HTTP status code
-  - **Harbor throttle** — non-error logs (`level!~"(?i)error|fatal|panic"`) rate-limited via `stage.limit { rate = 100, burst = 500 }`
+`modules/logging/pipelines/base.alloy` defines the journal pipeline. It maps RFC 5424 syslog priorities to levels (0-3→`error`, 4→`warn`, 5-6→`info`, 7→`debug`), **drops** priority-7 (`level=debug`) entries with `drop_counter_reason="journal_debug"`, and moves `node` to structured metadata so it stays queryable without indexing cost.
 
 ### Configuration (clusters.yaml)
 
@@ -163,43 +136,13 @@ logging:
 | Label | Type | Query Usage |
 |-------|------|-------------|
 | `cluster` | external_label | `{cluster="..."}` |
-| `namespace` | indexed | `{namespace="..."}` |
-| `container` | indexed | `{container="..."}` |
-| `app` | indexed | `{app="..."}` (from `app.kubernetes.io/name`) |
-| `unit` | indexed | `{unit="..."}` (journal logs only) |
-| `level` | indexed | `{level="error"}` (when extracted by a module pipeline) |
-| `pod` | structured metadata (Loki 3.x) | `{...} \| pod="..."` (pipe, NOT inside `{}`) |
+| `unit` | indexed | `{unit="..."}` (journal logs) |
+| `level` | indexed | `{level="error"}` (journal, from priority mapping) |
 | `node` | structured metadata (Loki 3.x) | `{...} \| node="..."` (pipe, NOT inside `{}`) |
-| `workflow_run_id` | structured metadata | `{...} \| workflow_run_id="..."` (ARC only) |
 | `type`, `kind` | indexed (events only) | `{type="Warning", kind="Pod"}` |
 | `reason`, `sourcecomponent` | structured metadata (events only) | `{kind="Pod"} \| reason="..."` |
 
-`pod` and `node` are moved to structured metadata after MODULE_PIPELINES via `stage.structured_metadata` + `stage.label_drop`. Use the pipe `|` syntax to filter, NOT label matchers `{}`.
-
-## Module Pipeline Discovery
-
-Each module can contribute log parsing rules by placing a `logging/pipeline.alloy` file in its module directory. The file must contain only `stage.match` blocks — syntactically valid inside a `loki.process` block.
-
-`modules/logging/scripts/python/assemble_config.py` accepts two required flags: `--modules-dir` (defaulted from `OSDC_ROOT` in `deploy.sh`) and `--upstream-modules-dir` (defaulted from `OSDC_UPSTREAM`, which itself falls back to `OSDC_ROOT`). With neither env var set, both flags resolve to `<repo root>/modules`. For each enabled module:
-1. Tries `<modules-dir>/<name>/logging/pipeline.alloy` first
-2. Falls back to `<upstream-modules-dir>/<name>/logging/pipeline.alloy` if the first file is absent
-3. **An empty/whitespace-only file at the first path is an explicit opt-out** — the second path is NOT checked as a fallback. This lets an override directory suppress a module's pipeline by placing an empty `pipeline.alloy` there.
-
-The assembler **skips the `logging` module by name** — the logging module owns the base pipeline, not a per-module pipeline.
-
-During deploy, `assemble_config.py`:
-1. Reads `clusters.yaml` to get the cluster's enabled modules
-2. For each module (except `logging`), runs the discovery above
-3. Inserts all discovered blocks at the `// MODULE_PIPELINES` marker in `base.alloy`
-4. Outputs the assembled config as a ConfigMap YAML
-
-If the marker is missing but pipelines were discovered, the script exits with an error (prevents silent drops).
-
-### Adding a Module Pipeline
-
-1. Create `modules/<name>/logging/pipeline.alloy` containing `stage.match` blocks
-2. Selector must use labels available at the marker: `namespace`, `container`, `app`, `pod`, `node`
-3. Redeploy: `just deploy-base <cluster>` — the assembly script discovers the file automatically
+`node` is moved to structured metadata via `stage.structured_metadata` + `stage.label_drop`. Use the pipe `|` syntax to filter, NOT label matchers `{}`.
 
 ## Key Gotchas (both pipelines)
 
@@ -343,8 +286,8 @@ The Mimir URL comes from `clusters.yaml` (`monitoring.grafana_cloud_read_url`). 
   Default upstream is 1Gi — bump only if `kubectl describe pod` shows OOMKilled. When raising the cgroup limit, also bump `GOMEMLIMIT` to ~85% of the new ceiling.
 - **DCGM exporter OOM**: pod is sized `requests=256Mi/limits=512Mi` with `GOMEMLIMIT=450MiB` and 60s collection interval (`--collect-interval=60000`). Aggressive limits were chosen because the per-GPU metric set was trimmed to 23 metrics; if DCGM is OOMKilled after re-introducing metrics, bump `resources.limits.memory` AND `GOMEMLIMIT` together (keep `GOMEMLIMIT` at ~88% of the new cgroup ceiling).
 - **Alloy did not pick up secret rotation**: monitoring `deploy.sh` runs `kubectl rollout restart deployment/alloy` after every successful Helm upgrade and waits on `rollout status`. Secret values are referenced via `valueFrom.secretKeyRef`, so Kubernetes will NOT restart pods when the secret value changes — only the explicit rollout does. If you rotate credentials without redeploying, force a rollout manually.
-- **Missing logs from a namespace**: check the module's `logging/pipeline.alloy` — bad `stage.match` regex silently drops logs. Also check the base pipeline drop stages (DEBUG/TRACE, oversized, kube-probe, Succeeded/Failed pods, `logging` namespace)
-- **Sampling-related "missing" logs**: ARC drops 90% of non-error logs, BuildKit drops 50%. Errors/warns are always kept. If you're searching for INFO-level lines and finding gaps, this is expected
-- **Rate limiting**: `stage.limit { rate = 1000, burst = 5000, by_label_name = "pod" }` — per-source-pod within each Alloy (not per-Alloy-instance globally). Each pod gets its own 1000/s budget. Check `loki_process_dropped_lines_total` for drops; `drop_counter_reason` labels include `low_log_level`, `oversized_line`, `journal_debug`, `feedback_loop_prevention`.
+- **Missing pod logs**: container stdout/stderr is intentionally NOT shipped. Look at GitHub Actions workflow logs (for runner jobs), `kubectl logs` (while the pod is still alive), or pod events via the `alloy-events` Deployment in Loki (`{cluster="X", kind="Pod"}`)
+- **Sampling-related "missing" logs**: not applicable — namespace-based sampling stages were removed with the pod-log pipeline
+- **Rate limiting**: not applicable — the per-pod rate-limit stage was removed with the pod-log pipeline. Journal logs go through `loki.process "system_logs"` which has no rate limit; volume is bounded by the per-unit `keep` filter on the journal source (`kubelet|containerd|kernel|nvidia-*`)
 - **Journal path empty**: EKS AL2023 uses `/var/log/journal` — hostPath uses `DirectoryOrCreate` so it won't crash, but no journal logs will appear if path is wrong
 - **Dashboard publish failed**: `grafana-publish.yml` runs `mise run push --folder fvnzj9` from the `grafana/` directory. Validation is gated by `gcx resources validate`; if it fails, the dashboard JSON in `grafana/*.json` is malformed or references a missing datasource. Reproduce locally with `cd grafana && mise run validate --folder fvnzj9`.
