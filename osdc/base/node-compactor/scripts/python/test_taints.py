@@ -10,6 +10,7 @@ from lightkube.types import PatchType
 from models import Config, NodeState, PodInfo
 from taints import (
     _pod_matches_node,
+    _toleration_matches_taint,
     apply_taint,
     check_pending_pods,
     cleanup_stale_taints,
@@ -259,12 +260,93 @@ class TestPodMatchesNode(unittest.TestCase):
         self.assertFalse(_pod_matches_node(pod, node))
 
     def test_equal_toleration_no_value_matches_taint_no_value(self):
-        """Equal toleration with unset value treated as wildcard for taint with no value."""
+        """Equal toleration with unset value matches taint with unset value
+        (both normalize to empty string per kube-scheduler semantics)."""
         taint = make_taint(key="team", value=None, effect="NoSchedule")
         tol = make_toleration(key="team", operator="Equal", value=None, effect="NoSchedule")
         pod = make_pod(tolerations=[tol])
         node = make_node_state(node_taints=[taint])
         self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_equal_toleration_no_value_does_not_match_taint_with_value(self):
+        """Equal toleration with unset value MUST NOT match taint with a value
+        (unset != "bar"; only kube-scheduler's Exists operator is a wildcard)."""
+        taint = make_taint(key="team", value="bar", effect="NoSchedule")
+        tol = make_toleration(key="team", operator="Equal", value=None, effect="NoSchedule")
+        pod = make_pod(tolerations=[tol])
+        node = make_node_state(node_taints=[taint])
+        self.assertFalse(_pod_matches_node(pod, node))
+
+
+class TestTolerationMatchesTaint(unittest.TestCase):
+    """Direct tests for _toleration_matches_taint — mirrors upstream
+    Toleration.ToleratesTaint contract from k8s.io/api/core/v1."""
+
+    def test_equal_matching_key_and_value(self):
+        tol = make_toleration(key="k", operator="Equal", value="v", effect="NoSchedule")
+        taint = make_taint(key="k", value="v", effect="NoSchedule")
+        self.assertTrue(_toleration_matches_taint(tol, taint))
+
+    def test_equal_value_mismatch(self):
+        tol = make_toleration(key="k", operator="Equal", value="v1", effect="NoSchedule")
+        taint = make_taint(key="k", value="v2", effect="NoSchedule")
+        self.assertFalse(_toleration_matches_taint(tol, taint))
+
+    def test_equal_unset_value_normalizes_to_empty_string(self):
+        """None value on toleration == "" on taint (Go zero-value semantics)."""
+        tol = make_toleration(key="k", operator="Equal", value=None, effect="NoSchedule")
+        taint = make_taint(key="k", value="", effect="NoSchedule")
+        self.assertTrue(_toleration_matches_taint(tol, taint))
+
+    def test_equal_unset_value_does_not_wildcard(self):
+        """Equal with no value is NOT a wildcard — must reject non-empty taint value."""
+        tol = make_toleration(key="k", operator="Equal", value=None, effect="NoSchedule")
+        taint = make_taint(key="k", value="v", effect="NoSchedule")
+        self.assertFalse(_toleration_matches_taint(tol, taint))
+
+    def test_default_operator_is_equal(self):
+        """Toleration with no operator set defaults to Equal."""
+        tol = make_toleration(key="k", operator=None, value="v", effect="NoSchedule")
+        taint = make_taint(key="k", value="v", effect="NoSchedule")
+        self.assertTrue(_toleration_matches_taint(tol, taint))
+
+    def test_exists_with_key_ignores_value(self):
+        tol = make_toleration(key="k", operator="Exists", value=None, effect="NoSchedule")
+        taint = make_taint(key="k", value="anything", effect="NoSchedule")
+        self.assertTrue(_toleration_matches_taint(tol, taint))
+
+    def test_exists_with_empty_key_matches_any_taint(self):
+        """Empty key + Exists is the universal wildcard toleration."""
+        tol = make_toleration(key=None, operator="Exists", value=None, effect=None)
+        taint = make_taint(key="anything", value="v", effect="NoSchedule")
+        self.assertTrue(_toleration_matches_taint(tol, taint))
+
+    def test_empty_key_without_exists_rejects(self):
+        """Empty key only works with Exists; with Equal it matches nothing."""
+        tol = make_toleration(key=None, operator="Equal", value="v", effect="NoSchedule")
+        taint = make_taint(key="k", value="v", effect="NoSchedule")
+        self.assertFalse(_toleration_matches_taint(tol, taint))
+
+    def test_empty_effect_matches_any_taint_effect(self):
+        tol = make_toleration(key="k", operator="Equal", value="v", effect=None)
+        taint = make_taint(key="k", value="v", effect="NoExecute")
+        self.assertTrue(_toleration_matches_taint(tol, taint))
+
+    def test_effect_mismatch_rejects(self):
+        tol = make_toleration(key="k", operator="Equal", value="v", effect="NoSchedule")
+        taint = make_taint(key="k", value="v", effect="NoExecute")
+        self.assertFalse(_toleration_matches_taint(tol, taint))
+
+    def test_key_mismatch_rejects(self):
+        tol = make_toleration(key="k1", operator="Equal", value="v", effect="NoSchedule")
+        taint = make_taint(key="k2", value="v", effect="NoSchedule")
+        self.assertFalse(_toleration_matches_taint(tol, taint))
+
+    def test_unknown_operator_rejects(self):
+        """Unknown operators are not honored — fail closed."""
+        tol = make_toleration(key="k", operator="Bogus", value="v", effect="NoSchedule")
+        taint = make_taint(key="k", value="v", effect="NoSchedule")
+        self.assertFalse(_toleration_matches_taint(tol, taint))
 
 
 class TestPodMatchesNodeMultipleIgnoredTaintsCheckPending(unittest.TestCase):

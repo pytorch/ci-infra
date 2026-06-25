@@ -54,6 +54,42 @@ _IGNORED_TAINT_KEYS = frozenset(
 )
 
 
+def _toleration_matches_taint(tol, taint) -> bool:
+    """Whether ``tol`` tolerates ``taint``.
+
+    Mirrors ``Toleration.ToleratesTaint`` from k8s.io/api/core/v1:
+    https://github.com/kubernetes/api/blob/master/core/v1/toleration.go
+
+    Contract:
+    - Empty effect on the toleration matches any taint effect.
+    - Empty key on the toleration is only valid with operator ``Exists``
+      and then matches every taint.
+    - Default operator (when unset) is ``Equal``.
+    - For ``Equal``, an unset value is normalized to the empty string
+      (Go zero-value string semantics) — NOT treated as a wildcard.
+    """
+    tol_effect = getattr(tol, "effect", None) or ""
+    if tol_effect and tol_effect != taint.effect:
+        return False
+
+    operator = getattr(tol, "operator", None) or "Equal"
+    tol_key = getattr(tol, "key", None) or ""
+
+    if not tol_key:
+        return operator == "Exists"
+
+    if tol_key != taint.key:
+        return False
+
+    if operator == "Exists":
+        return True
+    if operator == "Equal":
+        tol_value = getattr(tol, "value", None) or ""
+        taint_value = getattr(taint, "value", None) or ""
+        return tol_value == taint_value
+    return False
+
+
 def _pod_matches_node(pod, node_state: NodeState) -> bool:
     """Check if a pending pod could run on a given node.
 
@@ -73,24 +109,7 @@ def _pod_matches_node(pod, node_state: NodeState) -> bool:
             continue
         if taint.effect not in ("NoSchedule", "NoExecute"):
             continue
-        tolerated = False
-        for tol in tolerations:
-            if tol.operator == "Exists" and not tol.key:
-                tolerated = True
-                break
-            if tol.key != taint.key:
-                continue
-            if tol.effect and tol.effect != taint.effect:
-                continue
-            if tol.operator == "Exists":
-                tolerated = True
-                break
-            tol_value = getattr(tol, "value", None)
-            taint_value = getattr(taint, "value", None)
-            if tol_value is None or tol_value == taint_value:
-                tolerated = True
-                break
-        if not tolerated:
+        if not any(_toleration_matches_taint(tol, taint) for tol in tolerations):
             return False
 
     # --- 2. nodeSelector ---
