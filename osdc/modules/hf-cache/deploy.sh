@@ -26,6 +26,10 @@ CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 # --- Read hf_cache config ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" hf_cache.namespace hf-cache)
 RCLONE_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_image "rclone/rclone:1.69.1")
+# python3-capable image for the taint-remover sidecar (amazonlinux:2023 ships
+# python3 and matches cache-enforcer, which pulls reliably during node warmup).
+TAINT_REMOVER_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.taint_remover_image \
+  "public.ecr.aws/amazonlinux/amazonlinux:2023")
 VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size 200G)
 BUCKET_CFG=$(uv run "$CFG" "$CLUSTER" state_bucket)
 # Bucket is in the cluster's region, so rclone's S3 region is the cluster region.
@@ -45,11 +49,26 @@ BUCKET=$(tofu output -raw hf_cache_bucket)
 cd - >/dev/null
 echo "[hf-cache] Bucket: ${BUCKET} (${BUCKET_REGION}); role: ${ROLE_ARN}"
 
-# --- Namespace + ServiceAccount, IRSA annotation ---
+# --- Namespace + ServiceAccount + RBAC, IRSA annotation ---
 echo "[hf-cache] Applying base resources..."
 kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/"
 kubectl annotate sa hf-cache-mount -n "$NAMESPACE" \
   eks.amazonaws.com/role-arn="$ROLE_ARN" --overwrite
+
+# --- taint-remover library ConfigMap (rendered from the shared base lib) ---
+# The DaemonSet's taint-remover sidecar mounts this to clear its startup taint.
+# ConfigMaps are namespaced, so render a copy into this module's namespace from
+# the same source file the base node-taint-remover uses (no drift).
+echo "[hf-cache] Rendering node-taint-remover-lib ConfigMap..."
+TAINT_LIB="$UPSTREAM_ROOT/base/kubernetes/node-taint-remover/lib/taint_remover.py"
+[[ -f "$TAINT_LIB" ]] || {
+  echo "[hf-cache] ERROR: missing $TAINT_LIB" >&2
+  exit 1
+}
+kubectl create configmap node-taint-remover-lib \
+  --from-file="taint_remover.py=$TAINT_LIB" \
+  -n "$NAMESPACE" --dry-run=client -o yaml \
+  | kubectl_apply_if_changed -f -
 
 # --- Render + apply the mount DaemonSet ---
 echo "[hf-cache] Applying mount DaemonSet..."
@@ -58,6 +77,7 @@ sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
   -e "s|__REGION__|${BUCKET_REGION}|g" \
   -e "s|__RCLONE_IMAGE__|${RCLONE_IMAGE}|g" \
   -e "s|__VFS_CACHE_MAX_SIZE__|${VFS_CACHE_MAX_SIZE}|g" \
+  -e "s|__TAINT_REMOVER_IMAGE__|${TAINT_REMOVER_IMAGE}|g" \
   "$MODULE_DIR/kubernetes/mount-daemonset.yaml.tpl" \
   | kubectl_apply_if_changed -f -
 
