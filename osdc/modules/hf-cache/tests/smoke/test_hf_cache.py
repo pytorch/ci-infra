@@ -76,6 +76,48 @@ class TestHfCacheMountDaemonSet:
         probe = mount_pod_spec["containers"][0].get("livenessProbe")
         assert probe is not None, "rclone container needs a livenessProbe so a hung FUSE mount is restarted."
 
+    def test_taint_remover_sidecar(self, mount_pod_spec: dict) -> None:
+        """A taint-remover container clears the scheduling gate once the FUSE is up."""
+        names = [c.get("name") for c in mount_pod_spec.get("containers", [])]
+        assert "taint-remover" in names, (
+            "mount DaemonSet must include the taint-remover container — without it the "
+            "node-init.osdc.io/hf-cache startup taint is never cleared and runner pods never schedule."
+        )
+
+    def test_hostpid_enabled(self, mount_pod_spec: dict) -> None:
+        """taint-remover reads the host mount table (/proc/1/mounts) to confirm the FUSE is live."""
+        assert mount_pod_spec.get("hostPID") is True, (
+            "mount DaemonSet needs hostPID for the taint-remover host-mount check."
+        )
+
+    def test_taint_remover_lib_volume(self, mount_pod_spec: dict) -> None:
+        vols = mount_pod_spec.get("volumes", [])
+        lib = [v for v in vols if v.get("configMap", {}).get("name") == "node-taint-remover-lib"]
+        assert lib, "mount DaemonSet must mount the node-taint-remover-lib ConfigMap for the taint-remover."
+
+
+class TestHfCacheTaintGate:
+    """The startup-taint gate: lib ConfigMap + RBAC must exist so the taint is removable."""
+
+    def test_taint_remover_lib_configmap_exists(self) -> None:
+        result = run_kubectl(["get", "configmap", "node-taint-remover-lib"], namespace=NAMESPACE)
+        assert "taint_remover.py" in result.get("data", {}), (
+            "node-taint-remover-lib ConfigMap in hf-cache ns missing taint_remover.py — deploy.sh did not render it."
+        )
+
+    def test_taint_remover_rbac(self) -> None:
+        """The hf-cache-mount SA needs get/patch on nodes to clear its taint."""
+        role = run_kubectl(["get", "clusterrole", "hf-cache-taint-remover"])
+        verbs = {v for rule in role.get("rules", []) for v in rule.get("verbs", [])}
+        assert {"get", "patch"} <= verbs, (
+            f"hf-cache-taint-remover ClusterRole must allow get+patch on nodes, got {verbs}"
+        )
+        binding = run_kubectl(["get", "clusterrolebinding", "hf-cache-taint-remover"])
+        subjects = [(s.get("kind"), s.get("name"), s.get("namespace")) for s in binding.get("subjects", [])]
+        assert ("ServiceAccount", MOUNT_SA, NAMESPACE) in subjects, (
+            f"hf-cache-taint-remover binding must bind SA {MOUNT_SA}/{NAMESPACE}, got {subjects}"
+        )
+
 
 class TestHfCacheRunnerWiring:
     """The arc-runners job-pod template must carry the /mnt/hf_cache mount when hf-cache is enabled."""
