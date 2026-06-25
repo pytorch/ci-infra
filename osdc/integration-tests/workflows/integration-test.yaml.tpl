@@ -330,6 +330,10 @@ jobs:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       MODEL: "Qwen/Qwen2.5-7B-Instruct"
+      # Upper bound on load time. The mount fetches only this model's shards lazily
+      # (warm: from node NVMe; cold: ~15GB from S3 in-region). Blowing past this means
+      # the cache isn't serving efficiently — re-downloading, or pulling beyond the model.
+      MAX_LOAD_SECONDS: "300"
     steps:
       - name: Load the model offline from /mnt/hf_cache and run inference
         run: |
@@ -348,11 +352,16 @@ jobs:
           import torch
           from transformers import AutoModelForCausalLM, AutoTokenizer
           mid = os.environ['MODEL']
+          max_load = float(os.environ.get('MAX_LOAD_SECONDS', '300'))
           t0 = time.time()
           tok = AutoTokenizer.from_pretrained(mid)
           model = AutoModelForCausalLM.from_pretrained(mid, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
           model.eval()
-          print('loaded', mid, 'in', round(time.time() - t0), 's', flush=True)
+          load_s = time.time() - t0
+          print('loaded', mid, 'in', round(load_s), 's (limit', round(max_load), 's)', flush=True)
+          if load_s > max_load:
+              print('FAIL: load took', round(load_s), 's >', round(max_load), 's — cache not serving efficiently (re-downloading from S3?)')
+              sys.exit(1)
           prompt = 'In one sentence, what is PyTorch?'
           inputs = tok.apply_chat_template([{'role': 'user', 'content': prompt}], add_generation_prompt=True, return_tensors='pt', return_dict=True)
           input_len = inputs['input_ids'].shape[1]
