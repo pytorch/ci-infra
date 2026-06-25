@@ -4,7 +4,7 @@
 # NVMe (LRU). Writes go via the GitHub-OIDC refresh path, not this mount.
 #
 # Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
-# __VFS_CACHE_MAX_SIZE__
+# __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -33,26 +33,21 @@ spec:
       serviceAccountName: hf-cache-mount
       priorityClassName: system-node-critical
 
+      # taint-remover reads the host mount table (/proc/1/mounts) to confirm the
+      # FUSE is live on the host before clearing the scheduling gate.
+      hostPID: true
+
       # Runner/workflow nodes are labelled workload-type=github-runner.
       nodeSelector:
         workload-type: github-runner
 
-      # Tolerate all runner/workflow node taints so the mount precedes jobs.
+      # Tolerate every taint so the mount schedules FIRST on a fresh node —
+      # ahead of the node-init.osdc.io/* startup taints clearing — and brings up
+      # the FUSE before any runner pod. Enumerating taints risks a chicken-and-egg
+      # deadlock if one is missed (same rationale as cache-enforcer); a single
+      # `operator: Exists` matches all. Isolation is enforced by the nodeSelector.
       tolerations:
-        - key: node-fleet
-          operator: Exists
-          effect: NoSchedule
-        - key: instance-type
-          operator: Exists
-          effect: NoSchedule
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-        - key: deploy.osdc.io/refresh-pending
-          operator: Exists
-          effect: NoSchedule
-        - key: CriticalAddonsOnly
-          operator: Exists
+        - operator: Exists
 
       containers:
         - name: rclone
@@ -67,6 +62,10 @@ spec:
               set -eu
               MOUNT=/mnt/hf_cache
               CACHE=/mnt/hf-cache-vfs
+              # A crashed/killed container can't run preStop, so a stale FUSE mount
+              # is left on the host and rclone then fails with "directory already
+              # mounted". Clear it before remounting so restarts recover.
+              fusermount -uz "$MOUNT" 2>/dev/null || umount -l "$MOUNT" 2>/dev/null || true
               mkdir -p "$MOUNT" "$CACHE"
 
               # Credentials via IRSA (env_auth). /mnt/hf_cache/hub maps to
@@ -75,6 +74,7 @@ spec:
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
                 --read-only \
+                --allow-non-empty \
                 --allow-other \
                 --dir-cache-time 1h \
                 --poll-interval 0 \
@@ -118,6 +118,48 @@ spec:
             - name: hf-cache-vfs
               mountPath: /mnt/hf-cache-vfs
 
+        # Clears the node-init.osdc.io/hf-cache startup taint once the FUSE is
+        # live on the host, gating runner pods until the cache is mountable.
+        # A runner pod that starts before the FUSE binds the empty host dir
+        # (HostToContainer won't backfill a running pod), so the gate is the
+        # only reliable way to guarantee jobs see the cache.
+        - name: taint-remover
+          image: __TAINT_REMOVER_IMAGE__
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # Wait until rclone's FUSE has propagated to the host mount table.
+              # /proc/1/mounts is the host's (hostPID); the rclone container's
+              # Bidirectional mount surfaces here once it is up.
+              until grep -q ' /mnt/hf_cache fuse.rclone ' /proc/1/mounts 2>/dev/null; do
+                echo "waiting for /mnt/hf_cache FUSE mount on host..."
+                sleep 2
+              done
+              echo "FUSE mount present on host — removing startup taint."
+              python3 /opt/taint-remover/taint_remover.py node-init.osdc.io/hf-cache
+              echo "taint removed; idling."
+              exec sleep infinity
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: taint-remover-lib
+              mountPath: /opt/taint-remover
+              readOnly: true
+
       volumes:
         - name: hf-cache
           hostPath:
@@ -127,3 +169,8 @@ spec:
           hostPath:
             path: /mnt/hf-cache-vfs
             type: DirectoryOrCreate
+        # Shared taint_remover.py library (ConfigMap rendered into this namespace
+        # by deploy.sh from base/kubernetes/node-taint-remover/lib/).
+        - name: taint-remover-lib
+          configMap:
+            name: node-taint-remover-lib
