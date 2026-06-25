@@ -345,20 +345,24 @@ jobs:
           aws-region: us-east-1
 
       - name: Download from HF Hub (online) then sync to S3
+        env:
+          # The pod injects HF_HOME=/mnt/hf_cache (the read-only mount). The
+          # hf-xet downloader writes its cache/logs under $HF_HOME, so point it
+          # at a writable scratch dir — the refresh writes to S3, not the mount.
+          HF_HOME: ${{ runner.temp }}/hf-refresh
         run: |
           echo "=== Refresh: online download + sync to S3 ==="
           MODEL="prajjwal1/bert-tiny"
-          STAGING="${RUNNER_TEMP:-/tmp}/hf-refresh"
-          mkdir -p "$STAGING/hub"
-          # Online download into a writable dir (NOT the read-only /mnt/hf_cache).
-          MODEL="$MODEL" STAGING="$STAGING" python3 -c "
+          mkdir -p "$HF_HOME/hub"
+          # Online download into the writable HF_HOME (NOT the read-only mount).
+          MODEL="$MODEL" python3 -c "
           import os
           from huggingface_hub import snapshot_download
-          p = snapshot_download(os.environ['MODEL'], cache_dir=os.path.join(os.environ['STAGING'], 'hub'))
+          p = snapshot_download(os.environ['MODEL'], cache_dir=os.path.join(os.environ['HF_HOME'], 'hub'))
           print('downloaded', os.environ['MODEL'], 'to', p)
           "
           # Publish like the refresh job; aws s3 sync follows symlinks -> symlink-free in S3.
-          aws s3 sync "$STAGING/hub" "s3://$HF_CACHE_S3_BUCKET/hub" --region "$HF_CACHE_S3_REGION" --no-progress
+          aws s3 sync "$HF_HOME/hub" "s3://$HF_CACHE_S3_BUCKET/hub" --region "$HF_CACHE_S3_REGION" --no-progress
           PREFIX="hub/models--${MODEL//\//--}/"
           COUNT=$(aws s3 ls "s3://$HF_CACHE_S3_BUCKET/$PREFIX" --region "$HF_CACHE_S3_REGION" --recursive | wc -l | tr -d ' ')
           echo "Synced objects under $PREFIX: $COUNT"
