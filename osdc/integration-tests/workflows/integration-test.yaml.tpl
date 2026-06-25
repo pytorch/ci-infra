@@ -298,7 +298,7 @@ jobs:
         run: |
           echo "=== Offline Read (mirrors normal CI jobs) ==="
           MODEL="prajjwal1/bert-tiny"
-          CACHE_DIR="/mnt/hf_cache/hub/models--${MODEL//\//--}"
+          CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
           if [ ! -d "$CACHE_DIR" ]; then
             echo "::warning::$MODEL not in the cache yet (no refresh has populated it) — skipping"
             exit 0
