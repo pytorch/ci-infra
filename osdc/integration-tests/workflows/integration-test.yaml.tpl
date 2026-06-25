@@ -348,8 +348,12 @@ jobs:
           fi
           pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
           pip install --no-cache-dir 'transformers>=4.45' 'huggingface_hub>=0.24' accelerate
-          # Load + generate entirely offline. torch_dtype=bfloat16 keeps a 7B model
-          # near ~15GB RAM; greedy decode for a deterministic, bounded run.
+          # Load + generate entirely offline. low_cpu_mem_usage=False forces the
+          # weights to be COPIED into anonymous RAM instead of kept as zero-copy
+          # mmap views into the rclone FUSE mount — otherwise generate() faults
+          # FUSE-backed pages and dies with a SIGBUS (bus error) that no amount of
+          # node RAM fixes. ~15GB bf16 resident, ~28GB peak during the copy (hence
+          # the 64GB runner). Greedy decode for a deterministic, bounded run.
           MODEL="$MODEL" python3 -c "
           import os, sys, time
           import torch
@@ -358,7 +362,7 @@ jobs:
           max_load = float(os.environ.get('MAX_LOAD_SECONDS', '300'))
           t0 = time.time()
           tok = AutoTokenizer.from_pretrained(mid)
-          model = AutoModelForCausalLM.from_pretrained(mid, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
+          model = AutoModelForCausalLM.from_pretrained(mid, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False)
           model.eval()
           load_s = time.time() - t0
           print('loaded', mid, 'in', round(load_s), 's (limit', round(max_load), 's)', flush=True)
