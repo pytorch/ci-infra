@@ -26,6 +26,13 @@ settings:
   clusterName: ""
   clusterEndpoint: ""
   interruptionQueue: ""
+  # Accumulate pending pods into a single provisioning decision to reduce
+  # node churn from back-to-back launches. Chart renders BATCH_MAX_DURATION
+  # and BATCH_IDLE_DURATION from these keys AND also appends controller.env
+  # to the same list, so setting them in both places produces duplicate
+  # env entries that break `helm upgrade` strategic-merge patches.
+  batchMaxDuration: 45s
+  batchIdleDuration: 45s
   # Feature gates
   featureGates:
     spotToSpotConsolidation: true
@@ -37,10 +44,6 @@ controller:
     # Use global STS endpoint instead of regional (more reliable)
     - name: AWS_STS_REGIONAL_ENDPOINTS
       value: "legacy"
-    - name: BATCH_MAX_DURATION
-      value: "45s"
-    - name: BATCH_IDLE_DURATION
-      value: "45s"
   # Metrics
   metrics:
     port: 8000
