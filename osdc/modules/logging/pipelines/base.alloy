@@ -1,8 +1,8 @@
 // =============================================================================
 // Base Alloy pipeline — centralized log collection (DaemonSet)
 //
-// Pod logs:  discovery.kubernetes -> discovery.relabel -> loki.source.file
-//            -> loki.process -> loki.write
+// Pod logs:  discovery.kubernetes -> discovery.relabel -> local.file_match
+//            -> loki.source.file -> loki.process -> loki.write
 // System logs: loki.source.journal -> loki.process -> loki.write
 // =============================================================================
 
@@ -80,9 +80,18 @@ discovery.relabel "pod_logs" {
     }
 }
 
+// Expand the `*.log` glob in each target's `__path__` into concrete files.
+// `loki.source.file` does NOT expand globs — it `stat()`s each path literally
+// — so the discovery output must be passed through file_match first or every
+// target fails with `stat *.log: no such file or directory` and zero pod
+// logs are shipped.
+local.file_match "pod_logs" {
+    path_targets = discovery.relabel.pod_logs.output
+}
+
 // Read CRI log files discovered above
 loki.source.file "pod_logs" {
-    targets    = discovery.relabel.pod_logs.output
+    targets    = local.file_match.pod_logs.targets
     forward_to = [loki.process.pod_logs.receiver]
 }
 
