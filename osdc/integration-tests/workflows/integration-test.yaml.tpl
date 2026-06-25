@@ -283,9 +283,9 @@ jobs:
           echo "PASS: /mnt/hf_cache rejected a write (read-only)"
 
   # Read path: how normal CI test jobs use the cache — HF_HOME=/mnt/hf_cache
-  # (injected) + offline flags, load a small model via huggingface_hub. Skips if
-  # the model isn't cached yet (the refresh-sync job / ci-refresh-hf-cache
-  # populates it).
+  # (injected) + offline flags, load a small model via huggingface_hub. FAILS if
+  # the model isn't cached or won't load — the cache must be populated (refresh /
+  # ci-refresh-hf-cache).
   test-hf-cache-offline-read:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
@@ -300,8 +300,8 @@ jobs:
           MODEL="prajjwal1/bert-tiny"
           CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
           if [ ! -d "$CACHE_DIR" ]; then
-            echo "::warning::$MODEL not in the cache yet (no refresh has populated it) — skipping"
-            exit 0
+            echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — the cache must be populated first"
+            exit 1
           fi
           pip install --no-cache-dir 'huggingface_hub>=0.24'
           MODEL="$MODEL" python3 -c "
@@ -315,6 +315,46 @@ jobs:
               sys.exit(1)
           print('PASS: loaded', model, 'offline from', path, '(' + str(len(files)) + ' files)')
           "
+
+  # Large-model read: with the cache, resolving + reading a ~15GB model is quick
+  # (no multi-GB Hub download). FAILS if the model isn't cached — seed it once
+  # with `just hf-cache-seed <cluster>`.
+  test-hf-cache-large-read:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - name: Read a large model offline from /mnt/hf_cache
+        run: |
+          echo "=== Large-model Offline Read ==="
+          MODEL="Qwen/Qwen2.5-7B-Instruct"
+          CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
+          if [ ! -d "$CACHE_DIR" ]; then
+            echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — seed it once with 'just hf-cache-seed <cluster>'"
+            exit 1
+          fi
+          pip install --no-cache-dir 'huggingface_hub>=0.24'
+          # Resolve offline (must not touch the Hub), then read the weight shards.
+          SNAP=$(MODEL="$MODEL" python3 -c "import os; from huggingface_hub import snapshot_download; print(snapshot_download(os.environ['MODEL'], local_files_only=True))")
+          echo "Resolved snapshot: $SNAP"
+          START=$(date +%s)
+          TOTAL=0
+          for f in "$SNAP"/*.safetensors; do
+            [ -e "$f" ] || continue
+            TOTAL=$((TOTAL + $(stat -c %s "$f")))
+            cat "$f" > /dev/null
+          done
+          ELAPSED=$(( $(date +%s) - START ))
+          GB=$((TOTAL / 1073741824))
+          echo "Read ${GB}GiB of weights from the cache in ${ELAPSED}s"
+          if [ "$TOTAL" -lt 1073741824 ]; then
+            echo "FAIL: expected a multi-GB model, only read $TOTAL bytes"
+            exit 1
+          fi
+          echo "PASS: $MODEL (${GB}GiB) read offline from the cache in ${ELAPSED}s"
   # END_HF_CACHE
 
 
