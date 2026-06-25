@@ -62,7 +62,7 @@ defaults:
     controller_memory_limit: "4Gi"
   node_compactor:
     enabled: true
-    interval_seconds: 7
+    interval_seconds: 20
     max_uptime_hours: 48
     min_nodes: 1
     dry_run: false

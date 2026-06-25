@@ -38,7 +38,7 @@ if [[ "$ENABLED" != "true" ]]; then
   exit 0
 fi
 
-INTERVAL=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.interval_seconds "7")
+INTERVAL=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.interval_seconds "20")
 MAX_UPTIME=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.max_uptime_hours "48")
 DRY_RUN=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.dry_run "false")
 MIN_NODES=$(uv run "$CLUSTER_CONFIG" "$CLUSTER" node_compactor.min_nodes "1")
