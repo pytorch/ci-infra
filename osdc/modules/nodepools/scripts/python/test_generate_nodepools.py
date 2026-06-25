@@ -1491,6 +1491,20 @@ class TestModuleStartupTaints:
         keys = [t["key"] for t in startup_taints]
         assert "test.osdc.io/base" in keys
 
+    def test_hf_cache_taint_gated_on_module(self, monkeypatch):
+        """The real hf-cache entry: emitted on runner nodepools iff hf-cache is enabled.
+
+        The hf-cache-mount DaemonSet runs on every workload-type=github-runner
+        node and tolerates all taints, so the taint has no applies_when guard.
+        """
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "hf-cache arc-runners nodepools")
+        np = self._np_doc(generate_nodepool_yaml(_make_nodepool_def(), "nodepools"))
+        keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
+        assert "node-init.osdc.io/hf-cache" in keys
+
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "arc-runners nodepools")
+        assert "node-init.osdc.io/hf-cache" not in generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
+
     def test_base_taint_emitted_alongside_module_gated(self, monkeypatch):
         """Both module=None and module=<enabled-name> entries are emitted."""
         fake_registry = [
