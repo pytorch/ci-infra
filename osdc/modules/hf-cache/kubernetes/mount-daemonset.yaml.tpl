@@ -67,6 +67,10 @@ spec:
               set -eu
               MOUNT=/mnt/hf_cache
               CACHE=/mnt/hf-cache-vfs
+              # A crashed/killed container can't run preStop, so a stale FUSE mount
+              # is left on the host and rclone then fails with "directory already
+              # mounted". Clear it before remounting so restarts recover.
+              fusermount -uz "$MOUNT" 2>/dev/null || umount -l "$MOUNT" 2>/dev/null || true
               mkdir -p "$MOUNT" "$CACHE"
 
               # Credentials via IRSA (env_auth). /mnt/hf_cache/hub maps to
@@ -75,6 +79,7 @@ spec:
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
                 --read-only \
+                --allow-non-empty \
                 --allow-other \
                 --dir-cache-time 1h \
                 --poll-interval 0 \
