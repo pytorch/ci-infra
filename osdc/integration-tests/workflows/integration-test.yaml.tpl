@@ -235,6 +235,129 @@ jobs:
           python -c "import six, packaging, typing_extensions; print('PASS: uv pip install + import from upstream pypi.org')"
   # END_NO_CACHE_ENFORCER
 
+  # BEGIN_HF_CACHE
+  # ── HF Cache: read-only mount, env, and offline model load ──────────
+  test-hf-cache-mount:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify /mnt/hf_cache is mounted
+        run: |
+          echo "=== HF Cache Mount ==="
+          if [ ! -d /mnt/hf_cache ]; then
+            echo "FAIL: /mnt/hf_cache does not exist"
+            exit 1
+          fi
+          if ! grep -q ' /mnt/hf_cache ' /proc/mounts; then
+            echo "FAIL: /mnt/hf_cache is not a mountpoint"
+            grep hf_cache /proc/mounts || true
+            exit 1
+          fi
+          ls -la /mnt/hf_cache || true
+          echo "PASS: /mnt/hf_cache is mounted"
+
+      - name: Verify HF cache env vars
+        run: |
+          echo "=== HF Cache Env ==="
+          FAIL=0
+          [ "$HF_HOME" = "/mnt/hf_cache" ] || { echo "FAIL: HF_HOME='$HF_HOME'"; FAIL=1; }
+          [ "$HF_HUB_CACHE" = "/mnt/hf_cache/hub" ] || { echo "FAIL: HF_HUB_CACHE='$HF_HUB_CACHE'"; FAIL=1; }
+          EXPECTED_BUCKET="pytorch-hf-model-cache-{{CLUSTER_ID}}"
+          [ "$HF_CACHE_S3_BUCKET" = "$EXPECTED_BUCKET" ] \
+            || { echo "FAIL: HF_CACHE_S3_BUCKET='$HF_CACHE_S3_BUCKET' (expected $EXPECTED_BUCKET)"; FAIL=1; }
+          [ -n "$HF_CACHE_S3_REGION" ] || { echo "FAIL: HF_CACHE_S3_REGION is empty"; FAIL=1; }
+          echo "HF_HOME=$HF_HOME HF_HUB_CACHE=$HF_HUB_CACHE"
+          echo "HF_CACHE_S3_BUCKET=$HF_CACHE_S3_BUCKET HF_CACHE_S3_REGION=$HF_CACHE_S3_REGION"
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: HF cache env vars are correct"
+
+      - name: Verify mount is read-only
+        run: |
+          echo "=== Read-only Enforcement ==="
+          if touch /mnt/hf_cache/.integration-write-probe 2>/dev/null; then
+            echo "FAIL: wrote to /mnt/hf_cache — the cache mount must be read-only for job pods"
+            rm -f /mnt/hf_cache/.integration-write-probe 2>/dev/null || true
+            exit 1
+          fi
+          echo "PASS: /mnt/hf_cache rejected a write (read-only)"
+
+  # Read path: how normal CI test jobs use the cache — HF_HOME=/mnt/hf_cache
+  # (injected) + offline flags, load a small model via huggingface_hub. FAILS if
+  # the model isn't cached or won't load — the cache must be populated (refresh /
+  # ci-refresh-hf-cache).
+  test-hf-cache-offline-read:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - name: Load a small model offline from /mnt/hf_cache
+        run: |
+          echo "=== Offline Read (mirrors normal CI jobs) ==="
+          MODEL="prajjwal1/bert-tiny"
+          CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
+          if [ ! -d "$CACHE_DIR" ]; then
+            echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — the cache must be populated first"
+            exit 1
+          fi
+          pip install --no-cache-dir 'huggingface_hub>=0.24'
+          MODEL="$MODEL" python3 -c "
+          import os, sys
+          from huggingface_hub import snapshot_download
+          model = os.environ['MODEL']
+          path = snapshot_download(model, local_files_only=True)
+          files = os.listdir(path)
+          if not files:
+              print('FAIL: empty snapshot at', path)
+              sys.exit(1)
+          print('PASS: loaded', model, 'offline from', path, '(' + str(len(files)) + ' files)')
+          "
+
+  # Large-model read: with the cache, resolving + reading a ~15GB model is quick
+  # (no multi-GB Hub download). FAILS if the model isn't cached — seed it once
+  # with `just hf-cache-seed <cluster>`.
+  test-hf-cache-large-read:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - name: Read a large model offline from /mnt/hf_cache
+        run: |
+          echo "=== Large-model Offline Read ==="
+          MODEL="Qwen/Qwen2.5-7B-Instruct"
+          CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
+          if [ ! -d "$CACHE_DIR" ]; then
+            echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — seed it once with 'just hf-cache-seed <cluster>'"
+            exit 1
+          fi
+          pip install --no-cache-dir 'huggingface_hub>=0.24'
+          # Resolve offline (must not touch the Hub), then read the weight shards.
+          SNAP=$(MODEL="$MODEL" python3 -c "import os; from huggingface_hub import snapshot_download; print(snapshot_download(os.environ['MODEL'], local_files_only=True))")
+          echo "Resolved snapshot: $SNAP"
+          START=$(date +%s)
+          TOTAL=0
+          for f in "$SNAP"/*.safetensors; do
+            [ -e "$f" ] || continue
+            TOTAL=$((TOTAL + $(stat -c %s "$f")))
+            cat "$f" > /dev/null
+          done
+          ELAPSED=$(( $(date +%s) - START ))
+          GB=$((TOTAL / 1073741824))
+          echo "Read ${GB}GiB of weights from the cache in ${ELAPSED}s"
+          if [ "$TOTAL" -lt 1073741824 ]; then
+            echo "FAIL: expected a multi-GB model, only read $TOTAL bytes"
+            exit 1
+          fi
+          echo "PASS: $MODEL (${GB}GiB) read offline from the cache in ${ELAPSED}s"
+  # END_HF_CACHE
+
+
   # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
