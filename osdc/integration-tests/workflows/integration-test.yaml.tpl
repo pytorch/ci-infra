@@ -316,9 +316,12 @@ jobs:
           print('PASS: loaded', model, 'offline from', path, '(' + str(len(files)) + ' files)')
           "
 
-  # Large-model read: with the cache, resolving + reading a ~15GB model is quick
-  # (no multi-GB Hub download). FAILS if the model isn't cached — seed it once
-  # with `just hf-cache-seed <cluster>`.
+  # Large-model offline inference: load Qwen2.5-7B from the shared cache and run a
+  # real generation — the actual "use the model" path a job would take. Loading
+  # the weights reads them through the rclone mount (lazy from S3); generation then
+  # runs a forward/decode loop on CPU. Entirely offline (HF_HUB_OFFLINE) so it
+  # exercises only the cache. FAILS if the model isn't cached or won't run — seed
+  # it once with `scripts/hf-cache-seed.py <cluster> Qwen/Qwen2.5-7B-Instruct`.
   test-hf-cache-large-read:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
@@ -326,35 +329,43 @@ jobs:
     env:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
+      MODEL: "Qwen/Qwen2.5-7B-Instruct"
     steps:
-      - name: Read a large model offline from /mnt/hf_cache
+      - name: Load the model offline from /mnt/hf_cache and run inference
         run: |
-          echo "=== Large-model Offline Read ==="
-          MODEL="Qwen/Qwen2.5-7B-Instruct"
+          echo "=== Large-model offline inference ==="
           CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
           if [ ! -d "$CACHE_DIR" ]; then
-            echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — seed it once with 'just hf-cache-seed <cluster>'"
+            echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — seed it with scripts/hf-cache-seed.py"
             exit 1
           fi
-          pip install --no-cache-dir 'huggingface_hub>=0.24'
-          # Resolve offline (must not touch the Hub), then read the weight shards.
-          SNAP=$(MODEL="$MODEL" python3 -c "import os; from huggingface_hub import snapshot_download; print(snapshot_download(os.environ['MODEL'], local_files_only=True))")
-          echo "Resolved snapshot: $SNAP"
-          START=$(date +%s)
-          TOTAL=0
-          for f in "$SNAP"/*.safetensors; do
-            [ -e "$f" ] || continue
-            TOTAL=$((TOTAL + $(stat -c %s "$f")))
-            cat "$f" > /dev/null
-          done
-          ELAPSED=$(( $(date +%s) - START ))
-          GB=$((TOTAL / 1073741824))
-          echo "Read ${GB}GiB of weights from the cache in ${ELAPSED}s"
-          if [ "$TOTAL" -lt 1073741824 ]; then
-            echo "FAIL: expected a multi-GB model, only read $TOTAL bytes"
-            exit 1
-          fi
-          echo "PASS: $MODEL (${GB}GiB) read offline from the cache in ${ELAPSED}s"
+          pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+          pip install --no-cache-dir 'transformers>=4.45' 'huggingface_hub>=0.24' accelerate
+          # Load + generate entirely offline. torch_dtype=bfloat16 keeps a 7B model
+          # near ~15GB RAM; greedy decode for a deterministic, bounded run.
+          MODEL="$MODEL" python3 -c "
+          import os, sys, time
+          import torch
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          mid = os.environ['MODEL']
+          t0 = time.time()
+          tok = AutoTokenizer.from_pretrained(mid)
+          model = AutoModelForCausalLM.from_pretrained(mid, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
+          model.eval()
+          print('loaded', mid, 'in', round(time.time() - t0), 's', flush=True)
+          prompt = 'In one sentence, what is PyTorch?'
+          inputs = tok.apply_chat_template([{'role': 'user', 'content': prompt}], add_generation_prompt=True, return_tensors='pt')
+          t1 = time.time()
+          with torch.no_grad():
+              out = model.generate(inputs, max_new_tokens=16, do_sample=False)
+          reply = tok.decode(out[0][inputs.shape[1]:], skip_special_tokens=True).strip()
+          print('generated in', round(time.time() - t1), 's', flush=True)
+          print('PROMPT:', prompt)
+          print('OUTPUT:', reply)
+          if not reply:
+              print('FAIL: model loaded but produced no output'); sys.exit(1)
+          print('PASS:', mid, 'ran offline inference from the shared cache')
+          "
   # END_HF_CACHE
 
   # BEGIN_HF_CACHE_OIDC
