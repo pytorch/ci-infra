@@ -11,6 +11,7 @@ from models import (
     pod_cpu_request,
     pod_gpu_request,
     pod_memory_request,
+    pod_to_podinfo,
 )
 from taints import _pod_constraints_match
 
@@ -30,9 +31,11 @@ def pending_pods_for_group(
        at least one node in the group (treated as if our compactor taint were removed —
        since the intent is "could this fleet absorb this pod after we untaint").
     3. Resource sanity: pod's cpu/mem/gpu request must fit on at least one node in the
-       group at its full allocatable (NOT current usage). Without this filter, an
-       impossibly-large pending pod paralyzes the entire fleet (bin_pack returns
-       len(bins), surplus = 0, no taints).
+       group at its allocatable minus DaemonSet overhead (NOT current workload usage).
+       DaemonSets run on every node and reserve capacity even when no workload is
+       scheduled, so a pod requesting exactly allocatable can never fit. Without this
+       filter, an impossibly-large pending pod paralyzes the entire fleet (bin_pack
+       returns len(bins), surplus = 0, no taints).
 
     Pending Pods that pass become PodInfo(is_phantom=False, is_daemonset=False, node_name="")
     suitable for bin_pack_min_nodes.
@@ -69,28 +72,17 @@ def pending_pods_for_group(
 
         fits_any = False
         for node in group_nodes:
-            if cpu_req > node.allocatable_cpu:
+            if cpu_req > node.allocatable_cpu - node.daemonset_cpu:
                 continue
-            if mem_req > node.allocatable_memory:
+            if mem_req > node.allocatable_memory - node.daemonset_memory:
                 continue
-            if gpu_req > 0 and gpu_req > node.allocatable_gpu:
+            if gpu_req > 0 and gpu_req > node.allocatable_gpu - node.daemonset_gpu:
                 continue
             fits_any = True
             break
         if not fits_any:
             continue
 
-        result.append(
-            PodInfo(
-                name=getattr(meta, "name", "") or "",
-                namespace=getattr(meta, "namespace", "") or "",
-                cpu_request=cpu_req,
-                memory_request=mem_req,
-                gpu_request=gpu_req,
-                node_name="",
-                is_daemonset=False,
-                is_phantom=False,
-            )
-        )
+        result.append(pod_to_podinfo(pod))
 
     return result
