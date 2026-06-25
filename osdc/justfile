@@ -189,6 +189,30 @@ bootstrap cluster:
 bootstrap-all:
     @OSDC_ROOT="{{ROOT}}" OSDC_UPSTREAM="{{UPSTREAM}}" CLUSTERS_YAML="{{CLUSTERS_YAML}}" {{SCRIPTS}}/bootstrap-state.sh --all
 
+# One-off: seed a model into a cluster's HF cache S3 bucket. Downloads locally and
+# aws s3 syncs with YOUR AWS creds (not the OIDC CI role). Run once per model; set
+# HF_TOKEN first for gated models.
+hf-cache-seed cluster model='Qwen/Qwen2.5-7B-Instruct':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    MODEL="{{model}}"
+    REGION=$(uv run {{CFG}} "$CLUSTER" region)
+    BUCKET="pytorch-hf-model-cache-${CLUSTER}"
+    STAGING=$(mktemp -d)
+    trap 'rm -rf "$STAGING"' EXIT
+    echo "Seeding ${MODEL} -> s3://${BUCKET}/hub (region ${REGION})"
+    MODEL="$MODEL" HF_HOME="$STAGING" uv run --with 'huggingface_hub>=0.24' python -c "
+    import os
+    from huggingface_hub import snapshot_download
+    p = snapshot_download(os.environ['MODEL'], cache_dir=os.path.join(os.environ['HF_HOME'], 'hub'))
+    print('downloaded', os.environ['MODEL'], 'to', p)
+    "
+    aws s3 sync "$STAGING/hub" "s3://${BUCKET}/hub" --region "$REGION"
+    echo "Done — seeded ${MODEL} into s3://${BUCKET}/hub"
+
 # ============================================================================
 # DEPLOY
 # ============================================================================

@@ -110,6 +110,13 @@ defaults:
       - "x86_64"
       - "aarch64"
     target_manylinux: "2_28"
+  hf_cache:
+    # Shared HF model cache (modules/hf-cache). Off by default — add "hf-cache"
+    # to a cluster's modules list to enable. Each cluster gets its own private
+    # bucket (pytorch-hf-model-cache-<cluster_id>) in its region. Knobs:
+    namespace: hf-cache
+    rclone_image: "rclone/rclone:1.69.1"
+    vfs_cache_max_size: 200G          # per-node NVMe cap for the rclone cache
 
 clusters:
   meta-staging-aws-uw1:
@@ -174,6 +181,7 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - hf-cache
       - keda
       - buildkit
       - zombie-cleanup
@@ -247,6 +255,7 @@ clusters:
       - arc
       - nodepools
       - arc-runners
+      - hf-cache
       - keda
       - buildkit
       - zombie-cleanup
@@ -411,7 +420,6 @@ clusters:
         - lf_osdc_admin
     base:
       base_node_count: 4
-      base_node_instance_type: m7i.8xlarge
       vpc_cidr: "10.12.0.0/16"
     node_compactor:
       min_node_age_seconds: 900
@@ -455,7 +463,6 @@ clusters:
         - lf_osdc_admin
     base:
       base_node_count: 4
-      base_node_instance_type: m7i.8xlarge
       vpc_cidr: "10.16.0.0/16"
     node_compactor:
       min_node_age_seconds: 900
