@@ -501,27 +501,12 @@ clusters:
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue1
       scheduler_name: bin-pack-scheduler
-    buildkit:
-      amd64_instance_type: m6id.24xlarge
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
-      autoscaling:
-        enabled: true
-        amd64_min: 4
-        amd64_max: 64
-        arm64_min: 4
-        arm64_max: 64
-        amd64_fallback: 12
-        arm64_fallback: 4
     modules:
       - karpenter
       - arc
       - nodepools
       - bin-pack-scheduler
       - arc-runners
-      - keda
-      - buildkit
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -547,27 +532,12 @@ clusters:
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue2
       scheduler_name: bin-pack-scheduler
-    buildkit:
-      amd64_instance_type: m6id.24xlarge
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
-      autoscaling:
-        enabled: true
-        amd64_min: 4
-        amd64_max: 64
-        arm64_min: 4
-        arm64_max: 64
-        amd64_fallback: 12
-        arm64_fallback: 4
     modules:
       - karpenter
       - arc
       - nodepools
       - bin-pack-scheduler
       - arc-runners
-      - keda
-      - buildkit
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
