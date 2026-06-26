@@ -107,8 +107,11 @@ spec:
               echo "VFS cache cap: $VFS_MAX"
 
               # Credentials via IRSA (env_auth). /mnt/hf_cache/hub maps to
-              # s3://__BUCKET__/hub.
-              exec rclone mount \
+              # s3://__BUCKET__/hub. Run rclone in the background so that, once the
+              # FUSE is up, we can drop a sentinel file the (unprivileged) taint-
+              # remover sidecar waits on — it then needs no hostPID/privileged to
+              # detect readiness.
+              rclone mount \
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
                 --read-only \
@@ -123,7 +126,18 @@ spec:
                 --cache-dir "$CACHE" \
                 --no-modtime \
                 --umask 022 \
-                --log-level INFO
+                --log-level INFO &
+              RCLONE_PID=$!
+              trap 'kill -TERM "$RCLONE_PID" 2>/dev/null || true' TERM INT
+              # Signal once the FUSE is actually mounted (content-independent, so it
+              # fires even before the bucket is seeded). /proc/mounts here is this
+              # container's own mount namespace, where rclone created the mount.
+              until grep -q " $MOUNT fuse" /proc/mounts 2>/dev/null; do
+                kill -0 "$RCLONE_PID" 2>/dev/null || break
+                sleep 1
+              done
+              touch /run/hf-cache-signal/mounted 2>/dev/null || true
+              wait "$RCLONE_PID"
           lifecycle:
             preStop:
               exec:
@@ -155,12 +169,14 @@ spec:
               mountPropagation: Bidirectional
             - name: hf-cache-vfs
               mountPath: /mnt/hf-cache-vfs
+            - name: mount-signal
+              mountPath: /run/hf-cache-signal
 
-        # Clears the node-init.osdc.io/hf-cache startup taint once the FUSE is
-        # live on the host, gating runner pods until the cache is mountable.
-        # A runner pod that starts before the FUSE binds the empty host dir
-        # (HostToContainer won't backfill a running pod), so the gate is the
-        # only reliable way to guarantee jobs see the cache.
+        # Clears the node-init.osdc.io/hf-cache startup taint once rclone signals
+        # the FUSE is up (a sentinel file on a shared emptyDir). Using the sentinel
+        # instead of reading the host mount table lets this run UNPRIVILEGED — no
+        # privileged, no use of hostPID, all capabilities dropped. Unlike rclone it
+        # touches nothing on the node; it only patches its own node via the API.
         - name: taint-remover
           image: __TAINT_REMOVER_IMAGE__
           command:
@@ -168,14 +184,9 @@ spec:
             - -c
             - |
               set -eu
-              # Wait until rclone's FUSE has propagated to the host mount table.
-              # /proc/1/mounts is the host's (hostPID); the rclone container's
-              # Bidirectional mount surfaces here once it is up.
-              until grep -q ' /mnt/hf_cache fuse.rclone ' /proc/1/mounts 2>/dev/null; do
-                echo "waiting for /mnt/hf_cache FUSE mount on host..."
-                sleep 2
-              done
-              echo "FUSE mount present on host — removing startup taint."
+              # Wait for rclone to signal the mount is live, then clear the gate.
+              while [ ! -e /run/hf-cache-signal/mounted ]; do sleep 2; done
+              echo "mount signalled — removing startup taint."
               python3 /opt/taint-remover/taint_remover.py node-init.osdc.io/hf-cache
               echo "taint removed; idling."
               exec sleep infinity
@@ -185,7 +196,10 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
           securityContext:
-            privileged: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           resources:
             requests:
               cpu: 10m
@@ -196,6 +210,9 @@ spec:
           volumeMounts:
             - name: taint-remover-lib
               mountPath: /opt/taint-remover
+              readOnly: true
+            - name: mount-signal
+              mountPath: /run/hf-cache-signal
               readOnly: true
 
       volumes:
@@ -212,3 +229,8 @@ spec:
         - name: taint-remover-lib
           configMap:
             name: node-taint-remover-lib
+        # Shared sentinel: rclone touches a file here once the FUSE is up; the
+        # taint-remover waits on it (emptyDir sharing — no mount propagation needed,
+        # so the sidecar needs no host access).
+        - name: mount-signal
+          emptyDir: {}
