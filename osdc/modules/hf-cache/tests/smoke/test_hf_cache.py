@@ -84,10 +84,20 @@ class TestHfCacheMountDaemonSet:
             "node-init.osdc.io/hf-cache startup taint is never cleared and runner pods never schedule."
         )
 
+    def test_taint_remover_unprivileged(self, mount_pod_spec: dict) -> None:
+        """taint-remover must NOT be privileged — it waits on rclone's sentinel file, not the host."""
+        tr = next(c for c in mount_pod_spec["containers"] if c.get("name") == "taint-remover")
+        sc = tr.get("securityContext", {})
+        assert sc.get("privileged") is not True, (
+            "taint-remover must not be privileged (sentinel handshake, no host access)."
+        )
+        assert sc.get("allowPrivilegeEscalation") is False, "taint-remover must set allowPrivilegeEscalation: false."
+        assert "ALL" in (sc.get("capabilities", {}).get("drop") or []), "taint-remover must drop all capabilities."
+
     def test_hostpid_enabled(self, mount_pod_spec: dict) -> None:
-        """taint-remover reads the host mount table (/proc/1/mounts) to confirm the FUSE is live."""
+        """hostPID is required by the prepare-host-mount init (nsenter -t 1 into the host)."""
         assert mount_pod_spec.get("hostPID") is True, (
-            "mount DaemonSet needs hostPID for the host-mount prep + taint-remover host-mount check."
+            "mount DaemonSet needs hostPID for the prepare-host-mount init's nsenter into the host."
         )
 
     def test_prepare_host_mount_init(self, mount_pod_spec: dict) -> None:
