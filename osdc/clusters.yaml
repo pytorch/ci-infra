@@ -111,13 +111,11 @@ defaults:
       - "aarch64"
     target_manylinux: "2_28"
   hf_cache:
-    # Shared HF model cache (modules/hf-cache). Off by default — add "hf-cache"
-    # to a cluster's modules list to enable. Each cluster gets its own private
-    # bucket (pytorch-hf-model-cache-<cluster_id>) in its region. Knobs:
+    # Shared HF model cache (modules/hf-cache); enable per cluster via the modules
+    # list. Each cluster gets its own bucket pytorch-hf-model-cache-<cluster_id>.
     namespace: hf-cache
     rclone_image: "rclone/rclone:1.69.1"
-    # Per-node rclone cache cap. "<N>%" scales to N% of the node's cache disk
-    # (bigger nodes cache more); an absolute value like 200G is used as-is.
+    # Per-node rclone cache cap; "<N>%" = N% of the node's cache disk, or absolute (200G).
     vfs_cache_max_size: "75%"
 
 clusters:
