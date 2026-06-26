@@ -46,10 +46,14 @@ locals {
 
 # --- Per-cluster model-cache bucket ---
 # Plain symlink-free HF cache files (portable source of truth). Private.
-# force_destroy=false so remove-module won't wipe a populated cache.
+# force_destroy=true: the cache is reproducible (repopulated daily by the
+# scheduled refresh jobs), so cluster teardown / `tofu destroy` can empty and
+# drop the bucket cleanly instead of erroring on a non-empty bucket.
 
 resource "aws_s3_bucket" "hf_cache" {
   bucket = local.bucket
+
+  force_destroy = true
 
   tags = local.tags
 }
