@@ -179,6 +179,11 @@ listenerTemplate:
             value: "{{GPU_COUNT}}"
           - name: CAPACITY_AWARE_WORKFLOW_DISK
             value: "{{DISK_SIZE}}"
+          # Stamp the workflow placeholder (ph-w-*) with the same scheduler the
+          # real workflow pod uses (see {{SCHEDULER_NAME_LINE}} below) so
+          # packing/reservation stay consistent. Empty = default scheduler.
+          - name: CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME
+            value: "{{SCHEDULER_NAME}}"
           # Must match the runner container resources below (requests/limits)
           - name: CAPACITY_AWARE_RUNNER_CPU
             value: "750m"
@@ -383,7 +388,7 @@ data:
       # Priority 20 — preempts placeholder-workflow (10) so workflow pods
       # can claim the capacity reserved by the placeholders they replace.
       priorityClassName: arc-workflow
-
+{{SCHEDULER_NAME_LINE}}
       # Prefer scheduling job pods on same node fleet as runner.
       # Tolerations enforce node-fleet constraints (every NodePool taints
       # with node-fleet=<fleet>:NoSchedule), so nodeSelector is not needed.
