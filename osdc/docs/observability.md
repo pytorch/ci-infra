@@ -23,14 +23,14 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
                         │ clustered    │ │ independent   │ │ independent  │
                         └───────┬──────┘ └──────┬────────┘ └──────┬───────┘
                                 │               │                 │
-                   ServiceMonitor/   loki.source.file +   loki.source.
-                   PodMonitor CRDs   loki.source.journal  kubernetes_events
+                   ServiceMonitor/   loki.source.journal  loki.source.
+                   PodMonitor CRDs                        kubernetes_events
                         │               │                 │
                   ┌─────┴─────────┐  ┌──┴──────────────┐  K8s Events API
-                  │ kube-prom-stack│  │ /var/log/pods/  │
-                  │ exporters:    │  │ /var/log/journal │
-                  │ - node-export │  │ (every node)    │
-                  │ - kube-state  │  └─────────────────┘
+                  │ kube-prom-stack│  │ /var/log/journal│
+                  │ exporters:    │  │ (every node)    │
+                  │ - node-export │  └─────────────────┘
+                  │ - kube-state  │
                   │ - kubelet/    │
                   │   cAdvisor    │
                   │ - operator    │
@@ -47,7 +47,7 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
 | **Helm release** | `alloy` | `alloy-logging` | `alloy-events` |
 | **fullnameOverride** | (default) | `alloy-logging` | `alloy-events` |
 | **Clustering** | Enabled (HA target dedup) | Disabled (each pod handles its node) | Disabled |
-| **Config source** | Helm-generated (alloy-values.yaml) | Assembled ConfigMap (`assemble_config.py`) | Inline in Helm values |
+| **Config source** | Helm-generated (alloy-values.yaml) | `base.alloy` wrapped as ConfigMap (`assemble_config.py`) | Inline in Helm values |
 | **Data destination** | Grafana Cloud Mimir (metrics) | Grafana Cloud Loki (logs) | Grafana Cloud Loki (logs) |
 | **Secret name** | `grafana-cloud-credentials` in `monitoring` | `grafana-cloud-credentials` in `logging` | `grafana-cloud-credentials` in `logging` |
 | **Secret keys** | `username`, `password` (URL from `clusters.yaml`) | `loki-username`, `loki-api-key-write` (Alloy uses write only; `loki-api-key-read` is required by `docs/loki_query.md` tooling, not Alloy) | Same as Logging Alloy |
@@ -57,7 +57,7 @@ OSDC has two observability pipelines, both pushing telemetry to Grafana Cloud. T
 1. **Different controller types** — metrics scraping works with a clustered Deployment (Alloy's built-in clustering distributes scrape targets). Log collection requires a DaemonSet (each node's logs are local files). Event collection needs a single-replica Deployment (to avoid duplicate events).
 2. **RBAC isolation** — each Alloy needs ClusterRole/ClusterRoleBinding for Kubernetes API access. Without `fullnameOverride`, Helm creates identically-named RBAC resources that collide.
 3. **Independent lifecycle** — metrics and logs can be enabled/disabled separately. Both logging and monitoring are modules (opt-in).
-4. **Config complexity** — monitoring Alloy config is driven by CRD discovery (ServiceMonitor/PodMonitor). Logging Alloy config is assembled from base + per-module pipeline files. Events Alloy uses inline config for `loki.source.kubernetes_events`. Mixing these in one config would be fragile.
+4. **Config complexity** — monitoring Alloy config is driven by CRD discovery (ServiceMonitor/PodMonitor). Logging Alloy config is a single `base.alloy` file (journal source only). Events Alloy uses inline config for `loki.source.kubernetes_events`. Mixing these in one config would be fragile.
 
 ## Monitoring Pipeline (Metrics)
 
@@ -234,87 +234,29 @@ See [observability-estimates.md](observability-estimates.md#metrics-cardinality-
 
 ### Log sources
 
-1. **Pod logs** — `loki.source.file` reads CRI-format logs from `/var/log/pods/` on each node (Alloy DaemonSet)
-2. **System journal** — `loki.source.journal` reads kubelet, containerd, kernel, nvidia-fabricmanager, and nvidia-persistenced logs from `/var/log/journal` (Alloy DaemonSet)
-3. **Kubernetes events** — `loki.source.kubernetes_events` watches the K8s Events API and pushes events as JSON log lines (Alloy Events Deployment, single replica). The events Alloy is more than a passthrough: it does its own JSON extraction (`reason`, `type`, `kind`, `sourcecomponent`), drops events from the `logging` namespace (feedback-loop prevention), promotes `type` and `kind` to labels, and attaches `reason` and `sourcecomponent` as structured metadata.
+1. **System journal** — `loki.source.journal` reads kubelet, containerd, kernel, nvidia-fabricmanager, and nvidia-persistenced logs from `/var/log/journal` (Alloy DaemonSet)
+2. **Kubernetes events** — `loki.source.kubernetes_events` watches the K8s Events API and pushes events as JSON log lines (Alloy Events Deployment, single replica). The events Alloy is more than a passthrough: it does its own JSON extraction (`reason`, `type`, `kind`, `sourcecomponent`), drops events from the `logging` namespace (feedback-loop prevention), promotes `type` and `kind` to labels, and attaches `reason` and `sourcecomponent` as structured metadata.
 
-### Base pipeline drops
+**Container stdout/stderr is intentionally NOT shipped.** Runner-job log volume was too costly relative to the value (GitHub Actions stores full workflow logs already). To debug container behavior, use GitHub Actions workflow logs, `kubectl logs` while the pod is alive, or pod events via the `alloy-events` Deployment.
 
-The base pipeline applies hard drops that affect every log line — these run before module pipelines and the final rate-limit:
+### Journal pipeline
 
-- **Completed pods** — drop pods in `Succeeded|Failed` phase (target relabel before `loki.source.file`).
-- **`logging` namespace** — drop all pods in the `logging` namespace (feedback-loop prevention; Alloy's own log shipping must not be ingested).
-- **DEBUG/TRACE lines** — `stage.drop` with case-insensitive level token match (`drop_counter_reason="low_log_level"`).
-- **Oversized lines** — drop lines >16KB (`drop_counter_reason="oversized_line"`).
-- **Health probes** — drop lines containing `kube-probe/`.
-- **Journal debug** — drop journal entries with priority 7 (`drop_counter_reason="journal_debug"`).
-
-### Level normalization
-
-After module pipelines run (which may extract a `level` value), the base pipeline normalizes any extracted `level`:
-
-1. Lowercases the value (e.g. `ERROR` → `error`, `WARN` → `warn`).
-2. Maps short aliases to canonical names: `err|e` → `error`, `warning|w` → `warn`, `information|i` → `info`, `dbg|d` → `debug`, `f` → `fatal`.
-
-Modules that extract `level` get this normalization for free.
-
-### Rate limiting
-
-After module pipelines and level normalization, a global per-pod rate-limit applies: `stage.limit { rate = 1000, burst = 5000, by_label_name = "pod" }`. This is a safety valve — well-behaved noisy sources should be sampled or rate-limited in their module pipeline so important logs are protected before this limiter fires.
+The journal pipeline maps RFC 5424 syslog priorities to a `level` indexed label (0-3→`error`, 4→`warn`, 5-6→`info`, 7→`debug`) and drops priority-7 (`level=debug`) entries with `drop_counter_reason="journal_debug"`. `node` is moved to structured metadata (Loki 3.x) so it stays queryable without indexing cost.
 
 ### Label strategy
 
 | Label | Type | Cardinality | Purpose |
 |-------|------|-------------|---------|
 | `cluster` | external_label | low (~2) | Cluster-scoped queries |
-| `namespace` | indexed | low (~10) | Service scoping |
-| `container` | indexed | medium (~50) | Container identification |
-| `app` | indexed | medium (~20) | From `app.kubernetes.io/name` pod label |
-| `pod` | structured metadata | high | Queryable but not indexed (Loki 3.x) |
+| `unit` | indexed | low (~5) | systemd unit (journal only) |
+| `level` | indexed | low (~4) | Severity (journal only) |
 | `node` | structured metadata | high | Queryable but not indexed (Loki 3.x) |
+| `type`, `kind` | indexed | low (~10) | Events only — event severity / object kind |
+| `reason`, `sourcecomponent` | structured metadata | medium | Events only |
 
-**Structured metadata** (Loki 3.x) keeps high-cardinality labels queryable without indexing cost. Pod and node names change frequently — indexing them would explode Loki's index size. They're moved to structured metadata and dropped from indexed labels in the base pipeline (after `// MODULE_PIPELINES` so module `stage.match` blocks can still select on them).
+### Configmap rendering
 
-### Module pipeline discovery
-
-Each module can contribute log parsing rules by placing a `logging/pipeline.alloy` file in its module directory. The file must contain only `stage.match` blocks — syntactically valid inside a `loki.process` block.
-
-During deploy, `assemble_config.py`:
-
-1. Reads `clusters.yaml` to get the cluster's enabled modules
-2. For each module (except `logging` itself, which owns the base pipeline), checks `modules/<name>/logging/pipeline.alloy`
-3. **Consumer/upstream overlay**: the assembler is invoked with both `--modules-dir` (consumer, `OSDC_ROOT/modules`) and `--upstream-modules-dir` (`OSDC_UPSTREAM/modules`). The consumer path is checked first; if absent, it falls back to upstream. An empty/whitespace-only consumer file is an explicit **opt-out** — the upstream pipeline is NOT used as a fallback in that case, allowing consumers to suppress a module's logging pipeline.
-4. Inserts all discovered blocks at the `// MODULE_PIPELINES` marker in `base.alloy`
-5. Outputs the assembled config as a ConfigMap YAML (`alloy-logging-config`)
-
-**Example module pipeline** (`modules/karpenter/logging/pipeline.alloy`):
-
-```alloy
-// Karpenter (zap JSON logs)
-stage.match {
-    selector = "{namespace=\"karpenter\"}"
-    stage.json {
-        expressions = {
-            level = "level",
-        }
-    }
-    stage.labels {
-        values = {
-            level = "",
-        }
-    }
-}
-```
-
-**Per-module sampling and rate limits** — module pipelines do more than parsing; they also enforce volume controls before the base pipeline's global rate-limit:
-
-| Module | Behavior |
-|--------|----------|
-| `arc` (controller) | Logfmt parse, extract `level` |
-| `arc` (runners) | Extract `level`, then **sample non-error logs at 10%**. `workflow_run_id` regex extraction runs only on the survivors and is promoted to structured metadata. Errors/warns/fatals/panics always kept. |
-| `buildkit` | Logfmt parse, extract `level`, then **sample non-error logs at 50%**. |
-| `monitoring` | Parses Prometheus operator JSON, kube-state-metrics klog, Harbor JSON, Harbor nginx access logs (drops `/health` probes, extracts status). **Rate-limits non-error `harbor-system` logs** (`stage.limit` rate=100, burst=500). |
-| `karpenter` | Extract `level` from zap JSON (the example above). |
+`modules/logging/scripts/python/assemble_config.py` wraps `base.alloy` in a Kubernetes ConfigMap YAML named `alloy-logging-config`. No templating, no per-module pipeline composition — the script just renders one file as a ConfigMap.
 
 ### Credential setup (logging)
 
@@ -340,7 +282,7 @@ defaults:
 
 ## Log Volume Estimation Reference (arc-cbr-production)
 
-See [observability-estimates.md](observability-estimates.md#log-volume-estimation-reference) for per-unit log volume rates and scaling formulas. Runner pod logs are expected to be the dominant source despite 90% sampling of non-error lines.
+See [observability-estimates.md](observability-estimates.md#log-volume-estimation-reference) for per-unit log volume rates and scaling formulas. Journal logs are bounded by the per-unit `keep` filter (`kubelet|containerd|kernel|nvidia-*`); events scale with cluster activity.
 
 ## Deploy Order
 
@@ -358,7 +300,7 @@ Deployed via `just deploy-module <cluster> logging` (or as part of `just deploy 
 
 1. Creates `logging` namespace
 2. Gates on `grafana-cloud-credentials` secret (exits cleanly if missing)
-3. Runs `assemble_config.py` to build the ConfigMap from base + module pipelines
+3. Runs `assemble_config.py` to wrap `base.alloy` in a ConfigMap YAML
 4. `kubectl apply` the ConfigMap
 5. `helm upgrade --install alloy-logging` with runtime env vars (cluster name, Loki URL, credentials)
 6. `helm upgrade --install alloy-events` for Kubernetes event collection
@@ -379,15 +321,11 @@ kube-prometheus-stack's Prometheus Operator admission webhook pre-install job ha
 
 ### Alloy memory on high-throughput nodes
 
-CI nodes can have 100+ concurrent runner pods each producing logs. The logging Alloy DaemonSet is configured with 1Gi request / 2Gi limit and GC tuning (`GOGC=200`, `GOMEMLIMIT=1800MiB`). Under sustained backpressure (Loki down, rate-limited), Alloy may still OOM on high-throughput nodes. Check `kubectl describe pod` for OOMKilled events. The `stage.limit` rate limiter (1000 lines/s, burst 5000, scoped `by_label_name = "pod"` so each source pod is rate-limited independently) helps bound memory usage.
+The logging Alloy DaemonSet only ships systemd journal entries (no container stdout/stderr), so per-node throughput is bounded by kubelet+containerd+kernel chatter rather than runner-pod volume. Default sizing is 1Gi request / 2Gi limit with GC tuning (`GOGC=200`, `GOMEMLIMIT=1800MiB`); check `kubectl describe pod` for OOMKilled events if a particular node is unusually noisy (e.g., kernel storms).
 
 ### `NODE_NAME` env var (logging DaemonSet)
 
-`deploy.sh` injects `NODE_NAME` into the logging Alloy pod from `spec.nodeName` via the downward API. The base pipeline depends on it for two things: the pod-discovery field selector (`field = "spec.nodeName=" + env("NODE_NAME")`) so each DaemonSet pod only discovers pods on its own node, and as the `node` static label on journal entries. If `NODE_NAME` is not set, pod discovery and journal labelling break.
-
-### Module pipeline ordering
-
-The `// MODULE_PIPELINES` marker in `base.alloy` is placed **before** `stage.structured_metadata` and `stage.label_drop`. This means module `stage.match` blocks can select on `{pod=~"..."}` and `{node=~"..."}` labels. After the module pipelines run, pod and node are moved to structured metadata and dropped from indexed labels.
+`deploy.sh` injects `NODE_NAME` into the logging Alloy pod from `spec.nodeName` via the downward API. The journal pipeline uses it as the `node` static label on journal entries. If `NODE_NAME` is not set, journal labelling breaks.
 
 ### IPv6 binding overrides (IPv6-only EKS)
 
@@ -430,7 +368,7 @@ kubectl get secret grafana-cloud-credentials -n logging  # Verify credentials ex
 | No logs in Grafana Cloud | `grafana-cloud-credentials` secret missing in `logging` ns | Create the secret, redeploy |
 | No K8s events in Loki | `alloy-events` pod not running or secret missing | Check `kubectl get pods -n logging`, verify secret |
 | Alloy logging pods not running | Secret missing — deploy exits cleanly | Create secret, run `just deploy-module <cluster> logging` |
-| Missing logs from a namespace | Module `pipeline.alloy` has broken regex in `stage.match` | Check the assembled ConfigMap for syntax errors |
+| Missing pod logs | Container stdout/stderr is intentionally not shipped | Use GitHub Actions logs, `kubectl logs`, or pod events via `alloy-events` |
 | Alloy OOMKilled | High-throughput nodes exceeding 2Gi limit | Increase `resources.limits.memory` in logging Helm values |
 | RBAC errors in Alloy logs | ClusterRole collision between monitoring and logging Alloy | Verify `fullnameOverride` on all three Alloy releases |
 | ServiceMonitor not discovered | CRD ordering — monitors applied before kube-prometheus-stack | Redeploy monitoring module (deploy.sh handles ordering) |
