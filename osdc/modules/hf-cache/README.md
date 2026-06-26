@@ -37,7 +37,8 @@ follows symlinks, so the S3 layout is symlink-free and portable.
 
 When `hf-cache` is in a cluster's `modules:`, `generate_runners.py` keeps the
 `# BEGIN_HF_CACHE` block, adding to every job pod a read-only `/mnt/hf_cache`
-mount, `HF_HOME`/`HF_HUB_CACHE`, and `HF_CACHE_S3_BUCKET`/`HF_CACHE_S3_REGION`
+mount, `HF_HOME` (the hub cache derives as `$HF_HOME/hub`), and
+`HF_CACHE_S3_BUCKET`/`HF_CACHE_S3_REGION`
 (the refresh workflow's write target). When the module is absent the block is
 stripped (no-op).
 
