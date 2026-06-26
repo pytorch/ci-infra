@@ -41,6 +41,7 @@ from helpers.k8s_asserts import (
 )
 from helpers.nodes import (
     MIN_NODE_AGE_SECONDS,
+    POD_STARTUP_GRACE_SECONDS,
     RECENTLY_STABLE_AGE_SECONDS,
     _DISRUPTION_TAINT_KEYS,
     _count_unstable_nodes,
@@ -52,6 +53,7 @@ from helpers.nodes import (
     get_unstable_node_names,
     pod_age_seconds,
     pod_is_on_unstable_node,
+    pod_within_startup_grace,
 )
 from helpers.remote import (
     REMOTE_RETRIES,
@@ -88,6 +90,7 @@ __all__ = [
     "find_helm_release",
     # nodes
     "MIN_NODE_AGE_SECONDS",
+    "POD_STARTUP_GRACE_SECONDS",
     "RECENTLY_STABLE_AGE_SECONDS",
     "_DISRUPTION_TAINT_KEYS",
     "_count_unstable_nodes",
@@ -99,6 +102,7 @@ __all__ = [
     "get_unstable_node_names",
     "pod_age_seconds",
     "pod_is_on_unstable_node",
+    "pod_within_startup_grace",
     # retry
     "BACKOFF_ATTEMPTS",
     "BACKOFF_DELAYS",
