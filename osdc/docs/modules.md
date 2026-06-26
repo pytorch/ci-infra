@@ -148,15 +148,7 @@ fi
 
 ## Per-module logging pipeline
 
-Modules that emit logs needing custom Loki labels drop a `logging/pipeline.alloy` file in their directory:
-
-```
-modules/mymodule/
-└── logging/
-    └── pipeline.alloy
-```
-
-The `logging` module's `assemble_config.py` discovers these via `--modules-dir` / `--upstream-modules-dir` and merges them into the Alloy DaemonSet config. Without this file the module's logs still ship to Loki but get only the default labels. Real examples: `arc/`, `buildkit/`, `karpenter/`, `monitoring/` each have their own `logging/pipeline.alloy`.
+Per-module Alloy pipeline contributions have been removed. The `logging` module ships only journal logs from `base.alloy` and Kubernetes events from its own Deployment — container stdout/stderr is intentionally not collected. If a module needs custom log enrichment in the future, this is the place it would land.
 
 ## Tests
 
@@ -227,12 +219,12 @@ ARC runner scale sets for GitHub Actions self-hosted runners. Requires `arc` (co
 
 ### logging
 
-Centralized log collection — Grafana Alloy DaemonSet (pod logs + journal) and Events Deployment → Grafana Cloud Loki.
+Centralized log collection — Grafana Alloy DaemonSet (systemd journal only) and Events Deployment → Grafana Cloud Loki. Container stdout/stderr is intentionally not shipped.
 
-- **pipelines/base.alloy**: Base Alloy River config — pod log collection, journal collection, loki.write output
+- **pipelines/base.alloy**: Alloy DaemonSet config — journal source + loki.write
 - **helm/**: Helm values for DaemonSet mode Alloy (`alloy-logging-values.yaml`) and Events Deployment (`alloy-events-values.yaml`)
-- **scripts/python/assemble_config.py**: Assembles base pipeline + per-module `stage.match` blocks into a ConfigMap
-- **deploy.sh**: Secret-gated Alloy install (DaemonSet for logs + Deployment for events)
+- **scripts/python/assemble_config.py**: Wraps `base.alloy` in a Kubernetes ConfigMap YAML
+- **deploy.sh**: Secret-gated Alloy install (DaemonSet for journal + Deployment for events)
 
 ### buildkit
 
@@ -259,7 +251,6 @@ Grafana Alloy in metrics mode, scraping cluster + module endpoints and remote-wr
 
 - **helm/**: Alloy values for the metrics pipeline
 - **kubernetes/**: namespace, DCGM exporter DaemonSet + custom-metrics ConfigMap (`dcgm-exporter/`), PrometheusRule alert CRDs (`alerts/` — ARC, GPU, infra, network-pressure, node-compactor, nodelocaldns, harbor-cache-recovery, zombie-cleanup), and ServiceMonitor / PodMonitor manifests (`monitors/`)
-- **logging/pipeline.alloy**: Log routing rules for the monitoring module's own pods
 - **deploy.sh**: Installs `kube-prometheus-stack` (CRDs, node-exporter, kube-state-metrics, Prometheus Operator — Prometheus/Grafana/AlertManager are disabled), Prometheus Pushgateway, the `monitors/` kustomize (ServiceMonitors / PodMonitors / `alerts/` PrometheusRules) after the CRDs land, and — gated on the `grafana-cloud-credentials` secret — Grafana Alloy as the metrics push pipeline to Grafana Cloud
 
 ### pypi-cache
