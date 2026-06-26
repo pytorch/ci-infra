@@ -173,14 +173,28 @@ def resolve_max_runners(value, def_file, cluster_id):
     return value
 
 
-def generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled=True):
+def generate_runner(
+    def_file,
+    template_content,
+    cluster_config,
+    output_dir,
+    module_name,
+    pypi_cache_enabled=True,
+    available_modules=None,
+):
     """Generate a single runner config from its definition.
 
     pypi_cache_enabled controls whether the `# BEGIN_PYPI_CACHE` / `# END_PYPI_CACHE`
     block in the template is preserved (True) or stripped (False). Strip when the
     cluster does not deploy the pypi-cache module — the env vars would otherwise
     point at a Service that doesn't exist on this cluster.
+
+    available_modules is the set of modules the cluster deploys. A resolved
+    scheduler_name that does not name an available module is silently dropped,
+    so workflow pods don't get stamped with a schedulerName that has no
+    scheduler running (they would pend forever).
     """
+    available_modules = available_modules or set()
     with open(def_file) as f:
         data = yaml.safe_load(f)
 
@@ -335,6 +349,26 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
+    # Optional schedulerName for workflow pods (per-def scheduler_name).
+    # Empty = default scheduler. The same value feeds two places so the real
+    # workflow pod and its capacity placeholder (ph-w-*) agree on the scheduler:
+    #   {{SCHEDULER_NAME_LINE}} -> schedulerName on the workflow pod spec
+    #   {{SCHEDULER_NAME}}      -> CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME on the
+    #                             listener, which the fork stamps onto ph-w-*.
+    # If they diverged, the placeholder would reserve a slot the real pod can't claim.
+    scheduler_name = runner.get("scheduler_name", "")
+    # Cluster-wide default: a def without its own scheduler_name inherits
+    # arc-runners.scheduler_name from clusters.yaml, so a cluster can route all
+    # workflow pods to a secondary scheduler from one place (per-def value wins).
+    if not scheduler_name:
+        scheduler_name = cluster_config.get("scheduler_name", "")
+    # Convention: module dir name == scheduler name. If the cluster does not
+    # deploy a module with this name, silently drop — otherwise the workflow pod
+    # would be stamped with a schedulerName that has no scheduler running.
+    if scheduler_name and scheduler_name not in available_modules:
+        scheduler_name = ""
+    scheduler_name_line = f"      schedulerName: {scheduler_name}" if scheduler_name else ""
+
     # Replace all template placeholders
     output_content = template_content
     output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
@@ -364,6 +398,8 @@ def generate_runner(def_file, template_content, cluster_config, output_dir, modu
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
         "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
+        "{{SCHEDULER_NAME_LINE}}": scheduler_name_line,
+        "{{SCHEDULER_NAME}}": scheduler_name,
     }
 
     for placeholder, value in replacements.items():
@@ -498,10 +534,19 @@ def main():
     # vars from the workflow pod template so jobs don't try to reach a Service
     # that doesn't exist on this cluster.
     pypi_cache_enabled = "pypi-cache" in (cluster_cfg.get("modules") or [])
+    available_modules = set(cluster_cfg.get("modules") or [])
 
     count = 0
     for def_file in def_files:
-        if generate_runner(def_file, template_content, cluster_config, output_dir, module_name, pypi_cache_enabled):
+        if generate_runner(
+            def_file,
+            template_content,
+            cluster_config,
+            output_dir,
+            module_name,
+            pypi_cache_enabled,
+            available_modules,
+        ):
             count += 1
 
     print()
