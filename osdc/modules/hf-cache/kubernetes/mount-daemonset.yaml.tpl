@@ -92,6 +92,20 @@ spec:
               fusermount -uz "$MOUNT" 2>/dev/null || true
               mkdir -p "$MOUNT" "$CACHE"
 
+              # VFS cache cap. A "<N>%" value scales to N% of the cache disk so
+              # bigger nodes cache more (a100 ~1TB) and smaller ones less (g5/g6
+              # ~600GB); an absolute value (e.g. 200G) is used as-is. df -k + NF-4
+              # is busybox-safe and survives a wrapped device-name line.
+              VFS_MAX="__VFS_CACHE_MAX_SIZE__"
+              case "$VFS_MAX" in
+                *%)
+                  PCT=$(printf '%s' "$VFS_MAX" | tr -dc '0-9')
+                  TOTAL_GB=$(( $(df -k "$CACHE" | tail -1 | awk '{print $(NF-4)}') / 1048576 ))
+                  VFS_MAX="$(( TOTAL_GB * PCT / 100 ))G"
+                  ;;
+              esac
+              echo "VFS cache cap: $VFS_MAX"
+
               # Credentials via IRSA (env_auth). /mnt/hf_cache/hub maps to
               # s3://__BUCKET__/hub.
               exec rclone mount \
@@ -103,7 +117,7 @@ spec:
                 --dir-cache-time 1h \
                 --poll-interval 0 \
                 --vfs-cache-mode full \
-                --vfs-cache-max-size __VFS_CACHE_MAX_SIZE__ \
+                --vfs-cache-max-size "$VFS_MAX" \
                 --vfs-cache-max-age 24h \
                 --vfs-read-chunk-size 128M \
                 --cache-dir "$CACHE" \

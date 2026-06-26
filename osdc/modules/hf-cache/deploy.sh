@@ -30,7 +30,7 @@ RCLONE_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_image "rclone/rclone:1.6
 # python3 and matches cache-enforcer, which pulls reliably during node warmup).
 TAINT_REMOVER_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.taint_remover_image \
   "public.ecr.aws/amazonlinux/amazonlinux:2023")
-VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size 200G)
+VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size "75%")
 BUCKET_CFG=$(uv run "$CFG" "$CLUSTER" state_bucket)
 # Bucket is in the cluster's region, so rclone's S3 region is the cluster region.
 BUCKET_REGION="$REGION"
