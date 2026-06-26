@@ -26,8 +26,7 @@ CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
 # --- Read hf_cache config ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" hf_cache.namespace hf-cache)
 RCLONE_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_image "rclone/rclone:1.69.1")
-# python3-capable image for the taint-remover sidecar (amazonlinux:2023 ships
-# python3 and matches cache-enforcer, which pulls reliably during node warmup).
+# amazonlinux:2023 has python3 and pulls reliably at warmup (matches cache-enforcer).
 TAINT_REMOVER_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.taint_remover_image \
   "public.ecr.aws/amazonlinux/amazonlinux:2023")
 VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size "75%")
@@ -55,10 +54,9 @@ kubectl_apply_if_changed -k "$MODULE_DIR/kubernetes/"
 kubectl annotate sa hf-cache-mount -n "$NAMESPACE" \
   eks.amazonaws.com/role-arn="$ROLE_ARN" --overwrite
 
-# --- taint-remover library ConfigMap (rendered from the shared base lib) ---
-# The DaemonSet's taint-remover sidecar mounts this to clear its startup taint.
-# ConfigMaps are namespaced, so render a copy into this module's namespace from
-# the same source file the base node-taint-remover uses (no drift).
+# --- taint-remover library ConfigMap ---
+# ConfigMaps are namespaced, so render the shared base taint_remover.py into this
+# namespace for the taint-remover sidecar.
 echo "[hf-cache] Rendering node-taint-remover-lib ConfigMap..."
 TAINT_LIB="$UPSTREAM_ROOT/base/kubernetes/node-taint-remover/lib/taint_remover.py"
 [[ -f "$TAINT_LIB" ]] || {
