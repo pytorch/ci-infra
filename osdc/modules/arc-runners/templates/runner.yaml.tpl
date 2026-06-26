@@ -443,9 +443,8 @@ data:
               value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
             # END_PYPI_CACHE
             # BEGIN_HF_CACHE
-            # Read-only cache. HF_HOME is the only var needed — HF_HUB_CACHE defaults
-            # to $HF_HOME/hub. Offline gating + the OIDC write to HF_CACHE_S3_* are
-            # owned by the ci-refresh-hf-cache workflow.
+            # Only HF_HOME is set — HF_HUB_CACHE derives as $HF_HOME/hub.
+            # HF_CACHE_S3_* = the ci-refresh-hf-cache OIDC write target.
             - name: HF_HOME
               value: "/mnt/hf_cache"
             - name: HF_CACHE_S3_BUCKET
