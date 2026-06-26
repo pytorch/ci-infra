@@ -23,7 +23,7 @@ class TestBranchName:
         assert branch_name("meta-staging-aws-uw1") == "osdc-workload-test-meta-staging-aws-uw1"
 
     def test_production(self):
-        assert branch_name("arc-cbr-production") == "osdc-workload-test-arc-cbr-production"
+        assert branch_name("meta-prod-aws-ue2") == "osdc-workload-test-meta-prod-aws-ue2"
 
     def test_short_id(self):
         assert branch_name("x") == "osdc-workload-test-x"
