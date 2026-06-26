@@ -1,8 +1,5 @@
-# RBAC for the hf-cache-mount DaemonSet's taint-remover container to clear its
-# own node-init.osdc.io/hf-cache startup taint. The ServiceAccount is defined in
-# serviceaccounts.yaml; the Role + Binding here grant the minimum verbs
-# (get/patch nodes) that the shared taint_remover.py library at
-# base/kubernetes/node-taint-remover/lib/taint_remover.py requires.
+# Lets the hf-cache-mount SA clear its own node-init.osdc.io/hf-cache taint:
+# the get/patch on nodes that taint_remover.py needs. (SA: serviceaccounts.yaml.)
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
