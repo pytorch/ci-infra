@@ -19,9 +19,6 @@ from helpers import (
     fetch_grafana_cloud_credentials,
     filter_pods,
     find_helm_release,
-    get_all_node_names,
-    get_recently_stable_node_names,
-    get_unstable_node_names,
     loki_read_url,
     query_loki,
     retry_with_backoff,
@@ -84,24 +81,8 @@ class TestAlloyLogging:
         """Verify ConfigMap contains expected pipeline structure."""
         result = run_kubectl(["get", "configmap", "alloy-logging-config", "-o", "json"], namespace=logging_ns)
         config = result.get("data", {}).get("config.alloy", "")
-        assert "loki.source.file" in config, "ConfigMap missing pod log source (loki.source.file)"
+        assert "loki.source.journal" in config, "ConfigMap missing journal log source (loki.source.journal)"
         assert "loki.write" in config, "ConfigMap missing Loki writer (loki.write)"
-
-    def test_configmap_has_module_pipelines(self, logging_ns: str) -> None:
-        """Verify the ConfigMap contains module pipeline content beyond the base pipeline.
-
-        The assemble_config.py script wraps each module's pipeline with comment
-        delimiters of the form '// --- module: <name> ---'. Presence of at least
-        one such delimiter confirms module pipeline injection ran and at least one
-        module contributed a pipeline. This is stable — the delimiter format is
-        controlled by assemble_config.py and does not change with module names.
-        """
-        result = run_kubectl(["get", "configmap", "alloy-logging-config", "-o", "json"], namespace=logging_ns)
-        config = result.get("data", {}).get("config.alloy", "")
-        assert "// --- module:" in config, (
-            "ConfigMap contains no module pipeline comment delimiters ('// --- module: ...'). "
-            "Either assemble_config.py was not run, or no cluster modules have logging/pipeline.alloy files."
-        )
 
     def test_configmap_has_journal_pipeline(self, logging_ns: str) -> None:
         """Verify ConfigMap contains the journal log source for system log collection."""
@@ -114,12 +95,10 @@ class TestAlloyLogging:
     def test_configmap_has_level_normalization(self, logging_ns: str) -> None:
         """Verify ConfigMap contains level normalization stage.replace blocks.
 
-        The base pipeline normalizes log levels in two places:
-        - Pod logs: maps uppercase/abbreviated variants (ERROR, WARN, etc.) to lowercase
-        - Journal: maps syslog PRIORITY integers to level strings
-
-        We check that stage.replace blocks exist and that "error" and "warn" appear
-        as replace targets, using regex to be resilient to HCL whitespace formatting.
+        The journal pipeline maps syslog PRIORITY integers (0-7 per RFC 5424)
+        to level strings (error/warn/info/debug). We check that stage.replace
+        blocks exist and that "error" and "warn" appear as replace targets,
+        using regex to be resilient to HCL whitespace formatting.
         """
         result = run_kubectl(["get", "configmap", "alloy-logging-config", "-o", "json"], namespace=logging_ns)
         config = result.get("data", {}).get("config.alloy", "")
@@ -129,57 +108,6 @@ class TestAlloyLogging:
         assert re.search(r'replace\s*=\s*"warn"', config), (
             'ConfigMap missing level normalization: no stage.replace targeting "warn"'
         )
-
-    def test_alloy_pods_running(self, all_pods: dict, all_nodes: dict, logging_ns: str) -> None:
-        """Verify Alloy logging pods are in Running phase.
-
-        Tolerates pods not Running on unstable nodes (new, NotReady, or being
-        deleted) — these are expected during node churn (Karpenter scaling,
-        spot interruptions, node recycling).
-
-        Uses batch-fetched data first; if no pods found (e.g. nodes still
-        joining after a recycle), retries with live kubectl fetches.
-        """
-        alloy_labels = {"app.kubernetes.io/instance": "alloy-logging"}
-        state = {
-            "pods": filter_pods(all_pods, namespace=logging_ns, labels=alloy_labels),
-            "nodes": all_nodes,
-        }
-
-        def check() -> None:
-            pods = state["pods"]
-            nodes = state["nodes"]
-            assert len(pods) > 0, f"No alloy-logging pods found (after {BACKOFF_ATTEMPTS} attempts)"
-
-            known_node_names = get_all_node_names(nodes)
-            unstable_names = get_unstable_node_names(nodes)
-            recently_stable_names = get_recently_stable_node_names(nodes)
-            not_running = [
-                p["metadata"]["name"]
-                for p in pods
-                if p["status"].get("phase") != "Running"
-                and p["spec"].get("nodeName") in known_node_names  # skip pods on disappeared nodes
-                and p["spec"].get("nodeName") not in unstable_names
-                and not (p["status"].get("phase") == "Pending" and p["spec"].get("nodeName") in recently_stable_names)
-            ]
-            disappeared = sum(
-                1
-                for p in pods
-                if p["status"].get("phase") != "Running" and p["spec"].get("nodeName") not in known_node_names
-            )
-            assert not not_running, (
-                f"Alloy pods not Running on stable nodes: {not_running} "
-                f"({len(unstable_names)} unstable nodes excluded, "
-                f"{len(recently_stable_names)} recently-stable nodes with Pending pods tolerated, "
-                f"{disappeared} pods on disappeared nodes excluded, "
-                f"after {BACKOFF_ATTEMPTS} attempts)"
-            )
-
-        def refresh() -> None:
-            state["pods"] = filter_pods(run_kubectl(["get", "pods", "-A"]), namespace=logging_ns, labels=alloy_labels)
-            state["nodes"] = run_kubectl(["get", "nodes"])
-
-        retry_with_backoff(check, refresh=refresh)
 
 
 # ============================================================================
@@ -305,29 +233,14 @@ class TestLoggingPerSourceVerification:
         self.loki_user, self.loki_key = creds
         self.read_url = loki_read_url(self.loki_write_url)
 
-    def test_pod_logs_arriving(self, resolve_config) -> None:
-        """Verify pod logs are being collected (kube-system always has pods).
-
-        Requires the `container` label so this only matches actual pod logs
-        (loki.source.file). Without it, the query also matches Kubernetes
-        *events* (loki.source.kubernetes_events), which carry a `namespace`
-        label but no `container` — that made the test pass on busy clusters
-        even when pod-log collection was completely broken (no files tailed),
-        and only fail on quiet clusters with no recent events.
+    @pytest.fixture(autouse=True)
+    def _require_alloy_daemonset_healthy(self, all_daemonsets: dict, all_nodes: dict, logging_ns: str):
+        """Fail fast with a shipper-side error instead of blaming Loki when
+        alloy-logging hasn't converged. Without this, missing logs in Loki burn
+        the full ~10-min remote retry budget before failing — and the failure
+        message points at Loki, not at the DaemonSet that's actually broken.
         """
-        cluster_name = resolve_config("cluster_name", "")
-        if not cluster_name:
-            pytest.skip("cluster_name not set in config")
-
-        logql = f'{{cluster="{cluster_name}", namespace="kube-system", container=~".+"}}'
-        assert_logs_fresh_in_loki(
-            self.read_url,
-            logql,
-            self.loki_user,
-            self.loki_key,
-            max_staleness=600,
-            description="pod logs (kube-system)",
-        )
+        assert_daemonset_healthy(all_daemonsets, all_nodes, logging_ns, name_contains="alloy-logging")
 
     def test_journal_logs_arriving(self, resolve_config) -> None:
         """Verify journal logs are being collected (kubelet always runs)."""

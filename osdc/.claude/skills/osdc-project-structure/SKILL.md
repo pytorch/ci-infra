@@ -144,12 +144,11 @@ In most cases, reading the relevant source or docs in the knowledge base first w
 | `modules/monitoring/helm/alloy-values.yaml` | Grafana Alloy Deployment values for metrics (ServiceMonitor/PodMonitor discovery, remote_write to Mimir) |
 | `modules/monitoring/kubernetes/monitors/` | ServiceMonitors + PodMonitors for OSDC components (ARC, Harbor, Karpenter, etc.) |
 | `modules/monitoring/kubernetes/dcgm-exporter/` | DCGM GPU exporter DaemonSet + headless Service (GPU nodes only) |
-| `modules/logging/deploy.sh` | Secret-gated Alloy install for log collection -> Grafana Cloud Loki (DaemonSet for pod/journal logs, Deployment for Kubernetes events) |
-| `modules/logging/pipelines/base.alloy` | Base Alloy River config (pod logs, journal, loki.write, MODULE_PIPELINES marker) |
-| `modules/logging/helm/alloy-logging-values.yaml` | Alloy DaemonSet Helm values for pod/journal logs (tolerates all taints, journal mount, positions hostPath) |
+| `modules/logging/deploy.sh` | Secret-gated Alloy install for log collection -> Grafana Cloud Loki (DaemonSet for journal logs, Deployment for Kubernetes events) |
+| `modules/logging/pipelines/base.alloy` | Alloy DaemonSet config — journal source + `loki.write` (container stdout/stderr intentionally not shipped) |
+| `modules/logging/helm/alloy-logging-values.yaml` | Alloy DaemonSet Helm values for journal logs (tolerates all taints, journal mount, positions hostPath) |
 | `modules/logging/helm/alloy-events-values.yaml` | Alloy Deployment Helm values for Kubernetes events stream |
-| `modules/logging/scripts/python/assemble_config.py` | Assembles base pipeline + per-module `stage.match` blocks into ConfigMap |
-| `modules/<m>/logging/pipeline.alloy` | Per-module logging pipeline fragments (e.g., `arc/`, `buildkit/`, `karpenter/`, `monitoring/`) merged at deploy time |
+| `modules/logging/scripts/python/assemble_config.py` | Wraps `base.alloy` in a ConfigMap YAML |
 | `integration-tests/`, `tests/smoke/` | Top-level integration suites and smoke tests (per-module `tests/` subdirs cover module-local checks) |
 
 ## Base Component Notes
