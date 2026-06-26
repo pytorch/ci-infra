@@ -7,7 +7,7 @@ set -euo pipefail
 #
 # Deploys:
 #   1. Logging namespace
-#   2. Assembled Alloy config ConfigMap (base pipeline + per-module pipelines)
+#   2. Alloy base pipeline wrapped as a ConfigMap (system journal only)
 #   3. Grafana Alloy DaemonSet (if grafana-cloud-credentials secret exists)
 #   4. Grafana Alloy Deployment for Kubernetes Event collection
 
@@ -24,7 +24,6 @@ source "$UPSTREAM_ROOT/scripts/helm-upgrade.sh"
 # shellcheck source=/dev/null
 source "$UPSTREAM_ROOT/scripts/kubectl-apply.sh"
 CFG="$UPSTREAM_ROOT/scripts/cluster-config.py"
-CLUSTERS_YAML="${CLUSTERS_YAML:-$UPSTREAM_ROOT/clusters.yaml}"
 
 # --- Read per-installation logging config ---
 NAMESPACE=$(uv run "$CFG" "$CLUSTER" logging.namespace logging)
@@ -56,16 +55,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- Assemble Alloy config ConfigMap ---
+# --- Render Alloy config ConfigMap ---
 CONFIGMAP_FILE=$(mktemp)
 
-echo "Assembling Alloy logging config..."
+echo "Rendering Alloy logging config..."
 uv run "$MODULE_DIR/scripts/python/assemble_config.py" \
   --base-pipeline "$MODULE_DIR/pipelines/base.alloy" \
-  --modules-dir "$REPO_ROOT/modules" \
-  --upstream-modules-dir "$UPSTREAM_ROOT/modules" \
-  --cluster "$CLUSTER" \
-  --clusters-yaml "$CLUSTERS_YAML" \
   --namespace "$NAMESPACE" \
   --output "$CONFIGMAP_FILE"
 

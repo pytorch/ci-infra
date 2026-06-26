@@ -210,8 +210,11 @@ jobs:
             exit 1
           fi
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
-  # END_ARC_RUNNERS
-
+  # test-pip-install-upstream runs on a CPU arc-runner (l-x86iamx-8-32), so keep
+  # it nested inside ARC_RUNNERS: emit only on clusters that deploy the base
+  # arc-runners module AND have no cache-enforcer. On H100-only clusters (e.g.
+  # meta-prod-aws-uw1, which deploys only arc-runners-h100) the outer ARC_RUNNERS
+  # gate strips it, so it can't queue forever on a runner label that never exists.
   # BEGIN_NO_CACHE_ENFORCER
   test-pip-install-upstream:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
@@ -234,6 +237,7 @@ jobs:
           uv pip install --system --no-cache six packaging typing-extensions
           python -c "import six, packaging, typing_extensions; print('PASS: uv pip install + import from upstream pypi.org')"
   # END_NO_CACHE_ENFORCER
+  # END_ARC_RUNNERS
 
   # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────

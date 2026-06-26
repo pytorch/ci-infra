@@ -62,7 +62,7 @@ defaults:
     controller_memory_limit: "4Gi"
   node_compactor:
     enabled: true
-    interval_seconds: 20
+    interval_seconds: 7
     max_uptime_hours: 48
     min_nodes: 1
     dry_run: false
@@ -160,6 +160,7 @@ clusters:
       github_secret_name: meta-staging-aws-uw1
       runner_name_prefix: "c-mt-"          # staging/testing prefix — keeps labels distinct from prod's "mt-"
       runner_group: "meta-staging-aws-uw1"
+      scheduler_name: bin-pack-scheduler
     buildkit:
       arm64_instance_type: m7gd.16xlarge
       arm64_pods_per_node: 4
@@ -173,6 +174,7 @@ clusters:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
@@ -231,6 +233,7 @@ clusters:
       github_secret_name: meta-staging-aws-ue1
       runner_name_prefix: "c-mt-"          # staging/testing prefix — keeps labels distinct from prod's "mt-"
       runner_group: "meta-staging-aws-ue1"
+      scheduler_name: bin-pack-scheduler
     buildkit:
       arm64_instance_type: m7gd.16xlarge
       arm64_pods_per_node: 4
@@ -246,6 +249,7 @@ clusters:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
@@ -254,9 +258,86 @@ clusters:
       - monitoring
       - logging
 
-  arc-cbr-production-uw1:
-    cluster_name: pytorch-arc-cbr-production-uw1
+  meta-staging-aws-ue2:
+    # Third staging region — mirrors meta-staging-aws-ue1 (us-east-1) in us-east-2.
+    # Kept long-term alongside uw1/ue1 staging for broader region coverage.
+    region: us-east-2
+    cluster_name: meta-staging-aws-ue2
+    recycle_karpenter_nodes: true
+    proactive_capacity_max: 0  # disable warm-pool pre-provisioning — staging only creates pairs on demand for in-flight jobs
+    state_bucket: ciforge-tfstate-meta-staging-aws-ue2
+    access_config:
+      authentication_mode: API_AND_CONFIG_MAP
+      cluster_admin_role_names:
+        - osdc_gha_staging
+    base:
+      base_node_count: 2
+      base_node_instance_type: m5.4xlarge
+      base_node_max_unavailable_percentage: 100  # all-at-once for staging
+      single_nat_gateway: true       # cost optimization for staging
+      vpc_cidr: "10.24.0.0/16"
+    coredns:
+      replicas: 2
+    harbor:
+      core_replicas: 1
+      registry_replicas: 1
+      nginx_replicas: 1
+      pdb_max_unavailable: "100%"  # aggressive: staging has 1 replica each
+    karpenter:
+      replicas: 1
+      log_level: debug
+      pdb_enabled: false
+      pdb_min_available: 0
+    arc:
+      replica_count: 1
+      log_level: debug
+      controller_cpu_request: "500m"
+      controller_cpu_limit: "1"
+      controller_memory_request: "1Gi"
+      controller_memory_limit: "1Gi"
+    node_compactor:
+      dry_run: true
+    nodepools:
+      gpu_consolidate_after: "10s"
+      cpu_consolidate_after: "10s"
+    arc-runners:
+      # Org-wide (was github.com/pytorch/pytorch-canary). A repo-scoped URL forces
+      # runner_group → "default" in generate_runners.py, so the org URL is required
+      # for the runner_group below to take effect.
+      github_config_url: "https://github.com/pytorch"
+      github_secret_name: meta-staging-aws-ue2
+      runner_name_prefix: "c-mt-"          # staging/testing prefix — keeps labels distinct from prod's "mt-"
+      runner_group: "meta-staging-aws-ue2"
+      scheduler_name: bin-pack-scheduler
+    buildkit:
+      arm64_instance_type: m7gd.16xlarge
+      arm64_pods_per_node: 4
+      autoscaling:
+        enabled: true
+        amd64_min: 2  # 1x m6id.24xlarge (2 pods/node)
+        amd64_max: 8
+        arm64_min: 4  # 1x m7gd.16xlarge (4 pods/node)
+        arm64_max: 8
+    pypi_cache:
+      replicas: 1
+    modules:
+      - karpenter
+      - arc
+      - nodepools
+      - bin-pack-scheduler
+      - arc-runners
+      - keda
+      - buildkit
+      - zombie-cleanup
+      - harbor-cache-recovery
+      - monitoring
+      - logging
+
+  meta-prod-aws-uw1:
+    cluster_name: meta-prod-aws-uw1
     region: us-west-1
+    # state_bucket kept on the legacy arc-cbr name to avoid an S3 migration
+    # (mirrors meta-prod-aws-ue1, which also kept ciforge-tfstate-arc-cbr-prod-ue1).
     state_bucket: ciforge-tfstate-arc-cbr-prod-uw1
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
@@ -268,9 +349,9 @@ clusters:
       min_node_age_seconds: 900
     arc-runners:
       github_config_url: "https://github.com/pytorch"
-      github_secret_name: pytorch-arc-cbr-production
+      github_secret_name: meta-prod-aws-uw1
       runner_name_prefix: "mt-"
-      runner_group: "arc-cbr-prod-uw1"   # distinct from us-east-2's "default" — see doc
+      runner_group: "meta-prod-aws-uw1"   # distinct from us-east-2's "default" — see doc
     nodepools-h100:
       # us-west-1 H100 capacity reservations (p5.48xlarge, 8× H100 each):
       #   cr-04d3d1d84e127a562 — 2 nodes (16 H100 GPUs)
@@ -289,8 +370,6 @@ clusters:
       - nodepools
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
       - arc-runners-h100
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -420,6 +499,7 @@ clusters:
       github_secret_name: lf-prod-aws-ue1
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue1
+      scheduler_name: bin-pack-scheduler
     buildkit:
       amd64_instance_type: m6id.24xlarge
       amd64_pods_per_node: 2
@@ -437,6 +517,7 @@ clusters:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
@@ -464,6 +545,7 @@ clusters:
       github_secret_name: lf-prod-aws-ue2
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue2
+      scheduler_name: bin-pack-scheduler
     buildkit:
       amd64_instance_type: m6id.24xlarge
       amd64_pods_per_node: 2
@@ -481,6 +563,7 @@ clusters:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
