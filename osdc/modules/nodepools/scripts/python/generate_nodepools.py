@@ -64,13 +64,9 @@ STARTUP_TAINTS: list[dict] = [
         "applies_when": lambda d: d.get("extra_labels", {}).get("osdc.io/runner-class") != "release",
     },
     {
-        # Gates runner pods until the hf-cache rclone FUSE is mounted on the node.
-        # A runner pod that starts before the mount binds the empty host dir and
-        # never sees the cache (HostToContainer won't backfill a running pod), so
-        # the mount must precede scheduling. The hf-cache-mount DS runs on every
-        # workload-type=github-runner node (its nodeSelector) and tolerates all
-        # taints, so it clears this taint wherever it is emitted — no applies_when
-        # guard needed. Module-gated: only emitted on clusters that enable hf-cache.
+        # Gates runner pods until the rclone FUSE is mounted (a pod that starts
+        # first binds the empty dir and never sees the cache). No applies_when: the
+        # mount DS runs on, and clears it from, every workload-type=github-runner node.
         "module": "hf-cache",
         "key": "node-init.osdc.io/hf-cache",
         "value": "true",
