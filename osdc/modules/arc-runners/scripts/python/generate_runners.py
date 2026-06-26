@@ -181,6 +181,7 @@ def generate_runner(
     module_name,
     pypi_cache_enabled=True,
     hf_cache_enabled=False,
+    available_modules=None,
 ):
     """Generate a single runner config from its definition.
 
@@ -193,7 +194,13 @@ def generate_runner(
     block (HF_HOME env + the read-only /mnt/hf_cache hostPath mount). Strip when the
     cluster does not deploy the hf-cache module — the hostPath would otherwise be
     empty and HF_HUB_OFFLINE=1 would make every model load fail.
+
+    available_modules is the set of modules the cluster deploys. A resolved
+    scheduler_name that does not name an available module is silently dropped,
+    so workflow pods don't get stamped with a schedulerName that has no
+    scheduler running (they would pend forever).
     """
+    available_modules = available_modules or set()
     with open(def_file) as f:
         data = yaml.safe_load(f)
 
@@ -348,6 +355,26 @@ def generate_runner(
     # Optional maxRunners line — only emitted when max_runners is set in the def
     max_runners_line = f"maxRunners: {max_runners}" if max_runners is not None else ""
 
+    # Optional schedulerName for workflow pods (per-def scheduler_name).
+    # Empty = default scheduler. The same value feeds two places so the real
+    # workflow pod and its capacity placeholder (ph-w-*) agree on the scheduler:
+    #   {{SCHEDULER_NAME_LINE}} -> schedulerName on the workflow pod spec
+    #   {{SCHEDULER_NAME}}      -> CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME on the
+    #                             listener, which the fork stamps onto ph-w-*.
+    # If they diverged, the placeholder would reserve a slot the real pod can't claim.
+    scheduler_name = runner.get("scheduler_name", "")
+    # Cluster-wide default: a def without its own scheduler_name inherits
+    # arc-runners.scheduler_name from clusters.yaml, so a cluster can route all
+    # workflow pods to a secondary scheduler from one place (per-def value wins).
+    if not scheduler_name:
+        scheduler_name = cluster_config.get("scheduler_name", "")
+    # Convention: module dir name == scheduler name. If the cluster does not
+    # deploy a module with this name, silently drop — otherwise the workflow pod
+    # would be stamped with a schedulerName that has no scheduler running.
+    if scheduler_name and scheduler_name not in available_modules:
+        scheduler_name = ""
+    scheduler_name_line = f"      schedulerName: {scheduler_name}" if scheduler_name else ""
+
     # Replace all template placeholders
     output_content = template_content
     output_content = strip_conditional_block(output_content, "PYPI_CACHE", keep=pypi_cache_enabled)
@@ -382,6 +409,8 @@ def generate_runner(
         "{{PROACTIVE_CAPACITY}}": str(proactive_capacity),
         "{{MAX_BURST_CAPACITY}}": str(max_burst_capacity),
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
+        "{{SCHEDULER_NAME_LINE}}": scheduler_name_line,
+        "{{SCHEDULER_NAME}}": scheduler_name,
     }
 
     for placeholder, value in replacements.items():
@@ -516,6 +545,7 @@ def main():
     # vars from the workflow pod template so jobs don't try to reach a Service
     # that doesn't exist on this cluster.
     pypi_cache_enabled = "pypi-cache" in (cluster_cfg.get("modules") or [])
+    available_modules = set(cluster_cfg.get("modules") or [])
 
     # hf-cache module is cluster-scoped: when absent, strip the HF_CACHE env vars
     # and the /mnt/hf_cache hostPath mount from the workflow pod template so jobs
@@ -532,6 +562,7 @@ def main():
             module_name,
             pypi_cache_enabled,
             hf_cache_enabled,
+            available_modules,
         ):
             count += 1
 
