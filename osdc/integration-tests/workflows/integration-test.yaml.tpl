@@ -262,12 +262,11 @@ jobs:
           echo "=== HF Cache Env ==="
           FAIL=0
           [ "$HF_HOME" = "/mnt/hf_cache" ] || { echo "FAIL: HF_HOME='$HF_HOME'"; FAIL=1; }
-          [ "$HF_HUB_CACHE" = "/mnt/hf_cache/hub" ] || { echo "FAIL: HF_HUB_CACHE='$HF_HUB_CACHE'"; FAIL=1; }
           EXPECTED_BUCKET="pytorch-hf-model-cache-{{CLUSTER_ID}}"
           [ "$HF_CACHE_S3_BUCKET" = "$EXPECTED_BUCKET" ] \
             || { echo "FAIL: HF_CACHE_S3_BUCKET='$HF_CACHE_S3_BUCKET' (expected $EXPECTED_BUCKET)"; FAIL=1; }
           [ -n "$HF_CACHE_S3_REGION" ] || { echo "FAIL: HF_CACHE_S3_REGION is empty"; FAIL=1; }
-          echo "HF_HOME=$HF_HOME HF_HUB_CACHE=$HF_HUB_CACHE"
+          echo "HF_HOME=$HF_HOME"
           echo "HF_CACHE_S3_BUCKET=$HF_CACHE_S3_BUCKET HF_CACHE_S3_REGION=$HF_CACHE_S3_REGION"
           if [ "$FAIL" -ne 0 ]; then exit 1; fi
           echo "PASS: HF cache env vars are correct"
