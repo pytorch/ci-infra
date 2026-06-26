@@ -123,14 +123,17 @@ def assert_daemonset_healthy(
     desired = ds.get("status", {}).get("desiredNumberScheduled", 0)
     ready = ds.get("status", {}).get("numberReady", 0)
 
-    if desired == ready:
-        # Terminal — no retry would change this. Match original semantics.
-        if not allow_zero and _has_matching_nodes(all_nodes, node_selector):
-            assert desired > 0, f"{ds_name} has 0 desired pods"
+    if desired == ready and (desired > 0 or allow_zero or not _has_matching_nodes(all_nodes, node_selector)):
+        # Terminal — assertion already satisfied (or 0/0 is acceptable).
         return
 
+    # Reaching here means either desired != ready, or desired == ready == 0
+    # with eligible nodes — a transient post-deploy state where the controller
+    # has not yet computed desired against the new eligible-node set. Both
+    # cases drop into the retry loop.
+
     unstable = _count_unstable_nodes(all_nodes, min_node_age=min_node_age)
-    if max(0, desired - ready) <= unstable:
+    if desired != ready and max(0, desired - ready) <= unstable:
         # Gap explained by node churn — terminal accept (no retry needed).
         if not allow_zero and ready == 0 and _has_matching_nodes(all_nodes, node_selector):
             assert desired > 0, f"{ds_name} has 0 ready pods (all {unstable} nodes unstable)"

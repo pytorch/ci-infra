@@ -137,12 +137,14 @@ def workflow_template(tmp_path):
         "    steps:\n"
         "      - run: echo enforcer\n"
         "  # END_CACHE_ENFORCER\n"
+        "  # BEGIN_ARC_RUNNERS\n"
         "  # BEGIN_NO_CACHE_ENFORCER\n"
         "  no-cache-enforcer-job:\n"
         '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}upstream-runner"] }\n'
         "    steps:\n"
         "      - run: echo upstream\n"
         "  # END_NO_CACHE_ENFORCER\n"
+        "  # END_ARC_RUNNERS\n"
         "  # BEGIN_RELEASE\n"
         "  release-job:\n"
         '    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-runner"] }\n'
@@ -315,6 +317,22 @@ class TestGenerateWorkflow:
         assert "no-cache-enforcer-job" in result
         assert "BEGIN_NO_CACHE_ENFORCER" not in result
         assert "END_NO_CACHE_ENFORCER" not in result
+
+    def test_no_cache_enforcer_stripped_when_no_arc_runners(self, workflow_template):
+        # H100-only cluster (e.g. meta-prod-aws-uw1): no base arc-runners module
+        # and no cache-enforcer. The upstream pip test needs a CPU arc-runner, so
+        # the ARC_RUNNERS gate must strip it — otherwise it queues forever on a
+        # runner label that never exists on this cluster.
+        result = generate_workflow(
+            workflow_template,
+            "mt",
+            "meta-prod-aws-uw1",
+            "meta-prod-aws-uw1",
+            cluster_modules=["arc-runners-h100", "nodepools-h100"],
+        )
+        assert "no-cache-enforcer-job" not in result
+        assert "BEGIN_NO_CACHE_ENFORCER" not in result
+        assert "arc-job" not in result
 
     def test_no_cache_enforcer_stripped_when_cache_enforcer_present(self, workflow_template):
         result = generate_workflow(

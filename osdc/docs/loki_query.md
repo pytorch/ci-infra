@@ -259,11 +259,10 @@ To include timestamps:
 
 ## Notes on what's collected
 
-- **Pod logs** are collected from every node by the Alloy DaemonSet (`loki.source.file` reading CRI logs from `/var/log/pods/`). Pods in the `logging` namespace are excluded to prevent feedback loops; pods in `Succeeded` or `Failed` phase are dropped at discovery; lines matching `DEBUG`/`TRACE` levels and lines longer than 16KB are dropped; lines containing `kube-probe/` are dropped (HTTP readiness/liveness probe noise from any pod with HTTP access logging); per-pod rate limit is 1000 lines/s sustained / 5000 burst.
+- **Container stdout/stderr is NOT collected.** Use GitHub Actions workflow logs (for runner jobs), `kubectl logs` (while the pod is still alive), or pod events via the `alloy-events` Deployment to debug container behavior.
 - **Journal logs** are collected for `kubelet.service`, `containerd.service`, `kernel`, `nvidia-fabricmanager.service`, and `nvidia-persistenced.service` only. Debug-priority entries (syslog priority 7) are dropped.
 - **Kubernetes events** are collected by a separate Alloy Deployment (`alloy-events`, single replica) via the K8s Events API. Events from the `logging` namespace are dropped.
-- Some module pipelines apply additional sampling (e.g. `arc-runners` non-error logs are sampled at 10%, `buildkit` non-error logs at 50%, `harbor-system` non-error logs are throttled to 100 lines/s burst 500).
 
 ## Source
 
-Reference: `osdc-observability` skill ("Querying Logs in Grafana Cloud Loki" section) and `docs/observability.md`. Pipeline definitions in `modules/logging/pipelines/base.alloy`, `modules/logging/helm/alloy-events-values.yaml`, and per-module `modules/<name>/logging/pipeline.alloy` files.
+Reference: `osdc-observability` skill ("Querying Logs in Grafana Cloud Loki" section) and `docs/observability.md`. Pipeline definitions in `modules/logging/pipelines/base.alloy` (journal) and `modules/logging/helm/alloy-events-values.yaml` (events).

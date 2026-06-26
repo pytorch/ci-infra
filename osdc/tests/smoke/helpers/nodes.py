@@ -5,7 +5,8 @@ from __future__ import annotations
 import time
 
 MIN_NODE_AGE_SECONDS = 600  # Nodes must be Ready for 10+ min to count as stable
-RECENTLY_STABLE_AGE_SECONDS = 1200  # Nodes < 20 min may still have DaemonSet pods starting
+RECENTLY_STABLE_AGE_SECONDS = 1800  # Nodes < 30 min may still have DaemonSet pods starting
+POD_STARTUP_GRACE_SECONDS = 900  # Pods < 15 min old may still be pulling images or initializing
 
 # Taint keys signalling the node is unstable — about to be terminated, or
 # already known to be unhealthy by the kubelet/node-controller. The first
@@ -28,6 +29,7 @@ _DISRUPTION_TAINT_KEYS: frozenset[str] = frozenset(
 
 __all__ = [
     "MIN_NODE_AGE_SECONDS",
+    "POD_STARTUP_GRACE_SECONDS",
     "RECENTLY_STABLE_AGE_SECONDS",
     "_DISRUPTION_TAINT_KEYS",
     "_count_unstable_nodes",
@@ -39,6 +41,7 @@ __all__ = [
     "get_unstable_node_names",
     "pod_age_seconds",
     "pod_is_on_unstable_node",
+    "pod_within_startup_grace",
 ]
 
 
@@ -60,6 +63,20 @@ def pod_age_seconds(pod: dict) -> float | None:
     if not created:
         return None
     return time.time() - _parse_k8s_timestamp(created)
+
+
+def pod_within_startup_grace(pod: dict, grace_seconds: int = POD_STARTUP_GRACE_SECONDS) -> bool:
+    """True if the pod was created less than ``grace_seconds`` ago.
+
+    Decouples pod-readiness tolerance from node age — a pod can be young
+    (image-pulling, init-container running) on a node that has long since
+    crossed the ``MIN_NODE_AGE_SECONDS`` / ``RECENTLY_STABLE_AGE_SECONDS``
+    thresholds, e.g. when the node's age ticked over mid-pull.
+    """
+    age = pod_age_seconds(pod)
+    if age is None:
+        return False
+    return age < grace_seconds
 
 
 def _is_node_unstable(node: dict, min_node_age: int = MIN_NODE_AGE_SECONDS) -> bool:
