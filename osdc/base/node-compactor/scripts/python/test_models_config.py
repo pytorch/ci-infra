@@ -6,7 +6,6 @@ import unittest
 import unittest.mock
 from datetime import UTC, datetime, timedelta
 
-import models
 from models import Config, NodeState, PodInfo
 
 # ============================================================================
@@ -331,13 +330,87 @@ class TestNodeStateYoungestPodAgeSeconds(unittest.TestCase):
 
 
 class TestModuleConstants(unittest.TestCase):
-    """Module-level constants surfaced for the peak-window taint algorithm."""
+    """Defaults for the peak-window taint algorithm and pending-pod bounds."""
 
-    def test_peak_window_seconds(self):
-        self.assertEqual(models.PEAK_WINDOW_SECONDS, 2700)
+    def _from_clean_env(self) -> Config:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("COMPACTOR_")}
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            return Config.from_env()
 
-    def test_pending_pod_max_age_seconds(self):
-        self.assertEqual(models.PENDING_POD_MAX_AGE_SECONDS, 14400)
+    def test_peak_window_seconds_default(self):
+        self.assertEqual(self._from_clean_env().peak_window_seconds, 2700)
+
+    def test_pending_pod_max_age_seconds_default(self):
+        self.assertEqual(self._from_clean_env().pending_pod_max_age_seconds, 14400)
+
+    def test_pending_pod_min_age_seconds_default(self):
+        self.assertEqual(self._from_clean_env().pending_pod_min_age_seconds, 0)
+
+    def test_peak_window_seconds_env_override(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("COMPACTOR_")}
+        env["COMPACTOR_PEAK_WINDOW_SECONDS"] = "60"
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.peak_window_seconds, 60)
+
+    def test_pending_pod_max_age_seconds_env_override(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("COMPACTOR_")}
+        env["COMPACTOR_PENDING_POD_MAX_AGE_SECONDS"] = "120"
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.pending_pod_max_age_seconds, 120)
+
+    def test_pending_pod_min_age_seconds_env_override(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("COMPACTOR_")}
+        env["COMPACTOR_PENDING_POD_MIN_AGE_SECONDS"] = "45"
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.pending_pod_min_age_seconds, 45)
+
+
+class TestConfigFromEnvValidation(unittest.TestCase):
+    """Config.from_env() rejects out-of-range values for new env-configurable bounds."""
+
+    def _from_env(self, **env_vars):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("COMPACTOR_")}
+        env.update(env_vars)
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            return Config.from_env()
+
+    def test_peak_window_seconds_zero_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._from_env(COMPACTOR_PEAK_WINDOW_SECONDS="0")
+        self.assertIn("COMPACTOR_PEAK_WINDOW_SECONDS", str(ctx.exception))
+
+    def test_peak_window_seconds_negative_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._from_env(COMPACTOR_PEAK_WINDOW_SECONDS="-1")
+        self.assertIn("COMPACTOR_PEAK_WINDOW_SECONDS", str(ctx.exception))
+
+    def test_pending_pod_max_age_seconds_zero_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._from_env(COMPACTOR_PENDING_POD_MAX_AGE_SECONDS="0")
+        self.assertIn("COMPACTOR_PENDING_POD_MAX_AGE_SECONDS", str(ctx.exception))
+
+    def test_pending_pod_max_age_seconds_negative_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._from_env(COMPACTOR_PENDING_POD_MAX_AGE_SECONDS="-5")
+        self.assertIn("COMPACTOR_PENDING_POD_MAX_AGE_SECONDS", str(ctx.exception))
+
+    def test_pending_pod_min_age_seconds_negative_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._from_env(COMPACTOR_PENDING_POD_MIN_AGE_SECONDS="-1")
+        self.assertIn("COMPACTOR_PENDING_POD_MIN_AGE_SECONDS", str(ctx.exception))
+
+    def test_boundary_values_accepted(self):
+        cfg = self._from_env(
+            COMPACTOR_PEAK_WINDOW_SECONDS="1",
+            COMPACTOR_PENDING_POD_MAX_AGE_SECONDS="1",
+            COMPACTOR_PENDING_POD_MIN_AGE_SECONDS="0",
+        )
+        self.assertEqual(cfg.peak_window_seconds, 1)
+        self.assertEqual(cfg.pending_pod_max_age_seconds, 1)
+        self.assertEqual(cfg.pending_pod_min_age_seconds, 0)
 
 
 if __name__ == "__main__":

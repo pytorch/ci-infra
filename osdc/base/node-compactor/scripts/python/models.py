@@ -18,21 +18,6 @@ ANNOTATION_CAPACITY_RESERVED = "node-compactor.osdc.io/capacity-reserved"
 ANNOTATION_DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
 LABEL_NODE_FLEET = "node-fleet"
 
-# Sliding window over which the compactor tracks per-fleet peak bin-pack demand.
-# `min_needed` is the max bin-pack result observed inside this window, so a transient
-# dip in load doesn't trigger taints — the floor only releases after sustained drop.
-PEAK_WINDOW_SECONDS = 2700  # 45 minutes
-
-# Upper-bound age for a pending pod to be included in bin-pack input. Pods older than this
-# are unlikely to be capacity-constrained (more likely stuck on a permanent issue) and we
-# stop counting them as demand to avoid leaking memory if Kubernetes leaves zombie pods.
-PENDING_POD_MAX_AGE_SECONDS = 14400  # 4 hours
-
-# Lower-bound age before a pending pod is considered. Set to 0 to count every
-# pending pod the moment it appears, including pods that haven't yet been through
-# a Karpenter provisioning pass.
-PENDING_POD_MIN_AGE_SECONDS = 0
-
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -52,6 +37,9 @@ DEFAULTS = {
     "COMPACTOR_SPARE_CAPACITY_RATIO": "0.15",
     "COMPACTOR_SPARE_CAPACITY_THRESHOLD": "0.4",
     "COMPACTOR_CAPACITY_RESERVATION_NODES": "0",
+    "COMPACTOR_PEAK_WINDOW_SECONDS": "2700",
+    "COMPACTOR_PENDING_POD_MAX_AGE_SECONDS": "14400",
+    "COMPACTOR_PENDING_POD_MIN_AGE_SECONDS": "0",
 }
 
 
@@ -71,13 +59,16 @@ class Config:
     spare_capacity_ratio: float
     spare_capacity_threshold: float
     capacity_reservation_nodes: int
+    peak_window_seconds: int
+    pending_pod_max_age_seconds: int
+    pending_pod_min_age_seconds: int
 
     @classmethod
     def from_env(cls) -> "Config":
         def env(key: str) -> str:
             return os.environ.get(key, DEFAULTS[key])
 
-        return cls(
+        cfg = cls(
             interval=int(env("COMPACTOR_INTERVAL")),
             max_uptime_hours=int(env("COMPACTOR_MAX_UPTIME_HOURS")),
             nodepool_label=env("COMPACTOR_NODEPOOL_LABEL"),
@@ -92,7 +83,23 @@ class Config:
             spare_capacity_ratio=float(env("COMPACTOR_SPARE_CAPACITY_RATIO")),
             spare_capacity_threshold=float(env("COMPACTOR_SPARE_CAPACITY_THRESHOLD")),
             capacity_reservation_nodes=int(env("COMPACTOR_CAPACITY_RESERVATION_NODES")),
+            peak_window_seconds=int(env("COMPACTOR_PEAK_WINDOW_SECONDS")),
+            pending_pod_max_age_seconds=int(env("COMPACTOR_PENDING_POD_MAX_AGE_SECONDS")),
+            pending_pod_min_age_seconds=int(env("COMPACTOR_PENDING_POD_MIN_AGE_SECONDS")),
         )
+
+        if cfg.peak_window_seconds <= 0:
+            raise ValueError(f"COMPACTOR_PEAK_WINDOW_SECONDS must be > 0, got {cfg.peak_window_seconds}")
+        if cfg.pending_pod_max_age_seconds <= 0:
+            raise ValueError(
+                f"COMPACTOR_PENDING_POD_MAX_AGE_SECONDS must be > 0, got {cfg.pending_pod_max_age_seconds}"
+            )
+        if cfg.pending_pod_min_age_seconds < 0:
+            raise ValueError(
+                f"COMPACTOR_PENDING_POD_MIN_AGE_SECONDS must be >= 0, got {cfg.pending_pod_min_age_seconds}"
+            )
+
+        return cfg
 
 
 # ============================================================================

@@ -827,3 +827,130 @@ class TestGroupC_Reservation(_CompactorE2EBase):
         finally:
             log.info("C3: Scaling compactor back to 1...")
             scale_compactor_deployment(self.client, 1)
+
+
+# ============================================================================
+# Group PeakWindow: peak-window damping then release
+# ============================================================================
+
+
+class TestPeakWindow(_CompactorE2EBase):
+    """The per-fleet peak-window floor dampens transient drops then releases.
+
+    Session config sets COMPACTOR_PEAK_WINDOW_SECONDS=30 (see GROUP_A_CONFIG).
+    """
+
+    def test_peak_window_blocks_then_releases(self) -> None:
+        # Reset to the bare Group A config in case a prior group switched it.
+        from conftest import GROUP_A_CONFIG  # local import to avoid cycle at module load
+
+        log.info("PeakWindow: ensuring GROUP_A_CONFIG (peak_window=30s)...")
+        reconfigure_compactor(self.client, GROUP_A_CONFIG, self.logs)
+
+        # Start clean: drop any leftover pods so peak_history rebuilds from a known baseline
+        delete_all_pods(self.client, self.ns)
+        wait_for_stable(
+            "fleet stable before peak-window test",
+            lambda: (
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
+            ),
+            stable_s=STABLE_WINDOW,
+            timeout_s=TAINT_TIMEOUT,
+        )
+
+        log.info("PeakWindow: creating 9 pods → expect 3 nodes...")
+        _create_pods(self.client, self.ns, self.pool, self.itype, 9, "pw")
+
+        wait_for(
+            ">= 3 nodes in pool",
+            lambda: len(get_pool_nodes(self.client, self.pool)) >= 3,
+            timeout_s=PROVISION_TIMEOUT,
+            poll_s=5,
+        )
+        wait_for(
+            "9 pods running",
+            lambda: all_pods_running(self.client, self.ns, 9),
+            timeout_s=PROVISION_TIMEOUT,
+            poll_s=5,
+        )
+        wait_for_stable(
+            "compactor stable after peak load",
+            lambda: (
+                sorted(get_fleet_tainted_nodes(self.client, self.fleet_pools)),
+                len(get_fleet_nodes(self.client, self.fleet_pools)),
+            ),
+            stable_s=STABLE_WINDOW,
+            timeout_s=TAINT_TIMEOUT,
+        )
+
+        # Drain 2 of 3 nodes — peak window (30s) still covers the recent demand-of-3
+        pods_by_node = get_pods_by_node(self.client, self.ns)
+        nodes_with_pods = sorted(pods_by_node.keys())
+        assert len(nodes_with_pods) >= 2, f"Expected pods on >= 2 nodes, got {len(nodes_with_pods)}"
+        nodes_to_drain = nodes_with_pods[:-1]
+        pods_to_delete: list[str] = []
+        for node in nodes_to_drain:
+            pods_to_delete.extend(pods_by_node[node])
+
+        log.info("PeakWindow: draining %d nodes...", len(nodes_to_drain))
+        delete_pods(self.client, self.ns, pods_to_delete)
+        wait_for_pods_deleted(self.client, self.ns, pods_to_delete)
+
+        drained_set = set(nodes_to_drain)
+
+        # Start the clock AFTER deletion completes — pod deletion can take
+        # 10-30s and would otherwise eat into the 15s "must-not-taint" window.
+        drain_start = time.monotonic()
+
+        # Running observations: every taint we observe on a drained node, plus
+        # the set of drained nodes that were observed tainted before vanishing.
+        # The key invariant: a drained node disappearing without ever being
+        # observed tainted means the compactor did NOT taint it — Karpenter
+        # WhenEmpty deleted it on its own, and the peak-window release was
+        # never proven. That counts as a test failure.
+        observed_tainted: set[str] = set()
+        deleted_after_tainted: set[str] = set()
+
+        def _observe() -> None:
+            pool_names = {n.metadata.name for n in get_pool_nodes(self.client, self.pool)}
+            tainted_now = set(get_fleet_tainted_nodes(self.client, self.fleet_pools))
+            for n in drained_set:
+                if n in tainted_now:
+                    observed_tainted.add(n)
+                elif n not in pool_names and n in observed_tainted:
+                    deleted_after_tainted.add(n)
+
+        # Phase 1 — within the 30s peak window: drained nodes MUST NOT be tainted.
+        # Poll for ~15s and assert taints never appear on the drained nodes.
+        while time.monotonic() < drain_start + 15:
+            _observe()
+            early_taints = observed_tainted & drained_set
+            assert not early_taints, (
+                f"Peak window failed to dampen: nodes {early_taints} tainted within 15s of drain. "
+                f"Diagnostics:\n{self._taint_diagnostics()}"
+            )
+            time.sleep(2)
+        log.info("PeakWindow: drained nodes correctly NOT tainted within window")
+
+        # Phase 2 — after the 30s window expires, every drained node must be
+        # observed tainted at SOME point (or observed tainted before being
+        # deleted by Karpenter). A drained node deleted before we saw a taint
+        # is a failure — we never proved the compactor released the floor.
+        def _all_drained_accounted_for() -> bool:
+            _observe()
+            return all(n in observed_tainted or n in deleted_after_tainted for n in drained_set)
+
+        wait_for(
+            f"all drained nodes {drained_set} observed tainted (or tainted-then-deleted)",
+            _all_drained_accounted_for,
+            timeout_s=TAINT_TIMEOUT,
+            poll_s=2,
+            on_timeout=self._taint_diagnostics,
+        )
+        log.info(
+            "PeakWindow: drained nodes accounted for after peak-window expiry "
+            "(observed_tainted=%s, deleted_after_tainted=%s)",
+            observed_tainted,
+            deleted_after_tainted,
+        )
