@@ -47,7 +47,9 @@ from helpers import (
     get_compactor_pod_names,
     get_fleet_nodes,
     patch_compactor_env,
+    pause_arc_scalesets,
     restart_compactor_pod,
+    restore_arc_scalesets,
     restore_compactor_env,
     scale_compactor_deployment,
     wait_for,
@@ -372,6 +374,10 @@ def compactor_setup(
         log.info("Compactor scaled to 0 (stale from crashed run) — restoring to 1")
         scale_compactor_deployment(client, 1)
 
+    log.info("Pausing ARC scalesets (maxRunners=0) to silence cluster-wide churn...")
+    arc_originals = pause_arc_scalesets(client)
+    log.info("  Paused %d scaleset(s)", len(arc_originals))
+
     # Clean stale taints and reservation annotations from ALL fleet pools
     # (not just the target) — the compactor groups by fleet, so leftover
     # nodes in sibling pools pollute fleet-level taint decisions.
@@ -452,6 +458,12 @@ def compactor_setup(
             return
         restored = True
         compactor_logs.stop()
+        log.info("Restoring ARC scalesets...")
+        try:
+            restore_arc_scalesets(client, arc_originals)
+            log.info("  ARC scalesets restored.")
+        except Exception:
+            log.exception("  Failed to restore ARC scalesets!")
         log.info("Restoring compactor Deployment (env vars + replicas)...")
         try:
             # Ensure replicas=1 before restoring env (a crashed test may
