@@ -33,29 +33,20 @@ spec:
       serviceAccountName: hf-cache-mount
       priorityClassName: system-node-critical
 
-      # taint-remover reads the host mount table (/proc/1/mounts) to confirm the
-      # FUSE is live on the host before clearing the scheduling gate.
+      # prepare-host-mount nsenters the host's PID 1 to mount in the host NS.
       hostPID: true
 
-      # Runner/workflow nodes are labelled workload-type=github-runner.
       nodeSelector:
         workload-type: github-runner
 
-      # Tolerate every taint so the mount schedules FIRST on a fresh node —
-      # ahead of the node-init.osdc.io/* startup taints clearing — and brings up
-      # the FUSE before any runner pod. Enumerating taints risks a chicken-and-egg
-      # deadlock if one is missed (same rationale as cache-enforcer); a single
-      # `operator: Exists` matches all. Isolation is enforced by the nodeSelector.
+      # Schedule before the node-init.osdc.io/* taints clear, so the mount precedes
+      # runner pods. operator:Exists avoids a deadlock from missing one (cf. cache-enforcer).
       tolerations:
         - operator: Exists
 
-      # Make /mnt/hf_cache a shared mount point in the HOST mount namespace before
-      # rclone mounts. A plain hostPath dir is not a mount point, so the rclone
-      # container's Bidirectional FUSE has no shared host peer to propagate into
-      # and job pods (HostToContainer) only ever see the empty dir. Init runs to
-      # completion before the rclone container binds the volume, so the bind then
-      # joins the shared peer group and the FUSE propagates to the host. Same
-      # /proc/1/root nsenter-into-host pattern as cache-enforcer.
+      # Make the host /mnt/hf_cache an rshared mount point before rclone binds it: a
+      # plain hostPath dir gives Bidirectional no host peer, so the FUSE never reaches
+      # job pods (they see an empty dir). nsenter-into-host: cf. cache-enforcer.
       initContainers:
         - name: prepare-host-mount
           image: __TAINT_REMOVER_IMAGE__
@@ -85,17 +76,13 @@ spec:
               set -eu
               MOUNT=/mnt/hf_cache
               CACHE=/mnt/hf-cache-vfs
-              # A crashed/killed container can't run preStop, so a stale FUSE mount
-              # is left and rclone then fails with "directory already mounted".
-              # Clear only the FUSE (fusermount), never `umount` — that would tear
-              # down the host bind mount the initContainer set up for propagation.
+              # Clear a stale FUSE left by a crash (no preStop) so rclone can remount.
+              # fusermount only — `umount` would drop the host bind mount.
               fusermount -uz "$MOUNT" 2>/dev/null || true
               mkdir -p "$MOUNT" "$CACHE"
 
-              # VFS cache cap. A "<N>%" value scales to N% of the cache disk so
-              # bigger nodes cache more (a100 ~1TB) and smaller ones less (g5/g6
-              # ~600GB); an absolute value (e.g. 200G) is used as-is. df -k + NF-4
-              # is busybox-safe and survives a wrapped device-name line.
+              # "<N>%" scales the cap to N% of the cache disk; absolute (200G) as-is.
+              # df -k + NF-4 is busybox-safe and survives a wrapped device-name line.
               VFS_MAX="__VFS_CACHE_MAX_SIZE__"
               case "$VFS_MAX" in
                 *%)
@@ -106,11 +93,9 @@ spec:
               esac
               echo "VFS cache cap: $VFS_MAX"
 
-              # Credentials via IRSA (env_auth). /mnt/hf_cache/hub maps to
-              # s3://__BUCKET__/hub. Run rclone in the background so that, once the
-              # FUSE is up, we can drop a sentinel file the (unprivileged) taint-
-              # remover sidecar waits on — it then needs no hostPID/privileged to
-              # detect readiness.
+              # Background rclone so we can drop a sentinel once mounted — the
+              # taint-remover waits on that rather than inspecting the host, which
+              # keeps it unprivileged. Creds via IRSA (env_auth).
               rclone mount \
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
@@ -129,9 +114,8 @@ spec:
                 --log-level INFO &
               RCLONE_PID=$!
               trap 'kill -TERM "$RCLONE_PID" 2>/dev/null || true' TERM INT
-              # Signal once the FUSE is actually mounted (content-independent, so it
-              # fires even before the bucket is seeded). /proc/mounts here is this
-              # container's own mount namespace, where rclone created the mount.
+              # Signal on the mount itself (not hub/ contents) so it fires even before
+              # the bucket is seeded.
               until grep -q " $MOUNT fuse" /proc/mounts 2>/dev/null; do
                 kill -0 "$RCLONE_PID" 2>/dev/null || break
                 sleep 1
@@ -172,11 +156,8 @@ spec:
             - name: mount-signal
               mountPath: /run/hf-cache-signal
 
-        # Clears the node-init.osdc.io/hf-cache startup taint once rclone signals
-        # the FUSE is up (a sentinel file on a shared emptyDir). Using the sentinel
-        # instead of reading the host mount table lets this run UNPRIVILEGED — no
-        # privileged, no use of hostPID, all capabilities dropped. Unlike rclone it
-        # touches nothing on the node; it only patches its own node via the API.
+        # Clears the node-init.osdc.io/hf-cache gate once rclone signals readiness.
+        # Waiting on the sentinel (not the host mount table) keeps it unprivileged.
         - name: taint-remover
           image: __TAINT_REMOVER_IMAGE__
           command:
@@ -184,7 +165,6 @@ spec:
             - -c
             - |
               set -eu
-              # Wait for rclone to signal the mount is live, then clear the gate.
               while [ ! -e /run/hf-cache-signal/mounted ]; do sleep 2; done
               echo "mount signalled — removing startup taint."
               python3 /opt/taint-remover/taint_remover.py node-init.osdc.io/hf-cache
@@ -224,13 +204,10 @@ spec:
           hostPath:
             path: /mnt/hf-cache-vfs
             type: DirectoryOrCreate
-        # Shared taint_remover.py library (ConfigMap rendered into this namespace
-        # by deploy.sh from base/kubernetes/node-taint-remover/lib/).
+        # taint_remover.py — deploy.sh renders this ConfigMap into the namespace.
         - name: taint-remover-lib
           configMap:
             name: node-taint-remover-lib
-        # Shared sentinel: rclone touches a file here once the FUSE is up; the
-        # taint-remover waits on it (emptyDir sharing — no mount propagation needed,
-        # so the sidecar needs no host access).
+        # Sentinel: rclone touches it when mounted; taint-remover waits on it.
         - name: mount-signal
           emptyDir: {}

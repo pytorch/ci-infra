@@ -1,5 +1,5 @@
 # Per-cluster private S3 bucket (pytorch-hf-model-cache-<cluster_id>, in the
-# cluster's region) + a read-write IRSA role for the rclone mount. Created in the
+# cluster's region) + a read-only IRSA role for the rclone mount. Created in the
 # cluster's own state, so `just deploy-module <cluster> hf-cache` provisions it.
 
 terraform {
@@ -45,10 +45,8 @@ locals {
 }
 
 # --- Per-cluster model-cache bucket ---
-# Plain symlink-free HF cache files (portable source of truth). Private.
-# force_destroy=true: the cache is reproducible (repopulated daily by the
-# scheduled refresh jobs), so cluster teardown / `tofu destroy` can empty and
-# drop the bucket cleanly instead of erroring on a non-empty bucket.
+# force_destroy=true is safe: the cache is reproducible (refreshed daily), so
+# teardown can drop a non-empty bucket instead of erroring.
 
 resource "aws_s3_bucket" "hf_cache" {
   bucket = local.bucket

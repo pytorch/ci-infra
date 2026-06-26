@@ -285,10 +285,8 @@ jobs:
           fi
           echo "PASS: /mnt/hf_cache rejected a write (read-only)"
 
-  # Read path: how normal CI test jobs use the cache — HF_HOME=/mnt/hf_cache
-  # (injected) + offline flags, load a small model via huggingface_hub. FAILS if
-  # the model isn't cached or won't load — the cache must be populated (refresh /
-  # ci-refresh-hf-cache).
+  # Read path mirroring a real CI job: HF_HOME=/mnt/hf_cache + offline flags, load
+  # a small model. Fails if the cache isn't populated.
   test-hf-cache-offline-read:
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
     container:
@@ -319,18 +317,13 @@ jobs:
           print('PASS: loaded', model, 'offline from', path, '(' + str(len(files)) + ' files)')
           "
 
-  # Large-model offline inference: load Qwen2.5-7B from the shared cache and run a
-  # real generation — the actual "use the model" path a job would take. Loading
-  # the weights reads them through the rclone mount (lazy from S3); generation then
-  # runs a forward/decode loop on CPU. Entirely offline (HF_HUB_OFFLINE) so it
-  # exercises only the cache. FAILS if the model isn't cached or won't run — seed
-  # it once with `scripts/hf-cache-seed.py <cluster> Qwen/Qwen2.5-7B-Instruct`.
+  # Load Qwen2.5-7B from the cache and generate — the real "use the model" path
+  # (loading reads the weights through the mount). Seed once with
+  # `scripts/hf-cache-seed.py <cluster> Qwen/Qwen2.5-7B-Instruct`.
   test-hf-cache-large-read:
-    # GPU runner. CPU loading keeps the weights as mmap views into the rclone FUSE
-    # mount, so generate() SIGBUSes faulting those pages (reproduced on 32GB and 64GB,
-    # with low_cpu_mem_usage False — transformers still assigns mmap-backed tensors).
-    # On GPU the weights are copied into VRAM at load, so generate never touches the
-    # FUSE. A single A100 has ample VRAM for a 7B bf16 model.
+    # GPU: CPU loading keeps weights mmap'd from the FUSE, so generate() SIGBUSes
+    # faulting them (repro'd on 32/64GB, even low_cpu_mem_usage=False). On GPU
+    # weights go to VRAM, so generate never touches the FUSE; one A100 fits 7B bf16.
     runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-11-125-a100"] }
     container:
       image: python:3.12-slim
@@ -338,10 +331,8 @@ jobs:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       MODEL: "Qwen/Qwen2.5-7B-Instruct"
-      # Upper bound on load time. The mount fetches only this model's shards lazily
-      # (warm: from node NVMe; cold: ~15GB from S3 in-region — observed ~430s on a
-      # cold GPU nodepool). Generous so a cold fetch passes; still catches the
-      # pathological case (re-downloading, or pulling far beyond this one model).
+      # Generous cap: a cold GPU node fetches ~15GB from S3 (~430s observed). Still
+      # catches the pathological case (re-downloading / pulling beyond this model).
       MAX_LOAD_SECONDS: "900"
     steps:
       - name: Load the model offline from /mnt/hf_cache and run inference
@@ -354,10 +345,7 @@ jobs:
           fi
           pip install --no-cache-dir torch  # default CUDA build for the GPU runner
           pip install --no-cache-dir 'transformers>=4.45' 'huggingface_hub>=0.24' accelerate
-          # Load onto the GPU and generate offline. device_map='cuda' streams the weights
-          # from the cache into VRAM at load time, so generate() runs entirely on the GPU
-          # and never faults the rclone FUSE mmap (the CPU-load path does, and SIGBUSes).
-          # Greedy decode for a deterministic, bounded run.
+          # device_map='cuda' loads weights to VRAM (see runs-on note); greedy decode.
           MODEL="$MODEL" python3 -c "
           import os, sys, time
           import torch
