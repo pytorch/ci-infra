@@ -99,103 +99,30 @@ Where:
 
 ## Log Volume Estimation Reference
 
-Per-unit log volume estimates sent to Grafana Cloud Loki, broken down by scope. All estimates account for pipeline filtering: DEBUG/TRACE drops, >16KB line drops, health-check drops, module-level sampling, Harbor rate limiting, and per-pod rate limits.
+Only two log sources ship to Grafana Cloud Loki:
 
-To calculate total cluster volume, multiply per-unit rates by actual replica/node/pod counts using the scaling formula at the end of this section.
+1. **System journal** — per-node DaemonSet, scoped to a fixed `keep` filter (`kubelet.service|containerd.service|kernel|nvidia-fabricmanager.service|nvidia-persistenced.service`)
+2. **Kubernetes events** — single `alloy-events` Deployment watching the K8s Events API across all namespaces except `logging`
 
-### Per Runner Job Pod
+Container stdout/stderr is **not** shipped. Anything below assumes the journal + events architecture only.
 
-Runner pods are ephemeral (minutes to hours). Each job creates a runner pod (ARC orchestrator) and a job pod (the CI workflow container). Both are in the `arc-runners` namespace, where **non-error logs are sampled at 10%** (errors/warns always kept).
+### Per Node (Journal Overhead)
 
-| Component | Raw rate | After pipeline | ~Per job lifecycle (30 min) |
-|-----------|----------|:-:|:-:|
-| **Runner pod** (ARC orchestrator) | ~10-50 lines/min | ~2-10 lines/min | 50-300 lines (~0.01-0.06 MB) |
-| **Job pod** (CI workflow) | ~100-10,000 lines/min | ~15-1,050 lines/min | 450-31,500 lines (~0.09-6.3 MB) |
-| **Total per job** | | | **~0.1-6 MB** |
-
-Pipeline stages applied (in order):
-1. Pods in `Succeeded`/`Failed` phase excluded at discovery
-2. DEBUG/TRACE lines dropped globally
-3. Lines >16KB dropped
-4. Health-check probes (`kube-probe/`) dropped
-5. **Non-error logs sampled at 10%** (module pipeline — the dominant cost control)
-6. Rate limit: 1000 lines/s per pod (rarely hit after sampling)
-
-### Per Karpenter Node (DaemonSet Overhead)
-
-Every Karpenter-managed node runs DaemonSets that produce logs. This is the per-node overhead **excluding** runner or BuildKit pods on the node.
-
-| Source | Type | ~Lines/min per node | Notes |
-|--------|------|:---:|-------|
-| **kubelet** (journal) | System | 30-100 | Pod lifecycle, volume mounts, probes |
-| **containerd** (journal) | System | 20-80 | Container start/stop, image pulls |
-| **kernel** (journal) | System | 1-10 | OOM kills, hardware errors |
-| **node-performance-tuning** | Pod log | ~0 | Init container only, main sleeps |
-| **registry-mirror-config** | Pod log | ~0 | Init container, main sleeps |
-| **kube-proxy** | Pod log | 1-5 | EKS-managed DaemonSet — runs on every node. klog format, level extracted. |
-| **aws-node (VPC-CNI)** | Pod log | 1-5 | EKS-managed DaemonSet — runs on every node. JSON, level extracted. |
-| **GPU: nvidia-fabricmanager** (journal) | System | 1-5 | GPU nodes only |
-| **GPU: nvidia-persistenced** (journal) | System | 0-2 | GPU nodes only |
-| **cache-enforcer** | Pod log | 1-5 | DaemonSet on `arc-cbr-production` (`modules/cache-enforcer/kubernetes/daemonset.yaml`) |
-| **image-cache-janitor** | Pod log | 1-5 | DaemonSet in base — runs on every node (`base/kubernetes/image-cache-janitor/daemonset.yaml`) |
-| **nodelocaldns** | Pod log | <1 | DaemonSet in base — runs on every node (`base/kubernetes/nodelocaldns/`). CoreDNS plugin reports + "Setup OK" messages only; near-silent at steady state |
-
-Subset-scoped DaemonSets (not on every Karpenter node):
-
-| Source | Type | Scope | ~Lines/min per node | Notes |
-|--------|------|-------|:---:|-------|
-| **runner-hooks-warmer** | Pod log | `arc-runners` namespace, `nodeSelector: node-fleet=c7i-runner` (CPU runner pool only — not GPU, not BuildKit) | ~0 | Downloads runner-container-hooks zip once, main sleeps. Because it lives in `arc-runners`, its logs are sampled at 10% per the ARC pipeline. |
-
-**Per-node totals**:
-
-| Node type | Total overhead lines/min | ~GB/day per node |
-|-----------|:---:|:---:|
-| CPU runner node | ~55-200 | ~0.02-0.07 |
-| GPU runner node | ~57-207 | ~0.02-0.07 |
-
-**Not collected from nodes**: node-exporter (metrics only), alloy-logging (in `logging` namespace — self-excluded), dcgm-exporter (metrics only).
-
-### Base Infrastructure Services (Per Replica)
-
-These run on tainted `CriticalAddonsOnly` base nodes. Rates are **per replica** — multiply by actual replica count for each service.
-
-| Source | ~Lines/min per replica | Notes |
+| Source | ~Lines/min per node | Notes |
 |--------|:---:|-------|
-| **Harbor nginx** | 15-170 | Access logs; health-checks dropped; non-error capped at 100 lines/s burst 500 |
-| **Harbor core** | 5-25 | API request logs (JSON, level extracted) |
-| **Harbor registry** | 5-50 | Layer push/pull logs |
-| **Harbor jobservice** | 2-10 | Job execution logs |
-| **Harbor portal** | 1-5 | Frontend serving logs |
-| **Harbor db** | 1-5 | PostgreSQL logs |
-| **Harbor redis** | 1-5 | Cache operation logs |
-| **Harbor exporter** | 1-5 | Metrics exporter logs |
-| **node-compactor** | 10-30 | Runs every 20s, logs taint/untaint decisions (single replica) |
-| **Karpenter controller** | 5-25 | Node provisioning/deprovisioning events |
-| **ARC controller** | 5-25 | Runner scale set reconciliation |
-| **ARC listener** | 1-5 | GitHub API polling (1 listener per runner scale set definition) |
-| **CoreDNS** | 10-50 | DNS query logs |
-| **kube-state-metrics** | 2-10 | Object state change logs (single replica) |
-| **Prometheus Operator** | 2-10 | CRD reconciliation (single replica) |
-| **BuildKit HAProxy** | 5-20 | TCP connection access logs |
-| **Alloy (monitoring)** | 2-10 | Scrape lifecycle logs |
+| **kubelet** (journal) | 30-100 | Pod lifecycle, volume mounts, probes |
+| **containerd** (journal) | 20-80 | Container start/stop, image pulls |
+| **kernel** (journal) | 1-10 | OOM kills, hardware errors |
+| **nvidia-fabricmanager** (journal) | 1-5 | GPU nodes only |
+| **nvidia-persistenced** (journal) | 0-2 | GPU nodes only |
 
-Base nodes also produce journal logs (kubelet + containerd + kernel) at ~55-200 lines/min per node (same rates as the Karpenter node overhead table above).
+Priority-7 (`debug`) entries are dropped (`drop_counter_reason="journal_debug"`).
 
-Harbor nginx is the largest single source on base nodes. Without the 100 lines/s rate limit on non-error logs, nginx access logs alone could dominate total base infra volume during peak image pull activity.
-
-### Per BuildKit Pod
-
-BuildKit pods generate high log volume during active builds. **Non-error logs are sampled at 50%** (errors/warns always kept). Each pod runs `max-parallelism=1`.
-
-| Source | Idle lines/min | Building lines/min | Notes |
-|--------|:---:|:---:|-------|
-| **buildkitd** (per pod) | 5-20 | 200-4,000 | After 50% sampling; every build step logged |
-
-BuildKit nodes also produce DaemonSet + journal overhead at the same per-node rates as runner nodes (~55-200 lines/min per node).
+Per-node totals: **~55-200 lines/min** = **~0.02-0.07 GB/day** per node. Identical for CPU and GPU runner nodes, base nodes, and BuildKit nodes — journal volume is bounded by the per-unit `keep` filter, not by pod density on the node.
 
 ### Kubernetes Events
 
-Single `alloy-events` Deployment watches the K8s Events API across all namespaces except `logging`. Event volume scales with cluster activity, not replica count.
+Single `alloy-events` Deployment. Event volume scales with cluster activity, not replica count.
 
 | Condition | ~Events/min | Notes |
 |-----------|:---:|-------|
@@ -208,42 +135,19 @@ Events are JSON (~700 bytes average). Fields extracted: `type` and `kind` to ind
 ### Scaling Formula (Logs)
 
 ```
-Total GB/day ≈ C_base_services
-             + N_base_nodes × 0.02-0.07 GB      (journal overhead)
-             + N_runner_nodes × 0.02-0.07 GB     (DaemonSet + journal overhead)
-             + N_buildkit_nodes × 0.02-0.07 GB   (DaemonSet + journal overhead)
-             + N_concurrent_jobs × job_MB × jobs_per_day / 1000
-             + N_buildkit_pods × buildkit_GB_per_pod_day
-             + events_GB
+Total GB/day ≈ N_total_nodes × 0.02-0.07 GB     (journal overhead)
+             + events_GB                         (cluster activity)
 ```
 
-Where:
-- `C_base_services` = sum of per-replica service rates × replica counts × 60 × 24 × ~200 bytes/line ÷ 1e9
-- `job_MB` = 0.1-6 MB per job (highly variable by workflow)
-- `buildkit_GB_per_pod_day` = depends on build concurrency (idle: ~0.01 GB, active: ~0.5 GB)
-- `events_GB` = depends on cluster activity level (see events table above)
-
-Runner pod logs are expected to be the **dominant log source** despite 90% sampling of non-error lines. The three most impactful cost controls, in order:
-
-1. **ARC runner 10% sampling** — reduces runner logs by ~90%
-2. **Harbor rate limiting** — caps non-error nginx access logs at 100 lines/s
-3. **BuildKit 50% sampling** — reduces build logs by ~50%
-
-Global filters (DEBUG/TRACE drop, >16KB drop, health-check drop) prevent baseline bloat but are harder to quantify individually.
+Where `events_GB` depends on cluster activity level (see events table above). Both terms are bounded and predictable — there is no per-pod or per-job log multiplier any more.
 
 ### What's NOT Sent to Loki
 
 | Source | Why not collected |
 |--------|-------------------|
-| Alloy pods (`logging` namespace) | Self-excluded at discovery level (feedback loop prevention) |
-| Completed/failed pods | Dropped at discovery level |
-| DEBUG/TRACE log lines | Globally dropped in base pipeline |
-| Lines >16KB | Globally dropped (binary spam protection) |
-| Health-check probe lines (`kube-probe/`) | Globally dropped |
-| kube-apiserver logs | EKS-managed; not exposed as pod or journal unit |
-| kube-scheduler logs | EKS-managed; not exposed |
-| kube-controller-manager logs | EKS-managed; not exposed |
-| etcd logs | EKS-managed; not exposed |
+| Container stdout/stderr (any namespace) | Intentionally not shipped — runner-job volume was too costly; GitHub Actions stores full workflow logs |
+| Alloy pods (`logging` namespace) | Self-excluded at the events source (feedback loop prevention) |
+| kube-apiserver / kube-scheduler / kube-controller-manager / etcd | EKS-managed; not exposed as journal units |
 | CloudWatch control plane logs | Separate AWS pipeline; not collected by Alloy |
 
 ---
@@ -358,7 +262,7 @@ Active series scale roughly linearly with fleet size. Using the fleet estimates 
 
 Estimated daily log volume (GB/day) sent to Grafana Cloud Loki, derived from the fleet simulation in [current_runner_load_distribution.md](current_runner_load_distribution.md) and the per-unit rates above.
 
-**Date:** 2026-03-24 (input data); per-source descriptions and module/scale-set composition refreshed 2026-05-06. **Scope:** pytorch/pytorch self-hosted Linux runners only (same scope as the fleet simulation). Actual volume will also be higher due to unmapped runner types, B200/H100 GPU runners (local `arc-runners-b200`/`arc-runners-h100` modules, not in fleet simulation), and other repos sharing the cluster.
+**Date:** 2026-03-24 (input data); per-source descriptions refreshed 2026-06-25. **Scope:** pytorch/pytorch self-hosted Linux runners only (same scope as the fleet simulation). Actual volume will also be higher due to unmapped runner types, B200/H100 GPU runners, and other repos sharing the cluster.
 
 ### Input data
 
@@ -366,65 +270,22 @@ From the load distribution data:
 
 | Parameter | Value | Source |
 |---|---|---|
-| Total jobs (30 days) | ~1,599,000 | Sum of all self-hosted Linux runner job counts |
-| Average jobs/day | ~53,300 | 1,599,000 / 30 |
 | Peak fleet | 2,113 nodes | Fleet simulation |
-| Weekday avg fleet | ~1,355 nodes | Derived from [node churn estimates](current_runner_load_distribution.md#fleet-size-by-time-of-day): weighted average of peak (2,113), trough (597), and transition periods |
+| Weekday avg fleet | ~1,355 nodes | Derived from [node churn estimates](current_runner_load_distribution.md#fleet-size-by-time-of-day) |
 | Weekend avg fleet | ~249 nodes | [Node churn estimates](current_runner_load_distribution.md#fleet-size-by-time-of-day) |
-| BuildKit pods | 10 (5 per arch) | `clusters.yaml` defaults → `buildkit.replicas_per_arch: 5` × 2 archs |
-| BuildKit nodes | 5 (≈ 10 pods / 2 per node) | `clusters.yaml` arc-cbr-production override → `buildkit.pods_per_node: 2` |
-| Base nodes | 6 | `clusters.yaml` defaults → `base_node_count: 6` (no override in `arc-cbr-production`) |
+| BuildKit nodes | 5 | `clusters.yaml` arc-cbr-production override → `buildkit.pods_per_node: 2` |
+| Base nodes | 6 | `clusters.yaml` defaults → `base_node_count: 6` |
 
 ### Component breakdown (weekday average)
 
-#### Node DaemonSet + journal overhead
+#### Journal overhead (per node)
 
-Every runner node produces 0.02–0.07 GB/day (midpoint ~0.045) in DaemonSet and journal logs. This scales linearly with fleet size.
+Every node — runner, BuildKit, base — produces 0.02–0.07 GB/day (midpoint ~0.045) in journal logs. The rate is the same regardless of pod density on the node because journal scope is fixed (`kubelet|containerd|kernel|nvidia-*`).
 
-| Load level | Avg runner nodes | GB/day (low) | GB/day (mid) | GB/day (high) |
+| Load level | Total nodes (runner + BuildKit + base) | GB/day (low) | GB/day (mid) | GB/day (high) |
 |---|---|---|---|---|
-| Weekday average | ~1,355 | 27.1 | 61.0 | 94.9 |
-| Weekend average | ~249 | 5.0 | 11.2 | 17.4 |
-
-BuildKit nodes (4) and base nodes (5) add a constant ~0.4 GB/day (mid) regardless of runner load.
-
-#### Base infrastructure services
-
-Fixed overhead from centralized services. Uses service rates from the [base infrastructure reference](#base-infrastructure-services-per-replica), multiplied by replica counts for `arc-cbr-production`, converted at ~200 bytes/line.
-
-| Service | Lines/min (mid × replicas) | GB/day |
-|---|---|---|
-| Harbor (all components) | 6×93 + 4×15 + 4×28 + 1×6 + 1×3 + 1×3 + 1×3 + 1×3 = ~748 | ~0.22 |
-| ARC listeners (50 scale sets) | 50 × 3 = ~150 | ~0.04 |
-| ARC controller + Karpenter + CoreDNS | 4×15 + 4×15 + 6×30 = ~300 | ~0.09 |
-| Other (node-compactor, KSM, Prom Operator, Alloy, HAProxy) | ~50 | ~0.01 |
-| **Total base services** | **~1,248** | **~0.36** |
-
-kube-proxy and aws-node (EKS-managed) are excluded here — they run as DaemonSets on every node and are accounted for in the per-node DaemonSet overhead.
-
-#### Runner job logs
-
-This is the dominant variable. Each runner job produces 0.1–6 MB of logs after 10% non-error sampling (see [per runner job pod reference](#per-runner-job-pod)). The wide range reflects the mix of small lint/test jobs (~0.1–0.5 MB) vs. large GPU test jobs (~2–6 MB).
-
-At ~53,300 jobs/day average:
-
-| Average per-job volume | Runner logs GB/day |
-|---|---|
-| 0.5 MB (lint/test dominated) | ~26.7 |
-| 1.0 MB | ~53.3 |
-| 2.0 MB | ~106.6 |
-| 3.0 MB (GPU-test dominated) | ~159.9 |
-
-**Unknown:** actual per-job log volume distribution. The job mix is heavily weighted toward small CPU runners (linux.2xlarge: 491K jobs, linux.c7i.2xlarge: 351K) which likely produce lower log volume. An empirical measurement from Loki (average bytes/job across a sample period) would narrow this range significantly.
-
-#### BuildKit logs
-
-10 pods at `max-parallelism=1`. Volume depends on build activity (not in the load data).
-
-| Build activity | GB/day |
-|---|---|
-| Mostly idle | ~0.10 (10 × 0.01) |
-| Fully active | ~5.0 (10 × 0.5) |
+| Weekday average | ~1,366 (1,355 + 5 + 6) | 27.3 | 61.5 | 95.6 |
+| Weekend average | ~260 (249 + 5 + 6) | 5.2 | 11.7 | 18.2 |
 
 #### Kubernetes events
 
@@ -437,36 +298,19 @@ Pod churn drives event volume. At ~53,300 jobs/day (~37 job starts/min average),
 
 ### Total daily volume estimate (weekday average)
 
-Using midpoint per-unit rates and ~1 MB/job as the runner job estimate:
-
 | Component | GB/day | % of Total |
 |---|---|---|
-| Node DaemonSet + journal overhead | ~61 | 52.5% |
-| Runner job logs (at 1 MB/job) | ~53 | 45.6% |
-| Base infrastructure services | ~0.4 | 0.3% |
-| BuildKit (mixed idle/active) | ~1 | 0.9% |
-| Events | ~0.2 | 0.2% |
-| **Total** | **~116** | |
+| Journal overhead (all nodes) | ~62 | ~99.7% |
+| Events | ~0.2 | ~0.3% |
+| **Total** | **~62** | |
 
-### Sensitivity to per-job log volume
-
-The two dominant cost drivers are node DaemonSet overhead and runner job logs. Node overhead is relatively fixed for a given fleet size. Runner job volume is the primary lever:
-
-| Per-job volume | Runner GB/day | Node overhead GB/day | Total GB/day | Monthly GB |
-|---|---|---|---|---|
-| 0.5 MB | 26.7 | 61 | ~89 | ~2,670 |
-| 1.0 MB | 53.3 | 61 | ~116 | ~3,480 |
-| 2.0 MB | 106.6 | 61 | ~169 | ~5,070 |
-| 3.0 MB | 159.9 | 61 | ~223 | ~6,690 |
-
-Monthly totals assume weekday average; actual monthly volume will be ~15–20% lower due to reduced weekend load.
+Monthly total: **~1,860 GB** (weekday rate; actual monthly will be ~15–20% lower due to reduced weekend load).
 
 ### Caveats
 
-1. **Sum-of-peaks fleet size**: the fleet simulation uses the sum of each runner type's individual peak concurrency (7,367 runners). Since these peaks don't all occur simultaneously, the weekday average fleet (~1,355 nodes) used for node overhead is already a more realistic baseline than the peak (2,113).
+1. **Journal overhead range**: the 0.02–0.07 GB/day/node range covers kubelet + containerd + kernel chatter. The high end assumes verbose kubelet logging during active pod scheduling. Sustained average is likely closer to the low end (0.02–0.03 GB/day/node) once nodes stabilize.
 
-2. **Per-job log volume is the largest unknown**: the 0.1–6 MB range spans 60×. The job mix is dominated by small CPU runners which likely produce <1 MB, but GPU test jobs (93K+ g5.4xlarge jobs) may produce 3–6 MB each. Querying actual Loki ingestion rate per namespace would resolve this.
+2. **Logging module gating**: log shipping requires `grafana-cloud-credentials` to exist in the `logging` namespace. Until the secret is present, no logs are sent at all.
 
-3. **Node overhead may be over-estimated**: the 0.02–0.07 GB/day/node range includes journal logs (kubelet, containerd, kernel). The high end assumes verbose kubelet logging during active pod scheduling, which is transient. Sustained average is likely closer to the low end (0.02–0.03 GB/day/node).
+3. **Container stdout/stderr is not shipped.** To debug container behavior: GitHub Actions stores full workflow logs for runner jobs, `kubectl logs` works while a pod is alive, and pod events (scheduling, OOM, restarts) are queryable in Loki via the `alloy-events` Deployment.
 
-4. **Logging module status**: as of this estimate date, the `logging` module is not in the `arc-cbr-production` modules list but is deployed as base infrastructure. Log shipping requires Grafana Cloud credentials — until the credentials secret exists in the cluster, no logs are sent. These estimates project what the cluster *will* send once logging is active.
