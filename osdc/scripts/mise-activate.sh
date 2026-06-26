@@ -13,3 +13,13 @@ if command -v mise &>/dev/null; then
   eval "$(mise env -s bash -C "$_MISE_ROOT" 2>/dev/null)" || true
   unset _MISE_ROOT
 fi
+
+# Ensure the OpenTofu plugin cache dir exists before any `tofu init`.
+# mise.toml points TF_PLUGIN_CACHE_DIR at {{config_root}}/.terraform.d/plugin-cache,
+# but tofu requires the directory to pre-exist (it won't create it) and aborts
+# init with "plugin cache dir ... cannot be opened" otherwise. Since .terraform.d/
+# is gitignored, a fresh `git worktree` checkout starts without it — so create it
+# idempotently here, the single chokepoint every tofu-running recipe sources.
+if [[ -n "${TF_PLUGIN_CACHE_DIR:-}" ]]; then
+  mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+fi
