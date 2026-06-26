@@ -17,6 +17,11 @@ set -euo pipefail
 #   1. just drain-runners <cluster>      (runner pods drained; NodeClaims gone)
 #   2. Harbor S3 bucket emptied          (step 5 of the runbook)
 #
+# After the base is destroyed, sweeps for any EC2 still tagged
+# eks:eks-cluster-name=<cluster_name> and terminates the orphans — backstop for
+# a cluster destroyed before its Karpenter nodes drained (those otherwise keep
+# running and hold their capacity reservation with nothing left to reap them).
+#
 # What this destroys:
 #   - tofu-managed modules: karpenter, pypi-cache  (state keys
 #     <cluster>/<module>/terraform.tfstate)
@@ -170,6 +175,31 @@ destroy_base() {
   echo ""
 }
 
+# Backstop: terminate any EC2 still tagged for this cluster once the control
+# plane is gone — stuck Karpenter finalizers, or a destroy that ran before nodes
+# drained. Such instances keep running (and hold their capacity reservation)
+# with nothing left to reap them. Scoped to this cluster's cluster_name tag.
+sweep_orphaned_instances() {
+  echo "━━━ SWEEP: orphaned EC2 (tag eks:eks-cluster-name=$CNAME) ━━━"
+  local np="${NO_PROXY:-},.amazonaws.com"
+  local ids
+  ids=$(NO_PROXY="$np" no_proxy="$np" aws ec2 describe-instances --region "$REGION" \
+    --filters "Name=tag:eks:eks-cluster-name,Values=$CNAME" \
+    "Name=instance-state-name,Values=running,pending,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)
+  if [[ -z "${ids// /}" ]]; then
+    echo "  None found. ✓"
+    echo ""
+    return 0
+  fi
+  echo "  Terminating orphaned instances: $ids"
+  # shellcheck disable=SC2086  # space-separated instance IDs must word-split
+  NO_PROXY="$np" no_proxy="$np" aws ec2 terminate-instances --region "$REGION" \
+    --instance-ids $ids >/dev/null
+  echo "  Termination requested — capacity reservations free as they shut down."
+  echo ""
+}
+
 # ── Phase 1: destroy tofu-managed modules ──────────────────────────────────
 
 for m in "${TF_MODULES[@]}"; do
@@ -199,6 +229,10 @@ fi
 echo ""
 
 destroy_base
+
+# ── Phase 3: reap any orphaned EC2 (e.g. destroy ran before nodes drained) ──
+
+sweep_orphaned_instances
 
 # ── Done ───────────────────────────────────────────────────────────────────
 
