@@ -11,4 +11,4 @@ runner:
   # Fixed-capacity cap: 1 reserved 8-GPU node / 1 GPU per runner = 8 concurrent runners.
   max_runners:
     default: 8
-    arc-cbr-production-uw1: 48
+    meta-prod-aws-uw1: 48

@@ -2,6 +2,8 @@
 
 project-doc: enabled
 
+This file is the canonical project guidance for any coding agent (Claude, Codex, etc.) operating in `osdc/`. The sibling `AGENTS.md` is a thin pointer back to this file so AGENTS.md-aware tools pick up the same rules.
+
 ## What This Is
 
 Modular Kubernetes infrastructure platform on AWS EKS. The `modules/eks/` module provisions the cluster (VPC, EKS, Harbor S3/IAM via tofu); `base/` layers cluster-wide k8s resources on top (Harbor Helm chart, NVIDIA device plugin, image-cache-janitor, node tuning, runner-base image). Optional `modules/` (ARC, runners, BuildKit, nodepools, pypi-cache, monitoring, logging, etc.) deploy on top. One codebase drives multiple clusters across regions via `clusters.yaml`.
@@ -41,23 +43,21 @@ If either fails, fix the issues before finishing. Do not defer lint or test fail
 
 GPU families (g5, g6, g4dn) use unified single-fleet definitions (all GPU counts in one fleet). GPU allocation is handled by `nvidia.com/gpu` resource requests, not fleet-level isolation. Default `topologyManagerPolicy` is `best-effort`; multi-NUMA GPU instances (p4d, p5, p6-b200) override per-def to `single-numa-node` to prevent NUMA fragmentation and TopologyAffinityError livelocks under mixed GPU packing. See `actions-knowledge-base/docs/osdc/numa-topology-gpu-fleet-unification.md` for details.
 
-## Skills Reference
+## Skills
 
-Detailed instructions are broken into on-demand skills. Load the relevant skill when working on a specific topic:
+Skills live under `.claude/skills/`. Each one is a `SKILL.md` file with deep notes on one topic. Read the file when you start work in that area. Codex and other agents without skill auto-loading should open the path directly.
 
-| Skill | What it covers | When to load |
-|-------|---------------|--------------|
-| `osdc-project-structure` | Architecture, directory tree, submodule pattern, design decisions, knowledge base, key files, docs index | Always load when working on OSDC |
-| `osdc-deployment` | Deploy workflow, just recipes, base/module deploy order, clusters.yaml, Terraform architecture, smoke tests | Deploying, adding modules, modifying deploy scripts |
-| `osdc-tooling-and-quality` | Tools (tofu/just/mise/uv), automation hierarchy, unit tests, code style, 13 linters, indentation rules, full Don't Do list | Writing code, running linters, adding scripts/tests |
-| `osdc-runners-nodepools` | Runners, NodePools, BuildKit, GitHub Actions constraints, node taints, image mirroring, change checklist | Modifying runners, nodepools, BuildKit, node configs |
-| `osdc-observability` | Monitoring + logging pipelines, three-Alloy architecture, Loki log queries, label strategy, module pipelines, credentials | Working on monitoring, logging, Alloy, querying logs |
-| `osdc-cli-debugging` | Read-only kubectl, aws, helm, tofu commands and safety boundaries | Investigating cluster state, debugging pods |
-| `osdc-harbor` | Harbor Helm chart gotchas, image mirroring, proxy cache configuration | Working on Harbor or container registry config |
-| `osdc-pypi-cache` | PyPI wheel cache module — per-CUDA nginx+pypiserver fanout, EFS wheelhouse, S3 wheel pipeline, slug naming, prebuilt-cache.txt, NetworkPolicy, IRSA | Working on the pypi-cache module or debugging pip install failures on runners |
-| `osdc-nodelocaldns` | NodeLocal DNSCache base component — iptables-mode rationale, kube-dns ClusterIP substitution, Service-before-DaemonSet ordering, two metrics ports (9253/9353), `coredns_nodecache_*` prefix, soak gate | Working on the nodelocaldns base component or debugging DNS issues on runner nodes |
-
-Load the relevant `osdc-*` skill when you need detailed instructions on any specific topic.
+| Skill file | Read when |
+|------------|-----------|
+| [`.claude/skills/osdc-project-structure/SKILL.md`](.claude/skills/osdc-project-structure/SKILL.md) | Always. Project layout, key files, design choices. |
+| [`.claude/skills/osdc-deployment/SKILL.md`](.claude/skills/osdc-deployment/SKILL.md) | Deploying. Editing `clusters.yaml`. Changing deploy scripts. |
+| [`.claude/skills/osdc-tooling-and-quality/SKILL.md`](.claude/skills/osdc-tooling-and-quality/SKILL.md) | Writing code. Running linters. Adding tests. |
+| [`.claude/skills/osdc-runners-nodepools/SKILL.md`](.claude/skills/osdc-runners-nodepools/SKILL.md) | Editing runners, nodepools, BuildKit, node configs. |
+| [`.claude/skills/osdc-observability/SKILL.md`](.claude/skills/osdc-observability/SKILL.md) | Touching monitoring, logging, Alloy. Querying logs or metrics. |
+| [`.claude/skills/osdc-cli-debugging/SKILL.md`](.claude/skills/osdc-cli-debugging/SKILL.md) | Debugging the cluster. Running `kubectl`, `aws`, `helm`, `tofu`. |
+| [`.claude/skills/osdc-harbor/SKILL.md`](.claude/skills/osdc-harbor/SKILL.md) | Editing Harbor or container registry config. |
+| [`.claude/skills/osdc-pypi-cache/SKILL.md`](.claude/skills/osdc-pypi-cache/SKILL.md) | Editing pypi-cache. Debugging pip install failures on runners. |
+| [`.claude/skills/osdc-nodelocaldns/SKILL.md`](.claude/skills/osdc-nodelocaldns/SKILL.md) | Editing NodeLocal DNSCache. Debugging DNS on runner nodes. |
 
 ## Docs Index
 

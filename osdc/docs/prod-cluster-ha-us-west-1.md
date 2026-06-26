@@ -1,6 +1,6 @@
 # Multi-region prod cluster: us-west-1 HA + scale-out
 
-Deploy a second production OSDC EKS cluster (`arc-cbr-production-uw1`) in
+Deploy a second production OSDC EKS cluster (`meta-prod-aws-uw1`) in
 us-west-1 alongside the existing `arc-cbr-production` (us-east-2) for
 active/active load sharing and regional HA.
 
@@ -18,7 +18,7 @@ surviving group.
 | Cluster                   | Region    | Runner group        |
 |---------------------------|-----------|---------------------|
 | `arc-cbr-production`      | us-east-2 | `default`           |
-| `arc-cbr-production-uw1`  | us-west-1 | `arc-cbr-prod-uw1`  |
+| `meta-prod-aws-uw1`       | us-west-1 | `meta-prod-aws-uw1` |
 
 Note: custom runner groups only work for org-scoped `githubConfigUrl`
 (`https://github.com/pytorch`). The repo-scope guard in
@@ -28,7 +28,7 @@ this design wouldn't work on staging (which is repo-scoped at
 
 ## Prerequisites
 
-1. **Runner group at the pytorch org.** Create `arc-cbr-prod-uw1` at
+1. **Runner group at the pytorch org.** Create `meta-prod-aws-uw1` at
    `https://github.com/organizations/pytorch/settings/actions/runner-groups/new`.
    Set "Repository access" to include `pytorch/pytorch` (and any other
    repos that target `mt-…` labels).
@@ -49,10 +49,10 @@ move it for HA to work — asymmetry is fine.
 ## clusters.yaml entry
 
 ```yaml
-arc-cbr-production-uw1:
-  cluster_name: pytorch-arc-cbr-production-uw1
+meta-prod-aws-uw1:
+  cluster_name: meta-prod-aws-uw1
   region: us-west-1
-  state_bucket: ciforge-tfstate-arc-cbr-prod-uw1
+  state_bucket: ciforge-tfstate-arc-cbr-prod-uw1   # kept on the legacy arc-cbr name (like meta-prod-aws-ue1)
   access_config:
     authentication_mode: API_AND_CONFIG_MAP
     cluster_admin_role_names: [osdc_gha_prod]
@@ -66,9 +66,9 @@ arc-cbr-production-uw1:
     pods_per_node: 2
   arc-runners:
     github_config_url: "https://github.com/pytorch"
-    github_secret_name: pytorch-arc-cbr-production
+    github_secret_name: meta-prod-aws-uw1
     runner_name_prefix: "mt-"
-    runner_group: "arc-cbr-prod-uw1"              # distinct from us-east-2's "default"
+    runner_group: "meta-prod-aws-uw1"             # distinct from us-east-2's "default"
   nodepools-h100:
     capacity_reservation_ids:                     # us-west-1 H100 reservations
       - cr-04d3d1d84e127a562
@@ -94,22 +94,23 @@ arc-cbr-production-uw1:
 ## Deploy
 
 ```bash
-just bootstrap arc-cbr-production-uw1
-just deploy-base arc-cbr-production-uw1
-# Plant the pytorch-arc-cbr-production GitHub App Secret into the new
-# cluster's arc-runners namespace (same App, same private key as us-east-2).
-just deploy arc-cbr-production-uw1
+just bootstrap meta-prod-aws-uw1
+just deploy-base meta-prod-aws-uw1
+# Plant the meta-prod-aws-uw1 GitHub App Secret into the new cluster's
+# arc-runners namespace (same App / private key as the other prod
+# clusters, stored under this cluster's own secret name).
+just deploy meta-prod-aws-uw1
 ```
 
 From CI: dispatch `OSDC: Deploy production` from the Actions tab and pick
-`arc-cbr-production-uw1`. Approval required via the `osdc-production`
+`meta-prod-aws-uw1`. Approval required via the `osdc-production`
 environment.
 
 ## Post-deploy validation
 
 1. `kubectl get autoscalingrunnersets -n arc-runners` shows every scale
    set in `RUNNING`.
-2. The org's `arc-cbr-prod-uw1` runner group page lists every `mt-…`
+2. The org's `meta-prod-aws-uw1` runner group page lists every `mt-…`
    scale set with a healthy listener heartbeat. The same names also
    appear in the `default` group from us-east-2 — two groups, same
    names, both online.
