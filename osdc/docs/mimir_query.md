@@ -68,7 +68,7 @@ MIMIR_PASS=$(NO_PROXY="$NO_PROXY,.eks.amazonaws.com" no_proxy="$no_proxy,.eks.am
 MIMIR_URL="https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom" && \
 curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
     "$MIMIR_URL/api/v1/query" \
-    --data-urlencode 'query=up{cluster="pytorch-arc-cbr-production"}' | jq .
+    --data-urlencode 'query=up{cluster="meta-prod-aws-ue2"}' | jq .
 ```
 
 **Range query** — returns a time series:
@@ -77,7 +77,7 @@ curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
 # ... (credential extraction) ... && \
 curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
     "$MIMIR_URL/api/v1/query_range" \
-    --data-urlencode 'query=sum(node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"})' \
+    --data-urlencode 'query=sum(node_memory_MemAvailable_bytes{cluster="meta-prod-aws-ue2"})' \
     --data-urlencode "start=$(date -u -v-1H +%s)" \
     --data-urlencode "end=$(date -u +%s)" \
     --data-urlencode "step=60" | jq .
@@ -142,7 +142,7 @@ Confirm exact job names by running `count(up{cluster="..."}) by (job)`.
 
 ## Key Labels
 
-All metrics include `cluster="pytorch-arc-cbr-production"` (set by Alloy as an external label). Other common labels:
+All metrics include `cluster="meta-prod-aws-ue2"` (set by Alloy as an external label). Other common labels:
 
 | Label | Example | Notes |
 |-------|---------|-------|
@@ -162,19 +162,19 @@ All metrics include `cluster="pytorch-arc-cbr-production"` (set by Alloy as an e
 
 ```promql
 # Node count
-count(kube_node_info{cluster="pytorch-arc-cbr-production"})
+count(kube_node_info{cluster="meta-prod-aws-ue2"})
 
 # Pod count by namespace
-count(kube_pod_info{cluster="pytorch-arc-cbr-production"}) by (namespace)
+count(kube_pod_info{cluster="meta-prod-aws-ue2"}) by (namespace)
 
 # Cluster-wide memory available (bytes)
-sum(node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"})
+sum(node_memory_MemAvailable_bytes{cluster="meta-prod-aws-ue2"})
 
 # Cluster-wide memory usage %
-100 * (1 - sum(node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"}) / sum(node_memory_MemTotal_bytes{cluster="pytorch-arc-cbr-production"}))
+100 * (1 - sum(node_memory_MemAvailable_bytes{cluster="meta-prod-aws-ue2"}) / sum(node_memory_MemTotal_bytes{cluster="meta-prod-aws-ue2"}))
 
 # Up targets by job
-count(up{cluster="pytorch-arc-cbr-production"}) by (job)
+count(up{cluster="meta-prod-aws-ue2"}) by (job)
 ```
 
 > **Note**: CPU, disk, and most network metrics from `node_exporter` are dropped at scrape. Only `node_memory_MemAvailable_bytes`, `node_memory_MemTotal_bytes`, `node_nf_conntrack_entries`, and `node_nf_conntrack_entries_limit` are kept. For per-pod CPU you need a different source (e.g. KSM pod resource metrics) — `node_cpu_seconds_total`, `node_filesystem_*`, and `node_network_*` will return empty.
@@ -183,16 +183,16 @@ count(up{cluster="pytorch-arc-cbr-production"}) by (job)
 
 ```promql
 # Memory available per node (bytes)
-node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"}
+node_memory_MemAvailable_bytes{cluster="meta-prod-aws-ue2"}
 
 # Memory usage per node (%)
-100 * (1 - node_memory_MemAvailable_bytes{cluster="pytorch-arc-cbr-production"} / node_memory_MemTotal_bytes{cluster="pytorch-arc-cbr-production"})
+100 * (1 - node_memory_MemAvailable_bytes{cluster="meta-prod-aws-ue2"} / node_memory_MemTotal_bytes{cluster="meta-prod-aws-ue2"})
 
 # Conntrack table utilization per node (%)
-100 * node_nf_conntrack_entries{cluster="pytorch-arc-cbr-production"} / node_nf_conntrack_entries_limit{cluster="pytorch-arc-cbr-production"}
+100 * node_nf_conntrack_entries{cluster="meta-prod-aws-ue2"} / node_nf_conntrack_entries_limit{cluster="meta-prod-aws-ue2"}
 
 # Nodes with conntrack pressure (matches NodeConntrackHigh alert threshold)
-node_nf_conntrack_entries{cluster="pytorch-arc-cbr-production"} / node_nf_conntrack_entries_limit{cluster="pytorch-arc-cbr-production"} > 0.80
+node_nf_conntrack_entries{cluster="meta-prod-aws-ue2"} / node_nf_conntrack_entries_limit{cluster="meta-prod-aws-ue2"} > 0.80
 ```
 
 > **Kubelet metrics unavailable**: `kubelet_running_pods` and `kubelet_running_containers` return empty in current clusters — the kubelet ServiceMonitor is disabled under IPv6-only EKS. See the warning at the top of "Available Scrape Jobs".
@@ -201,20 +201,20 @@ node_nf_conntrack_entries{cluster="pytorch-arc-cbr-production"} / node_nf_conntr
 
 ```promql
 # Pod-to-node mapping (use to join pod-level metrics with node info)
-kube_pod_info{cluster="pytorch-arc-cbr-production"}
+kube_pod_info{cluster="meta-prod-aws-ue2"}
 
 # Container restarts in last 24h — control-plane namespaces only
 # (kube_pod_container_status_restarts_total is filtered to arc-systems|karpenter|harbor-system|monitoring|logging|buildkit by Alloy)
-topk(10, increase(kube_pod_container_status_restarts_total{cluster="pytorch-arc-cbr-production"}[24h]))
+topk(10, increase(kube_pod_container_status_restarts_total{cluster="meta-prod-aws-ue2"}[24h]))
 
 # Pods that exited with a non-Completed reason (last terminated)
-kube_pod_container_status_last_terminated_reason{cluster="pytorch-arc-cbr-production"}
+kube_pod_container_status_last_terminated_reason{cluster="meta-prod-aws-ue2"}
 
 # Pods that exited with non-zero exit code
-kube_pod_container_status_last_terminated_exitcode{cluster="pytorch-arc-cbr-production", container_exit_code!="0"}
+kube_pod_container_status_last_terminated_exitcode{cluster="meta-prod-aws-ue2", container_exit_code!="0"}
 
 # Pod status reasons (Evicted, NodeLost, UnexpectedAdmissionError — routine reasons are dropped)
-kube_pod_status_reason{cluster="pytorch-arc-cbr-production"} == 1
+kube_pod_status_reason{cluster="meta-prod-aws-ue2"} == 1
 ```
 
 > **Note**: `kube_pod_status_phase` is NOT in the KSM keep allowlist — phase-based queries return nothing. Use `kube_pod_info` joined with `kube_pod_container_status_*` instead. `container_memory_working_set_bytes`, `container_memory_rss`, and `container_cpu_usage_seconds_total` all return empty in current clusters — the kubelet/cAdvisor ServiceMonitor is disabled under IPv6-only EKS. The Alloy `cost_control` two-step replace+drop pattern that previously scoped cAdvisor memory to control-plane namespaces is still configured but has no source data to filter; queries against these metrics will be empty until a custom IPv6-aware kubelet ServiceMonitor ships.
@@ -223,25 +223,25 @@ kube_pod_status_reason{cluster="pytorch-arc-cbr-production"} == 1
 
 ```promql
 # NodePool usage (current allocation per nodepool)
-karpenter_nodepools_usage{cluster="pytorch-arc-cbr-production"}
+karpenter_nodepools_usage{cluster="meta-prod-aws-ue2"}
 
 # NodePool limits
-karpenter_nodepools_limit{cluster="pytorch-arc-cbr-production"}
+karpenter_nodepools_limit{cluster="meta-prod-aws-ue2"}
 
 # Allocatable capacity per Karpenter-managed node
-karpenter_nodes_allocatable{cluster="pytorch-arc-cbr-production"}
+karpenter_nodes_allocatable{cluster="meta-prod-aws-ue2"}
 
 # Nodes created in the last hour
-increase(karpenter_nodes_created_total{cluster="pytorch-arc-cbr-production"}[1h])
+increase(karpenter_nodes_created_total{cluster="meta-prod-aws-ue2"}[1h])
 
 # Nodes terminated in the last hour
-increase(karpenter_nodes_terminated_total{cluster="pytorch-arc-cbr-production"}[1h])
+increase(karpenter_nodes_terminated_total{cluster="meta-prod-aws-ue2"}[1h])
 
 # NodeClaims created (provisioning attempts)
-increase(karpenter_nodeclaims_created_total{cluster="pytorch-arc-cbr-production"}[1h])
+increase(karpenter_nodeclaims_created_total{cluster="meta-prod-aws-ue2"}[1h])
 
 # Spot interruptions received in the last hour
-increase(karpenter_interruption_received_messages_total{cluster="pytorch-arc-cbr-production"}[1h])
+increase(karpenter_interruption_received_messages_total{cluster="meta-prod-aws-ue2"}[1h])
 ```
 
 > **Note**: Only the seven karpenter metrics above are kept by the Karpenter ServiceMonitor. `karpenter_nodepools_allowed_disruptions`, `karpenter_nodes_total`, and `karpenter_provisioner_scheduling_duration_seconds` will return empty.
@@ -250,33 +250,33 @@ increase(karpenter_interruption_received_messages_total{cluster="pytorch-arc-cbr
 
 ```promql
 # Currently assigned jobs per runner scale set
-gha_assigned_jobs{cluster="pytorch-arc-cbr-production"}
+gha_assigned_jobs{cluster="meta-prod-aws-ue2"}
 
 # Currently running jobs per runner scale set
-gha_running_jobs{cluster="pytorch-arc-cbr-production"}
+gha_running_jobs{cluster="meta-prod-aws-ue2"}
 
 # Job completion rate (last hour)
-rate(gha_completed_jobs_total{cluster="pytorch-arc-cbr-production"}[1h])
+rate(gha_completed_jobs_total{cluster="meta-prod-aws-ue2"}[1h])
 
 # Job start rate (last hour)
-rate(gha_started_jobs_total{cluster="pytorch-arc-cbr-production"}[1h])
+rate(gha_started_jobs_total{cluster="meta-prod-aws-ue2"}[1h])
 
 # Average job execution duration (sum/count — buckets dropped)
-rate(gha_job_execution_duration_seconds_sum{cluster="pytorch-arc-cbr-production"}[1h])
-  / rate(gha_job_execution_duration_seconds_count{cluster="pytorch-arc-cbr-production"}[1h])
+rate(gha_job_execution_duration_seconds_sum{cluster="meta-prod-aws-ue2"}[1h])
+  / rate(gha_job_execution_duration_seconds_count{cluster="meta-prod-aws-ue2"}[1h])
 ```
 
 ### Control Plane
 
 ```promql
 # API server request rate by verb
-sum by (verb) (rate(apiserver_request_total{cluster="pytorch-arc-cbr-production"}[5m]))
+sum by (verb) (rate(apiserver_request_total{cluster="meta-prod-aws-ue2"}[5m]))
 
 # API server terminations (rate-limited / dropped requests)
-rate(apiserver_request_terminations_total{cluster="pytorch-arc-cbr-production"}[5m])
+rate(apiserver_request_terminations_total{cluster="meta-prod-aws-ue2"}[5m])
 
 # CoreDNS request rate
-rate(coredns_dns_requests_total{cluster="pytorch-arc-cbr-production"}[5m])
+rate(coredns_dns_requests_total{cluster="meta-prod-aws-ue2"}[5m])
 ```
 
 ### NodeLocal DNSCache (NLD)
@@ -289,45 +289,45 @@ Per-node DaemonSet — each pod emits CoreDNS plugin metrics on port `9253` (zon
 
 ```promql
 # Cluster-wide NLD QPS across all zones (one pod per node)
-sum(rate(coredns_dns_request_count_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m]))
+sum(rate(coredns_dns_request_count_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns"}[5m]))
 
 # Per-zone NLD QPS (cluster.local.:53, in-addr.arpa.:53, ip6.arpa.:53, .:53)
-sum by (server) (rate(coredns_dns_request_count_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m]))
+sum by (server) (rate(coredns_dns_request_count_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns"}[5m]))
 
 # Per-node NLD QPS (top 10 noisiest nodes)
-topk(10, sum by (pod) (rate(coredns_dns_request_count_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m])))
+topk(10, sum by (pod) (rate(coredns_dns_request_count_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns"}[5m])))
 
 # Cluster-wide cache hit ratio (success hits / (success hits + misses))
-sum(rate(coredns_cache_hits_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns", type="success"}[5m]))
-  / (sum(rate(coredns_cache_hits_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns", type="success"}[5m]))
-     + sum(rate(coredns_cache_misses_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m])))
+sum(rate(coredns_cache_hits_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns", type="success"}[5m]))
+  / (sum(rate(coredns_cache_hits_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns", type="success"}[5m]))
+     + sum(rate(coredns_cache_misses_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns"}[5m])))
 
 # Per-node cache hit ratio (find nodes with poor cache locality)
-sum by (pod) (rate(coredns_cache_hits_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns", type="success"}[5m]))
-  / (sum by (pod) (rate(coredns_cache_hits_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns", type="success"}[5m]))
-     + sum by (pod) (rate(coredns_cache_misses_total{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"}[5m])))
+sum by (pod) (rate(coredns_cache_hits_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns", type="success"}[5m]))
+  / (sum by (pod) (rate(coredns_cache_hits_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns", type="success"}[5m]))
+     + sum by (pod) (rate(coredns_cache_misses_total{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns"}[5m])))
 
 # NLD setup errors (any non-zero value should fire NodeLocalDNSSetupErrors alert)
-coredns_nodecache_setup_errors_total{cluster="pytorch-arc-cbr-production"}
+coredns_nodecache_setup_errors_total{cluster="meta-prod-aws-ue2"}
 
 # Per-node NLD setup errors broken down by error type
-sum by (pod, errortype) (coredns_nodecache_setup_errors_total{cluster="pytorch-arc-cbr-production"})
+sum by (pod, errortype) (coredns_nodecache_setup_errors_total{cluster="meta-prod-aws-ue2"})
 
 # Number of NLD pods reporting metrics (should equal node count)
-count(up{cluster="pytorch-arc-cbr-production", job="monitoring/nodelocaldns"} == 1)
+count(up{cluster="meta-prod-aws-ue2", job="monitoring/nodelocaldns"} == 1)
 ```
 
 ### PyPI Cache
 
 ```promql
 # nginx availability per pypi-cache instance
-nginx_up{cluster="pytorch-arc-cbr-production"}
+nginx_up{cluster="meta-prod-aws-ue2"}
 
 # Request rate
-rate(nginx_http_requests_total{cluster="pytorch-arc-cbr-production"}[5m])
+rate(nginx_http_requests_total{cluster="meta-prod-aws-ue2"}[5m])
 
 # Active connections
-nginx_connections_active{cluster="pytorch-arc-cbr-production"}
+nginx_connections_active{cluster="meta-prod-aws-ue2"}
 ```
 
 ### GPU (DCGM)
@@ -336,16 +336,16 @@ The DCGM ServiceMonitor doesn't drop any metric names — only labels (`UUID`, `
 
 ```promql
 # GPU temperature per GPU (Celsius) — used by GPUTemperatureCritical alert (>95C for 5m)
-DCGM_FI_DEV_GPU_TEMP{cluster="pytorch-arc-cbr-production"}
+DCGM_FI_DEV_GPU_TEMP{cluster="meta-prod-aws-ue2"}
 
 # GPU utilization per GPU (%)
-DCGM_FI_DEV_GPU_UTIL{cluster="pytorch-arc-cbr-production"}
+DCGM_FI_DEV_GPU_UTIL{cluster="meta-prod-aws-ue2"}
 
 # Uncorrectable (double-bit) ECC errors — used by GPUDoublebitECCError alert
-DCGM_FI_DEV_ECC_DBE_VOL_TOTAL{cluster="pytorch-arc-cbr-production"}
+DCGM_FI_DEV_ECC_DBE_VOL_TOTAL{cluster="meta-prod-aws-ue2"}
 
 # XID critical errors (48/79/94/95) — used by GPUXIDCriticalError alert
-DCGM_FI_DEV_XID_ERRORS{cluster="pytorch-arc-cbr-production"}
+DCGM_FI_DEV_XID_ERRORS{cluster="meta-prod-aws-ue2"}
 ```
 
 ### Bad Node Detection (Join Pattern)
@@ -354,8 +354,8 @@ DCGM_FI_DEV_XID_ERRORS{cluster="pytorch-arc-cbr-production"}
 
 ```promql
 count(
-  kube_pod_container_status_last_terminated_exitcode{cluster="pytorch-arc-cbr-production", container_exit_code!="0"}
-  * on(namespace, pod) group_left(node) kube_pod_info{cluster="pytorch-arc-cbr-production"}
+  kube_pod_container_status_last_terminated_exitcode{cluster="meta-prod-aws-ue2", container_exit_code!="0"}
+  * on(namespace, pod) group_left(node) kube_pod_info{cluster="meta-prod-aws-ue2"}
 ) by (node)
 ```
 
@@ -383,7 +383,7 @@ To find what metrics exist for a particular component, use a regex match on `__n
 # Find all karpenter metrics
 curl -s -u "$MIMIR_USER:$MIMIR_PASS" \
     "$MIMIR_URL/api/v1/query" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", __name__=~"karpenter.*"}' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", __name__=~"karpenter.*"}' \
     | jq '[.data.result[] | .metric.__name__] | unique'
 ```
 
