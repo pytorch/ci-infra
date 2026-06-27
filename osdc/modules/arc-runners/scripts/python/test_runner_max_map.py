@@ -800,11 +800,11 @@ class TestMain:
 
 class TestEndToEnd:
     def test_realistic_production_like_setup(self, tmp_path, monkeypatch, capsys):
-        """Mirrors the arc-cbr-production cluster shape: prefix=mt-, three modules."""
+        """Mirrors the meta-prod-aws-ue2 cluster shape: prefix=mt-, three modules."""
         clusters_yaml = {
             "defaults": {},
             "clusters": {
-                "arc-cbr-production": {
+                "meta-prod-aws-ue2": {
                     "arc-runners": {"runner_name_prefix": "mt-"},
                     "modules": [
                         "karpenter",
@@ -831,7 +831,7 @@ class TestEndToEnd:
         }
         repo = make_repo(tmp_path, clusters_yaml, modules)
         monkeypatch.setenv("OSDC_ROOT", str(repo))
-        rc = main(["arc-cbr-production"])
+        rc = main(["meta-prod-aws-ue2"])
         captured = capsys.readouterr()
         assert rc == 0
         parsed = json.loads(captured.out)

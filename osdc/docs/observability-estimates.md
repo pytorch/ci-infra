@@ -2,14 +2,14 @@
 
 Per-unit cost estimates for metrics cardinality and log volume. For architecture, pipeline descriptions, deploy order, gotchas, and troubleshooting, see [observability.md](observability.md).
 
-> **Stale estimates warning**: The numerical cardinality estimates in the "Estimated Metrics Load for arc-cbr-production" section below are stale for multiple reasons and should not be relied on without re-validation:
+> **Stale estimates warning**: The numerical cardinality estimates in the "Estimated Metrics Load for meta-prod-aws-ue2" section below are stale for multiple reasons and should not be relied on without re-validation:
 > - **Per-source whitelists landed after the original calculation.** node-exporter is now ~4 series per node (was estimated at 200–400) and cAdvisor is restricted to control-plane namespaces (was estimated at 30–50 cluster-wide).
 > - **The kubelet ServiceMonitor is currently disabled** on IPv6-only EKS (`modules/monitoring/helm/values.yaml` `kubelet.enabled: false`). Both cAdvisor and `kubelet_*` series produce **zero** today. The per-source descriptions below describe the planned post-IPv6 state, not current behavior. See `observability.md` "Disabled scrapers (IPv6 migration)".
-> - **`arc-cbr-production` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, BuildKit 10 (5/arch × 2), pypi-cache 40 (4 deployments × 10 replicas). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
+> - **`meta-prod-aws-ue2` sizing inputs in this doc are out of date.** Current `clusters.yaml` defaults give: base nodes 6 (`m7i.12xlarge`), CoreDNS 6, Karpenter 4, ARC controller 4, Harbor nginx/core/registry 6/4/4, BuildKit 10 (5/arch × 2), pypi-cache 40 (4 deployments × 10 replicas). The input-data table below has been refreshed; subtotals downstream may still reflect the older numbers.
 > - **Scale-set count is 50**, not 40 (42 upstream + 4 B200 + 4 H100).
 > - **`gha_capacity_*` family count is 16**, not 15.
 >
-> Re-validate against live Grafana Cloud Mimir before relying on aggregate numbers (e.g. `count by (__name__) ({cluster="pytorch-arc-cbr-production"})`).
+> Re-validate against live Grafana Cloud Mimir before relying on aggregate numbers (e.g. `count by (__name__) ({cluster="meta-prod-aws-ue2"})`).
 
 > **Maintenance note**: When adding, removing, or modifying any ServiceMonitor, PodMonitor, metricRelabelings, logging pipeline, sampling rate, or filtering rule, the estimates in this document **MUST be updated** to reflect the change. Stale estimates are misleading and can lead to unexpected Grafana Cloud costs.
 
@@ -108,7 +108,63 @@ Container stdout/stderr is **not** shipped. Anything below assumes the journal +
 
 ### Per Node (Journal Overhead)
 
+<<<<<<< HEAD
+| Component | Raw rate | After pipeline | ~Per job lifecycle (30 min) |
+|-----------|----------|:-:|:-:|
+| **Runner pod** (ARC orchestrator) | ~10-50 lines/min | ~2-10 lines/min | 50-300 lines (~0.01-0.06 MB) |
+| **Job pod** (CI workflow) | ~100-10,000 lines/min | ~15-1,050 lines/min | 450-31,500 lines (~0.09-6.3 MB) |
+| **Total per job** | | | **~0.1-6 MB** |
+
+Pipeline stages applied (in order):
+1. Pods in `Succeeded`/`Failed` phase excluded at discovery
+2. DEBUG/TRACE lines dropped globally
+3. Lines >16KB dropped
+4. Health-check probes (`kube-probe/`) dropped
+5. **Non-error logs sampled at 10%** (module pipeline — the dominant cost control)
+6. Rate limit: 1000 lines/s per pod (rarely hit after sampling)
+
+### Per Karpenter Node (DaemonSet Overhead)
+
+Every Karpenter-managed node runs DaemonSets that produce logs. This is the per-node overhead **excluding** runner or BuildKit pods on the node.
+
+| Source | Type | ~Lines/min per node | Notes |
+|--------|------|:---:|-------|
+| **kubelet** (journal) | System | 30-100 | Pod lifecycle, volume mounts, probes |
+| **containerd** (journal) | System | 20-80 | Container start/stop, image pulls |
+| **kernel** (journal) | System | 1-10 | OOM kills, hardware errors |
+| **node-performance-tuning** | Pod log | ~0 | Init container only, main sleeps |
+| **registry-mirror-config** | Pod log | ~0 | Init container, main sleeps |
+| **kube-proxy** | Pod log | 1-5 | EKS-managed DaemonSet — runs on every node. klog format, level extracted. |
+| **aws-node (VPC-CNI)** | Pod log | 1-5 | EKS-managed DaemonSet — runs on every node. JSON, level extracted. |
+| **GPU: nvidia-fabricmanager** (journal) | System | 1-5 | GPU nodes only |
+| **GPU: nvidia-persistenced** (journal) | System | 0-2 | GPU nodes only |
+| **cache-enforcer** | Pod log | 1-5 | DaemonSet on `meta-prod-aws-ue2` (`modules/cache-enforcer/kubernetes/daemonset.yaml`) |
+| **image-cache-janitor** | Pod log | 1-5 | DaemonSet in base — runs on every node (`base/kubernetes/image-cache-janitor/daemonset.yaml`) |
+| **nodelocaldns** | Pod log | <1 | DaemonSet in base — runs on every node (`base/kubernetes/nodelocaldns/`). CoreDNS plugin reports + "Setup OK" messages only; near-silent at steady state |
+
+Subset-scoped DaemonSets (not on every Karpenter node):
+
+| Source | Type | Scope | ~Lines/min per node | Notes |
+|--------|------|-------|:---:|-------|
+| **runner-hooks-warmer** | Pod log | `arc-runners` namespace, `nodeSelector: node-fleet=c7i-runner` (CPU runner pool only — not GPU, not BuildKit) | ~0 | Downloads runner-container-hooks zip once, main sleeps. Because it lives in `arc-runners`, its logs are sampled at 10% per the ARC pipeline. |
+
+**Per-node totals**:
+
+| Node type | Total overhead lines/min | ~GB/day per node |
+|-----------|:---:|:---:|
+| CPU runner node | ~55-200 | ~0.02-0.07 |
+| GPU runner node | ~57-207 | ~0.02-0.07 |
+
+**Not collected from nodes**: node-exporter (metrics only), alloy-logging (in `logging` namespace — self-excluded), dcgm-exporter (metrics only).
+
+### Base Infrastructure Services (Per Replica)
+
+These run on tainted `CriticalAddonsOnly` base nodes. Rates are **per replica** — multiply by actual replica count for each service.
+
+| Source | ~Lines/min per replica | Notes |
+=======
 | Source | ~Lines/min per node | Notes |
+>>>>>>> main
 |--------|:---:|-------|
 | **kubelet** (journal) | 30-100 | Pod lifecycle, volume mounts, probes |
 | **containerd** (journal) | 20-80 | Container start/stop, image pulls |
@@ -152,9 +208,9 @@ Where `events_GB` depends on cluster activity level (see events table above). Bo
 
 ---
 
-## Estimated Metrics Load for arc-cbr-production
+## Estimated Metrics Load for meta-prod-aws-ue2
 
-Peak active series estimate for the `arc-cbr-production` cluster, derived from the fleet simulation in [current_runner_load_distribution.md](current_runner_load_distribution.md) and the per-unit rates above. Represents the worst-case simultaneous peak where every runner type hits its individual peak concurrency at the same time.
+Peak active series estimate for the `meta-prod-aws-ue2` cluster, derived from the fleet simulation in [current_runner_load_distribution.md](current_runner_load_distribution.md) and the per-unit rates above. Represents the worst-case simultaneous peak where every runner type hits its individual peak concurrency at the same time.
 
 **Date:** 2026-03-24 (input data); per-source descriptions and module/scale-set composition refreshed 2026-05-06. The aggregate totals below have **not** been recomputed against the current whitelists — see the stale-estimates warning at the top of this doc. **Scope:** pytorch/pytorch self-hosted Linux runners only (same scope as the fleet simulation). Actual cardinality will also be higher due to unmapped runner types, B200/H100 GPU runners (local `arc-runners-b200`/`arc-runners-h100` modules, not in fleet simulation), and other repos sharing the cluster.
 
@@ -168,10 +224,10 @@ From the fleet simulation:
 | CPU-only runner nodes | 680 | c7a.48xlarge (267) + c7i.metal-24xl (36) + m6i.32xlarge (27) + m7i.48xlarge (48) + m8g.16xlarge (29) + m8g.48xlarge (15) + r7a.48xlarge (138) + r7g.16xlarge (120) |
 | GPU runner nodes | 1,433 | g4dn.12xlarge (157) + g4dn.8xlarge (89) + g4dn.metal (79) + g5.12xlarge (58) + g5.48xlarge (40) + g5.8xlarge (596) + g6.12xlarge (26) + g6.8xlarge (388). H100 (`p5.48xlarge`) and B200 nodes are not in the fleet simulation and are not counted here. |
 | Total GPUs | 2,989 | Across all GPU node types in the fleet simulation (excludes H100/B200) |
-| Base infra nodes | 6 | `clusters.yaml` defaults → `base_node_count: 6` (m7i.12xlarge per `base_node_instance_type`; `arc-cbr-production` has no override) |
+| Base infra nodes | 6 | `clusters.yaml` defaults → `base_node_count: 6` (m7i.12xlarge per `base_node_instance_type`; `meta-prod-aws-ue2` has no override) |
 | Runner scale sets | 50 | 42 upstream (`modules/arc-runners/defs/`) + 4 B200 (`modules/arc-runners-b200/defs/`) + 4 H100 (`modules/arc-runners-h100/defs/`) |
 
-From `clusters.yaml` defaults plus `arc-cbr-production` overrides:
+From `clusters.yaml` defaults plus `meta-prod-aws-ue2` overrides:
 
 | Service | Replicas | Source |
 |---|---|---|
@@ -185,10 +241,10 @@ From `clusters.yaml` defaults plus `arc-cbr-production` overrides:
 | Monitoring Alloy | 2 | Hard-coded in `modules/monitoring/helm/alloy-values.yaml` (`controller.replicas: 2`, `clustering.enabled: true`) — there is no `monitoring.alloy_replicas` config knob |
 | BuildKit daemon | 10 | `defaults.buildkit.replicas_per_arch: 5` × 2 archs |
 | BuildKit HAProxy | 1 | single replica |
-| CoreDNS | 6 | `defaults.coredns.replicas: 6` (`arc-cbr-production` has no override) |
+| CoreDNS | 6 | `defaults.coredns.replicas: 6` (`meta-prod-aws-ue2` has no override) |
 | kube-state-metrics | 1 | single replica |
 | Prometheus Operator | 1 | single replica |
-| pypi-cache nginx | 40 | 4 deployments per CUDA slug (`cpu`, `cu126`, `cu128`, `cu130`) × `arc-cbr-production.pypi_cache.replicas: 10` |
+| pypi-cache nginx | 40 | 4 deployments per CUDA slug (`cpu`, `cu126`, `cu128`, `cu130`) × `meta-prod-aws-ue2.pypi_cache.replicas: 10` |
 
 ### Cluster-wide fixed overhead (C_fixed)
 
@@ -244,7 +300,7 @@ Total series ≈ C_fixed
 | Cluster-wide fixed | ~1,100 | 0.1% |
 | **Total at peak** | **~1,895,000** | |
 
-**~1.9M active series** at simultaneous peak. **WARNING:** this total is stale and overstated — see the warning at the top of this doc; the per-source whitelisting work landed after this calculation was made. GPU runner nodes dominate the (stale) breakdown due to DCGM per-GPU metrics. The ARC listener line grew from ~300 to ~4,250 series with the proactive-capacity metrics at the 50-scale-set count for `arc-cbr-production` (50 × ~85), but is still a small fraction of total. Re-validate against live Mimir before relying on these numbers.
+**~1.9M active series** at simultaneous peak. **WARNING:** this total is stale and overstated — see the warning at the top of this doc; the per-source whitelisting work landed after this calculation was made. GPU runner nodes dominate the (stale) breakdown due to DCGM per-GPU metrics. The ARC listener line grew from ~300 to ~4,250 series with the proactive-capacity metrics at the 50-scale-set count for `meta-prod-aws-ue2` (50 × ~85), but is still a small fraction of total. Re-validate against live Mimir before relying on these numbers.
 
 ### Scaling at sub-peak load
 
@@ -258,7 +314,7 @@ Active series scale roughly linearly with fleet size. Using the fleet estimates 
 
 ---
 
-## Estimated Log Volume for arc-cbr-production
+## Estimated Log Volume for meta-prod-aws-ue2
 
 Estimated daily log volume (GB/day) sent to Grafana Cloud Loki, derived from the fleet simulation in [current_runner_load_distribution.md](current_runner_load_distribution.md) and the per-unit rates above.
 
@@ -313,4 +369,3 @@ Monthly total: **~1,860 GB** (weekday rate; actual monthly will be ~15–20% low
 2. **Logging module gating**: log shipping requires `grafana-cloud-credentials` to exist in the `logging` namespace. Until the secret is present, no logs are sent at all.
 
 3. **Container stdout/stderr is not shipped.** To debug container behavior: GitHub Actions stores full workflow logs for runner jobs, `kubectl logs` works while a pod is alive, and pod events (scheduling, OOM, restarts) are queryable in Loki via the `alloy-events` Deployment.
-
