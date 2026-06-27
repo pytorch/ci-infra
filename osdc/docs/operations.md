@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- AWS CLI configured with credentials for an IAM principal mapped to one of the roles in the target cluster's `access_config.cluster_admin_role_names` (e.g. `osdc_gha_staging` for `meta-staging-aws-uw1`, `osdc_gha_prod` for `arc-cbr-production`). How those credentials are acquired (SSO, role assumption, static keys) is left to the operator's organization — the project does not prescribe a profile or login flow.
+- AWS CLI configured with credentials for an IAM principal mapped to one of the roles in the target cluster's `access_config.cluster_admin_role_names` (e.g. `osdc_gha_staging` for `meta-staging-aws-uw1`, `osdc_gha_prod` for `meta-prod-aws-ue2`). How those credentials are acquired (SSO, role assumption, static keys) is left to the operator's organization — the project does not prescribe a profile or login flow.
 - `mise` installed ([mise.jdx.dev](https://mise.jdx.dev))
 - `just` installed (not managed by `mise` — install separately)
 - Docker with **BuildKit** enabled — local deploys build container images (e.g. `image-cache-janitor`) and require BuildKit; see [Docker / BuildKit (local builds)](#docker--buildkit-local-builds) below
@@ -10,7 +10,7 @@
 
 `mise` auto-installs all other tools (tofu, kubectl, helm, crane, awscli, packer, `uv`, plus linters) on first run. Run `just setup` once to create the Python virtualenv (`uv sync`) used by `cluster-config.py` and other helpers.
 
-`mise` also exports `AWS_REGION=us-west-2` for every shell rooted at the project. This is the state-bucket region (state and the lock table always live in `us-west-2`) and the default for `aws` calls; override `AWS_REGION` explicitly when running ad-hoc `aws` commands against another cluster's region (e.g. `arc-cbr-production` lives in `us-east-2`).
+`mise` also exports `AWS_REGION=us-west-2` for every shell rooted at the project. This is the state-bucket region (state and the lock table always live in `us-west-2`) and the default for `aws` calls; override `AWS_REGION` explicitly when running ad-hoc `aws` commands against another cluster's region (e.g. `meta-prod-aws-ue2` lives in `us-east-2`).
 
 ### Corporate proxy (Meta and similar)
 
@@ -179,7 +179,7 @@ Set these to suppress the interactive prompts in `just deploy` — required for 
 
 ## Adding a new cluster
 
-1. Pick a cluster ID, region, VPC CIDR, and decide which modules. The VPC CIDR sizes only the IPv4 footprint (nodes, NAT, ENI primary IPs) — pod IPs come from an AWS-allocated /56 IPv6 block, so a `/16` is more than enough even for very large fleets. Module names must match a directory under `modules/` — see the existing `meta-staging-aws-uw1` and `arc-cbr-production` entries in `clusters.yaml` for full, working examples. Minimal skeleton:
+1. Pick a cluster ID, region, VPC CIDR, and decide which modules. The VPC CIDR sizes only the IPv4 footprint (nodes, NAT, ENI primary IPs) — pod IPs come from an AWS-allocated /56 IPv6 block, so a `/16` is more than enough even for very large fleets. Module names must match a directory under `modules/` — see the existing `meta-staging-aws-uw1` and `meta-prod-aws-ue2` entries in `clusters.yaml` for full, working examples. Minimal skeleton:
 
    ```yaml
    # clusters.yaml
