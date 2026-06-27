@@ -226,7 +226,7 @@ defaults:
     grafana_cloud_read_url: "https://prometheus-prod-36-prod-us-west-0.grafana.net/api/prom"
 ```
 
-## Metrics Cardinality Reference (arc-cbr-production)
+## Metrics Cardinality Reference (meta-prod-aws-ue2)
 
 See [observability-estimates.md](observability-estimates.md#metrics-cardinality-reference) for detailed per-pod, per-node, and cluster-wide metrics cardinality estimates.
 
@@ -280,7 +280,7 @@ defaults:
     grafana_cloud_loki_url: "https://logs-prod-021.grafana.net/loki/api/v1/push"
 ```
 
-## Log Volume Estimation Reference (arc-cbr-production)
+## Log Volume Estimation Reference (meta-prod-aws-ue2)
 
 See [observability-estimates.md](observability-estimates.md#log-volume-estimation-reference) for per-unit log volume rates and scaling formulas. Journal logs are bounded by the per-unit `keep` filter (`kubelet|containerd|kernel|nvidia-*`); events scale with cluster activity.
 

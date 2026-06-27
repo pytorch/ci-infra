@@ -140,6 +140,8 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 3
+          # Provisional — load-test in prod and tune. An OOM-kill drops the mount
+          # node-wide, so the memory limit may need raising or removing.
           resources:
             requests:
               cpu: 100m
