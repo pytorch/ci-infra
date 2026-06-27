@@ -1,7 +1,7 @@
 # Multi-region prod cluster: us-west-1 HA + scale-out
 
 Deploy a second production OSDC EKS cluster (`meta-prod-aws-uw1`) in
-us-west-1 alongside the existing `arc-cbr-production` (us-east-2) for
+us-west-1 alongside the existing `meta-prod-aws-ue2` (us-east-2) for
 active/active load sharing and regional HA.
 
 ## How it works
@@ -17,7 +17,7 @@ surviving group.
 
 | Cluster                   | Region    | Runner group        |
 |---------------------------|-----------|---------------------|
-| `arc-cbr-production`      | us-east-2 | `default`           |
+| `meta-prod-aws-ue2`       | us-east-2 | `meta-prod-aws-ue2` |
 | `meta-prod-aws-uw1`       | us-west-1 | `meta-prod-aws-uw1` |
 
 Note: custom runner groups only work for org-scoped `githubConfigUrl`

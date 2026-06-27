@@ -323,8 +323,9 @@ jobs:
   test-hf-cache-large-read:
     # GPU: CPU loading keeps weights mmap'd from the FUSE, so generate() SIGBUSes
     # faulting them (repro'd on 32/64GB, even low_cpu_mem_usage=False). On GPU
-    # weights go to VRAM, so generate never touches the FUSE; one A100 fits 7B bf16.
-    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iavx512-11-125-a100"] }
+    # weights go to VRAM, so generate never touches the FUSE. A single L4 (24GB)
+    # fits 7B bf16 — far cheaper than an A100/p4d node for a 1-GPU test.
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86aavx2-29-113-l4"] }
     container:
       image: python:3.12-slim
     env:
