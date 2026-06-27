@@ -421,9 +421,11 @@ clusters:
       - monitoring
       - logging
 
-  arc-cbr-production:
-    cluster_name: pytorch-arc-cbr-production
+  meta-prod-aws-ue2:
+    cluster_name: meta-prod-aws-ue2
     region: us-east-2
+    # state_bucket kept on the legacy arc-cbr name to avoid an S3 migration
+    # (mirrors meta-prod-aws-ue1, which also kept its arc-cbr bucket).
     state_bucket: ciforge-tfstate-arc-cbr-prod
     access_config:
       authentication_mode: API_AND_CONFIG_MAP
@@ -448,8 +450,9 @@ clusters:
         arm64_fallback: 8
     arc-runners:
       github_config_url: "https://github.com/pytorch"
-      github_secret_name: pytorch-arc-cbr-production
+      github_secret_name: meta-prod-aws-ue2
       runner_name_prefix: "mt-"
+      runner_group: "meta-prod-aws-ue2"   # moved off the shared "default"/"release-runners" groups
     nodepools-h100:
       # us-east-2 H100 capacity reservation (p5.48xlarge, 8× H100).
       capacity_reservation_ids:
@@ -473,8 +476,6 @@ clusters:
       - arc-runners-h100
       - keda
       - buildkit
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
