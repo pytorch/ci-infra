@@ -54,16 +54,7 @@ A refresh run should:
 ## Enable on a cluster
 
 ```
-# add "hf-cache" to the cluster's modules: list (after arc-runners), then:
+# add "hf-cache" to the cluster's modules: list, then:
 just deploy-module <cluster> hf-cache
 just deploy-module <cluster> arc-runners   # re-render job pods with the mount
 ```
-
-## Open items (see PR description)
-
-- **Verify OIDC through ARC k8s mode**: confirm `id-token` reaches job pods and
-  `configure-aws-credentials` works (pytorch CI already uses OIDC, so expected).
-- The mount DaemonSet is **privileged** (FUSE); confirm it's acceptable under the
-  cluster's Pod Security posture.
-- Same-account assumption: enable only on clusters in account 308535385114 (where
-  the OIDC role + buckets live); cross-account would need a bucket policy.

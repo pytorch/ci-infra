@@ -16,7 +16,7 @@ Output (stdout): JSON object, sorted keys, two-space indent.
 Diagnostics: stderr only.
 
 Example:
-    uv run runner_max_map.py arc-cbr-production
+    uv run runner_max_map.py meta-prod-aws-ue2
 """
 
 from __future__ import annotations
@@ -230,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) != 1:
         print("Usage: runner_max_map.py <cluster-id>", file=sys.stderr)
-        print("Example: runner_max_map.py arc-cbr-production", file=sys.stderr)
+        print("Example: runner_max_map.py meta-prod-aws-ue2", file=sys.stderr)
         return 2
 
     cluster_id = argv[0]
