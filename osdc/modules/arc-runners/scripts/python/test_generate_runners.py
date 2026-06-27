@@ -824,7 +824,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production",
+            "cluster_id": "meta-prod-aws-ue2",
         }
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is True
