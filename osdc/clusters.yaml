@@ -53,7 +53,7 @@ defaults:
     pdb_enabled: true
     pdb_min_available: 1
   arc:
-    chart_version: "0.14.1-jeanschmidt.14"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
+    chart_version: "0.14.1-jeanschmidt.16"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
     replica_count: 4
     log_level: info
     controller_cpu_request: "1"

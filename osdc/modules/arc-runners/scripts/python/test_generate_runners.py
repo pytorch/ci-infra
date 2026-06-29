@@ -48,6 +48,10 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                 value: "{{MAX_BURST_CAPACITY}}"
               - name: CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY
                 value: "{{HUD_FAILURE_BASE_CAPACITY}}"
+              - name: CAPACITY_AWARE_FRESH_MULTIPLIER
+                value: "{{CAPACITY_AWARE_FRESH_MULTIPLIER}}"
+              - name: CAPACITY_AWARE_AGED_MULTIPLIER
+                value: "{{CAPACITY_AWARE_AGED_MULTIPLIER}}"
     template:
       spec:
         containers:
@@ -194,6 +198,8 @@ def make_def_file(
     hud_failure_base_capacity=None,
     node_fleet=None,
     scheduler_name=None,
+    fresh_multiplier=None,
+    aged_multiplier=None,
 ):
     """Write a runner def YAML and return the path.
 
@@ -224,6 +230,10 @@ def make_def_file(
         runner["node_fleet"] = node_fleet
     if scheduler_name is not None:
         runner["scheduler_name"] = scheduler_name
+    if fresh_multiplier is not None:
+        runner["fresh_multiplier"] = fresh_multiplier
+    if aged_multiplier is not None:
+        runner["aged_multiplier"] = aged_multiplier
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -1243,6 +1253,26 @@ class TestGenerateRunner:
         output_dir.mkdir()
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+
+    def test_invalid_fresh_multiplier_non_numeric(self, tmp_path, capsys):
+        def_file = make_def_file(tmp_path, "bad-fresh", "c7i.24xlarge", 4, 16, fresh_multiplier="abc")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        with pytest.raises(SystemExit) as exc:
+            generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners")
+        assert exc.value.code == 1
+        combined = capsys.readouterr().out + capsys.readouterr().err
+        assert "fresh_multiplier" in combined or "bad-fresh" in combined
+
+    def test_invalid_aged_multiplier_non_numeric(self, tmp_path, capsys):
+        def_file = make_def_file(tmp_path, "bad-aged", "c7i.24xlarge", 4, 16, aged_multiplier="xyz")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        with pytest.raises(SystemExit) as exc:
+            generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners")
+        assert exc.value.code == 1
 
     def test_invalid_node_fleet_non_string(self, tmp_path, capsys):
         """node_fleet must be a string, not an int."""
@@ -2842,3 +2872,64 @@ class TestPypiCacheConditional:
             assert name in content
         assert "# BEGIN_PYPI_CACHE" not in content
         assert "# END_PYPI_CACHE" not in content
+
+
+def _multiplier_env_values(output_dir, runner_name):
+    """Extract the fresh/aged multiplier env values from a rendered runner YAML."""
+    docs = list(yaml.safe_load_all((output_dir / f"{runner_name}.yaml").read_text()))
+    helm = docs[0]
+    env = {e["name"]: e.get("value") for e in helm["listenerTemplate"]["spec"]["containers"][0]["env"]}
+    return env.get("CAPACITY_AWARE_FRESH_MULTIPLIER"), env.get("CAPACITY_AWARE_AGED_MULTIPLIER")
+
+
+class TestMultipliers:
+    """Lookup order: per-def → cluster fallback → 1.0 hardcoded default."""
+
+    def _base_cluster_config(self):
+        return {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "",
+        }
+
+    def test_defaults_to_one_when_neither_set(self, tmp_path):
+        def_file = make_def_file(tmp_path, "r", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, self._base_cluster_config(), output_dir, "arc-runners")
+        fresh, aged = _multiplier_env_values(output_dir, "r")
+        assert fresh == "1.0"
+        assert aged == "1.0"
+
+    def test_per_def_value_wins_over_cluster(self, tmp_path):
+        def_file = make_def_file(tmp_path, "r", "c7i.24xlarge", 4, 16, fresh_multiplier=0.5, aged_multiplier=2.0)
+        cluster_config = self._base_cluster_config()
+        cluster_config["capacity_aware_fresh_multiplier"] = 3.0
+        cluster_config["capacity_aware_aged_multiplier"] = 4.0
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        fresh, aged = _multiplier_env_values(output_dir, "r")
+        assert fresh == "0.5"
+        assert aged == "2.0"
+
+    def test_cluster_fallback_applies_when_def_unset(self, tmp_path):
+        def_file = make_def_file(tmp_path, "r", "c7i.24xlarge", 4, 16)
+        cluster_config = self._base_cluster_config()
+        cluster_config["capacity_aware_fresh_multiplier"] = 0.5
+        cluster_config["capacity_aware_aged_multiplier"] = 2.0
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        fresh, aged = _multiplier_env_values(output_dir, "r")
+        assert fresh == "0.5"
+        assert aged == "2.0"
+
+    def test_int_value_coerced_to_float_string(self, tmp_path):
+        def_file = make_def_file(tmp_path, "r", "c7i.24xlarge", 4, 16, fresh_multiplier=2, aged_multiplier=3)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, self._base_cluster_config(), output_dir, "arc-runners")
+        fresh, aged = _multiplier_env_values(output_dir, "r")
+        assert fresh == "2.0"
+        assert aged == "3.0"

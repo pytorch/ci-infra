@@ -209,6 +209,10 @@ listenerTemplate:
             value: "{{CAPACITY_AWARE_CLUSTER_COUNT}}"
           - name: CAPACITY_AWARE_AGE_THRESHOLD_SECONDS
             value: "{{CAPACITY_AWARE_AGE_THRESHOLD_SECONDS}}"
+          - name: CAPACITY_AWARE_FRESH_MULTIPLIER
+            value: "{{CAPACITY_AWARE_FRESH_MULTIPLIER}}"
+          - name: CAPACITY_AWARE_AGED_MULTIPLIER
+            value: "{{CAPACITY_AWARE_AGED_MULTIPLIER}}"
 
 template:
   metadata:

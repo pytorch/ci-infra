@@ -17,9 +17,9 @@
 Published from the fork via the `gha-publish-chart.yaml` workflow (manual `workflow_dispatch`). The workflow builds the controller image (multi-arch `linux/amd64` + `linux/arm64`) and publishes the chart to GHCR.
 
 - **OCI registry**: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.12`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
+- **Chart version**: configured in `clusters.yaml` at `arc.chart_version` (currently `0.14.1-jeanschmidt.16`). Format is `<upstream-base>-jeanschmidt.<N>`; bump `<N>` for each fork publish. Valid as both Helm chart version and OCI image tag.
 - **Image tags**: the workflow publishes two tags per build:
-  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.12` to match the chart)
+  - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>` (the rolling release tag — pass `release_tag_name=0.14.1-jeanschmidt.16` to match the chart)
   - `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<release_tag_name>-<short_sha>` (immutable tag with the source commit baked in, useful for pinning and debugging)
 
 To publish a new chart version, trigger `gha-publish-chart.yaml` from the fork's GitHub Actions UI with `publish_gha_runner_scale_set_controller_chart: true`.
@@ -137,14 +137,14 @@ This runs `modules/arc/deploy.sh`, which:
 3. **Applies RBAC** from `modules/arc/kubernetes/capacity-monitor-rbac.yaml`
 4. **Helm upgrade** of the fork chart:
    - Chart: `oci://ghcr.io/jeanschmidt/actions-runner-controller-charts/gha-runner-scale-set-controller`
-   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.12`)
+   - Version: from `clusters.yaml` `arc.chart_version` (default `0.14.1-jeanschmidt.16`)
    - Image: defaults to `ghcr.io/jeanschmidt/gha-runner-scale-set-controller:<chart_version>`. Override with `arc.image_repository` / `arc.image_tag` in `clusters.yaml` for local Harbor builds.
 
 Other deploy.sh config knobs (all from `clusters.yaml`):
 
 | Key | Default | What |
 |-----|---------|------|
-| `arc.chart_version` | `0.14.1-jeanschmidt.12` | Helm chart version (fork) |
+| `arc.chart_version` | `0.14.1-jeanschmidt.16` | Helm chart version (fork) |
 | `arc.image_repository` | `ghcr.io/jeanschmidt/gha-runner-scale-set-controller` | Controller image repo (override for local Harbor builds) |
 | `arc.image_tag` | _(chart_version)_ | Controller image tag (override for local Harbor builds) |
 | `arc.replica_count` | `2` | Controller replicas |
@@ -184,12 +184,14 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_CLUSTER_INDEX` | `0` | auto-derived by `generate_runners.py` from `clusters.yaml` | This cluster's position in the peer list (0-indexed). Peers are clusters that deploy the same `arc-runners`-family module AND advertise the same `runner_name_prefix`. |
 | `CAPACITY_AWARE_CLUSTER_COUNT` | `1` | auto-derived by `generate_runners.py` from `clusters.yaml` | Number of peer clusters serving the same runner labels. `1` disables sharding (single-cluster behavior). |
 | `CAPACITY_AWARE_AGE_THRESHOLD_SECONDS` | `900` (15 min) | from `clusters.yaml` `arc-runners.capacity_aware_age_threshold_seconds` (default `900`) | Fresh-jobs threshold for the sharding slice. Jobs younger than this are sliced across peers; older jobs are claimed by all peers (failover signal). `0` disables sharding entirely. Sub-60s values are clamped to `60`. |
+| `CAPACITY_AWARE_FRESH_MULTIPLIER` | `1.0` | def `fresh_multiplier` → cluster `capacity_aware_fresh_multiplier` → 1.0 | Tunes per-peer slice of fresh queue. `0.5` = take half my fair share (cheaper, longer queue). `2.0` = double up (faster start, redundant). |
+| `CAPACITY_AWARE_AGED_MULTIPLIER` | `1.0` | def `aged_multiplier` → cluster `capacity_aware_aged_multiplier` → 1.0 | Tunes per-peer aged claim. `0.5` = each peer claims half of aged jobs (cheaper failover, more queue). `2.0` = double-claim aged (aggressive backup). Only active when sharding is on. |
 
 Currently enabled for all runners (`CAPACITY_AWARE_ENABLED=true` is hardcoded in the template). Note: `generate_runners.py` caps `proactive_capacity` at `N` for clusters that set `proactive_capacity_max: N` in `clusters.yaml` — each scale set renders `min(def_proactive_capacity, N)`. The staging cluster sets `proactive_capacity_max: 0`, so no placeholders are pre-provisioned there — only on-demand pairs created for in-flight jobs. Other clusters do not set the cap and use def values directly.
 
 ### Multi-cluster HUD queue sharding
 
-When N clusters serve the same runner label, each listener claims `1/N` of fresh queued jobs (rounded with stable remainder distribution by cluster index) plus 100% of jobs older than `AgeThresholdSeconds`. The age tier is the failover signal: a healthy peer drains its share fast so jobs never age out; a dead peer's share ages and surviving peers absorb it. No cross-cluster coordination is required. `CAPACITY_AWARE_CLUSTER_INDEX` and `CAPACITY_AWARE_CLUSTER_COUNT` are auto-derived by `generate_runners.py` from the set of clusters in `clusters.yaml` that deploy the same `arc-runners`-family module and advertise the same `runner_name_prefix`.
+When N clusters serve the same runner label, each listener claims `1/N` of fresh queued jobs (rounded with stable remainder distribution by cluster index) plus 100% of jobs older than `AgeThresholdSeconds`. The age tier is the failover signal: a healthy peer drains its share fast so jobs never age out; a dead peer's share ages and surviving peers absorb it. No cross-cluster coordination is required. `CAPACITY_AWARE_CLUSTER_INDEX` and `CAPACITY_AWARE_CLUSTER_COUNT` are auto-derived by `generate_runners.py` from the set of clusters in `clusters.yaml` that deploy the same `arc-runners`-family module and advertise the same `runner_name_prefix`. Each peer's slice and aged claim can be tuned per runner def (`fresh_multiplier`, `aged_multiplier`) or globally per cluster (`capacity_aware_fresh_multiplier`, `capacity_aware_aged_multiplier`) — defaults of 1.0 preserve original sharding behavior.
 
 ## Creating the HUD API Secret
 
