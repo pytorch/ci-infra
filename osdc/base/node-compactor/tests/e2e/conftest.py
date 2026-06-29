@@ -89,9 +89,19 @@ GROUP_A_CONFIG = {
     "COMPACTOR_SPARE_CAPACITY_RATIO": "0",
     "COMPACTOR_SPARE_CAPACITY_THRESHOLD": "0.4",
     "COMPACTOR_CAPACITY_RESERVATION_NODES": "0",
-    "COMPACTOR_PEAK_WINDOW_SECONDS": "30",
+    # 0 disables peak-window damping (peak_min == current_min). Tests that
+    # exercise damping explicitly use GROUP_PEAK_WINDOW_CONFIG.
+    "COMPACTOR_PEAK_WINDOW_SECONDS": "0",
     "COMPACTOR_PENDING_POD_MAX_AGE_SECONDS": "14400",
     "COMPACTOR_PENDING_POD_MIN_AGE_SECONDS": "0",
+}
+
+# Peak-window config — same as Group A but with the 30s peak window enabled.
+# Owned by TestPeakWindow; other groups disable peak window to keep their
+# wait_for budgets independent of peak decay timing.
+GROUP_PEAK_WINDOW_CONFIG = {
+    **GROUP_A_CONFIG,
+    "COMPACTOR_PEAK_WINDOW_SECONDS": "30",
 }
 
 # Group B: anti-flap mechanisms — min_node_age blocks first, then rate + cooldown
@@ -508,9 +518,11 @@ def compactor_setup(
 def _wait_for_compactor_reconcile(timeout_s: int = 60) -> None:
     """Wait until the compactor has completed at least one reconcile cycle.
 
-    Accepts either "Reconciling:" (nodes found) or "Node Compactor starting"
-    (pod alive, but 0 managed nodes — nothing to reconcile, tests will
-    provision their own nodes).
+    Looks for any sign of liveness: "Reconciling:", "Node Compactor starting",
+    or per-fleet/decision lines from the per-iteration logger. Under load a
+    single reconcile cycle emits dozens of fleet/decision lines that can
+    push the "Reconciling:" header off a tail window — so we use --since
+    instead of --tail and match a broader pattern set.
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -523,16 +535,17 @@ def _wait_for_compactor_reconcile(timeout_s: int = 60) -> None:
                     COMPACTOR_NAMESPACE,
                     "-l",
                     "app.kubernetes.io/name=node-compactor",
-                    "--tail=50",
+                    "--since=30s",
                 ],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            if "Reconciling:" in result.stdout:
+            out = result.stdout
+            if "Reconciling:" in out or "fleet=" in out or ("Applied" in out and "taint change" in out):
                 log.info("  Compactor reconciliation detected.")
                 return
-            if "Node Compactor starting" in result.stdout:
+            if "Node Compactor starting" in out:
                 log.info("  Compactor running (no managed nodes yet — tests will provision).")
                 return
         except Exception:
