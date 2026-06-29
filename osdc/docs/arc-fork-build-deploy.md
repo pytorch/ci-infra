@@ -181,8 +181,15 @@ The capacity monitor is configured via env vars on the listener pod, set in `mod
 | `CAPACITY_AWARE_RUNNER_CLASS` | _(empty)_ | `{{RUNNER_CLASS}}` (from runner def) | Runner class for placeholder node selector |
 | `CAPACITY_AWARE_HUD_API_URL` | _(built-in default URL)_ | hardcoded PyTorch HUD `queued_jobs_aggregate` URL | HUD endpoint for queued job counts |
 | `CAPACITY_AWARE_HUD_API_TOKEN` | _(empty)_ | from K8s secret `pytorch-hud-token` (optional mount) | PyTorch HUD API token for queued job counts |
+| `CAPACITY_AWARE_CLUSTER_INDEX` | `0` | auto-derived by `generate_runners.py` from `clusters.yaml` | This cluster's position in the peer list (0-indexed). Peers are clusters that deploy the same `arc-runners`-family module AND advertise the same `runner_name_prefix`. |
+| `CAPACITY_AWARE_CLUSTER_COUNT` | `1` | auto-derived by `generate_runners.py` from `clusters.yaml` | Number of peer clusters serving the same runner labels. `1` disables sharding (single-cluster behavior). |
+| `CAPACITY_AWARE_AGE_THRESHOLD_SECONDS` | `900` (15 min) | from `clusters.yaml` `arc-runners.capacity_aware_age_threshold_seconds` (default `900`) | Fresh-jobs threshold for the sharding slice. Jobs younger than this are sliced across peers; older jobs are claimed by all peers (failover signal). `0` disables sharding entirely. Sub-60s values are clamped to `60`. |
 
 Currently enabled for all runners (`CAPACITY_AWARE_ENABLED=true` is hardcoded in the template). Note: `generate_runners.py` caps `proactive_capacity` at `N` for clusters that set `proactive_capacity_max: N` in `clusters.yaml` — each scale set renders `min(def_proactive_capacity, N)`. The staging cluster sets `proactive_capacity_max: 0`, so no placeholders are pre-provisioned there — only on-demand pairs created for in-flight jobs. Other clusters do not set the cap and use def values directly.
+
+### Multi-cluster HUD queue sharding
+
+When N clusters serve the same runner label, each listener claims `1/N` of fresh queued jobs (rounded with stable remainder distribution by cluster index) plus 100% of jobs older than `AgeThresholdSeconds`. The age tier is the failover signal: a healthy peer drains its share fast so jobs never age out; a dead peer's share ages and surviving peers absorb it. No cross-cluster coordination is required. `CAPACITY_AWARE_CLUSTER_INDEX` and `CAPACITY_AWARE_CLUSTER_COUNT` are auto-derived by `generate_runners.py` from the set of clusters in `clusters.yaml` that deploy the same `arc-runners`-family module and advertise the same `runner_name_prefix`.
 
 ## Creating the HUD API Secret
 

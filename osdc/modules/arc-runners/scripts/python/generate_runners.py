@@ -114,6 +114,30 @@ def get_cluster_config(clusters_yaml, cluster_id):
     return cluster_cfg, defaults
 
 
+def compute_cluster_sharding(clusters_yaml, cluster_id, module_name, runner_name_prefix):
+    """Return (cluster_index, cluster_count) for sharding HUD queue across peer clusters.
+
+    Peers are clusters that deploy the same module AND use the same
+    runner_name_prefix — together they advertise overlapping runner labels and
+    must shard the queue. The index is the cluster's position in the
+    alphabetically-sorted peer list; the count is the size of that list.
+
+    A cluster that is not its own peer (configuration drift, called with a
+    module/prefix combination it does not actually deploy) returns (0, 1) so
+    the listener degrades to single-cluster behavior instead of mis-sharding.
+    """
+    target_prefix = runner_name_prefix or ""
+    peers = sorted(
+        cid
+        for cid, cfg in (clusters_yaml.get("clusters") or {}).items()
+        if module_name in (cfg.get("modules") or [])
+        and (((cfg.get("arc-runners") or {}).get("runner_name_prefix")) or "") == target_prefix
+    )
+    if cluster_id not in peers:
+        return 0, 1
+    return peers.index(cluster_id), len(peers)
+
+
 def _resolve_consumer_root(upstream_dir):
     env_root = os.environ.get("OSDC_ROOT", "")
     if not env_root:
@@ -400,6 +424,11 @@ def generate_runner(
         "{{HUD_FAILURE_BASE_CAPACITY}}": str(hud_failure_base_capacity),
         "{{SCHEDULER_NAME_LINE}}": scheduler_name_line,
         "{{SCHEDULER_NAME}}": scheduler_name,
+        "{{CAPACITY_AWARE_CLUSTER_INDEX}}": str(cluster_config.get("capacity_aware_cluster_index", 0)),
+        "{{CAPACITY_AWARE_CLUSTER_COUNT}}": str(cluster_config.get("capacity_aware_cluster_count", 1)),
+        "{{CAPACITY_AWARE_AGE_THRESHOLD_SECONDS}}": str(
+            cluster_config.get("capacity_aware_age_threshold_seconds", 900)
+        ),
     }
 
     for placeholder, value in replacements.items():
@@ -499,6 +528,13 @@ def main():
     # Stash the cluster id so generate_runner() can pick the right
     # max_runners_overrides entry from each def.
     cluster_config["cluster_id"] = cluster_id
+    prefix = cluster_config.get("runner_name_prefix") or ""
+    shard_idx, shard_count = compute_cluster_sharding(clusters_yaml, cluster_id, module_name, prefix)
+    cluster_config["capacity_aware_cluster_index"] = shard_idx
+    cluster_config["capacity_aware_cluster_count"] = shard_count
+    cluster_config["capacity_aware_age_threshold_seconds"] = cluster_cfg.get(
+        "capacity_aware_age_threshold_seconds", 900
+    )
 
     # Hard-fail before touching the output dir: a runner pointing at a fleet no
     # NodePool defines would pend forever at apply time, and wiping generated/

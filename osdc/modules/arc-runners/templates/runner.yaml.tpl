@@ -203,6 +203,12 @@ listenerTemplate:
                 name: pytorch-hud-token
                 key: token
                 optional: true
+          - name: CAPACITY_AWARE_CLUSTER_INDEX
+            value: "{{CAPACITY_AWARE_CLUSTER_INDEX}}"
+          - name: CAPACITY_AWARE_CLUSTER_COUNT
+            value: "{{CAPACITY_AWARE_CLUSTER_COUNT}}"
+          - name: CAPACITY_AWARE_AGE_THRESHOLD_SECONDS
+            value: "{{CAPACITY_AWARE_AGE_THRESHOLD_SECONDS}}"
 
 template:
   metadata:
