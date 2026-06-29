@@ -3,8 +3,6 @@
 from datetime import UTC, datetime
 
 from models import (
-    PENDING_POD_MAX_AGE_SECONDS,
-    PENDING_POD_MIN_AGE_SECONDS,
     NodeState,
     PodInfo,
     node_view_without_taint,
@@ -20,13 +18,15 @@ def pending_pods_for_group(
     pending_pods: list,
     group_nodes: list[NodeState],
     taint_key: str,
+    pending_min_age: int,
+    pending_max_age: int,
 ) -> list[PodInfo]:
     """Filter raw pending Pods to those that could land on this fleet, return as PodInfo.
 
     Inclusion criteria (all must pass):
-    1. Age in [PENDING_POD_MIN_AGE_SECONDS, PENDING_POD_MAX_AGE_SECONDS]. Lower bound is
-       already enforced by discovery.build_node_states, but we reapply for safety.
-       Upper bound stops stuck zombie pods from inflating min_needed forever.
+    1. Age in [pending_min_age, pending_max_age]. Lower bound is already enforced by
+       discovery.build_node_states, but we reapply for safety. Upper bound stops stuck
+       zombie pods from inflating min_needed forever.
     2. Constraints match: tolerations + nodeSelector + nodeAffinity must be satisfied by
        at least one node in the group (treated as if our compactor taint were removed —
        since the intent is "could this fleet absorb this pod after we untaint").
@@ -55,7 +55,7 @@ def pending_pods_for_group(
         if creation_ts is None:
             continue
         age = (now - creation_ts).total_seconds()
-        if age < PENDING_POD_MIN_AGE_SECONDS or age > PENDING_POD_MAX_AGE_SECONDS:
+        if age < pending_min_age or age > pending_max_age:
             continue
 
         constraints_ok = False

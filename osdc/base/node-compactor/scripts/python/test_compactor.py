@@ -12,7 +12,6 @@ from fit import _pods_fit_on_nodes
 from lightkube import ApiError
 from models import (
     LABEL_NODE_FLEET,
-    PEAK_WINDOW_SECONDS,
     Config,
     NodeState,
     PodInfo,
@@ -21,6 +20,8 @@ from models import (
 )
 from packing import bin_pack_min_nodes, compute_taints
 from pending import pending_pods_for_group
+
+PEAK_WINDOW_SECONDS = 2700
 
 # ============================================================================
 # Helpers
@@ -46,6 +47,9 @@ def make_config(**overrides) -> Config:
         "spare_capacity_ratio": 0.0,
         "spare_capacity_threshold": 0.4,
         "capacity_reservation_nodes": 0,
+        "peak_window_seconds": 2700,
+        "pending_pod_max_age_seconds": 14400,
+        "pending_pod_min_age_seconds": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -3124,7 +3128,7 @@ class TestPendingPodsInBinPack:
 
         pp_wrong = make_pending_pod_mock(cpu="16", node_selector={"role": "gpu"})
 
-        filtered = pending_pods_for_group([pp_wrong], list(nodes.values()), cfg.taint_key)
+        filtered = pending_pods_for_group([pp_wrong], list(nodes.values()), cfg.taint_key, 0, 14400)
         assert filtered == []
 
         to_taint, *_ = compute_taints(nodes, cfg, pending_pods=[pp_wrong])
@@ -3138,7 +3142,7 @@ class TestPendingPodsInBinPack:
 
         pp = make_pending_pod_mock(cpu="0", memory="0")
 
-        filtered = pending_pods_for_group([pp], list(nodes.values()), cfg.taint_key)
+        filtered = pending_pods_for_group([pp], list(nodes.values()), cfg.taint_key, 0, 14400)
         assert len(filtered) == 1
         assert filtered[0].cpu_request == 0
         assert filtered[0].memory_request == 0
