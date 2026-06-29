@@ -12,7 +12,7 @@ on:
   workflow_call:
     inputs:
       cluster:
-        description: "Cluster id from clusters.yaml (e.g. meta-staging-aws-uw1, arc-cbr-production)"
+        description: "Cluster id from clusters.yaml (e.g. meta-staging-aws-uw1, meta-prod-aws-ue2)"
         required: true
         type: string
       environment:
