@@ -32,6 +32,9 @@ def make_config(**overrides) -> Config:
         "spare_capacity_ratio": 0.15,
         "spare_capacity_threshold": 0.4,
         "capacity_reservation_nodes": 0,
+        "peak_window_seconds": 2700,
+        "pending_pod_max_age_seconds": 14400,
+        "pending_pod_min_age_seconds": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -885,19 +888,19 @@ class TestPendingPodExclusionFilters:
         _, pending = self._run_with_pending_pod(pod)
         assert len(pending) == 1
 
-    def test_pod_too_young_excluded(self):
-        """Pod pending for only 10s is excluded (< 30s threshold)."""
+    def test_pod_just_created_included(self):
+        """Pod with age 0 is included — lower bound is 0."""
         pod = make_mock_pod(
-            "young-pod",
+            "fresh-pod",
             node_name=None,
             phase="Pending",
-            creation_timestamp=NOW - timedelta(seconds=10),
+            creation_timestamp=NOW,
         )
         _, pending = self._run_with_pending_pod(pod)
-        assert len(pending) == 0
+        assert len(pending) == 1
 
     def test_pod_old_enough_included(self):
-        """Pod pending for 60s is included (> 30s threshold)."""
+        """Pod pending for 60s is included."""
         pod = make_mock_pod(
             "old-pod",
             node_name=None,
@@ -907,17 +910,16 @@ class TestPendingPodExclusionFilters:
         _, pending = self._run_with_pending_pod(pod)
         assert len(pending) == 1
 
-    def test_pod_exactly_at_threshold_excluded(self):
-        """Pod pending for exactly 30s is excluded (< not <=)."""
-        # The check is `age < 30`, so exactly 30 should pass
+    def test_pod_with_future_timestamp_excluded(self):
+        """Pod with creationTimestamp in the future (clock skew) is excluded defensively."""
         pod = make_mock_pod(
-            "threshold-pod",
+            "future-pod",
             node_name=None,
             phase="Pending",
-            creation_timestamp=NOW - timedelta(seconds=30),
+            creation_timestamp=NOW + timedelta(seconds=30),
         )
         _, pending = self._run_with_pending_pod(pod)
-        assert len(pending) == 1
+        assert len(pending) == 0
 
     def test_terminating_namespace_excluded(self):
         """Pod in a namespace with deletionTimestamp is excluded."""

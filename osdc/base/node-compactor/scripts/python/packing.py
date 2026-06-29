@@ -5,7 +5,10 @@ import math
 from collections import defaultdict
 from collections.abc import Callable
 
+from fit import _pods_fit_on_nodes
 from models import Config, NodeState, PodInfo
+from peak_window import prune_stale_peak_history, update_peak_history
+from pending import pending_pods_for_group
 
 log = logging.getLogger("compactor")
 
@@ -61,64 +64,20 @@ def bin_pack_min_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> int:
     return max(nodes_used, 1)
 
 
-def _pods_fit_on_nodes(pods: list[PodInfo], nodes: list[NodeState]) -> bool:
-    """Check if all pods can fit on the given nodes (considering current load).
-
-    Uses total resource usage (workload + DaemonSet) to compute remaining
-    capacity, since DaemonSet pods consume real resources on the node.
-    """
-    if not pods:
-        return True
-    if not nodes:
-        return False
-
-    # Build bins from available capacity on each node, accounting for
-    # ALL pods (workload + DaemonSet) currently running
-    bins = []
-    for node in nodes:
-        bins.append(
-            {
-                "cpu_remaining": node.allocatable_cpu - node.total_cpu_used,
-                "mem_remaining": node.allocatable_memory - node.total_memory_used,
-                "gpu_remaining": node.allocatable_gpu - node.total_gpu_used,
-            }
-        )
-
-    sorted_pods = sorted(pods, key=lambda p: (p.gpu_request, p.cpu_request), reverse=True)
-    for pod in sorted_pods:
-        placed = False
-        for b in bins:
-            if (
-                b["cpu_remaining"] >= pod.cpu_request
-                and b["mem_remaining"] >= pod.memory_request
-                and (pod.gpu_request == 0 or b["gpu_remaining"] >= pod.gpu_request)
-            ):
-                b["cpu_remaining"] -= pod.cpu_request
-                b["mem_remaining"] -= pod.memory_request
-                b["gpu_remaining"] -= pod.gpu_request
-                placed = True
-                break
-        if not placed:
-            return False
-    return True
-
-
 def select_reserved_nodes(group_nodes: dict[str, list[NodeState]], cfg: Config) -> dict[str, set[str]]:
     """Select nodes per pool for capacity reservation (do-not-disrupt).
 
     Only young nodes (< max_uptime_hours) are eligible. Selection priority:
-    lowest utilization first (ready-to-use capacity), then oldest
-    youngest-pod age (closer to draining), then newest node as tiebreaker.
+    lowest utilization first (ready-to-use capacity), then oldest youngest-pod
+    age (closer to draining), then newest node as tiebreaker.
 
-    Accepts any grouping (e.g. fleet-grouped data) but internally
-    re-groups by NodePool, since reservations are per-NodePool.
+    Accepts any grouping (e.g. fleet-grouped data) but internally re-groups by
+    NodePool, since reservations are per-NodePool.
 
-    Returns {pool_name: {node_names}} with up to
-    cfg.capacity_reservation_nodes per pool.
+    Returns {pool_name: {node_names}} with up to cfg.capacity_reservation_nodes per pool.
     """
     if cfg.capacity_reservation_nodes <= 0:
         return {}
-
     # Reservations are per-NodePool — re-group internally regardless of caller grouping
     pool_nodes: dict[str, list[NodeState]] = defaultdict(list)
     for nodes in group_nodes.values():
@@ -166,6 +125,8 @@ def compute_taints(
     cfg: Config,
     reserved_nodes: set[str] | None = None,
     group_key: Callable[[NodeState], str] | None = None,
+    peak_history: dict[str, list[tuple[float, int]]] | None = None,
+    pending_pods: list | None = None,
 ) -> tuple[set[str], set[str], set[str], set[str]]:
     """Decide which nodes to taint and which to untaint.
 
@@ -187,6 +148,9 @@ def compute_taints(
     for ns in node_states.values():
         groups[key_fn(ns)].append(ns)
 
+    if peak_history is not None:
+        prune_stale_peak_history(peak_history, cfg.peak_window_seconds)
+
     to_taint: set[str] = set()
     to_untaint: set[str] = set()
     mandatory_untaint: set[str] = set()
@@ -194,13 +158,30 @@ def compute_taints(
 
     reserved = reserved_nodes or set()
 
-    for _group_name, group_nodes in groups.items():
+    for group_name, group_nodes in groups.items():
         all_workload_pods = []
         for node in group_nodes:
             all_workload_pods.extend(p for p in node.workload_pods if not p.is_phantom)
 
-        min_needed = bin_pack_min_nodes(all_workload_pods, group_nodes)
-        min_needed = max(min_needed, cfg.min_nodes)
+        if pending_pods:
+            all_workload_pods.extend(
+                pending_pods_for_group(
+                    pending_pods,
+                    group_nodes,
+                    cfg.taint_key,
+                    cfg.pending_pod_min_age_seconds,
+                    cfg.pending_pod_max_age_seconds,
+                )
+            )
+
+        current_min = bin_pack_min_nodes(all_workload_pods, group_nodes)
+
+        if peak_history is not None:
+            peak_min = update_peak_history(peak_history, group_name, current_min, cfg.interval, cfg.peak_window_seconds)
+        else:
+            peak_min = current_min
+
+        min_needed = max(peak_min, cfg.min_nodes)
 
         surplus = len(group_nodes) - min_needed
         if surplus <= 0:
@@ -212,19 +193,18 @@ def compute_taints(
                     mandatory_untaint.add(node.name)
             continue
 
-        # Compute required spare capacity for this group.
-        # spare_capacity_nodes is a floor, spare_capacity_ratio scales with
-        # group size. The effective requirement is the max of both.
-        # Setting both to 0 disables the feature.
+        # Compute required spare capacity for this group. spare_capacity_nodes
+        # is a floor, spare_capacity_ratio scales with group size. The effective
+        # requirement is the max of both. Setting both to 0 disables the feature.
         required_spare = max(
             cfg.spare_capacity_nodes,
             math.ceil(len(group_nodes) * cfg.spare_capacity_ratio),
         )
 
-        # Exclude young nodes and reserved nodes from taint candidates.
-        # Young nodes may not have received pods yet (race between Karpenter
-        # provisioning and the compactor's reconcile cycle). Reserved nodes
-        # are protected from disruption to maintain ready-to-use capacity.
+        # Exclude young nodes and reserved nodes from taint candidates. Young
+        # nodes may not have received pods yet (race between Karpenter provisioning
+        # and the compactor's reconcile cycle). Reserved nodes are protected
+        # from disruption to maintain ready-to-use capacity.
         eligible = []
         for node in group_nodes:
             if node.name in reserved:
@@ -241,9 +221,9 @@ def compute_taints(
                 continue
             eligible.append(node)
 
-        # Priority: old nodes first, then lowest utilization, then youngest
-        # pod age descending (nodes whose youngest pod is oldest are closer
-        # to draining naturally -- higher age = better taint candidate)
+        # Priority: old nodes first, then lowest utilization, then youngest pod
+        # age descending (nodes whose youngest pod is oldest are closer to
+        # draining naturally -- higher age = better taint candidate)
         def taint_priority(node: NodeState) -> tuple:
             is_old = 1 if node.uptime_hours > cfg.max_uptime_hours else 0
             return (
@@ -257,15 +237,15 @@ def compute_taints(
         candidates = sorted(eligible, key=taint_priority)
 
         # Rate limit: cap the number of NEW taints (nodes not already tainted)
-        # per iteration to avoid large-scale taint storms.
-        # Always allow at least 1 new taint even with rate=0.0.
+        # per iteration to avoid large-scale taint storms. Always allow at least
+        # 1 new taint even with rate=0.0.
         max_new_taints = max(1, math.ceil(surplus * cfg.taint_rate))
         new_taint_count = 0
 
         # Nodes beyond the surplus count are definitely remaining untainted.
-        # Nodes within the surplus range that fail the safety check also
-        # become remaining. This avoids the stale-snapshot bug where
-        # remaining_untainted was pre-computed before the loop.
+        # Nodes within the surplus range that fail the safety check also become
+        # remaining. This avoids the stale-snapshot bug where remaining_untainted
+        # was pre-computed before the loop.
         definitely_remaining = list(candidates[surplus:])
         conditionally_remaining: list[NodeState] = []
 
@@ -279,9 +259,9 @@ def compute_taints(
                     mandatory_untaint.add(node.name)
                 continue
 
-            # This node is a taint candidate -- check safety.
-            # Exclude phantom pods: they are predictions about pending pod
-            # placement, not real workload that needs to be accommodated.
+            # This node is a taint candidate -- check safety. Exclude phantom
+            # pods: they are predictions about pending pod placement, not real
+            # workload that needs to be accommodated.
             real_pods = [p for p in node.workload_pods if not p.is_phantom]
             all_remaining = definitely_remaining + conditionally_remaining
             if real_pods and not _pods_fit_on_nodes(real_pods, all_remaining):
@@ -307,10 +287,10 @@ def compute_taints(
                 conditionally_remaining.append(node)
                 continue
 
-            # Spare capacity check: ensure enough low-utilization nodes
-            # remain untainted after this taint.  Count untainted nodes
-            # (excluding this candidate and nodes already marked to taint)
-            # with utilization at or below the threshold.
+            # Spare capacity check: ensure enough low-utilization nodes remain
+            # untainted after this taint. Count untainted nodes (excluding this
+            # candidate and nodes already marked to taint) with utilization at
+            # or below the threshold.
             if required_spare > 0:
                 spare_after = _count_spare_nodes(
                     group_nodes,
@@ -335,8 +315,7 @@ def compute_taints(
             if not node.is_tainted:
                 new_taint_count += 1
 
-        # Spare capacity recovery: untaint low-utilization tainted nodes
-        # if the group doesn't meet the spare capacity requirement.
+        # Spare capacity recovery: untaint low-utilization tainted nodes if the group misses the spare capacity requirement.
         if required_spare > 0:
             current_spare = _count_spare_nodes(
                 group_nodes,
@@ -345,9 +324,8 @@ def compute_taints(
                 cfg.spare_capacity_threshold,
             )
             if current_spare < required_spare:
-                # Find tainted nodes with low utilization that we can
-                # untaint to restore spare capacity. Prefer lowest
-                # utilization first.
+                # Find tainted nodes with low utilization that we can untaint
+                # to restore spare capacity. Prefer lowest utilization first.
                 tainted_low = sorted(
                     (
                         n
