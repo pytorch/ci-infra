@@ -27,7 +27,7 @@ import time
 import metrics as m
 from discovery import build_node_states, discover_managed_nodes
 from lightkube import ApiError, Client
-from models import LABEL_NODE_FLEET, Config, NodeState
+from models import LABEL_NODE_FLEET, PEAK_WINDOW_SECONDS, PENDING_POD_MAX_AGE_SECONDS, Config, NodeState
 from packing import _count_spare_nodes, compute_taints, select_reserved_nodes
 from phantom import apply_pending_phantom_load
 from prometheus_client import start_http_server
@@ -57,6 +57,7 @@ def reconcile(
     cfg: Config,
     taint_times: dict[str, float],
     fleet_cooldown_times: dict[str, float] | None = None,
+    peak_history: dict[str, list[tuple[float, int]]] | None = None,
 ) -> None:
     """Single reconciliation cycle.
 
@@ -68,6 +69,10 @@ def reconcile(
         fleet_cooldown_times: Mutable dict tracking when each nodepool last
             had a burst untaint. Updated in-place. If None, fleet cooldown
             is effectively disabled.
+        peak_history: Mutable dict tracking per-fleet sliding window of
+            (timestamp, bin_pack_min_needed) samples. Threaded into
+            compute_taints so the peak-window floor survives across cycles.
+            If None, the peak-window floor is effectively disabled.
     """
     # Touch healthcheck file so liveness probe passes even with no managed nodes.
     pathlib.Path("/tmp/healthy").touch()
@@ -124,8 +129,8 @@ def reconcile(
     m.refresh_gauge(m.workload_pods, {(fk,): count for fk, count in fleet_pod_counts.items()})
 
     # Instrumentation point 3: pending pods
-    burst_untaint = check_pending_pods(cfg, node_states, pending_pods)
-    m.pending_pods_compatible.set(len(pending_pods))
+    burst_untaint, compatible_count = check_pending_pods(cfg, node_states, pending_pods)
+    m.pending_pods_compatible.set(compatible_count)
 
     # Record fleet cooldown for fleets that had burst untaints
     if fleet_cooldown_times is not None:
@@ -161,7 +166,12 @@ def reconcile(
     m.refresh_gauge(m.reserved_nodes, reserved_counts)
 
     desired_taint, desired_untaint, mandatory_untaint, rate_limited = compute_taints(
-        node_states, cfg, reserved_nodes=all_reserved, group_key=_fleet_group_key
+        node_states,
+        cfg,
+        reserved_nodes=all_reserved,
+        group_key=_fleet_group_key,
+        peak_history=peak_history,
+        pending_pods=pending_pods,
     )
 
     # Log and emit metrics for rate-limited nodes
@@ -355,6 +365,11 @@ def main() -> int:
         cfg.nodepool_label,
         cfg.taint_key,
     )
+    log.info(
+        "Peak-window tracking: window=%ds, pending pod max age for bin-pack=%ds",
+        PEAK_WINDOW_SECONDS,
+        PENDING_POD_MAX_AGE_SECONDS,
+    )
 
     # Expose Prometheus metrics on :8080/metrics. Bind ::0 so the socket
     # accepts both IPv6 and IPv4-mapped IPv6 connections — the pod has
@@ -380,6 +395,10 @@ def main() -> int:
     shutdown = False
     taint_times: dict[str, float] = {}
     fleet_cooldown_times: dict[str, float] = {}
+    # Sliding-window samples of per-fleet bin-pack peak demand. Lives only in
+    # process memory — restart clears the floor, which is fine because the
+    # next reconcile rebuilds it from observed load.
+    peak_history: dict[str, list[tuple[float, int]]] = {}
 
     def handle_signal(signum, frame):
         nonlocal shutdown
@@ -397,7 +416,7 @@ def main() -> int:
     while not shutdown:
         try:
             with m.reconcile_duration_seconds.time():
-                reconcile(client, cfg, taint_times, fleet_cooldown_times)
+                reconcile(client, cfg, taint_times, fleet_cooldown_times, peak_history)
             m.reconcile_cycles_total.labels(status="success").inc()
         except ApiError as e:
             m.reconcile_cycles_total.labels(status="error").inc()

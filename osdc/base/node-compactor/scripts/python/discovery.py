@@ -7,6 +7,7 @@ from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Namespace, Node, Pod
 from models import (
     ANNOTATION_CAPACITY_RESERVED,
+    PENDING_POD_MIN_AGE_SECONDS,
     Config,
     NodeState,
     PodInfo,
@@ -17,10 +18,6 @@ from models import (
     pod_gpu_request,
     pod_memory_request,
 )
-
-# Minimum age (seconds) before a pending pod is considered for burst detection.
-# Pods younger than this are likely still being scheduled normally.
-PENDING_POD_MIN_AGE_SECONDS = 30
 
 log = logging.getLogger("compactor")
 
@@ -152,7 +149,9 @@ def build_node_states(
             if is_daemonset_pod(pod):
                 continue
 
-            # --- Exclusion filter 3: pod too young (< 30s) ---
+            # --- Exclusion filter 3: pod younger than PENDING_POD_MIN_AGE_SECONDS ---
+            # With the lower bound at 0 this only filters pods whose timestamp is in
+            # the future (clock skew); the bound is kept as the runtime toggle.
             creation_ts = pod.metadata.creationTimestamp if pod.metadata else None
             if creation_ts:
                 age = (now - creation_ts).total_seconds()

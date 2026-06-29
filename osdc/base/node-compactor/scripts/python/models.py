@@ -18,6 +18,21 @@ ANNOTATION_CAPACITY_RESERVED = "node-compactor.osdc.io/capacity-reserved"
 ANNOTATION_DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
 LABEL_NODE_FLEET = "node-fleet"
 
+# Sliding window over which the compactor tracks per-fleet peak bin-pack demand.
+# `min_needed` is the max bin-pack result observed inside this window, so a transient
+# dip in load doesn't trigger taints — the floor only releases after sustained drop.
+PEAK_WINDOW_SECONDS = 2700  # 45 minutes
+
+# Upper-bound age for a pending pod to be included in bin-pack input. Pods older than this
+# are unlikely to be capacity-constrained (more likely stuck on a permanent issue) and we
+# stop counting them as demand to avoid leaking memory if Kubernetes leaves zombie pods.
+PENDING_POD_MAX_AGE_SECONDS = 14400  # 4 hours
+
+# Lower-bound age before a pending pod is considered. Set to 0 to count every
+# pending pod the moment it appears, including pods that haven't yet been through
+# a Karpenter provisioning pass.
+PENDING_POD_MIN_AGE_SECONDS = 0
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -298,3 +313,35 @@ def pod_gpu_request(pod: Pod) -> int:
             if c.resources and c.resources.requests and "nvidia.com/gpu" in c.resources.requests:
                 total += int(c.resources.requests["nvidia.com/gpu"])
     return total
+
+
+def pod_to_podinfo(pod: Pod) -> "PodInfo":
+    """Convert a lightkube Pod into a PodInfo suitable for bin-packing.
+
+    The pod is treated as unscheduled workload (is_phantom=False,
+    is_daemonset=False, node_name="") regardless of its actual phase —
+    callers use this for pending/admission analysis where node placement
+    has not yet happened.
+    """
+    meta = getattr(pod, "metadata", None)
+    return PodInfo(
+        name=(getattr(meta, "name", "") or "") if meta else "",
+        namespace=(getattr(meta, "namespace", "") or "") if meta else "",
+        cpu_request=pod_cpu_request(pod),
+        memory_request=pod_memory_request(pod),
+        gpu_request=pod_gpu_request(pod),
+        node_name="",
+        is_daemonset=False,
+        is_phantom=False,
+    )
+
+
+def node_view_without_taint(ns: "NodeState", taint_key: str) -> "NodeState":
+    """Return a copy of NodeState with the named taint stripped from node_taints.
+
+    Used to simulate "what would the node look like once our compactor taint is removed"
+    when checking pending-pod compatibility against fleets.
+    """
+    from dataclasses import replace
+
+    return replace(ns, node_taints=[t for t in ns.node_taints if t.key != taint_key])
