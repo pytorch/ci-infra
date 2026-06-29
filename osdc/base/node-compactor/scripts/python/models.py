@@ -18,6 +18,20 @@ ANNOTATION_CAPACITY_RESERVED = "node-compactor.osdc.io/capacity-reserved"
 ANNOTATION_DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
 LABEL_NODE_FLEET = "node-fleet"
 
+# Sliding window over which the compactor tracks per-fleet peak bin-pack demand.
+# `min_needed` is the max bin-pack result observed inside this window, so a transient
+# dip in load doesn't trigger taints — the floor only releases after sustained drop.
+PEAK_WINDOW_SECONDS = 2700  # 45 minutes
+
+# Upper-bound age for a pending pod to be included in bin-pack input. Pods older than this
+# are unlikely to be capacity-constrained (more likely stuck on a permanent issue) and we
+# stop counting them as demand to avoid leaking memory if Kubernetes leaves zombie pods.
+PENDING_POD_MAX_AGE_SECONDS = 14400  # 4 hours
+
+# Lower-bound age before a pending pod is considered for burst detection. Pods younger
+# than this are likely still being scheduled normally and not yet a capacity signal.
+PENDING_POD_MIN_AGE_SECONDS = 30
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -298,3 +312,14 @@ def pod_gpu_request(pod: Pod) -> int:
             if c.resources and c.resources.requests and "nvidia.com/gpu" in c.resources.requests:
                 total += int(c.resources.requests["nvidia.com/gpu"])
     return total
+
+
+def node_view_without_taint(ns: "NodeState", taint_key: str) -> "NodeState":
+    """Return a copy of NodeState with the named taint stripped from node_taints.
+
+    Used to simulate "what would the node look like once our compactor taint is removed"
+    when checking pending-pod compatibility against fleets.
+    """
+    from dataclasses import replace
+
+    return replace(ns, node_taints=[t for t in ns.node_taints if t.key != taint_key])
