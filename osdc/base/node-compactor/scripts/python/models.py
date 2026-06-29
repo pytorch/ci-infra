@@ -28,9 +28,10 @@ PEAK_WINDOW_SECONDS = 2700  # 45 minutes
 # stop counting them as demand to avoid leaking memory if Kubernetes leaves zombie pods.
 PENDING_POD_MAX_AGE_SECONDS = 14400  # 4 hours
 
-# Lower-bound age before a pending pod is considered for burst detection. Pods younger
-# than this are likely still being scheduled normally and not yet a capacity signal.
-PENDING_POD_MIN_AGE_SECONDS = 30
+# Lower-bound age before a pending pod is considered. Set to 0 to count every
+# pending pod the moment it appears, including pods that haven't yet been through
+# a Karpenter provisioning pass.
+PENDING_POD_MIN_AGE_SECONDS = 0
 
 # ============================================================================
 # Configuration
@@ -312,6 +313,27 @@ def pod_gpu_request(pod: Pod) -> int:
             if c.resources and c.resources.requests and "nvidia.com/gpu" in c.resources.requests:
                 total += int(c.resources.requests["nvidia.com/gpu"])
     return total
+
+
+def pod_to_podinfo(pod: Pod) -> "PodInfo":
+    """Convert a lightkube Pod into a PodInfo suitable for bin-packing.
+
+    The pod is treated as unscheduled workload (is_phantom=False,
+    is_daemonset=False, node_name="") regardless of its actual phase —
+    callers use this for pending/admission analysis where node placement
+    has not yet happened.
+    """
+    meta = getattr(pod, "metadata", None)
+    return PodInfo(
+        name=(getattr(meta, "name", "") or "") if meta else "",
+        namespace=(getattr(meta, "namespace", "") or "") if meta else "",
+        cpu_request=pod_cpu_request(pod),
+        memory_request=pod_memory_request(pod),
+        gpu_request=pod_gpu_request(pod),
+        node_name="",
+        is_daemonset=False,
+        is_phantom=False,
+    )
 
 
 def node_view_without_taint(ns: "NodeState", taint_key: str) -> "NodeState":

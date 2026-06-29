@@ -4,7 +4,14 @@ import unittest
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
-from models import NodeState, is_daemonset_pod, node_view_without_taint, pod_cpu_request, pod_memory_request
+from models import (
+    NodeState,
+    is_daemonset_pod,
+    node_view_without_taint,
+    pod_cpu_request,
+    pod_memory_request,
+    pod_to_podinfo,
+)
 
 
 def _mock_pod(metadata=True, owner_refs=None, containers=None, spec=True):
@@ -247,6 +254,48 @@ class TestNodeViewWithoutTaint(unittest.TestCase):
         self.assertTrue(view.is_reserved)
         # Original is not mutated
         self.assertEqual(len(ns.node_taints), 2)
+
+
+class TestPodToPodInfo(unittest.TestCase):
+    """Tests for pod_to_podinfo."""
+
+    def test_converts_basic_pod(self):
+        pod = _mock_pod(containers=[_mock_container(cpu="500m", memory="1Gi")])
+        pod.metadata.name = "pending-1"
+        pod.metadata.namespace = "default"
+
+        info = pod_to_podinfo(pod)
+
+        self.assertEqual(info.name, "pending-1")
+        self.assertEqual(info.namespace, "default")
+        self.assertAlmostEqual(info.cpu_request, 0.5)
+        self.assertEqual(info.memory_request, 1024**3)
+        self.assertEqual(info.gpu_request, 0)
+        self.assertEqual(info.node_name, "")
+        self.assertFalse(info.is_daemonset)
+        self.assertFalse(info.is_phantom)
+
+    def test_metadata_none_yields_empty_name_namespace(self):
+        pod = _mock_pod(metadata=None, spec=False)
+
+        info = pod_to_podinfo(pod)
+
+        self.assertEqual(info.name, "")
+        self.assertEqual(info.namespace, "")
+        self.assertEqual(info.cpu_request, 0.0)
+        self.assertEqual(info.memory_request, 0)
+        self.assertEqual(info.gpu_request, 0)
+
+    def test_gpu_request_carried_over(self):
+        c = _mock_container(cpu="1", memory="1Gi")
+        c.resources.requests["nvidia.com/gpu"] = "2"
+        pod = _mock_pod(containers=[c])
+        pod.metadata.name = "gpu-pod"
+        pod.metadata.namespace = "ns"
+
+        info = pod_to_podinfo(pod)
+
+        self.assertEqual(info.gpu_request, 2)
 
 
 if __name__ == "__main__":

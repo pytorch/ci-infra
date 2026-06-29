@@ -7,6 +7,7 @@ from models import (
     PENDING_POD_MAX_AGE_SECONDS,
     Config,
     NodeState,
+    PodInfo,
 )
 from pending import pending_pods_for_group
 
@@ -105,14 +106,24 @@ class TestPendingPodsForGroup:
         filtered = pending_pods_for_group([pp_stuck], list(nodes.values()), cfg.taint_key)
         assert filtered == []
 
-    def test_pending_pod_younger_than_min_age_is_excluded(self):
-        """Pod with age below the discovery lower bound is filtered out (defensive)."""
+    def test_pending_pod_just_created_is_included(self):
+        """Pod with age 0 (just created) is included — lower bound is 0."""
         cfg = make_config(min_nodes=1, taint_rate=1.0)
         nodes = {f"n{i}": make_node(f"n{i}") for i in range(3)}
 
-        pp_young = make_pending_pod_mock(cpu="16", age_seconds=5)
+        pp_new = make_pending_pod_mock(cpu="16", age_seconds=0)
 
-        filtered = pending_pods_for_group([pp_young], list(nodes.values()), cfg.taint_key)
+        filtered = pending_pods_for_group([pp_new], list(nodes.values()), cfg.taint_key)
+        assert len(filtered) == 1
+
+    def test_pending_pod_with_future_timestamp_is_excluded(self):
+        """Pod with creationTimestamp in the future (clock skew) is filtered out defensively."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        nodes = {f"n{i}": make_node(f"n{i}") for i in range(3)}
+
+        pp_future = make_pending_pod_mock(cpu="16", age_seconds=-30)
+
+        filtered = pending_pods_for_group([pp_future], list(nodes.values()), cfg.taint_key)
         assert filtered == []
 
     def test_pending_pod_missing_creation_timestamp_skipped(self):
@@ -169,3 +180,43 @@ class TestPendingPodsForGroup:
 
         filtered = pending_pods_for_group([pp], nodes_list, cfg.taint_key)
         assert filtered == []
+
+    def test_pending_pod_equal_to_allocatable_excluded_when_daemonset_overhead(self):
+        """A pod requesting exactly allocatable_cpu cannot fit once DaemonSets are accounted for."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        ds_pod = PodInfo(
+            name="ds",
+            namespace="kube-system",
+            cpu_request=0.5,
+            memory_request=512 * 1024 * 1024,
+            node_name="n1",
+            is_daemonset=True,
+            start_time=NOW,
+        )
+        node = make_node("n1", cpu=16.0)
+        node.pods = [ds_pod]
+
+        pp = make_pending_pod_mock(cpu="16", memory="1Gi")
+
+        filtered = pending_pods_for_group([pp], [node], cfg.taint_key)
+        assert filtered == []
+
+    def test_pending_pod_at_allocatable_minus_daemonset_admitted(self):
+        """A pod requesting allocatable - daemonset is the largest pod that can still fit."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        ds_pod = PodInfo(
+            name="ds",
+            namespace="kube-system",
+            cpu_request=0.5,
+            memory_request=512 * 1024 * 1024,
+            node_name="n1",
+            is_daemonset=True,
+            start_time=NOW,
+        )
+        node = make_node("n1", cpu=16.0, mem=64 * GiB)
+        node.pods = [ds_pod]
+
+        pp = make_pending_pod_mock(cpu="15.5", memory=f"{64 * 1024 - 512}Mi")
+
+        filtered = pending_pods_for_group([pp], [node], cfg.taint_key)
+        assert len(filtered) == 1
