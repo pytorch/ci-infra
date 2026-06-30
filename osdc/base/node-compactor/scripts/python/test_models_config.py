@@ -402,6 +402,20 @@ class TestConfigFromEnvValidation(unittest.TestCase):
             self._from_env(COMPACTOR_PENDING_POD_MIN_AGE_SECONDS="-1")
         self.assertIn("COMPACTOR_PENDING_POD_MIN_AGE_SECONDS", str(ctx.exception))
 
+    def test_pending_pod_min_age_not_less_than_max_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._from_env(
+                COMPACTOR_PENDING_POD_MIN_AGE_SECONDS="100",
+                COMPACTOR_PENDING_POD_MAX_AGE_SECONDS="100",
+            )
+        self.assertIn("must be <", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            self._from_env(
+                COMPACTOR_PENDING_POD_MIN_AGE_SECONDS="200",
+                COMPACTOR_PENDING_POD_MAX_AGE_SECONDS="100",
+            )
+        self.assertIn("must be <", str(ctx.exception))
+
     def test_boundary_values_accepted(self):
         cfg = self._from_env(
             COMPACTOR_PEAK_WINDOW_SECONDS="1",
