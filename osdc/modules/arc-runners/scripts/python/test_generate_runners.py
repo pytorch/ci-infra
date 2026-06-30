@@ -9,6 +9,7 @@ import pytest
 import yaml
 from fleet_naming import derive_fleet_name
 from generate_runners import (
+    compute_cluster_sharding,
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
@@ -2933,3 +2934,78 @@ class TestMultipliers:
         fresh, aged = _multiplier_env_values(output_dir, "r")
         assert fresh == "2.0"
         assert aged == "3.0"
+
+
+class TestComputeClusterSharding:
+    """Unit tests for the per-(module, runner_name_prefix) sharding helper."""
+
+    def _yaml(self, clusters):
+        return {"clusters": clusters}
+
+    def test_two_peer_clusters_same_module_same_prefix(self):
+        yml = self._yaml(
+            {
+                "a-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+                "a-prod-aws-ue2": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "a-prod-aws-ue1", "arc-runners", "mt-") == (0, 2)
+        assert compute_cluster_sharding(yml, "a-prod-aws-ue2", "arc-runners", "mt-") == (1, 2)
+
+    def test_different_prefixes_are_separate_shards(self):
+        yml = self._yaml(
+            {
+                "meta-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+                "lf-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "lf-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-") == (0, 1)
+        assert compute_cluster_sharding(yml, "lf-prod-aws-ue1", "arc-runners", "lf-") == (0, 1)
+
+    def test_different_modules_are_separate_shards(self):
+        yml = self._yaml(
+            {
+                "meta-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+                "meta-prod-aws-ue2": {
+                    "modules": ["arc-runners", "arc-runners-b200"],
+                    "arc-runners": {"runner_name_prefix": "mt-"},
+                },
+            }
+        )
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-") == (0, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-") == (1, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners-b200", "mt-") == (0, 1)
+
+    def test_three_peer_staging_clusters(self):
+        yml = self._yaml(
+            {
+                "meta-staging-aws-uw1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "c-mt-"}},
+                "meta-staging-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "c-mt-"}},
+                "meta-staging-aws-ue2": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "c-mt-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "meta-staging-aws-ue1", "arc-runners", "c-mt-") == (0, 3)
+        assert compute_cluster_sharding(yml, "meta-staging-aws-ue2", "arc-runners", "c-mt-") == (1, 3)
+        assert compute_cluster_sharding(yml, "meta-staging-aws-uw1", "arc-runners", "c-mt-") == (2, 3)
+
+    def test_cluster_not_in_peer_set_returns_safe_fallback(self):
+        yml = self._yaml(
+            {
+                "other": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "missing", "arc-runners", "mt-") == (0, 1)
+
+    def test_empty_clusters_yaml(self):
+        assert compute_cluster_sharding({}, "any", "arc-runners", "mt-") == (0, 1)
+        assert compute_cluster_sharding({"clusters": {}}, "any", "arc-runners", "mt-") == (0, 1)
+
+    def test_empty_prefix_matches_clusters_with_no_prefix(self):
+        yml = self._yaml(
+            {
+                "x": {"modules": ["arc-runners"], "arc-runners": {}},
+                "y": {"modules": ["arc-runners"]},
+            }
+        )
+        assert compute_cluster_sharding(yml, "x", "arc-runners", "") == (0, 2)
+        assert compute_cluster_sharding(yml, "y", "arc-runners", "") == (1, 2)
