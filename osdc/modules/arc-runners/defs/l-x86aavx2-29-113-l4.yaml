@@ -8,6 +8,6 @@ runner:
   vcpu: 29
   memory: 113Gi
   gpu: 1
-  proactive_capacity: 1
+  proactive_capacity: 0
   hud_failure_base_capacity: 30
   max_burst_capacity: 60

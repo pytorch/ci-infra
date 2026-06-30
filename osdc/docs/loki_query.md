@@ -28,7 +28,7 @@ LOKI_URL="https://logs-prod-021.grafana.net"
 
 **Important**: The `NO_PROXY` / `no_proxy` bypass is required because of Meta's corporate proxy. Without it, `kubectl` calls to EKS will fail.
 
-The Loki URL comes from `clusters.yaml` under `logging.grafana_cloud_loki_url`, with the `/loki/api/v1/push` suffix stripped. For `pytorch-arc-cbr-production`, the URL is `https://logs-prod-021.grafana.net`.
+The Loki URL comes from `clusters.yaml` under `logging.grafana_cloud_loki_url`, with the `/loki/api/v1/push` suffix stripped. For `meta-prod-aws-ue2`, the URL is `https://logs-prod-021.grafana.net`.
 
 ## Step 2 — Query
 
@@ -48,7 +48,7 @@ LOKI_READ_KEY=$(NO_PROXY="$NO_PROXY,.eks.amazonaws.com" no_proxy="$no_proxy,.eks
 LOKI_URL="https://logs-prod-021.grafana.net" && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="kubelet.service"}' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", unit="kubelet.service"}' \
     --data-urlencode "limit=20" \
     --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -74,7 +74,7 @@ Three log sources flow into the same Loki tenant: **pod logs**, **system journal
 
 | Label | Source | Example values | Description |
 |-------|--------|---------------|-------------|
-| `cluster` | all | `pytorch-arc-cbr-production` | Cluster name from clusters.yaml (external label on the writer) |
+| `cluster` | all | `meta-prod-aws-ue2` | Cluster name from clusters.yaml (external label on the writer) |
 | `namespace` | pod logs | `arc-runners`, `kube-system`, `harbor-system` | Kubernetes namespace |
 | `container` | pod logs | `runner`, `coredns`, `kube-proxy` | Container name |
 | `app` | pod logs | `karpenter`, `harbor`, `pypi-cache` | From `app.kubernetes.io/name` pod label only — pods labeled only with `k8s-app` (EKS-managed CoreDNS, kube-proxy, NodeLocal DNS) do NOT have this label; filter by `container=` instead |
@@ -96,7 +96,7 @@ Three log sources flow into the same Loki tenant: **pod logs**, **system journal
 
 **Key distinction**: Structured metadata uses pipe syntax AFTER the stream selector:
 ```
-{cluster="pytorch-arc-cbr-production", unit="kubelet.service"} | node="ip-10-4-154-0.us-east-2.compute.internal"
+{cluster="meta-prod-aws-ue2", unit="kubelet.service"} | node="ip-10-4-154-0.us-east-2.compute.internal"
 ```
 
 ## Example Queries
@@ -119,7 +119,7 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" "$LOKI_URL/loki/api/v1/label/unit/values"
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="kubelet.service"}' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", unit="kubelet.service"}' \
     --data-urlencode "limit=20" \
     --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -131,7 +131,7 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="kubelet.service"} | node="ip-10-4-154-0.us-east-2.compute.internal"' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", unit="kubelet.service"} | node="ip-10-4-154-0.us-east-2.compute.internal"' \
     --data-urlencode "limit=50" \
     --data-urlencode "start=$(date -u -v-6H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -143,7 +143,7 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="containerd.service"}' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", unit="containerd.service"}' \
     --data-urlencode "limit=20" \
     --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -155,7 +155,7 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="arc-runners", container="runner"}' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", namespace="arc-runners", container="runner"}' \
     --data-urlencode "limit=50" \
     --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -167,7 +167,7 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="karpenter", level="error"}' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", namespace="karpenter", level="error"}' \
     --data-urlencode "limit=50" \
     --data-urlencode "start=$(date -u -v-6H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -179,7 +179,7 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="arc-runners"} | workflow_run_id="12345678901"' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", namespace="arc-runners"} | workflow_run_id="12345678901"' \
     --data-urlencode "limit=200" \
     --data-urlencode "start=$(date -u -v-6H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -193,7 +193,7 @@ NodeLocal DNSCache pods are labeled `k8s-app: node-local-dns` only (no `app.kube
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", namespace="kube-system", container="node-cache"}' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", namespace="kube-system", container="node-cache"}' \
     --data-urlencode "limit=50" \
     --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
@@ -206,26 +206,26 @@ curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
 # ... (credential extraction) ... && \
 curl -s -u "$LOKI_USER:$LOKI_READ_KEY" \
     "$LOKI_URL/loki/api/v1/query_range" \
-    --data-urlencode 'query={cluster="pytorch-arc-cbr-production", kind=~".+"}' \
+    --data-urlencode 'query={cluster="meta-prod-aws-ue2", kind=~".+"}' \
     --data-urlencode "limit=100" \
     --data-urlencode "start=$(date -u -v-1H +%s)000000000" \
     --data-urlencode "end=$(date -u +%s)000000000" | jq .
 
 # Warning events for Pods only
---data-urlencode 'query={cluster="pytorch-arc-cbr-production", kind="Pod", type="Warning"}'
+--data-urlencode 'query={cluster="meta-prod-aws-ue2", kind="Pod", type="Warning"}'
 
 # Filter by reason (structured metadata)
---data-urlencode 'query={cluster="pytorch-arc-cbr-production", kind=~".+"} | reason="FailedScheduling"'
+--data-urlencode 'query={cluster="meta-prod-aws-ue2", kind=~".+"} | reason="FailedScheduling"'
 ```
 
 ### GPU-related journal logs
 
 ```bash
 # nvidia-fabricmanager and nvidia-persistenced events on GPU nodes
---data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit=~"nvidia-.+"}'
+--data-urlencode 'query={cluster="meta-prod-aws-ue2", unit=~"nvidia-.+"}'
 
 # Kernel messages (OOM kills, hardware errors)
---data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="kernel"}'
+--data-urlencode 'query={cluster="meta-prod-aws-ue2", unit="kernel"}'
 ```
 
 ### Text search within logs
@@ -234,13 +234,13 @@ Use LogQL's line filter after the stream selector:
 
 ```bash
 # Logs containing "error" (case-insensitive)
---data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="kubelet.service"} |~ "(?i)error"'
+--data-urlencode 'query={cluster="meta-prod-aws-ue2", unit="kubelet.service"} |~ "(?i)error"'
 
 # Logs containing exact string "OOMKilled"
---data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="kubelet.service"} |= "OOMKilled"'
+--data-urlencode 'query={cluster="meta-prod-aws-ue2", unit="kubelet.service"} |= "OOMKilled"'
 
 # Logs NOT containing "info"
---data-urlencode 'query={cluster="pytorch-arc-cbr-production", unit="kubelet.service"} != "info"'
+--data-urlencode 'query={cluster="meta-prod-aws-ue2", unit="kubelet.service"} != "info"'
 ```
 
 ### Compact output (just log lines)
@@ -259,11 +259,10 @@ To include timestamps:
 
 ## Notes on what's collected
 
-- **Pod logs** are collected from every node by the Alloy DaemonSet (`loki.source.file` reading CRI logs from `/var/log/pods/`). Pods in the `logging` namespace are excluded to prevent feedback loops; pods in `Succeeded` or `Failed` phase are dropped at discovery; lines matching `DEBUG`/`TRACE` levels and lines longer than 16KB are dropped; lines containing `kube-probe/` are dropped (HTTP readiness/liveness probe noise from any pod with HTTP access logging); per-pod rate limit is 1000 lines/s sustained / 5000 burst.
+- **Container stdout/stderr is NOT collected.** Use GitHub Actions workflow logs (for runner jobs), `kubectl logs` (while the pod is still alive), or pod events via the `alloy-events` Deployment to debug container behavior.
 - **Journal logs** are collected for `kubelet.service`, `containerd.service`, `kernel`, `nvidia-fabricmanager.service`, and `nvidia-persistenced.service` only. Debug-priority entries (syslog priority 7) are dropped.
 - **Kubernetes events** are collected by a separate Alloy Deployment (`alloy-events`, single replica) via the K8s Events API. Events from the `logging` namespace are dropped.
-- Some module pipelines apply additional sampling (e.g. `arc-runners` non-error logs are sampled at 10%, `buildkit` non-error logs at 50%, `harbor-system` non-error logs are throttled to 100 lines/s burst 500).
 
 ## Source
 
-Reference: `osdc-observability` skill ("Querying Logs in Grafana Cloud Loki" section) and `docs/observability.md`. Pipeline definitions in `modules/logging/pipelines/base.alloy`, `modules/logging/helm/alloy-events-values.yaml`, and per-module `modules/<name>/logging/pipeline.alloy` files.
+Reference: `osdc-observability` skill ("Querying Logs in Grafana Cloud Loki" section) and `docs/observability.md`. Pipeline definitions in `modules/logging/pipelines/base.alloy` (journal) and `modules/logging/helm/alloy-events-values.yaml` (events).

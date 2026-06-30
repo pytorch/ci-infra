@@ -193,6 +193,7 @@ def make_def_file(
     max_burst_capacity=None,
     hud_failure_base_capacity=None,
     node_fleet=None,
+    scheduler_name=None,
 ):
     """Write a runner def YAML and return the path.
 
@@ -221,6 +222,8 @@ def make_def_file(
         runner["hud_failure_base_capacity"] = hud_failure_base_capacity
     if node_fleet is not None:
         runner["node_fleet"] = node_fleet
+    if scheduler_name is not None:
+        runner["scheduler_name"] = scheduler_name
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -788,7 +791,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+            max_runners={"default": 8, "meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -796,7 +799,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production-uw1",
+            "cluster_id": "meta-prod-aws-uw1",
         }
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is True
@@ -813,7 +816,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+            max_runners={"default": 8, "meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -821,7 +824,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production",
+            "cluster_id": "meta-prod-aws-ue2",
         }
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners-h100") is True
@@ -838,7 +841,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"arc-cbr-production-uw1": 48},
+            max_runners={"meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -846,7 +849,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production-uw1",
+            "cluster_id": "meta-prod-aws-uw1",
         }
 
         with pytest.raises(ValueError, match="max_runners mapping must include a `default` key"):
@@ -861,7 +864,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+            max_runners={"default": 8, "meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -869,7 +872,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production-uw1",
+            "cluster_id": "meta-prod-aws-uw1",
             "pause_runners": True,
         }
 
@@ -887,7 +890,7 @@ class TestGenerateRunner:
             22,
             225,
             gpu=1,
-            max_runners={"default": 8, "arc-cbr-production-uw1": 48},
+            max_runners={"default": 8, "meta-prod-aws-uw1": 48},
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -895,7 +898,7 @@ class TestGenerateRunner:
             "github_config_url": "url",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "cluster_id": "arc-cbr-production-uw1",
+            "cluster_id": "meta-prod-aws-uw1",
             "excluded_instance_types": {"p5.48xlarge"},
             "region": "us-west-1",
         }
@@ -1599,17 +1602,17 @@ class TestGenerateRunner:
         def_file = make_def_file(tmp_path, "ovr-def", "m6i.32xlarge", 4, 16, runner_group="release-runners")
         output_dir = tmp_path / "out"
         output_dir.mkdir()
-        # ...but the cluster config says "arc-cbr-prod-uw1" — cluster wins.
+        # ...but the cluster config says "meta-prod-aws-uw1" — cluster wins.
         cluster_config = {
             "github_config_url": "https://github.com/pytorch",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "runner_group": "arc-cbr-prod-uw1",
+            "runner_group": "meta-prod-aws-uw1",
         }
 
         generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
         docs = list(yaml.safe_load_all((output_dir / "ovr-def.yaml").read_text()))
-        assert docs[0]["runnerGroup"] == "arc-cbr-prod-uw1"
+        assert docs[0]["runnerGroup"] == "meta-prod-aws-uw1"
 
     def test_runner_group_cluster_override_no_def_value(self, tmp_path):
         """Cluster-level runner_group applies even when the def doesn't set one."""
@@ -1620,12 +1623,12 @@ class TestGenerateRunner:
             "github_config_url": "https://github.com/pytorch",
             "github_secret_name": "secret",
             "runner_name_prefix": "",
-            "runner_group": "arc-cbr-prod-uw1",
+            "runner_group": "meta-prod-aws-uw1",
         }
 
         generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
         docs = list(yaml.safe_load_all((output_dir / "ovr-nodef.yaml").read_text()))
-        assert docs[0]["runnerGroup"] == "arc-cbr-prod-uw1"
+        assert docs[0]["runnerGroup"] == "meta-prod-aws-uw1"
 
     def test_runner_group_cluster_override_repo_scope_guard_still_wins(self, tmp_path):
         """Repo-scoped URL still forces 'default' even when cluster sets a custom group."""
@@ -1858,6 +1861,19 @@ def _render_real(real_template, tmp_path, variant):
     return helm, configmap, workflow_pod
 
 
+def _listener_env_value(helm, name):
+    """Return the value of a named env var on the listener container.
+
+    Returns None when the env var is absent so callers can distinguish
+    "missing" from "present but empty".
+    """
+    containers = helm["listenerTemplate"]["spec"]["containers"]
+    for entry in containers[0].get("env", []):
+        if entry.get("name") == name:
+            return entry.get("value")
+    return None
+
+
 class TestRealTemplate:
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_runner_pod_uses_arc_runner_priority_class(self, real_template, tmp_path, variant):
@@ -1870,6 +1886,271 @@ class TestRealTemplate:
         """Runner pod nodeSelector must use the literal c7i-runner pool, not the def's fleet."""
         helm, _, _ = _render_real(real_template, tmp_path, variant)
         assert helm["template"]["spec"]["nodeSelector"]["node-fleet"] == "c7i-runner"
+
+    def test_workflow_pod_scheduler_name_from_def(self, real_template, tmp_path):
+        """Workflow pod gets schedulerName when the runner def sets scheduler_name."""
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name="packed-runner",
+            instance_type="r7a.48xlarge",
+            vcpu=8,
+            memory=64,
+            gpu=0,
+            disk_size=200,
+            scheduler_name="bin-pack-scheduler",
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+        }
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                available_modules={"bin-pack-scheduler"},
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "packed-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert workflow_pod["spec"]["schedulerName"] == "bin-pack-scheduler"
+        # The capacity placeholder (ph-w-*) must use the SAME scheduler so it
+        # reserves a slot the real workflow pod can actually claim.
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == "bin-pack-scheduler"
+
+    def test_workflow_pod_scheduler_name_from_cluster_default(self, real_template, tmp_path):
+        """A def without its own scheduler_name inherits arc-runners.scheduler_name."""
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name="packed-runner",
+            instance_type="r7a.48xlarge",
+            vcpu=8,
+            memory=64,
+            gpu=0,
+            disk_size=200,
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+            "scheduler_name": "bin-pack-scheduler",
+        }
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                available_modules={"bin-pack-scheduler"},
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "packed-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert workflow_pod["spec"]["schedulerName"] == "bin-pack-scheduler"
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == "bin-pack-scheduler"
+
+    def test_def_scheduler_name_overrides_cluster_default(self, real_template, tmp_path):
+        """A def's own scheduler_name wins over the cluster default."""
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name="packed-runner",
+            instance_type="r7a.48xlarge",
+            vcpu=8,
+            memory=64,
+            gpu=0,
+            disk_size=200,
+            scheduler_name="def-sched",
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+            "scheduler_name": "cluster-sched",
+        }
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                available_modules={"def-sched", "cluster-sched"},
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "packed-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert workflow_pod["spec"]["schedulerName"] == "def-sched"
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == "def-sched"
+
+    def test_workflow_pod_scheduler_name_dropped_when_module_absent_cluster_default(self, real_template, tmp_path):
+        """Cluster default scheduler_name is dropped when the module is not deployed."""
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name="packed-runner",
+            instance_type="r7a.48xlarge",
+            vcpu=8,
+            memory=64,
+            gpu=0,
+            disk_size=200,
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+            "scheduler_name": "bin-pack-scheduler",
+        }
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                available_modules=set(),
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "packed-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert "schedulerName" not in workflow_pod["spec"]
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == ""
+
+    def test_workflow_pod_scheduler_name_dropped_when_module_absent_per_def(self, real_template, tmp_path):
+        """Per-def scheduler_name is dropped when the module is not deployed."""
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name="packed-runner",
+            instance_type="r7a.48xlarge",
+            vcpu=8,
+            memory=64,
+            gpu=0,
+            disk_size=200,
+            scheduler_name="bin-pack-scheduler",
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+        }
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                available_modules=set(),
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "packed-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert "schedulerName" not in workflow_pod["spec"]
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == ""
+
+    def test_workflow_pod_scheduler_name_enabled_when_module_present(self, real_template, tmp_path):
+        """Cluster default scheduler_name is stamped when the module is in the cluster modules list."""
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name="packed-runner",
+            instance_type="r7a.48xlarge",
+            vcpu=8,
+            memory=64,
+            gpu=0,
+            disk_size=200,
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+            "scheduler_name": "bin-pack-scheduler",
+        }
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                available_modules={"bin-pack-scheduler", "pypi-cache"},
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "packed-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert workflow_pod["spec"]["schedulerName"] == "bin-pack-scheduler"
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == "bin-pack-scheduler"
+
+    def test_workflow_pod_per_def_scheduler_dropped_no_fallback_to_cluster_default(self, real_template, tmp_path):
+        """Per-def scheduler_name wins resolution; if its module is absent it is dropped, with no fallback to the cluster default even when that one's module IS deployed."""
+        def_file = make_def_file(
+            tmp_path=tmp_path,
+            name="packed-runner",
+            instance_type="r7a.48xlarge",
+            vcpu=8,
+            memory=64,
+            gpu=0,
+            disk_size=200,
+            scheduler_name="def-sched",
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "real-",
+            "scheduler_name": "cluster-sched",
+        }
+        assert (
+            generate_runner(
+                def_file,
+                real_template,
+                cluster_config,
+                output_dir,
+                "arc-runners",
+                available_modules={"cluster-sched"},
+            )
+            is True
+        )
+        docs = list(yaml.safe_load_all((output_dir / "packed-runner.yaml").read_text()))
+        helm = docs[0]
+        workflow_pod = yaml.safe_load(docs[1]["data"]["job-pod.yaml"])
+        assert "schedulerName" not in workflow_pod["spec"]
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == ""
+
+    @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
+    def test_workflow_pod_no_scheduler_name_by_default(self, real_template, tmp_path, variant):
+        """Workflow pod must NOT have schedulerName when the runner def omits scheduler_name."""
+        helm, _, workflow_pod = _render_real(real_template, tmp_path, variant)
+        assert "schedulerName" not in workflow_pod["spec"]
+        # Placeholder scheduler env must be present-but-empty (the fork treats
+        # empty as default-scheduler), keeping it in sync with the workflow pod.
+        assert _listener_env_value(helm, "CAPACITY_AWARE_WORKFLOW_SCHEDULER_NAME") == ""
 
     @pytest.mark.parametrize("variant", RUNNER_VARIANTS)
     def test_runner_pod_tolerates_c7i_runner_node_fleet(self, real_template, tmp_path, variant):

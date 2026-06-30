@@ -5,7 +5,7 @@ name: "OSDC: Deploy production"
 # the reusable workflow, which selects LF_AWS_DEPLOY_ROLE_ARN over the Meta role.
 #
 # Default behavior (target = all): sequential rollout of all clusters.
-#   Meta: arc-cbr-production-uw1 → arc-cbr-production → meta-prod-aws-ue1
+#   Meta: meta-prod-aws-uw1 → meta-prod-aws-ue2 → meta-prod-aws-ue1
 #   LF:   lf-prod-aws-ue1 → lf-prod-aws-ue2 (runs in parallel with Meta)
 #
 # Use `all-meta` or `all-lf` to deploy only one account's clusters.
@@ -29,8 +29,8 @@ on:
           - all
           - all-meta
           - all-lf
-          - arc-cbr-production-uw1
-          - arc-cbr-production
+          - meta-prod-aws-uw1
+          - meta-prod-aws-ue2
           - meta-prod-aws-ue1
           - lf-prod-aws-ue1
           - lf-prod-aws-ue2
@@ -62,10 +62,10 @@ jobs:
   # --- Meta clusters ---
 
   deploy_uw1:
-    if: ${{ inputs.target == 'all' || inputs.target == 'all-meta' || inputs.target == 'arc-cbr-production-uw1' }}
+    if: ${{ inputs.target == 'all' || inputs.target == 'all-meta' || inputs.target == 'meta-prod-aws-uw1' }}
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
-      cluster: arc-cbr-production-uw1
+      cluster: meta-prod-aws-uw1
       environment: osdc-production
       taint_nodes: ${{ inputs.taint_nodes }}
       restart_listeners: ${{ inputs.restart_listeners }}
@@ -77,12 +77,12 @@ jobs:
     needs: deploy_uw1
     if: |
       !cancelled() && (
-        inputs.target == 'arc-cbr-production' ||
+        inputs.target == 'meta-prod-aws-ue2' ||
         ((inputs.target == 'all' || inputs.target == 'all-meta') && needs.deploy_uw1.result == 'success')
       )
     uses: ./.github/workflows/_osdc-deploy.yml
     with:
-      cluster: arc-cbr-production
+      cluster: meta-prod-aws-ue2
       environment: osdc-production
       taint_nodes: ${{ inputs.taint_nodes }}
       restart_listeners: ${{ inputs.restart_listeners }}
