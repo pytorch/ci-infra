@@ -9,6 +9,7 @@ import pytest
 import yaml
 from fleet_naming import derive_fleet_name
 from generate_runners import (
+    compute_cluster_sharding,
     generate_runner,
     get_cluster_config,
     load_clusters_yaml,
@@ -48,6 +49,10 @@ MINIMAL_TEMPLATE = textwrap.dedent("""\
                 value: "{{MAX_BURST_CAPACITY}}"
               - name: CAPACITY_AWARE_HUD_FAILURE_BASE_CAPACITY
                 value: "{{HUD_FAILURE_BASE_CAPACITY}}"
+              - name: CAPACITY_AWARE_FRESH_MULTIPLIER
+                value: "{{CAPACITY_AWARE_FRESH_MULTIPLIER}}"
+              - name: CAPACITY_AWARE_AGED_MULTIPLIER
+                value: "{{CAPACITY_AWARE_AGED_MULTIPLIER}}"
     template:
       spec:
         containers:
@@ -194,6 +199,7 @@ def make_def_file(
     hud_failure_base_capacity=None,
     node_fleet=None,
     scheduler_name=None,
+    fresh_multiplier=None,
 ):
     """Write a runner def YAML and return the path.
 
@@ -224,6 +230,8 @@ def make_def_file(
         runner["node_fleet"] = node_fleet
     if scheduler_name is not None:
         runner["scheduler_name"] = scheduler_name
+    if fresh_multiplier is not None:
+        runner["fresh_multiplier"] = fresh_multiplier
     content = {"runner": runner}
     p = tmp_path / f"{name}.yaml"
     p.write_text(yaml.dump(content, default_flow_style=False))
@@ -1243,6 +1251,17 @@ class TestGenerateRunner:
         output_dir.mkdir()
 
         assert generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners") is False
+
+    def test_invalid_fresh_multiplier_non_numeric(self, tmp_path, capsys):
+        def_file = make_def_file(tmp_path, "bad-fresh", "c7i.24xlarge", 4, 16, fresh_multiplier="abc")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        with pytest.raises(SystemExit) as exc:
+            generate_runner(def_file, MINIMAL_TEMPLATE, {}, output_dir, "arc-runners")
+        assert exc.value.code == 1
+        combined = capsys.readouterr().out + capsys.readouterr().err
+        assert "fresh_multiplier" in combined or "bad-fresh" in combined
 
     def test_invalid_node_fleet_non_string(self, tmp_path, capsys):
         """node_fleet must be a string, not an int."""
@@ -2842,3 +2861,167 @@ class TestPypiCacheConditional:
             assert name in content
         assert "# BEGIN_PYPI_CACHE" not in content
         assert "# END_PYPI_CACHE" not in content
+
+
+def _fresh_multiplier_env_value(output_dir, runner_name):
+    docs = list(yaml.safe_load_all((output_dir / f"{runner_name}.yaml").read_text()))
+    helm = docs[0]
+    env = {e["name"]: e.get("value") for e in helm["listenerTemplate"]["spec"]["containers"][0]["env"]}
+    return env.get("CAPACITY_AWARE_FRESH_MULTIPLIER")
+
+
+class TestMultipliers:
+    """fresh_multiplier lookup order: per-def → cluster_cfg[module_name].capacity_aware_fresh_multiplier → 1.0."""
+
+    def _base_cluster_config(self):
+        return {
+            "github_config_url": "https://github.com/test-org",
+            "github_secret_name": "gh-secret",
+            "runner_name_prefix": "",
+        }
+
+    def test_defaults_to_one_when_neither_set(self, tmp_path):
+        def_file = make_def_file(tmp_path, "r", "c7i.24xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, self._base_cluster_config(), output_dir, "arc-runners")
+        assert _fresh_multiplier_env_value(output_dir, "r") == "1.0"
+
+    def test_per_def_value_wins_over_module_block(self, tmp_path):
+        def_file = make_def_file(tmp_path, "r", "c7i.24xlarge", 4, 16, fresh_multiplier=0.5)
+        cluster_cfg = {"arc-runners": {"capacity_aware_fresh_multiplier": 3.0}}
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(
+            def_file,
+            MINIMAL_TEMPLATE,
+            self._base_cluster_config(),
+            output_dir,
+            "arc-runners",
+            cluster_cfg=cluster_cfg,
+        )
+        assert _fresh_multiplier_env_value(output_dir, "r") == "0.5"
+
+    def test_module_block_fallback_applies_when_def_unset(self, tmp_path):
+        def_file = make_def_file(tmp_path, "r", "c7i.24xlarge", 4, 16)
+        cluster_cfg = {"arc-runners": {"capacity_aware_fresh_multiplier": 0.8}}
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(
+            def_file,
+            MINIMAL_TEMPLATE,
+            self._base_cluster_config(),
+            output_dir,
+            "arc-runners",
+            cluster_cfg=cluster_cfg,
+        )
+        assert _fresh_multiplier_env_value(output_dir, "r") == "0.8"
+
+    def test_module_block_lookup_is_per_module_not_shared(self, tmp_path):
+        """h100 reads its own block, not the sibling arc-runners block."""
+        def_file = make_def_file(tmp_path, "r", "p5.48xlarge", 22, 225, gpu=1)
+        cluster_cfg = {
+            "arc-runners": {"capacity_aware_fresh_multiplier": 0.8},
+            "arc-runners-h100": {"capacity_aware_fresh_multiplier": 1.0},
+        }
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(
+            def_file,
+            MINIMAL_TEMPLATE,
+            self._base_cluster_config(),
+            output_dir,
+            "arc-runners-h100",
+            cluster_cfg=cluster_cfg,
+        )
+        assert _fresh_multiplier_env_value(output_dir, "r") == "1.0"
+
+    def test_int_value_coerced_to_float_string(self, tmp_path):
+        def_file = make_def_file(tmp_path, "r", "c7i.24xlarge", 4, 16, fresh_multiplier=2)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        assert generate_runner(def_file, MINIMAL_TEMPLATE, self._base_cluster_config(), output_dir, "arc-runners")
+        assert _fresh_multiplier_env_value(output_dir, "r") == "2.0"
+
+    def test_bad_value_exits_one(self, tmp_path):
+        def_file = make_def_file(tmp_path, "bad", "c7i.24xlarge", 4, 16, fresh_multiplier="abc")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        with pytest.raises(SystemExit) as exc:
+            generate_runner(def_file, MINIMAL_TEMPLATE, self._base_cluster_config(), output_dir, "arc-runners")
+        assert exc.value.code == 1
+
+
+class TestComputeClusterSharding:
+    """Unit tests for the per-(module, runner_name_prefix) sharding helper."""
+
+    def _yaml(self, clusters):
+        return {"clusters": clusters}
+
+    def test_two_peer_clusters_same_module_same_prefix(self):
+        yml = self._yaml(
+            {
+                "a-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+                "a-prod-aws-ue2": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "a-prod-aws-ue1", "arc-runners", "mt-") == (0, 2)
+        assert compute_cluster_sharding(yml, "a-prod-aws-ue2", "arc-runners", "mt-") == (1, 2)
+
+    def test_different_prefixes_are_separate_shards(self):
+        yml = self._yaml(
+            {
+                "meta-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+                "lf-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "lf-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-") == (0, 1)
+        assert compute_cluster_sharding(yml, "lf-prod-aws-ue1", "arc-runners", "lf-") == (0, 1)
+
+    def test_different_modules_are_separate_shards(self):
+        yml = self._yaml(
+            {
+                "meta-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+                "meta-prod-aws-ue2": {
+                    "modules": ["arc-runners", "arc-runners-b200"],
+                    "arc-runners": {"runner_name_prefix": "mt-"},
+                },
+            }
+        )
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-") == (0, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-") == (1, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners-b200", "mt-") == (0, 1)
+
+    def test_three_peer_staging_clusters(self):
+        yml = self._yaml(
+            {
+                "meta-staging-aws-uw1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "c-mt-"}},
+                "meta-staging-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "c-mt-"}},
+                "meta-staging-aws-ue2": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "c-mt-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "meta-staging-aws-ue1", "arc-runners", "c-mt-") == (0, 3)
+        assert compute_cluster_sharding(yml, "meta-staging-aws-ue2", "arc-runners", "c-mt-") == (1, 3)
+        assert compute_cluster_sharding(yml, "meta-staging-aws-uw1", "arc-runners", "c-mt-") == (2, 3)
+
+    def test_cluster_not_in_peer_set_returns_safe_fallback(self):
+        yml = self._yaml(
+            {
+                "other": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "missing", "arc-runners", "mt-") == (0, 1)
+
+    def test_empty_clusters_yaml(self):
+        assert compute_cluster_sharding({}, "any", "arc-runners", "mt-") == (0, 1)
+        assert compute_cluster_sharding({"clusters": {}}, "any", "arc-runners", "mt-") == (0, 1)
+
+    def test_empty_prefix_matches_clusters_with_no_prefix(self):
+        yml = self._yaml(
+            {
+                "x": {"modules": ["arc-runners"], "arc-runners": {}},
+                "y": {"modules": ["arc-runners"]},
+            }
+        )
+        assert compute_cluster_sharding(yml, "x", "arc-runners", "") == (0, 2)
+        assert compute_cluster_sharding(yml, "y", "arc-runners", "") == (1, 2)
