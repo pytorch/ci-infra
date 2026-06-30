@@ -436,6 +436,90 @@ jobs:
             exit 1
           fi
           echo "PASS: downloaded $MODEL from HF Hub and synced $COUNT objects to s3://$HF_CACHE_S3_BUCKET/$PREFIX"
+
+  # Concurrent writers must not corrupt the bucket: a scheduled refresh can overlap
+  # with a manual seed (scripts/hf-cache-seed.py) or another refresh. Run N parallel
+  # `aws s3 sync` of the same model to a per-run prefix and assert all succeed and the
+  # result converges to a complete, consistent object set (no object lost to a race).
+  test-hf-cache-concurrent-sync:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    environment: hf-cache-write
+    permissions:
+      id-token: write
+      contents: read
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Install deps (torch, transformers, hub, awscli)
+        run: |
+          pip install --no-cache-dir torch  # default build; runs on CPU for a tiny model
+          pip install --no-cache-dir 'transformers>=4.45' 'huggingface_hub>=0.24' awscli
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_hf-cache-write
+          aws-region: us-east-1
+
+      - name: Parallel sync, then assert the uploaded model is complete & usable
+        env:
+          HF_HOME: ${{ runner.temp }}/hf-concurrent
+        run: |
+          set -eu
+          echo "=== Concurrent upload conflict test ==="
+          MODEL="prajjwal1/bert-tiny"
+          SRC="$HF_HOME/hub"
+          VERIFY="$HF_HOME/verify"
+          mkdir -p "$SRC"
+          MODEL="$MODEL" python3 -c "
+          import os
+          from huggingface_hub import snapshot_download
+          snapshot_download(os.environ['MODEL'], cache_dir=os.path.join(os.environ['HF_HOME'], 'hub'))
+          "
+          # Per-run prefix under hub/ (the scope the refresh role writes) so overlapping
+          # CI runs never collide; removed on exit.
+          DEST="s3://$HF_CACHE_S3_BUCKET/hub/zz_concurrent_test/${{ github.run_id }}-${{ github.run_attempt }}"
+          cleanup() { aws s3 rm "$DEST" --region "$HF_CACHE_S3_REGION" --recursive --only-show-errors || true; }
+          trap cleanup EXIT
+
+          # 1) N writers of identical content at the same destination, concurrently.
+          N=3
+          pids=""
+          for _ in $(seq 1 "$N"); do
+            aws s3 sync "$SRC" "$DEST" --region "$HF_CACHE_S3_REGION" --no-progress &
+            pids="$pids $!"
+          done
+          rc=0
+          for pid in $pids; do
+            wait "$pid" || rc=1
+          done
+          [ "$rc" -eq 0 ] || { echo "FAIL: a concurrent sync exited non-zero"; exit 1; }
+
+          # 2) Complete: a reconciling sync must find nothing left to upload.
+          LEFT=$(aws s3 sync "$SRC" "$DEST" --region "$HF_CACHE_S3_REGION" --no-progress --dryrun | grep -c 'upload:' || true)
+          [ "$LEFT" -eq 0 ] || { echo "FAIL: $LEFT objects missing after $N concurrent syncs (lost to a race)"; exit 1; }
+
+          # 3) Uncorrupted & usable: pull the uploaded copy back, load it, run a forward
+          #    pass, and assert it matches the freshly-downloaded source bit-for-bit.
+          aws s3 sync "$DEST" "$VERIFY" --region "$HF_CACHE_S3_REGION" --no-progress
+          MODEL="$MODEL" SRC="$SRC" VERIFY="$VERIFY" python3 -c "
+          import os, torch
+          from transformers import AutoModel, AutoTokenizer
+          mid = os.environ['MODEL']
+          def load(cache):
+              tok = AutoTokenizer.from_pretrained(mid, cache_dir=cache, local_files_only=True)
+              return tok, AutoModel.from_pretrained(mid, cache_dir=cache, local_files_only=True).eval()
+          tok, src = load(os.environ['SRC'])
+          _, got = load(os.environ['VERIFY'])
+          inp = tok('hello world from osdc', return_tensors='pt')
+          with torch.no_grad():
+              ref = src(**inp).last_hidden_state
+              out = got(**inp).last_hidden_state
+          assert torch.isfinite(out).all(), 'round-tripped model produced non-finite output'
+          assert torch.allclose(ref, out, atol=1e-6), 'round-tripped output differs from source — corruption'
+          print('loaded + forward OK; output', tuple(out.shape), 'matches source')
+          "
+          echo "PASS: $N concurrent syncs converged to a complete, uncorrupted, usable model"
   # END_HF_CACHE_OIDC
 
   # BEGIN_PYPI_CACHE
