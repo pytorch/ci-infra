@@ -27,7 +27,7 @@ import time
 import metrics as m
 from discovery import build_node_states, discover_managed_nodes
 from lightkube import ApiError, Client
-from models import LABEL_NODE_FLEET, PEAK_WINDOW_SECONDS, PENDING_POD_MAX_AGE_SECONDS, Config, NodeState
+from models import LABEL_NODE_FLEET, Config, NodeState
 from packing import _count_spare_nodes, compute_taints, select_reserved_nodes
 from phantom import apply_pending_phantom_load
 from prometheus_client import start_http_server
@@ -366,9 +366,10 @@ def main() -> int:
         cfg.taint_key,
     )
     log.info(
-        "Peak-window tracking: window=%ds, pending pod max age for bin-pack=%ds",
-        PEAK_WINDOW_SECONDS,
-        PENDING_POD_MAX_AGE_SECONDS,
+        "Peak-window tracking: window=%ds, pending pod max age for bin-pack=%ds, pending pod min age=%ds",
+        cfg.peak_window_seconds,
+        cfg.pending_pod_max_age_seconds,
+        cfg.pending_pod_min_age_seconds,
     )
 
     # Expose Prometheus metrics on :8080/metrics. Bind ::0 so the socket

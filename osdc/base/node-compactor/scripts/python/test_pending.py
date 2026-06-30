@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 from models import (
-    PENDING_POD_MAX_AGE_SECONDS,
     Config,
     NodeState,
     PodInfo,
@@ -13,6 +12,7 @@ from pending import pending_pods_for_group
 
 NOW = datetime.now(UTC)
 GiB = 1024**3
+PENDING_POD_MAX_AGE_SECONDS = 14400
 
 
 def make_config(**overrides) -> Config:
@@ -31,6 +31,9 @@ def make_config(**overrides) -> Config:
         "spare_capacity_ratio": 0.0,
         "spare_capacity_threshold": 0.4,
         "capacity_reservation_nodes": 0,
+        "peak_window_seconds": 2700,
+        "pending_pod_max_age_seconds": 14400,
+        "pending_pod_min_age_seconds": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -93,7 +96,7 @@ class TestPendingPodsForGroup:
 
         pp_huge = make_pending_pod_mock(cpu="96", memory="1Gi")
 
-        filtered = pending_pods_for_group([pp_huge], list(nodes.values()), cfg.taint_key)
+        filtered = pending_pods_for_group([pp_huge], list(nodes.values()), cfg.taint_key, 0, 14400)
         assert filtered == []
 
     def test_pending_pod_older_than_max_age_is_excluded(self):
@@ -103,7 +106,7 @@ class TestPendingPodsForGroup:
 
         pp_stuck = make_pending_pod_mock(cpu="16", age_seconds=PENDING_POD_MAX_AGE_SECONDS + 100)
 
-        filtered = pending_pods_for_group([pp_stuck], list(nodes.values()), cfg.taint_key)
+        filtered = pending_pods_for_group([pp_stuck], list(nodes.values()), cfg.taint_key, 0, 14400)
         assert filtered == []
 
     def test_pending_pod_just_created_is_included(self):
@@ -113,7 +116,7 @@ class TestPendingPodsForGroup:
 
         pp_new = make_pending_pod_mock(cpu="16", age_seconds=0)
 
-        filtered = pending_pods_for_group([pp_new], list(nodes.values()), cfg.taint_key)
+        filtered = pending_pods_for_group([pp_new], list(nodes.values()), cfg.taint_key, 0, 14400)
         assert len(filtered) == 1
 
     def test_pending_pod_with_future_timestamp_is_excluded(self):
@@ -123,7 +126,7 @@ class TestPendingPodsForGroup:
 
         pp_future = make_pending_pod_mock(cpu="16", age_seconds=-30)
 
-        filtered = pending_pods_for_group([pp_future], list(nodes.values()), cfg.taint_key)
+        filtered = pending_pods_for_group([pp_future], list(nodes.values()), cfg.taint_key, 0, 14400)
         assert filtered == []
 
     def test_pending_pod_missing_creation_timestamp_skipped(self):
@@ -134,15 +137,15 @@ class TestPendingPodsForGroup:
         pp = make_pending_pod_mock(cpu="16")
         pp.metadata.creationTimestamp = None
 
-        filtered = pending_pods_for_group([pp], list(nodes.values()), cfg.taint_key)
+        filtered = pending_pods_for_group([pp], list(nodes.values()), cfg.taint_key, 0, 14400)
         assert filtered == []
 
     def test_pending_pods_empty_inputs_return_empty(self):
         """Empty pending list or empty node list returns []."""
         nodes = [make_node("n1")]
-        assert pending_pods_for_group([], nodes, "k") == []
+        assert pending_pods_for_group([], nodes, "k", 0, 14400) == []
         pp = make_pending_pod_mock(cpu="1")
-        assert pending_pods_for_group([pp], [], "k") == []
+        assert pending_pods_for_group([pp], [], "k", 0, 14400) == []
 
     def test_pending_pod_compactor_taint_stripped_when_matching(self):
         """A pod with no tolerations still matches a node tainted only by compactor."""
@@ -157,7 +160,7 @@ class TestPendingPodsForGroup:
 
         pp = make_pending_pod_mock(cpu="1", memory="1Gi", tolerations=None)
 
-        filtered = pending_pods_for_group([pp], nodes_list, cfg.taint_key)
+        filtered = pending_pods_for_group([pp], nodes_list, cfg.taint_key, 0, 14400)
         assert len(filtered) == 1
 
     def test_pending_pod_with_gpu_too_big_excluded(self):
@@ -167,7 +170,7 @@ class TestPendingPodsForGroup:
 
         pp = make_pending_pod_mock(cpu="1", memory="1Gi", gpu=2)
 
-        filtered = pending_pods_for_group([pp], nodes_list, cfg.taint_key)
+        filtered = pending_pods_for_group([pp], nodes_list, cfg.taint_key, 0, 14400)
         assert filtered == []
 
     def test_pending_pod_metadata_none_skipped(self):
@@ -178,7 +181,7 @@ class TestPendingPodsForGroup:
         pp = MagicMock()
         pp.metadata = None
 
-        filtered = pending_pods_for_group([pp], nodes_list, cfg.taint_key)
+        filtered = pending_pods_for_group([pp], nodes_list, cfg.taint_key, 0, 14400)
         assert filtered == []
 
     def test_pending_pod_equal_to_allocatable_excluded_when_daemonset_overhead(self):
@@ -198,7 +201,7 @@ class TestPendingPodsForGroup:
 
         pp = make_pending_pod_mock(cpu="16", memory="1Gi")
 
-        filtered = pending_pods_for_group([pp], [node], cfg.taint_key)
+        filtered = pending_pods_for_group([pp], [node], cfg.taint_key, 0, 14400)
         assert filtered == []
 
     def test_pending_pod_at_allocatable_minus_daemonset_admitted(self):
@@ -218,5 +221,5 @@ class TestPendingPodsForGroup:
 
         pp = make_pending_pod_mock(cpu="15.5", memory=f"{64 * 1024 - 512}Mi")
 
-        filtered = pending_pods_for_group([pp], [node], cfg.taint_key)
+        filtered = pending_pods_for_group([pp], [node], cfg.taint_key, 0, 14400)
         assert len(filtered) == 1

@@ -149,7 +149,7 @@ def compute_taints(
         groups[key_fn(ns)].append(ns)
 
     if peak_history is not None:
-        prune_stale_peak_history(peak_history)
+        prune_stale_peak_history(peak_history, cfg.peak_window_seconds)
 
     to_taint: set[str] = set()
     to_untaint: set[str] = set()
@@ -164,12 +164,20 @@ def compute_taints(
             all_workload_pods.extend(p for p in node.workload_pods if not p.is_phantom)
 
         if pending_pods:
-            all_workload_pods.extend(pending_pods_for_group(pending_pods, group_nodes, cfg.taint_key))
+            all_workload_pods.extend(
+                pending_pods_for_group(
+                    pending_pods,
+                    group_nodes,
+                    cfg.taint_key,
+                    cfg.pending_pod_min_age_seconds,
+                    cfg.pending_pod_max_age_seconds,
+                )
+            )
 
         current_min = bin_pack_min_nodes(all_workload_pods, group_nodes)
 
         if peak_history is not None:
-            peak_min = update_peak_history(peak_history, group_name, current_min, cfg.interval)
+            peak_min = update_peak_history(peak_history, group_name, current_min, cfg.interval, cfg.peak_window_seconds)
         else:
             peak_min = current_min
 

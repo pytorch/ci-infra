@@ -7,7 +7,6 @@ from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Namespace, Node, Pod
 from models import (
     ANNOTATION_CAPACITY_RESERVED,
-    PENDING_POD_MIN_AGE_SECONDS,
     Config,
     NodeState,
     PodInfo,
@@ -149,13 +148,13 @@ def build_node_states(
             if is_daemonset_pod(pod):
                 continue
 
-            # --- Exclusion filter 3: pod younger than PENDING_POD_MIN_AGE_SECONDS ---
+            # --- Exclusion filter 3: pod younger than cfg.pending_pod_min_age_seconds ---
             # With the lower bound at 0 this only filters pods whose timestamp is in
             # the future (clock skew); the bound is kept as the runtime toggle.
             creation_ts = pod.metadata.creationTimestamp if pod.metadata else None
             if creation_ts:
                 age = (now - creation_ts).total_seconds()
-                if age < PENDING_POD_MIN_AGE_SECONDS:
+                if age < cfg.pending_pod_min_age_seconds:
                     continue
 
             # --- Exclusion filter 4: terminating namespace ---
