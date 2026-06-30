@@ -89,7 +89,7 @@ aws dynamodb create-table \
 | `availability_zone_suffixes` | `["a", "b"]` | Availability zone letter suffixes |
 | `hud_api_url` | `N/A` | URL for sending callback data to HUD |
 | `hud_bot_key` | `N/A` | Key to access to HUD (sensitive) |
-| `oot_status_ttl` | `259200` | OOT workflow run status TTL in Redis (seconds) |
+| `crcr_status_ttl` | `259200` | CRCR workflow run status TTL in Redis (seconds) |
 
 **Note:**
 
@@ -160,6 +160,6 @@ CRCR follows a four-level progression system. Each level adds more integration b
 | Level | Name | Status | Description |
 |---|---|---|---|
 | **L1** | Events Only | running | Webhook events are forwarded to downstream repos. No feedback to upstream PRs. Downstream repos receive `repository_dispatch` and run CI independently. |
-| **L2** | HUD Visibility | **Current**  | Downstream CI results are written to ClickHouse and displayed on a dedicated HUD page (`hud.pytorch.org/oot/[org]/[repo]`). Upstream PRs still show no check status. |
-| **L3** | Label-Triggered PR Checks | developing | A non-blocking Check Run appears on upstream PRs when a `ciflow/oot/<name>` label is added. This is the recommended long-term target for most downstream repos. |
+| **L2** | HUD Visibility | **Current**  | Downstream CI results are written to ClickHouse and displayed on a dedicated HUD page (`hud.pytorch.org/crcr/[org]/[repo]`). Upstream PRs still show no check status. |
+| **L3** | Label-Triggered PR Checks | developing | A non-blocking Check Run appears on upstream PRs when a `ciflow/crcr/<name>` label is added. This is the recommended long-term target for most downstream repos. |
 | **L4** | Always-On Blocking Checks | developing | Blocking Check Run auto-triggered for every PR. Reserved for critical accelerators only. Merge is blocked on failure. |
