@@ -98,6 +98,11 @@ class Config:
             raise ValueError(
                 f"COMPACTOR_PENDING_POD_MIN_AGE_SECONDS must be >= 0, got {cfg.pending_pod_min_age_seconds}"
             )
+        if cfg.pending_pod_min_age_seconds >= cfg.pending_pod_max_age_seconds:
+            raise ValueError(
+                f"COMPACTOR_PENDING_POD_MIN_AGE_SECONDS ({cfg.pending_pod_min_age_seconds}) "
+                f"must be < COMPACTOR_PENDING_POD_MAX_AGE_SECONDS ({cfg.pending_pod_max_age_seconds})"
+            )
 
         return cfg
 
