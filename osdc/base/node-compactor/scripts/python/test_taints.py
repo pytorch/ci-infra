@@ -1006,6 +1006,58 @@ class TestCheckPendingPods(unittest.TestCase):
             result, _count = check_pending_pods(cfg, {"node-a": ns_a}, [pod])
         self.assertEqual(result, set())
 
+    def test_binpack_requires_more_nodes_than_sum_would_suggest(self):
+        """Three 20-vCPU pods don't pack into two 30-vCPU nodes despite 60>=60 sums.
+
+        Sum-based logic untaints 2 nodes (cumulative 60 CPU >= demand 60 CPU).
+        Bin-packing exposes that the 3rd pod has nowhere to go after pods 1 & 2
+        each take one 20-vCPU bin (10 vCPU left per node), so all 3 nodes are
+        needed.
+        """
+        cfg = make_config()
+        compactor_taint = make_taint(key=cfg.taint_key, value="true", effect="NoSchedule")
+        nodes = {}
+        for i in ("a", "b", "c"):
+            nodes[f"node-{i}"] = make_node_state(
+                name=f"node-{i}",
+                is_tainted=True,
+                node_taints=[compactor_taint],
+                allocatable_cpu=32.0,
+                allocatable_memory=64 * GiB,
+                pods=[PodInfo(f"p{i}", "ns", 2.0, 1 * GiB, f"node-{i}", False, start_time=NOW)],
+            )
+        pods = [make_pod(cpu="20", memory="1Gi") for _ in range(3)]
+
+        result, count = check_pending_pods(cfg, nodes, pods)
+        self.assertEqual(result, {"node-a", "node-b", "node-c"})
+        self.assertEqual(count, 3)
+
+    def test_unfittable_pending_returns_all_compatible_tainted(self):
+        """When bin-pack of all pending pods can't fit even after untainting every
+        compatible tainted node, we still untaint all of them — best-effort, and
+        Karpenter will provision new nodes for the rest.
+        """
+        cfg = make_config()
+        compactor_taint = make_taint(key=cfg.taint_key, value="true", effect="NoSchedule")
+        nodes = {}
+        for i in ("a", "b"):
+            nodes[f"node-{i}"] = make_node_state(
+                name=f"node-{i}",
+                is_tainted=True,
+                node_taints=[compactor_taint],
+                allocatable_cpu=32.0,
+                allocatable_memory=64 * GiB,
+                pods=[PodInfo(f"p{i}", "ns", 2.0, 1 * GiB, f"node-{i}", False, start_time=NOW)],
+            )
+        # Each pod fits on a node in isolation (20 < 30 free), so all enter
+        # compatible_pending. But two 30-vCPU nodes can hold only two 20-vCPU
+        # pods total — the third has no home even after untainting everyone.
+        pods = [make_pod(cpu="20", memory="1Gi") for _ in range(3)]
+
+        result, count = check_pending_pods(cfg, nodes, pods)
+        self.assertEqual(result, {"node-a", "node-b"})
+        self.assertEqual(count, 3)
+
 
 # ============================================================================
 # apply_taint tests
