@@ -352,6 +352,7 @@ clusters:
       github_secret_name: meta-prod-aws-uw1
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-uw1"   # distinct from us-east-2's "default" — see doc
+      scheduler_name: bin-pack-scheduler
     nodepools-h100:
       # us-west-1 H100 capacity reservations (p5.48xlarge, 8× H100 each):
       #   cr-04d3d1d84e127a562 — 2 nodes (16 H100 GPUs)
@@ -369,6 +370,7 @@ clusters:
       - arc
       - nodepools
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
+      - bin-pack-scheduler
       - arc-runners-h100
       - zombie-cleanup
       - harbor-cache-recovery
@@ -405,10 +407,12 @@ clusters:
       github_secret_name: meta-prod-aws-ue1
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-ue1"
+      scheduler_name: bin-pack-scheduler
     modules:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
@@ -449,6 +453,7 @@ clusters:
       github_secret_name: meta-prod-aws-ue2
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-ue2"   # moved off the shared "default"/"release-runners" groups
+      scheduler_name: bin-pack-scheduler
     nodepools-h100:
       # us-east-2 H100 capacity reservation (p5.48xlarge, 8× H100).
       capacity_reservation_ids:
@@ -467,6 +472,7 @@ clusters:
       - nodepools
       - nodepools-b200
       - nodepools-h100
+      - bin-pack-scheduler
       - arc-runners
       - arc-runners-b200
       - arc-runners-h100
