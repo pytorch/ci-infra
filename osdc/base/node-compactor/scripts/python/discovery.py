@@ -7,6 +7,7 @@ from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Namespace, Node, Pod
 from models import (
     ANNOTATION_CAPACITY_RESERVED,
+    PENDING_POD_MIN_AGE_SECONDS,
     Config,
     NodeState,
     PodInfo,
@@ -17,10 +18,6 @@ from models import (
     pod_gpu_request,
     pod_memory_request,
 )
-
-# Minimum age (seconds) before a pending pod is considered for burst detection.
-# Pods younger than this are likely still being scheduled normally.
-PENDING_POD_MIN_AGE_SECONDS = 30
 
 log = logging.getLogger("compactor")
 

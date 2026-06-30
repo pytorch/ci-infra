@@ -6,6 +6,7 @@ import unittest
 import unittest.mock
 from datetime import UTC, datetime, timedelta
 
+import models
 from models import Config, NodeState, PodInfo
 
 # ============================================================================
@@ -327,6 +328,16 @@ class TestNodeStateYoungestPodAgeSeconds(unittest.TestCase):
             ]
         )
         self.assertEqual(node.youngest_pod_age_seconds, math.inf)
+
+
+class TestModuleConstants(unittest.TestCase):
+    """Module-level constants surfaced for the peak-window taint algorithm."""
+
+    def test_peak_window_seconds(self):
+        self.assertEqual(models.PEAK_WINDOW_SECONDS, 2700)
+
+    def test_pending_pod_max_age_seconds(self):
+        self.assertEqual(models.PENDING_POD_MAX_AGE_SECONDS, 14400)
 
 
 if __name__ == "__main__":
