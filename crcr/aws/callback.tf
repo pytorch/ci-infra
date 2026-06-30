@@ -25,7 +25,7 @@ resource "aws_lambda_function" "callback" {
       ALLOWLIST_URL           = var.allowlist_url
       ALLOWLIST_TTL_SECONDS   = tostring(var.allowlist_ttl)
       HUD_API_URL             = var.hud_api_url
-      OOT_STATUS_TTL          = tostring(var.oot_status_ttl)
+      CRCR_STATUS_TTL         = tostring(var.crcr_status_ttl)
     }
   }
 
