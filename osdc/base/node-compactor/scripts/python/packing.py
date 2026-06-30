@@ -184,13 +184,45 @@ def compute_taints(
         min_needed = max(peak_min, cfg.min_nodes)
 
         surplus = len(group_nodes) - min_needed
+
+        tainted_count = sum(1 for n in group_nodes if n.is_tainted)
+        workload_count = sum(1 for n in group_nodes for p in n.workload_pods if not p.is_phantom)
+        pending_in_pack = len(all_workload_pods) - workload_count
+        log.info(
+            "fleet=%s nodes=%d tainted=%d workload=%d pending_in_pack=%d current_min=%d peak_min=%d min_needed=%d surplus=%d",
+            group_name,
+            len(group_nodes),
+            tainted_count,
+            workload_count,
+            pending_in_pack,
+            current_min,
+            peak_min,
+            min_needed,
+            surplus,
+        )
+
         if surplus <= 0:
             # All nodes are needed — untaint any that are tainted.
             # This is a min_nodes enforcement: mandatory.
+            mandatory_count = 0
             for node in group_nodes:
                 if node.is_tainted:
                     to_untaint.add(node.name)
                     mandatory_untaint.add(node.name)
+                    mandatory_count += 1
+                    log.info(
+                        "  fleet=%s candidate=%s decision=untainted-mandatory (uptime=%ds util=%.2f tainted=%s)",
+                        group_name,
+                        node.name,
+                        node.uptime_seconds,
+                        node.utilization,
+                        node.is_tainted,
+                    )
+            log.info(
+                "fleet=%s decision=mandatory-untaint-all surplus<=0 untainted=%d",
+                group_name,
+                mandatory_count,
+            )
             continue
 
         # Compute required spare capacity for this group. spare_capacity_nodes
@@ -209,12 +241,28 @@ def compute_taints(
         for node in group_nodes:
             if node.name in reserved:
                 log.debug("Skipping %s: capacity-reserved", node.name)
+                log.info(
+                    "  fleet=%s candidate=%s decision=skipped-reserved (uptime=%ds util=%.2f tainted=%s)",
+                    group_name,
+                    node.name,
+                    node.uptime_seconds,
+                    node.utilization,
+                    node.is_tainted,
+                )
                 if node.is_tainted:
                     to_untaint.add(node.name)
                     mandatory_untaint.add(node.name)
                 continue
             if node.uptime_seconds < cfg.min_node_age:
                 log.debug("Skipping %s: too young (%.0fs < %ds)", node.name, node.uptime_seconds, cfg.min_node_age)
+                log.info(
+                    "  fleet=%s candidate=%s decision=skipped-young (uptime=%ds util=%.2f tainted=%s)",
+                    group_name,
+                    node.name,
+                    node.uptime_seconds,
+                    node.utilization,
+                    node.is_tainted,
+                )
                 if node.is_tainted:
                     to_untaint.add(node.name)
                     mandatory_untaint.add(node.name)
@@ -257,6 +305,14 @@ def compute_taints(
                 if node.is_tainted:
                     to_untaint.add(node.name)
                     mandatory_untaint.add(node.name)
+                    log.info(
+                        "  fleet=%s candidate=%s decision=past-surplus-no-op (uptime=%ds util=%.2f tainted=%s)",
+                        group_name,
+                        node.name,
+                        node.uptime_seconds,
+                        node.utilization,
+                        node.is_tainted,
+                    )
                 continue
 
             # This node is a taint candidate -- check safety. Exclude phantom
@@ -268,6 +324,14 @@ def compute_taints(
                 log.info(
                     "Skipping taint of %s: pods cannot fit on remaining nodes",
                     node.name,
+                )
+                log.info(
+                    "  fleet=%s candidate=%s decision=skipped-fit-safety (uptime=%ds util=%.2f tainted=%s)",
+                    group_name,
+                    node.name,
+                    node.uptime_seconds,
+                    node.utilization,
+                    node.is_tainted,
                 )
                 conditionally_remaining.append(node)
                 if node.is_tainted:
@@ -282,6 +346,14 @@ def compute_taints(
                     node.name,
                     new_taint_count,
                     max_new_taints,
+                )
+                log.info(
+                    "  fleet=%s candidate=%s decision=skipped-rate-limit (uptime=%ds util=%.2f tainted=%s)",
+                    group_name,
+                    node.name,
+                    node.uptime_seconds,
+                    node.utilization,
+                    node.is_tainted,
                 )
                 rate_limited.add(node.name)
                 conditionally_remaining.append(node)
@@ -305,6 +377,14 @@ def compute_taints(
                         spare_after,
                         required_spare,
                     )
+                    log.info(
+                        "  fleet=%s candidate=%s decision=skipped-spare-capacity (uptime=%ds util=%.2f tainted=%s)",
+                        group_name,
+                        node.name,
+                        node.uptime_seconds,
+                        node.utilization,
+                        node.is_tainted,
+                    )
                     conditionally_remaining.append(node)
                     if node.is_tainted:
                         to_untaint.add(node.name)
@@ -314,6 +394,14 @@ def compute_taints(
             taint_count += 1
             if not node.is_tainted:
                 new_taint_count += 1
+            log.info(
+                "  fleet=%s candidate=%s decision=tainted (uptime=%ds util=%.2f tainted=%s)",
+                group_name,
+                node.name,
+                node.uptime_seconds,
+                node.utilization,
+                node.is_tainted,
+            )
 
         # Spare capacity recovery: untaint low-utilization tainted nodes if the group misses the spare capacity requirement.
         if required_spare > 0:

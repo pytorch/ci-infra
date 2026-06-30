@@ -88,8 +88,8 @@ class Config:
             pending_pod_min_age_seconds=int(env("COMPACTOR_PENDING_POD_MIN_AGE_SECONDS")),
         )
 
-        if cfg.peak_window_seconds <= 0:
-            raise ValueError(f"COMPACTOR_PEAK_WINDOW_SECONDS must be > 0, got {cfg.peak_window_seconds}")
+        if cfg.peak_window_seconds < 0:
+            raise ValueError(f"COMPACTOR_PEAK_WINDOW_SECONDS must be >= 0, got {cfg.peak_window_seconds}")
         if cfg.pending_pod_max_age_seconds <= 0:
             raise ValueError(
                 f"COMPACTOR_PENDING_POD_MAX_AGE_SECONDS must be > 0, got {cfg.pending_pod_max_age_seconds}"
