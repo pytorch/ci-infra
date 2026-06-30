@@ -13,9 +13,12 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
-from conditional_blocks import strip_conditional_block  # noqa: E402
+import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
+
+from conditional_blocks import strip_conditional_block
+from nodepool_defs import is_excluded_for_region
 from run import (
     CANARY_REPO,
     PR_TITLE_PREFIX,
@@ -42,6 +45,32 @@ TAG_REQUIREMENTS: dict[str, list[str]] = {
 INVERSE_TAG_EXCLUSIONS: dict[str, list[str]] = {
     "NO_CACHE_ENFORCER": ["cache-enforcer"],
 }
+
+# Conditional blocks whose job targets a runner backed by a region-restricted
+# GPU fleet. Module gating can't catch this — the fleet exists as a module but is
+# excluded in some regions (exclude_regions in modules/nodepools/defs/<fleet>.yaml).
+# Where the fleet is excluded the block is stripped, else the job queues forever
+# for a runner that can never come online.
+REGION_GATED_BLOCKS: dict[str, str] = {
+    "HF_CACHE_GPU": "g6",  # test-hf-cache-large-read runs on an L4 (g6) runner
+}
+
+
+def region_excluded_blocks(upstream_dir: Path, region: str) -> set[str]:
+    """Return REGION_GATED_BLOCKS tags whose backing fleet is excluded in *region*."""
+    if not region:
+        return set()
+    excluded = set()
+    for tag, fleet in REGION_GATED_BLOCKS.items():
+        def_path = upstream_dir / "modules" / "nodepools" / "defs" / f"{fleet}.yaml"
+        try:
+            data = yaml.safe_load(def_path.read_text()) or {}
+        except FileNotFoundError:
+            continue
+        fleet_def = data.get("fleet") or {}
+        if is_excluded_for_region(fleet_def, region):
+            excluded.add(tag)
+    return excluded
 
 
 def ensure_canary_repo(upstream_dir: Path) -> Path:
@@ -261,6 +290,7 @@ def generate_workflow(
     release_runner_group: str = "release-runners",
     ecr_pull_resolved_tag: str = "",
     ecr_pull_sha: str = "",
+    region: str = "",
 ) -> str:
     """Generate the integration test workflow from template."""
     template_path = upstream_dir / "integration-tests" / "workflows" / "integration-test.yaml.tpl"
@@ -289,6 +319,13 @@ def generate_workflow(
     for tag, excluded in INVERSE_TAG_EXCLUSIONS.items():
         keep = not any(m in modules_set for m in excluded)
         content = strip_conditional_block(content, tag, keep=keep)
+
+    # Region gate (after module gating, so a block already removed with its parent
+    # is a no-op here): strip GPU test blocks whose fleet is excluded in this region,
+    # and clear the markers from any that survive.
+    excluded_blocks = region_excluded_blocks(upstream_dir, region)
+    for tag in REGION_GATED_BLOCKS:
+        content = strip_conditional_block(content, tag, keep=tag not in excluded_blocks)
 
     if not _has_any_job(content):
         content = _replace_jobs_with_noop(content)

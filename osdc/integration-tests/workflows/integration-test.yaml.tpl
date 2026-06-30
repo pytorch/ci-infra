@@ -317,6 +317,11 @@ jobs:
           print('PASS: loaded', model, 'offline from', path, '(' + str(len(files)) + ' files)')
           "
 
+  # BEGIN_HF_CACHE_GPU
+  # Runs on an L4 (g6) runner. g6 is region-restricted (e.g. excluded in
+  # us-west-1); where it's unavailable this block is stripped so the job doesn't
+  # queue forever for a runner that can't come online. See REGION_GATED_BLOCKS
+  # in integration-tests/scripts/python/phases.py.
   # Load Qwen2.5-7B from the cache and generate — the real "use the model" path
   # (loading reads the weights through the mount). Seed once with
   # `scripts/hf-cache-seed.py <cluster> Qwen/Qwen2.5-7B-Instruct`.
@@ -377,6 +382,7 @@ jobs:
               print('FAIL: model loaded but produced no output'); sys.exit(1)
           print('PASS:', mid, 'ran offline inference from the shared cache')
           "
+  # END_HF_CACHE_GPU
   # END_HF_CACHE
 
   # BEGIN_HF_CACHE_OIDC
