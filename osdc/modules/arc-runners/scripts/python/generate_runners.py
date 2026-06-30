@@ -205,6 +205,7 @@ def generate_runner(
     module_name,
     pypi_cache_enabled=True,
     available_modules=None,
+    cluster_cfg=None,
 ):
     """Generate a single runner config from its definition.
 
@@ -245,19 +246,12 @@ def generate_runner(
 
     fresh_multiplier = runner.get("fresh_multiplier")
     if fresh_multiplier is None:
-        fresh_multiplier = cluster_config.get("capacity_aware_fresh_multiplier", 1.0)
+        module_block = (cluster_cfg or {}).get(module_name) or {}
+        fresh_multiplier = module_block.get("capacity_aware_fresh_multiplier", 1.0)
     try:
         fresh_multiplier = float(fresh_multiplier)
     except (ValueError, TypeError):
         log_error(f"Invalid fresh_multiplier for runner {runner_name}: {fresh_multiplier!r} (must be a number)")
-        sys.exit(1)
-    aged_multiplier = runner.get("aged_multiplier")
-    if aged_multiplier is None:
-        aged_multiplier = cluster_config.get("capacity_aware_aged_multiplier", 1.0)
-    try:
-        aged_multiplier = float(aged_multiplier)
-    except (ValueError, TypeError):
-        log_error(f"Invalid aged_multiplier for runner {runner_name}: {aged_multiplier!r} (must be a number)")
         sys.exit(1)
 
     if not runner_name or not instance_type:
@@ -447,7 +441,6 @@ def generate_runner(
             cluster_config.get("capacity_aware_age_threshold_seconds", 900)
         ),
         "{{CAPACITY_AWARE_FRESH_MULTIPLIER}}": str(fresh_multiplier),
-        "{{CAPACITY_AWARE_AGED_MULTIPLIER}}": str(aged_multiplier),
     }
 
     for placeholder, value in replacements.items():
@@ -601,6 +594,7 @@ def main():
             module_name,
             pypi_cache_enabled,
             available_modules,
+            cluster_cfg=cluster_cfg,
         ):
             count += 1
 

@@ -356,6 +356,8 @@ clusters:
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-uw1"   # distinct from us-east-2's "default" — see doc
       scheduler_name: bin-pack-scheduler
+    arc-runners-h100:
+      capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
       # us-west-1 H100 capacity reservations (p5.48xlarge, 8× H100 each):
       #   cr-04d3d1d84e127a562 — 2 nodes (16 H100 GPUs)
@@ -459,6 +461,10 @@ clusters:
       runner_group: "meta-prod-aws-ue2"   # moved off the shared "default"/"release-runners" groups
       capacity_aware_fresh_multiplier: 0.8
       scheduler_name: bin-pack-scheduler
+    arc-runners-h100:
+      capacity_aware_fresh_multiplier: 1.0
+    arc-runners-b200:
+      capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
       # us-east-2 H100 capacity reservation (p5.48xlarge, 8× H100).
       capacity_reservation_ids:
