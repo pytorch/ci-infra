@@ -453,7 +453,9 @@ jobs:
       - name: Install deps (torch, transformers, hub, awscli)
         run: |
           pip install --no-cache-dir torch  # default build; runs on CPU for a tiny model
-          pip install --no-cache-dir 'transformers>=4.45' 'huggingface_hub>=0.24' awscli
+          # transformers <5: bert-tiny's config.json has no model_type key (5.x rejects
+          # it; 4.x infers "bert"). hf_hub <1 stays compatible with transformers 4.x.
+          pip install --no-cache-dir 'transformers>=4.45,<5' 'huggingface_hub>=0.24,<1' awscli
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -503,18 +505,22 @@ jobs:
           #    pass, and assert it matches the freshly-downloaded source bit-for-bit.
           aws s3 sync "$DEST" "$VERIFY" --region "$HF_CACHE_S3_REGION" --no-progress
           MODEL="$MODEL" SRC="$SRC" VERIFY="$VERIFY" python3 -c "
-          import os, torch
-          from transformers import AutoModel, AutoTokenizer
-          mid = os.environ['MODEL']
+          import glob, os, torch
+          from transformers import AutoModel
+          slug = 'models--' + os.environ['MODEL'].replace('/', '--')
           def load(cache):
-              tok = AutoTokenizer.from_pretrained(mid, cache_dir=cache, local_files_only=True)
-              return tok, AutoModel.from_pretrained(mid, cache_dir=cache, local_files_only=True).eval()
-          tok, src = load(os.environ['SRC'])
-          _, got = load(os.environ['VERIFY'])
-          inp = tok('hello world from osdc', return_tensors='pt')
+              # Load from the snapshot dir directly — avoids from_pretrained's
+              # cache_dir/repo-id resolution, which differs across transformers majors.
+              snap = sorted(glob.glob(os.path.join(cache, slug, 'snapshots', '*')))[0]
+              return AutoModel.from_pretrained(snap, local_files_only=True).eval()
+          src = load(os.environ['SRC'])
+          got = load(os.environ['VERIFY'])
+          # Fixed input_ids — no tokenizer (bert-tiny ships only vocab.txt; the fast
+          # tokenizer needs sentencepiece). We verify weight fidelity, not tokenization.
+          ids = torch.tensor([[101, 7592, 2088, 102]])
           with torch.no_grad():
-              ref = src(**inp).last_hidden_state
-              out = got(**inp).last_hidden_state
+              ref = src(ids).last_hidden_state
+              out = got(ids).last_hidden_state
           assert torch.isfinite(out).all(), 'round-tripped model produced non-finite output'
           assert torch.allclose(ref, out, atol=1e-6), 'round-tripped output differs from source — corruption'
           print('loaded + forward OK; output', tuple(out.shape), 'matches source')
