@@ -217,6 +217,7 @@ def main():
 
     cfg = load_cluster_config(args.clusters_yaml, args.cluster_id)
     cluster_name = resolve(cfg, "cluster_name")
+    region = resolve(cfg, "region", "")
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
     cluster_runner_group = resolve(cfg, "arc-runners.runner_group")
     runner_group = cluster_runner_group or "default"
@@ -298,6 +299,7 @@ def main():
             pypi_cache_cuda_version=pypi_cache_cuda_version,
             ecr_pull_resolved_tag=ecr_pull_resolved_tag,
             ecr_pull_sha=ecr_pull_sha,
+            region=region,
         )
         pr_created_at = datetime.now(tz=UTC)
         pr_number = prepare_pr(canary_path, args.upstream_dir, workflow_content, args.dry_run, branch)
