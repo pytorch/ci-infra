@@ -377,10 +377,10 @@ class TestConfigFromEnvValidation(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, env, clear=True):
             return Config.from_env()
 
-    def test_peak_window_seconds_zero_rejected(self):
-        with self.assertRaises(ValueError) as ctx:
-            self._from_env(COMPACTOR_PEAK_WINDOW_SECONDS="0")
-        self.assertIn("COMPACTOR_PEAK_WINDOW_SECONDS", str(ctx.exception))
+    def test_peak_window_seconds_zero_accepted(self):
+        """0 is a valid value meaning "peak-window damping disabled" — peak_min == current_min."""
+        cfg = self._from_env(COMPACTOR_PEAK_WINDOW_SECONDS="0")
+        self.assertEqual(cfg.peak_window_seconds, 0)
 
     def test_peak_window_seconds_negative_rejected(self):
         with self.assertRaises(ValueError) as ctx:
