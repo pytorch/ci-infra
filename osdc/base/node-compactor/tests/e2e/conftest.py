@@ -387,10 +387,8 @@ def compactor_setup(
     log.info("Pausing ARC scalesets (maxRunners=0) to silence cluster-wide churn...")
     arc_originals = pause_arc_scalesets(client)
     log.info("  Paused %d scaleset(s)", len(arc_originals))
-    # Register ARC restore BEFORE any further setup so an exception in
-    # cleanup_stale_cluster_state / patch_compactor_env / wait_for_rollout
-    # cannot leave scalesets stuck at maxRunners=0. The full restore() below
-    # is idempotent via the `restored` flag, so registering this twice is safe.
+    # atexit guarantees restore even if setup crashes before the fixture yields;
+    # the teardown path below would otherwise be skipped.
     atexit.register(restore_arc_scalesets, client, arc_originals)
 
     # Clean stale taints and reservation annotations from ALL fleet pools
@@ -410,6 +408,9 @@ def compactor_setup(
     originals = patch_compactor_env(client, test_overrides)
     log.info("  Original env: %s", originals)
     log.info("  Test overrides: %s", test_overrides)
+    # Same hazard as ARC above: a stranded patched compactor will mis-manage
+    # production nodes cluster-wide until someone notices.
+    atexit.register(restore_compactor_env, client, originals)
 
     # Detect no-op patches: if a previous test run crashed without restoring
     # env vars, the originals will already match the overrides. In that case
