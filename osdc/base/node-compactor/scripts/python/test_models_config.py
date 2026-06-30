@@ -338,7 +338,7 @@ class TestModuleConstants(unittest.TestCase):
             return Config.from_env()
 
     def test_peak_window_seconds_default(self):
-        self.assertEqual(self._from_clean_env().peak_window_seconds, 2700)
+        self.assertEqual(self._from_clean_env().peak_window_seconds, 1800)
 
     def test_pending_pod_max_age_seconds_default(self):
         self.assertEqual(self._from_clean_env().pending_pod_max_age_seconds, 14400)
