@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from compactor import _fleet_group_key, main, reconcile
+from fit import _pods_fit_on_nodes
 from lightkube import ApiError
 from models import (
     LABEL_NODE_FLEET,
@@ -18,7 +19,7 @@ from models import (
     parse_cpu,
     parse_memory,
 )
-from packing import _pods_fit_on_nodes, bin_pack_min_nodes, compute_taints
+from packing import bin_pack_min_nodes, compute_taints
 from pending import pending_pods_for_group
 
 # ============================================================================
