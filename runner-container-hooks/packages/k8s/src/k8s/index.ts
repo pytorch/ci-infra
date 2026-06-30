@@ -4,7 +4,6 @@ import { spawn } from 'child_process'
 import * as k8s from '@kubernetes/client-node'
 import tar from 'tar-fs'
 import * as stream from 'stream'
-import { WritableStreamBuffer } from 'stream-buffers'
 import { createHash } from 'crypto'
 import type { ContainerInfo, Registry } from 'hooklib'
 import {
@@ -83,9 +82,9 @@ const COPY_VERIFY_RETRIES = parseInt(
 //                                — at typical 100 MB/s producer rate, ~5 MB
 //                                may slip past per poll, well under HIGH.
 // ERR_STREAM_MAX_BYTES         — cap the per-call stderr capture buffer. The
-//                                upstream stream-buffers WritableStreamBuffer
-//                                grows without bound; a misbehaving container
-//                                that floods stderr could OOM the runner.
+//                                underlying BufferSink grows without bound; a
+//                                misbehaving container that floods stderr
+//                                could OOM the runner.
 // ---------------------------------------------------------------------------
 const EXEC_TIMEOUT_MS = 120_000
 const EXEC_POD_STEP_TIMEOUT_MS = 60_000
@@ -107,6 +106,34 @@ function safeTerminateWs(ws: WebSocket | null): void {
 }
 
 /**
+ * A Writable that collects everything written to it in memory and can return
+ * it as a string. Replaces the previous `stream-buffers` WritableStreamBuffer
+ * dependency, whose internal buffer growth used the deprecated `Buffer()`
+ * constructor (Node DEP0005). See actions/runner-container-hooks#261.
+ *
+ * Chunks are kept as-is and concatenated lazily on read, so there is no
+ * preallocated backing buffer and no resize logic.
+ */
+export class BufferSink extends stream.Writable {
+  private readonly chunks: Buffer[] = []
+  _write(
+    chunk: Buffer | string,
+    encoding: string,
+    cb: (err?: Error | null) => void
+  ): void {
+    this.chunks.push(
+      Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding as any)
+    )
+    cb()
+  }
+  getContentsAsString(encoding = 'utf8'): string {
+    return this.chunks.length
+      ? Buffer.concat(this.chunks).toString(encoding as any)
+      : ''
+  }
+}
+
+/**
  * A Writable that caps how much data it actually buffers. Once the cap is
  * reached, additional writes are silently dropped (the count is still tracked
  * so the upstream `getContentsAsString()` reflects the truncated content).
@@ -114,13 +141,13 @@ function safeTerminateWs(ws: WebSocket | null): void {
  * Used for stderr capture in execCp{To,From}Pod where a misbehaving container
  * can flood stderr without bound and OOM the runner pod.
  */
-class CappedWritable extends stream.Writable {
-  private readonly buffer: WritableStreamBuffer
+export class CappedWritable extends stream.Writable {
+  private readonly buffer: BufferSink
   private bytesWritten = 0
   private truncated = false
   constructor(private readonly maxBytes: number) {
     super()
-    this.buffer = new WritableStreamBuffer()
+    this.buffer = new BufferSink()
   }
   _write(
     chunk: Buffer | string,
@@ -663,7 +690,7 @@ export async function execPodStepOutput(
   timeoutMs?: number
 ): Promise<{ exitCode: number; stdout: string }> {
   const exec = new k8s.Exec(kc)
-  const stdoutBuffer = new WritableStreamBuffer()
+  const stdoutBuffer = new BufferSink()
   const effectiveTimeout = timeoutMs ?? EXEC_POD_STEP_TIMEOUT_MS
 
   command = fixArgs(command)
