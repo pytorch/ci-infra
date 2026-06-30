@@ -8,7 +8,7 @@ rendered with the /mnt/hf_cache mount.
 from __future__ import annotations
 
 import pytest
-from helpers import assert_daemonset_ready, filter_daemonsets, run_kubectl
+from helpers import assert_daemonset_healthy, filter_daemonsets, run_kubectl
 
 pytestmark = [pytest.mark.live]
 
@@ -17,6 +17,7 @@ MOUNT_DS = "hf-cache-mount"
 MOUNT_SA = "hf-cache-mount"
 IRSA_KEY = "eks.amazonaws.com/role-arn"
 MOUNT_PATH = "/mnt/hf_cache"
+RUNNER_NODE_SELECTOR = {"workload-type": ["github-runner"]}
 
 
 class TestHfCacheNamespace:
@@ -45,8 +46,18 @@ class TestHfCacheMountDaemonSet:
         assert ds, f"DaemonSet '{MOUNT_DS}' not found in {NAMESPACE}."
         return ds[0]["spec"]["template"]["spec"]
 
-    def test_daemonset_ready(self, all_daemonsets: dict) -> None:
-        assert_daemonset_ready(all_daemonsets, namespace=NAMESPACE, name=MOUNT_DS)
+    def test_daemonset_ready(self, all_daemonsets: dict, all_nodes: dict) -> None:
+        # The mount runs on the autoscaling github-runner pool, so a few pods are
+        # always mid-init on freshly-scaled nodes. Tolerate ready/desired gaps that
+        # are fully explained by unstable nodes (new/NotReady/cordoned/deleting) — but
+        # still fail on pods stuck unready on stable nodes (a real mount break).
+        assert_daemonset_healthy(
+            all_daemonsets,
+            all_nodes,
+            NAMESPACE,
+            name=MOUNT_DS,
+            node_selector=RUNNER_NODE_SELECTOR,
+        )
 
     def test_targets_runner_nodes(self, mount_pod_spec: dict) -> None:
         sel = mount_pod_spec.get("nodeSelector", {})
