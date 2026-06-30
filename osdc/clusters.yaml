@@ -53,7 +53,7 @@ defaults:
     pdb_enabled: true
     pdb_min_available: 1
   arc:
-    chart_version: "0.14.1-jeanschmidt.14"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
+    chart_version: "0.14.1-jeanschmidt.16"  # MUST match for controller + runner charts (minor version mismatch = ARS deletion). Fork chart published from jeanschmidt/actions-runner-controller.
     replica_count: 4
     log_level: info
     controller_cpu_request: "1"
@@ -161,6 +161,7 @@ clusters:
       runner_name_prefix: "c-mt-"          # staging/testing prefix — keeps labels distinct from prod's "mt-"
       runner_group: "meta-staging-aws-uw1"
       scheduler_name: bin-pack-scheduler
+      capacity_aware_fresh_multiplier: 0.8
     buildkit:
       arm64_instance_type: m7gd.16xlarge
       arm64_pods_per_node: 4
@@ -234,6 +235,7 @@ clusters:
       runner_name_prefix: "c-mt-"          # staging/testing prefix — keeps labels distinct from prod's "mt-"
       runner_group: "meta-staging-aws-ue1"
       scheduler_name: bin-pack-scheduler
+      capacity_aware_fresh_multiplier: 0.8
     buildkit:
       arm64_instance_type: m7gd.16xlarge
       arm64_pods_per_node: 4
@@ -309,6 +311,7 @@ clusters:
       runner_name_prefix: "c-mt-"          # staging/testing prefix — keeps labels distinct from prod's "mt-"
       runner_group: "meta-staging-aws-ue2"
       scheduler_name: bin-pack-scheduler
+      capacity_aware_fresh_multiplier: 0.8
     buildkit:
       arm64_instance_type: m7gd.16xlarge
       arm64_pods_per_node: 4
@@ -352,6 +355,9 @@ clusters:
       github_secret_name: meta-prod-aws-uw1
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-uw1"   # distinct from us-east-2's "default" — see doc
+      scheduler_name: bin-pack-scheduler
+    arc-runners-h100:
+      capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
       # us-west-1 H100 capacity reservations (p5.48xlarge, 8× H100 each):
       #   cr-04d3d1d84e127a562 — 2 nodes (16 H100 GPUs)
@@ -369,6 +375,7 @@ clusters:
       - arc
       - nodepools
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
+      - bin-pack-scheduler
       - arc-runners-h100
       - zombie-cleanup
       - harbor-cache-recovery
@@ -405,17 +412,16 @@ clusters:
       github_secret_name: meta-prod-aws-ue1
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-ue1"
-    pypi_cache:
-      replicas: 10
+      capacity_aware_fresh_multiplier: 0.8
+      scheduler_name: bin-pack-scheduler
     modules:
       - karpenter
       - arc
       - nodepools
+      - bin-pack-scheduler
       - arc-runners
       - keda
       - buildkit
-      - pypi-cache
-      - cache-enforcer
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -453,6 +459,12 @@ clusters:
       github_secret_name: meta-prod-aws-ue2
       runner_name_prefix: "mt-"
       runner_group: "meta-prod-aws-ue2"   # moved off the shared "default"/"release-runners" groups
+      capacity_aware_fresh_multiplier: 0.8
+      scheduler_name: bin-pack-scheduler
+    arc-runners-h100:
+      capacity_aware_fresh_multiplier: 1.0
+    arc-runners-b200:
+      capacity_aware_fresh_multiplier: 1.0
     nodepools-h100:
       # us-east-2 H100 capacity reservation (p5.48xlarge, 8× H100).
       capacity_reservation_ids:
@@ -471,6 +483,7 @@ clusters:
       - nodepools
       - nodepools-b200
       - nodepools-h100
+      - bin-pack-scheduler
       - arc-runners
       - arc-runners-b200
       - arc-runners-h100
@@ -501,27 +514,13 @@ clusters:
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue1
       scheduler_name: bin-pack-scheduler
-    buildkit:
-      amd64_instance_type: m6id.24xlarge
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
-      autoscaling:
-        enabled: true
-        amd64_min: 4
-        amd64_max: 64
-        arm64_min: 4
-        arm64_max: 64
-        amd64_fallback: 12
-        arm64_fallback: 4
+      capacity_aware_fresh_multiplier: 0.8
     modules:
       - karpenter
       - arc
       - nodepools
       - bin-pack-scheduler
       - arc-runners
-      - keda
-      - buildkit
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
@@ -547,27 +546,13 @@ clusters:
       runner_name_prefix: "lf-"
       runner_group: lf-prod-aws-ue2
       scheduler_name: bin-pack-scheduler
-    buildkit:
-      amd64_instance_type: m6id.24xlarge
-      amd64_pods_per_node: 2
-      arm64_instance_type: m7gd.16xlarge
-      arm64_pods_per_node: 4
-      autoscaling:
-        enabled: true
-        amd64_min: 4
-        amd64_max: 64
-        arm64_min: 4
-        arm64_max: 64
-        amd64_fallback: 12
-        arm64_fallback: 4
+      capacity_aware_fresh_multiplier: 0.8
     modules:
       - karpenter
       - arc
       - nodepools
       - bin-pack-scheduler
       - arc-runners
-      - keda
-      - buildkit
       - zombie-cleanup
       - harbor-cache-recovery
       - monitoring
