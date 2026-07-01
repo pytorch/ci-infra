@@ -64,16 +64,27 @@ def bucket_for(cid: str) -> str:
     return f"{BUCKET_PREFIX}{cid}"
 
 
-def download_models(models: list[str], staging: Path) -> None:
-    """Download each model once into staging/hub (shared across all target buckets)."""
+def download_models(models: list[str], staging: Path) -> list[str]:
+    """Download each model once into staging/hub (shared across all target buckets).
+
+    Returns the models that failed to download (e.g. a gated repo without an
+    HF_TOKEN that has access) — these are skipped so one bad model doesn't abort
+    the whole batch; the rest still download and sync.
+    """
     from huggingface_hub import snapshot_download
 
     hub = staging / "hub"
     hub.mkdir(parents=True, exist_ok=True)
-    for model in models:
-        print(f"-> downloading {model} ...", flush=True)
-        path = snapshot_download(model, cache_dir=str(hub))
-        print(f"   {model} -> {path}", flush=True)
+    failed = []
+    for i, model in enumerate(models, 1):
+        print(f"-> [{i}/{len(models)}] downloading {model} ...", flush=True)
+        try:
+            path = snapshot_download(model, cache_dir=str(hub))
+            print(f"   {model} -> {path}", flush=True)
+        except Exception as e:
+            print(f"   !! SKIP {model}: {type(e).__name__}: {str(e)[:140]}", flush=True)
+            failed.append(model)
+    return failed
 
 
 def sync_to_cluster(cid: str, region: str, staging: Path) -> tuple[str, bool, str]:
@@ -87,9 +98,15 @@ def sync_to_cluster(cid: str, region: str, staging: Path) -> tuple[str, bool, st
         region,
         "--no-progress",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    ok = proc.returncode == 0
-    return cid, ok, (proc.stdout if ok else (proc.stderr or proc.stdout)).strip()
+    # Stream aws's per-file "upload: ..." lines live (prefixed with the cluster id
+    # so parallel syncs stay readable) instead of capturing — otherwise the upload
+    # phase looks hung with no output. --no-progress keeps it to one line per file.
+    print(f"[{cid}] syncing -> s3://{bucket_for(cid)}/hub", flush=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    for line in proc.stdout or []:
+        print(f"[{cid}] {line}", end="", flush=True)
+    rc = proc.wait()
+    return cid, rc == 0, "" if rc == 0 else f"aws s3 sync exited {rc} (see [{cid}] output above)"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -111,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
 
     staging = Path(tempfile.mkdtemp(prefix="hf-cache-seed-"))
     try:
-        download_models(args.models, staging)
+        dl_failed = download_models(args.models, staging)
         workers = args.jobs or len(targets)
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(sync_to_cluster, cid, clusters[cid]["region"], staging) for cid in targets]
@@ -120,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(staging, ignore_errors=True)
 
     print("\n=== results ===")
+    if dl_failed:
+        print(f"  SKIPPED {len(dl_failed)} model(s) — download failed: {', '.join(dl_failed)}")
     failed = 0
     for cid, ok, detail in sorted(results):
         if ok:
@@ -128,10 +147,14 @@ def main(argv: list[str] | None = None) -> int:
             failed += 1
             tail = "\n        ".join(detail.splitlines()[-5:])
             print(f"  FAIL {cid}\n        {tail}")
-    if failed:
-        print(f"\n{failed}/{len(results)} cluster(s) failed.")
+    seeded = len(args.models) - len(dl_failed)
+    if failed or dl_failed:
+        if failed:
+            print(f"\n{failed}/{len(results)} cluster(s) failed.")
+        if dl_failed:
+            print(f"{len(dl_failed)} model(s) skipped (see above).")
         return 1
-    print(f"\nSeeded {len(args.models)} model(s) into {len(results)} cluster(s).")
+    print(f"\nSeeded {seeded} model(s) into {len(results)} cluster(s).")
     return 0
 
 

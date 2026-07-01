@@ -60,28 +60,47 @@ def test_download_models(monkeypatch, tmp_path):
     fake = types.ModuleType("huggingface_hub")
     fake.snapshot_download = lambda model, cache_dir: f"{cache_dir}/{model}"
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
-    _mod.download_models(["org/m"], tmp_path)
+    assert _mod.download_models(["org/m"], tmp_path) == []
     assert (tmp_path / "hub").is_dir()
 
 
+def test_download_models_skips_failure(monkeypatch, tmp_path):
+    def boom(model, cache_dir):
+        if model == "org/bad":
+            raise OSError("gated repo")
+        return f"{cache_dir}/{model}"
+
+    fake = types.ModuleType("huggingface_hub")
+    fake.snapshot_download = boom
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    assert _mod.download_models(["org/ok", "org/bad"], tmp_path) == ["org/bad"]
+
+
+def _fake_popen(lines, rc):
+    fake = MagicMock()
+    fake.stdout = list(lines)  # iterable + truthy
+    fake.wait.return_value = rc
+    return fake
+
+
 def test_sync_to_cluster_ok():
-    with patch.object(_mod.subprocess, "run", return_value=MagicMock(returncode=0, stdout="done", stderr="")):
+    with patch.object(_mod.subprocess, "Popen", return_value=_fake_popen(["upload: a\n"], 0)):
         cid, ok, _ = _mod.sync_to_cluster("c1", "us-east-1", Path("/tmp/x"))
     assert ok
     assert cid == "c1"
 
 
 def test_sync_to_cluster_fail():
-    with patch.object(_mod.subprocess, "run", return_value=MagicMock(returncode=1, stdout="", stderr="boom")):
+    with patch.object(_mod.subprocess, "Popen", return_value=_fake_popen(["AccessDenied\n"], 1)):
         _, ok, detail = _mod.sync_to_cluster("c1", "us-east-1", Path("/tmp/x"))
     assert not ok
-    assert "boom" in detail
+    assert "exited 1" in detail
 
 
 def _run_main(argv, sync=lambda cid, region, staging: (cid, True, "ok")):
     with (
         patch.object(_mod, "load_clusters", return_value=CLUSTERS),
-        patch.object(_mod, "download_models"),
+        patch.object(_mod, "download_models", return_value=[]),
         patch.object(_mod.shutil, "which", return_value="/usr/bin/aws"),
         patch.object(_mod, "sync_to_cluster", side_effect=sync),
     ):
@@ -101,6 +120,18 @@ def test_main_reports_failure(capsys):
     rc = _run_main(["-c", "meta-staging-aws-ue1", "org/m"], sync=lambda cid, region, staging: (cid, False, "e1\ne2"))
     assert rc == 1
     assert "FAIL" in capsys.readouterr().out
+
+
+def test_main_reports_download_skip(capsys):
+    with (
+        patch.object(_mod, "load_clusters", return_value=CLUSTERS),
+        patch.object(_mod, "download_models", return_value=["org/bad"]),
+        patch.object(_mod.shutil, "which", return_value="/usr/bin/aws"),
+        patch.object(_mod, "sync_to_cluster", side_effect=lambda cid, region, staging: (cid, True, "")),
+    ):
+        rc = _mod.main(["-c", "meta-staging-aws-ue1", "org/ok", "org/bad"])
+    assert rc == 1
+    assert "SKIPPED" in capsys.readouterr().out
 
 
 def test_main_requires_aws():
