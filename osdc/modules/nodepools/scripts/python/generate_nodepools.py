@@ -64,6 +64,15 @@ STARTUP_TAINTS: list[dict] = [
         "applies_when": lambda d: d.get("extra_labels", {}).get("osdc.io/runner-class") != "release",
     },
     {
+        # Gates runner pods until the rclone FUSE is mounted (a pod that starts
+        # first binds the empty dir and never sees the cache). No applies_when: the
+        # mount DS runs on, and clears it from, every workload-type=github-runner node.
+        "module": "hf-cache",
+        "key": "node-init.osdc.io/hf-cache",
+        "value": "true",
+        "effect": "NoSchedule",
+    },
+    {
         "module": None,
         "key": "node-init.osdc.io/registry-mirror",
         "value": "true",
