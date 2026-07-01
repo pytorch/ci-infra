@@ -383,6 +383,7 @@ clusters:
     modules:
       - karpenter
       - arc
+      - hf-cache              # before nodepools: mount must be up before the node-init gate taint
       - nodepools
       - nodepools-h100        # H100 only — B200 has no capacity reservation in us-west-1
       - bin-pack-scheduler
