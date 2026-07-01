@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base resources only. The mount DaemonSet and refresh CronJob are rendered
+# from templates by deploy.sh (they need terraform outputs and per-cluster
+# config substituted in), so they are not part of this kustomization.
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - rbac.yaml

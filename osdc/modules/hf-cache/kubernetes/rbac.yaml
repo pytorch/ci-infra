@@ -1,0 +1,28 @@
+# Lets the hf-cache-mount SA clear its own node-init.osdc.io/hf-cache taint:
+# the get/patch on nodes that taint_remover.py needs. (SA: serviceaccounts.yaml.)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hf-cache-taint-remover
+  labels:
+    osdc.io/module: hf-cache
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hf-cache-taint-remover
+  labels:
+    osdc.io/module: hf-cache
+subjects:
+  - kind: ServiceAccount
+    name: hf-cache-mount
+    namespace: hf-cache
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hf-cache-taint-remover
