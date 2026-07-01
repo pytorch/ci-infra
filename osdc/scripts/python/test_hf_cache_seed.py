@@ -58,14 +58,28 @@ def test_load_clusters(tmp_path, monkeypatch):
 
 def test_download_models(monkeypatch, tmp_path):
     fake = types.ModuleType("huggingface_hub")
-    fake.snapshot_download = lambda model, cache_dir: f"{cache_dir}/{model}"
+    fake.snapshot_download = lambda model, cache_dir, allow_patterns=None: f"{cache_dir}/{model}"
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
     assert _mod.download_models(["org/m"], tmp_path) == []
     assert (tmp_path / "hub").is_dir()
 
 
+def test_download_models_config_only_passes_allow_patterns(monkeypatch, tmp_path):
+    seen = {}
+
+    def cap(model, cache_dir, allow_patterns=None):
+        seen["allow"] = allow_patterns
+        return f"{cache_dir}/{model}"
+
+    fake = types.ModuleType("huggingface_hub")
+    fake.snapshot_download = cap
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    _mod.download_models(["org/m"], tmp_path, config_only=True)
+    assert seen["allow"] == _mod.CONFIG_ONLY_PATTERNS
+
+
 def test_download_models_skips_failure(monkeypatch, tmp_path):
-    def boom(model, cache_dir):
+    def boom(model, cache_dir, allow_patterns=None):
         if model == "org/bad":
             raise OSError("gated repo")
         return f"{cache_dir}/{model}"

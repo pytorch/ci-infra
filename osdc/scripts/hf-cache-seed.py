@@ -64,8 +64,17 @@ def bucket_for(cid: str) -> str:
     return f"{BUCKET_PREFIX}{cid}"
 
 
-def download_models(models: list[str], staging: Path) -> list[str]:
+# config + tokenizer only (no weight files) — enough for benchmarks that init
+# with random weights, e.g. vLLM's ``--load-format dummy`` runs. Excludes
+# *.safetensors / *.bin / *.pth / *.gguf, which for those models are huge/gated.
+CONFIG_ONLY_PATTERNS = ["*.json", "*.txt", "*.model", "*.jinja"]
+
+
+def download_models(models: list[str], staging: Path, config_only: bool = False) -> list[str]:
     """Download each model once into staging/hub (shared across all target buckets).
+
+    With ``config_only`` only config + tokenizer files are fetched (no weights) —
+    for benchmarks that random-init weights (e.g. vLLM ``--load-format dummy``).
 
     Returns the models that failed to download (e.g. a gated repo without an
     HF_TOKEN that has access) — these are skipped so one bad model doesn't abort
@@ -75,11 +84,13 @@ def download_models(models: list[str], staging: Path) -> list[str]:
 
     hub = staging / "hub"
     hub.mkdir(parents=True, exist_ok=True)
+    allow = CONFIG_ONLY_PATTERNS if config_only else None
     failed = []
     for i, model in enumerate(models, 1):
-        print(f"-> [{i}/{len(models)}] downloading {model} ...", flush=True)
+        suffix = " (config only)" if config_only else ""
+        print(f"-> [{i}/{len(models)}] downloading {model}{suffix} ...", flush=True)
         try:
-            path = snapshot_download(model, cache_dir=str(hub))
+            path = snapshot_download(model, cache_dir=str(hub), allow_patterns=allow)
             print(f"   {model} -> {path}", flush=True)
         except Exception as e:
             print(f"   !! SKIP {model}: {type(e).__name__}: {str(e)[:140]}", flush=True)
@@ -116,6 +127,11 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--all", action="store_true", help="target every cluster that enables the hf-cache module")
     parser.add_argument("models", nargs="+", help="HF model id(s), e.g. Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("-j", "--jobs", type=int, default=0, help="parallel cluster syncs (default: one per cluster)")
+    parser.add_argument(
+        "--config-only",
+        action="store_true",
+        help="download only config+tokenizer files, no weights (for vLLM --load-format dummy benchmarks)",
+    )
     args = parser.parse_args(argv)
 
     clusters = load_clusters()
@@ -128,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
 
     staging = Path(tempfile.mkdtemp(prefix="hf-cache-seed-"))
     try:
-        dl_failed = download_models(args.models, staging)
+        dl_failed = download_models(args.models, staging, config_only=args.config_only)
         workers = args.jobs or len(targets)
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(sync_to_cluster, cid, clusters[cid]["region"], staging) for cid in targets]
