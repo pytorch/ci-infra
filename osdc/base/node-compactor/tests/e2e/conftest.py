@@ -47,7 +47,9 @@ from helpers import (
     get_compactor_pod_names,
     get_fleet_nodes,
     patch_compactor_env,
+    pause_arc_scalesets,
     restart_compactor_pod,
+    restore_arc_scalesets,
     restore_compactor_env,
     scale_compactor_deployment,
     wait_for,
@@ -87,6 +89,19 @@ GROUP_A_CONFIG = {
     "COMPACTOR_SPARE_CAPACITY_RATIO": "0",
     "COMPACTOR_SPARE_CAPACITY_THRESHOLD": "0.4",
     "COMPACTOR_CAPACITY_RESERVATION_NODES": "0",
+    # 0 disables peak-window damping (peak_min == current_min). Tests that
+    # exercise damping explicitly use GROUP_PEAK_WINDOW_CONFIG.
+    "COMPACTOR_PEAK_WINDOW_SECONDS": "0",
+    "COMPACTOR_PENDING_POD_MAX_AGE_SECONDS": "14400",
+    "COMPACTOR_PENDING_POD_MIN_AGE_SECONDS": "0",
+}
+
+# Peak-window config — same as Group A but with the 30s peak window enabled.
+# Owned by TestPeakWindow; other groups disable peak window to keep their
+# wait_for budgets independent of peak decay timing.
+GROUP_PEAK_WINDOW_CONFIG = {
+    **GROUP_A_CONFIG,
+    "COMPACTOR_PEAK_WINDOW_SECONDS": "30",
 }
 
 # Group B: anti-flap mechanisms — min_node_age blocks first, then rate + cooldown
@@ -369,6 +384,13 @@ def compactor_setup(
         log.info("Compactor scaled to 0 (stale from crashed run) — restoring to 1")
         scale_compactor_deployment(client, 1)
 
+    log.info("Pausing ARC scalesets (maxRunners=0) to silence cluster-wide churn...")
+    arc_originals = pause_arc_scalesets(client)
+    log.info("  Paused %d scaleset(s)", len(arc_originals))
+    # atexit guarantees restore even if setup crashes before the fixture yields;
+    # the teardown path below would otherwise be skipped.
+    atexit.register(restore_arc_scalesets, client, arc_originals)
+
     # Clean stale taints and reservation annotations from ALL fleet pools
     # (not just the target) — the compactor groups by fleet, so leftover
     # nodes in sibling pools pollute fleet-level taint decisions.
@@ -386,6 +408,9 @@ def compactor_setup(
     originals = patch_compactor_env(client, test_overrides)
     log.info("  Original env: %s", originals)
     log.info("  Test overrides: %s", test_overrides)
+    # Same hazard as ARC above: a stranded patched compactor will mis-manage
+    # production nodes cluster-wide until someone notices.
+    atexit.register(restore_compactor_env, client, originals)
 
     # Detect no-op patches: if a previous test run crashed without restoring
     # env vars, the originals will already match the overrides. In that case
@@ -449,6 +474,12 @@ def compactor_setup(
             return
         restored = True
         compactor_logs.stop()
+        log.info("Restoring ARC scalesets...")
+        try:
+            restore_arc_scalesets(client, arc_originals)
+            log.info("  ARC scalesets restored.")
+        except Exception:
+            log.exception("  Failed to restore ARC scalesets!")
         log.info("Restoring compactor Deployment (env vars + replicas)...")
         try:
             # Ensure replicas=1 before restoring env (a crashed test may
@@ -493,9 +524,11 @@ def compactor_setup(
 def _wait_for_compactor_reconcile(timeout_s: int = 60) -> None:
     """Wait until the compactor has completed at least one reconcile cycle.
 
-    Accepts either "Reconciling:" (nodes found) or "Node Compactor starting"
-    (pod alive, but 0 managed nodes — nothing to reconcile, tests will
-    provision their own nodes).
+    Looks for any sign of liveness: "Reconciling:", "Node Compactor starting",
+    or per-fleet/decision lines from the per-iteration logger. Under load a
+    single reconcile cycle emits dozens of fleet/decision lines that can
+    push the "Reconciling:" header off a tail window — so we use --since
+    instead of --tail and match a broader pattern set.
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -508,16 +541,17 @@ def _wait_for_compactor_reconcile(timeout_s: int = 60) -> None:
                     COMPACTOR_NAMESPACE,
                     "-l",
                     "app.kubernetes.io/name=node-compactor",
-                    "--tail=50",
+                    "--since=30s",
                 ],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            if "Reconciling:" in result.stdout:
+            out = result.stdout
+            if "Reconciling:" in out or "fleet=" in out or ("Applied" in out and "taint change" in out):
                 log.info("  Compactor reconciliation detected.")
                 return
-            if "Node Compactor starting" in result.stdout:
+            if "Node Compactor starting" in out:
                 log.info("  Compactor running (no managed nodes yet — tests will provision).")
                 return
         except Exception:

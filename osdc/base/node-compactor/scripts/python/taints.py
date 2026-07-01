@@ -3,15 +3,18 @@
 import logging
 import time
 
+from fit import _pods_fit_on_nodes
 from lightkube import ApiError, Client
 from lightkube.resources.core_v1 import Node
 from lightkube.types import PatchType
 from models import (
     Config,
     NodeState,
+    node_view_without_taint,
     pod_cpu_request,
     pod_gpu_request,
     pod_memory_request,
+    pod_to_podinfo,
 )
 
 log = logging.getLogger("compactor")
@@ -90,15 +93,8 @@ def _toleration_matches_taint(tol, taint) -> bool:
     return False
 
 
-def _pod_matches_node(pod, node_state: NodeState) -> bool:
-    """Check if a pending pod could run on a given node.
-
-    Checks scheduling constraints:
-    1. Tolerations — pod must tolerate all node taints
-    2. nodeSelector — every key=value must match node labels
-    3. Node affinity (requiredDuringSchedulingIgnoredDuringExecution)
-    4. Resource fit — pod requests must fit in remaining node capacity
-    """
+def _pod_constraints_match(pod, node_state: NodeState) -> bool:
+    """Whether a pod's scheduling constraints (tolerations, nodeSelector, nodeAffinity) match a node."""
     if not pod.spec:
         return not bool(node_state.node_taints)
 
@@ -130,6 +126,11 @@ def _pod_matches_node(pod, node_state: NodeState) -> bool:
                 if terms and not _any_term_matches(terms, node_state.labels):
                     return False
 
+    return True
+
+
+def _pod_fits_resources(pod, node_state: NodeState) -> bool:
+    """Whether a pod's resource requests fit in the node's remaining capacity."""
     # --- 4. Resource fit ---
     remaining_cpu = node_state.allocatable_cpu - node_state.total_cpu_used
     remaining_memory = node_state.allocatable_memory - node_state.total_memory_used
@@ -145,6 +146,18 @@ def _pod_matches_node(pod, node_state: NodeState) -> bool:
         if gpu_req > remaining_gpu:
             return False
     return True
+
+
+def _pod_matches_node(pod, node_state: NodeState) -> bool:
+    """Check if a pending pod could run on a given node.
+
+    Checks scheduling constraints:
+    1. Tolerations — pod must tolerate all node taints
+    2. nodeSelector — every key=value must match node labels
+    3. Node affinity (requiredDuringSchedulingIgnoredDuringExecution)
+    4. Resource fit — pod requests must fit in remaining node capacity
+    """
+    return _pod_constraints_match(pod, node_state) and _pod_fits_resources(pod, node_state)
 
 
 def _any_term_matches(terms: list, node_labels: dict) -> bool:
@@ -195,39 +208,38 @@ def _all_expressions_match(expressions: list, node_labels: dict) -> bool:
     return True
 
 
-def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_pods: list) -> set[str]:
-    """Check for unschedulable pending pods; return nodes to untaint.
+def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_pods: list) -> tuple[set[str], int]:
+    """Check for unschedulable pending pods; return nodes to untaint and compatible pending count.
 
     If pending pods exist that could run on tainted nodes, untaint enough
-    nodes (sorted by highest utilization first) to absorb the total
-    resource demand of the compatible pending pods.
+    nodes (sorted by highest utilization first) so a First-Fit-Decreasing
+    bin-pack of the compatible pending pods fits across the chosen set.
+    Summed demand vs summed availability is not enough — a 50-vCPU pod
+    cannot be served by two 30-vCPU nodes even though the sums work out.
 
     Uses pre-collected pending pods and node taint data from node_states
     to avoid redundant API calls.
+
+    When the pending pods cannot fit even after untainting every
+    compatible tainted node, all compatible tainted nodes are returned
+    anyway: we do what we can and let Karpenter provision the rest for
+    whatever still cannot land.
+
+    Returns a tuple of (nodes_to_untaint, compatible_pending_count) where the
+    second element is the number of pending pods that match at least one
+    tainted node — exposed as a metric.
     """
     if not pending_pods:
-        return set()
+        return set(), 0
 
     tainted_nodes = [ns for ns in node_states.values() if ns.is_tainted]
     if not tainted_nodes:
-        return set()
+        return set(), 0
 
     # Build NodeState views with compactor taint removed (simulates untainting)
-    untainted_views: dict[str, NodeState] = {}
-    for tnode in tainted_nodes:
-        remaining_taints = [t for t in tnode.node_taints if t.key != cfg.taint_key]
-        untainted_views[tnode.name] = NodeState(
-            name=tnode.name,
-            nodepool=tnode.nodepool,
-            allocatable_cpu=tnode.allocatable_cpu,
-            allocatable_memory=tnode.allocatable_memory,
-            allocatable_gpu=tnode.allocatable_gpu,
-            creation_time=tnode.creation_time,
-            pods=tnode.pods,
-            is_tainted=tnode.is_tainted,
-            node_taints=remaining_taints,
-            labels=tnode.labels,
-        )
+    untainted_views: dict[str, NodeState] = {
+        tnode.name: node_view_without_taint(tnode, cfg.taint_key) for tnode in tainted_nodes
+    }
 
     # Only count demand from pods that actually match compatible tainted nodes
     compatible_pending = []
@@ -239,7 +251,7 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
 
     if not compatible_pending:
         log.debug("Pending pods found but none match tainted nodes")
-        return set()
+        return set(), 0
 
     # Filter tainted nodes to those that pending pods could actually run on
     compatible_tainted: list[NodeState] = []
@@ -248,45 +260,28 @@ def check_pending_pods(cfg: Config, node_states: dict[str, NodeState], pending_p
             compatible_tainted.append(tnode)
 
     if not compatible_tainted:
-        return set()
+        return set(), 0
 
-    # Calculate total resource demand of compatible pending pods only
-    total_cpu_demand = sum(pod_cpu_request(pod) for pod in compatible_pending)
-    total_mem_demand = sum(pod_memory_request(pod) for pod in compatible_pending)
-    total_gpu_demand = sum(pod_gpu_request(pod) for pod in compatible_pending)
+    pending_podinfos = [pod_to_podinfo(p) for p in compatible_pending]
 
-    # Sort by highest utilization first (least wasteful to untaint)
+    # Sort tainted nodes by highest utilization first (least wasteful to untaint)
     compatible_tainted.sort(key=lambda n: n.utilization, reverse=True)
 
-    # Untaint enough nodes to cover the demand
     nodes_to_untaint: set[str] = set()
-    cumulative_cpu = 0.0
-    cumulative_mem = 0
-    cumulative_gpu = 0
-
+    candidate_nodes: list[NodeState] = []
     for tnode in compatible_tainted:
+        candidate_nodes.append(tnode)
         nodes_to_untaint.add(tnode.name)
-        # Available capacity = allocatable minus currently used
-        cumulative_cpu += tnode.allocatable_cpu - tnode.total_cpu_used
-        cumulative_mem += tnode.allocatable_memory - tnode.total_memory_used
-        cumulative_gpu += tnode.allocatable_gpu - tnode.total_gpu_used
-
-        cpu_met = cumulative_cpu >= total_cpu_demand
-        mem_met = cumulative_mem >= total_mem_demand
-        gpu_met = total_gpu_demand == 0 or cumulative_gpu >= total_gpu_demand
-        if cpu_met and mem_met and gpu_met:
+        if _pods_fit_on_nodes(pending_podinfos, candidate_nodes):
             break
 
     log.info(
-        "Found %d compatible pending pod(s) (%.1f CPU, %d MiB, %d GPU), untainting %d node(s) to absorb: %s",
+        "Found %d compatible pending pod(s), untainting %d node(s) to absorb: %s",
         len(compatible_pending),
-        total_cpu_demand,
-        total_mem_demand // (1024 * 1024),
-        total_gpu_demand,
         len(nodes_to_untaint),
         ", ".join(sorted(nodes_to_untaint)),
     )
-    return nodes_to_untaint
+    return nodes_to_untaint, len(compatible_pending)
 
 
 def apply_taint(client: Client, node_name: str, taint_key: str, dry_run: bool, max_retries: int = 5) -> None:
