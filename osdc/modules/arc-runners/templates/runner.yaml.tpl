@@ -450,6 +450,16 @@ data:
             - name: PYPI_CACHE_WHL_URL
               value: "http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/whl/cpu/"
             # END_PYPI_CACHE
+            # BEGIN_HF_CACHE
+            # Only HF_HOME is set — HF_HUB_CACHE derives as $HF_HOME/hub.
+            # HF_CACHE_S3_* = the ci-refresh-hf-cache OIDC write target.
+            - name: HF_HOME
+              value: "/mnt/hf_cache"
+            - name: HF_CACHE_S3_BUCKET
+              value: "{{HF_CACHE_BUCKET}}"
+            - name: HF_CACHE_S3_REGION
+              value: "{{HF_CACHE_REGION}}"
+            # END_HF_CACHE
             - name: TORCH_CI_MAX_MEMORY
               value: "{{MEMORY_BYTES}}"
           # Workflow container gets the actual compute resources
@@ -463,6 +473,13 @@ data:
               memory: "{{MEMORY}}"
               ephemeral-storage: "{{DISK_SIZE}}"{{GPU_LIMIT}}
           volumeMounts:
+            # BEGIN_HF_CACHE
+            # Read-only shared HF cache (hf-cache mount DaemonSet, HostToContainer).
+            - name: hf-cache
+              mountPath: /mnt/hf_cache
+              readOnly: true
+              mountPropagation: HostToContainer
+            # END_HF_CACHE
             # K8s default /dev/shm is 64Mi (container runtime tmpfs). NCCL
             # blows past that on multi-GPU workloads; PyTorch docker-based CI
             # also runs with --shm-size=1g-2g, so match that ceiling for all
@@ -474,6 +491,12 @@ data:
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
+        # BEGIN_HF_CACHE
+        - name: hf-cache
+          hostPath:
+            path: /mnt/hf_cache
+            type: DirectoryOrCreate
+        # END_HF_CACHE
   wrapper.js: |
     #!/usr/bin/env node
     'use strict';
