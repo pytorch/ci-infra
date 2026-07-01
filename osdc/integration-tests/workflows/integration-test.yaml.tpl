@@ -239,6 +239,153 @@ jobs:
   # END_NO_CACHE_ENFORCER
   # END_ARC_RUNNERS
 
+  # BEGIN_HF_CACHE
+  # ── HF Cache: read-only mount, env, and offline model load ──────────
+  test-hf-cache-mount:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify /mnt/hf_cache is mounted
+        run: |
+          echo "=== HF Cache Mount ==="
+          if [ ! -d /mnt/hf_cache ]; then
+            echo "FAIL: /mnt/hf_cache does not exist"
+            exit 1
+          fi
+          if ! grep -q ' /mnt/hf_cache ' /proc/mounts; then
+            echo "FAIL: /mnt/hf_cache is not a mountpoint"
+            grep hf_cache /proc/mounts || true
+            exit 1
+          fi
+          ls -la /mnt/hf_cache || true
+          echo "PASS: /mnt/hf_cache is mounted"
+
+      - name: Verify HF cache env vars
+        run: |
+          echo "=== HF Cache Env ==="
+          FAIL=0
+          [ "$HF_HOME" = "/mnt/hf_cache" ] || { echo "FAIL: HF_HOME='$HF_HOME'"; FAIL=1; }
+          EXPECTED_BUCKET="pytorch-hf-model-cache-{{CLUSTER_ID}}"
+          [ "$HF_CACHE_S3_BUCKET" = "$EXPECTED_BUCKET" ] \
+            || { echo "FAIL: HF_CACHE_S3_BUCKET='$HF_CACHE_S3_BUCKET' (expected $EXPECTED_BUCKET)"; FAIL=1; }
+          [ -n "$HF_CACHE_S3_REGION" ] || { echo "FAIL: HF_CACHE_S3_REGION is empty"; FAIL=1; }
+          echo "HF_HOME=$HF_HOME"
+          echo "HF_CACHE_S3_BUCKET=$HF_CACHE_S3_BUCKET HF_CACHE_S3_REGION=$HF_CACHE_S3_REGION"
+          if [ "$FAIL" -ne 0 ]; then exit 1; fi
+          echo "PASS: HF cache env vars are correct"
+
+      - name: Verify mount is read-only
+        run: |
+          echo "=== Read-only Enforcement ==="
+          if touch /mnt/hf_cache/.integration-write-probe 2>/dev/null; then
+            echo "FAIL: wrote to /mnt/hf_cache — the cache mount must be read-only for job pods"
+            rm -f /mnt/hf_cache/.integration-write-probe 2>/dev/null || true
+            exit 1
+          fi
+          echo "PASS: /mnt/hf_cache rejected a write (read-only)"
+
+  # Read path mirroring a real CI job: HF_HOME=/mnt/hf_cache + offline flags, load
+  # a small model. Fails if the cache isn't populated.
+  test-hf-cache-offline-read:
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }
+    container:
+      image: python:3.12-slim
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - name: Load a small model offline from /mnt/hf_cache
+        run: |
+          echo "=== Offline Read (mirrors normal CI jobs) ==="
+          MODEL="prajjwal1/bert-tiny"
+          CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
+          if [ ! -d "$CACHE_DIR" ]; then
+            echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — the cache must be populated first"
+            exit 1
+          fi
+          pip install --no-cache-dir 'huggingface_hub>=0.24'
+          MODEL="$MODEL" python3 -c "
+          import os, sys
+          from huggingface_hub import snapshot_download
+          model = os.environ['MODEL']
+          path = snapshot_download(model, local_files_only=True)
+          files = os.listdir(path)
+          if not files:
+              print('FAIL: empty snapshot at', path)
+              sys.exit(1)
+          print('PASS: loaded', model, 'offline from', path, '(' + str(len(files)) + ' files)')
+          "
+
+  # BEGIN_HF_CACHE_GPU
+  # Runs on an L4 (g6) runner. g6 is region-restricted (e.g. excluded in
+  # us-west-1); where it's unavailable this block is stripped so the job doesn't
+  # queue forever for a runner that can't come online. See REGION_GATED_BLOCKS
+  # in integration-tests/scripts/python/phases.py.
+  # Load Qwen2.5-7B from the cache and generate — the real "use the model" path
+  # (loading reads the weights through the mount). Seed once with
+  # `scripts/hf-cache-seed.py <cluster> Qwen/Qwen2.5-7B-Instruct`.
+  test-hf-cache-large-read:
+    # GPU: CPU loading keeps weights mmap'd from the FUSE, so generate() SIGBUSes
+    # faulting them (repro'd on 32/64GB, even low_cpu_mem_usage=False). On GPU
+    # weights go to VRAM, so generate never touches the FUSE. A single L4 (24GB)
+    # fits 7B bf16 — far cheaper than an A100/p4d node for a 1-GPU test.
+    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86aavx2-29-113-l4"] }
+    container:
+      image: python:3.12-slim
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      MODEL: "Qwen/Qwen2.5-7B-Instruct"
+      # Generous cap: a cold GPU node fetches ~15GB from S3 (~430s observed). Still
+      # catches the pathological case (re-downloading / pulling beyond this model).
+      MAX_LOAD_SECONDS: "900"
+    steps:
+      - name: Load the model offline from /mnt/hf_cache and run inference
+        run: |
+          echo "=== Large-model offline inference ==="
+          CACHE_DIR="/mnt/hf_cache/hub/models--$(echo "$MODEL" | sed 's|/|--|g')"
+          if [ ! -d "$CACHE_DIR" ]; then
+            echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — seed it with scripts/hf-cache-seed.py"
+            exit 1
+          fi
+          pip install --no-cache-dir torch  # default CUDA build for the GPU runner
+          pip install --no-cache-dir 'transformers>=4.45' 'huggingface_hub>=0.24' accelerate
+          # device_map='cuda' loads weights to VRAM (see runs-on note); greedy decode.
+          MODEL="$MODEL" python3 -c "
+          import os, sys, time
+          import torch
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          assert torch.cuda.is_available(), 'CUDA not available on this runner'
+          mid = os.environ['MODEL']
+          max_load = float(os.environ.get('MAX_LOAD_SECONDS', '300'))
+          t0 = time.time()
+          tok = AutoTokenizer.from_pretrained(mid)
+          model = AutoModelForCausalLM.from_pretrained(mid, torch_dtype=torch.bfloat16, device_map='cuda')
+          model.eval()
+          load_s = time.time() - t0
+          print('loaded', mid, 'on', torch.cuda.get_device_name(0), 'in', round(load_s), 's (limit', round(max_load), 's)', flush=True)
+          if load_s > max_load:
+              print('FAIL: load took', round(load_s), 's >', round(max_load), 's — cache not serving efficiently (re-downloading from S3?)')
+              sys.exit(1)
+          prompt = 'In one sentence, what is PyTorch?'
+          inputs = tok.apply_chat_template([{'role': 'user', 'content': prompt}], add_generation_prompt=True, return_tensors='pt', return_dict=True).to('cuda')
+          input_len = inputs['input_ids'].shape[1]
+          t1 = time.time()
+          with torch.no_grad():
+              out = model.generate(**inputs, max_new_tokens=16, do_sample=False)
+          reply = tok.decode(out[0][input_len:], skip_special_tokens=True).strip()
+          print('generated in', round(time.time() - t1), 's', flush=True)
+          print('PROMPT:', prompt)
+          print('OUTPUT:', reply)
+          if not reply:
+              print('FAIL: model loaded but produced no output'); sys.exit(1)
+          print('PASS:', mid, 'ran offline inference from the shared cache')
+          "
+  # END_HF_CACHE_GPU
+  # END_HF_CACHE
+
+
   # BEGIN_PYPI_CACHE
   # ── PyPI Cache: Default Pod Environment ─────────────────────────────
   # Validates runner pod-level defaults: pip install, uv install,
