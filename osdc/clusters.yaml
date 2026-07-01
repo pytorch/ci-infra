@@ -67,9 +67,9 @@ defaults:
     min_nodes: 1
     dry_run: false
   nodepools:
-    gpu_consolidate_after: "40m"
-    cpu_consolidate_after: "20m"
-    baremetal_consolidate_after: "1h"
+    gpu_consolidate_after: "10m"
+    cpu_consolidate_after: "5m"
+    baremetal_consolidate_after: "15m"
     gpu_disruption_budget: "20%"
     cpu_disruption_budget: "20%"
   buildkit:
@@ -359,7 +359,7 @@ clusters:
     base:
       vpc_cidr: "10.8.0.0/16"
     node_compactor:
-      min_node_age_seconds: 900
+      min_node_age_seconds: 300
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: meta-prod-aws-uw1
@@ -403,7 +403,7 @@ clusters:
     base:
       vpc_cidr: "10.4.0.0/16"
     node_compactor:
-      min_node_age_seconds: 900
+      min_node_age_seconds: 300
     buildkit:
       amd64_instance_type: m6id.24xlarge
       amd64_pods_per_node: 2
@@ -450,7 +450,7 @@ clusters:
     base:
       vpc_cidr: "10.4.0.0/16"
     node_compactor:
-      min_node_age_seconds: 900
+      min_node_age_seconds: 300
     buildkit:
       amd64_instance_type: m6id.24xlarge
       amd64_pods_per_node: 2
@@ -517,7 +517,7 @@ clusters:
       base_node_instance_type: m7i.8xlarge
       vpc_cidr: "10.12.0.0/16"
     node_compactor:
-      min_node_age_seconds: 900
+      min_node_age_seconds: 300
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: lf-prod-aws-ue1
@@ -549,7 +549,7 @@ clusters:
       base_node_instance_type: m7i.8xlarge
       vpc_cidr: "10.16.0.0/16"
     node_compactor:
-      min_node_age_seconds: 900
+      min_node_age_seconds: 300
     arc-runners:
       github_config_url: "https://github.com/pytorch"
       github_secret_name: lf-prod-aws-ue2
