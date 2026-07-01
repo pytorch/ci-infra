@@ -13,6 +13,7 @@ from phases import (
     ensure_canary_repo,
     generate_workflow,
     prepare_pr,
+    region_excluded_blocks,
 )
 from run import (
     branch_name,
@@ -1694,3 +1695,108 @@ class TestMain:
 
         assert exc_info.value.code == 1
         mock_gen.assert_not_called()
+
+
+# ── region-gated GPU blocks (hf-cache large-read on L4/g6) ─────────────────
+
+
+@pytest.fixture
+def hf_cache_template(tmp_path):
+    """Template with an HF_CACHE block whose large-read job is nested in a
+    region-gated HF_CACHE_GPU block, plus a g6 fleet def excluded in us-west-1."""
+    upstream = tmp_path / "upstream"
+    wf_dir = upstream / "integration-tests" / "workflows"
+    wf_dir.mkdir(parents=True)
+    template = (
+        "name: {{PREFIX}} integration test\n"
+        "on: push\n"
+        "jobs:\n"
+        "  # BEGIN_HF_CACHE\n"
+        "  hf-cache-cpu-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-8-32"] }\n'
+        "    steps:\n"
+        "      - run: echo cpu\n"
+        "  # BEGIN_HF_CACHE_GPU\n"
+        "  hf-cache-gpu-job:\n"
+        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86aavx2-29-113-l4"] }\n'
+        "    steps:\n"
+        "      - run: echo gpu\n"
+        "  # END_HF_CACHE_GPU\n"
+        "  # END_HF_CACHE\n"
+    )
+    (wf_dir / "integration-test.yaml.tpl").write_text(template)
+    defs_dir = upstream / "modules" / "nodepools" / "defs"
+    defs_dir.mkdir(parents=True)
+    (defs_dir / "g6.yaml").write_text("fleet:\n  name: g6\n  exclude_regions:\n    - us-west-1\n")
+    return upstream
+
+
+class TestRegionGatedHfCacheGpu:
+    def test_gpu_kept_in_available_region(self, hf_cache_template):
+        result = generate_workflow(
+            hf_cache_template,
+            "cbr",
+            "c",
+            "c",
+            cluster_modules=["arc-runners", "hf-cache"],
+            region="us-east-2",
+        )
+        assert "hf-cache-cpu-job" in result
+        assert "hf-cache-gpu-job" in result
+        assert "BEGIN_" not in result
+        assert "END_" not in result
+
+    def test_gpu_stripped_in_excluded_region(self, hf_cache_template):
+        result = generate_workflow(
+            hf_cache_template,
+            "cbr",
+            "c",
+            "c",
+            cluster_modules=["arc-runners", "hf-cache"],
+            region="us-west-1",
+        )
+        # CPU job survives; the L4 job (and its runner label) is gone.
+        assert "hf-cache-cpu-job" in result
+        assert "hf-cache-gpu-job" not in result
+        assert "l-x86aavx2-29-113-l4" not in result
+        assert "BEGIN_" not in result
+        assert "END_" not in result
+
+    def test_gpu_kept_when_region_unset(self, hf_cache_template):
+        result = generate_workflow(
+            hf_cache_template,
+            "cbr",
+            "c",
+            "c",
+            cluster_modules=["arc-runners", "hf-cache"],
+        )
+        assert "hf-cache-gpu-job" in result
+        assert "BEGIN_HF_CACHE_GPU" not in result
+
+    def test_gpu_removed_with_parent_when_module_absent(self, hf_cache_template):
+        result = generate_workflow(
+            hf_cache_template,
+            "cbr",
+            "c",
+            "c",
+            cluster_modules=["arc-runners"],  # no hf-cache → whole block stripped
+            region="us-west-1",
+        )
+        assert "hf-cache-cpu-job" not in result
+        assert "hf-cache-gpu-job" not in result
+        assert "BEGIN_HF_CACHE_GPU" not in result
+
+
+class TestRegionExcludedBlocks:
+    def test_excluded_region_returns_tag(self, hf_cache_template):
+        assert region_excluded_blocks(hf_cache_template, "us-west-1") == {"HF_CACHE_GPU"}
+
+    def test_available_region_returns_empty(self, hf_cache_template):
+        assert region_excluded_blocks(hf_cache_template, "us-east-2") == set()
+
+    def test_empty_region_returns_empty(self, hf_cache_template):
+        assert region_excluded_blocks(hf_cache_template, "") == set()
+
+    def test_missing_fleet_def_returns_empty(self, tmp_path):
+        # No modules/nodepools/defs tree → FileNotFoundError handled → empty.
+        assert region_excluded_blocks(tmp_path, "us-west-1") == set()
