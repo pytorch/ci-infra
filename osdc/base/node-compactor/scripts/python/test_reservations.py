@@ -49,6 +49,9 @@ def make_config(**overrides) -> Config:
         "spare_capacity_ratio": 0.0,
         "spare_capacity_threshold": 0.4,
         "capacity_reservation_nodes": 0,
+        "peak_window_seconds": 2700,
+        "pending_pod_max_age_seconds": 14400,
+        "pending_pod_min_age_seconds": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)
