@@ -2,9 +2,12 @@
 name: osdc-cli-debugging
 description: >
   Read-only CLI commands for debugging OSDC clusters: kubectl, aws, helm, tofu.
-  Includes command references and safety boundaries.
+  Includes command references, safety boundaries, and the deploy-audit ConfigMaps
+  in osdc-system (what version is running where, who deployed it, when, did it succeed,
+  is a deploy stuck).
   Applies to ~/meta/ci-infra/osdc.
-  Load when investigating cluster state, debugging pods, or inspecting infrastructure.
+  Load when investigating cluster state, debugging pods, inspecting infrastructure,
+  comparing deployed versions across clusters, or diagnosing a failed or stuck deploy.
 ---
 
 # OSDC CLI Debugging (Read-Only)
@@ -144,6 +147,115 @@ just deploy-history <cluster>                        # Recent deploy history (sa
 ```
 
 `just deploy-status` / `just deploy-history` require kubeconfig to be set first (`just kubeconfig <cluster>`) — they read live ConfigMaps from the cluster.
+
+## Deploy-Audit ConfigMaps (osdc-system)
+
+Every `just deploy`, `just deploy-base`, and `just deploy-module` records itself as ConfigMaps in the `osdc-system` namespace via `scripts/deploy-log.sh`. These are the source of truth for **what version is running where, who deployed it, when, did it succeed, and is something stuck**. The `osdc-system` namespace exists for nothing else — it is purely the audit log.
+
+**Always start here**: `just deploy-status <cluster>` — it parses the ConfigMaps and prints color-coded Current Versions + recent history. Drop to raw kubectl only when you need a field the renderer hides (`branch`, `duration`) or want to diff across clusters.
+
+### What gets written
+
+Every recipe writes three ConfigMaps per recorded event, all labelled `app.kubernetes.io/managed-by=osdc-deploy-log`:
+
+| Name pattern | When written | Status field |
+|---|---|---|
+| `osdc-deploy-<scope>-start-<name>` | Immediately when the recipe begins | `started` |
+| `osdc-deploy-<scope>-finish-<name>` | When the recipe exits (success or via ERR trap on failure) | `completed` or `failed` |
+| `osdc-deploy-<scope>-history-<name>` | Both events appended to `.data.entries` (JSONL, trimmed to last 50 lines) | n/a |
+
+`<scope>` is `cmd` for the top-level `just` recipe and `module` for the per-module record. `<name>` is the recipe or module name. Examples:
+- `just deploy meta-prod-aws-ue1` → `osdc-deploy-cmd-{start,finish,history}-deploy`
+- `just deploy-base meta-prod-aws-ue1` → `osdc-deploy-cmd-{start,finish,history}-deploy-base`
+- `just deploy-module meta-prod-aws-ue1 karpenter` → writes **two** records: `osdc-deploy-cmd-{...}-deploy-module-karpenter` AND `osdc-deploy-module-{...}-karpenter`
+
+A full `just deploy` of an N-module cluster emits one outer `deploy` record, one `deploy-base` record, and 2N module records (cmd-scope + module-scope per module) — roughly 100 ConfigMaps for a 16-module cluster.
+
+### Data schema
+
+Common keys on both `start` and `finish`:
+
+| Key | Source | Example |
+|---|---|---|
+| `commit` | `git rev-parse --short HEAD` on the deploy machine (or `unknown`) | `4fe8f56` |
+| `branch` | `git branch --show-current` (or `detached` for SHA checkouts; CI is almost always `detached`) | `main` |
+| `user` | `$USER` on the deploy machine (NOT the GH actor) | `jschmidt` |
+| `cluster` | The positional arg passed to the `just` recipe | `meta-prod-aws-ue1` |
+| `timestamp` | `date -u +%Y-%m-%dT%H:%M:%SZ` — ISO-8601 UTC, second precision, lexicographically sortable | `2026-06-30T14:23:45Z` |
+| `module` or `command` | The recipe/module name | `karpenter` / `deploy-base` |
+| `status` | `started` (on start CM); `completed` or `failed` (on finish CM) | `completed` |
+
+Only on `finish`: `duration` — wall-clock seconds as a string (e.g. `"197"`).
+
+History entries are `\n`-separated JSON lines with the same fields plus `event: start|finish`.
+
+### Debugging recipes
+
+All commands assume `just kubeconfig <cluster>` has been run and need the EKS proxy bypass — `NO_PROXY=...,.eks.amazonaws.com no_proxy=...,.eks.amazonaws.com` prefix, omitted below for readability.
+
+**What version of module X is on this cluster?**
+```bash
+kubectl get cm osdc-deploy-module-finish-<module> -n osdc-system -o yaml
+```
+Read `.data.commit`, `.data.branch`, `.data.timestamp`, `.data.user`, `.data.status`.
+
+**Does prod match staging for module X?**
+```bash
+just kubeconfig meta-prod-aws-ue1
+PROD_COMMIT=$(kubectl get cm osdc-deploy-module-finish-karpenter -n osdc-system -o jsonpath='{.data.commit}')
+just kubeconfig meta-staging-aws-uw1
+STAGING_COMMIT=$(kubectl get cm osdc-deploy-module-finish-karpenter -n osdc-system -o jsonpath='{.data.commit}')
+echo "prod=$PROD_COMMIT  staging=$STAGING_COMMIT"
+git log --oneline "$PROD_COMMIT..$STAGING_COMMIT" -- modules/karpenter/
+```
+
+**Who deployed last on this cluster, and when?**
+```bash
+just deploy-status <cluster>          # color-coded; reads all CMs at once
+```
+Or raw, sorted by actual deploy time (NOT `creationTimestamp`):
+```bash
+kubectl get cm -n osdc-system -l app.kubernetes.io/managed-by=osdc-deploy-log \
+    -o jsonpath='{range .items[*]}{.data.timestamp}{"\t"}{.metadata.name}{"\t"}{.data.user}{"\t"}{.data.status}{"\n"}{end}' \
+    | sort | tail -20
+```
+
+**Why did the last deploy fail?**
+```bash
+just deploy-status <cluster>          # red "failed" rows identify the failing scope
+# Or list every failure on the cluster:
+kubectl get cm -n osdc-system -l app.kubernetes.io/managed-by=osdc-deploy-log -o json \
+    | jq -r '.items[] | select(.data.status=="failed") | "\(.data.timestamp)\t\(.metadata.name)\t\(.data.commit)\t\(.data.user)"'
+```
+The ConfigMap only records THAT it failed, not WHY — pair this with the actual deploy logs (CI job, terminal scrollback). When `deploy-base` fails inside `just deploy`, you typically see TWO failed records (the inner `deploy-base` and the outer `deploy`).
+
+**Is a deploy in progress right now?**
+```bash
+just deploy-status <cluster> | grep -i "in progress"
+```
+`deploy-status` flags "in progress" when the start ConfigMap's timestamp is newer than the finish one's. **There is no TTL or liveness check** — an orchestrator that was SIGKILL'd hours ago shows as in-progress forever until somebody re-runs the same scope/name. Sanity-check the start `timestamp`: anything >1h old with no recent module activity is almost certainly a dead orchestrator, not a live deploy.
+
+**Timeline of every deploy event today, narrowed to one scope:**
+```bash
+just deploy-status <cluster> <name>   # name = "deploy" | "deploy-base" | "deploy-module-<MOD>" | "<MOD>"
+```
+The optional `<name>` filter switches the history table to include BOTH start and finish events (richer timeline) and bumps the row cap to 20. Without it, only finish events are shown, capped at 10.
+
+**Full JSONL history for one record:**
+```bash
+kubectl get cm osdc-deploy-module-history-karpenter -n osdc-system -o jsonpath='{.data.entries}'
+```
+
+### Gotchas
+
+- **`.metadata.creationTimestamp` is NOT the deploy time** — it is when the ConfigMap was first created (possibly weeks ago). `just deploy-history` sorts by `creationTimestamp` and is therefore mostly an inventory of which records exist, not a timeline. Always use `.data.timestamp` for actual deploy time.
+- **"In progress" can be stale.** No TTL, no heartbeat. A re-run of the same scope/name is the only thing that clears it.
+- **`user` is `$USER`, not the GH actor.** CI runs as whatever user the runner pod uses — usually meaningless for attribution. Cross-reference with the CI job URL.
+- **`branch=detached` is normal in CI** (SHA checkouts). Not a bug.
+- **Removed modules leak ConfigMaps.** Records for a module dropped from `clusters.yaml` stay in `osdc-system` until someone `kubectl delete cm`s them.
+- **Audit writes are non-fatal and silent on failure.** If the audit `kubectl` call itself fails (network blip, RBAC), the deploy still proceeds and the audit record simply doesn't exist — only a `Warning: deploy-log failed …` on stderr.
+- **Direct `./modules/foo/deploy.sh` invocations produce zero audit records.** Module scripts don't source `deploy-log.sh`; only the `just` recipes do.
+- **History caps at 50 entries combined (start + finish)** → effectively the last ~25 deploys per record. High-churn clusters lose old history fast.
 
 ## tofu (OpenTofu) — read-only
 
