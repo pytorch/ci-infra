@@ -37,6 +37,9 @@ DEFAULTS = {
     "COMPACTOR_SPARE_CAPACITY_RATIO": "0.15",
     "COMPACTOR_SPARE_CAPACITY_THRESHOLD": "0.4",
     "COMPACTOR_CAPACITY_RESERVATION_NODES": "0",
+    "COMPACTOR_PEAK_WINDOW_SECONDS": "1800",
+    "COMPACTOR_PENDING_POD_MAX_AGE_SECONDS": "14400",
+    "COMPACTOR_PENDING_POD_MIN_AGE_SECONDS": "0",
 }
 
 
@@ -56,13 +59,16 @@ class Config:
     spare_capacity_ratio: float
     spare_capacity_threshold: float
     capacity_reservation_nodes: int
+    peak_window_seconds: int
+    pending_pod_max_age_seconds: int
+    pending_pod_min_age_seconds: int
 
     @classmethod
     def from_env(cls) -> "Config":
         def env(key: str) -> str:
             return os.environ.get(key, DEFAULTS[key])
 
-        return cls(
+        cfg = cls(
             interval=int(env("COMPACTOR_INTERVAL")),
             max_uptime_hours=int(env("COMPACTOR_MAX_UPTIME_HOURS")),
             nodepool_label=env("COMPACTOR_NODEPOOL_LABEL"),
@@ -77,7 +83,28 @@ class Config:
             spare_capacity_ratio=float(env("COMPACTOR_SPARE_CAPACITY_RATIO")),
             spare_capacity_threshold=float(env("COMPACTOR_SPARE_CAPACITY_THRESHOLD")),
             capacity_reservation_nodes=int(env("COMPACTOR_CAPACITY_RESERVATION_NODES")),
+            peak_window_seconds=int(env("COMPACTOR_PEAK_WINDOW_SECONDS")),
+            pending_pod_max_age_seconds=int(env("COMPACTOR_PENDING_POD_MAX_AGE_SECONDS")),
+            pending_pod_min_age_seconds=int(env("COMPACTOR_PENDING_POD_MIN_AGE_SECONDS")),
         )
+
+        if cfg.peak_window_seconds < 0:
+            raise ValueError(f"COMPACTOR_PEAK_WINDOW_SECONDS must be >= 0, got {cfg.peak_window_seconds}")
+        if cfg.pending_pod_max_age_seconds <= 0:
+            raise ValueError(
+                f"COMPACTOR_PENDING_POD_MAX_AGE_SECONDS must be > 0, got {cfg.pending_pod_max_age_seconds}"
+            )
+        if cfg.pending_pod_min_age_seconds < 0:
+            raise ValueError(
+                f"COMPACTOR_PENDING_POD_MIN_AGE_SECONDS must be >= 0, got {cfg.pending_pod_min_age_seconds}"
+            )
+        if cfg.pending_pod_min_age_seconds >= cfg.pending_pod_max_age_seconds:
+            raise ValueError(
+                f"COMPACTOR_PENDING_POD_MIN_AGE_SECONDS ({cfg.pending_pod_min_age_seconds}) "
+                f"must be < COMPACTOR_PENDING_POD_MAX_AGE_SECONDS ({cfg.pending_pod_max_age_seconds})"
+            )
+
+        return cfg
 
 
 # ============================================================================
@@ -298,3 +325,35 @@ def pod_gpu_request(pod: Pod) -> int:
             if c.resources and c.resources.requests and "nvidia.com/gpu" in c.resources.requests:
                 total += int(c.resources.requests["nvidia.com/gpu"])
     return total
+
+
+def pod_to_podinfo(pod: Pod) -> "PodInfo":
+    """Convert a lightkube Pod into a PodInfo suitable for bin-packing.
+
+    The pod is treated as unscheduled workload (is_phantom=False,
+    is_daemonset=False, node_name="") regardless of its actual phase —
+    callers use this for pending/admission analysis where node placement
+    has not yet happened.
+    """
+    meta = getattr(pod, "metadata", None)
+    return PodInfo(
+        name=(getattr(meta, "name", "") or "") if meta else "",
+        namespace=(getattr(meta, "namespace", "") or "") if meta else "",
+        cpu_request=pod_cpu_request(pod),
+        memory_request=pod_memory_request(pod),
+        gpu_request=pod_gpu_request(pod),
+        node_name="",
+        is_daemonset=False,
+        is_phantom=False,
+    )
+
+
+def node_view_without_taint(ns: "NodeState", taint_key: str) -> "NodeState":
+    """Return a copy of NodeState with the named taint stripped from node_taints.
+
+    Used to simulate "what would the node look like once our compactor taint is removed"
+    when checking pending-pod compatibility against fleets.
+    """
+    from dataclasses import replace
+
+    return replace(ns, node_taints=[t for t in ns.node_taints if t.key != taint_key])
