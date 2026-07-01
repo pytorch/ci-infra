@@ -1,9 +1,17 @@
 """Tests for is_daemonset_pod, pod_cpu_request, and pod_memory_request in models.py."""
 
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
-from models import is_daemonset_pod, pod_cpu_request, pod_memory_request
+from models import (
+    NodeState,
+    is_daemonset_pod,
+    node_view_without_taint,
+    pod_cpu_request,
+    pod_memory_request,
+    pod_to_podinfo,
+)
 
 
 def _mock_pod(metadata=True, owner_refs=None, containers=None, spec=True):
@@ -212,6 +220,82 @@ class TestPodMemoryRequest(unittest.TestCase):
         c3 = _mock_container(memory="256Mi")
         pod = _mock_pod(containers=[c1, c2, c3])
         self.assertEqual(pod_memory_request(pod), 512 * 1024**2)
+
+
+class TestNodeViewWithoutTaint(unittest.TestCase):
+    """Tests for node_view_without_taint."""
+
+    def _make_taint(self, key, value="true", effect="NoSchedule"):
+        t = MagicMock()
+        t.key = key
+        t.value = value
+        t.effect = effect
+        return t
+
+    def test_strips_named_taint_and_preserves_annotations_and_reserved(self):
+        target_key = "node-compactor.osdc.io/consolidating"
+        other_taint = self._make_taint("instance-type", value="g5.xlarge")
+        ns = NodeState(
+            name="n1",
+            nodepool="pool-a",
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * 1024**3,
+            creation_time=datetime.now(UTC),
+            node_taints=[self._make_taint(target_key), other_taint],
+            labels={"karpenter.sh/nodepool": "pool-a"},
+            annotations={"foo": "bar"},
+            is_reserved=True,
+        )
+
+        view = node_view_without_taint(ns, target_key)
+
+        self.assertEqual([t.key for t in view.node_taints], ["instance-type"])
+        self.assertEqual(view.annotations, {"foo": "bar"})
+        self.assertTrue(view.is_reserved)
+        # Original is not mutated
+        self.assertEqual(len(ns.node_taints), 2)
+
+
+class TestPodToPodInfo(unittest.TestCase):
+    """Tests for pod_to_podinfo."""
+
+    def test_converts_basic_pod(self):
+        pod = _mock_pod(containers=[_mock_container(cpu="500m", memory="1Gi")])
+        pod.metadata.name = "pending-1"
+        pod.metadata.namespace = "default"
+
+        info = pod_to_podinfo(pod)
+
+        self.assertEqual(info.name, "pending-1")
+        self.assertEqual(info.namespace, "default")
+        self.assertAlmostEqual(info.cpu_request, 0.5)
+        self.assertEqual(info.memory_request, 1024**3)
+        self.assertEqual(info.gpu_request, 0)
+        self.assertEqual(info.node_name, "")
+        self.assertFalse(info.is_daemonset)
+        self.assertFalse(info.is_phantom)
+
+    def test_metadata_none_yields_empty_name_namespace(self):
+        pod = _mock_pod(metadata=None, spec=False)
+
+        info = pod_to_podinfo(pod)
+
+        self.assertEqual(info.name, "")
+        self.assertEqual(info.namespace, "")
+        self.assertEqual(info.cpu_request, 0.0)
+        self.assertEqual(info.memory_request, 0)
+        self.assertEqual(info.gpu_request, 0)
+
+    def test_gpu_request_carried_over(self):
+        c = _mock_container(cpu="1", memory="1Gi")
+        c.resources.requests["nvidia.com/gpu"] = "2"
+        pod = _mock_pod(containers=[c])
+        pod.metadata.name = "gpu-pod"
+        pod.metadata.namespace = "ns"
+
+        info = pod_to_podinfo(pod)
+
+        self.assertEqual(info.gpu_request, 2)
 
 
 if __name__ == "__main__":
