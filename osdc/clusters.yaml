@@ -181,6 +181,7 @@ clusters:
     modules:
       - karpenter
       - arc
+      - hf-cache
       - nodepools
       - bin-pack-scheduler
       - arc-runners
@@ -257,6 +258,7 @@ clusters:
     modules:
       - karpenter
       - arc
+      - hf-cache
       - nodepools
       - bin-pack-scheduler
       - arc-runners
@@ -333,6 +335,7 @@ clusters:
     modules:
       - karpenter
       - arc
+      - hf-cache
       - nodepools
       - bin-pack-scheduler
       - arc-runners
