@@ -27,6 +27,10 @@ just deploy-module <cluster> <module> [force]    # Single module; force="" sets 
 just plan <cluster>                              # Read-only `tofu plan` for base + every TF-backed module (CI-safe)
 just deploy-history <cluster>                    # List deploy audit ConfigMaps in osdc-system namespace
 just deploy-status <cluster> [name]              # Human-readable status of recent deploys
+# ^ Both read the deploy-audit ConfigMaps written by every just deploy/deploy-base/deploy-module
+#   into osdc-system. For the ConfigMap schema, raw kubectl queries, cross-cluster version diffs,
+#   stuck-deploy detection, and failure triage, see the "Deploy-Audit ConfigMaps" section of the
+#   osdc-cli-debugging skill.
 just recycle-nodes <cluster>                     # Terminate Karpenter nodes (reprovisioned on demand)
 just test                                        # Run all unit tests (95% per-file coverage required)
 just test-compactor <cluster>                    # Run node-compactor e2e tests (base/node-compactor/tests/e2e/)
