@@ -8,9 +8,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from compactor import _fleet_group_key, main, reconcile
+from fit import _pods_fit_on_nodes
 from lightkube import ApiError
-from models import LABEL_NODE_FLEET, Config, NodeState, PodInfo, parse_cpu, parse_memory
-from packing import _pods_fit_on_nodes, bin_pack_min_nodes, compute_taints
+from models import (
+    LABEL_NODE_FLEET,
+    Config,
+    NodeState,
+    PodInfo,
+    parse_cpu,
+    parse_memory,
+)
+from packing import bin_pack_min_nodes, compute_taints
+from pending import pending_pods_for_group
+
+PEAK_WINDOW_SECONDS = 2700
 
 # ============================================================================
 # Helpers
@@ -36,6 +47,9 @@ def make_config(**overrides) -> Config:
         "spare_capacity_ratio": 0.0,
         "spare_capacity_threshold": 0.4,
         "capacity_reservation_nodes": 0,
+        "peak_window_seconds": 2700,
+        "pending_pod_max_age_seconds": 14400,
+        "pending_pod_min_age_seconds": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -1154,7 +1168,7 @@ class TestFleetCooldownCrossPool:
 
         mock_discover.return_value = {"n-big": "m8g-48xlarge", "n-small": "m8g-8xlarge"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = {"n-big"}  # burst untaint for n-big
+        mock_check.return_value = ({"n-big"}, 1)  # burst untaint for n-big
         mock_compute.return_value = (set(), set(), set(), set())
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -1179,7 +1193,7 @@ class TestFleetCooldownCrossPool:
 
         mock_discover.return_value = {"n-big": "m8g-48xlarge", "n-small": "m8g-8xlarge"}
         mock_build.return_value = (node_states_2, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n-small"}, set(), set(), set())
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -1222,7 +1236,7 @@ class TestFleetCooldownCrossPool:
 
         mock_discover.return_value = {"n-m8g": "m8g-48xlarge", "n-r7a": "r7a-4xlarge"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n-m8g", "n-r7a"}, set(), set(), set())
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -1275,7 +1289,7 @@ class TestFleetCooldownCrossPool:
             "n4": "m8g-8xlarge",
         }
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n4"}, set(), set(), set())
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -1612,7 +1626,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default", "n2": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n2"}, {"n1"}, set(), set())
 
         reconcile(client, cfg, taint_times)
@@ -1650,7 +1664,7 @@ class TestReconcile:
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
         # burst_untaint includes n1 -- should bypass cooldown
-        mock_check.return_value = {"n1"}
+        mock_check.return_value = ({"n1"}, 1)
         mock_compute.return_value = (set(), set(), set(), set())
 
         reconcile(client, cfg, taint_times)
@@ -1685,7 +1699,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()  # no burst untaint
+        mock_check.return_value = (set(), 0)  # no burst untaint
         mock_compute.return_value = (set(), {"n1"}, set(), set())  # compute says untaint n1
 
         reconcile(client, cfg, taint_times)
@@ -1721,7 +1735,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()  # no burst untaint
+        mock_check.return_value = (set(), 0)  # no burst untaint
         # compute says untaint n1, and it's mandatory (min_nodes)
         mock_compute.return_value = (set(), {"n1"}, {"n1"}, set())
 
@@ -1757,7 +1771,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = (set(), {"n1"}, set(), set())
 
         reconcile(client, cfg, taint_times)
@@ -1790,7 +1804,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default", "n2": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = (set(), {"n1", "n2"}, set(), set())
 
         # First untaint raises 404, second succeeds
@@ -1827,7 +1841,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         mock_apply.side_effect = _make_api_error(404)
@@ -1865,7 +1879,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         mock_apply.side_effect = _make_api_error(409)
@@ -1901,7 +1915,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = (set(), {"n1"}, set(), set())
 
         mock_remove.side_effect = RuntimeError("connection lost")
@@ -1936,7 +1950,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         mock_apply.side_effect = RuntimeError("timeout")
@@ -1974,7 +1988,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         before = time.time()
@@ -2010,7 +2024,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = (set(), {"n1"}, set(), set())
 
         reconcile(client, cfg, {})
@@ -2043,7 +2057,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         reconcile(client, cfg, {})
@@ -2075,7 +2089,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = (set(), set(), set(), set())
 
         reconcile(client, cfg, {})
@@ -2109,7 +2123,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = {"n1"}  # burst wants untaint
+        mock_check.return_value = ({"n1"}, 1)  # burst wants untaint
         mock_compute.return_value = ({"n1"}, set(), set(), set())  # compute wants taint
 
         reconcile(client, cfg, {})
@@ -2143,7 +2157,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = (set(), {"n1"}, set(), set())
 
         mock_remove.side_effect = _make_api_error(500)
@@ -2184,7 +2198,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "pool-a", "n2": "pool-a"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_select_reserved.return_value = {"pool-a": {"n1"}}
         mock_compute.return_value = (set(), set(), set(), set())
 
@@ -2234,7 +2248,7 @@ class TestReconcile:
 
         mock_discover.return_value = {"n1": "pool-a", "n2": "pool-a", "n3": "pool-b"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         # Return n2, n3 as rate-limited
         mock_compute.return_value = ({"n1"}, set(), set(), {"n2", "n3"})
 
@@ -2244,6 +2258,67 @@ class TestReconcile:
         mock_rate_limit_blocks.labels.assert_called()
         pool_labels = {c[1]["nodepool"] for c in mock_rate_limit_blocks.labels.call_args_list}
         assert pool_labels == {"pool-a", "pool-b"}
+
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_reconcile_threads_peak_history(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_touch,
+    ):
+        """reconcile() forwards the caller's peak_history dict to compute_taints."""
+        client = MagicMock()
+        cfg = make_config()
+
+        n1 = make_node("n1")
+        mock_discover.return_value = {"n1": "pool"}
+        mock_build.return_value = ({"n1": n1}, [])
+        mock_check.return_value = (set(), 0)
+        mock_compute.return_value = (set(), set(), set(), set())
+
+        peak_history: dict[str, list[tuple[float, int]]] = {}
+        reconcile(client, cfg, {}, {}, peak_history)
+
+        assert mock_compute.call_args.kwargs["peak_history"] is peak_history
+
+    @patch("compactor.m.pending_pods_compatible")
+    @patch("compactor.apply_pending_phantom_load")
+    @patch("compactor.pathlib.Path.touch")
+    @patch("compactor.compute_taints")
+    @patch("compactor.check_pending_pods")
+    @patch("compactor.build_node_states")
+    @patch("compactor.discover_managed_nodes")
+    def test_reconcile_pending_pods_compatible_uses_check_return(
+        self,
+        mock_discover,
+        mock_build,
+        mock_check,
+        mock_compute,
+        mock_touch,
+        mock_phantom,
+        mock_gauge,
+    ):
+        """pending_pods_compatible gauge reflects check_pending_pods's count, not len(pending_pods)."""
+        client = MagicMock()
+        cfg = make_config()
+
+        n1 = make_node("n1")
+        # 10 pending pods, but only 5 are compatible with tainted nodes
+        pending_pods = [MagicMock() for _ in range(10)]
+        mock_discover.return_value = {"n1": "pool"}
+        mock_build.return_value = ({"n1": n1}, pending_pods)
+        mock_check.return_value = ({"n1"}, 5)
+        mock_compute.return_value = (set(), set(), set(), set())
+
+        reconcile(client, cfg, {})
+
+        mock_gauge.set.assert_called_once_with(5)
 
 
 # ============================================================================
@@ -2284,7 +2359,7 @@ class TestFleetCooldown:
 
         mock_discover.return_value = {"n1": "default", "n2": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = {"n1"}  # burst untaint for n1
+        mock_check.return_value = ({"n1"}, 1)  # burst untaint for n1
         mock_compute.return_value = (set(), set(), set(), set())
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -2306,7 +2381,7 @@ class TestFleetCooldown:
 
         mock_discover.return_value = {"n1": "default", "n2": "default"}
         mock_build.return_value = (node_states_2, [])
-        mock_check.return_value = set()  # no burst this time
+        mock_check.return_value = (set(), 0)  # no burst this time
         mock_compute.return_value = ({"n2"}, set(), set(), set())  # wants to taint n2
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -2343,7 +2418,7 @@ class TestFleetCooldown:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -2389,7 +2464,7 @@ class TestFleetCooldown:
             "n4": "default",
         }
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n4"}, set(), set(), set())  # wants to taint n4
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -2428,7 +2503,7 @@ class TestFleetCooldown:
 
         mock_discover.return_value = {"n1": "pool-a", "n2": "pool-b"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n1", "n2"}, set(), set(), set())
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -2466,7 +2541,7 @@ class TestFleetCooldown:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         # mandatory untaint for n1
         mock_compute.return_value = (set(), {"n1"}, {"n1"}, set())
 
@@ -2504,7 +2579,7 @@ class TestFleetCooldown:
 
         mock_discover.return_value = {"n1": "default"}
         mock_build.return_value = (node_states, [])
-        mock_check.return_value = set()
+        mock_check.return_value = (set(), 0)
         mock_compute.return_value = ({"n1"}, set(), set(), set())
 
         reconcile(client, cfg, taint_times, fleet_cooldown_times)
@@ -2547,7 +2622,7 @@ class TestMain:
         # signal handler and invoking it
         call_count = 0
 
-        def reconcile_side_effect(client, config, taint_times, fleet_cooldown_times=None):
+        def reconcile_side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count >= 1:
@@ -2837,3 +2912,241 @@ class TestComputeTaintsRateLimiting:
         # surplus = 4; max_new_taints = max(1, ceil(4 * 0.0)) = max(1, 0) = 1
         assert len(to_taint) == 1
         assert len(rate_limited) == 4  # rate-limited nodes don't advance taint_count
+
+
+# ============================================================================
+# Peak window tests
+# ============================================================================
+
+
+def make_pending_pod_mock(
+    cpu: str = "1",
+    memory: str = "1Gi",
+    gpu: int | None = None,
+    age_seconds: float = 60.0,
+    name: str = "pending-pod",
+    namespace: str = "default",
+    tolerations=None,
+    node_selector=None,
+):
+    """Build a MagicMock lightkube Pod for pending-pod tests."""
+    pod = MagicMock()
+    pod.metadata.name = name
+    pod.metadata.namespace = namespace
+    pod.metadata.creationTimestamp = datetime.now(UTC) - timedelta(seconds=age_seconds)
+    pod.spec.tolerations = tolerations
+    pod.spec.nodeSelector = node_selector
+    pod.spec.affinity = None
+    container = MagicMock()
+    requests = {"cpu": cpu, "memory": memory}
+    if gpu is not None:
+        requests["nvidia.com/gpu"] = gpu
+    container.resources.requests = requests
+    pod.spec.containers = [container]
+    return pod
+
+
+class TestPeakWindow:
+    """Tests for the per-fleet sliding-window peak tracker in compute_taints."""
+
+    def test_empty_peak_history_uses_current_bin_pack(self):
+        """First tick: empty history → min_needed is bin_pack(current pods)."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        n1 = make_node("n1")
+        n1.pods = [make_pod("p1", cpu=8.0, node_name="n1")]
+        n2 = make_node("n2")
+        n2.pods = [make_pod("p2", cpu=8.0, node_name="n2")]
+        n3 = make_node("n3")
+        nodes = {"n1": n1, "n2": n2, "n3": n3}
+        peak_history: dict[str, list[tuple[float, int]]] = {}
+
+        to_taint, *_ = compute_taints(nodes, cfg, peak_history=peak_history)
+
+        # bin_pack: 2 pods of 8 CPU each fit on 1 node of 16 CPU → min=1
+        # surplus = 3 - 1 = 2 → 2 nodes tainted
+        assert len(to_taint) == 2
+        assert "default" in peak_history
+        assert len(peak_history["default"]) == 1
+
+    def test_history_accumulates_max_wins(self):
+        """Second tick appends; peak_min is the max of all entries in window."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        nodes = {f"n{i}": make_node(f"n{i}") for i in range(5)}
+        peak_history: dict[str, list[tuple[float, int]]] = {
+            "default": [(time.monotonic() - 10, 4)],
+        }
+
+        to_taint, *_ = compute_taints(nodes, cfg, peak_history=peak_history)
+
+        # peak_min = max(4, 0) = 4; min_needed = max(4,1) = 4; surplus=1
+        assert len(to_taint) == 1
+        assert len(peak_history["default"]) == 2
+        assert max(v for _, v in peak_history["default"]) == 4
+
+    def test_history_prunes_by_age(self):
+        """Entries older than PEAK_WINDOW_SECONDS are dropped."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        nodes = {f"n{i}": make_node(f"n{i}") for i in range(5)}
+        now = time.monotonic()
+        peak_history: dict[str, list[tuple[float, int]]] = {
+            "default": [
+                (now - PEAK_WINDOW_SECONDS - 100, 4),
+                (now - 10, 1),
+            ],
+        }
+
+        compute_taints(nodes, cfg, peak_history=peak_history)
+
+        timestamps = [t for t, _ in peak_history["default"]]
+        assert all(t >= now - PEAK_WINDOW_SECONDS - 1 for t in timestamps)
+        assert max(v for _, v in peak_history["default"]) == 1
+
+    def test_history_capped_to_max_entries(self):
+        """Inserting 10000 fake entries: post-call list length is bounded."""
+        cfg = make_config(min_nodes=1, interval=20, taint_rate=1.0)
+        nodes = {"n1": make_node("n1")}
+        now = time.monotonic()
+        peak_history: dict[str, list[tuple[float, int]]] = {
+            "default": [(now - i * 0.0001, 0) for i in range(10000)],
+        }
+
+        compute_taints(nodes, cfg, peak_history=peak_history)
+
+        expected_cap = max(64, PEAK_WINDOW_SECONDS // max(1, cfg.interval) + 60)
+        assert len(peak_history["default"]) <= expected_cap
+
+    def test_fleet_rename_stale_key_pruned(self):
+        """Key not present in current groups (with only-stale entries) is dropped."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        nodes = {"n1": make_node("n1", nodepool="pool-a")}
+        now = time.monotonic()
+        peak_history: dict[str, list[tuple[float, int]]] = {
+            "renamed-pool": [(now - PEAK_WINDOW_SECONDS - 5, 99)],
+        }
+
+        compute_taints(nodes, cfg, peak_history=peak_history)
+
+        assert "renamed-pool" not in peak_history
+        assert "pool-a" in peak_history
+
+    def test_drop_out_cliff_when_old_peak_expires(self):
+        """Old peak=20 sample expires this tick → peak_min becomes current."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        nodes = {f"n{i}": make_node(f"n{i}") for i in range(5)}
+        now = time.monotonic()
+        peak_history: dict[str, list[tuple[float, int]]] = {
+            "default": [(now - PEAK_WINDOW_SECONDS - 1, 20)],
+        }
+
+        to_taint, *_ = compute_taints(nodes, cfg, peak_history=peak_history)
+
+        # Stale entry pruned at top; current=0 → min=max(0,1)=1; surplus=4
+        assert len(to_taint) == 4
+
+    def test_peak_min_beats_min_nodes(self):
+        """cfg.min_nodes=3, peak history says 10 → min_needed=10."""
+        cfg = make_config(min_nodes=3, taint_rate=1.0)
+        nodes = {f"n{i}": make_node(f"n{i}") for i in range(15)}
+        now = time.monotonic()
+        peak_history: dict[str, list[tuple[float, int]]] = {
+            "default": [(now - 5, 10)],
+        }
+
+        to_taint, *_ = compute_taints(nodes, cfg, peak_history=peak_history)
+
+        assert len(to_taint) == 5
+
+    def test_peak_min_loses_to_min_nodes(self):
+        """cfg.min_nodes=10 dominates a smaller peak history."""
+        cfg = make_config(min_nodes=10, taint_rate=1.0)
+        nodes = {f"n{i}": make_node(f"n{i}") for i in range(12)}
+        now = time.monotonic()
+        peak_history: dict[str, list[tuple[float, int]]] = {
+            "default": [(now - 30, 3), (now - 20, 4), (now - 10, 5)],
+        }
+
+        to_taint, *_ = compute_taints(nodes, cfg, peak_history=peak_history)
+
+        assert len(to_taint) == 2
+
+    def test_none_peak_history_preserves_legacy_behavior(self):
+        """peak_history=None disables the floor entirely; behavior matches today."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        n1 = make_node("n1")
+        n1.pods = [make_pod("p1", cpu=8.0, node_name="n1")]
+        nodes = {"n1": n1, "n2": make_node("n2"), "n3": make_node("n3")}
+
+        to_taint_a, *_ = compute_taints(nodes, cfg)
+        to_taint_b, *_ = compute_taints(nodes, cfg, peak_history=None)
+
+        assert to_taint_a == to_taint_b
+
+
+# ============================================================================
+# Pending pods in bin-pack tests
+# ============================================================================
+
+
+class TestPendingPodsInBinPack:
+    """Tests for pending-pod inclusion in compute_taints bin-pack input."""
+
+    def test_no_pending_pods_none_behaves_legacy(self):
+        """pending_pods=None and [] behave identically to today."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        n1 = make_node("n1")
+        n1.pods = [make_pod("p1", cpu=8.0, node_name="n1")]
+        nodes = {"n1": n1, "n2": make_node("n2"), "n3": make_node("n3")}
+
+        to_taint_a, *_ = compute_taints(nodes, cfg)
+        to_taint_b, *_ = compute_taints(nodes, cfg, pending_pods=None)
+        to_taint_c, *_ = compute_taints(nodes, cfg, pending_pods=[])
+
+        assert to_taint_a == to_taint_b == to_taint_c
+
+    def test_pending_pod_matching_is_included(self):
+        """Pending pods that fit and match are added to bin-pack input."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        nodes = {f"n{i}": make_node(f"n{i}") for i in range(3)}
+
+        pp = make_pending_pod_mock(cpu="16", memory="1Gi")
+        pp2 = make_pending_pod_mock(cpu="16", memory="1Gi", name="pp2")
+
+        # 1 pending pod fills 1 node → bin_pack=1; surplus = 3-1 = 2 tainted
+        to_taint, *_ = compute_taints(nodes, cfg, pending_pods=[pp])
+        # 2 pending pods fill 2 nodes → bin_pack=2; surplus = 3-2 = 1 tainted
+        to_taint2, *_ = compute_taints(nodes, cfg, pending_pods=[pp, pp2])
+
+        assert len(to_taint) == 2
+        assert len(to_taint2) == 1
+
+    def test_pending_pod_not_matching_nodeselector_is_excluded(self):
+        """Pending pod with mismatched nodeSelector is excluded from bin-pack."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        n = make_node("n1")
+        n.labels = {"role": "build"}
+        nodes = {"n1": n, "n2": make_node("n2"), "n3": make_node("n3")}
+
+        pp_wrong = make_pending_pod_mock(cpu="16", node_selector={"role": "gpu"})
+
+        filtered = pending_pods_for_group([pp_wrong], list(nodes.values()), cfg.taint_key, 0, 14400)
+        assert filtered == []
+
+        to_taint, *_ = compute_taints(nodes, cfg, pending_pods=[pp_wrong])
+        # bin_pack returned 0 → min=max(0,1)=1; surplus=2 tainted
+        assert len(to_taint) == 2
+
+    def test_pending_pod_with_zero_requests_included_no_inflation(self):
+        """No-request pending pod is included but doesn't push min_needed up."""
+        cfg = make_config(min_nodes=1, taint_rate=1.0)
+        nodes = {f"n{i}": make_node(f"n{i}") for i in range(3)}
+
+        pp = make_pending_pod_mock(cpu="0", memory="0")
+
+        filtered = pending_pods_for_group([pp], list(nodes.values()), cfg.taint_key, 0, 14400)
+        assert len(filtered) == 1
+        assert filtered[0].cpu_request == 0
+        assert filtered[0].memory_request == 0
+
+        to_taint, *_ = compute_taints(nodes, cfg, pending_pods=[pp])
+        # Zero-request pod doesn't inflate bin_pack; surplus = 3-1 = 2 tainted
+        assert len(to_taint) == 2
