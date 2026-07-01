@@ -8,7 +8,8 @@ import re
 import time
 from collections.abc import Callable
 
-from lightkube import Client
+from lightkube import ApiError, Client
+from lightkube.generic_resource import create_namespaced_resource
 from lightkube.models.core_v1 import (
     Container,
     PodSpec,
@@ -36,6 +37,14 @@ COMPACTOR_DEPLOYMENT = "node-compactor"
 COMPACTOR_NAMESPACE = "kube-system"
 COMPACTOR_POD_LABEL = "app.kubernetes.io/name=node-compactor"
 TEST_IMAGE = "public.ecr.aws/docker/library/alpine:3.21"
+
+ARC_RUNNERS_NAMESPACE = "arc-runners"
+AUTOSCALING_RUNNER_SET = create_namespaced_resource(
+    group="actions.github.com",
+    version="v1alpha1",
+    kind="AutoscalingRunnerSet",
+    plural="autoscalingrunnersets",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -831,3 +840,75 @@ def search_compactor_logs(collector: object, pattern: str, since_line: int = 0) 
     compiled = re.compile(pattern)
     lines = collector.lines
     return [line for line in lines[since_line:] if compiled.search(line)]
+
+
+# ---------------------------------------------------------------------------
+# ARC scale-set pause/restore (e2e-only helpers)
+# ---------------------------------------------------------------------------
+
+
+def pause_arc_scalesets(client: Client) -> dict[str, int | None]:
+    """Set every AutoscalingRunnerSet.spec.maxRunners to 0.
+
+    Returns a mapping of {scaleset_name: original_maxRunners}, where the
+    value is None for scale sets that had no maxRunners field set (this
+    distinguishes "remove the field" from "restore to N" on cleanup).
+
+    This pauses both real runner creation AND proactive placeholder pods,
+    eliminating cluster-wide churn that interferes with compactor decisions.
+
+    If the CRD or namespace is missing (404), returns an empty dict so the
+    suite can run against clusters without arc-runners installed.
+    """
+    originals: dict[str, int | None] = {}
+    try:
+        ars_iter = list(client.list(AUTOSCALING_RUNNER_SET, namespace=ARC_RUNNERS_NAMESPACE))
+    except ApiError as e:
+        if e.status.code == 404:
+            log.debug("No AutoscalingRunnerSets found (CRD or namespace missing) — skipping pause")
+            return {}
+        raise
+
+    for ars in ars_iter:
+        name = ars["metadata"]["name"]
+        original_max = ars.get("spec", {}).get("maxRunners")
+        originals[name] = original_max
+
+        if original_max is not None:
+            patch = [{"op": "replace", "path": "/spec/maxRunners", "value": 0}]
+        else:
+            patch = [{"op": "add", "path": "/spec/maxRunners", "value": 0}]
+        try:
+            client.patch(
+                AUTOSCALING_RUNNER_SET,
+                name=name,
+                namespace=ARC_RUNNERS_NAMESPACE,
+                obj=patch,
+                patch_type=PatchType.JSON,
+            )
+        except ApiError as e:
+            log.warning("Failed to pause scaleset %s: %s", name, e)
+    return originals
+
+
+def restore_arc_scalesets(client: Client, originals: dict[str, int | None]) -> None:
+    """Restore each AutoscalingRunnerSet.spec.maxRunners to its captured value.
+
+    Scale sets whose original value was None get their maxRunners field
+    removed (matches pre-pause state); others are set back to the captured int.
+    """
+    for name, original_max in originals.items():
+        if original_max is None:
+            patch = [{"op": "remove", "path": "/spec/maxRunners"}]
+        else:
+            patch = [{"op": "replace", "path": "/spec/maxRunners", "value": original_max}]
+        try:
+            client.patch(
+                AUTOSCALING_RUNNER_SET,
+                name=name,
+                namespace=ARC_RUNNERS_NAMESPACE,
+                obj=patch,
+                patch_type=PatchType.JSON,
+            )
+        except ApiError as e:
+            log.warning("Failed to restore scaleset %s: %s", name, e)

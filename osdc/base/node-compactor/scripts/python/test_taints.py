@@ -9,6 +9,8 @@ from lightkube.resources.core_v1 import Node
 from lightkube.types import PatchType
 from models import Config, NodeState, PodInfo
 from taints import (
+    _pod_constraints_match,
+    _pod_fits_resources,
     _pod_matches_node,
     _toleration_matches_taint,
     apply_taint,
@@ -37,6 +39,9 @@ def make_config(**overrides):
         "spare_capacity_ratio": 0.15,
         "spare_capacity_threshold": 0.4,
         "capacity_reservation_nodes": 0,
+        "peak_window_seconds": 2700,
+        "pending_pod_max_age_seconds": 14400,
+        "pending_pod_min_age_seconds": 0,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -365,7 +370,7 @@ class TestPodMatchesNodeMultipleIgnoredTaintsCheckPending(unittest.TestCase):
             pods=[],
         )
         pod = make_pod(tolerations=None, cpu="1", memory="1Gi")
-        result = check_pending_pods(cfg, {"node-a": ns}, [pod])
+        result, _count = check_pending_pods(cfg, {"node-a": ns}, [pod])
         self.assertEqual(result, {"node-a"})
 
 
@@ -699,6 +704,173 @@ class TestPodMatchesNodeCombined(unittest.TestCase):
 
 
 # ============================================================================
+# _pod_constraints_match tests — constraints (tolerations + selector + affinity), no resources
+# ============================================================================
+
+
+class TestPodConstraintsMatch(unittest.TestCase):
+    def test_pod_no_spec_no_taints_matches(self):
+        """Pod with no spec on a node with no taints — constraints trivially satisfied."""
+        pod = make_pod(has_spec=False)
+        node = make_node_state(node_taints=[])
+        self.assertTrue(_pod_constraints_match(pod, node))
+
+    def test_pod_no_spec_with_taints_fails(self):
+        """Pod with no spec cannot tolerate any taints."""
+        pod = make_pod(has_spec=False)
+        node = make_node_state(node_taints=[make_taint()])
+        self.assertFalse(_pod_constraints_match(pod, node))
+
+    def test_matching_toleration(self):
+        taint = make_taint(key="k1", value="v1", effect="NoSchedule")
+        tol = make_toleration(key="k1", operator="Equal", value="v1", effect="NoSchedule")
+        pod = make_pod(tolerations=[tol])
+        node = make_node_state(node_taints=[taint])
+        self.assertTrue(_pod_constraints_match(pod, node))
+
+    def test_no_matching_toleration(self):
+        taint = make_taint(key="k1", value="v1", effect="NoSchedule")
+        pod = make_pod(tolerations=None)
+        node = make_node_state(node_taints=[taint])
+        self.assertFalse(_pod_constraints_match(pod, node))
+
+    def test_nodeselector_matches_but_toleration_fails(self):
+        """nodeSelector matches but taint not tolerated — constraints overall fail."""
+        taint = make_taint(key="gpu", value="true", effect="NoSchedule")
+        pod = make_pod(tolerations=None, node_selector={"tier": "gpu"})
+        node = make_node_state(node_taints=[taint], labels={"tier": "gpu"})
+        self.assertFalse(_pod_constraints_match(pod, node))
+
+    def test_constraints_pass_even_when_resources_would_overflow(self):
+        """Key contract: _pod_constraints_match ignores resource fit entirely.
+
+        Pod requests way more CPU than the node has, but constraints alone
+        (tolerations + selector + affinity) all pass — so this helper must
+        return True even though _pod_matches_node would return False.
+        """
+        pod = make_pod(cpu="100", memory="1Ti")  # absurd request
+        node = make_node_state(allocatable_cpu=2.0, allocatable_memory=4 * GiB)
+        self.assertTrue(_pod_constraints_match(pod, node))
+        # And the AND-of-helpers function correctly says False
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_affinity_match(self):
+        expr = make_match_expression("zone", "In", ["us-east-1a"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"zone": "us-east-1a"})
+        self.assertTrue(_pod_constraints_match(pod, node))
+
+    def test_affinity_no_match(self):
+        expr = make_match_expression("zone", "In", ["us-east-1a"])
+        term = make_node_selector_term([expr])
+        affinity = make_node_affinity_required([term])
+        pod = make_pod(affinity=affinity)
+        node = make_node_state(labels={"zone": "us-west-2a"})
+        self.assertFalse(_pod_constraints_match(pod, node))
+
+
+# ============================================================================
+# _pod_fits_resources tests — resource fit only, no constraints
+# ============================================================================
+
+
+class TestPodFitsResources(unittest.TestCase):
+    def test_fits_comfortably(self):
+        node = make_node_state(allocatable_cpu=8.0, allocatable_memory=32 * GiB, pods=[])
+        pod = make_pod(cpu="2", memory="4Gi")
+        self.assertTrue(_pod_fits_resources(pod, node))
+
+    def test_cpu_overflow(self):
+        node = make_node_state(
+            allocatable_cpu=4.0,
+            allocatable_memory=32 * GiB,
+            pods=[PodInfo("p", "ns", 3.0, 1 * GiB, "node-1", False, start_time=NOW)],
+        )
+        pod = make_pod(cpu="2", memory="1Gi")  # only 1 CPU left, needs 2
+        self.assertFalse(_pod_fits_resources(pod, node))
+
+    def test_memory_overflow(self):
+        node = make_node_state(
+            allocatable_cpu=8.0,
+            allocatable_memory=8 * GiB,
+            pods=[PodInfo("p", "ns", 1.0, 6 * GiB, "node-1", False, start_time=NOW)],
+        )
+        pod = make_pod(cpu="1", memory="4Gi")  # only 2 GiB left, needs 4
+        self.assertFalse(_pod_fits_resources(pod, node))
+
+    def test_gpu_requested_but_node_has_none(self):
+        """Pod requests GPU on a CPU-only node — fails fast at the gpu==0 branch."""
+        node = NodeState(
+            name="cpu-node",
+            nodepool="cpu-pool",
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * GiB,
+            creation_time=NOW - timedelta(hours=1),
+            allocatable_gpu=0,
+        )
+        pod = MagicMock()
+        pod.spec.tolerations = None
+        pod.spec.nodeSelector = None
+        pod.spec.affinity = None
+        container = MagicMock()
+        container.resources.requests = {"cpu": "1", "memory": "1Gi", "nvidia.com/gpu": "1"}
+        pod.spec.containers = [container]
+        self.assertFalse(_pod_fits_resources(pod, node))
+
+    def test_gpu_requested_exceeds_remaining(self):
+        """Pod requests more GPUs than the node has free."""
+        node = NodeState(
+            name="gpu-node",
+            nodepool="gpu-pool",
+            allocatable_cpu=8.0,
+            allocatable_memory=32 * GiB,
+            creation_time=NOW - timedelta(hours=1),
+            allocatable_gpu=2,
+            pods=[PodInfo("p", "ns", 0.0, 0, "gpu-node", False, start_time=NOW, gpu_request=1)],
+        )
+        pod = MagicMock()
+        pod.spec.tolerations = None
+        pod.spec.nodeSelector = None
+        pod.spec.affinity = None
+        container = MagicMock()
+        container.resources.requests = {"cpu": "1", "memory": "1Gi", "nvidia.com/gpu": "2"}
+        pod.spec.containers = [container]
+        self.assertFalse(_pod_fits_resources(pod, node))
+
+
+# ============================================================================
+# _pod_matches_node = constraints AND resources
+# ============================================================================
+
+
+class TestPodMatchesNodeIsAndOfHelpers(unittest.TestCase):
+    def test_returns_true_only_when_both_helpers_pass(self):
+        """_pod_matches_node must agree with constraints AND fits."""
+        node = make_node_state(allocatable_cpu=8.0, allocatable_memory=32 * GiB)
+        pod = make_pod(cpu="1", memory="1Gi")
+        self.assertTrue(_pod_constraints_match(pod, node))
+        self.assertTrue(_pod_fits_resources(pod, node))
+        self.assertTrue(_pod_matches_node(pod, node))
+
+    def test_returns_false_when_only_constraints_fail(self):
+        taint = make_taint(key="k1", value="v1", effect="NoSchedule")
+        pod = make_pod(tolerations=None, cpu="1", memory="1Gi")
+        node = make_node_state(node_taints=[taint], allocatable_cpu=8.0, allocatable_memory=32 * GiB)
+        self.assertFalse(_pod_constraints_match(pod, node))
+        self.assertTrue(_pod_fits_resources(pod, node))
+        self.assertFalse(_pod_matches_node(pod, node))
+
+    def test_returns_false_when_only_resources_fail(self):
+        pod = make_pod(cpu="100", memory="1Gi")
+        node = make_node_state(allocatable_cpu=2.0, allocatable_memory=32 * GiB)
+        self.assertTrue(_pod_constraints_match(pod, node))
+        self.assertFalse(_pod_fits_resources(pod, node))
+        self.assertFalse(_pod_matches_node(pod, node))
+
+
+# ============================================================================
 # check_pending_pods tests
 # ============================================================================
 
@@ -708,14 +880,16 @@ class TestCheckPendingPods(unittest.TestCase):
         self.cfg = make_config()
 
     def test_no_pending_pods(self):
-        result = check_pending_pods(self.cfg, {"n": make_node_state(is_tainted=True)}, [])
+        result, count = check_pending_pods(self.cfg, {"n": make_node_state(is_tainted=True)}, [])
         self.assertEqual(result, set())
+        self.assertEqual(count, 0)
 
     def test_no_tainted_nodes(self):
         ns = make_node_state(is_tainted=False)
         pod = make_pod()
-        result = check_pending_pods(self.cfg, {"n": ns}, [pod])
+        result, count = check_pending_pods(self.cfg, {"n": ns}, [pod])
         self.assertEqual(result, set())
+        self.assertEqual(count, 0)
 
     def test_pending_pods_dont_match_tainted_nodes(self):
         """Pending pods have taints they can't tolerate."""
@@ -726,8 +900,9 @@ class TestCheckPendingPods(unittest.TestCase):
             node_taints=[compactor_taint, other_taint],
         )
         pod = make_pod(tolerations=None)
-        result = check_pending_pods(self.cfg, {"n": ns}, [pod])
+        result, count = check_pending_pods(self.cfg, {"n": ns}, [pod])
         self.assertEqual(result, set())
+        self.assertEqual(count, 0)
 
     def test_compatible_pending_one_node_enough(self):
         compactor_taint = make_taint(key=self.cfg.taint_key, value="true", effect="NoSchedule")
@@ -740,8 +915,9 @@ class TestCheckPendingPods(unittest.TestCase):
             pods=[],  # all capacity free
         )
         pod = make_pod(cpu="1", memory="1Gi")
-        result = check_pending_pods(self.cfg, {"node-a": ns}, [pod])
+        result, count = check_pending_pods(self.cfg, {"node-a": ns}, [pod])
         self.assertEqual(result, {"node-a"})
+        self.assertEqual(count, 1)
 
     def test_multiple_pending_need_multiple_nodes(self):
         compactor_taint = make_taint(key=self.cfg.taint_key, value="true", effect="NoSchedule")
@@ -772,7 +948,7 @@ class TestCheckPendingPods(unittest.TestCase):
             make_pod(cpu="2", memory="4Gi"),
             make_pod(cpu="1", memory="2Gi"),
         ]
-        result = check_pending_pods(self.cfg, {"node-a": ns_a, "node-b": ns_b}, pods)
+        result, _count = check_pending_pods(self.cfg, {"node-a": ns_a, "node-b": ns_b}, pods)
         self.assertEqual(result, {"node-a", "node-b"})
 
     def test_sort_by_utilization_highest_first(self):
@@ -798,7 +974,7 @@ class TestCheckPendingPods(unittest.TestCase):
         )
         # Small demand: 1 CPU -- only need 1 node
         pod = make_pod(cpu="1", memory="1Gi")
-        result = check_pending_pods(self.cfg, {"node-a": ns_a, "node-b": ns_b}, [pod])
+        result, _count = check_pending_pods(self.cfg, {"node-a": ns_a, "node-b": ns_b}, [pod])
         # Should pick node-b (higher utilization = least wasteful)
         self.assertEqual(result, {"node-b"})
 
@@ -830,8 +1006,60 @@ class TestCheckPendingPods(unittest.TestCase):
             return call_count["n"] == 1
 
         with patch("taints._pod_matches_node", side_effect=controlled_match):
-            result = check_pending_pods(cfg, {"node-a": ns_a}, [pod])
+            result, _count = check_pending_pods(cfg, {"node-a": ns_a}, [pod])
         self.assertEqual(result, set())
+
+    def test_binpack_requires_more_nodes_than_sum_would_suggest(self):
+        """Three 20-vCPU pods don't pack into two 30-vCPU nodes despite 60>=60 sums.
+
+        Sum-based logic untaints 2 nodes (cumulative 60 CPU >= demand 60 CPU).
+        Bin-packing exposes that the 3rd pod has nowhere to go after pods 1 & 2
+        each take one 20-vCPU bin (10 vCPU left per node), so all 3 nodes are
+        needed.
+        """
+        cfg = make_config()
+        compactor_taint = make_taint(key=cfg.taint_key, value="true", effect="NoSchedule")
+        nodes = {}
+        for i in ("a", "b", "c"):
+            nodes[f"node-{i}"] = make_node_state(
+                name=f"node-{i}",
+                is_tainted=True,
+                node_taints=[compactor_taint],
+                allocatable_cpu=32.0,
+                allocatable_memory=64 * GiB,
+                pods=[PodInfo(f"p{i}", "ns", 2.0, 1 * GiB, f"node-{i}", False, start_time=NOW)],
+            )
+        pods = [make_pod(cpu="20", memory="1Gi") for _ in range(3)]
+
+        result, count = check_pending_pods(cfg, nodes, pods)
+        self.assertEqual(result, {"node-a", "node-b", "node-c"})
+        self.assertEqual(count, 3)
+
+    def test_unfittable_pending_returns_all_compatible_tainted(self):
+        """When bin-pack of all pending pods can't fit even after untainting every
+        compatible tainted node, we still untaint all of them — best-effort, and
+        Karpenter will provision new nodes for the rest.
+        """
+        cfg = make_config()
+        compactor_taint = make_taint(key=cfg.taint_key, value="true", effect="NoSchedule")
+        nodes = {}
+        for i in ("a", "b"):
+            nodes[f"node-{i}"] = make_node_state(
+                name=f"node-{i}",
+                is_tainted=True,
+                node_taints=[compactor_taint],
+                allocatable_cpu=32.0,
+                allocatable_memory=64 * GiB,
+                pods=[PodInfo(f"p{i}", "ns", 2.0, 1 * GiB, f"node-{i}", False, start_time=NOW)],
+            )
+        # Each pod fits on a node in isolation (20 < 30 free), so all enter
+        # compatible_pending. But two 30-vCPU nodes can hold only two 20-vCPU
+        # pods total — the third has no home even after untainting everyone.
+        pods = [make_pod(cpu="20", memory="1Gi") for _ in range(3)]
+
+        result, count = check_pending_pods(cfg, nodes, pods)
+        self.assertEqual(result, {"node-a", "node-b"})
+        self.assertEqual(count, 3)
 
 
 # ============================================================================
