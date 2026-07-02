@@ -529,6 +529,7 @@ clusters:
     modules:
       - karpenter
       - arc
+      - hf-cache              # before nodepools: mount must be up before the node-init gate taint
       - nodepools
       - bin-pack-scheduler
       - arc-runners
@@ -561,6 +562,7 @@ clusters:
     modules:
       - karpenter
       - arc
+      - hf-cache              # before nodepools: mount must be up before the node-init gate taint
       - nodepools
       - bin-pack-scheduler
       - arc-runners
