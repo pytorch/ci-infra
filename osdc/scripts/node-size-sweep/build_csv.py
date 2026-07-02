@@ -157,7 +157,7 @@ def _strip_provider_prefix(label: str) -> tuple[str, str] | None:
     else:
         return None
     rest = label.split("-", 1)[1]  # drop 'mt' or 'lf'
-    if rest.startswith("l-") or rest.startswith("rel-l-"):
+    if rest.startswith(("l-", "rel-l-")):
         return provider, rest
     # Legacy 'linux.*' names — translate via OLD_TO_NEW_LABEL.
     mapped = OLD_TO_NEW_LABEL.get(rest)
@@ -187,8 +187,7 @@ def _iter_chunk_rows(paths: list[Path]):
     """Yield [label, started_at, completed_at, runtime_s] rows across all chunks."""
     for p in paths:
         rows = json.loads(p.read_text())
-        for row in rows:
-            yield row
+        yield from rows
 
 
 def cmd_build_table(_args) -> int:

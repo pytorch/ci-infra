@@ -71,6 +71,7 @@ def _resolve_creds() -> tuple[str, str, str]:
         sys.exit(2)
     return url, user, pw
 
+
 # The query is intentionally kept simple and identical across chunks so any
 # schema/filter change lives in ONE place. See build_csv.py for what happens
 # to the returned rows.
@@ -203,7 +204,10 @@ def main() -> int:
             payload = _run_query(url, user, pw, sql, args.timeout)
         except requests.HTTPError as e:
             body = e.response.text[:500] if e.response is not None else ""
-            print(f"ERROR: {path.name}: HTTP {e.response.status_code if e.response is not None else '?'}: {body}", file=sys.stderr)
+            print(
+                f"ERROR: {path.name}: HTTP {e.response.status_code if e.response is not None else '?'}: {body}",
+                file=sys.stderr,
+            )
             return 3
         rows = _extract_rows(payload)
         path.write_text(json.dumps(rows))

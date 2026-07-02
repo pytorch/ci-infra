@@ -182,7 +182,7 @@ def simulate(
     phantom_cap: float = 0.30,
     progress: bool = True,
 ) -> dict:
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # noqa: S311
 
     def warmup_for(pool: str) -> int:
         return _warmup_buckets(pool, warmup_buckets_default, warmup_buckets_gpu, warmup_buckets_baremetal)
@@ -267,7 +267,10 @@ def simulate(
                     free_gpu += node.gpu_allocatable - fj.gpu
 
         # 3. Top up placeholders per (pool, cpu_m, mem_mi, gpu).
-        arr = arrivals.get(t, [])
+        # Snapshot arrivals for this bucket into a local list so shuffling in
+        # step 4 does not mutate the arrivals dict — keeps simulate() safe to
+        # call repeatedly in the same process with the same jobs.
+        arr = list(arrivals.get(t, ()))
         if placeholders_enabled:
             needed: dict[tuple[str, int, int, int], int] = defaultdict(int)
             for j in arr:
@@ -362,6 +365,15 @@ def simulate(
             mem_alloc = sum(n.mem_allocatable_mi + ds_factor * n.daemonset_mem_mi for n in ns)
             gpu_used = sum(n.gpu_used + ds_factor * n.daemonset_gpu + n.phantom_gpu for n in ns)
             gpu_alloc = sum(n.gpu_allocatable + ds_factor * n.daemonset_gpu for n in ns)
+            workload_cpu_m = sum(n.cpu_used_m for n in ns)
+            workload_mem_mi = sum(n.mem_used_mi for n in ns)
+            workload_gpu = sum(n.gpu_used for n in ns)
+            ds_cpu_m = sum(n.daemonset_cpu_m for n in ns)
+            ds_mem_mi = sum(n.daemonset_mem_mi for n in ns)
+            ds_gpu = sum(n.daemonset_gpu for n in ns)
+            alloc_cpu_m_raw = sum(n.cpu_allocatable_m for n in ns)
+            alloc_mem_mi_raw = sum(n.mem_allocatable_mi for n in ns)
+            alloc_gpu_raw = sum(n.gpu_allocatable for n in ns)
             per_pool[name] = {
                 "cpu_used_m": cpu_used,
                 "cpu_alloc_m": cpu_alloc,
@@ -369,6 +381,15 @@ def simulate(
                 "mem_alloc_mi": mem_alloc,
                 "gpu_used": gpu_used,
                 "gpu_alloc": gpu_alloc,
+                "workload_cpu_m": workload_cpu_m,
+                "workload_mem_mi": workload_mem_mi,
+                "workload_gpu": workload_gpu,
+                "ds_cpu_m": ds_cpu_m,
+                "ds_mem_mi": ds_mem_mi,
+                "ds_gpu": ds_gpu,
+                "alloc_cpu_m_raw": alloc_cpu_m_raw,
+                "alloc_mem_mi_raw": alloc_mem_mi_raw,
+                "alloc_gpu_raw": alloc_gpu_raw,
             }
             if len(ns) > pool_max_nodes[name]:
                 pool_max_nodes[name] = len(ns)

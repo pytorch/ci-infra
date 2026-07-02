@@ -16,7 +16,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
 
-from analyze_node_utilization import compute_allocatable, compute_daemonset_overhead  # noqa: E402, F401
+from analyze_node_utilization import compute_allocatable, compute_daemonset_overhead  # noqa: E402
 from daemonset_overhead import DaemonSetOverhead, discover_daemonsets  # noqa: E402
 from fleet_naming import derive_fleet_name  # noqa: E402
 from instance_specs import INSTANCE_SPECS  # noqa: E402
@@ -39,11 +39,7 @@ def _daemonsets_for_fleet(daemonsets: list[DaemonSetOverhead], fleet_name: str) 
     like runner-hooks-warmer (node-fleet=c7i-runner) would otherwise be counted
     on every fleet's allocatable calculation.
     """
-    return [
-        ds
-        for ds in daemonsets
-        if fleet_name in FLEET_SCOPED_DAEMONSETS.get(ds.name, {fleet_name})
-    ]
+    return [ds for ds in daemonsets if fleet_name in FLEET_SCOPED_DAEMONSETS.get(ds.name, {fleet_name})]
 
 
 @dataclass(slots=True)
@@ -209,8 +205,7 @@ class ClusterModel:
             if alloc.cpu_m >= cpu_m and alloc.mem_mi >= mem_mi and alloc.gpu >= gpu:
                 return inst
         raise RuntimeError(
-            f"no instance in fleet {fleet!r} fits pod "
-            f"(cpu_m={cpu_m}, mem_mi={mem_mi}, gpu={gpu}); tried {fs.instances}"
+            f"no instance in fleet {fleet!r} fits pod (cpu_m={cpu_m}, mem_mi={mem_mi}, gpu={gpu}); tried {fs.instances}"
         )
 
     def make_node(self, pool: str, cpu_m: int, mem_mi: int, gpu: int) -> Node:

@@ -11,7 +11,7 @@ def percentiles(vals: list[float], pcts: list[int]) -> dict[int, float]:
         return {p: float("nan") for p in pcts}
     sv = sorted(vals)
     n = len(sv)
-    return {p: sv[max(0, min(n - 1, int(round(p / 100 * (n - 1)))))] for p in pcts}
+    return {p: sv[max(0, min(n - 1, round(p / 100 * (n - 1))))] for p in pcts}
 
 
 def _weighted_series(per_bucket, used_key: str, alloc_key: str) -> list[float]:

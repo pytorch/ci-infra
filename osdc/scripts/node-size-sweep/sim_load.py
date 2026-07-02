@@ -12,9 +12,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
 
-from build_csv import build_label_table  # noqa: E402
 from analyze_node_utilization import HOOKS_OVERHEAD_CPU_M as FALLBACK_HOOKS_CPU_M  # noqa: E402
 from analyze_node_utilization import HOOKS_OVERHEAD_MEM_MI as FALLBACK_HOOKS_MEM_MI  # noqa: E402
+from build_csv import build_label_table  # noqa: E402
 from sim_nodes import Job  # noqa: E402
 
 BUCKET_SEC = 300
@@ -67,7 +67,7 @@ def load_jobs(
         drop_providers = set()
     if not (0.0 < keep_fraction <= 1.0):
         raise ValueError(f"keep_fraction must be in (0, 1], got {keep_fraction}")
-    rng = random.Random(keep_seed)
+    rng = random.Random(keep_seed)  # noqa: S311
 
     label_table = build_label_table()
     hooks_cpu, hooks_mem, runner_cpu, runner_mem = _load_runner_overhead()
