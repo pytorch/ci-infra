@@ -157,10 +157,18 @@ def _load_fleet_specs(defs_dirs: list[Path]) -> dict[str, FleetSpec]:
 class ClusterModel:
     """Holds fleet specs + cached per-(fleet, instance) allocatable."""
 
-    def __init__(self, defs_dirs: list[Path] | None = None, upstream_dir: Path = REPO_ROOT):
-        if defs_dirs is None:
-            defs_dirs = NODEPOOL_DEFS_DIRS
-        self.fleets = _load_fleet_specs(defs_dirs)
+    def __init__(
+        self,
+        defs_dirs: list[Path] | None = None,
+        upstream_dir: Path = REPO_ROOT,
+        fleets_override: dict[str, FleetSpec] | None = None,
+    ):
+        if fleets_override is not None:
+            self.fleets = dict(fleets_override)
+        else:
+            if defs_dirs is None:
+                defs_dirs = NODEPOOL_DEFS_DIRS
+            self.fleets = _load_fleet_specs(defs_dirs)
         self.daemonsets = discover_daemonsets(upstream_dir)
         self._alloc_cache: dict[tuple[str, str], Allocatable] = {}
         self._ds_cache: dict[tuple[str, str], tuple[int, int, int]] = {}

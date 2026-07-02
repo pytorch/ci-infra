@@ -1,298 +1,3739 @@
 {
   "catalog": {
-    "g5": [
+    "r7a": [
       {
         "N": 1,
-        "alloc_cpu_m": 47360,
-        "alloc_gpu": 4,
-        "alloc_mem_mi": 172274,
-        "ds_cpu_m": 450,
-        "ds_mem_mi": 1126,
-        "instance": "g5.12xlarge",
-        "overhead_frac": 0.013333,
-        "slot_cpu_m": 47360,
-        "slot_gpu": 4,
-        "slot_mem_mi": 172274
-      },
-      {
-        "N": 1,
-        "alloc_cpu_m": 63320,
-        "alloc_gpu": 1,
-        "alloc_mem_mi": 238485,
-        "ds_cpu_m": 450,
-        "ds_mem_mi": 1126,
-        "instance": "g5.16xlarge",
-        "overhead_frac": 0.010625,
-        "slot_cpu_m": 63320,
-        "slot_gpu": 1,
-        "slot_mem_mi": 238485
-      },
-      {
-        "N": 1,
-        "alloc_cpu_m": 95240,
-        "alloc_gpu": 4,
-        "alloc_mem_mi": 354136,
-        "ds_cpu_m": 450,
-        "ds_mem_mi": 1126,
-        "instance": "g5.24xlarge",
-        "overhead_frac": 0.007917,
-        "slot_cpu_m": 95240,
-        "slot_gpu": 4,
-        "slot_mem_mi": 354136
+        "alloc_cpu_m": 47460,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 359925,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.12xlarge",
+        "overhead_frac": 0.01125,
+        "slot_cpu_m": 47460,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359925
       },
       {
         "N": 2,
-        "alloc_cpu_m": 95240,
-        "alloc_gpu": 4,
-        "alloc_mem_mi": 354136,
-        "ds_cpu_m": 450,
-        "ds_mem_mi": 1126,
-        "instance": "g5.24xlarge",
-        "overhead_frac": 0.007917,
-        "slot_cpu_m": 47620,
-        "slot_gpu": 2,
-        "slot_mem_mi": 177068
+        "alloc_cpu_m": 47460,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 359925,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.12xlarge",
+        "overhead_frac": 0.01125,
+        "slot_cpu_m": 23730,
+        "slot_gpu": 0,
+        "slot_mem_mi": 179962
       },
       {
-        "N": 1,
-        "alloc_cpu_m": 191000,
-        "alloc_gpu": 8,
-        "alloc_mem_mi": 722173,
-        "ds_cpu_m": 450,
-        "ds_mem_mi": 1126,
-        "instance": "g5.48xlarge",
-        "overhead_frac": 0.005208,
-        "slot_cpu_m": 191000,
-        "slot_gpu": 8,
-        "slot_mem_mi": 722173
-      },
-      {
-        "N": 2,
-        "alloc_cpu_m": 191000,
-        "alloc_gpu": 8,
-        "alloc_mem_mi": 722173,
-        "ds_cpu_m": 450,
-        "ds_mem_mi": 1126,
-        "instance": "g5.48xlarge",
-        "overhead_frac": 0.005208,
-        "slot_cpu_m": 95500,
-        "slot_gpu": 4,
-        "slot_mem_mi": 361086
+        "N": 3,
+        "alloc_cpu_m": 47460,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 359925,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.12xlarge",
+        "overhead_frac": 0.01125,
+        "slot_cpu_m": 15820,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119975
       },
       {
         "N": 4,
-        "alloc_cpu_m": 191000,
-        "alloc_gpu": 8,
-        "alloc_mem_mi": 722173,
-        "ds_cpu_m": 450,
-        "ds_mem_mi": 1126,
-        "instance": "g5.48xlarge",
-        "overhead_frac": 0.005208,
-        "slot_cpu_m": 47750,
-        "slot_gpu": 2,
-        "slot_mem_mi": 180543
+        "alloc_cpu_m": 47460,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 359925,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.12xlarge",
+        "overhead_frac": 0.01125,
+        "slot_cpu_m": 11865,
+        "slot_gpu": 0,
+        "slot_mem_mi": 89981
+      },
+      {
+        "N": 5,
+        "alloc_cpu_m": 47460,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 359925,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.12xlarge",
+        "overhead_frac": 0.01125,
+        "slot_cpu_m": 9492,
+        "slot_gpu": 0,
+        "slot_mem_mi": 71985
       },
       {
         "N": 1,
-        "alloc_cpu_m": 31400,
-        "alloc_gpu": 1,
-        "alloc_mem_mi": 117186,
-        "ds_cpu_m": 450,
-        "ds_mem_mi": 1126,
-        "instance": "g5.8xlarge",
-        "overhead_frac": 0.01875,
-        "slot_cpu_m": 31400,
-        "slot_gpu": 1,
-        "slot_mem_mi": 117186
+        "alloc_cpu_m": 63420,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 475749,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.16xlarge",
+        "overhead_frac": 0.009062,
+        "slot_cpu_m": 63420,
+        "slot_gpu": 0,
+        "slot_mem_mi": 475749
+      },
+      {
+        "N": 2,
+        "alloc_cpu_m": 63420,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 475749,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.16xlarge",
+        "overhead_frac": 0.009062,
+        "slot_cpu_m": 31710,
+        "slot_gpu": 0,
+        "slot_mem_mi": 237874
+      },
+      {
+        "N": 3,
+        "alloc_cpu_m": 63420,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 475749,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.16xlarge",
+        "overhead_frac": 0.009062,
+        "slot_cpu_m": 21140,
+        "slot_gpu": 0,
+        "slot_mem_mi": 158583
+      },
+      {
+        "N": 4,
+        "alloc_cpu_m": 63420,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 475749,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.16xlarge",
+        "overhead_frac": 0.009062,
+        "slot_cpu_m": 15855,
+        "slot_gpu": 0,
+        "slot_mem_mi": 118937
+      },
+      {
+        "N": 5,
+        "alloc_cpu_m": 63420,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 475749,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.16xlarge",
+        "overhead_frac": 0.009062,
+        "slot_cpu_m": 12684,
+        "slot_gpu": 0,
+        "slot_mem_mi": 95149
+      },
+      {
+        "N": 6,
+        "alloc_cpu_m": 63420,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 475749,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.16xlarge",
+        "overhead_frac": 0.009062,
+        "slot_cpu_m": 10570,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79291
+      },
+      {
+        "N": 7,
+        "alloc_cpu_m": 63420,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 475749,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.16xlarge",
+        "overhead_frac": 0.009062,
+        "slot_cpu_m": 9060,
+        "slot_gpu": 0,
+        "slot_mem_mi": 67964
+      },
+      {
+        "N": 1,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 95340,
+        "slot_gpu": 0,
+        "slot_mem_mi": 718117
+      },
+      {
+        "N": 2,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 47670,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359058
+      },
+      {
+        "N": 3,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 31780,
+        "slot_gpu": 0,
+        "slot_mem_mi": 239372
+      },
+      {
+        "N": 4,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 23835,
+        "slot_gpu": 0,
+        "slot_mem_mi": 179529
+      },
+      {
+        "N": 5,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 19068,
+        "slot_gpu": 0,
+        "slot_mem_mi": 143623
+      },
+      {
+        "N": 6,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 15890,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119686
+      },
+      {
+        "N": 7,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 13620,
+        "slot_gpu": 0,
+        "slot_mem_mi": 102588
+      },
+      {
+        "N": 8,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 11917,
+        "slot_gpu": 0,
+        "slot_mem_mi": 89764
+      },
+      {
+        "N": 9,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 10593,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79790
+      },
+      {
+        "N": 10,
+        "alloc_cpu_m": 95340,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 718117,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.24xlarge",
+        "overhead_frac": 0.006875,
+        "slot_cpu_m": 9534,
+        "slot_gpu": 0,
+        "slot_mem_mi": 71811
+      },
+      {
+        "N": 1,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567
+      },
+      {
+        "N": 2,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783
+      },
+      {
+        "N": 3,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855
+      },
+      {
+        "N": 4,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391
+      },
+      {
+        "N": 5,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113
+      },
+      {
+        "N": 6,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 31850,
+        "slot_gpu": 0,
+        "slot_mem_mi": 240927
+      },
+      {
+        "N": 7,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 27300,
+        "slot_gpu": 0,
+        "slot_mem_mi": 206509
+      },
+      {
+        "N": 8,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 23887,
+        "slot_gpu": 0,
+        "slot_mem_mi": 180695
+      },
+      {
+        "N": 9,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 21233,
+        "slot_gpu": 0,
+        "slot_mem_mi": 160618
+      },
+      {
+        "N": 10,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 19110,
+        "slot_gpu": 0,
+        "slot_mem_mi": 144556
+      },
+      {
+        "N": 11,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 17372,
+        "slot_gpu": 0,
+        "slot_mem_mi": 131415
+      },
+      {
+        "N": 12,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 15925,
+        "slot_gpu": 0,
+        "slot_mem_mi": 120463
+      },
+      {
+        "N": 13,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 14700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 111197
+      },
+      {
+        "N": 14,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 13650,
+        "slot_gpu": 0,
+        "slot_mem_mi": 103254
+      },
+      {
+        "N": 15,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 12740,
+        "slot_gpu": 0,
+        "slot_mem_mi": 96371
+      },
+      {
+        "N": 16,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 11943,
+        "slot_gpu": 0,
+        "slot_mem_mi": 90347
+      },
+      {
+        "N": 17,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 11241,
+        "slot_gpu": 0,
+        "slot_mem_mi": 85033
+      },
+      {
+        "N": 18,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 10616,
+        "slot_gpu": 0,
+        "slot_mem_mi": 80309
+      },
+      {
+        "N": 19,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 10057,
+        "slot_gpu": 0,
+        "slot_mem_mi": 76082
+      },
+      {
+        "N": 20,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 9555,
+        "slot_gpu": 0,
+        "slot_mem_mi": 72278
+      },
+      {
+        "N": 21,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.48xlarge",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 9100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 68836
+      },
+      {
+        "N": 1,
+        "alloc_cpu_m": 15540,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 117442,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.4xlarge",
+        "overhead_frac": 0.02875,
+        "slot_cpu_m": 15540,
+        "slot_gpu": 0,
+        "slot_mem_mi": 117442
+      },
+      {
+        "N": 1,
+        "alloc_cpu_m": 31500,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 238741,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.8xlarge",
+        "overhead_frac": 0.015625,
+        "slot_cpu_m": 31500,
+        "slot_gpu": 0,
+        "slot_mem_mi": 238741
+      },
+      {
+        "N": 2,
+        "alloc_cpu_m": 31500,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 238741,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.8xlarge",
+        "overhead_frac": 0.015625,
+        "slot_cpu_m": 15750,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119370
+      },
+      {
+        "N": 3,
+        "alloc_cpu_m": 31500,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 238741,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.8xlarge",
+        "overhead_frac": 0.015625,
+        "slot_cpu_m": 10500,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79580
+      },
+      {
+        "N": 1,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567
+      },
+      {
+        "N": 2,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783
+      },
+      {
+        "N": 3,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855
+      },
+      {
+        "N": 4,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391
+      },
+      {
+        "N": 5,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113
+      },
+      {
+        "N": 6,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 31850,
+        "slot_gpu": 0,
+        "slot_mem_mi": 240927
+      },
+      {
+        "N": 7,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 27300,
+        "slot_gpu": 0,
+        "slot_mem_mi": 206509
+      },
+      {
+        "N": 8,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 23887,
+        "slot_gpu": 0,
+        "slot_mem_mi": 180695
+      },
+      {
+        "N": 9,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 21233,
+        "slot_gpu": 0,
+        "slot_mem_mi": 160618
+      },
+      {
+        "N": 10,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 19110,
+        "slot_gpu": 0,
+        "slot_mem_mi": 144556
+      },
+      {
+        "N": 11,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 17372,
+        "slot_gpu": 0,
+        "slot_mem_mi": 131415
+      },
+      {
+        "N": 12,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 15925,
+        "slot_gpu": 0,
+        "slot_mem_mi": 120463
+      },
+      {
+        "N": 13,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 14700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 111197
+      },
+      {
+        "N": 14,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 13650,
+        "slot_gpu": 0,
+        "slot_mem_mi": 103254
+      },
+      {
+        "N": 15,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 12740,
+        "slot_gpu": 0,
+        "slot_mem_mi": 96371
+      },
+      {
+        "N": 16,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 11943,
+        "slot_gpu": 0,
+        "slot_mem_mi": 90347
+      },
+      {
+        "N": 17,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 11241,
+        "slot_gpu": 0,
+        "slot_mem_mi": 85033
+      },
+      {
+        "N": 18,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 10616,
+        "slot_gpu": 0,
+        "slot_mem_mi": 80309
+      },
+      {
+        "N": 19,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 10057,
+        "slot_gpu": 0,
+        "slot_mem_mi": 76082
+      },
+      {
+        "N": 20,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 9555,
+        "slot_gpu": 0,
+        "slot_mem_mi": 72278
+      },
+      {
+        "N": 21,
+        "alloc_cpu_m": 191100,
+        "alloc_gpu": 0,
+        "alloc_mem_mi": 1445567,
+        "ds_cpu_m": 350,
+        "ds_mem_mi": 870,
+        "instance": "r7a.metal-48xl",
+        "overhead_frac": 0.004687,
+        "slot_cpu_m": 9100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 68836
       }
     ]
   },
   "ceiling": {
-    "g5": 0.985826
+    "r7a": 0.917915
   },
   "eligibility": {
-    "l-x86aavx2-29-113-a10g": [
+    "l-x86iavx512-16-128": [
       {
         "N": 1,
         "efficiency": {
-          "binding": 0.674704,
-          "cpu": 0.619088,
-          "mem": 0.674704
+          "binding": 0.365615,
+          "cpu": 0.343869,
+          "mem": 0.365615
         },
-        "instance": "g5.12xlarge",
-        "opt_share": 0.670323,
-        "slot_cpu_m": 47360,
-        "slot_gpu": 4,
-        "slot_mem_mi": 172274,
-        "waste_cpu_m": 18040,
-        "waste_mem_mi": 56040
-      },
-      {
-        "N": 1,
-        "efficiency": {
-          "binding": 0.487385,
-          "cpu": 0.463045,
-          "mem": 0.487385
-        },
-        "instance": "g5.16xlarge",
-        "opt_share": 0.485095,
-        "slot_cpu_m": 63320,
-        "slot_gpu": 1,
-        "slot_mem_mi": 238485,
-        "waste_cpu_m": 34000,
-        "waste_mem_mi": 122251
-      },
-      {
-        "N": 1,
-        "efficiency": {
-          "binding": 0.328219,
-          "cpu": 0.307854,
-          "mem": 0.328219
-        },
-        "instance": "g5.24xlarge",
-        "opt_share": 0.327178,
-        "slot_cpu_m": 95240,
-        "slot_gpu": 4,
-        "slot_mem_mi": 354136,
-        "waste_cpu_m": 65920,
-        "waste_mem_mi": 237902
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.364733,
+        "slot_cpu_m": 47460,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359925,
+        "waste_cpu_m": 31140,
+        "waste_mem_mi": 228331
       },
       {
         "N": 2,
         "efficiency": {
-          "binding": 0.656437,
-          "cpu": 0.615708,
-          "mem": 0.656437
+          "binding": 0.731232,
+          "cpu": 0.687737,
+          "mem": 0.731232
         },
-        "instance": "g5.24xlarge",
-        "opt_share": 0.654357,
-        "slot_cpu_m": 47620,
-        "slot_gpu": 2,
-        "slot_mem_mi": 177068,
-        "waste_cpu_m": 18300,
-        "waste_mem_mi": 60834
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.729467,
+        "slot_cpu_m": 23730,
+        "slot_gpu": 0,
+        "slot_mem_mi": 179962,
+        "waste_cpu_m": 7410,
+        "waste_mem_mi": 48368
       },
       {
         "N": 1,
         "efficiency": {
-          "binding": 0.16095,
-          "cpu": 0.153508,
-          "mem": 0.16095
+          "binding": 0.276604,
+          "cpu": 0.257332,
+          "mem": 0.276604
         },
-        "instance": "g5.48xlarge",
-        "opt_share": 0.1607,
-        "slot_cpu_m": 191000,
-        "slot_gpu": 8,
-        "slot_mem_mi": 722173,
-        "waste_cpu_m": 161680,
-        "waste_mem_mi": 605939
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.276099,
+        "slot_cpu_m": 63420,
+        "slot_gpu": 0,
+        "slot_mem_mi": 475749,
+        "waste_cpu_m": 47100,
+        "waste_mem_mi": 344155
       },
       {
         "N": 2,
         "efficiency": {
-          "binding": 0.321901,
-          "cpu": 0.307016,
-          "mem": 0.321901
+          "binding": 0.553209,
+          "cpu": 0.514664,
+          "mem": 0.553209
         },
-        "instance": "g5.48xlarge",
-        "opt_share": 0.3214,
-        "slot_cpu_m": 95500,
-        "slot_gpu": 4,
-        "slot_mem_mi": 361086,
-        "waste_cpu_m": 66180,
-        "waste_mem_mi": 244852
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.552198,
+        "slot_cpu_m": 31710,
+        "slot_gpu": 0,
+        "slot_mem_mi": 237874,
+        "waste_cpu_m": 15390,
+        "waste_mem_mi": 106280
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.829812,
+          "cpu": 0.771996,
+          "mem": 0.829812
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.828297,
+        "slot_cpu_m": 21140,
+        "slot_gpu": 0,
+        "slot_mem_mi": 158583,
+        "waste_cpu_m": 4820,
+        "waste_mem_mi": 26989
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.183249,
+          "cpu": 0.171177,
+          "mem": 0.183249
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.183027,
+        "slot_cpu_m": 95340,
+        "slot_gpu": 0,
+        "slot_mem_mi": 718117,
+        "waste_cpu_m": 79020,
+        "waste_mem_mi": 586523
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.366498,
+          "cpu": 0.342354,
+          "mem": 0.366498
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.366054,
+        "slot_cpu_m": 47670,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359058,
+        "waste_cpu_m": 31350,
+        "waste_mem_mi": 227464
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.549747,
+          "cpu": 0.513531,
+          "mem": 0.549747
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.549081,
+        "slot_cpu_m": 31780,
+        "slot_gpu": 0,
+        "slot_mem_mi": 239372,
+        "waste_cpu_m": 15460,
+        "waste_mem_mi": 107778
       },
       {
         "N": 4,
         "efficiency": {
-          "binding": 0.643802,
-          "cpu": 0.614031,
-          "mem": 0.643802
+          "binding": 0.732996,
+          "cpu": 0.684707,
+          "mem": 0.732996
         },
-        "instance": "g5.48xlarge",
-        "opt_share": 0.642799,
-        "slot_cpu_m": 47750,
-        "slot_gpu": 2,
-        "slot_mem_mi": 180543,
-        "waste_cpu_m": 18430,
-        "waste_mem_mi": 64309
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.732108,
+        "slot_cpu_m": 23835,
+        "slot_gpu": 0,
+        "slot_mem_mi": 179529,
+        "waste_cpu_m": 7515,
+        "waste_mem_mi": 47935
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.916246,
+          "cpu": 0.855884,
+          "mem": 0.916246
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.915135,
+        "slot_cpu_m": 19068,
+        "slot_gpu": 0,
+        "slot_mem_mi": 143623,
+        "waste_cpu_m": 2748,
+        "waste_mem_mi": 12029
       },
       {
         "N": 1,
         "efficiency": {
-          "binding": 0.991876,
-          "cpu": 0.933758,
-          "mem": 0.991876
+          "binding": 0.091033,
+          "cpu": 0.0854,
+          "mem": 0.091033
         },
-        "instance": "g5.8xlarge",
-        "opt_share": 0.982436,
-        "slot_cpu_m": 31400,
-        "slot_gpu": 1,
-        "slot_mem_mi": 117186,
-        "waste_cpu_m": 2080,
-        "waste_mem_mi": 952
-      }
-    ],
-    "l-x86aavx2-45-167-a10g-4": [
-      {
-        "N": 1,
-        "efficiency": {
-          "binding": 0.995681,
-          "cpu": 0.956926,
-          "mem": 0.995681
-        },
-        "instance": "g5.12xlarge",
-        "opt_share": 0.989216,
-        "slot_cpu_m": 47360,
-        "slot_gpu": 4,
-        "slot_mem_mi": 172274,
-        "waste_cpu_m": 2040,
-        "waste_mem_mi": 744
-      },
-      {
-        "N": 1,
-        "efficiency": {
-          "binding": 0.484362,
-          "cpu": 0.47585,
-          "mem": 0.484362
-        },
-        "instance": "g5.24xlarge",
-        "opt_share": 0.482827,
-        "slot_cpu_m": 95240,
-        "slot_gpu": 4,
-        "slot_mem_mi": 354136,
-        "waste_cpu_m": 49920,
-        "waste_mem_mi": 182606
-      },
-      {
-        "N": 1,
-        "efficiency": {
-          "binding": 0.237519,
-          "cpu": 0.237277,
-          "mem": 0.237519
-        },
-        "instance": "g5.48xlarge",
-        "opt_share": 0.23715,
-        "slot_cpu_m": 191000,
-        "slot_gpu": 8,
-        "slot_mem_mi": 722173,
-        "waste_cpu_m": 145680,
-        "waste_mem_mi": 550643
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.090978,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 174780,
+        "waste_mem_mi": 1313973
       },
       {
         "N": 2,
         "efficiency": {
-          "binding": 0.475039,
-          "cpu": 0.474555,
-          "mem": 0.475039
+          "binding": 0.182066,
+          "cpu": 0.170801,
+          "mem": 0.182066
         },
-        "instance": "g5.48xlarge",
-        "opt_share": 0.474299,
-        "slot_cpu_m": 95500,
-        "slot_gpu": 4,
-        "slot_mem_mi": 361086,
-        "waste_cpu_m": 50180,
-        "waste_mem_mi": 189556
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.181956,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 79230,
+        "waste_mem_mi": 591189
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.273099,
+          "cpu": 0.256201,
+          "mem": 0.273099
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.272934,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 47380,
+        "waste_mem_mi": 350261
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.364132,
+          "cpu": 0.341601,
+          "mem": 0.364132
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.363912,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391,
+        "waste_cpu_m": 31455,
+        "waste_mem_mi": 229797
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.455165,
+          "cpu": 0.427002,
+          "mem": 0.455165
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.45489,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113,
+        "waste_cpu_m": 21900,
+        "waste_mem_mi": 157519
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.546199,
+          "cpu": 0.512402,
+          "mem": 0.546199
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.545868,
+        "slot_cpu_m": 31850,
+        "slot_gpu": 0,
+        "slot_mem_mi": 240927,
+        "waste_cpu_m": 15530,
+        "waste_mem_mi": 109333
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.637231,
+          "cpu": 0.597802,
+          "mem": 0.637231
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.636846,
+        "slot_cpu_m": 27300,
+        "slot_gpu": 0,
+        "slot_mem_mi": 206509,
+        "waste_cpu_m": 10980,
+        "waste_mem_mi": 74915
+      },
+      {
+        "N": 8,
+        "efficiency": {
+          "binding": 0.728266,
+          "cpu": 0.683217,
+          "mem": 0.728266
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.727824,
+        "slot_cpu_m": 23887,
+        "slot_gpu": 0,
+        "slot_mem_mi": 180695,
+        "waste_cpu_m": 7567,
+        "waste_mem_mi": 49101
+      },
+      {
+        "N": 9,
+        "efficiency": {
+          "binding": 0.819298,
+          "cpu": 0.768615,
+          "mem": 0.819298
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.818802,
+        "slot_cpu_m": 21233,
+        "slot_gpu": 0,
+        "slot_mem_mi": 160618,
+        "waste_cpu_m": 4913,
+        "waste_mem_mi": 29024
+      },
+      {
+        "N": 10,
+        "efficiency": {
+          "binding": 0.910332,
+          "cpu": 0.854003,
+          "mem": 0.910332
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.90978,
+        "slot_cpu_m": 19110,
+        "slot_gpu": 0,
+        "slot_mem_mi": 144556,
+        "waste_cpu_m": 2790,
+        "waste_mem_mi": 12962
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.5512,
+          "cpu": 0.518095,
+          "mem": 0.5512
+        },
+        "instance": "r7a.8xlarge",
+        "opt_share": 0.549198,
+        "slot_cpu_m": 31500,
+        "slot_gpu": 0,
+        "slot_mem_mi": 238741,
+        "waste_cpu_m": 15180,
+        "waste_mem_mi": 107147
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.091033,
+          "cpu": 0.0854,
+          "mem": 0.091033
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.090978,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 174780,
+        "waste_mem_mi": 1313973
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.182066,
+          "cpu": 0.170801,
+          "mem": 0.182066
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.181956,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 79230,
+        "waste_mem_mi": 591189
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.273099,
+          "cpu": 0.256201,
+          "mem": 0.273099
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.272934,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 47380,
+        "waste_mem_mi": 350261
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.364132,
+          "cpu": 0.341601,
+          "mem": 0.364132
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.363912,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391,
+        "waste_cpu_m": 31455,
+        "waste_mem_mi": 229797
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.455165,
+          "cpu": 0.427002,
+          "mem": 0.455165
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.45489,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113,
+        "waste_cpu_m": 21900,
+        "waste_mem_mi": 157519
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.546199,
+          "cpu": 0.512402,
+          "mem": 0.546199
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.545868,
+        "slot_cpu_m": 31850,
+        "slot_gpu": 0,
+        "slot_mem_mi": 240927,
+        "waste_cpu_m": 15530,
+        "waste_mem_mi": 109333
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.637231,
+          "cpu": 0.597802,
+          "mem": 0.637231
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.636846,
+        "slot_cpu_m": 27300,
+        "slot_gpu": 0,
+        "slot_mem_mi": 206509,
+        "waste_cpu_m": 10980,
+        "waste_mem_mi": 74915
+      },
+      {
+        "N": 8,
+        "efficiency": {
+          "binding": 0.728266,
+          "cpu": 0.683217,
+          "mem": 0.728266
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.727824,
+        "slot_cpu_m": 23887,
+        "slot_gpu": 0,
+        "slot_mem_mi": 180695,
+        "waste_cpu_m": 7567,
+        "waste_mem_mi": 49101
+      },
+      {
+        "N": 9,
+        "efficiency": {
+          "binding": 0.819298,
+          "cpu": 0.768615,
+          "mem": 0.819298
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.818802,
+        "slot_cpu_m": 21233,
+        "slot_gpu": 0,
+        "slot_mem_mi": 160618,
+        "waste_cpu_m": 4913,
+        "waste_mem_mi": 29024
+      },
+      {
+        "N": 10,
+        "efficiency": {
+          "binding": 0.910332,
+          "cpu": 0.854003,
+          "mem": 0.910332
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.90978,
+        "slot_cpu_m": 19110,
+        "slot_gpu": 0,
+        "slot_mem_mi": 144556,
+        "waste_cpu_m": 2790,
+        "waste_mem_mi": 12962
+      }
+    ],
+    "l-x86iavx512-32-256": [
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.72978,
+          "cpu": 0.680995,
+          "mem": 0.72978
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.72802,
+        "slot_cpu_m": 47460,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359925,
+        "waste_cpu_m": 15140,
+        "waste_mem_mi": 97259
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.55211,
+          "cpu": 0.509618,
+          "mem": 0.55211
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.551103,
+        "slot_cpu_m": 63420,
+        "slot_gpu": 0,
+        "slot_mem_mi": 475749,
+        "waste_cpu_m": 31100,
+        "waste_mem_mi": 213083
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.36577,
+          "cpu": 0.338997,
+          "mem": 0.36577
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.365328,
+        "slot_cpu_m": 95340,
+        "slot_gpu": 0,
+        "slot_mem_mi": 718117,
+        "waste_cpu_m": 63020,
+        "waste_mem_mi": 455451
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.731542,
+          "cpu": 0.677995,
+          "mem": 0.731542
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.730656,
+        "slot_cpu_m": 47670,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359058,
+        "waste_cpu_m": 15350,
+        "waste_mem_mi": 96392
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.181704,
+          "cpu": 0.169126,
+          "mem": 0.181704
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.181595,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 158780,
+        "waste_mem_mi": 1182901
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.363409,
+          "cpu": 0.338252,
+          "mem": 0.363409
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.36319,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 63230,
+        "waste_mem_mi": 460117
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.545114,
+          "cpu": 0.507378,
+          "mem": 0.545114
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.544786,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 31380,
+        "waste_mem_mi": 219189
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.726819,
+          "cpu": 0.676504,
+          "mem": 0.726819
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.726381,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391,
+        "waste_cpu_m": 15455,
+        "waste_mem_mi": 98725
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.908524,
+          "cpu": 0.845631,
+          "mem": 0.908524
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.907976,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113,
+        "waste_cpu_m": 5900,
+        "waste_mem_mi": 26447
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.181704,
+          "cpu": 0.169126,
+          "mem": 0.181704
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.181595,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 158780,
+        "waste_mem_mi": 1182901
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.363409,
+          "cpu": 0.338252,
+          "mem": 0.363409
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.36319,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 63230,
+        "waste_mem_mi": 460117
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.545114,
+          "cpu": 0.507378,
+          "mem": 0.545114
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.544786,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 31380,
+        "waste_mem_mi": 219189
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.726819,
+          "cpu": 0.676504,
+          "mem": 0.726819
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.726381,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391,
+        "waste_cpu_m": 15455,
+        "waste_mem_mi": 98725
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.908524,
+          "cpu": 0.845631,
+          "mem": 0.908524
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.907976,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113,
+        "waste_cpu_m": 5900,
+        "waste_mem_mi": 26447
+      }
+    ],
+    "l-x86iavx512-48-384": [
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.827617,
+          "cpu": 0.761905,
+          "mem": 0.827617
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.826106,
+        "slot_cpu_m": 63420,
+        "slot_gpu": 0,
+        "slot_mem_mi": 475749,
+        "waste_cpu_m": 15100,
+        "waste_mem_mi": 82011
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.548292,
+          "cpu": 0.506818,
+          "mem": 0.548292
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.547629,
+        "slot_cpu_m": 95340,
+        "slot_gpu": 0,
+        "slot_mem_mi": 718117,
+        "waste_cpu_m": 47020,
+        "waste_mem_mi": 324379
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.272376,
+          "cpu": 0.252852,
+          "mem": 0.272376
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.272212,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 142780,
+        "waste_mem_mi": 1051829
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.544753,
+          "cpu": 0.505704,
+          "mem": 0.544753
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.544425,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 47230,
+        "waste_mem_mi": 329045
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.81713,
+          "cpu": 0.758556,
+          "mem": 0.81713
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.816637,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 15380,
+        "waste_mem_mi": 88117
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.272376,
+          "cpu": 0.252852,
+          "mem": 0.272376
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.272212,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 142780,
+        "waste_mem_mi": 1051829
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.544753,
+          "cpu": 0.505704,
+          "mem": 0.544753
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.544425,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 47230,
+        "waste_mem_mi": 329045
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.81713,
+          "cpu": 0.758556,
+          "mem": 0.81713
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.816637,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 15380,
+        "waste_mem_mi": 88117
+      }
+    ],
+    "l-x86iavx512-8-64": [
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.183533,
+          "cpu": 0.175306,
+          "mem": 0.183533
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.18309,
+        "slot_cpu_m": 47460,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359925,
+        "waste_cpu_m": 39140,
+        "waste_mem_mi": 293867
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.367066,
+          "cpu": 0.350611,
+          "mem": 0.367066
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.36618,
+        "slot_cpu_m": 23730,
+        "slot_gpu": 0,
+        "slot_mem_mi": 179962,
+        "waste_cpu_m": 15410,
+        "waste_mem_mi": 113904
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.550598,
+          "cpu": 0.525917,
+          "mem": 0.550598
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.54927,
+        "slot_cpu_m": 15820,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119975,
+        "waste_cpu_m": 7500,
+        "waste_mem_mi": 53917
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.734133,
+          "cpu": 0.701222,
+          "mem": 0.734133
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.73236,
+        "slot_cpu_m": 11865,
+        "slot_gpu": 0,
+        "slot_mem_mi": 89981,
+        "waste_cpu_m": 3545,
+        "waste_mem_mi": 23923
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.917663,
+          "cpu": 0.876528,
+          "mem": 0.917663
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.915451,
+        "slot_cpu_m": 9492,
+        "slot_gpu": 0,
+        "slot_mem_mi": 71985,
+        "waste_cpu_m": 1172,
+        "waste_mem_mi": 5927
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.138851,
+          "cpu": 0.131189,
+          "mem": 0.138851
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.138597,
+        "slot_cpu_m": 63420,
+        "slot_gpu": 0,
+        "slot_mem_mi": 475749,
+        "waste_cpu_m": 55100,
+        "waste_mem_mi": 409691
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.277702,
+          "cpu": 0.262378,
+          "mem": 0.277702
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.277194,
+        "slot_cpu_m": 31710,
+        "slot_gpu": 0,
+        "slot_mem_mi": 237874,
+        "waste_cpu_m": 23390,
+        "waste_mem_mi": 171816
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.416552,
+          "cpu": 0.393567,
+          "mem": 0.416552
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.415791,
+        "slot_cpu_m": 21140,
+        "slot_gpu": 0,
+        "slot_mem_mi": 158583,
+        "waste_cpu_m": 12820,
+        "waste_mem_mi": 92525
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.555403,
+          "cpu": 0.524756,
+          "mem": 0.555403
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.554388,
+        "slot_cpu_m": 15855,
+        "slot_gpu": 0,
+        "slot_mem_mi": 118937,
+        "waste_cpu_m": 7535,
+        "waste_mem_mi": 52879
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.694258,
+          "cpu": 0.655944,
+          "mem": 0.694258
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.692985,
+        "slot_cpu_m": 12684,
+        "slot_gpu": 0,
+        "slot_mem_mi": 95149,
+        "waste_cpu_m": 4364,
+        "waste_mem_mi": 29091
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.833108,
+          "cpu": 0.787133,
+          "mem": 0.833108
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.831582,
+        "slot_cpu_m": 10570,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79291,
+        "waste_cpu_m": 2250,
+        "waste_mem_mi": 13233
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.971956,
+          "cpu": 0.918322,
+          "mem": 0.971956
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.97018,
+        "slot_cpu_m": 9060,
+        "slot_gpu": 0,
+        "slot_mem_mi": 67964,
+        "waste_cpu_m": 740,
+        "waste_mem_mi": 1906
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.091988,
+          "cpu": 0.087267,
+          "mem": 0.091988
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.091876,
+        "slot_cpu_m": 95340,
+        "slot_gpu": 0,
+        "slot_mem_mi": 718117,
+        "waste_cpu_m": 87020,
+        "waste_mem_mi": 652059
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.183976,
+          "cpu": 0.174533,
+          "mem": 0.183976
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.183753,
+        "slot_cpu_m": 47670,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359058,
+        "waste_cpu_m": 39350,
+        "waste_mem_mi": 293000
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.275964,
+          "cpu": 0.2618,
+          "mem": 0.275964
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.275629,
+        "slot_cpu_m": 31780,
+        "slot_gpu": 0,
+        "slot_mem_mi": 239372,
+        "waste_cpu_m": 23460,
+        "waste_mem_mi": 173314
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.367952,
+          "cpu": 0.349066,
+          "mem": 0.367952
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.367506,
+        "slot_cpu_m": 23835,
+        "slot_gpu": 0,
+        "slot_mem_mi": 179529,
+        "waste_cpu_m": 15515,
+        "waste_mem_mi": 113471
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.45994,
+          "cpu": 0.436333,
+          "mem": 0.45994
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.459382,
+        "slot_cpu_m": 19068,
+        "slot_gpu": 0,
+        "slot_mem_mi": 143623,
+        "waste_cpu_m": 10748,
+        "waste_mem_mi": 77565
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.551928,
+          "cpu": 0.5236,
+          "mem": 0.551928
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.551259,
+        "slot_cpu_m": 15890,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119686,
+        "waste_cpu_m": 7570,
+        "waste_mem_mi": 53628
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.643915,
+          "cpu": 0.610866,
+          "mem": 0.643915
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.643135,
+        "slot_cpu_m": 13620,
+        "slot_gpu": 0,
+        "slot_mem_mi": 102588,
+        "waste_cpu_m": 5300,
+        "waste_mem_mi": 36530
+      },
+      {
+        "N": 8,
+        "efficiency": {
+          "binding": 0.735907,
+          "cpu": 0.698162,
+          "mem": 0.735907
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.735012,
+        "slot_cpu_m": 11917,
+        "slot_gpu": 0,
+        "slot_mem_mi": 89764,
+        "waste_cpu_m": 3597,
+        "waste_mem_mi": 23706
+      },
+      {
+        "N": 9,
+        "efficiency": {
+          "binding": 0.827898,
+          "cpu": 0.785424,
+          "mem": 0.827898
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.826888,
+        "slot_cpu_m": 10593,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79790,
+        "waste_cpu_m": 2273,
+        "waste_mem_mi": 13732
+      },
+      {
+        "N": 10,
+        "efficiency": {
+          "binding": 0.919887,
+          "cpu": 0.872666,
+          "mem": 0.919887
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.918765,
+        "slot_cpu_m": 9534,
+        "slot_gpu": 0,
+        "slot_mem_mi": 71811,
+        "waste_cpu_m": 1214,
+        "waste_mem_mi": 5753
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.045697,
+          "cpu": 0.043537,
+          "mem": 0.045697
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.045669,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 182780,
+        "waste_mem_mi": 1379509
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.091394,
+          "cpu": 0.087075,
+          "mem": 0.091394
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.091339,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 87230,
+        "waste_mem_mi": 656725
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.137091,
+          "cpu": 0.130612,
+          "mem": 0.137091
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.137008,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 55380,
+        "waste_mem_mi": 415797
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.182788,
+          "cpu": 0.17415,
+          "mem": 0.182788
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.182678,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391,
+        "waste_cpu_m": 39455,
+        "waste_mem_mi": 295333
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.228485,
+          "cpu": 0.217687,
+          "mem": 0.228485
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.228347,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113,
+        "waste_cpu_m": 29900,
+        "waste_mem_mi": 223055
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.274183,
+          "cpu": 0.261224,
+          "mem": 0.274183
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.274017,
+        "slot_cpu_m": 31850,
+        "slot_gpu": 0,
+        "slot_mem_mi": 240927,
+        "waste_cpu_m": 23530,
+        "waste_mem_mi": 174869
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.31988,
+          "cpu": 0.304762,
+          "mem": 0.31988
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.319686,
+        "slot_cpu_m": 27300,
+        "slot_gpu": 0,
+        "slot_mem_mi": 206509,
+        "waste_cpu_m": 18980,
+        "waste_mem_mi": 140451
+      },
+      {
+        "N": 8,
+        "efficiency": {
+          "binding": 0.365577,
+          "cpu": 0.348307,
+          "mem": 0.365577
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.365356,
+        "slot_cpu_m": 23887,
+        "slot_gpu": 0,
+        "slot_mem_mi": 180695,
+        "waste_cpu_m": 15567,
+        "waste_mem_mi": 114637
+      },
+      {
+        "N": 9,
+        "efficiency": {
+          "binding": 0.411274,
+          "cpu": 0.391843,
+          "mem": 0.411274
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.411025,
+        "slot_cpu_m": 21233,
+        "slot_gpu": 0,
+        "slot_mem_mi": 160618,
+        "waste_cpu_m": 12913,
+        "waste_mem_mi": 94560
+      },
+      {
+        "N": 10,
+        "efficiency": {
+          "binding": 0.456972,
+          "cpu": 0.435374,
+          "mem": 0.456972
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.456695,
+        "slot_cpu_m": 19110,
+        "slot_gpu": 0,
+        "slot_mem_mi": 144556,
+        "waste_cpu_m": 10790,
+        "waste_mem_mi": 78498
+      },
+      {
+        "N": 11,
+        "efficiency": {
+          "binding": 0.502667,
+          "cpu": 0.478932,
+          "mem": 0.502667
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.502364,
+        "slot_cpu_m": 17372,
+        "slot_gpu": 0,
+        "slot_mem_mi": 131415,
+        "waste_cpu_m": 9052,
+        "waste_mem_mi": 65357
+      },
+      {
+        "N": 12,
+        "efficiency": {
+          "binding": 0.548368,
+          "cpu": 0.522449,
+          "mem": 0.548368
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.548034,
+        "slot_cpu_m": 15925,
+        "slot_gpu": 0,
+        "slot_mem_mi": 120463,
+        "waste_cpu_m": 7605,
+        "waste_mem_mi": 54405
+      },
+      {
+        "N": 13,
+        "efficiency": {
+          "binding": 0.594063,
+          "cpu": 0.565986,
+          "mem": 0.594063
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.593703,
+        "slot_cpu_m": 14700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 111197,
+        "waste_cpu_m": 6380,
+        "waste_mem_mi": 45139
+      },
+      {
+        "N": 14,
+        "efficiency": {
+          "binding": 0.639762,
+          "cpu": 0.609524,
+          "mem": 0.639762
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.639372,
+        "slot_cpu_m": 13650,
+        "slot_gpu": 0,
+        "slot_mem_mi": 103254,
+        "waste_cpu_m": 5330,
+        "waste_mem_mi": 37196
+      },
+      {
+        "N": 15,
+        "efficiency": {
+          "binding": 0.685455,
+          "cpu": 0.653061,
+          "mem": 0.685455
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.685042,
+        "slot_cpu_m": 12740,
+        "slot_gpu": 0,
+        "slot_mem_mi": 96371,
+        "waste_cpu_m": 4420,
+        "waste_mem_mi": 30313
+      },
+      {
+        "N": 16,
+        "efficiency": {
+          "binding": 0.731159,
+          "cpu": 0.696642,
+          "mem": 0.731159
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.730711,
+        "slot_cpu_m": 11943,
+        "slot_gpu": 0,
+        "slot_mem_mi": 90347,
+        "waste_cpu_m": 3623,
+        "waste_mem_mi": 24289
+      },
+      {
+        "N": 17,
+        "efficiency": {
+          "binding": 0.776851,
+          "cpu": 0.740148,
+          "mem": 0.776851
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.776381,
+        "slot_cpu_m": 11241,
+        "slot_gpu": 0,
+        "slot_mem_mi": 85033,
+        "waste_cpu_m": 2921,
+        "waste_mem_mi": 18975
+      },
+      {
+        "N": 18,
+        "efficiency": {
+          "binding": 0.822548,
+          "cpu": 0.783723,
+          "mem": 0.822548
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.82205,
+        "slot_cpu_m": 10616,
+        "slot_gpu": 0,
+        "slot_mem_mi": 80309,
+        "waste_cpu_m": 2296,
+        "waste_mem_mi": 14251
+      },
+      {
+        "N": 19,
+        "efficiency": {
+          "binding": 0.868247,
+          "cpu": 0.827284,
+          "mem": 0.868247
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.86772,
+        "slot_cpu_m": 10057,
+        "slot_gpu": 0,
+        "slot_mem_mi": 76082,
+        "waste_cpu_m": 1737,
+        "waste_mem_mi": 10024
+      },
+      {
+        "N": 20,
+        "efficiency": {
+          "binding": 0.913943,
+          "cpu": 0.870748,
+          "mem": 0.913943
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.913389,
+        "slot_cpu_m": 9555,
+        "slot_gpu": 0,
+        "slot_mem_mi": 72278,
+        "waste_cpu_m": 1235,
+        "waste_mem_mi": 6220
+      },
+      {
+        "N": 21,
+        "efficiency": {
+          "binding": 0.959643,
+          "cpu": 0.914286,
+          "mem": 0.959643
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.959059,
+        "slot_cpu_m": 9100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 68836,
+        "waste_cpu_m": 780,
+        "waste_mem_mi": 2778
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.562473,
+          "cpu": 0.535393,
+          "mem": 0.562473
+        },
+        "instance": "r7a.4xlarge",
+        "opt_share": 0.558337,
+        "slot_cpu_m": 15540,
+        "slot_gpu": 0,
+        "slot_mem_mi": 117442,
+        "waste_cpu_m": 7220,
+        "waste_mem_mi": 51384
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.276693,
+          "cpu": 0.264127,
+          "mem": 0.276693
+        },
+        "instance": "r7a.8xlarge",
+        "opt_share": 0.275689,
+        "slot_cpu_m": 31500,
+        "slot_gpu": 0,
+        "slot_mem_mi": 238741,
+        "waste_cpu_m": 23180,
+        "waste_mem_mi": 172683
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.553389,
+          "cpu": 0.528254,
+          "mem": 0.553389
+        },
+        "instance": "r7a.8xlarge",
+        "opt_share": 0.551377,
+        "slot_cpu_m": 15750,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119370,
+        "waste_cpu_m": 7430,
+        "waste_mem_mi": 53312
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.830083,
+          "cpu": 0.792381,
+          "mem": 0.830083
+        },
+        "instance": "r7a.8xlarge",
+        "opt_share": 0.827066,
+        "slot_cpu_m": 10500,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79580,
+        "waste_cpu_m": 2180,
+        "waste_mem_mi": 13522
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.045697,
+          "cpu": 0.043537,
+          "mem": 0.045697
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.045669,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 182780,
+        "waste_mem_mi": 1379509
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.091394,
+          "cpu": 0.087075,
+          "mem": 0.091394
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.091339,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 87230,
+        "waste_mem_mi": 656725
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.137091,
+          "cpu": 0.130612,
+          "mem": 0.137091
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.137008,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 55380,
+        "waste_mem_mi": 415797
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.182788,
+          "cpu": 0.17415,
+          "mem": 0.182788
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.182678,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391,
+        "waste_cpu_m": 39455,
+        "waste_mem_mi": 295333
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.228485,
+          "cpu": 0.217687,
+          "mem": 0.228485
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.228347,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113,
+        "waste_cpu_m": 29900,
+        "waste_mem_mi": 223055
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.274183,
+          "cpu": 0.261224,
+          "mem": 0.274183
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.274017,
+        "slot_cpu_m": 31850,
+        "slot_gpu": 0,
+        "slot_mem_mi": 240927,
+        "waste_cpu_m": 23530,
+        "waste_mem_mi": 174869
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.31988,
+          "cpu": 0.304762,
+          "mem": 0.31988
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.319686,
+        "slot_cpu_m": 27300,
+        "slot_gpu": 0,
+        "slot_mem_mi": 206509,
+        "waste_cpu_m": 18980,
+        "waste_mem_mi": 140451
+      },
+      {
+        "N": 8,
+        "efficiency": {
+          "binding": 0.365577,
+          "cpu": 0.348307,
+          "mem": 0.365577
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.365356,
+        "slot_cpu_m": 23887,
+        "slot_gpu": 0,
+        "slot_mem_mi": 180695,
+        "waste_cpu_m": 15567,
+        "waste_mem_mi": 114637
+      },
+      {
+        "N": 9,
+        "efficiency": {
+          "binding": 0.411274,
+          "cpu": 0.391843,
+          "mem": 0.411274
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.411025,
+        "slot_cpu_m": 21233,
+        "slot_gpu": 0,
+        "slot_mem_mi": 160618,
+        "waste_cpu_m": 12913,
+        "waste_mem_mi": 94560
+      },
+      {
+        "N": 10,
+        "efficiency": {
+          "binding": 0.456972,
+          "cpu": 0.435374,
+          "mem": 0.456972
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.456695,
+        "slot_cpu_m": 19110,
+        "slot_gpu": 0,
+        "slot_mem_mi": 144556,
+        "waste_cpu_m": 10790,
+        "waste_mem_mi": 78498
+      },
+      {
+        "N": 11,
+        "efficiency": {
+          "binding": 0.502667,
+          "cpu": 0.478932,
+          "mem": 0.502667
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.502364,
+        "slot_cpu_m": 17372,
+        "slot_gpu": 0,
+        "slot_mem_mi": 131415,
+        "waste_cpu_m": 9052,
+        "waste_mem_mi": 65357
+      },
+      {
+        "N": 12,
+        "efficiency": {
+          "binding": 0.548368,
+          "cpu": 0.522449,
+          "mem": 0.548368
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.548034,
+        "slot_cpu_m": 15925,
+        "slot_gpu": 0,
+        "slot_mem_mi": 120463,
+        "waste_cpu_m": 7605,
+        "waste_mem_mi": 54405
+      },
+      {
+        "N": 13,
+        "efficiency": {
+          "binding": 0.594063,
+          "cpu": 0.565986,
+          "mem": 0.594063
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.593703,
+        "slot_cpu_m": 14700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 111197,
+        "waste_cpu_m": 6380,
+        "waste_mem_mi": 45139
+      },
+      {
+        "N": 14,
+        "efficiency": {
+          "binding": 0.639762,
+          "cpu": 0.609524,
+          "mem": 0.639762
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.639372,
+        "slot_cpu_m": 13650,
+        "slot_gpu": 0,
+        "slot_mem_mi": 103254,
+        "waste_cpu_m": 5330,
+        "waste_mem_mi": 37196
+      },
+      {
+        "N": 15,
+        "efficiency": {
+          "binding": 0.685455,
+          "cpu": 0.653061,
+          "mem": 0.685455
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.685042,
+        "slot_cpu_m": 12740,
+        "slot_gpu": 0,
+        "slot_mem_mi": 96371,
+        "waste_cpu_m": 4420,
+        "waste_mem_mi": 30313
+      },
+      {
+        "N": 16,
+        "efficiency": {
+          "binding": 0.731159,
+          "cpu": 0.696642,
+          "mem": 0.731159
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.730711,
+        "slot_cpu_m": 11943,
+        "slot_gpu": 0,
+        "slot_mem_mi": 90347,
+        "waste_cpu_m": 3623,
+        "waste_mem_mi": 24289
+      },
+      {
+        "N": 17,
+        "efficiency": {
+          "binding": 0.776851,
+          "cpu": 0.740148,
+          "mem": 0.776851
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.776381,
+        "slot_cpu_m": 11241,
+        "slot_gpu": 0,
+        "slot_mem_mi": 85033,
+        "waste_cpu_m": 2921,
+        "waste_mem_mi": 18975
+      },
+      {
+        "N": 18,
+        "efficiency": {
+          "binding": 0.822548,
+          "cpu": 0.783723,
+          "mem": 0.822548
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.82205,
+        "slot_cpu_m": 10616,
+        "slot_gpu": 0,
+        "slot_mem_mi": 80309,
+        "waste_cpu_m": 2296,
+        "waste_mem_mi": 14251
+      },
+      {
+        "N": 19,
+        "efficiency": {
+          "binding": 0.868247,
+          "cpu": 0.827284,
+          "mem": 0.868247
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.86772,
+        "slot_cpu_m": 10057,
+        "slot_gpu": 0,
+        "slot_mem_mi": 76082,
+        "waste_cpu_m": 1737,
+        "waste_mem_mi": 10024
+      },
+      {
+        "N": 20,
+        "efficiency": {
+          "binding": 0.913943,
+          "cpu": 0.870748,
+          "mem": 0.913943
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.913389,
+        "slot_cpu_m": 9555,
+        "slot_gpu": 0,
+        "slot_mem_mi": 72278,
+        "waste_cpu_m": 1235,
+        "waste_mem_mi": 6220
+      },
+      {
+        "N": 21,
+        "efficiency": {
+          "binding": 0.959643,
+          "cpu": 0.914286,
+          "mem": 0.959643
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.959059,
+        "slot_cpu_m": 9100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 68836,
+        "waste_cpu_m": 780,
+        "waste_mem_mi": 2778
+      }
+    ],
+    "rel-l-x86iavx512-8-64": [
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.183533,
+          "cpu": 0.175306,
+          "mem": 0.183533
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.18309,
+        "slot_cpu_m": 47460,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359925,
+        "waste_cpu_m": 39140,
+        "waste_mem_mi": 293867
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.367066,
+          "cpu": 0.350611,
+          "mem": 0.367066
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.36618,
+        "slot_cpu_m": 23730,
+        "slot_gpu": 0,
+        "slot_mem_mi": 179962,
+        "waste_cpu_m": 15410,
+        "waste_mem_mi": 113904
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.550598,
+          "cpu": 0.525917,
+          "mem": 0.550598
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.54927,
+        "slot_cpu_m": 15820,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119975,
+        "waste_cpu_m": 7500,
+        "waste_mem_mi": 53917
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.734133,
+          "cpu": 0.701222,
+          "mem": 0.734133
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.73236,
+        "slot_cpu_m": 11865,
+        "slot_gpu": 0,
+        "slot_mem_mi": 89981,
+        "waste_cpu_m": 3545,
+        "waste_mem_mi": 23923
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.917663,
+          "cpu": 0.876528,
+          "mem": 0.917663
+        },
+        "instance": "r7a.12xlarge",
+        "opt_share": 0.915451,
+        "slot_cpu_m": 9492,
+        "slot_gpu": 0,
+        "slot_mem_mi": 71985,
+        "waste_cpu_m": 1172,
+        "waste_mem_mi": 5927
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.138851,
+          "cpu": 0.131189,
+          "mem": 0.138851
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.138597,
+        "slot_cpu_m": 63420,
+        "slot_gpu": 0,
+        "slot_mem_mi": 475749,
+        "waste_cpu_m": 55100,
+        "waste_mem_mi": 409691
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.277702,
+          "cpu": 0.262378,
+          "mem": 0.277702
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.277194,
+        "slot_cpu_m": 31710,
+        "slot_gpu": 0,
+        "slot_mem_mi": 237874,
+        "waste_cpu_m": 23390,
+        "waste_mem_mi": 171816
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.416552,
+          "cpu": 0.393567,
+          "mem": 0.416552
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.415791,
+        "slot_cpu_m": 21140,
+        "slot_gpu": 0,
+        "slot_mem_mi": 158583,
+        "waste_cpu_m": 12820,
+        "waste_mem_mi": 92525
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.555403,
+          "cpu": 0.524756,
+          "mem": 0.555403
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.554388,
+        "slot_cpu_m": 15855,
+        "slot_gpu": 0,
+        "slot_mem_mi": 118937,
+        "waste_cpu_m": 7535,
+        "waste_mem_mi": 52879
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.694258,
+          "cpu": 0.655944,
+          "mem": 0.694258
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.692985,
+        "slot_cpu_m": 12684,
+        "slot_gpu": 0,
+        "slot_mem_mi": 95149,
+        "waste_cpu_m": 4364,
+        "waste_mem_mi": 29091
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.833108,
+          "cpu": 0.787133,
+          "mem": 0.833108
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.831582,
+        "slot_cpu_m": 10570,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79291,
+        "waste_cpu_m": 2250,
+        "waste_mem_mi": 13233
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.971956,
+          "cpu": 0.918322,
+          "mem": 0.971956
+        },
+        "instance": "r7a.16xlarge",
+        "opt_share": 0.97018,
+        "slot_cpu_m": 9060,
+        "slot_gpu": 0,
+        "slot_mem_mi": 67964,
+        "waste_cpu_m": 740,
+        "waste_mem_mi": 1906
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.091988,
+          "cpu": 0.087267,
+          "mem": 0.091988
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.091876,
+        "slot_cpu_m": 95340,
+        "slot_gpu": 0,
+        "slot_mem_mi": 718117,
+        "waste_cpu_m": 87020,
+        "waste_mem_mi": 652059
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.183976,
+          "cpu": 0.174533,
+          "mem": 0.183976
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.183753,
+        "slot_cpu_m": 47670,
+        "slot_gpu": 0,
+        "slot_mem_mi": 359058,
+        "waste_cpu_m": 39350,
+        "waste_mem_mi": 293000
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.275964,
+          "cpu": 0.2618,
+          "mem": 0.275964
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.275629,
+        "slot_cpu_m": 31780,
+        "slot_gpu": 0,
+        "slot_mem_mi": 239372,
+        "waste_cpu_m": 23460,
+        "waste_mem_mi": 173314
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.367952,
+          "cpu": 0.349066,
+          "mem": 0.367952
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.367506,
+        "slot_cpu_m": 23835,
+        "slot_gpu": 0,
+        "slot_mem_mi": 179529,
+        "waste_cpu_m": 15515,
+        "waste_mem_mi": 113471
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.45994,
+          "cpu": 0.436333,
+          "mem": 0.45994
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.459382,
+        "slot_cpu_m": 19068,
+        "slot_gpu": 0,
+        "slot_mem_mi": 143623,
+        "waste_cpu_m": 10748,
+        "waste_mem_mi": 77565
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.551928,
+          "cpu": 0.5236,
+          "mem": 0.551928
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.551259,
+        "slot_cpu_m": 15890,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119686,
+        "waste_cpu_m": 7570,
+        "waste_mem_mi": 53628
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.643915,
+          "cpu": 0.610866,
+          "mem": 0.643915
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.643135,
+        "slot_cpu_m": 13620,
+        "slot_gpu": 0,
+        "slot_mem_mi": 102588,
+        "waste_cpu_m": 5300,
+        "waste_mem_mi": 36530
+      },
+      {
+        "N": 8,
+        "efficiency": {
+          "binding": 0.735907,
+          "cpu": 0.698162,
+          "mem": 0.735907
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.735012,
+        "slot_cpu_m": 11917,
+        "slot_gpu": 0,
+        "slot_mem_mi": 89764,
+        "waste_cpu_m": 3597,
+        "waste_mem_mi": 23706
+      },
+      {
+        "N": 9,
+        "efficiency": {
+          "binding": 0.827898,
+          "cpu": 0.785424,
+          "mem": 0.827898
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.826888,
+        "slot_cpu_m": 10593,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79790,
+        "waste_cpu_m": 2273,
+        "waste_mem_mi": 13732
+      },
+      {
+        "N": 10,
+        "efficiency": {
+          "binding": 0.919887,
+          "cpu": 0.872666,
+          "mem": 0.919887
+        },
+        "instance": "r7a.24xlarge",
+        "opt_share": 0.918765,
+        "slot_cpu_m": 9534,
+        "slot_gpu": 0,
+        "slot_mem_mi": 71811,
+        "waste_cpu_m": 1214,
+        "waste_mem_mi": 5753
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.045697,
+          "cpu": 0.043537,
+          "mem": 0.045697
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.045669,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 182780,
+        "waste_mem_mi": 1379509
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.091394,
+          "cpu": 0.087075,
+          "mem": 0.091394
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.091339,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 87230,
+        "waste_mem_mi": 656725
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.137091,
+          "cpu": 0.130612,
+          "mem": 0.137091
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.137008,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 55380,
+        "waste_mem_mi": 415797
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.182788,
+          "cpu": 0.17415,
+          "mem": 0.182788
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.182678,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391,
+        "waste_cpu_m": 39455,
+        "waste_mem_mi": 295333
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.228485,
+          "cpu": 0.217687,
+          "mem": 0.228485
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.228347,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113,
+        "waste_cpu_m": 29900,
+        "waste_mem_mi": 223055
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.274183,
+          "cpu": 0.261224,
+          "mem": 0.274183
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.274017,
+        "slot_cpu_m": 31850,
+        "slot_gpu": 0,
+        "slot_mem_mi": 240927,
+        "waste_cpu_m": 23530,
+        "waste_mem_mi": 174869
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.31988,
+          "cpu": 0.304762,
+          "mem": 0.31988
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.319686,
+        "slot_cpu_m": 27300,
+        "slot_gpu": 0,
+        "slot_mem_mi": 206509,
+        "waste_cpu_m": 18980,
+        "waste_mem_mi": 140451
+      },
+      {
+        "N": 8,
+        "efficiency": {
+          "binding": 0.365577,
+          "cpu": 0.348307,
+          "mem": 0.365577
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.365356,
+        "slot_cpu_m": 23887,
+        "slot_gpu": 0,
+        "slot_mem_mi": 180695,
+        "waste_cpu_m": 15567,
+        "waste_mem_mi": 114637
+      },
+      {
+        "N": 9,
+        "efficiency": {
+          "binding": 0.411274,
+          "cpu": 0.391843,
+          "mem": 0.411274
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.411025,
+        "slot_cpu_m": 21233,
+        "slot_gpu": 0,
+        "slot_mem_mi": 160618,
+        "waste_cpu_m": 12913,
+        "waste_mem_mi": 94560
+      },
+      {
+        "N": 10,
+        "efficiency": {
+          "binding": 0.456972,
+          "cpu": 0.435374,
+          "mem": 0.456972
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.456695,
+        "slot_cpu_m": 19110,
+        "slot_gpu": 0,
+        "slot_mem_mi": 144556,
+        "waste_cpu_m": 10790,
+        "waste_mem_mi": 78498
+      },
+      {
+        "N": 11,
+        "efficiency": {
+          "binding": 0.502667,
+          "cpu": 0.478932,
+          "mem": 0.502667
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.502364,
+        "slot_cpu_m": 17372,
+        "slot_gpu": 0,
+        "slot_mem_mi": 131415,
+        "waste_cpu_m": 9052,
+        "waste_mem_mi": 65357
+      },
+      {
+        "N": 12,
+        "efficiency": {
+          "binding": 0.548368,
+          "cpu": 0.522449,
+          "mem": 0.548368
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.548034,
+        "slot_cpu_m": 15925,
+        "slot_gpu": 0,
+        "slot_mem_mi": 120463,
+        "waste_cpu_m": 7605,
+        "waste_mem_mi": 54405
+      },
+      {
+        "N": 13,
+        "efficiency": {
+          "binding": 0.594063,
+          "cpu": 0.565986,
+          "mem": 0.594063
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.593703,
+        "slot_cpu_m": 14700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 111197,
+        "waste_cpu_m": 6380,
+        "waste_mem_mi": 45139
+      },
+      {
+        "N": 14,
+        "efficiency": {
+          "binding": 0.639762,
+          "cpu": 0.609524,
+          "mem": 0.639762
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.639372,
+        "slot_cpu_m": 13650,
+        "slot_gpu": 0,
+        "slot_mem_mi": 103254,
+        "waste_cpu_m": 5330,
+        "waste_mem_mi": 37196
+      },
+      {
+        "N": 15,
+        "efficiency": {
+          "binding": 0.685455,
+          "cpu": 0.653061,
+          "mem": 0.685455
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.685042,
+        "slot_cpu_m": 12740,
+        "slot_gpu": 0,
+        "slot_mem_mi": 96371,
+        "waste_cpu_m": 4420,
+        "waste_mem_mi": 30313
+      },
+      {
+        "N": 16,
+        "efficiency": {
+          "binding": 0.731159,
+          "cpu": 0.696642,
+          "mem": 0.731159
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.730711,
+        "slot_cpu_m": 11943,
+        "slot_gpu": 0,
+        "slot_mem_mi": 90347,
+        "waste_cpu_m": 3623,
+        "waste_mem_mi": 24289
+      },
+      {
+        "N": 17,
+        "efficiency": {
+          "binding": 0.776851,
+          "cpu": 0.740148,
+          "mem": 0.776851
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.776381,
+        "slot_cpu_m": 11241,
+        "slot_gpu": 0,
+        "slot_mem_mi": 85033,
+        "waste_cpu_m": 2921,
+        "waste_mem_mi": 18975
+      },
+      {
+        "N": 18,
+        "efficiency": {
+          "binding": 0.822548,
+          "cpu": 0.783723,
+          "mem": 0.822548
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.82205,
+        "slot_cpu_m": 10616,
+        "slot_gpu": 0,
+        "slot_mem_mi": 80309,
+        "waste_cpu_m": 2296,
+        "waste_mem_mi": 14251
+      },
+      {
+        "N": 19,
+        "efficiency": {
+          "binding": 0.868247,
+          "cpu": 0.827284,
+          "mem": 0.868247
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.86772,
+        "slot_cpu_m": 10057,
+        "slot_gpu": 0,
+        "slot_mem_mi": 76082,
+        "waste_cpu_m": 1737,
+        "waste_mem_mi": 10024
+      },
+      {
+        "N": 20,
+        "efficiency": {
+          "binding": 0.913943,
+          "cpu": 0.870748,
+          "mem": 0.913943
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.913389,
+        "slot_cpu_m": 9555,
+        "slot_gpu": 0,
+        "slot_mem_mi": 72278,
+        "waste_cpu_m": 1235,
+        "waste_mem_mi": 6220
+      },
+      {
+        "N": 21,
+        "efficiency": {
+          "binding": 0.959643,
+          "cpu": 0.914286,
+          "mem": 0.959643
+        },
+        "instance": "r7a.48xlarge",
+        "opt_share": 0.959059,
+        "slot_cpu_m": 9100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 68836,
+        "waste_cpu_m": 780,
+        "waste_mem_mi": 2778
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.562473,
+          "cpu": 0.535393,
+          "mem": 0.562473
+        },
+        "instance": "r7a.4xlarge",
+        "opt_share": 0.558337,
+        "slot_cpu_m": 15540,
+        "slot_gpu": 0,
+        "slot_mem_mi": 117442,
+        "waste_cpu_m": 7220,
+        "waste_mem_mi": 51384
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.276693,
+          "cpu": 0.264127,
+          "mem": 0.276693
+        },
+        "instance": "r7a.8xlarge",
+        "opt_share": 0.275689,
+        "slot_cpu_m": 31500,
+        "slot_gpu": 0,
+        "slot_mem_mi": 238741,
+        "waste_cpu_m": 23180,
+        "waste_mem_mi": 172683
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.553389,
+          "cpu": 0.528254,
+          "mem": 0.553389
+        },
+        "instance": "r7a.8xlarge",
+        "opt_share": 0.551377,
+        "slot_cpu_m": 15750,
+        "slot_gpu": 0,
+        "slot_mem_mi": 119370,
+        "waste_cpu_m": 7430,
+        "waste_mem_mi": 53312
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.830083,
+          "cpu": 0.792381,
+          "mem": 0.830083
+        },
+        "instance": "r7a.8xlarge",
+        "opt_share": 0.827066,
+        "slot_cpu_m": 10500,
+        "slot_gpu": 0,
+        "slot_mem_mi": 79580,
+        "waste_cpu_m": 2180,
+        "waste_mem_mi": 13522
+      },
+      {
+        "N": 1,
+        "efficiency": {
+          "binding": 0.045697,
+          "cpu": 0.043537,
+          "mem": 0.045697
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.045669,
+        "slot_cpu_m": 191100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 1445567,
+        "waste_cpu_m": 182780,
+        "waste_mem_mi": 1379509
+      },
+      {
+        "N": 2,
+        "efficiency": {
+          "binding": 0.091394,
+          "cpu": 0.087075,
+          "mem": 0.091394
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.091339,
+        "slot_cpu_m": 95550,
+        "slot_gpu": 0,
+        "slot_mem_mi": 722783,
+        "waste_cpu_m": 87230,
+        "waste_mem_mi": 656725
+      },
+      {
+        "N": 3,
+        "efficiency": {
+          "binding": 0.137091,
+          "cpu": 0.130612,
+          "mem": 0.137091
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.137008,
+        "slot_cpu_m": 63700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 481855,
+        "waste_cpu_m": 55380,
+        "waste_mem_mi": 415797
+      },
+      {
+        "N": 4,
+        "efficiency": {
+          "binding": 0.182788,
+          "cpu": 0.17415,
+          "mem": 0.182788
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.182678,
+        "slot_cpu_m": 47775,
+        "slot_gpu": 0,
+        "slot_mem_mi": 361391,
+        "waste_cpu_m": 39455,
+        "waste_mem_mi": 295333
+      },
+      {
+        "N": 5,
+        "efficiency": {
+          "binding": 0.228485,
+          "cpu": 0.217687,
+          "mem": 0.228485
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.228347,
+        "slot_cpu_m": 38220,
+        "slot_gpu": 0,
+        "slot_mem_mi": 289113,
+        "waste_cpu_m": 29900,
+        "waste_mem_mi": 223055
+      },
+      {
+        "N": 6,
+        "efficiency": {
+          "binding": 0.274183,
+          "cpu": 0.261224,
+          "mem": 0.274183
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.274017,
+        "slot_cpu_m": 31850,
+        "slot_gpu": 0,
+        "slot_mem_mi": 240927,
+        "waste_cpu_m": 23530,
+        "waste_mem_mi": 174869
+      },
+      {
+        "N": 7,
+        "efficiency": {
+          "binding": 0.31988,
+          "cpu": 0.304762,
+          "mem": 0.31988
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.319686,
+        "slot_cpu_m": 27300,
+        "slot_gpu": 0,
+        "slot_mem_mi": 206509,
+        "waste_cpu_m": 18980,
+        "waste_mem_mi": 140451
+      },
+      {
+        "N": 8,
+        "efficiency": {
+          "binding": 0.365577,
+          "cpu": 0.348307,
+          "mem": 0.365577
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.365356,
+        "slot_cpu_m": 23887,
+        "slot_gpu": 0,
+        "slot_mem_mi": 180695,
+        "waste_cpu_m": 15567,
+        "waste_mem_mi": 114637
+      },
+      {
+        "N": 9,
+        "efficiency": {
+          "binding": 0.411274,
+          "cpu": 0.391843,
+          "mem": 0.411274
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.411025,
+        "slot_cpu_m": 21233,
+        "slot_gpu": 0,
+        "slot_mem_mi": 160618,
+        "waste_cpu_m": 12913,
+        "waste_mem_mi": 94560
+      },
+      {
+        "N": 10,
+        "efficiency": {
+          "binding": 0.456972,
+          "cpu": 0.435374,
+          "mem": 0.456972
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.456695,
+        "slot_cpu_m": 19110,
+        "slot_gpu": 0,
+        "slot_mem_mi": 144556,
+        "waste_cpu_m": 10790,
+        "waste_mem_mi": 78498
+      },
+      {
+        "N": 11,
+        "efficiency": {
+          "binding": 0.502667,
+          "cpu": 0.478932,
+          "mem": 0.502667
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.502364,
+        "slot_cpu_m": 17372,
+        "slot_gpu": 0,
+        "slot_mem_mi": 131415,
+        "waste_cpu_m": 9052,
+        "waste_mem_mi": 65357
+      },
+      {
+        "N": 12,
+        "efficiency": {
+          "binding": 0.548368,
+          "cpu": 0.522449,
+          "mem": 0.548368
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.548034,
+        "slot_cpu_m": 15925,
+        "slot_gpu": 0,
+        "slot_mem_mi": 120463,
+        "waste_cpu_m": 7605,
+        "waste_mem_mi": 54405
+      },
+      {
+        "N": 13,
+        "efficiency": {
+          "binding": 0.594063,
+          "cpu": 0.565986,
+          "mem": 0.594063
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.593703,
+        "slot_cpu_m": 14700,
+        "slot_gpu": 0,
+        "slot_mem_mi": 111197,
+        "waste_cpu_m": 6380,
+        "waste_mem_mi": 45139
+      },
+      {
+        "N": 14,
+        "efficiency": {
+          "binding": 0.639762,
+          "cpu": 0.609524,
+          "mem": 0.639762
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.639372,
+        "slot_cpu_m": 13650,
+        "slot_gpu": 0,
+        "slot_mem_mi": 103254,
+        "waste_cpu_m": 5330,
+        "waste_mem_mi": 37196
+      },
+      {
+        "N": 15,
+        "efficiency": {
+          "binding": 0.685455,
+          "cpu": 0.653061,
+          "mem": 0.685455
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.685042,
+        "slot_cpu_m": 12740,
+        "slot_gpu": 0,
+        "slot_mem_mi": 96371,
+        "waste_cpu_m": 4420,
+        "waste_mem_mi": 30313
+      },
+      {
+        "N": 16,
+        "efficiency": {
+          "binding": 0.731159,
+          "cpu": 0.696642,
+          "mem": 0.731159
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.730711,
+        "slot_cpu_m": 11943,
+        "slot_gpu": 0,
+        "slot_mem_mi": 90347,
+        "waste_cpu_m": 3623,
+        "waste_mem_mi": 24289
+      },
+      {
+        "N": 17,
+        "efficiency": {
+          "binding": 0.776851,
+          "cpu": 0.740148,
+          "mem": 0.776851
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.776381,
+        "slot_cpu_m": 11241,
+        "slot_gpu": 0,
+        "slot_mem_mi": 85033,
+        "waste_cpu_m": 2921,
+        "waste_mem_mi": 18975
+      },
+      {
+        "N": 18,
+        "efficiency": {
+          "binding": 0.822548,
+          "cpu": 0.783723,
+          "mem": 0.822548
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.82205,
+        "slot_cpu_m": 10616,
+        "slot_gpu": 0,
+        "slot_mem_mi": 80309,
+        "waste_cpu_m": 2296,
+        "waste_mem_mi": 14251
+      },
+      {
+        "N": 19,
+        "efficiency": {
+          "binding": 0.868247,
+          "cpu": 0.827284,
+          "mem": 0.868247
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.86772,
+        "slot_cpu_m": 10057,
+        "slot_gpu": 0,
+        "slot_mem_mi": 76082,
+        "waste_cpu_m": 1737,
+        "waste_mem_mi": 10024
+      },
+      {
+        "N": 20,
+        "efficiency": {
+          "binding": 0.913943,
+          "cpu": 0.870748,
+          "mem": 0.913943
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.913389,
+        "slot_cpu_m": 9555,
+        "slot_gpu": 0,
+        "slot_mem_mi": 72278,
+        "waste_cpu_m": 1235,
+        "waste_mem_mi": 6220
+      },
+      {
+        "N": 21,
+        "efficiency": {
+          "binding": 0.959643,
+          "cpu": 0.914286,
+          "mem": 0.959643
+        },
+        "instance": "r7a.metal-48xl",
+        "opt_share": 0.959059,
+        "slot_cpu_m": 9100,
+        "slot_gpu": 0,
+        "slot_mem_mi": 68836,
+        "waste_cpu_m": 780,
+        "waste_mem_mi": 2778
       }
     ]
   }

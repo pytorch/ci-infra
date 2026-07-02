@@ -514,6 +514,12 @@ def main() -> int:
         help="max fraction of node allocatable consumed by phantoms (default 0.30 matches prod PHANTOM_LOAD_CAP)",
     )
     ap.add_argument("--no-progress", action="store_true")
+    ap.add_argument(
+        "--last-days",
+        type=int,
+        default=None,
+        help="filter jobs to those starting within the last N days of the CSV's max start_bucket",
+    )
     args = ap.parse_args()
 
     print(f"loading {args.csv}...", file=sys.stderr)
@@ -523,6 +529,7 @@ def main() -> int:
         runner_pool=args.runner_pod_pool,
         drop_providers=set(args.drop_provider),
         keep_fraction=args.keep_fraction,
+        last_days=args.last_days,
     )
     print(f"  {len(jobs):,} pod-lifetimes (including runner pods)", file=sys.stderr)
 

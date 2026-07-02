@@ -62,6 +62,7 @@ def load_jobs(
     drop_providers: set[str] | None = None,
     keep_fraction: float = 1.0,
     keep_seed: int = 12345,
+    last_days: int | None = None,
 ) -> list[Job]:
     if drop_providers is None:
         drop_providers = set()
@@ -129,6 +130,16 @@ def load_jobs(
         total = sum(dropped_unknown_label.values())
         print(
             f"  dropped unknown labels:     {total:,} ({len(dropped_unknown_label)} distinct)",
+            file=sys.stderr,
+        )
+    if last_days is not None and last_days > 0 and jobs:
+        max_start = max(j.start_bucket for j in jobs)
+        cutoff = max_start - last_days * 86400
+        before = len(jobs)
+        jobs = [j for j in jobs if j.start_bucket >= cutoff]
+        dropped = before - len(jobs)
+        print(
+            f"  filtered to last {last_days} days: {len(jobs):,} jobs kept, {dropped:,} dropped",
             file=sys.stderr,
         )
     return jobs

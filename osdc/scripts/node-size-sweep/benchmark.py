@@ -29,6 +29,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
 
 import sim_load  # noqa: E402
 import simulate as sim_mod  # noqa: E402
+from optimize_config import PROD_PARITY_SIM_FLAGS  # noqa: E402
 from sim_nodes import ClusterModel  # noqa: E402
 
 
@@ -171,21 +172,20 @@ def bench_noise_floor(jobs, n_seeds: int) -> dict:
     }
 
 
-def _run_calibration_with_csv(csv_path: Path) -> dict:
+def _run_calibration_with_csv(csv_path: Path, last_days: int | None = None) -> dict:
     prod_jobs = sim_load.load_jobs(
         csv_path,
         drop_providers={"lf"},
         keep_fraction=0.5,
+        last_days=last_days,
     )
     t0 = time.perf_counter()
     sim_out = sim_mod.simulate(
         prod_jobs,
         model=ClusterModel(),
         seed=42,
-        empty_ttl_buckets=1,
-        daemonsets_in_metric=True,
-        phantom_pods_enabled=True,
         progress=False,
+        **PROD_PARITY_SIM_FLAGS,
     )
     wall = time.perf_counter() - t0
     metrics = _cluster_totals(sim_out)
@@ -209,6 +209,12 @@ def main() -> int:
     ap.add_argument("--skip-noise-floor", action="store_true", help="skip Benchmark 2 (slow)")
     ap.add_argument("--n-seeds", type=int, default=20, help="seeds for noise-floor (default 20)")
     ap.add_argument("--output", default=str(HERE / "benchmark_results.json"), help="JSON output path")
+    ap.add_argument(
+        "--last-days",
+        type=int,
+        default=None,
+        help="filter jobs to those starting within the last N days of the CSV's max start_bucket",
+    )
     args = ap.parse_args()
 
     csv_path = Path(args.csv)
@@ -218,7 +224,7 @@ def main() -> int:
 
     print(f"loading {csv_path}...", file=sys.stderr)
     t0 = time.perf_counter()
-    jobs = sim_load.load_jobs(csv_path)
+    jobs = sim_load.load_jobs(csv_path, last_days=args.last_days)
     csv_load_s = time.perf_counter() - t0
     print(f"  {len(jobs):,} pod-lifetimes loaded in {csv_load_s:.1f}s", file=sys.stderr)
 
@@ -242,7 +248,7 @@ def main() -> int:
         results["benchmark_2_noise_floor"] = b2
 
     print("\n[bench 3/3] sim-vs-prod calibration...", file=sys.stderr)
-    b3 = _run_calibration_with_csv(csv_path)
+    b3 = _run_calibration_with_csv(csv_path, last_days=args.last_days)
     results["benchmark_3_calibration"] = b3
 
     # Human report on stdout.
