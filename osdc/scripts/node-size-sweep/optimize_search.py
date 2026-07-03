@@ -970,6 +970,431 @@ class ProgressDisplay:
                 sys.stderr.flush()
 
 
+class QueueProgressDisplay:
+    """Worker-side ProgressDisplay stand-in that forwards state changes to the
+    parent process over a `multiprocessing.Queue`.
+
+    Public API mirrors `ProgressDisplay` exactly so `_search_family` can be
+    called uniformly. Methods enqueue small dict messages; the parent
+    aggregator (`MultiFamilyProgressDisplay`) consumes them and renders.
+
+    Queue is `put_nowait` — if the parent falls behind, we drop the update
+    rather than block the worker. Message loss is fine: the display is
+    cosmetic, and the next update supersedes it. Terminal messages
+    (`family_end`) use blocking `put` to guarantee delivery.
+    """
+
+    def __init__(self, family: str, queue) -> None:
+        self._family = family
+        self._queue = queue
+        self._num_restarts = 0
+        self._restart_idx = 0
+        self._step = 0
+        self._best_opt_max = 0.0
+
+    def _try_put(self, msg: dict) -> None:
+        try:
+            self._queue.put_nowait(msg)
+        except Exception:
+            pass
+
+    def start_family(self, family: str, num_restarts: int, best_opt_max: float = 0.0) -> None:
+        self._num_restarts = num_restarts
+        self._best_opt_max = best_opt_max
+        self._try_put({
+            "kind": "family_start",
+            "family": family,
+            "num_restarts": num_restarts,
+            "best_opt_max": best_opt_max,
+        })
+
+    def update_best(self, best_opt_max: float) -> None:
+        if best_opt_max > self._best_opt_max:
+            self._best_opt_max = best_opt_max
+        self._try_put({
+            "kind": "best_update",
+            "family": self._family,
+            "best_opt_max": self._best_opt_max,
+        })
+
+    def start_restart(self, restart_idx: int, phase: str) -> None:
+        self._restart_idx = restart_idx + 1
+        self._try_put({
+            "kind": "restart_start",
+            "family": self._family,
+            "restart": restart_idx + 1,
+            "total_restarts": self._num_restarts,
+            "phase": phase,
+        })
+
+    def start_step(self, step: int, total_neighbors: int) -> None:
+        self._step = step
+        self._try_put({
+            "kind": "step_start",
+            "family": self._family,
+            "restart": self._restart_idx,
+            "step": step,
+            "total_neighbors": total_neighbors,
+        })
+
+    def advance(self, candidates: int, current_best_opt_max: float) -> None:
+        if current_best_opt_max > self._best_opt_max:
+            self._best_opt_max = current_best_opt_max
+        self._try_put({
+            "kind": "step_advance",
+            "family": self._family,
+            "restart": self._restart_idx,
+            "step": self._step,
+            "candidates": candidates,
+            "current_best": self._best_opt_max,
+        })
+
+    def end_step(self, result: str) -> None:
+        self._try_put({
+            "kind": "step_end",
+            "family": self._family,
+            "restart": self._restart_idx,
+            "step": self._step,
+            "result": result,
+        })
+
+    def end_family(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def report_final(self, result: "FamilyResult") -> None:
+        """Blocking send of the terminal `family_end` — parent must render DONE."""
+        msg = {
+            "kind": "family_end",
+            "family": result.family,
+            "opt_max": result.best_metrics.opt_max,
+            "baseline_opt_max": result.baseline_metrics.opt_max,
+            "delta_pp": result.delta_pp,
+            "verdict": result.verdict,
+            "skipped_reason": result.skipped_reason,
+        }
+        try:
+            self._queue.put(msg, timeout=5.0)
+        except Exception:
+            pass
+
+
+class MultiFamilyProgressDisplay:
+    """Parent-process aggregator: one row per family in a `rich.Live` panel.
+
+    Rows show status per family (queued / running / done / stalled) and update
+    from messages workers push to `self.queue`. A background daemon thread
+    drains the queue and mutates row state under a lock; `rich.Live` refreshes
+    the rendered table at ~10 Hz.
+
+    Fallback: when `use_rich=False` (non-TTY or import failure), the display
+    is a no-op — workers still push messages but nothing renders. Bumping
+    worker stderr StreamHandlers to WARNING+ (handled at worker entry) keeps
+    stdout/stderr quiet either way; file logs stay verbose.
+
+    Stalled-worker detection: if no message arrives from a running family for
+    STALL_TIMEOUT seconds, its row is annotated STALLED. Worker crashes
+    (segfault, OOM) surface as a stuck row instead of silently vanishing.
+    """
+
+    STALL_TIMEOUT_S = 900.0
+    _SPINNER_UNICODE = "⠋⠙⠹⠸⠼⠴⠶⠧⠇⠏"
+    _SPINNER_ASCII = "|/-\\"
+
+    def __init__(
+        self,
+        *,
+        families: list[str],
+        enabled: bool,
+        use_rich: bool,
+        loggers: list[logging.Logger] | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self.use_rich = use_rich and enabled
+        self._loggers = loggers or []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+        ctx = mp.get_context("spawn")
+        self._manager = ctx.Manager()
+        # Manager-backed Queue is proxy-based and can be pickled into Pool tasks;
+        # a plain `ctx.Queue()` cannot be passed as a Pool argument under spawn.
+        self.queue = self._manager.Queue()
+
+        # Row state keyed by family. Only known families get a row; families
+        # not in the initial list get added lazily on first message.
+        self._rows: dict[str, dict] = {}
+        for f in families:
+            self._rows[f] = self._new_row(f, "queued")
+
+        self._spinner_cycle = itertools.cycle(
+            self._SPINNER_UNICODE if self._supports_unicode() else self._SPINNER_ASCII
+        )
+        self._spinner_char = next(self._spinner_cycle)
+
+        self._live = None
+        self._console = None
+        self._rich_handler = None
+        self._saved_stream_handlers: list[tuple[logging.Logger, logging.Handler, int]] = []
+        self._consumer_thread: threading.Thread | None = None
+
+        if not self.enabled:
+            return
+        if self.use_rich:
+            self._init_rich()
+        else:
+            self._init_plain()
+
+    @staticmethod
+    def _new_row(family: str, status: str) -> dict:
+        return {
+            "family": family,
+            "status": status,
+            "restart": 0,
+            "total_restarts": 0,
+            "step": 0,
+            "phase": "",
+            "evaluated": 0,
+            "total_neighbors": 0,
+            "candidates": 0,
+            "best": 0.0,
+            "baseline": 0.0,
+            "delta_pp": 0.0,
+            "verdict": "",
+            "skipped_reason": None,
+            "last_update": time.monotonic(),
+        }
+
+    @staticmethod
+    def _supports_unicode() -> bool:
+        enc = (sys.stderr.encoding or "").lower()
+        return "utf" in enc
+
+    def _init_rich(self) -> None:
+        try:
+            from rich.console import Console
+            from rich.live import Live
+            from rich.logging import RichHandler
+        except ImportError:
+            self.use_rich = False
+            self._init_plain()
+            return
+
+        self._console = Console(file=sys.stderr, force_terminal=True)
+        self._live = Live(
+            self._render(),
+            console=self._console,
+            refresh_per_second=10,
+            transient=False,
+        )
+        self._live.start()
+
+        self._rich_handler = RichHandler(
+            console=self._console,
+            show_time=True,
+            show_level=True,
+            show_path=False,
+            markup=False,
+            rich_tracebacks=False,
+        )
+        self._rich_handler.setFormatter(logging.Formatter("%(name)s %(message)s"))
+        for lg in self._loggers:
+            for h in list(lg.handlers):
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    self._saved_stream_handlers.append((lg, h, h.level))
+                    lg.removeHandler(h)
+            lg.addHandler(self._rich_handler)
+
+    def _init_plain(self) -> None:
+        # Non-rich fallback: suppress INFO stderr in the parent so heartbeat lines
+        # don't drown out worker startup logs. Workers likewise bump their own
+        # stderr to WARNING+ when connected to a queue.
+        for lg in self._loggers:
+            for h in lg.handlers:
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    self._saved_stream_handlers.append((lg, h, h.level))
+                    h.setLevel(logging.WARNING)
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        self._consumer_thread = threading.Thread(target=self._consume_loop, daemon=True)
+        self._consumer_thread.start()
+
+    def _consume_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                msg = self.queue.get(timeout=0.2)
+            except Exception:
+                self._check_stalled()
+                if self.use_rich and self._live is not None:
+                    with self._lock:
+                        self._spinner_char = next(self._spinner_cycle)
+                        self._live.update(self._render())
+                continue
+            self._apply(msg)
+            if self.use_rich and self._live is not None:
+                with self._lock:
+                    self._live.update(self._render())
+
+    def _apply(self, msg: dict) -> None:
+        kind = msg.get("kind")
+        family = msg.get("family")
+        if not family:
+            return
+        with self._lock:
+            row = self._rows.get(family)
+            if row is None:
+                row = self._new_row(family, "running")
+                self._rows[family] = row
+            row["last_update"] = time.monotonic()
+            if kind == "family_start":
+                row["status"] = "running"
+                row["total_restarts"] = int(msg.get("num_restarts", 0))
+                row["best"] = float(msg.get("best_opt_max", 0.0))
+                row["phase"] = "baseline"
+            elif kind == "best_update":
+                row["best"] = max(row["best"], float(msg.get("best_opt_max", 0.0)))
+            elif kind == "restart_start":
+                row["status"] = "running"
+                row["restart"] = int(msg.get("restart", 0))
+                row["total_restarts"] = int(msg.get("total_restarts", row["total_restarts"]))
+                row["phase"] = str(msg.get("phase", ""))
+                row["step"] = 0
+                row["evaluated"] = 0
+                row["total_neighbors"] = 0
+                row["candidates"] = 0
+            elif kind == "step_start":
+                row["step"] = int(msg.get("step", 0))
+                row["total_neighbors"] = int(msg.get("total_neighbors", 0))
+                row["evaluated"] = 0
+                row["candidates"] = 0
+                row["phase"] = f"step {row['step']}"
+            elif kind == "step_advance":
+                row["evaluated"] += 1
+                row["candidates"] = int(msg.get("candidates", row["candidates"]))
+                row["best"] = max(row["best"], float(msg.get("current_best", row["best"])))
+            elif kind == "step_end":
+                row["phase"] = f"step {row['step']} {msg.get('result', '')}"
+            elif kind == "family_end":
+                row["status"] = "done"
+                row["best"] = float(msg.get("opt_max", row["best"]))
+                row["baseline"] = float(msg.get("baseline_opt_max", 0.0))
+                row["delta_pp"] = float(msg.get("delta_pp", 0.0))
+                row["verdict"] = str(msg.get("verdict", ""))
+                row["skipped_reason"] = msg.get("skipped_reason")
+
+    def _check_stalled(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            for row in self._rows.values():
+                if row["status"] == "running" and now - row["last_update"] > self.STALL_TIMEOUT_S:
+                    row["status"] = "stalled"
+
+    def _render(self):
+        from rich.table import Table
+
+        table = Table.grid(padding=(0, 1))
+        table.add_column()
+
+        def sort_key(item):
+            status = item["status"]
+            order = {"running": 0, "queued": 1, "stalled": 2, "done": 3}.get(status, 4)
+            return (order, item["family"])
+
+        rows = sorted(self._rows.values(), key=sort_key)
+        prev_status = None
+        for row in rows:
+            if prev_status is not None and row["status"] != prev_status:
+                table.add_row("")
+            prev_status = row["status"]
+            table.add_row(self._render_row(row))
+        return table
+
+    def _render_row(self, row: dict):
+        from rich.text import Text
+
+        t = Text()
+        t.append(f"{row['family']:<8}", style="bold cyan")
+        status = row["status"]
+        if status == "queued":
+            t.append("QUEUED", style="dim")
+            return t
+        if status == "stalled":
+            t.append("STALLED (no updates)", style="bold red")
+            return t
+        if status == "done":
+            if row["skipped_reason"]:
+                t.append(f"DONE     skipped ({row['skipped_reason']})", style="dim")
+                return t
+            t.append("DONE     ", style="bold green")
+            t.append(f"opt_max {row['best']:.4f} ")
+            if row["baseline"] > 0:
+                t.append(
+                    f"(baseline {row['baseline']:.4f}, {row['delta_pp']:+.1f}pp)",
+                    style="green" if row["delta_pp"] > 0 else "yellow",
+                )
+            t.append(f"  [{row['verdict']}]", style="dim")
+            return t
+        # running
+        if row["total_restarts"]:
+            t.append(f"restart {max(row['restart'] - 1, 0)}/{row['total_restarts']}  ")
+        if row["phase"]:
+            t.append(f"{row['phase']:<10} ", style="yellow")
+        if row["total_neighbors"]:
+            bar = self._bar(row["evaluated"], row["total_neighbors"], width=12)
+            t.append(f"[{bar}] ", style="green")
+            t.append(f"{row['evaluated']:>3}/{row['total_neighbors']:<3} neighbors  ")
+            t.append(f"{row['candidates']} candidates  ", style="magenta")
+        else:
+            t.append(f"[{' ' * 12}]  0/0   neighbors  0 candidates  ", style="dim")
+        t.append(f"best {row['best']:.4f}  ", style="bold")
+        t.append(self._spinner_char, style="cyan")
+        return t
+
+    @staticmethod
+    def _bar(done: int, total: int, width: int) -> str:
+        if total <= 0:
+            return " " * width
+        filled = int(width * done / total)
+        if filled >= width:
+            return "=" * width
+        return "=" * filled + ">" + " " * (width - filled - 1)
+
+    def close(self) -> None:
+        if not self.enabled:
+            return
+        self._stop.set()
+        if self._consumer_thread is not None:
+            self._consumer_thread.join(timeout=2.0)
+        # Drain any final messages that arrived after stop was set so DONE rows render.
+        try:
+            while True:
+                msg = self.queue.get_nowait()
+                self._apply(msg)
+        except Exception:
+            pass
+        try:
+            if self.use_rich and self._live is not None:
+                with self._lock:
+                    self._live.update(self._render())
+                self._live.stop()
+        finally:
+            for lg, handler, level in self._saved_stream_handlers:
+                if self._rich_handler is not None and self._rich_handler in lg.handlers:
+                    lg.removeHandler(self._rich_handler)
+                handler.setLevel(level)
+                if handler not in lg.handlers:
+                    lg.addHandler(handler)
+            self._saved_stream_handlers.clear()
+            try:
+                self._manager.shutdown()
+            except Exception:
+                pass
+
+
 def _search_family(
     family: str,
     defs: list[dict],
@@ -986,7 +1411,7 @@ def _search_family(
     improvement_threshold_pp: float,
     neutral_move_limit: int,
     log_level: str,
-    progress: ProgressDisplay | None = None,
+    progress: ProgressDisplay | QueueProgressDisplay | None = None,
 ) -> FamilyResult:
     log = _configure_family_logger(family, logs_dir, log_level)
     cache = SimCache(cache_path)
@@ -1295,7 +1720,31 @@ def _family_worker(kwargs: dict) -> FamilyResult:
 
     signal.signal(signal.SIGTERM, _sigterm)
     signal.signal(signal.SIGINT, _sigterm)
-    return _search_family(**kwargs)
+
+    # If parent supplied a progress queue, build a QueueProgressDisplay for this
+    # worker and bump stderr StreamHandlers to WARNING+ so INFO chatter doesn't
+    # interleave into the parent's live panel. File handlers keep full detail.
+    queue = kwargs.pop("progress_queue", None)
+    family = kwargs["family"]
+    prog: QueueProgressDisplay | None = None
+    if queue is not None:
+        prog = QueueProgressDisplay(family, queue)
+        # Pre-configure loggers here so we can bump their stderr StreamHandlers
+        # before _search_family emits any INFO records. Without this the first
+        # handful of INFO lines from each worker slip through and interleave
+        # into the parent's live panel.
+        _configure_family_logger(family, kwargs["logs_dir"], kwargs["log_level"])
+        for name in ("global", family):
+            lg = logging.getLogger(name)
+            for h in lg.handlers:
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    h.setLevel(logging.WARNING)
+
+    kwargs["progress"] = prog
+    result = _search_family(**kwargs)
+    if prog is not None:
+        prog.report_final(result)
+    return result
 
 
 def _write_family_report(reports_dir: Path, r: FamilyResult, defs: list[dict]) -> None:
@@ -1563,19 +2012,18 @@ def main(argv: list[str] | None = None) -> int:
     workers = args.num_workers if args.num_workers else max(1, min(len(worker_kwargs), cpu - 2))
     global_log.info("dispatching %d families across %d workers", len(worker_kwargs), workers)
 
-    # Live display only makes sense with a single-process search — multiprocessing
-    # workers can't share a terminal cleanly, and non-TTY output would corrupt on
-    # ANSI escapes / carriage returns. --no-progress is an explicit opt-out.
+    # Live display: single-worker uses ProgressDisplay; multi-worker uses the
+    # parent-side MultiFamilyProgressDisplay fed by a queue. Both require a TTY
+    # and are opt-out via --no-progress.
     is_tty = sys.stderr.isatty()
     progress_requested = not args.no_progress
-    progress_enabled = progress_requested and is_tty and workers == 1
-    if progress_requested and workers > 1:
-        global_log.warning("live progress disabled with multiple workers")
+    single_worker_progress = progress_requested and is_tty and workers == 1
+    multi_worker_progress = progress_requested and is_tty and workers > 1
     if progress_requested and not is_tty:
         global_log.info("live progress disabled: stderr is not a TTY")
 
     use_rich = False
-    if progress_enabled:
+    if single_worker_progress or multi_worker_progress:
         try:
             import rich  # noqa: F401
 
@@ -1590,7 +2038,7 @@ def main(argv: list[str] | None = None) -> int:
         for kw in worker_kwargs:
             fam_log = _configure_family_logger(kw["family"], logs_dir, args.log_level)
             prog = ProgressDisplay(
-                enabled=progress_enabled,
+                enabled=single_worker_progress,
                 use_rich=use_rich,
                 loggers=[global_log, fam_log],
             )
@@ -1599,16 +2047,32 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 prog.close()
     else:
+        multi_display: MultiFamilyProgressDisplay | None = None
+        if multi_worker_progress:
+            multi_display = MultiFamilyProgressDisplay(
+                families=[kw["family"] for kw in worker_kwargs],
+                enabled=True,
+                use_rich=use_rich,
+                loggers=[global_log],
+            )
+            multi_display.start()
+            for kw in worker_kwargs:
+                kw["progress_queue"] = multi_display.queue
+
         ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=workers, maxtasksperchild=1) as pool:
-            for r in pool.imap_unordered(_family_worker, worker_kwargs):
-                results.append(r)
-                elapsed = time.perf_counter() - t0
-                done = len(results)
-                total = len(worker_kwargs)
-                remaining = total - done
-                eta = (elapsed / done) * remaining if done else 0.0
-                global_log.info("heartbeat: %d/%d families done, elapsed=%.0fs, eta=%.0fs", done, total, elapsed, eta)
+        try:
+            with ctx.Pool(processes=workers, maxtasksperchild=1) as pool:
+                for r in pool.imap_unordered(_family_worker, worker_kwargs):
+                    results.append(r)
+                    elapsed = time.perf_counter() - t0
+                    done = len(results)
+                    total = len(worker_kwargs)
+                    remaining = total - done
+                    eta = (elapsed / done) * remaining if done else 0.0
+                    global_log.info("heartbeat: %d/%d families done, elapsed=%.0fs, eta=%.0fs", done, total, elapsed, eta)
+        finally:
+            if multi_display is not None:
+                multi_display.close()
 
     for r in results:
         defs = defs_by_family[r.family]
