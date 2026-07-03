@@ -3,9 +3,15 @@
 ## Goal
 
 For each fleet family (r7a, c7i, m7i, c7a, m8g, m7g, m6i, r7i, g5, g6, g4dn),
-find the combination of (1) AWS instance sizes offered by the fleet and (2)
-per-def pod shapes that maximizes **allocatable-weighted utilization of the
-binding resource** — `max(CPU util, memory util)` — on real HUD workload data.
+decide whether to keep the current single-nodepool layout or **split the
+family into multiple sub-nodepools with different instance sizes** and how to
+**partition its runner defs across those sub-nodepools**, to maximize
+allocatable-weighted `max(cpu_util, mem_util)` on real HUD workload data.
+
+Pod requests are not a free search axis. Once a def is assigned to a
+sub-nodepool with a chosen instance size, its cpu/mem request is derived
+deterministically from the tight-fit rule (D4) — the search never proposes
+arbitrary pod upsizing.
 
 Skip fleets that are already right-sized or out of scope: `p4d`, `p5`,
 `p5-large`, `p6-b200`, `p6-b200-large`, all `-metal` variants, the
@@ -24,8 +30,13 @@ Two failure modes we're steering between:
   = ~15-20% of the node lost to fixed overhead before any workload. Small
   instances have terrible overhead ratios.
 
-Sweet spot is usually 2-3 instance sizes per fleet with pod shapes tuned to
-fit cleanly.
+Current state deploys ONE nodepool per family using ONE instance size (the
+biggest in the family). All pods in a family share that nodepool. This is
+efficient for pods whose shape is close to a clean divisor of the big
+instance, and terrible for pods that are much smaller. Splitting the family
+into sub-nodepools lets small pods run on smaller instances (lower
+fragmentation) while larger pods keep the big-instance home (lower per-pod
+overhead).
 
 CPU util alone rewards packing patterns that strand expensive memory on
 memory-optimized families (r7a, r7i). Memory util alone rewards patterns that
@@ -36,40 +47,46 @@ takes the max.
 
 ## Logic — the search space
 
-### Shape catalog
+### Configuration structure
 
-For each AWS instance size in each family, enumerate every valid split N:
-
-```
-N_max = min(
-    alloc_cpu_m // req_cpu_m,
-    alloc_mem_mi // req_mem_mi,
-    alloc_gpu // req_gpu     if req_gpu > 0 else infinity,
-)
-enumerate N in 1..N_max
-```
-
-then compute per-slot allocatable capacity:
+Per family, a candidate configuration is a partition of the family's runner
+defs across one or more sub-nodepools plus an instance-size choice per
+sub-nodepool:
 
 ```
-slot_cpu_m  = (alloc_cpu_m  - N * 0) // N       # even split
-slot_mem_mi = alloc_mem_mi // N
-slot_gpu    = alloc_gpu // N                    # only valid if gpu % N == 0
+{
+  <sub_nodepool_name_1>: {instance: <aws_size>, pods: [def_label, ...]},
+  <sub_nodepool_name_2>: {instance: <aws_size>, pods: [def_label, ...]},
+  ...
+}
 ```
 
-Reject shapes where `slot_gpu == 0` but the def requires a GPU, and shapes
-where any slot dimension is <= 0.
+- Sub-nodepool count ranges from 1 (current state — no split) to `N_defs`
+  (one sub-nodepool per def).
+- Each sub-nodepool uses exactly one instance size.
+- Each def is assigned to exactly one sub-nodepool.
+- Pod cpu/mem requests are NOT stored in the config; they are derived
+  deterministically from `(def, sub_nodepool.instance)` via the tight-fit
+  rule below (D4).
 
-This admits current production shapes (N ∈ {3, 5, 6, 12, 24, 96}) that a
-power-of-2 constraint would exclude. Catalog size per family is typically
-50-150 shapes, still tractable.
+### Eligibility catalog
 
-### Per-def eligibility
+For each `(def, in-family instance)` pair, precompute whether the pair is
+feasible under the tight-fit rule and what the resulting adjusted slot shape
+and per-node count `N` would be:
 
-For each runner def, filter the family's catalog to shapes where
-`slot >= request` on ALL 3 dimensions. Compute per-eligible-shape waste on
-each axis (`slot - request`) so operators can eyeball the tradeoffs before any
-sim runs.
+- Reuse the existing `compute_allocatable(instance, scoped_daemonsets)`
+  helper. Returns `alloc_cpu_m, alloc_mem_mi, alloc_gpu`.
+- Compute `N = min(alloc_cpu_m // orig_cpu, alloc_mem_mi // orig_mem)` (also
+  divide alloc_gpu by orig_gpu when the def is a GPU def).
+- Compute the tight-fit slot: `slot_cpu = alloc_cpu_m // N`,
+  `slot_mem = alloc_mem_mi // N`.
+- Apply the bounds check from D4. If any dimension is out of bounds, mark
+  the pair infeasible.
+
+The catalog is small (K defs × M in-family sizes = tens to low hundreds of
+entries per family) and runs in seconds. It is the feasibility oracle every
+partition-level candidate consults.
 
 ### Objective
 
@@ -85,13 +102,15 @@ opt_mem = sum(mem_used_mi) / sum(mem_allocatable_mi + ds_mem_mi)
 objective(sim_result) = allocatable_weighted( max(opt_cpu, opt_mem) )
 ```
 
-Numerator is workload requests only (excludes DaemonSets). Denominator is
-capacity net of kubelet reserved (post-kubelet, pre-DS) — the physical space
-available for real work if DS overhead were zero. DS appears in the
-denominator as a fixed per-node tax, so configs that reduce per-node DS
-fraction (bigger instances, fewer nodes) win by shrinking the denominator;
-configs that pack workload tighter win by growing the numerator. Both are
-real optimization axes.
+`cpu_used_m` and `mem_used_mi` in the numerator are the **tight-fit-adjusted
+pod requests** (per D4), not the original def requests — because adjustment
+is a mechanical byproduct of the (def, instance) pair the config selects.
+Denominator is capacity net of kubelet reserved (post-kubelet, pre-DS) — the
+physical space available for real work if DS overhead were zero. DS appears
+in the denominator as a fixed per-node tax, so configs that reduce per-node
+DS fraction (bigger instances, fewer nodes) win by shrinking the denominator;
+configs that pack workload tighter (bigger adjusted slot per pod) win by
+growing the numerator. Both are real optimization axes.
 
 **Calibration metric — matches prod dashboard PromQL:**
 
@@ -106,7 +125,10 @@ DaemonSets over `node.status.allocatable`, i.e. post-kubelet-pre-DS). Sim's
 sim-vs-prod calibration and for final reports so a human can cross-check the
 sim number against Grafana. Not used for ranking.
 
-Tie-breaker on the ranking metric: total node-hours (lower is better). Report
+Tie-breaker on the ranking metric: total vCPU-hours (lower is better).
+vCPU-hours is size-invariant WITHIN a family — 1h × 192 vCPU on r7a.48xl and
+12h × 16 vCPU on r7a.4xl are the same raw compute — and roughly proportional
+to $/hr since $/vCPU is near-constant across sizes within a family. Report
 opt AND cal for both CPU and memory in every output; ranking uses
 `max(opt_cpu, opt_mem)`.
 
@@ -119,6 +141,25 @@ workflow job regardless of the workflow's fleet (see runner.yaml.tpl —
 workflow-fleet optimization does not perturb c7i-runner load at all. Coupling
 between families is zero at this metric. Outer loop: **for each family, run
 an independent search**.
+
+Within a family, the search space is (partitions of K defs) × (per-partition
+instance assignment from M in-family instances). Bell number
+B(K) counts the partitions: B(5)=52, B(6)=203, B(7)=877. For each partition,
+each group independently picks from M instances (typically M ≈ 6-8). Raw
+count is B(K) × sum over partitions of M^(group_count); feasibility filtering
+prunes aggressively.
+
+Two viable approaches:
+
+- **Exhaustive enumeration**: iterate every feasible config, sim each, pick
+  best. ~200-500 sim runs per family × 20s = 1-3 hours per family. Guarantees
+  global optimum. Preferred for K ≤ 5.
+- **Hill-climb over partition+assignment space**: multi-restart from random
+  feasible seeds. Neighbor moves (see Phase 2). Preferred for K ≥ 6 where
+  exhaustive gets expensive.
+
+The choice is per-family and controlled by a CLI flag with a K-based
+default.
 
 ## Decisions made
 
@@ -159,12 +200,40 @@ Per-fleet search. Other fleets held at current config. Coupling to
 template, not derived from workflow fleet choice. No cross-fleet
 re-optimization phase is required.
 
-### D4: N enumeration is data-driven, not power-of-2
+### D4: Pod adjustment rule — deterministic tight-fit with tolerance bounds
 
-`N ∈ 1..N_max` where `N_max` is derived per (def, instance) from the
-allocatable-vs-request division. This admits the shapes production actually
-runs (N=3 on r7a.24xl for a 24c def; N=12 on r7a.48xl for the 8c amx def)
-that a `{1,2,4,8,16,32}` constraint would exclude.
+Given a def with original request `(orig_cpu, orig_mem)` (and `orig_gpu` if
+applicable) assigned to a sub-nodepool with instance `inst`:
+
+1. `alloc_cpu_m, alloc_mem_mi, alloc_gpu = compute_allocatable(inst, ds)`.
+2. Derive per-node pod count `N`:
+   ```
+   n_max_cpu = alloc_cpu_m // orig_cpu
+   n_max_mem = alloc_mem_mi // orig_mem
+   n_max_gpu = (alloc_gpu // orig_gpu) if orig_gpu > 0 else inf
+   N = min(n_max_cpu, n_max_mem, n_max_gpu)
+   ```
+   If `N == 0`, the pair is infeasible on capacity alone.
+3. Derive the tight-fit slot:
+   ```
+   slot_cpu = alloc_cpu_m // N
+   slot_mem = alloc_mem_mi // N
+   ```
+   `slot ≥ orig` on each dimension because `N` was floor-divided; any
+   remainder is wasted per-node.
+4. Bounds check (adjusted slot vs original request):
+   - **CPU lower bound**: `slot_cpu ≥ orig_cpu - max(1000, orig_cpu × 0.05)`
+     (max of 1 vCPU or 5%, whichever is larger).
+   - **CPU upper bound**: `slot_cpu ≤ orig_cpu + max(2000, orig_cpu × 0.35)`
+     (max of 2 vCPU or 35%, whichever is larger).
+   - **Memory lower bound**: `slot_mem ≥ orig_mem × 0.95` (5% shrink max).
+   - **Memory upper bound**: none.
+5. If any dimension is out of bounds, the (def, instance) pair is
+   **infeasible** and any config containing it is rejected.
+
+The adjusted slot values `(slot_cpu, slot_mem)` are the pod's cpu/mem
+requests in the simulator run. They are not a search variable — they are a
+function of the (def, instance) pair.
 
 ### D5: Shape represents pod REQUESTS, not real usage
 
@@ -175,43 +244,42 @@ utilization — so prod may see additional headroom sim does not model.
 Expect a systematic gap between sim util and Grafana util; Phase 0
 calibrates it.
 
-### D6: Deliverable is git-apply-able patches
+### D6: Deliverable is git-apply-able patches with a rename flag
 
-Recommendations are emitted as:
+Recommendations per family are emitted as:
 
-- Per-def unified diff against `modules/arc-runners/defs/<label>.yaml`
-  updating `vcpu`, `memory`, `instance_type`, `node_fleet` fields as needed.
-- Per-fleet unified diff against `modules/nodepools/defs/<fleet>.yaml` (or a
-  new file for a virtual sub-fleet — see D7) updating the `instances` list.
-- Per-rec metadata: does this def require a runner-name rename? If the
-  label encodes shape (`l-x86iamx-8-64` means "8 vcpu / 64 GiB") and the
-  shape changed, rename is required — auto-apply is halted for that rec and
-  a manual-action item is emitted instead.
+- One new `modules/nodepools/defs/<family>-<subfleet-label>.yaml` per
+  sub-nodepool that does not already exist (each new sub-nodepool's
+  `instances` list contains exactly its chosen instance size, name-taint
+  isolated per prod convention — see D7).
+- Per-def patch against `modules/arc-runners/defs/<label>.yaml`:
+  - `node_fleet` updated to point at the assigned sub-nodepool.
+  - `vcpu` / `memory` updated to the D4 tight-fit slot values (may be a
+    small upsize or ≤5% memory shrink).
+- Per-def rename flag: labels like `l-x86iamx-8-64` encode the shape
+  ("8 vcpu / 64 GiB"). If the adjustment changes cpu or mem by more than
+  ~10% relative to the original, the label lies about the shape. Emit
+  `rename_required=true` for that def; auto-apply is halted for that def
+  and a manual-action item is emitted with a proposed new label and the
+  list of downstream `.github/workflows/` files that would need updating.
 
 Patches must pass `git apply --check` and `just lint`.
 
-### D7: Fleet composition via virtual sub-fleets (Option B)
+### D7: Sub-nodepools are the deployment unit
 
-`sim_nodes.pick_instance` picks the highest-weight instance in the fleet
-whose allocatable fits the pod (sim_nodes.py:200-214). For a fleet with
-both r7a.8xl (weight 20) and r7a.24xl (weight 80), a pod that fits both
-lands on r7a.24xl. This means "add r7a.8xl to the fleet" alone does not
-produce r7a.8xl placements — the small-instance shape gets shadowed.
+Sub-nodepools are the first-class output of this optimization. Each
+recommended sub-nodepool becomes its own fleet YAML with a single-entry
+`instances` list, name-taint isolated so `sim_nodes.pick_instance` and
+prod Karpenter both pick the right instance for pods routed to it — the
+same pattern prod already uses for `r7a-large`. Each def's `node_fleet`
+points at exactly one sub-nodepool.
 
-The recommendation output creates virtual sub-fleets with disjoint instance
-lists — e.g. `r7a-small` (r7a.8xl only), `r7a-medium` (r7a.16xl only),
-`r7a-large` (existing). Each def is mapped to the fleet that contains the
-recommended instance. This matches how prod already handles the
-name-taint-isolated `r7a-large` fleet. Operator changes required:
-
-- New `modules/nodepools/defs/<subfleet>.yaml` file per sub-fleet.
-- Per-def `node_fleet` field updated to the target sub-fleet name.
-- No sim changes needed — sub-fleets are just fleet YAMLs the sim already
-  loads via `_load_fleet_specs`.
-
-Chosen over Option A (threading `label` through `pick_instance` for per-def
-overrides) because it matches prod deployment patterns and requires zero
-sim-code changes.
+This maps cleanly to how `sim_nodes.pick_instance` works
+(sim_nodes.py:200-214): it picks the highest-weight instance in the fleet
+whose allocatable fits the pod. With one instance per sub-nodepool, the
+choice is trivially deterministic. No sim-code changes required —
+sub-nodepools are just fleet YAMLs the sim already loads via
+`_load_fleet_specs`.
 
 ### D8: Skip GPU/baremetal/reserved fleets and c7i-runner
 
@@ -245,29 +313,33 @@ Scope: `r7a`, `c7i`, `m7i`, `c7a`, `m8g`, `m7g`, `m6i`, `r7i`, `g5`, `g6`,
    Report the delta per fleet. If the delta is > 5pp systematically, all
    sim-based recs are reframed as **deltas vs baseline**, not absolutes.
 4. Extend `INSTANCE_SPECS` in `scripts/python/instance_specs.py` to cover
-   every in-scope family size that a Phase 1 catalog would enumerate but is
-   not currently present (e.g. r7a.2xl, r7a.4xl). Fill `memory_mi` via
+   every in-scope family size that the Phase 1 catalog would need (every
+   AWS size in each in-scope family — the catalog considers all of them as
+   candidate sub-nodepool instances). Fill `memory_mi` via
    `collect_instance_memory.py` where a live node exists; otherwise use the
    0.925 estimate as documented.
-5. Compute per-fleet theoretical util ceiling from the Phase 1 shape catalog
-   — the best achievable util assuming perfect packing and current def
-   requests. Anchors the "how much room is there" question before any
+5. Compute per-family theoretical util ceiling from the Phase 1 eligibility
+   catalog — the best achievable util assuming perfect packing under D4
+   constraints. Anchors the "how much room is there" question before any
    search.
 
-### Phase 1 — Shape catalog (analytical, no sim runs)
+### Phase 1 — Eligibility catalog (analytical, no sim runs)
 
 Deliverable: `scripts/node-size-sweep/optimize_catalog.py`.
 
 - Input: `INSTANCE_SPECS`, `ENI_MAX_PODS`, DaemonSet defs, runner defs.
 - Output:
-  1. **Shape catalog**: per (family, instance, N), the
-     `slot_cpu_m / slot_mem_mi / slot_gpu / overhead_frac / slots_per_node`.
-  2. **Per-def eligibility**: per runner def, the eligible shapes and
-     waste-per-pod on each dimension.
+  1. **Eligibility catalog**: per `(def, in-family instance)` pair,
+     `(feasible: bool, N, slot_cpu_m, slot_mem_mi, slot_gpu,
+     overhead_frac)`. `feasible` reflects the D4 bounds check.
+  2. **Per-def summary**: for each def, the list of feasible instances and
+     per-instance waste on each dimension (`slot - orig`), so operators can
+     see which instances a def is compatible with before any sim runs.
 
-Runs in seconds. Answers "for r7a defs, what are the viable shapes and their
-waste profiles?" and surfaces obvious wins (waste > 30% shapes replaced by
-waste < 10% shapes) without any sim run.
+Runs in seconds. Answers "for the r7a family, which (def, instance) pairs
+are feasible and what does each look like after adjustment?" and surfaces
+obvious wins (large defs stranded on small instances, small defs stranded
+on the current family-max instance) without any sim run.
 
 ### Phase 2 — Sim-driven search
 
@@ -275,37 +347,49 @@ Deliverable: `scripts/node-size-sweep/optimize_search.py`.
 
 For each in-scope family:
 
-1. **Seed configs**: baseline (current config), greedy-tight (each def picks
-   the shape maximizing `request / slot`), greedy-dense (each def picks the
-   shape with fewest slots per node).
-2. **Feasibility gate**: every candidate config (seed or neighbor) is
-   checked: does every def in the family have at least one eligible shape
-   in the resulting fleet list? Skip if not. Prevents the search from
-   entering states where some def has no home.
-3. **Multi-restart hill-climb**: `NUM_RESTARTS >= 20`. Neighbor = flip one
-   def to a different eligible shape (which may add/remove an instance from
-   the fleet). Try all neighbors, keep the best if it improves objective by
-   more than `3σ` (σ from Phase 0).
-4. **Neutral-move acceptance**: sideways moves (delta within noise floor)
-   are accepted with limited budget per restart, to traverse plateaus
-   without cycling. Prevents early termination on flat landscapes typical
-   of coarse discrete search spaces.
-5. **Memoize**: `sim(config) → objective` on config hash. See
-   Checkpointing.
+1. **Enumeration mode selection**: default exhaustive for K ≤ 5, hill-climb
+   for K ≥ 6. Overridable via `--mode {exhaustive,hillclimb}`.
+2. **Feasibility gate**: a config is feasible iff every def in the family
+   is assigned to a sub-nodepool whose instance is in the def's feasible
+   list from Phase 1. Infeasible configs are skipped without a sim run.
+3. **Exhaustive**: iterate all partitions of the K defs (Bell number B(K));
+   for each partition, enumerate all M^(group_count) instance-assignment
+   combinations; drop infeasible; sim the survivors; return the argmax on
+   the ranking objective.
+4. **Hill-climb**: `NUM_RESTARTS >= 20`. Neighbor moves on a
+   (partition, assignment) config:
+   - **move-pod**: reassign one def from its current sub-nodepool to a
+     different existing sub-nodepool (or to a new singleton sub-nodepool).
+   - **merge**: combine two sub-nodepools into one, picking the instance
+     that keeps every merged def feasible; skip if none exists.
+   - **split**: peel a subset of defs out of a sub-nodepool into a new
+     sub-nodepool, with a newly chosen instance.
+   - **change-instance**: swap one sub-nodepool's instance for another
+     in-family instance that keeps every def in that sub-nodepool feasible.
+   All neighbors are feasibility-gated before sim. Keep neighbor if
+   objective improves by > 3σ (σ from Phase 0). Sideways moves within σ
+   are accepted with limited budget per restart to traverse plateaus.
+5. **Baseline**: the current single-sub-nodepool config (one sub-nodepool
+   with the family's current instance, all defs assigned). Included as a
+   seed and as the reference for "no change recommended" verdicts.
+6. **Memoize**: `sim(config) → objective` on config hash (see
+   Checkpointing).
 
 Emit to logs: `max(cpu, mem)` objective, cpu util alone, mem util alone,
-node-hours. Ranking is `max(cpu, mem)`; node-hours breaks ties.
+vCPU-hours. Ranking is `max(cpu, mem)`; vCPU-hours breaks ties.
 
-Expected sim runs per fleet: 50-500 depending on family size and restart
-count. Times ~11 families. Total budget target: ~24h wall on a single box
-without parallelism; parallelism across families is trivial.
+Expected sim runs per family: 200-500 exhaustive on small families; 50-500
+hill-climb on large ones. Times ~11 families. Total budget target: ~24h
+wall on a single box without parallelism; parallelism across families is
+trivial.
 
 ### Phase 3 — Sensitivity analysis
 
-For the top recommendation per fleet:
+For the top recommendation per family:
 
-- Sweep ±1 shape per def and record util delta. If deltas are below noise
-  floor, the recommendation is fragile — flag it.
+- Neighbor perturbation: apply one of each D4-preserving neighbor move
+  (move-pod, merge, split, change-instance) and record util delta. If
+  deltas are below noise floor, the recommendation is fragile — flag it.
 - Sweep runner-container-hooks tax (currently 320m/522Mi) by ±50%. If a
   ±50% change to the hook tax would shift the recommendation, flag as
   "hook-overhead sensitive" — operator should consider hook optimization
@@ -313,16 +397,40 @@ For the top recommendation per fleet:
 
 ### Phase 4 — Deliverable
 
-Per-fleet report AND git-apply-able patches. Report includes:
+Per-family report AND git-apply-able patches. Report format per family:
 
-- Current util (both dimensions).
-- Recommended util (both dimensions).
+```
+Family: r7a
+Baseline:
+  Sub-nodepool: r7a (instance r7a.48xlarge)
+    Defs (K=6): [l-x86-r7a-8-64, l-x86-r7a-24-192, ...]
+    opt_cpu=54.1%  opt_mem=48.7%  opt_max=54.1%
+    vcpu-hours: 2,368,000
+
+Recommendation:
+  Sub-nodepool: r7a-small (instance r7a.8xlarge)
+    Defs (2): [l-x86-r7a-8-64, l-x86-r7a-4-32]
+    per-def adjustment:
+      l-x86-r7a-8-64: cpu 8000m->8000m (unchanged), mem 65536Mi->65536Mi (unchanged), N=1
+      l-x86-r7a-4-32: cpu 4000m->4000m (unchanged), mem 32768Mi->32768Mi (unchanged), N=2
+  Sub-nodepool: r7a-large (instance r7a.48xlarge)
+    Defs (4): [l-x86-r7a-24-192, ...]
+    per-def adjustment: ...
+  opt_max=68.4%  (delta +14.3pp vs baseline)
+  vcpu-hours: 1,876,000  (delta -492,000 vs baseline, -20.8%)
+
+Rename-required: l-x86-r7a-4-32 (mem adjusted -12% -> label lies)
+Sensitivity: stable (all neighbor perturbations within σ)
+Verdict: apply
+```
+
+Report also includes:
+
 - Theoretical ceiling from Phase 0.
 - Noise floor σ from Phase 0.
 - Sim-vs-prod delta from Phase 0.
-- Per-def rename-required flag from D6.
 - Sensitivity flags from Phase 3.
-- Rejection cases: fleets where no recommendation beats baseline by > 3σ
+- Rejection cases: families where no recommendation beats baseline by > 3σ
   get an explicit "no change recommended" verdict.
 
 Output layout:
@@ -369,8 +477,9 @@ observability and crash-safety are first-class requirements.
 ### Progress bars
 
 - Interactive (isatty): tqdm progress bar per family showing "runs completed
-  / estimated total" where estimate = `num_restarts * avg_neighbors_per_restart *
-  avg_convergence_steps` (estimate refined online).
+  / estimated total" where estimate = feasible-config count for exhaustive
+  mode, or `num_restarts * avg_neighbors_per_restart * avg_convergence_steps`
+  for hill-climb (estimate refined online).
 - Log lines are ALSO emitted alongside progress bars so a `tail -F` on the
   log file gives useful output.
 
@@ -388,7 +497,7 @@ CREATE TABLE sim_cache (
     objective   REAL NOT NULL,
     cpu_util    REAL NOT NULL,
     mem_util    REAL NOT NULL,
-    node_hours  REAL NOT NULL,
+    vcpu_hours  REAL NOT NULL,
     computed_at INTEGER NOT NULL
 );
 ```
@@ -397,7 +506,8 @@ Key input to the sha256:
 
 ```json
 {
-  "config":       {...},              // {label: {cpu_m, mem_mi, gpu, instance_type, node_fleet}}
+  "config":       {...},              // {subpool: {instance, pods: [...]}, ...}
+  "adjusted":     {...},              // {def_label: {cpu_m, mem_mi}}  derived from config via D4
   "sim_flags":    {...},              // seed, empty_ttl, warmup, phantom, cap, etc.
   "csv_sha256":   "...",              // input CSV hash
   "simulate_py":  "...",              // sha256 of simulate.py
@@ -454,7 +564,8 @@ seconds stale. Cache is safe (each sim result is committed on completion).
 --output-dir <path>       default: output/<timestamp>-<git-sha>
 --resume <path>           resume from a prior run's directory
 --fleet <name>            run just one family (repeatable; testing only)
---num-restarts <N>        default 20
+--mode {exhaustive,hillclimb,auto}   default auto (exhaustive if K<=5)
+--num-restarts <N>        default 20 (hill-climb only)
 --noise-sigma <float>     override Phase 0 noise floor (testing)
 --log-level {debug,info,warning}   default info
 --dry-run                 emit Phase 1 catalog + eligibility, no sims
@@ -473,28 +584,28 @@ seconds stale. Cache is safe (each sim result is committed on completion).
 - Extend `simulate()` signature to accept a pre-parsed `jobs` list (already
   the case) plus a `ClusterModel` whose fleet YAML paths are overridden per
   candidate config. `ClusterModel.__init__` already accepts `defs_dirs`;
-  the search harness writes the candidate fleet YAMLs to a temp dir per
-  config and points `ClusterModel` at it.
+  the search harness writes the candidate sub-nodepool YAMLs to a temp dir
+  per config and points `ClusterModel` at it.
 
 ## Implementation details
 
-### Config injection
-
-A candidate configuration is:
+### Config representation and injection
 
 ```python
-Config = dict[str, DefShape]
-DefShape = {
-    "cpu_m":         int,   # pod request millicores (includes hooks tax)
-    "mem_mi":        int,   # pod request MiB (includes hooks tax)
-    "gpu":           int,
-    "instance_type": str,   # target instance size for this def
-    "node_fleet":    str,   # target (possibly virtual) fleet name
+Config = dict[str, SubNodepool]   # subpool_name -> spec
+SubNodepool = {
+    "instance": str,               # AWS size, e.g. "r7a.8xlarge"
+    "pods":     list[str],         # def labels assigned to this subpool
 }
 ```
 
 Applied by:
-- Writing a `<family>.yaml` (or per-sub-fleet YAML) to a temp defs dir.
+
+- For each subpool, writing a `<family>-<subpool-suffix>.yaml` to a temp
+  defs dir with `instances: [<instance>]`.
+- For each def, writing an adjusted-request override that maps
+  `<def_label> -> {cpu_m: slot_cpu, mem_mi: slot_mem, node_fleet: <subpool>}`
+  where `slot_cpu`, `slot_mem` come from D4 applied to (def, subpool.instance).
 - Constructing `ClusterModel(defs_dirs=[<tempdir>, <other-real-dirs>])`.
 - Overriding `build_label_table()`'s output for the candidate labels before
   passing into `load_jobs` (or into a variant that accepts an already-built
@@ -503,93 +614,110 @@ Applied by:
 No changes to `simulate.py`'s inner loop. All optimizer logic lives in the
 new files.
 
-### Shape catalog generation
+### Eligibility catalog generation
 
 ```python
-def generate_catalog(family: str, defs: list[DefReq]) -> list[Shape]:
+def generate_catalog(family: str, defs: list[DefReq]) -> dict[tuple[str, str], Eligibility]:
     instances = [i for i in INSTANCE_SPECS if i.startswith(f"{family}.")]
-    out = []
-    for inst in instances:
-        alloc = compute_allocatable(inst, ...)
-        n_max_by_def = max(
-            min(
-                alloc.cpu_m // d.cpu_m,
-                alloc.mem_mi // d.mem_mi,
-                (alloc.gpu // d.gpu) if d.gpu > 0 else 10_000,
-            )
-            for d in defs
-        )
-        for n in range(1, n_max_by_def + 1):
-            if alloc.gpu > 0 and alloc.gpu % n != 0:
+    out = {}
+    for d in defs:
+        for inst in instances:
+            alloc = compute_allocatable(inst, scoped_daemonsets_for(inst))
+            n_cpu = alloc.cpu_m // d.cpu_m
+            n_mem = alloc.mem_mi // d.mem_mi
+            n_gpu = (alloc.gpu // d.gpu) if d.gpu > 0 else 10_000
+            N = min(n_cpu, n_mem, n_gpu)
+            if N == 0:
+                out[(d.label, inst)] = Eligibility(feasible=False, reason="capacity")
                 continue
-            slot_cpu = alloc.cpu_m // n
-            slot_mem = alloc.mem_mi // n
-            slot_gpu = alloc.gpu // n
-            if slot_cpu <= 0 or slot_mem <= 0:
+            slot_cpu = alloc.cpu_m // N
+            slot_mem = alloc.mem_mi // N
+            slot_gpu = alloc.gpu // N if d.gpu > 0 else 0
+            if not within_cpu_bounds(slot_cpu, d.cpu_m) \
+                    or not within_mem_bounds(slot_mem, d.mem_mi):
+                out[(d.label, inst)] = Eligibility(feasible=False, reason="tolerance")
                 continue
-            out.append(Shape(
-                instance=inst, n=n,
+            out[(d.label, inst)] = Eligibility(
+                feasible=True, N=N,
                 slot_cpu_m=slot_cpu, slot_mem_mi=slot_mem, slot_gpu=slot_gpu,
                 overhead_frac=1 - (alloc.cpu_m / (INSTANCE_SPECS[inst]["vcpu"] * 1000)),
-            ))
+            )
     return out
+
+def within_cpu_bounds(slot_cpu: int, orig_cpu: int) -> bool:
+    lo = orig_cpu - max(1000, int(orig_cpu * 0.05))
+    hi = orig_cpu + max(2000, int(orig_cpu * 0.35))
+    return lo <= slot_cpu <= hi
+
+def within_mem_bounds(slot_mem: int, orig_mem: int) -> bool:
+    return slot_mem >= int(orig_mem * 0.95)
 ```
-
-### Per-def eligibility
-
-```python
-def eligible_shapes(req: DefReq, catalog: list[Shape]) -> list[Shape]:
-    return [
-        s for s in catalog
-        if s.slot_cpu_m >= req.cpu_m
-        and s.slot_mem_mi >= req.mem_mi
-        and s.slot_gpu >= req.gpu
-    ]
-```
-
-Waste per shape: `(slot_cpu_m - req.cpu_m, slot_mem_mi - req.mem_mi)`.
 
 ### Search harness
 
-```
+```python
 for family in FAMILIES:
     if state.family_done(family): continue
     catalog = generate_catalog(family, defs[family])
-    baseline = load_current(family)
-    if not feasible(baseline, catalog): raise ValueError("baseline infeasible")
-    best_config, best_obj = baseline, run_sim_cached(baseline)
-    for restart in range(NUM_RESTARTS):
-        if state.restart_done(family, restart): continue
-        state.mark_running(family, restart)
-        config = seed(restart, baseline, catalog)  # 0=baseline, 1=tight, 2=dense, N>=3=random
-        neutral_budget = NEUTRAL_MAX
-        while True:
-            neighbors = [n for n in enumerate_neighbors(config, catalog) if feasible(n, catalog)]
-            scored = [(n, run_sim_cached(n)) for n in neighbors]
-            best_n, best_n_obj = max(scored, key=lambda t: t[1])
-            delta = best_n_obj - run_sim_cached(config)
-            if delta > 3 * sigma:
-                config = best_n
-            elif abs(delta) <= sigma and neutral_budget > 0:
-                config = best_n
-                neutral_budget -= 1
-            else:
-                break
-            state.checkpoint(family, restart, config, ...)
-        obj = run_sim_cached(config)
-        if obj > best_obj + 3 * sigma:
-            best_config, best_obj = config, obj
-        state.mark_restart_done(family, restart)
+    baseline = load_current(family)                 # 1 subpool, all defs
+    assert feasible(baseline, catalog)
+    baseline_obj = run_sim_cached(baseline)
+    best_config, best_obj = baseline, baseline_obj
+
+    if mode(family) == "exhaustive":
+        for cfg in enumerate_configs(defs[family], instances[family], catalog):
+            obj = run_sim_cached(cfg)
+            if obj > best_obj + 3 * sigma:
+                best_config, best_obj = cfg, obj
+    else:  # hillclimb
+        for restart in range(NUM_RESTARTS):
+            if state.restart_done(family, restart): continue
+            state.mark_running(family, restart)
+            cfg = seed(restart, baseline, catalog)  # 0=baseline, N>=1=random feasible
+            neutral_budget = NEUTRAL_MAX
+            while True:
+                neighbors = [n for n in neighbor_moves(cfg, catalog) if feasible(n, catalog)]
+                scored = [(n, run_sim_cached(n)) for n in neighbors]
+                if not scored: break
+                best_n, best_n_obj = max(scored, key=lambda t: t[1])
+                delta = best_n_obj - run_sim_cached(cfg)
+                if delta > 3 * sigma:
+                    cfg = best_n
+                elif abs(delta) <= sigma and neutral_budget > 0:
+                    cfg = best_n
+                    neutral_budget -= 1
+                else:
+                    break
+                state.checkpoint(family, restart, cfg, ...)
+            obj = run_sim_cached(cfg)
+            if obj > best_obj + 3 * sigma:
+                best_config, best_obj = cfg, obj
+            state.mark_restart_done(family, restart)
+
     verdict = "improved" if best_obj > baseline_obj + 3 * sigma else "no-change"
     state.mark_family_done(family, best_config, verdict)
     write_reports_and_patches(family, best_config, baseline)
 ```
 
-### Neighbor generation
+### Neighbor generation (hill-climb only)
 
-Per-def flip: for each def in the family, for each eligible shape different
-from the current, emit `{**config, def: new_shape}`. Neighbors per config
-typically 20-100.
+Four move types on a `(partition, assignment)` config:
+
+- **move-pod**: for each def, for each existing sub-nodepool other than the
+  def's current one, emit a config with the def reassigned; also emit a
+  config with the def in a new singleton sub-nodepool (instance chosen from
+  the def's feasible instances).
+- **merge**: for each pair of sub-nodepools, emit a config merging them,
+  with the merged sub-nodepool's instance chosen as the one that keeps every
+  merged def feasible (skip if none exists).
+- **split**: for each sub-nodepool containing ≥2 defs, for each non-empty
+  proper subset of its defs, emit a config peeling that subset into a new
+  sub-nodepool with a newly chosen instance.
+- **change-instance**: for each sub-nodepool, for each in-family instance
+  that keeps every assigned def feasible, emit a config with the instance
+  swapped.
+
+All neighbors are feasibility-gated (D4) before sim.
 
 ### File layout
 
@@ -656,14 +784,15 @@ effects would show up as sim-vs-prod delta, which Phase 0 measures.
 
 ### R5: Runner-name encodes shape
 
-Labels like `l-x86iamx-8-64` encode "8 vcpu / 64 GiB". Shrinking a def's
-`cpu_m` / `mem_mi` produces a label that lies. Renames are cross-repo
-coordinated changes.
+Labels like `l-x86iamx-8-64` encode "8 vcpu / 64 GiB". A D4 adjustment that
+moves cpu or mem more than ~10% produces a label that lies. Renames are
+cross-repo coordinated changes.
 
 Mitigation: emit `rename_required=true` per rec when the label encodes the
-shape and the shape moved. Do NOT auto-apply patches for renamed defs;
-emit a manual-action item with the proposed new label and the list of
-downstream `.github/workflows/` files that would need updating.
+shape and the adjusted shape drifts past the threshold. Do NOT auto-apply
+patches for renamed defs; emit a manual-action item with the proposed new
+label and the list of downstream `.github/workflows/` files that would need
+updating.
 
 ### R6: Guaranteed QoS requires requests == limits
 
@@ -711,8 +840,8 @@ clusters.
 ### R10: INSTANCE_SPECS incomplete
 
 Not every in-scope family size is in `instance_specs.py` today — the file
-prioritizes what production actually runs. Phase 1's catalog will trip on
-missing entries.
+prioritizes what production actually runs. The Phase 1 catalog needs every
+size in every in-scope family.
 
 Mitigation: Phase 0 step 4 adds every in-scope family size before the
 catalog runs. Fixed cost, no reason to defer.
@@ -731,13 +860,31 @@ absolutes; the report text says so explicitly.
   Seed-variance stddev of the objective < 1pp cluster-wide util. Sim-vs-prod
   delta measured per fleet and documented; if > 5pp, explicit caveat added
   to all deliverables.
-- **Phase 1**: catalog + eligibility surface at least one obvious win per
-  family (waste > 30% shape replaced by waste < 10% shape), with no sim
-  runs.
-- **Phase 2**: at least three fleets show `max(cpu, mem)` util improvement
+- **Phase 1**: eligibility catalog surfaces at least one obvious win per
+  family (a def currently stranded on the family-max instance that is
+  feasible on a much smaller instance with clearly lower overhead), with
+  no sim runs.
+- **Phase 2**: at least three families show `max(cpu, mem)` util improvement
   > 3σ vs baseline. Improvement stable across two disjoint validation
   windows (weekdays vs weekends, and first-30 vs last-30 days).
 - **Phase 4**: patch files apply cleanly (`git apply --check` passes),
   pass `just lint`, pass `just test`. Reports include current util,
   recommended util, ceiling, noise floor, sim-vs-prod delta, and per-def
   rename flags. Rejection cases explicitly say "no change recommended".
+
+## Prior misformulation
+
+An earlier version of this document formulated the problem as a search over
+per-def `(instance, N)` shapes drawn from a large enumerated shape catalog,
+with pod cpu/mem requests treated as free search variables. That
+formulation let the optimizer arbitrarily upsize pod requests to fit
+whichever slot maximized the objective, which is not a valid deployment
+change — pod requests are constrained by what the def actually needs, and
+runner labels encode the shape. The correct formulation, above, treats the
+search variable as "how do we partition this family's defs across
+sub-nodepools, and which instance size does each sub-nodepool use?" Pod
+adjustment is a mechanical consequence of the (def, instance) pair,
+bounded by the tight tolerances in D4 (≤ +max(2 vCPU, 35%) CPU up,
+≤ max(1 vCPU, 5%) CPU down, ≤ 5% memory down, memory up unbounded). Any
+(def, instance) pair that would need a larger adjustment is infeasible and
+excluded before the sim ever runs.

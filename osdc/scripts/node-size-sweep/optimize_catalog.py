@@ -3,24 +3,14 @@
 # requires-python = ">=3.12"
 # dependencies = ["pyyaml>=6.0"]
 # ///
-"""Phase 1 of the node-size optimizer: shape catalog + per-def eligibility.
+"""Phase 1 of the node-size optimizer: eligibility catalog.
 
-Analytical. No sim runs. For each in-scope fleet family:
+For each (def, in-family instance) pair in scope, compute whether the pair is
+feasible under the D4 tight-fit rule (see optimize.md) and, if so, what the
+resulting adjusted pod slot and per-node pod count `N` are.
 
-  1. Enumerate every AWS instance size present in INSTANCE_SPECS for that
-     family and compute allocatable (kubelet-reserved + DaemonSet overhead).
-  2. For every (instance, N) split, emit a shape (slot_cpu, slot_mem,
-     slot_gpu, overhead_frac) that respects the D4 enumeration rules.
-  3. For every runner def belonging to the family, filter to eligible shapes
-     (slot >= request on all 3 dims), pick the best per def by CPU efficiency,
-     and record waste per dim.
-  4. Compute the per-fleet theoretical util ceiling using the ranking metric
-     opt_max = max(req_cpu / (alloc_cpu + ds_cpu), req_mem / (alloc_mem +
-     ds_mem)) averaged uniformly across defs (Phase 1 caveat: no
-     per-def load weights yet).
-
-Runs in seconds. Output: three human-readable tables on stdout plus a JSON
-dump for downstream phases.
+The catalog is the feasibility oracle every partition-level candidate config
+consults in Phase 2. It runs in seconds, no sim invocation required.
 """
 
 from __future__ import annotations
@@ -28,335 +18,365 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
-
-from analyze_node_utilization import (  # noqa: E402
-    compute_allocatable,
-)
-from daemonset_overhead import discover_daemonsets  # noqa: E402
-from instance_specs import INSTANCE_SPECS  # noqa: E402
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_csv import build_label_table  # noqa: E402
+
+from analyze_node_utilization import compute_allocatable  # noqa: E402
+from daemonset_overhead import DaemonSetOverhead, discover_daemonsets  # noqa: E402
+from instance_specs import INSTANCE_SPECS  # noqa: E402
 from optimize_config import (  # noqa: E402
-    EXCLUDED_FAMILIES,
-    EXCLUDED_FLEETS,
     IN_SCOPE_FAMILIES,
     def_totals,
     load_defs_by_family,
 )
 from sim_nodes import _daemonsets_for_fleet  # noqa: E402
 
+# D4 tight-fit tolerance constants (see optimize.md § D4). 1 vCPU = 1000 mcpu.
+CPU_LOWER_ABS_M = 1000
+CPU_UPPER_ABS_M = 2000
+CPU_LOWER_PCT = 0.05
+CPU_UPPER_PCT = 0.35
+MEM_LOWER_PCT = 0.95
+
+
+@dataclass(frozen=True)
+class EligibleEntry:
+    """A feasible (def, instance) pair with its D4 tight-fit slot and pod count."""
+
+    def_label: str
+    instance: str
+    n: int
+    slot_cpu_m: int
+    slot_mem_mi: int
+    slot_gpu: int
+    orig_cpu_m: int
+    orig_mem_mi: int
+    orig_gpu: int
+    adj_cpu_pct: float
+    adj_mem_pct: float
+
 
 def instances_for_family(family: str) -> list[str]:
-    """Return all INSTANCE_SPECS entries whose prefix matches `family.`."""
-    prefix = f"{family}."
-    return sorted(k for k in INSTANCE_SPECS if k.startswith(prefix))
+    """All INSTANCE_SPECS entries whose prefix matches `<family>.`, excluding metal variants.
 
-
-def _def_totals(defrow: dict) -> tuple[int, int, int]:
-    """Deprecated alias; kept for downstream callers. Use `def_totals` from optimize_config."""
-    return def_totals(defrow)
-
-
-def generate_catalog(family: str, defs: list[dict], daemonsets) -> list[dict]:
-    """For every instance in a family, yield every valid N split as a shape.
-
-    N_max per instance is the largest split N such that AT LEAST ONE def in
-    the family still fits a slot at that N (i.e. `max_over_defs(min(alloc_cpu
-    // req_cpu, alloc_mem // req_mem, alloc_gpu // req_gpu))`). Enumerating
-    beyond that produces slots too small for any real workload and
-    explodes the catalog by orders of magnitude.
+    Metal instances are whole-node-per-pod by design (see optimize.md D8) and
+    are out of scope for the tight-fit optimizer — filtering them here keeps
+    the catalog from recommending an instance the search must never pick.
     """
-    out: list[dict] = []
-    if not defs:
-        return out
-    reqs = [_def_totals(d) for d in defs]
-    scoped_ds = _daemonsets_for_fleet(daemonsets, family)
-    for inst in instances_for_family(family):
-        alloc = compute_allocatable(inst, scoped_ds)
-        if alloc is None:
+    prefix = f"{family}."
+    return sorted(k for k in INSTANCE_SPECS if k.startswith(prefix) and ".metal" not in k)
+
+
+def _within_cpu_bounds(slot_cpu_m: int, orig_cpu_m: int) -> bool:
+    lo = orig_cpu_m - max(CPU_LOWER_ABS_M, int(orig_cpu_m * CPU_LOWER_PCT))
+    hi = orig_cpu_m + max(CPU_UPPER_ABS_M, int(orig_cpu_m * CPU_UPPER_PCT))
+    return lo <= slot_cpu_m <= hi
+
+
+def _within_mem_bounds(slot_mem_mi: int, orig_mem_mi: int) -> bool:
+    return slot_mem_mi >= int(orig_mem_mi * MEM_LOWER_PCT)
+
+
+def eligibility_for_pair(
+    def_label: str,
+    orig_cpu_m: int,
+    orig_mem_mi: int,
+    orig_gpu: int,
+    instance: str,
+    scoped_daemonsets: list[DaemonSetOverhead],
+) -> EligibleEntry | None:
+    """Compute the tight-fit outcome for one (def, instance) pair.
+
+    Returns an EligibleEntry when feasible under D4, or None when the pair
+    cannot fit at all (N=0) or falls outside D4 tolerances on any dimension.
+    """
+    alloc = compute_allocatable(instance, scoped_daemonsets)
+    if alloc is None:
+        return None
+    alloc_cpu_m = alloc["allocatable_cpu_m"]
+    alloc_mem_mi = alloc["allocatable_mem_mi"]
+    alloc_gpu = alloc["allocatable_gpu"]
+
+    # A CPU/memory-only def cannot land on a GPU node (the pod would occupy a
+    # GPU-attached instance without a nvidia.com/gpu request), and a GPU def
+    # obviously needs a GPU instance. Filter both directions before any math.
+    if orig_gpu > 0 and alloc_gpu == 0:
+        return None
+    if orig_gpu == 0 and alloc_gpu > 0:
+        return None
+
+    if orig_cpu_m <= 0 or orig_mem_mi <= 0:
+        return None
+
+    n_cpu = alloc_cpu_m // orig_cpu_m
+    n_mem = alloc_mem_mi // orig_mem_mi
+    n_gpu = (alloc_gpu // orig_gpu) if orig_gpu > 0 else n_cpu
+    n = min(n_cpu, n_mem, n_gpu)
+    if n <= 0:
+        return None
+
+    raw_slot_cpu_m = alloc_cpu_m // n
+    raw_slot_mem_mi = alloc_mem_mi // n
+
+    # Runner defs deploy with integer vCPU and integer GiB. Round DOWN so N pods
+    # still fit within allocatable (rounding up could exceed it and break tight-fit).
+    slot_cpu_m = (raw_slot_cpu_m // 1000) * 1000
+    slot_mem_mi = (raw_slot_mem_mi // 1024) * 1024
+    slot_gpu = (alloc_gpu // n) if orig_gpu > 0 else 0
+
+    # Bounds must be re-checked AFTER rounding: rounding down can push the slot
+    # below `orig - lower_bound`, making a previously-feasible pair infeasible.
+    if not _within_cpu_bounds(slot_cpu_m, orig_cpu_m):
+        return None
+    if not _within_mem_bounds(slot_mem_mi, orig_mem_mi):
+        return None
+    # GPU count per pod is fixed — the tight-fit rule may not silently change it.
+    if orig_gpu > 0 and slot_gpu != orig_gpu:
+        return None
+
+    adj_cpu_pct = 100.0 * (slot_cpu_m - orig_cpu_m) / orig_cpu_m
+    adj_mem_pct = 100.0 * (slot_mem_mi - orig_mem_mi) / orig_mem_mi
+
+    return EligibleEntry(
+        def_label=def_label,
+        instance=instance,
+        n=int(n),
+        slot_cpu_m=int(slot_cpu_m),
+        slot_mem_mi=int(slot_mem_mi),
+        slot_gpu=int(slot_gpu),
+        orig_cpu_m=int(orig_cpu_m),
+        orig_mem_mi=int(orig_mem_mi),
+        orig_gpu=int(orig_gpu),
+        adj_cpu_pct=adj_cpu_pct,
+        adj_mem_pct=adj_mem_pct,
+    )
+
+
+def build_eligibility_catalog(
+    families: Iterable[str] | None = None,
+    daemonsets: list[DaemonSetOverhead] | None = None,
+) -> dict[str, list[EligibleEntry]]:
+    """Return `{family: [EligibleEntry, ...]}` covering every feasible pair.
+
+    A def with N eligible instances contributes N entries. A def with zero
+    eligible entries in its family means no in-family instance can host it
+    under tight-fit bounds — that def is infeasible; a warning is logged and
+    the def contributes nothing to the catalog.
+    """
+    fams = tuple(families) if families is not None else IN_SCOPE_FAMILIES
+    if daemonsets is None:
+        daemonsets = discover_daemonsets(REPO_ROOT)
+    defs_by_family = load_defs_by_family()
+
+    catalog: dict[str, list[EligibleEntry]] = {}
+    for family in fams:
+        defs = defs_by_family.get(family, [])
+        if not defs:
+            print(f"WARN: no in-scope defs found for family {family!r}", file=sys.stderr)
+            catalog[family] = []
             continue
-        spec = INSTANCE_SPECS[inst]
-        total_cpu_m = spec["vcpu"] * 1000
-        alloc_cpu_m = alloc["allocatable_cpu_m"]
-        alloc_mem_mi = alloc["allocatable_mem_mi"]
-        alloc_gpu = alloc["allocatable_gpu"]
-        overhead_frac = 1 - (alloc_cpu_m / total_cpu_m) if total_cpu_m > 0 else 0.0
-
-        n_max = 0
-        for req_cpu, req_mem, req_gpu in reqs:
-            if req_gpu > 0 and alloc_gpu == 0:
-                continue
-            if req_gpu == 0 and alloc_gpu > 0:
-                continue
-            per_def = min(alloc_cpu_m // req_cpu, alloc_mem_mi // req_mem)
-            if req_gpu > 0:
-                per_def = min(per_def, alloc_gpu // req_gpu)
-            n_max = max(n_max, per_def)
-        if alloc_gpu > 0:
-            n_max = min(n_max, alloc_gpu)
-        if n_max <= 0:
-            continue
-        for n in range(1, int(n_max) + 1):
-            if alloc_gpu > 0 and alloc_gpu % n != 0:
-                continue
-            slot_cpu = alloc_cpu_m // n
-            slot_mem = alloc_mem_mi // n
-            slot_gpu = alloc_gpu // n if alloc_gpu > 0 else 0
-            if slot_cpu <= 0 or slot_mem <= 0:
-                continue
-            if alloc_gpu > 0 and slot_gpu == 0:
-                continue
-            out.append(
-                {
-                    "instance": inst,
-                    "N": n,
-                    "slot_cpu_m": slot_cpu,
-                    "slot_mem_mi": slot_mem,
-                    "slot_gpu": slot_gpu,
-                    "alloc_cpu_m": alloc_cpu_m,
-                    "alloc_mem_mi": alloc_mem_mi,
-                    "alloc_gpu": alloc_gpu,
-                    "ds_cpu_m": alloc["ds_cpu_m"],
-                    "ds_mem_mi": alloc["ds_mem_mi"],
-                    "overhead_frac": overhead_frac,
-                }
-            )
-    return out
+        entries: list[EligibleEntry] = []
+        instances = instances_for_family(family)
+        # Fleet-scoped DaemonSets today are all keyed on `c7i-runner` (see
+        # FLEET_SCOPED_DAEMONSETS in sim_nodes.py). Since c7i-runner is
+        # out-of-scope for the optimizer (EXCLUDED_FLEETS in optimize_config.py),
+        # passing the family name here is equivalent to passing any sub-nodepool
+        # name for in-scope families. If new fleet-scoped DSes are added keyed
+        # on other fleets, this call needs to be lifted per sub-nodepool.
+        scoped_ds = _daemonsets_for_fleet(daemonsets, family)
+        for d in defs:
+            orig_cpu_m, orig_mem_mi, orig_gpu = def_totals(d)
+            per_def_count = 0
+            for inst in instances:
+                entry = eligibility_for_pair(d["name"], orig_cpu_m, orig_mem_mi, orig_gpu, inst, scoped_ds)
+                if entry is not None:
+                    entries.append(entry)
+                    per_def_count += 1
+            if per_def_count == 0:
+                print(
+                    f"WARN: def {d['name']!r} in family {family!r} has zero eligible in-family instances",
+                    file=sys.stderr,
+                )
+        entries.sort(key=lambda e: (e.def_label, e.instance))
+        catalog[family] = entries
+    return catalog
 
 
-def eligible_shapes(req_cpu_m: int, req_mem_mi: int, req_gpu: int, catalog: list[dict]) -> list[dict]:
-    """Filter catalog to shapes that fit request on ALL 3 dims."""
-    return [
-        s
-        for s in catalog
-        if s["slot_cpu_m"] >= req_cpu_m and s["slot_mem_mi"] >= req_mem_mi and s["slot_gpu"] >= req_gpu
-    ]
+def _fmt_slot_cpu(slot_cpu_m: int) -> str:
+    return f"{slot_cpu_m / 1000:.1f}c"
 
 
-def score_shape(req_cpu_m: int, req_mem_mi: int, shape: dict) -> dict:
-    """Per-pod fit metrics used for ranking and eyeball comparison."""
-    cpu_eff = req_cpu_m / shape["slot_cpu_m"]
-    mem_eff = req_mem_mi / shape["slot_mem_mi"]
-    return {
-        "cpu_eff": cpu_eff,
-        "mem_eff": mem_eff,
-        "binding_eff": max(cpu_eff, mem_eff),
-        "waste_cpu_m": shape["slot_cpu_m"] - req_cpu_m,
-        "waste_mem_mi": shape["slot_mem_mi"] - req_mem_mi,
-    }
-
-
-def _load_defs_by_family() -> dict[str, list[dict]]:
-    """Deprecated alias; kept for downstream callers. Use `load_defs_by_family` from optimize_config."""
-    return load_defs_by_family()
-
-
-def analyse_family(family: str, defs: list[dict], daemonsets) -> dict:
-    """Build catalog, per-def eligibility, and theoretical ceiling for a family."""
-    catalog = generate_catalog(family, defs, daemonsets)
-    eligibility: dict[str, dict] = {}
-    unfittable: list[str] = []
-    best_contribs: list[float] = []
-    for d in defs:
-        req_cpu, req_mem, req_gpu = _def_totals(d)
-        elig = eligible_shapes(req_cpu, req_mem, req_gpu, catalog)
-        if not elig:
-            unfittable.append(d["name"])
-            eligibility[d["name"]] = {
-                "req_cpu_m": req_cpu,
-                "req_mem_mi": req_mem,
-                "req_gpu": req_gpu,
-                "shapes": [],
-                "best": None,
-            }
-            continue
-        scored = []
-        for s in elig:
-            m = score_shape(req_cpu, req_mem, s)
-            row = {**s, **m}
-            row["opt_share_cpu"] = req_cpu / (s["alloc_cpu_m"] + s["ds_cpu_m"])
-            row["opt_share_mem"] = req_mem / (s["alloc_mem_mi"] + s["ds_mem_mi"])
-            row["opt_share"] = max(row["opt_share_cpu"], row["opt_share_mem"]) * s["N"]
-            scored.append(row)
-        best = max(scored, key=lambda r: r["binding_eff"])
-        eligibility[d["name"]] = {
-            "req_cpu_m": req_cpu,
-            "req_mem_mi": req_mem,
-            "req_gpu": req_gpu,
-            "shapes": scored,
-            "best": best,
-        }
-        best_contribs.append(best["opt_share"])
-    ceiling = sum(best_contribs) / len(best_contribs) if best_contribs else 0.0
-    return {
-        "catalog": catalog,
-        "eligibility": eligibility,
-        "unfittable": unfittable,
-        "ceiling": ceiling,
-    }
+def _fmt_slot_mem(slot_mem_mi: int) -> str:
+    return f"{slot_mem_mi / 1024:.1f}Gi"
 
 
 def _fmt_pct(x: float) -> str:
-    return f"{x * 100:5.1f}%"
+    return f"{x:+.1f}%"
 
 
-def print_catalog_table(family: str, catalog: list[dict]) -> None:
-    print(f"==== Shape catalog: family={family} ====")
-    print(
-        f"  {'instance':<22} {'alloc_cpu_m':>12} {'alloc_mem_mi':>13} {'alloc_gpu':>10} {'overhead':>9} {'N-values':>14}"
-    )
-    by_inst: dict[str, list[int]] = {}
-    for s in catalog:
-        by_inst.setdefault(s["instance"], []).append(s["N"])
-    for inst in sorted(by_inst):
-        ns = sorted(by_inst[inst])
-        alloc = next(s for s in catalog if s["instance"] == inst)
-        n_range = f"{min(ns)}..{max(ns)}" if len(ns) > 1 else str(ns[0])
-        print(
-            f"  {inst:<22} {alloc['alloc_cpu_m']:>12} {alloc['alloc_mem_mi']:>13} "
-            f"{alloc['alloc_gpu']:>10} {_fmt_pct(alloc['overhead_frac']):>9} {n_range:>14}"
-        )
-    print()
+def _defs_index(defs_by_family: dict[str, list[dict]]) -> dict[str, dict]:
+    """Flat {def_name: defrow} across all families for orig-request lookup."""
+    out: dict[str, dict] = {}
+    for defs in defs_by_family.values():
+        for d in defs:
+            out[d["name"]] = d
+    return out
 
 
-def print_eligibility_table(family: str, defs: list[dict], eligibility: dict, verbose: bool) -> None:
-    print(f"==== Per-def eligibility: family={family} ====")
-    print(f"  {'def':<32} {'req_cpu':>7} {'req_mem':>8} {'best_shape':<38} {'cpu':>6} {'mem':>6} {'bind':>6}")
+def print_family_report(
+    family: str,
+    entries: list[EligibleEntry],
+    defs: list[dict],
+    verbose: bool,
+) -> None:
+    print(f"==== Eligibility catalog: family={family} ====")
+    hdr = f"  {'def':<32} {'instance':<20} {'N':>3}  {'slot_cpu':>8} {'slot_mem':>9} {'adj_cpu':>8} {'adj_mem':>8}"
+    print(hdr)
+    by_def: dict[str, list[EligibleEntry]] = {}
+    for e in entries:
+        by_def.setdefault(e.def_label, []).append(e)
+
     for d in defs:
         name = d["name"]
-        entry = eligibility[name]
-        if entry["best"] is None:
-            print(f"  {name:<32} {entry['req_cpu_m']:>7} {entry['req_mem_mi']:>8} {'NO ELIGIBLE SHAPE':<38}")
+        elig = by_def.get(name, [])
+        if not elig:
+            orig_cpu_m, orig_mem_mi, _ = def_totals(d)
+            print(
+                f"  {name:<32} {'(no eligible in-family instance)':<20}     "
+                f"orig={_fmt_slot_cpu(orig_cpu_m)}/{_fmt_slot_mem(orig_mem_mi)}"
+            )
             continue
-        best = entry["best"]
-        shape_str = (
-            f"{best['instance']} N={best['N']} slot={best['slot_cpu_m'] // 1000}c/{best['slot_mem_mi'] // 1024}Gi"
-        )
-        print(
-            f"  {name:<32} {entry['req_cpu_m']:>7} {entry['req_mem_mi']:>8} {shape_str:<38} "
-            f"{_fmt_pct(best['cpu_eff']):>6} {_fmt_pct(best['mem_eff']):>6} {_fmt_pct(best['binding_eff']):>6}"
-        )
-        if verbose:
-            for s in sorted(entry["shapes"], key=lambda r: -r["binding_eff"]):
-                if s is best:
-                    continue
-                sstr = f"{s['instance']} N={s['N']} slot={s['slot_cpu_m'] // 1000}c/{s['slot_mem_mi'] // 1024}Gi"
-                print(
-                    f"  {'':<32} {'':>7} {'':>8} {sstr:<38} "
-                    f"{_fmt_pct(s['cpu_eff']):>6} {_fmt_pct(s['mem_eff']):>6} {_fmt_pct(s['binding_eff']):>6}"
-                )
+        for e in elig:
+            print(
+                f"  {e.def_label:<32} {e.instance:<20} {e.n:>3}  "
+                f"{_fmt_slot_cpu(e.slot_cpu_m):>8} {_fmt_slot_mem(e.slot_mem_mi):>9} "
+                f"{_fmt_pct(e.adj_cpu_pct):>8} {_fmt_pct(e.adj_mem_pct):>8}"
+            )
+    print()
+
+    if verbose:
+        print(f"  Per-def eligible counts (family={family}):")
+        for d in defs:
+            elig = by_def.get(d["name"], [])
+            insts = ", ".join(e.instance for e in elig) if elig else "(none)"
+            print(f"    {d['name']:<32} {len(elig):>3}  [{insts}]")
+        print()
+
+
+def print_global_summary(
+    catalog: dict[str, list[EligibleEntry]],
+    defs_by_family: dict[str, list[dict]],
+) -> None:
+    print("==== Per-family summary ====")
+    print(f"  {'family':<8} {'defs':>6} {'eligible_defs':>14} {'pairs':>7} {'infeasible_defs':>16}")
+    for family, entries in catalog.items():
+        defs = defs_by_family.get(family, [])
+        eligible_names = {e.def_label for e in entries}
+        eligible_defs = len(eligible_names)
+        infeasible_defs = len(defs) - eligible_defs
+        print(f"  {family:<8} {len(defs):>6} {eligible_defs:>14} {len(entries):>7} {infeasible_defs:>16}")
+    print()
+
+    infeasible: list[tuple[str, str]] = []
+    for family, entries in catalog.items():
+        defs = defs_by_family.get(family, [])
+        eligible_names = {e.def_label for e in entries}
+        for d in defs:
+            if d["name"] not in eligible_names:
+                infeasible.append((family, d["name"]))
+    print("==== Defs with ZERO eligible in-family instances (bug indicator) ====")
+    if not infeasible:
+        print("  (none)")
+    else:
+        for family, name in infeasible:
+            print(f"  {family}: {name}")
     print()
 
 
-def print_ceiling_table(results: dict[str, dict]) -> None:
-    print("==== Per-fleet theoretical ceiling (opt metric, uniform def weighting) ====")
-    print(f"  {'fleet':<8} {'ceiling(opt_max)':>18}")
-    for family in IN_SCOPE_FAMILIES:
-        r = results.get(family)
-        if r is None:
-            continue
-        print(f"  {family:<8} {_fmt_pct(r['ceiling']):>18}")
-    print()
+def to_json(
+    catalog: dict[str, list[EligibleEntry]],
+    defs_by_family: dict[str, list[dict]],
+) -> dict:
+    """Deterministically-sorted JSON payload for Phase B consumption."""
+    families_out: dict[str, dict] = {}
+    for family in sorted(catalog):
+        entries = catalog[family]
+        by_def: dict[str, list[EligibleEntry]] = {}
+        for e in entries:
+            by_def.setdefault(e.def_label, []).append(e)
 
-
-def to_json(results: dict[str, dict]) -> dict:
-    """Serialize to JSON schema documented in optimize.md."""
-    catalog_out: dict[str, list[dict]] = {}
-    elig_out: dict[str, list[dict]] = {}
-    ceiling_out: dict[str, float] = {}
-    for family, r in results.items():
-        catalog_out[family] = [
-            {
-                "instance": s["instance"],
-                "N": s["N"],
-                "slot_cpu_m": s["slot_cpu_m"],
-                "slot_mem_mi": s["slot_mem_mi"],
-                "slot_gpu": s["slot_gpu"],
-                "alloc_cpu_m": s["alloc_cpu_m"],
-                "alloc_mem_mi": s["alloc_mem_mi"],
-                "alloc_gpu": s["alloc_gpu"],
-                "ds_cpu_m": s["ds_cpu_m"],
-                "ds_mem_mi": s["ds_mem_mi"],
-                "overhead_frac": round(s["overhead_frac"], 6),
+        defs_out: dict[str, dict] = {}
+        for d in defs_by_family.get(family, []):
+            orig_cpu_m, orig_mem_mi, orig_gpu = def_totals(d)
+            elig = sorted(by_def.get(d["name"], []), key=lambda e: e.instance)
+            defs_out[d["name"]] = {
+                "orig_cpu_m": orig_cpu_m,
+                "orig_mem_mi": orig_mem_mi,
+                "orig_gpu": orig_gpu,
+                "eligible": [
+                    {
+                        "instance": e.instance,
+                        "n": e.n,
+                        "slot_cpu_m": e.slot_cpu_m,
+                        "slot_mem_mi": e.slot_mem_mi,
+                        "slot_gpu": e.slot_gpu,
+                        "adj_cpu_pct": round(e.adj_cpu_pct, 4),
+                        "adj_mem_pct": round(e.adj_mem_pct, 4),
+                    }
+                    for e in elig
+                ],
             }
-            for s in r["catalog"]
-        ]
-        for defname, entry in r["eligibility"].items():
-            elig_out[defname] = [
-                {
-                    "instance": s["instance"],
-                    "N": s["N"],
-                    "slot_cpu_m": s["slot_cpu_m"],
-                    "slot_mem_mi": s["slot_mem_mi"],
-                    "slot_gpu": s["slot_gpu"],
-                    "waste_cpu_m": s["waste_cpu_m"],
-                    "waste_mem_mi": s["waste_mem_mi"],
-                    "efficiency": {
-                        "cpu": round(s["cpu_eff"], 6),
-                        "mem": round(s["mem_eff"], 6),
-                        "binding": round(s["binding_eff"], 6),
-                    },
-                    "opt_share": round(s["opt_share"], 6),
-                }
-                for s in entry["shapes"]
-            ]
-        ceiling_out[family] = round(r["ceiling"], 6)
-    return {"catalog": catalog_out, "eligibility": elig_out, "ceiling": ceiling_out}
+        families_out[family] = {"defs": defs_out}
+    return {"families": families_out}
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--family", action="append", help="Restrict to one or more families (repeatable)")
-    ap.add_argument("--output", default="optimize_catalog.json", help="JSON output path")
-    ap.add_argument("--verbose", action="store_true", help="Show all eligible shapes per def, not just the best")
+    ap.add_argument(
+        "--family",
+        action="append",
+        help="Restrict to one or more in-scope families (repeatable)",
+    )
+    ap.add_argument("--output", default=None, help="Optional JSON output path")
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print the per-def eligible-instances summary alongside the main table",
+    )
     args = ap.parse_args(argv)
 
     families = tuple(args.family) if args.family else IN_SCOPE_FAMILIES
     for f in families:
         if f not in IN_SCOPE_FAMILIES:
-            print(f"ERROR: {f!r} is not an in-scope family. In scope: {IN_SCOPE_FAMILIES}", file=sys.stderr)
+            print(
+                f"ERROR: {f!r} is not an in-scope family. In scope: {IN_SCOPE_FAMILIES}",
+                file=sys.stderr,
+            )
             return 2
 
-    upstream_dir = REPO_ROOT
-    daemonsets = discover_daemonsets(upstream_dir)
-    defs_by_family = _load_defs_by_family()
-
-    results: dict[str, dict] = {}
-    unfittable_global: dict[str, list[str]] = {}
-    for family in families:
-        defs = defs_by_family.get(family, [])
-        if not defs:
-            print(f"WARN: no in-scope defs found for family {family!r}", file=sys.stderr)
-            continue
-        r = analyse_family(family, defs, daemonsets)
-        results[family] = r
-        if r["unfittable"]:
-            unfittable_global[family] = r["unfittable"]
+    daemonsets = discover_daemonsets(REPO_ROOT)
+    catalog = build_eligibility_catalog(families=families, daemonsets=daemonsets)
+    defs_by_family = load_defs_by_family()
 
     for family in families:
-        if family not in results:
-            continue
-        print_catalog_table(family, results[family]["catalog"])
-        print_eligibility_table(family, defs_by_family[family], results[family]["eligibility"], args.verbose)
+        print_family_report(family, catalog.get(family, []), defs_by_family.get(family, []), args.verbose)
+    print_global_summary(catalog, {f: defs_by_family.get(f, []) for f in families})
 
-    print_ceiling_table(results)
+    if args.output:
+        out_path = Path(args.output).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = to_json(catalog, defs_by_family)
+        out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        print(f"wrote {out_path}", file=sys.stderr)
 
-    if unfittable_global:
-        print("==== Defs with ZERO eligible shapes (bug indicator) ====", file=sys.stderr)
-        for family, names in unfittable_global.items():
-            for n in names:
-                print(f"  {family}: {n}", file=sys.stderr)
-        print(file=sys.stderr)
-
-    out_path = Path(args.output).resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(to_json(results), indent=2, sort_keys=True) + "\n")
-    print(f"wrote {out_path}", file=sys.stderr)
     return 0
 
 

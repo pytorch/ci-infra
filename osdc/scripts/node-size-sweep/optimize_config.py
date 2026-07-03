@@ -9,8 +9,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from analyze_node_utilization import HOOKS_OVERHEAD_CPU_M, HOOKS_OVERHEAD_MEM_MI  # noqa: E402
 from build_csv import build_label_table  # noqa: E402
+from runner_hooks import load_runner_overhead  # noqa: E402
 
 IN_SCOPE_FAMILIES = ("r7a", "c7i", "c7a", "m7i", "m8g", "m7g", "m6i", "r7i", "g5", "g6", "g4dn")
 EXCLUDED_FAMILIES = ("p4d", "p5", "p6-b200")
@@ -43,11 +43,14 @@ def def_totals(defrow: dict) -> tuple[int, int, int]:
     """Pod-total (cpu_m, mem_mi, gpu) for a runner def including hooks tax.
 
     `build_label_table` gives vcpu (float) and memory_gib (float). Convert to
-    the same millicore/MiB accounting the sim uses and add hook overhead so
-    the resulting slot check matches what Karpenter schedules against.
+    the same millicore/MiB accounting the sim uses (int truncation, matches
+    sim_load.load_jobs exactly) and add hook overhead read from the same
+    shared source so the resulting slot check matches what Karpenter
+    schedules against.
     """
-    cpu_m = round(defrow["vcpu"] * 1000) + HOOKS_OVERHEAD_CPU_M
-    mem_mi = round(defrow["memory_gib"] * 1024) + HOOKS_OVERHEAD_MEM_MI
+    hooks_cpu, hooks_mem, _, _ = load_runner_overhead()
+    cpu_m = int(defrow["vcpu"] * 1000) + hooks_cpu
+    mem_mi = int(defrow["memory_gib"] * 1024) + hooks_mem
     gpu = int(defrow["gpu"])
     return cpu_m, mem_mi, gpu
 

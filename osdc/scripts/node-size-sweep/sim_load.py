@@ -12,9 +12,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
 
-from analyze_node_utilization import HOOKS_OVERHEAD_CPU_M as FALLBACK_HOOKS_CPU_M  # noqa: E402
-from analyze_node_utilization import HOOKS_OVERHEAD_MEM_MI as FALLBACK_HOOKS_MEM_MI  # noqa: E402
 from build_csv import build_label_table  # noqa: E402
+from runner_hooks import load_runner_overhead as _load_runner_overhead  # noqa: E402
 from sim_nodes import Job  # noqa: E402
 
 BUCKET_SEC = 300
@@ -22,37 +21,9 @@ BUCKET_SEC = 300
 RUNNER_POD_POOL = "c7i-runner"
 RUNNER_POD_LABEL = "runner-pod"
 
-FALLBACK_RUNNER_CPU_M = 750
-FALLBACK_RUNNER_MEM_MI = 1024
-
 
 def _bucket(ts: dt.datetime) -> int:
     return (int(ts.timestamp()) // BUCKET_SEC) * BUCKET_SEC
-
-
-def _load_runner_overhead() -> tuple[int, int, int, int]:
-    """Return (workflow_extra_cpu_m, workflow_extra_mem_mi, runner_cpu_m, runner_mem_mi)."""
-    try:
-        from runner_overhead import load_runner_pod_overhead
-
-        overhead = load_runner_pod_overhead(REPO_ROOT)
-        return (
-            overhead.workflow_extra_cpu_m or FALLBACK_HOOKS_CPU_M,
-            overhead.workflow_extra_mem_mi or FALLBACK_HOOKS_MEM_MI,
-            overhead.runner_cpu_m,
-            overhead.runner_mem_mi,
-        )
-    except Exception as e:
-        print(
-            f"warning: falling back to hooks/runner constants ({type(e).__name__}: {e})",
-            file=sys.stderr,
-        )
-        return (
-            FALLBACK_HOOKS_CPU_M,
-            FALLBACK_HOOKS_MEM_MI,
-            FALLBACK_RUNNER_CPU_M,
-            FALLBACK_RUNNER_MEM_MI,
-        )
 
 
 def load_jobs(

@@ -3,36 +3,35 @@
 # requires-python = ">=3.12"
 # dependencies = ["pyyaml>=6.0", "rich>=13"]
 # ///
-"""Phase 2 of the node-size optimizer: sim-driven per-family hill-climb search.
+"""Phase 2 of the node-size optimizer: sim-driven per-family partition search.
 
-For each in-scope fleet family, run an independent multi-restart hill climb
-over per-def (instance_type, N) shape choices. Ranking metric is
-`max(opt_cpu, opt_mem)` averaged across time buckets on the family's virtual
-sub-fleets. Sim results are memoized in SQLite; search state is checkpointed
-so crashes and SIGINT resume without redoing work.
+For each in-scope fleet family, run an independent search over partitions of
+the family's runner defs into sub-nodepools, plus per-partition instance
+assignment. Pod (cpu_m, mem_mi) requests are derived deterministically from the
+(def, instance) pair via the D4 tight-fit rule — never a search variable.
+
+Ranking metric is `max(opt_cpu, opt_mem)` on the family's virtual sub-fleets.
+Sim results are memoized in SQLite; per-family / per-restart search state is
+checkpointed so crashes and SIGINT resume without redoing work.
 
 Family independence (D3) means each family runs as its own subprocess via
 multiprocessing.Pool. c7i-runner is kept in the injected fleets so runner-pod
-entries still schedule.
+entries schedule as they do in prod.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import itertools
 import json
 import logging
 import multiprocessing as mp
 import os
 import random
 import signal
-import sqlite3
 import subprocess
 import sys
-import threading
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -42,53 +41,48 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
 
 from daemonset_overhead import discover_daemonsets  # noqa: E402
-from instance_specs import INSTANCE_SPECS  # noqa: E402
 
 import optimize_catalog  # noqa: E402
+import optimize_engine  # noqa: E402
+import optimize_report  # noqa: E402
 import sim_load  # noqa: E402
-import simulate as sim_mod  # noqa: E402
 from optimize_config import (  # noqa: E402
     IN_SCOPE_FAMILIES,
     PROD_PARITY_SIM_FLAGS,
-    def_totals,
     load_defs_by_family,
 )
-from sim_load import RUNNER_POD_LABEL, RUNNER_POD_POOL  # noqa: E402
+from optimize_engine import (  # noqa: E402
+    Config,
+    FamilyResult,
+    baseline_config,
+    build_family_catalog,
+    canonical_config,
+    cached_sim,
+    enumerate_feasible_configs,
+    enumerate_neighbors,
+    is_config_feasible,
+    random_feasible_config,
+    rank_key,
+)
+from optimize_progress import (  # noqa: E402
+    MultiFamilyProgressDisplay,
+    ProgressDisplay,
+    QueueProgressDisplay,
+)
+from optimize_storage import SimCache, SimMetrics, StateStore  # noqa: E402
+from sim_load import RUNNER_POD_POOL  # noqa: E402
 from sim_nodes import ClusterModel, FleetSpec, Job  # noqa: E402
 
-# Ranking uses max(opt_cpu, opt_mem) (spec D1); node-hours is the tie-break.
-# Improvement threshold defaults to 0.1pp (3σ per Phase 0 measurements).
 DEFAULT_IMPROVEMENT_THRESHOLD_PP = 0.1
 DEFAULT_NEUTRAL_MOVE_LIMIT = 3
 DEFAULT_NUM_RESTARTS = 20
 DEFAULT_LAST_DAYS = 21
-BUCKET_SEC = 300
+DEFAULT_EXHAUSTIVE_K_CUTOFF = 5
+DEFAULT_EXHAUSTIVE_MAX_CONFIGS = 10000
+DEFAULT_RENAME_THRESHOLD_PCT = 10.0
 
 
-DefChoice = tuple[str, int]
-Config = dict[str, DefChoice]
-
-
-@dataclass
-class SimMetrics:
-    opt_cpu: float
-    opt_mem: float
-    opt_max: float
-    cal_cpu: float
-    cal_mem: float
-    node_hours: float
-    elapsed_s: float
-
-
-@dataclass
-class ShapeInfo:
-    """Per-eligible-shape data cached at search start."""
-
-    instance: str
-    n: int
-    slot_cpu_m: int
-    slot_mem_mi: int
-    slot_gpu: int
+# ---------- infra helpers ----------
 
 
 def _sha256_file(p: Path) -> str:
@@ -102,9 +96,9 @@ def _sha256_file(p: Path) -> str:
 def _sim_source_shas() -> dict[str, str]:
     """Hashes of the sim files that materially affect results — pinned into the cache key.
 
-    Includes any script the sim/loader/analyzer pipeline touches, plus the discovered
-    DaemonSet YAML set (as a canonical JSON blob) so bumping a DS request invalidates
-    all cached entries.
+    Includes the sim/loader/analyzer pipeline plus the discovered DaemonSet YAML
+    set (as a canonical JSON blob) so bumping a DS request invalidates all
+    cached entries.
     """
     scripts_python = REPO_ROOT / "scripts" / "python"
     file_list: list[tuple[str, Path]] = [
@@ -113,6 +107,8 @@ def _sim_source_shas() -> dict[str, str]:
         ("sim_load_py", HERE / "sim_load.py"),
         ("optimize_catalog_py", HERE / "optimize_catalog.py"),
         ("optimize_config_py", HERE / "optimize_config.py"),
+        ("optimize_engine_py", HERE / "optimize_engine.py"),
+        ("runner_hooks_py", HERE / "runner_hooks.py"),
         ("analyze_node_utilization_py", scripts_python / "analyze_node_utilization.py"),
         ("build_csv_py", HERE / "build_csv.py"),
         ("runner_overhead_py", scripts_python / "runner_overhead.py"),
@@ -125,11 +121,9 @@ def _sim_source_shas() -> dict[str, str]:
         if path.is_file():
             out[key] = _sha256_file(path)
     # Canonical DS payload — drop `source` (absolute path) so identical DS content
-    # from a differently-located checkout still hits the same cache entry. cpu /
-    # memory / gpu_only remain in the hash so YAML edits invalidate cached sims.
+    # from a differently-located checkout still hits the same cache entry.
     ds_canonical = sorted(
-        (ds.name, ds.cpu_millicores, ds.memory_mib, ds.gpu_only)
-        for ds in discover_daemonsets(REPO_ROOT)
+        (ds.name, ds.cpu_millicores, ds.memory_mib, ds.gpu_only) for ds in discover_daemonsets(REPO_ROOT)
     )
     ds_payload = json.dumps(ds_canonical, sort_keys=True).encode()
     out["daemonsets_discovered"] = hashlib.sha256(ds_payload).hexdigest()
@@ -153,23 +147,8 @@ def _default_output_dir() -> Path:
     return HERE / "output" / f"{ts}-{_git_sha()}"
 
 
-def _is_gpu_instance(instance_type: str) -> bool:
-    spec = INSTANCE_SPECS.get(instance_type)
-    return bool(spec and spec.get("gpu", 0) > 0)
-
-
-def _family_sub_pool(family: str, instance_type: str) -> str:
-    """Virtual sub-fleet pool name — one fleet per (family, instance) in the search."""
-    return f"{family}__{instance_type}"
-
-
-def _defs_by_family() -> dict[str, list[dict]]:
-    """Return {family: [def rows]} filtered by scope constants."""
-    return load_defs_by_family()
-
-
 def _real_runner_fleet() -> FleetSpec:
-    """Steal the c7i-runner FleetSpec from a real ClusterModel so runner-pods schedule."""
+    """Steal c7i-runner FleetSpec from a real ClusterModel so runner-pods schedule."""
     real = ClusterModel()
     fs = real.fleets.get(RUNNER_POD_POOL)
     if fs is None:
@@ -177,482 +156,18 @@ def _real_runner_fleet() -> FleetSpec:
     return fs
 
 
-def _build_eligibility(family: str, defs: list[dict], daemonsets) -> dict[str, list[ShapeInfo]]:
-    """For each def in the family, the sorted list of eligible (instance, N) shapes.
-
-    Reuses Phase 1's catalog + eligible_shapes so the two phases agree exactly.
-    """
-    catalog = optimize_catalog.generate_catalog(family, defs, daemonsets)
-    out: dict[str, list[ShapeInfo]] = {}
-    for d in defs:
-        req_cpu, req_mem, req_gpu = def_totals(d)
-        elig = optimize_catalog.eligible_shapes(req_cpu, req_mem, req_gpu, catalog)
-        shapes = [
-            ShapeInfo(
-                instance=s["instance"],
-                n=s["N"],
-                slot_cpu_m=s["slot_cpu_m"],
-                slot_mem_mi=s["slot_mem_mi"],
-                slot_gpu=s["slot_gpu"],
-            )
-            for s in elig
-        ]
-        shapes.sort(key=lambda s: (s.instance, s.n))
-        out[d["name"]] = shapes
-    return out
-
-
-def _baseline_config(defs: list[dict], eligibility: dict[str, list[ShapeInfo]]) -> Config:
-    """Current-prod (instance_type, N) per def, using build_label_table's nodepool_fraction as N.
-
-    Exact match preferred. Fallback: same instance, N closest to prod_n (prefer larger — smaller
-    N means more slack, more wasteful, but a fair proxy for prod behavior). Final fallback:
-    first eligible shape.
-    """
-    cfg: Config = {}
-    for d in defs:
-        name = d["name"]
-        prod_inst = d["instance_type"]
-        prod_n = int(d.get("nodepool_fraction", 1))
-        shapes = eligibility.get(name, [])
-        chosen: DefChoice | None = None
-        for s in shapes:
-            if s.instance == prod_inst and s.n == prod_n:
-                chosen = (s.instance, s.n)
-                break
-        if chosen is None:
-            same_inst = [s for s in shapes if s.instance == prod_inst]
-            if same_inst:
-                s = min(same_inst, key=lambda s: (abs(s.n - prod_n), -s.n))
-                chosen = (s.instance, s.n)
-        if chosen is None and shapes:
-            chosen = (shapes[0].instance, shapes[0].n)
-        if chosen is None:
-            raise RuntimeError(f"def {name} has no eligible shapes — baseline infeasible")
-        cfg[name] = chosen
-    return cfg
-
-
-def _random_config(
-    eligibility: dict[str, list[ShapeInfo]],
-    rng: random.Random,
-) -> Config:
-    cfg: Config = {}
-    for name, shapes in eligibility.items():
-        if not shapes:
-            raise RuntimeError(f"def {name} has no eligible shapes")
-        s = rng.choice(shapes)
-        cfg[name] = (s.instance, s.n)
-    return cfg
-
-
-def _shape_lookup(eligibility: dict[str, list[ShapeInfo]], name: str, choice: DefChoice) -> ShapeInfo:
-    for s in eligibility[name]:
-        if s.instance == choice[0] and s.n == choice[1]:
-            return s
-    raise KeyError(f"shape {choice} not eligible for def {name}")
-
-
-def _config_key(family: str, config: Config, sim_flags: dict, csv_sha: str, src_shas: dict[str, str]) -> str:
-    canonical = {
-        "family": family,
-        "config": {k: list(v) for k, v in sorted(config.items())},
-        "sim_flags": sim_flags,
-        "csv_sha256": csv_sha,
-        "sim_source_shas": src_shas,
-    }
-    payload = json.dumps(canonical, sort_keys=True).encode()
-    return hashlib.sha256(payload).hexdigest()
-
-
-class SimCache:
-    """SQLite-backed sim(config) -> metrics cache; safe for concurrent writers."""
-
-    def __init__(self, path: Path):
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._conn() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sim_cache (
-                    key         TEXT PRIMARY KEY,
-                    config_json TEXT NOT NULL,
-                    opt_max     REAL NOT NULL,
-                    opt_cpu     REAL NOT NULL,
-                    opt_mem     REAL NOT NULL,
-                    node_hours  REAL NOT NULL,
-                    cal_cpu     REAL NOT NULL,
-                    cal_mem     REAL NOT NULL,
-                    elapsed_s   REAL NOT NULL,
-                    computed_at INTEGER NOT NULL
-                )
-                """
-            )
-
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
-
-    def get(self, key: str) -> SimMetrics | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT opt_cpu, opt_mem, opt_max, cal_cpu, cal_mem, node_hours, elapsed_s FROM sim_cache WHERE key=?",
-                (key,),
-            ).fetchone()
-        if row is None:
-            return None
-        return SimMetrics(
-            opt_cpu=row[0], opt_mem=row[1], opt_max=row[2],
-            cal_cpu=row[3], cal_mem=row[4], node_hours=row[5], elapsed_s=row[6],
-        )
-
-    def put(self, key: str, config: Config, m: SimMetrics) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO sim_cache VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    key,
-                    json.dumps({k: list(v) for k, v in sorted(config.items())}),
-                    m.opt_max, m.opt_cpu, m.opt_mem, m.node_hours,
-                    m.cal_cpu, m.cal_mem, m.elapsed_s,
-                    int(time.time()),
-                ),
-            )
-
-
-class StateStore:
-    """SQLite-backed per-family / per-restart search state for resume."""
-
-    def __init__(self, path: Path):
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._conn() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS family_state (
-                    family     TEXT PRIMARY KEY,
-                    status     TEXT NOT NULL,
-                    verdict    TEXT,
-                    best_json  TEXT,
-                    updated_at INTEGER NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS restart_state (
-                    family              TEXT NOT NULL,
-                    restart_id          INTEGER NOT NULL,
-                    config_json         TEXT NOT NULL,
-                    best_opt_max        REAL,
-                    neighbors_evaluated INTEGER NOT NULL,
-                    status              TEXT NOT NULL,
-                    updated_at          INTEGER NOT NULL,
-                    PRIMARY KEY (family, restart_id)
-                )
-                """
-            )
-
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
-
-    def family_status(self, family: str) -> str | None:
-        with self._conn() as conn:
-            row = conn.execute("SELECT status FROM family_state WHERE family=?", (family,)).fetchone()
-        return row[0] if row else None
-
-    def mark_family(self, family: str, status: str, verdict: str | None = None, best: dict | None = None) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO family_state VALUES (?, ?, ?, ?, ?)",
-                (family, status, verdict, json.dumps(best) if best else None, int(time.time())),
-            )
-
-    def restart_status(self, family: str, restart_id: int) -> str | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT status FROM restart_state WHERE family=? AND restart_id=?",
-                (family, restart_id),
-            ).fetchone()
-        return row[0] if row else None
-
-    def update_restart(
-        self,
-        family: str,
-        restart_id: int,
-        config: Config,
-        best_opt_max: float,
-        neighbors_evaluated: int,
-        status: str,
-    ) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO restart_state VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    family, restart_id,
-                    json.dumps({k: list(v) for k, v in sorted(config.items())}),
-                    best_opt_max, neighbors_evaluated, status, int(time.time()),
-                ),
-            )
-
-
-def _rebuild_jobs_for_family(
-    all_jobs: list[Job],
-    family: str,
-    defs: list[dict],
-    config: Config,
-    eligibility: dict[str, list[ShapeInfo]],
-) -> list[Job]:
-    """Emit a job list scoped to a family + rewritten pod shapes.
-
-    - Each family job's (cpu_m, mem_mi) becomes the slot capacity from its config
-      choice, so the pod occupies the whole slot exactly (matches Karpenter's
-      request-based scheduling). Pool becomes the virtual sub-fleet name.
-    - Runner-pod entries are dropped: they live on c7i-runner and never contribute
-      to the per-family metrics (`{family}__` prefix), so simulating them is pure
-      overhead. Halves sim wall-time on the real dataset.
-    - Jobs from other families are dropped — family independence (D3).
-    """
-    family_def_names = {d["name"] for d in defs}
-    out: list[Job] = []
-    for j in all_jobs:
-        if j.label == RUNNER_POD_LABEL:
-            continue
-        if j.label not in family_def_names:
-            continue
-        choice = config.get(j.label)
-        if choice is None:
-            continue
-        shape = _shape_lookup(eligibility, j.label, choice)
-        out.append(
-            Job(
-                label=j.label,
-                pool=_family_sub_pool(family, shape.instance),
-                cpu_m=shape.slot_cpu_m,
-                mem_mi=shape.slot_mem_mi,
-                gpu=shape.slot_gpu,
-                start_bucket=j.start_bucket,
-                end_bucket=j.end_bucket,
-            )
-        )
-    return out
-
-
-def _fleets_override_for_config(
-    family: str,
-    config: Config,
-    runner_fleet: FleetSpec,
-) -> dict[str, FleetSpec]:
-    """One FleetSpec per unique instance in the config + the untouched c7i-runner."""
-    fleets: dict[str, FleetSpec] = {RUNNER_POD_POOL: runner_fleet}
-    unique_insts = {inst for inst, _ in config.values()}
-    for inst in unique_insts:
-        pool_name = _family_sub_pool(family, inst)
-        fleets[pool_name] = FleetSpec(
-            name=pool_name,
-            is_gpu=_is_gpu_instance(inst),
-            instances=(inst,),
-        )
-    return fleets
-
-
-def _extract_family_metrics(sim_out: dict, family: str) -> tuple[float, float, float, float, float, float]:
-    """Return (opt_cpu, opt_mem, opt_max_mean, cal_cpu, cal_mem, node_hours) restricted to the family's pools."""
-    prefix = f"{family}__"
-    opt_cpu_series: list[float] = []
-    opt_mem_series: list[float] = []
-    cal_cpu_series: list[float] = []
-    cal_mem_series: list[float] = []
-    max_series: list[float] = []
-    node_bucket_count = 0
-    for _t, per_pool in sim_out["per_bucket"]:
-        w_cpu = ds_cpu = a_cpu = 0
-        w_mem = ds_mem = a_mem = 0
-        used_cpu = alloc_cpu = 0
-        used_mem = alloc_mem = 0
-        for name, sums in per_pool.items():
-            if not name.startswith(prefix):
-                continue
-            w_cpu += sums["workload_cpu_m"]
-            ds_cpu += sums["ds_cpu_m"]
-            a_cpu += sums["alloc_cpu_m_raw"]
-            w_mem += sums["workload_mem_mi"]
-            ds_mem += sums["ds_mem_mi"]
-            a_mem += sums["alloc_mem_mi_raw"]
-            used_cpu += sums["cpu_used_m"]
-            alloc_cpu += sums["cpu_alloc_m"]
-            used_mem += sums["mem_used_mi"]
-            alloc_mem += sums["mem_alloc_mi"]
-        opt_denom_cpu = a_cpu + ds_cpu
-        opt_denom_mem = a_mem + ds_mem
-        # Skip buckets where the family has zero footprint on both axes — otherwise
-        # empty periods (weekends, gaps) dilute the ranking metric with zeros
-        # while the per-axis series correctly skip them, biasing search decisions.
-        if opt_denom_cpu <= 0 and opt_denom_mem <= 0:
-            continue
-        cur_max_cpu = 0.0
-        cur_max_mem = 0.0
-        if opt_denom_cpu > 0:
-            cur_max_cpu = w_cpu / opt_denom_cpu
-            opt_cpu_series.append(cur_max_cpu)
-        if opt_denom_mem > 0:
-            cur_max_mem = w_mem / opt_denom_mem
-            opt_mem_series.append(cur_max_mem)
-        if alloc_cpu > 0:
-            cal_cpu_series.append(used_cpu / alloc_cpu)
-        if alloc_mem > 0:
-            cal_mem_series.append(used_mem / alloc_mem)
-        max_series.append(max(cur_max_cpu, cur_max_mem))
-        node_bucket_count += a_cpu
-
-    def mean(xs: list[float]) -> float:
-        return sum(xs) / len(xs) if xs else 0.0
-
-    opt_cpu = mean(opt_cpu_series)
-    opt_mem = mean(opt_mem_series)
-    opt_max_mean = mean(max_series)
-    cal_cpu = mean(cal_cpu_series)
-    cal_mem = mean(cal_mem_series)
-
-    node_hours = 0.0
-    for _t, per_pool in sim_out["per_bucket"]:
-        for name, sums in per_pool.items():
-            if not name.startswith(prefix):
-                continue
-            inst = name[len(prefix):]
-            spec = INSTANCE_SPECS.get(inst)
-            if not spec:
-                continue
-            vcpu_m = spec["vcpu"] * 1000
-            if vcpu_m > 0:
-                nodes_in_bucket = sums["alloc_cpu_m_raw"] / (vcpu_m * 0.95)
-                node_hours += nodes_in_bucket * (BUCKET_SEC / 3600.0)
-
-    return opt_cpu, opt_mem, opt_max_mean, cal_cpu, cal_mem, node_hours
-
-
-def _run_sim_for_config(
-    family: str,
-    config: Config,
-    all_jobs: list[Job],
-    defs: list[dict],
-    eligibility: dict[str, list[ShapeInfo]],
-    runner_fleet: FleetSpec,
-    sim_flags: dict,
-) -> SimMetrics:
-    jobs = _rebuild_jobs_for_family(all_jobs, family, defs, config, eligibility)
-    # simulate() would crash on min(...) over an empty sequence — return a sentinel
-    # zero result so the search can compare configs uniformly instead of blowing up.
-    if not jobs:
-        return SimMetrics(
-            opt_cpu=0.0, opt_mem=0.0, opt_max=0.0,
-            cal_cpu=0.0, cal_mem=0.0, node_hours=0.0,
-            elapsed_s=0.0,
-        )
-    fleets_override = _fleets_override_for_config(family, config, runner_fleet)
-    model = ClusterModel(fleets_override=fleets_override)
-    t0 = time.perf_counter()
-    sim_out = sim_mod.simulate(
-        jobs,
-        model=model,
-        seed=sim_flags["seed"],
-        empty_ttl_buckets=sim_flags["empty_ttl_buckets"],
-        placeholder_max_age=sim_flags["placeholder_max_age"],
-        warmup_buckets_default=sim_flags["warmup_default"],
-        warmup_buckets_gpu=sim_flags["warmup_gpu"],
-        warmup_buckets_baremetal=sim_flags["warmup_baremetal"],
-        placeholders_enabled=sim_flags["placeholders_enabled"],
-        daemonsets_in_metric=sim_flags["daemonsets_in_metric"],
-        phantom_pods_enabled=sim_flags["phantom_pods_enabled"],
-        progress=False,
-    )
-    elapsed = time.perf_counter() - t0
-    opt_cpu, opt_mem, opt_max, cal_cpu, cal_mem, node_hours = _extract_family_metrics(sim_out, family)
-    return SimMetrics(
-        opt_cpu=opt_cpu, opt_mem=opt_mem, opt_max=opt_max,
-        cal_cpu=cal_cpu, cal_mem=cal_mem, node_hours=node_hours,
-        elapsed_s=elapsed,
-    )
-
-
-def _cached_sim(
-    family: str,
-    config: Config,
-    all_jobs: list[Job],
-    defs: list[dict],
-    eligibility: dict[str, list[ShapeInfo]],
-    runner_fleet: FleetSpec,
-    sim_flags: dict,
-    csv_sha: str,
-    src_shas: dict[str, str],
-    cache: SimCache,
-    log: logging.Logger,
-) -> SimMetrics:
-    key = _config_key(family, config, sim_flags, csv_sha, src_shas)
-    hit = cache.get(key)
-    if hit is not None:
-        log.debug("cache HIT for config %s: opt_max=%.4f", key[:12], hit.opt_max)
-        return hit
-    log.debug("cache MISS for config %s — running sim", key[:12])
-    m = _run_sim_for_config(family, config, all_jobs, defs, eligibility, runner_fleet, sim_flags)
-    cache.put(key, config, m)
-    log.debug("cache STORE for config %s: opt_max=%.4f elapsed=%.1fs", key[:12], m.opt_max, m.elapsed_s)
-    return m
-
-
-def _enumerate_neighbors(config: Config, eligibility: dict[str, list[ShapeInfo]]) -> list[Config]:
-    """Flip one def to a different eligible shape at a time."""
-    neighbors: list[Config] = []
-    for name, cur in config.items():
-        for s in eligibility[name]:
-            choice = (s.instance, s.n)
-            if choice == cur:
-                continue
-            new = dict(config)
-            new[name] = choice
-            neighbors.append(new)
-    return neighbors
-
-
-@dataclass
-class FamilyResult:
-    family: str
-    baseline_metrics: SimMetrics
-    baseline_config: Config
-    best_metrics: SimMetrics
-    best_config: Config
-    delta_pp: float
-    verdict: str
-    num_restarts: int
-    winning_restart: int
-    total_sim_calls: int
-    total_neighbors_evaluated: int
-    elapsed_s: float
-    skipped_reason: str | None = None
-
-
-def _rank_key(m: SimMetrics) -> tuple[float, float]:
-    """Ranking tuple per spec D1: opt_max is primary, node_hours is the tie-break
-    (fewer node-hours wins, hence negated)."""
-    return (m.opt_max, -m.node_hours)
-
-
 def _restart_seed(family: str, restart_id: int) -> int:
-    """Deterministic per-(family, restart_id) seed. Uses SHA-256 because Python's
-    built-in `hash()` on tuples containing strings is randomized per interpreter
-    via PYTHONHASHSEED, which breaks cross-process reproducibility of the search."""
+    """Deterministic per-(family, restart_id) seed. SHA-256 so cross-process
+    reproducibility is not broken by PYTHONHASHSEED."""
     seed_bytes = hashlib.sha256(f"{family}-{restart_id}-seed".encode()).digest()
     return int.from_bytes(seed_bytes[:4], "big")
 
 
-def _cfg_from_json(raw: str, eligibility: dict[str, list[ShapeInfo]]) -> Config | None:
-    """Rehydrate a persisted config JSON. Returns None if any def or shape has
-    since become ineligible (e.g. specs/DS overhead changed between runs)."""
+# ---------- state persistence helpers ----------
+
+
+def _config_from_persisted_json(raw: str, catalog) -> Config | None:
+    """Rehydrate a persisted config JSON. Returns None if any pair is not eligible now."""
     try:
         data = json.loads(raw)
     except (TypeError, ValueError):
@@ -660,739 +175,460 @@ def _cfg_from_json(raw: str, eligibility: dict[str, list[ShapeInfo]]) -> Config 
     if not isinstance(data, dict):
         return None
     out: Config = {}
-    for name, choice in data.items():
-        if name not in eligibility:
+    for sub_id, spec in data.items():
+        if not isinstance(spec, dict) or "instance" not in spec or "pods" not in spec:
             return None
-        if not isinstance(choice, (list, tuple)) or len(choice) != 2:
+        inst = spec["instance"]
+        pods = spec["pods"]
+        if not isinstance(pods, list):
             return None
-        inst, n = choice[0], int(choice[1])
-        try:
-            _shape_lookup(eligibility, name, (inst, n))
-        except KeyError:
-            return None
-        out[name] = (inst, n)
+        for pod in pods:
+            if (pod, inst) not in catalog:
+                return None
+        out[sub_id] = {"instance": inst, "pods": sorted(pods)}
     return out
+
+
+def _metrics_from_persisted(payload: dict | None) -> SimMetrics | None:
+    """Rehydrate a full SimMetrics from a persisted best payload.
+
+    Older state DBs (pre-vcpu_hours rename) are not migrated — the schema
+    break invalidates cached sims anyway. Fall back to zero for missing keys
+    so resume does not crash; a stale prior best loses tie-breaks (vcpu_hours=0
+    reads as "unknown / worst") until the next sim recomputes it.
+    """
+    if not isinstance(payload, dict):
+        return None
+    if "metrics" in payload and isinstance(payload["metrics"], dict):
+        md = payload["metrics"]
+        try:
+            return SimMetrics(
+                opt_max=float(md["opt_max"]),
+                opt_cpu=float(md["opt_cpu"]),
+                opt_mem=float(md["opt_mem"]),
+                cal_cpu=float(md["cal_cpu"]),
+                cal_mem=float(md["cal_mem"]),
+                vcpu_hours=float(md.get("vcpu_hours", 0.0)),
+            )
+        except (TypeError, ValueError, KeyError):
+            return None
+    if "opt_max" in payload:
+        try:
+            return SimMetrics(
+                opt_max=float(payload["opt_max"]),
+                opt_cpu=0.0,
+                opt_mem=0.0,
+                cal_cpu=0.0,
+                cal_mem=0.0,
+                vcpu_hours=0.0,
+            )
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _persist_best_payload(cfg: Config, m: SimMetrics) -> dict:
+    return {
+        "config": {sid: {"instance": spec["instance"], "pods": list(spec["pods"])} for sid, spec in cfg.items()},
+        "opt_max": m.opt_max,
+        "metrics": {
+            "opt_max": m.opt_max,
+            "opt_cpu": m.opt_cpu,
+            "opt_mem": m.opt_mem,
+            "cal_cpu": m.cal_cpu,
+            "cal_mem": m.cal_mem,
+            "vcpu_hours": m.vcpu_hours,
+        },
+    }
 
 
 def _load_persisted_best(
     state: StateStore,
     family: str,
-    eligibility: dict[str, list[ShapeInfo]],
-) -> tuple[Config | None, float | None, int | None]:
-    """Recover the best (config, opt_max) previously observed for this family across
-    the family_state row and any per-restart rows. Returns (config, opt_max, restart_id)
-    or (None, None, None) if nothing recoverable."""
+    catalog,
+) -> tuple[Config | None, SimMetrics | None, int | None]:
+    """Recover the best (config, full metrics) across family_state and restart_state rows.
+
+    Uses rank_key ordering (opt_max primary, -vcpu_hours tie-breaker) so the
+    resume-time choice matches the live search's ordering.
+    """
     best_cfg: Config | None = None
-    best_opt: float | None = None
+    best_m: SimMetrics | None = None
     best_rid: int | None = None
-    with state._conn() as conn:
-        fam_row = conn.execute(
-            "SELECT best_json FROM family_state WHERE family=?", (family,)
-        ).fetchone()
-        rows = conn.execute(
-            "SELECT restart_id, config_json, best_opt_max, status FROM restart_state WHERE family=?",
-            (family,),
-        ).fetchall()
-    if fam_row and fam_row[0]:
+    fam_json = state.family_best_json(family)
+    if fam_json:
         try:
-            fam_best = json.loads(fam_row[0])
+            fam_best = json.loads(fam_json)
         except (TypeError, ValueError):
             fam_best = None
-        if fam_best and "config" in fam_best and "opt_max" in fam_best:
-            cfg = _cfg_from_json(json.dumps(fam_best["config"]), eligibility)
-            opt = fam_best.get("opt_max")
-            if cfg is not None and isinstance(opt, (int, float)):
+        if isinstance(fam_best, dict) and "config" in fam_best:
+            cfg = _config_from_persisted_json(json.dumps(fam_best["config"]), catalog)
+            m = _metrics_from_persisted(fam_best)
+            if cfg is not None and m is not None:
                 best_cfg = cfg
-                best_opt = float(opt)
-    for restart_id, cfg_json, opt_max, _status in rows:
+                best_m = m
+    for restart_id, cfg_json, opt_max, _status in state.restart_rows(family):
         if opt_max is None:
             continue
-        cfg = _cfg_from_json(cfg_json, eligibility)
+        cfg = _config_from_persisted_json(cfg_json, catalog)
         if cfg is None:
             continue
-        if best_opt is None or opt_max > best_opt:
-            best_opt = float(opt_max)
+        # restart_state only persists opt_max, so tie-break via family-level
+        # metrics when the restart row wins; otherwise treat vcpu_hours=0
+        # (unknown), which just makes the restart row lose ties.
+        rm = SimMetrics(
+            opt_max=float(opt_max),
+            opt_cpu=0.0,
+            opt_mem=0.0,
+            cal_cpu=0.0,
+            cal_mem=0.0,
+            vcpu_hours=0.0,
+        )
+        if best_m is None or rank_key(rm) > rank_key(best_m):
+            best_m = rm
             best_cfg = cfg
             best_rid = restart_id
-    return best_cfg, best_opt, best_rid
+    return best_cfg, best_m, best_rid
 
 
-class ProgressDisplay:
-    """Single-family live terminal progress. No-op when disabled.
+def _reconstitute_family_result(
+    state: StateStore,
+    family: str,
+    defs: list[dict],
+    daemonsets,
+) -> FamilyResult | None:
+    """Rebuild a FamilyResult for a family the state store marks 'done'.
 
-    Rendering is optional: `enabled=False` yields a null object whose methods
-    are safe no-ops. When enabled with `use_rich=True`, updates render via
-    `rich.live.Live`; otherwise fall back to a carriage-return single-line
-    ANSI-free updater. All internal state mutations are guarded by a lock so
-    the background-refresh thread (rich path) never races the search thread.
-
-    Log integration: when `use_rich=True`, the provided loggers have their
-    stderr StreamHandlers swapped for a `rich.logging.RichHandler` bound to
-    the same console the Live view uses, so INFO messages render above the
-    progress panel instead of interleaving into it. When falling back to
-    plain text, stderr StreamHandlers are bumped to WARNING+ instead.
+    Ensures the global report includes every requested family on resume,
+    not just those re-run in the current invocation.
     """
-
-    _SPINNER_UNICODE = "⠋⠙⠹⠸⠼⠴⠶⠧⠇⠏"
-    _SPINNER_ASCII = "|/-\\"
-
-    def __init__(
-        self,
-        *,
-        enabled: bool,
-        use_rich: bool,
-        loggers: list[logging.Logger] | None = None,
-    ) -> None:
-        self.enabled = enabled
-        self.use_rich = use_rich and enabled
-        self._loggers = loggers or []
-        self._lock = threading.Lock()
-        self._family: str | None = None
-        self._num_restarts: int = 0
-        self._restart_idx: int = 0
-        self._phase: str = ""
-        self._step: int = 0
-        self._neighbors_done: int = 0
-        self._neighbors_total: int = 0
-        self._candidates: int = 0
-        self._best_opt_max: float = 0.0
-        self._spinner_cycle = itertools.cycle(
-            self._SPINNER_UNICODE if self._supports_unicode() else self._SPINNER_ASCII
-        )
-        self._spinner_char = next(self._spinner_cycle)
-
-        self._live = None
-        self._console = None
-        self._rich_handler = None
-        self._saved_stream_handlers: list[tuple[logging.Logger, logging.Handler, int]] = []
-
-        if not self.enabled:
-            return
-        if self.use_rich:
-            self._init_rich()
-        else:
-            self._init_plain()
-
-    @staticmethod
-    def _supports_unicode() -> bool:
-        enc = (sys.stderr.encoding or "").lower()
-        return "utf" in enc
-
-    def _init_rich(self) -> None:
-        try:
-            from rich.console import Console
-            from rich.live import Live
-            from rich.logging import RichHandler
-        except ImportError:
-            self.use_rich = False
-            self._init_plain()
-            return
-
-        self._console = Console(file=sys.stderr, force_terminal=True)
-        self._live = Live(
-            self._render_rich(),
-            console=self._console,
-            refresh_per_second=10,
-            transient=False,
-        )
-        self._live.start()
-
-        self._rich_handler = RichHandler(
-            console=self._console,
-            show_time=True,
-            show_level=True,
-            show_path=False,
-            markup=False,
-            rich_tracebacks=False,
-        )
-        self._rich_handler.setFormatter(logging.Formatter("%(name)s %(message)s"))
-        for lg in self._loggers:
-            for h in list(lg.handlers):
-                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
-                    self._saved_stream_handlers.append((lg, h, h.level))
-                    lg.removeHandler(h)
-            lg.addHandler(self._rich_handler)
-
-    def _init_plain(self) -> None:
-        # Suppress INFO-level stderr chatter so single-line CR updates aren't
-        # shredded by interleaved log records. File handlers keep full INFO.
-        for lg in self._loggers:
-            for h in lg.handlers:
-                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
-                    self._saved_stream_handlers.append((lg, h, h.level))
-                    h.setLevel(logging.WARNING)
-
-    def _render_rich(self):
-        from rich.text import Text
-
-        t = Text()
-        if not self._family:
-            t.append("(starting)")
-            return t
-        t.append(f"{self._family}  ", style="bold cyan")
-        if self._num_restarts:
-            t.append(f"restart {self._restart_idx}/{self._num_restarts}  ")
-        if self._phase:
-            t.append(f"{self._phase}  ", style="yellow")
-        if self._neighbors_total:
-            bar = self._bar(self._neighbors_done, self._neighbors_total, width=12)
-            t.append(f"[{bar}]  ", style="green")
-            t.append(f"{self._neighbors_done}/{self._neighbors_total} neighbors  ")
-            t.append(f"{self._candidates} candidates  ", style="magenta")
-        t.append(f"best {self._best_opt_max:.4f}  ", style="bold")
-        t.append(self._spinner_char, style="cyan")
-        return t
-
-    @staticmethod
-    def _bar(done: int, total: int, width: int) -> str:
-        if total <= 0:
-            return " " * width
-        filled = int(width * done / total)
-        if filled >= width:
-            return "=" * width
-        return "=" * filled + ">" + " " * (width - filled - 1)
-
-    def _render_plain_line(self) -> str:
-        parts = []
-        if self._family:
-            parts.append(self._family)
-        if self._num_restarts:
-            parts.append(f"restart {self._restart_idx}/{self._num_restarts}")
-        if self._phase:
-            parts.append(self._phase)
-        if self._neighbors_total:
-            bar = self._bar(self._neighbors_done, self._neighbors_total, width=12)
-            parts.append(f"[{bar}] {self._neighbors_done}/{self._neighbors_total} neighbors")
-            parts.append(f"{self._candidates} cand")
-        parts.append(f"best {self._best_opt_max:.4f}")
-        parts.append(self._spinner_char)
-        return "  ".join(parts)
-
-    def _refresh(self) -> None:
-        if not self.enabled:
-            return
-        if self.use_rich and self._live is not None:
-            self._live.update(self._render_rich())
-        else:
-            line = self._render_plain_line()
-            # \r + K clears the line before rewrite; keeps a single moving line.
-            sys.stderr.write("\r\x1b[K" + line)
-            sys.stderr.flush()
-
-    def start_family(self, family: str, num_restarts: int, best_opt_max: float = 0.0) -> None:
-        if not self.enabled:
-            return
-        with self._lock:
-            self._family = family
-            self._num_restarts = num_restarts
-            self._restart_idx = 0
-            self._phase = "baseline"
-            self._step = 0
-            self._neighbors_done = 0
-            self._neighbors_total = 0
-            self._candidates = 0
-            self._best_opt_max = best_opt_max
-            self._spinner_char = next(self._spinner_cycle)
-        self._refresh()
-
-    def update_best(self, best_opt_max: float) -> None:
-        if not self.enabled:
-            return
-        with self._lock:
-            self._best_opt_max = best_opt_max
-        self._refresh()
-
-    def start_restart(self, restart_idx: int, phase: str) -> None:
-        if not self.enabled:
-            return
-        with self._lock:
-            self._restart_idx = restart_idx + 1
-            self._phase = phase
-            self._step = 0
-            self._neighbors_done = 0
-            self._neighbors_total = 0
-            self._candidates = 0
-        self._refresh()
-
-    def start_step(self, step: int, total_neighbors: int) -> None:
-        if not self.enabled:
-            return
-        with self._lock:
-            self._step = step
-            self._phase = f"step {step}"
-            self._neighbors_done = 0
-            self._neighbors_total = total_neighbors
-            self._candidates = 0
-        self._refresh()
-
-    def advance(self, candidates: int, current_best_opt_max: float) -> None:
-        if not self.enabled:
-            return
-        with self._lock:
-            self._neighbors_done += 1
-            self._candidates = candidates
-            if current_best_opt_max > self._best_opt_max:
-                self._best_opt_max = current_best_opt_max
-            self._spinner_char = next(self._spinner_cycle)
-        self._refresh()
-
-    def end_step(self, result: str) -> None:
-        if not self.enabled:
-            return
-        with self._lock:
-            self._phase = f"step {self._step} {result}"
-        self._refresh()
-
-    def end_family(self) -> None:
-        if not self.enabled:
-            return
-        with self._lock:
-            self._phase = "done"
-        self._refresh()
-
-    def close(self) -> None:
-        if not self.enabled:
-            return
-        try:
-            if self.use_rich and self._live is not None:
-                self._live.stop()
-        finally:
-            for lg, handler, level in self._saved_stream_handlers:
-                if self._rich_handler is not None and self._rich_handler in lg.handlers:
-                    lg.removeHandler(self._rich_handler)
-                handler.setLevel(level)
-                if handler not in lg.handlers:
-                    lg.addHandler(handler)
-            self._saved_stream_handlers.clear()
-            if not self.use_rich:
-                # Terminate the CR-updated line so subsequent stderr output starts fresh.
-                sys.stderr.write("\n")
-                sys.stderr.flush()
+    catalog_full = optimize_catalog.build_eligibility_catalog(families=[family], daemonsets=daemonsets)
+    entries = catalog_full.get(family, [])
+    catalog = build_family_catalog(entries)
+    verdict = state.family_verdict(family) or "unknown"
+    eligible_names = {e.def_label for e in entries}
+    eligible_defs = [d for d in defs if d["name"] in eligible_names]
+    try:
+        baseline = baseline_config(family, eligible_defs, entries) if eligible_defs else {}
+    except ValueError:
+        baseline = {}
+    prior_cfg, prior_m, _ = _load_persisted_best(state, family, catalog)
+    if prior_cfg is None or prior_m is None:
+        # Nothing to reconstitute (e.g. skipped families with no best).
+        if verdict == "skipped":
+            return FamilyResult(
+                family=family,
+                baseline_config=baseline,
+                baseline_metrics=None,
+                best_config=None,
+                best_metrics=None,
+                verdict="skipped",
+                skipped_reason="resumed: no persisted metrics",
+            )
+        return None
+    return FamilyResult(
+        family=family,
+        baseline_config=baseline,
+        baseline_metrics=prior_m,
+        best_config=prior_cfg,
+        best_metrics=prior_m,
+        verdict=verdict,
+    )
 
 
-class QueueProgressDisplay:
-    """Worker-side ProgressDisplay stand-in that forwards state changes to the
-    parent process over a `multiprocessing.Queue`.
+# ---------- search strategies ----------
 
-    Public API mirrors `ProgressDisplay` exactly so `_search_family` can be
-    called uniformly. Methods enqueue small dict messages; the parent
-    aggregator (`MultiFamilyProgressDisplay`) consumes them and renders.
 
-    Queue is `put_nowait` — if the parent falls behind, we drop the update
-    rather than block the worker. Message loss is fine: the display is
-    cosmetic, and the next update supersedes it. Terminal messages
-    (`family_end`) use blocking `put` to guarantee delivery.
+def _search_exhaustive(
+    family: str,
+    defs: list[dict],
+    catalog_entries,
+    all_jobs: list[Job],
+    runner_fleet: FleetSpec,
+    sim_flags: dict,
+    csv_sha: str,
+    src_shas: dict[str, str],
+    cache: SimCache,
+    log: logging.Logger,
+    max_configs: int,
+    prog,
+    best_seed_cfg: Config | None,
+    best_seed_m: SimMetrics | None,
+    daemonsets,
+    seen_configs: set[str],
+) -> tuple[Config | None, SimMetrics | None, int, int]:
+    """Enumerate every feasible config, return (best_cfg, best_m, evaluated, cache_hits).
+
+    Falls through to hill-climb (returns None,None,...,-1 cache_hits sentinel) when
+    the feasible set exceeds `max_configs` — caller re-dispatches.
     """
-
-    def __init__(self, family: str, queue) -> None:
-        self._family = family
-        self._queue = queue
-        self._num_restarts = 0
-        self._restart_idx = 0
-        self._step = 0
-        self._best_opt_max = 0.0
-
-    def _try_put(self, msg: dict) -> None:
+    log.info("family=%s: enumerating configs (max_configs=%d)", family, max_configs)
+    configs, capped = enumerate_feasible_configs(family, defs, catalog_entries, limit=max_configs)
+    if capped:
+        log.warning(
+            "family=%s: exhaustive enumeration exceeded %d configs — falling back to hillclimb",
+            family,
+            max_configs,
+        )
+        return None, None, 0, -1
+    log.info("family=%s: %d feasible configs to sim", family, len(configs))
+    prog.start_phase("exhaustive", len(configs))
+    family_def_names = {d["name"] for d in defs}
+    catalog = build_family_catalog(catalog_entries)
+    best_cfg = best_seed_cfg
+    best_m = best_seed_m
+    evaluated = 0
+    cache_hits = 0
+    for cfg in configs:
+        cfg_key = canonical_config(cfg)
         try:
-            self._queue.put_nowait(msg)
-        except Exception:
-            pass
-
-    def start_family(self, family: str, num_restarts: int, best_opt_max: float = 0.0) -> None:
-        self._num_restarts = num_restarts
-        self._best_opt_max = best_opt_max
-        self._try_put({
-            "kind": "family_start",
-            "family": family,
-            "num_restarts": num_restarts,
-            "best_opt_max": best_opt_max,
-        })
-
-    def update_best(self, best_opt_max: float) -> None:
-        if best_opt_max > self._best_opt_max:
-            self._best_opt_max = best_opt_max
-        self._try_put({
-            "kind": "best_update",
-            "family": self._family,
-            "best_opt_max": self._best_opt_max,
-        })
-
-    def start_restart(self, restart_idx: int, phase: str) -> None:
-        self._restart_idx = restart_idx + 1
-        self._try_put({
-            "kind": "restart_start",
-            "family": self._family,
-            "restart": restart_idx + 1,
-            "total_restarts": self._num_restarts,
-            "phase": phase,
-        })
-
-    def start_step(self, step: int, total_neighbors: int) -> None:
-        self._step = step
-        self._try_put({
-            "kind": "step_start",
-            "family": self._family,
-            "restart": self._restart_idx,
-            "step": step,
-            "total_neighbors": total_neighbors,
-        })
-
-    def advance(self, candidates: int, current_best_opt_max: float) -> None:
-        if current_best_opt_max > self._best_opt_max:
-            self._best_opt_max = current_best_opt_max
-        self._try_put({
-            "kind": "step_advance",
-            "family": self._family,
-            "restart": self._restart_idx,
-            "step": self._step,
-            "candidates": candidates,
-            "current_best": self._best_opt_max,
-        })
-
-    def end_step(self, result: str) -> None:
-        self._try_put({
-            "kind": "step_end",
-            "family": self._family,
-            "restart": self._restart_idx,
-            "step": self._step,
-            "result": result,
-        })
-
-    def end_family(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-    def report_final(self, result: "FamilyResult") -> None:
-        """Blocking send of the terminal `family_end` — parent must render DONE."""
-        msg = {
-            "kind": "family_end",
-            "family": result.family,
-            "opt_max": result.best_metrics.opt_max,
-            "baseline_opt_max": result.baseline_metrics.opt_max,
-            "delta_pp": result.delta_pp,
-            "verdict": result.verdict,
-            "skipped_reason": result.skipped_reason,
-        }
-        try:
-            self._queue.put(msg, timeout=5.0)
-        except Exception:
-            pass
+            m, was_hit = cached_sim(
+                family,
+                cfg,
+                all_jobs,
+                catalog,
+                family_def_names,
+                runner_fleet,
+                sim_flags,
+                csv_sha,
+                src_shas,
+                cache,
+                log,
+                daemonsets=daemonsets,
+            )
+        except Exception as e:
+            log.warning("family=%s: sim failed for config %s: %s", family, cfg_key[:60], e, exc_info=True)
+            prog.advance(best_m.opt_max if best_m is not None else None)
+            continue
+        # Dedupe evaluation counter across baseline / prior-best / enumeration.
+        if cfg_key not in seen_configs:
+            seen_configs.add(cfg_key)
+            evaluated += 1
+        if was_hit:
+            cache_hits += 1
+        if best_m is None or rank_key(m) > rank_key(best_m):
+            best_cfg = cfg
+            best_m = m
+            log.info("family=%s: new best opt_max=%.4f (%d/%d)", family, m.opt_max, evaluated, len(configs))
+        prog.advance(best_m.opt_max if best_m is not None else None)
+    prog.end_phase("done")
+    return best_cfg, best_m, evaluated, cache_hits
 
 
-class MultiFamilyProgressDisplay:
-    """Parent-process aggregator: one row per family in a `rich.Live` panel.
+def _search_hillclimb(
+    family: str,
+    defs: list[dict],
+    catalog_entries,
+    all_jobs: list[Job],
+    runner_fleet: FleetSpec,
+    sim_flags: dict,
+    csv_sha: str,
+    src_shas: dict[str, str],
+    cache: SimCache,
+    state: StateStore,
+    log: logging.Logger,
+    num_restarts: int,
+    neutral_move_limit: int,
+    improvement_threshold_pp: float,
+    prog,
+    baseline: Config,
+    best_seed_cfg: Config | None,
+    best_seed_m: SimMetrics | None,
+    daemonsets,
+    seen_configs: set[str],
+) -> tuple[Config | None, SimMetrics | None, int, int, int]:
+    """Return (best_cfg, best_m, evaluated, cache_hits, restarts_run).
 
-    Rows show status per family (queued / running / done / stalled) and update
-    from messages workers push to `self.queue`. A background daemon thread
-    drains the queue and mutates row state under a lock; `rich.Live` refreshes
-    the rendered table at ~10 Hz.
-
-    Fallback: when `use_rich=False` (non-TTY or import failure), the display
-    is a no-op — workers still push messages but nothing renders. Bumping
-    worker stderr StreamHandlers to WARNING+ (handled at worker entry) keeps
-    stdout/stderr quiet either way; file logs stay verbose.
-
-    Stalled-worker detection: if no message arrives from a running family for
-    STALL_TIMEOUT seconds, its row is annotated STALLED. Worker crashes
-    (segfault, OOM) surface as a stuck row instead of silently vanishing.
+    Restart semantics: restart_id 0 = baseline seed. restart_ids 1..N =
+    random feasible seeds. `num_restarts` is the number of RANDOM restarts
+    on top of the baseline (total sim rounds = 1 + num_restarts).
     """
+    family_def_names = {d["name"] for d in defs}
+    catalog = build_family_catalog(catalog_entries)
+    best_cfg = best_seed_cfg
+    best_m = best_seed_m
+    evaluated = 0
+    cache_hits = 0
+    restarts_run = 0
+    improvement_threshold = improvement_threshold_pp / 100.0
 
-    STALL_TIMEOUT_S = 900.0
-    _SPINNER_UNICODE = "⠋⠙⠹⠸⠼⠴⠶⠧⠇⠏"
-    _SPINNER_ASCII = "|/-\\"
-
-    def __init__(
-        self,
-        *,
-        families: list[str],
-        enabled: bool,
-        use_rich: bool,
-        loggers: list[logging.Logger] | None = None,
-    ) -> None:
-        self.enabled = enabled
-        self.use_rich = use_rich and enabled
-        self._loggers = loggers or []
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-
-        ctx = mp.get_context("spawn")
-        self._manager = ctx.Manager()
-        # Manager-backed Queue is proxy-based and can be pickled into Pool tasks;
-        # a plain `ctx.Queue()` cannot be passed as a Pool argument under spawn.
-        self.queue = self._manager.Queue()
-
-        # Row state keyed by family. Only known families get a row; families
-        # not in the initial list get added lazily on first message.
-        self._rows: dict[str, dict] = {}
-        for f in families:
-            self._rows[f] = self._new_row(f, "queued")
-
-        self._spinner_cycle = itertools.cycle(
-            self._SPINNER_UNICODE if self._supports_unicode() else self._SPINNER_ASCII
-        )
-        self._spinner_char = next(self._spinner_cycle)
-
-        self._live = None
-        self._console = None
-        self._rich_handler = None
-        self._saved_stream_handlers: list[tuple[logging.Logger, logging.Handler, int]] = []
-        self._consumer_thread: threading.Thread | None = None
-
-        if not self.enabled:
-            return
-        if self.use_rich:
-            self._init_rich()
-        else:
-            self._init_plain()
-
-    @staticmethod
-    def _new_row(family: str, status: str) -> dict:
-        return {
-            "family": family,
-            "status": status,
-            "restart": 0,
-            "total_restarts": 0,
-            "step": 0,
-            "phase": "",
-            "evaluated": 0,
-            "total_neighbors": 0,
-            "candidates": 0,
-            "best": 0.0,
-            "baseline": 0.0,
-            "delta_pp": 0.0,
-            "verdict": "",
-            "skipped_reason": None,
-            "last_update": time.monotonic(),
-        }
-
-    @staticmethod
-    def _supports_unicode() -> bool:
-        enc = (sys.stderr.encoding or "").lower()
-        return "utf" in enc
-
-    def _init_rich(self) -> None:
+    def _sim(cfg: Config) -> tuple[SimMetrics | None, bool]:
+        cfg_key = canonical_config(cfg)
         try:
-            from rich.console import Console
-            from rich.live import Live
-            from rich.logging import RichHandler
-        except ImportError:
-            self.use_rich = False
-            self._init_plain()
-            return
+            m, was_hit = cached_sim(
+                family,
+                cfg,
+                all_jobs,
+                catalog,
+                family_def_names,
+                runner_fleet,
+                sim_flags,
+                csv_sha,
+                src_shas,
+                cache,
+                log,
+                daemonsets=daemonsets,
+            )
+        except Exception as e:
+            log.warning("family=%s: sim failed for config %s: %s", family, cfg_key[:60], e, exc_info=True)
+            return None, False
+        return m, was_hit
 
-        self._console = Console(file=sys.stderr, force_terminal=True)
-        self._live = Live(
-            self._render(),
-            console=self._console,
-            refresh_per_second=10,
-            transient=False,
-        )
-        self._live.start()
+    for restart_id in range(num_restarts + 1):
+        prior_status = state.restart_status(family, restart_id)
+        if prior_status == "done":
+            log.info("family=%s: restart %d already done, skipping", family, restart_id)
+            continue
 
-        self._rich_handler = RichHandler(
-            console=self._console,
-            show_time=True,
-            show_level=True,
-            show_path=False,
-            markup=False,
-            rich_tracebacks=False,
-        )
-        self._rich_handler.setFormatter(logging.Formatter("%(name)s %(message)s"))
-        for lg in self._loggers:
-            for h in list(lg.handlers):
-                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
-                    self._saved_stream_handlers.append((lg, h, h.level))
-                    lg.removeHandler(h)
-            lg.addHandler(self._rich_handler)
+        rng = random.Random(_restart_seed(family, restart_id))  # noqa: S311
+        prog.start_restart(restart_id, phase="seed")
+        if restart_id == 0:
+            cur = optimize_engine._config_copy(baseline)
+        else:
+            cur = random_feasible_config(family, defs, catalog_entries, rng)
 
-    def _init_plain(self) -> None:
-        # Non-rich fallback: suppress INFO stderr in the parent so heartbeat lines
-        # don't drown out worker startup logs. Workers likewise bump their own
-        # stderr to WARNING+ when connected to a queue.
-        for lg in self._loggers:
-            for h in lg.handlers:
-                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
-                    self._saved_stream_handlers.append((lg, h, h.level))
-                    h.setLevel(logging.WARNING)
+        cur_m, was_hit = _sim(cur)
+        if cur_m is None:
+            log.warning("family=%s: restart %d seed sim failed — skipping restart", family, restart_id)
+            continue
+        cur_key = canonical_config(cur)
+        if cur_key not in seen_configs:
+            seen_configs.add(cur_key)
+            evaluated += 1
+        if was_hit:
+            cache_hits += 1
+        restart_best_m = cur_m
+        restart_best_cfg = cur
+        neutral_budget = neutral_move_limit
+        step = 0
 
-    def start(self) -> None:
-        if not self.enabled:
-            return
-        self._consumer_thread = threading.Thread(target=self._consume_loop, daemon=True)
-        self._consumer_thread.start()
+        while True:
+            neighbors = enumerate_neighbors(family, cur, defs, catalog_entries)
+            if not neighbors:
+                break
+            prog.start_phase(f"step {step}", len(neighbors))
+            best_n_m: SimMetrics | None = None
+            best_n_cfg: Config | None = None
+            for n_cfg in neighbors:
+                n_m, n_was_hit = _sim(n_cfg)
+                if n_m is None:
+                    prog.advance(best_m.opt_max if best_m else 0.0)
+                    continue
+                n_key = canonical_config(n_cfg)
+                if n_key not in seen_configs:
+                    seen_configs.add(n_key)
+                    evaluated += 1
+                if n_was_hit:
+                    cache_hits += 1
+                if best_n_m is None or rank_key(n_m) > rank_key(best_n_m):
+                    best_n_m = n_m
+                    best_n_cfg = n_cfg
+                prog.advance(max(n_m.opt_max, best_m.opt_max if best_m else 0.0))
+            if best_n_m is None or best_n_cfg is None:
+                # All neighbors failed to sim — cannot make progress on this restart.
+                prog.end_phase("STOP")
+                break
 
-    def _consume_loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                msg = self.queue.get(timeout=0.2)
-            except Exception:
-                self._check_stalled()
-                if self.use_rich and self._live is not None:
-                    with self._lock:
-                        self._spinner_char = next(self._spinner_cycle)
-                        self._live.update(self._render())
-                continue
-            self._apply(msg)
-            if self.use_rich and self._live is not None:
-                with self._lock:
-                    self._live.update(self._render())
-
-    def _apply(self, msg: dict) -> None:
-        kind = msg.get("kind")
-        family = msg.get("family")
-        if not family:
-            return
-        with self._lock:
-            row = self._rows.get(family)
-            if row is None:
-                row = self._new_row(family, "running")
-                self._rows[family] = row
-            row["last_update"] = time.monotonic()
-            if kind == "family_start":
-                row["status"] = "running"
-                row["total_restarts"] = int(msg.get("num_restarts", 0))
-                row["best"] = float(msg.get("best_opt_max", 0.0))
-                row["phase"] = "baseline"
-            elif kind == "best_update":
-                row["best"] = max(row["best"], float(msg.get("best_opt_max", 0.0)))
-            elif kind == "restart_start":
-                row["status"] = "running"
-                row["restart"] = int(msg.get("restart", 0))
-                row["total_restarts"] = int(msg.get("total_restarts", row["total_restarts"]))
-                row["phase"] = str(msg.get("phase", ""))
-                row["step"] = 0
-                row["evaluated"] = 0
-                row["total_neighbors"] = 0
-                row["candidates"] = 0
-            elif kind == "step_start":
-                row["step"] = int(msg.get("step", 0))
-                row["total_neighbors"] = int(msg.get("total_neighbors", 0))
-                row["evaluated"] = 0
-                row["candidates"] = 0
-                row["phase"] = f"step {row['step']}"
-            elif kind == "step_advance":
-                row["evaluated"] += 1
-                row["candidates"] = int(msg.get("candidates", row["candidates"]))
-                row["best"] = max(row["best"], float(msg.get("current_best", row["best"])))
-            elif kind == "step_end":
-                row["phase"] = f"step {row['step']} {msg.get('result', '')}"
-            elif kind == "family_end":
-                row["status"] = "done"
-                row["best"] = float(msg.get("opt_max", row["best"]))
-                row["baseline"] = float(msg.get("baseline_opt_max", 0.0))
-                row["delta_pp"] = float(msg.get("delta_pp", 0.0))
-                row["verdict"] = str(msg.get("verdict", ""))
-                row["skipped_reason"] = msg.get("skipped_reason")
-
-    def _check_stalled(self) -> None:
-        now = time.monotonic()
-        with self._lock:
-            for row in self._rows.values():
-                if row["status"] == "running" and now - row["last_update"] > self.STALL_TIMEOUT_S:
-                    row["status"] = "stalled"
-
-    def _render(self):
-        from rich.table import Table
-
-        table = Table.grid(padding=(0, 1))
-        table.add_column()
-
-        def sort_key(item):
-            status = item["status"]
-            order = {"running": 0, "queued": 1, "stalled": 2, "done": 3}.get(status, 4)
-            return (order, item["family"])
-
-        rows = sorted(self._rows.values(), key=sort_key)
-        prev_status = None
-        for row in rows:
-            if prev_status is not None and row["status"] != prev_status:
-                table.add_row("")
-            prev_status = row["status"]
-            table.add_row(self._render_row(row))
-        return table
-
-    def _render_row(self, row: dict):
-        from rich.text import Text
-
-        t = Text()
-        t.append(f"{row['family']:<8}", style="bold cyan")
-        status = row["status"]
-        if status == "queued":
-            t.append("QUEUED", style="dim")
-            return t
-        if status == "stalled":
-            t.append("STALLED (no updates)", style="bold red")
-            return t
-        if status == "done":
-            if row["skipped_reason"]:
-                t.append(f"DONE     skipped ({row['skipped_reason']})", style="dim")
-                return t
-            t.append("DONE     ", style="bold green")
-            t.append(f"opt_max {row['best']:.4f} ")
-            if row["baseline"] > 0:
-                t.append(
-                    f"(baseline {row['baseline']:.4f}, {row['delta_pp']:+.1f}pp)",
-                    style="green" if row["delta_pp"] > 0 else "yellow",
+            delta_pp = (best_n_m.opt_max - cur_m.opt_max) * 100.0
+            if delta_pp > improvement_threshold_pp:
+                log.info(
+                    "family=%s restart=%d step=%d: IMPROVE %.4f -> %.4f (+%.3fpp)",
+                    family,
+                    restart_id,
+                    step,
+                    cur_m.opt_max,
+                    best_n_m.opt_max,
+                    delta_pp,
                 )
-            t.append(f"  [{row['verdict']}]", style="dim")
-            return t
-        # running
-        if row["total_restarts"]:
-            t.append(f"restart {max(row['restart'] - 1, 0)}/{row['total_restarts']}  ")
-        if row["phase"]:
-            t.append(f"{row['phase']:<10} ", style="yellow")
-        if row["total_neighbors"]:
-            bar = self._bar(row["evaluated"], row["total_neighbors"], width=12)
-            t.append(f"[{bar}] ", style="green")
-            t.append(f"{row['evaluated']:>3}/{row['total_neighbors']:<3} neighbors  ")
-            t.append(f"{row['candidates']} candidates  ", style="magenta")
-        else:
-            t.append(f"[{' ' * 12}]  0/0   neighbors  0 candidates  ", style="dim")
-        t.append(f"best {row['best']:.4f}  ", style="bold")
-        t.append(self._spinner_char, style="cyan")
-        return t
+                cur = best_n_cfg
+                cur_m = best_n_m
+                if rank_key(cur_m) > rank_key(restart_best_m):
+                    restart_best_m = cur_m
+                    restart_best_cfg = cur
+                state.update_restart(
+                    family,
+                    restart_id,
+                    canonical_config(restart_best_cfg),
+                    restart_best_m.opt_max,
+                    evaluated,
+                    "running",
+                )
+                prog.end_phase("IMPROVE")
+            elif (
+                abs(delta_pp) < improvement_threshold_pp and neutral_budget > 0 and rank_key(best_n_m) > rank_key(cur_m)
+            ):
+                log.info(
+                    "family=%s restart=%d step=%d: NEUTRAL %.4f -> %.4f (%.3fpp; budget=%d)",
+                    family,
+                    restart_id,
+                    step,
+                    cur_m.opt_max,
+                    best_n_m.opt_max,
+                    delta_pp,
+                    neutral_budget - 1,
+                )
+                cur = best_n_cfg
+                cur_m = best_n_m
+                neutral_budget -= 1
+                if rank_key(cur_m) > rank_key(restart_best_m):
+                    restart_best_m = cur_m
+                    restart_best_cfg = cur
+                state.update_restart(
+                    family,
+                    restart_id,
+                    canonical_config(restart_best_cfg),
+                    restart_best_m.opt_max,
+                    evaluated,
+                    "running",
+                )
+                prog.end_phase("NEUTRAL")
+            else:
+                log.info(
+                    "family=%s restart=%d step=%d: STOP delta=%.3fpp",
+                    family,
+                    restart_id,
+                    step,
+                    delta_pp,
+                )
+                prog.end_phase("STOP")
+                break
+            step += 1
 
-    @staticmethod
-    def _bar(done: int, total: int, width: int) -> str:
-        if total <= 0:
-            return " " * width
-        filled = int(width * done / total)
-        if filled >= width:
-            return "=" * width
-        return "=" * filled + ">" + " " * (width - filled - 1)
+        # Update global best from the restart PEAK, not from the walked end-state.
+        if best_m is None or rank_key(restart_best_m) > rank_key(best_m):
+            improved = best_m is None or restart_best_m.opt_max > best_m.opt_max + improvement_threshold
+            log.info(
+                "family=%s restart=%d: NEW BEST opt_max=%.4f (improved=%s)",
+                family,
+                restart_id,
+                restart_best_m.opt_max,
+                improved,
+            )
+            best_m = restart_best_m
+            best_cfg = restart_best_cfg
+            prog.update_best(best_m.opt_max)
+        state.update_restart(
+            family,
+            restart_id,
+            canonical_config(restart_best_cfg),
+            restart_best_m.opt_max,
+            evaluated,
+            "done",
+        )
+        restarts_run += 1
 
-    def close(self) -> None:
-        if not self.enabled:
-            return
-        self._stop.set()
-        if self._consumer_thread is not None:
-            self._consumer_thread.join(timeout=2.0)
-        # Drain any final messages that arrived after stop was set so DONE rows render.
-        try:
-            while True:
-                msg = self.queue.get_nowait()
-                self._apply(msg)
-        except Exception:
-            pass
-        try:
-            if self.use_rich and self._live is not None:
-                with self._lock:
-                    self._live.update(self._render())
-                self._live.stop()
-        finally:
-            for lg, handler, level in self._saved_stream_handlers:
-                if self._rich_handler is not None and self._rich_handler in lg.handlers:
-                    lg.removeHandler(self._rich_handler)
-                handler.setLevel(level)
-                if handler not in lg.handlers:
-                    lg.addHandler(handler)
-            self._saved_stream_handlers.clear()
-            try:
-                self._manager.shutdown()
-            except Exception:
-                pass
+    return best_cfg, best_m, evaluated, cache_hits, restarts_run
+
+
+# ---------- family orchestrator ----------
+
+
+def _select_search_mode(mode_flag: str, k: int, exhaustive_cutoff: int) -> str:
+    if mode_flag == "exhaustive":
+        return "exhaustive"
+    if mode_flag == "hillclimb":
+        return "hillclimb"
+    return "exhaustive" if k <= exhaustive_cutoff else "hillclimb"
 
 
 def _search_family(
@@ -1410,6 +646,9 @@ def _search_family(
     num_restarts: int,
     improvement_threshold_pp: float,
     neutral_move_limit: int,
+    search_mode: str,
+    exhaustive_max_configs: int,
+    exhaustive_k_cutoff: int,
     log_level: str,
     progress: ProgressDisplay | QueueProgressDisplay | None = None,
 ) -> FamilyResult:
@@ -1419,265 +658,306 @@ def _search_family(
     prog = progress or ProgressDisplay(enabled=False, use_rich=False)
 
     t0 = time.perf_counter()
-    log.info("family=%s: building eligibility", family)
-    eligibility = _build_eligibility(family, defs, daemonsets)
-    for name, shapes in eligibility.items():
-        if not shapes:
-            log.warning("def %s has no eligible shapes — will be skipped", name)
-    eligible_defs = [d for d in defs if eligibility[d["name"]]]
-    if not eligible_defs:
-        log.error("family=%s: no defs with eligible shapes — aborting", family)
-        raise RuntimeError(f"family {family} has zero fittable defs")
-    elig_only = {d["name"]: eligibility[d["name"]] for d in eligible_defs}
+    log.info("family=%s: building eligibility catalog", family)
+    catalog_full = optimize_catalog.build_eligibility_catalog(families=[family], daemonsets=daemonsets)
+    entries = catalog_full.get(family, [])
+    catalog = build_family_catalog(entries)
 
-    # Empty-family guard: if the CSV window has no jobs for any of this family's
-    # defs, simulate() would crash on min() over the empty arrivals. Return a
-    # "skipped" result so the global report can render "no data" instead.
-    # If a prior run under a wider window persisted a best, preserve it rather
-    # than overwriting with a "skipped" verdict — the narrower window is not
-    # evidence that the prior best is invalid.
-    family_def_names = {d["name"] for d in eligible_defs}
-    has_family_jobs = any(j.label in family_def_names for j in all_jobs)
-    if not has_family_jobs:
-        prior_cfg, prior_opt, _prior_rid = _load_persisted_best(state, family, elig_only)
-        if prior_cfg is not None and prior_opt is not None:
-            log.warning(
-                "family=%s: no jobs in current window but prior best exists — "
-                "preserving prior best, not marking done for this window",
-                family,
-            )
-            elapsed = time.perf_counter() - t0
-            # Only opt_max is durable across runs (persisted in state); the
-            # remaining metric fields were computed against the prior window
-            # and cannot be reconstructed from an empty current window.
-            prior_m = SimMetrics(
-                opt_cpu=0.0, opt_mem=0.0, opt_max=float(prior_opt),
-                cal_cpu=0.0, cal_mem=0.0, node_hours=0.0, elapsed_s=0.0,
-            )
-            return FamilyResult(
-                family=family,
-                baseline_metrics=prior_m,
-                baseline_config=prior_cfg,
-                best_metrics=prior_m,
-                best_config=prior_cfg,
-                delta_pp=0.0,
-                verdict="kept_prior_best",
-                num_restarts=num_restarts,
-                winning_restart=0,
-                total_sim_calls=0,
-                total_neighbors_evaluated=0,
-                elapsed_s=elapsed,
-                skipped_reason="no jobs in window (prior best preserved)",
-            )
-        log.warning("family=%s: no jobs in window — skipping search", family)
-        empty = SimMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        baseline = _baseline_config(eligible_defs, elig_only)
+    eligible_names = {e.def_label for e in entries}
+    eligible_defs = [d for d in defs if d["name"] in eligible_names]
+    for d in defs:
+        if d["name"] not in eligible_names:
+            log.warning("def %s has zero eligible instances — dropped from family search", d["name"])
+    if not eligible_defs:
+        log.error("family=%s: no defs with eligible shapes — aborting family", family)
         elapsed = time.perf_counter() - t0
         state.mark_family(family, "done", verdict="skipped", best=None)
         return FamilyResult(
             family=family,
-            baseline_metrics=empty,
-            baseline_config=baseline,
-            best_metrics=empty,
-            best_config=baseline,
-            delta_pp=0.0,
+            baseline_config={},
+            baseline_metrics=None,
+            best_config=None,
+            best_metrics=None,
             verdict="skipped",
-            num_restarts=num_restarts,
-            winning_restart=0,
-            total_sim_calls=0,
-            total_neighbors_evaluated=0,
-            elapsed_s=elapsed,
-            skipped_reason="no jobs in window",
+            skipped_reason="no eligible defs",
+            elapsed_sec=elapsed,
         )
 
-    baseline = _baseline_config(eligible_defs, elig_only)
+    baseline = baseline_config(family, eligible_defs, entries)
+    if not is_config_feasible(baseline, catalog):
+        # Prod's single-instance baseline stranded outside D4 bounds means we
+        # cannot honestly compare recommendations "vs prod" — the baseline is
+        # not what prod is running. Skip loudly instead of substituting a
+        # random per-def baseline and mislabelling it. Operator action: loosen
+        # D4 bounds (or update prod) and re-run.
+        log.error(
+            "family=%s: baseline infeasible under D4 bounds — skipping family "
+            "(loosen bounds or update prod config, then re-run)",
+            family,
+        )
+        elapsed = time.perf_counter() - t0
+        state.mark_family(family, "done", verdict="skipped", best=None)
+        return FamilyResult(
+            family=family,
+            baseline_config=baseline,
+            baseline_metrics=None,
+            best_config=None,
+            best_metrics=None,
+            verdict="skipped",
+            skipped_reason="baseline infeasible under D4 bounds",
+            elapsed_sec=elapsed,
+        )
+
+    family_def_names = {d["name"] for d in eligible_defs}
+    has_family_jobs = any(j.label in family_def_names for j in all_jobs)
+    if not has_family_jobs:
+        prior_cfg, prior_m, _ = _load_persisted_best(state, family, catalog)
+        if prior_cfg is not None and prior_m is not None:
+            log.warning(
+                "family=%s: no jobs in window but prior best exists — preserving",
+                family,
+            )
+            elapsed = time.perf_counter() - t0
+            result = FamilyResult(
+                family=family,
+                baseline_config=baseline,
+                baseline_metrics=prior_m,
+                best_config=prior_cfg,
+                best_metrics=prior_m,
+                verdict="kept_prior_best",
+                skipped_reason="no jobs in window (prior best preserved)",
+                elapsed_sec=elapsed,
+            )
+            state.mark_family(
+                family,
+                "done",
+                verdict="kept_prior_best",
+                best=_persist_best_payload(prior_cfg, prior_m),
+            )
+            return result
+        log.warning("family=%s: no jobs in window — skipping search", family)
+        elapsed = time.perf_counter() - t0
+        state.mark_family(family, "done", verdict="skipped", best=None)
+        return FamilyResult(
+            family=family,
+            baseline_config=baseline,
+            baseline_metrics=None,
+            best_config=None,
+            best_metrics=None,
+            verdict="skipped",
+            skipped_reason="no jobs in window",
+            elapsed_sec=elapsed,
+        )
+
+    mode = _select_search_mode(search_mode, len(eligible_defs), exhaustive_k_cutoff)
+    log.info("family=%s: mode=%s (K=%d defs)", family, mode, len(eligible_defs))
+    prog.start_family(family, mode, num_restarts)
+
     log.info("family=%s: running baseline sim", family)
-    prog.start_family(family, num_restarts)
-    baseline_m = _cached_sim(
-        family, baseline, all_jobs, eligible_defs, elig_only, runner_fleet,
-        sim_flags, csv_sha, src_shas, cache, log,
-    )
+    seen_configs: set[str] = set()
+    try:
+        baseline_m, baseline_hit = cached_sim(
+            family,
+            baseline,
+            all_jobs,
+            catalog,
+            family_def_names,
+            runner_fleet,
+            sim_flags,
+            csv_sha,
+            src_shas,
+            cache,
+            log,
+            daemonsets=daemonsets,
+        )
+    except Exception as e:
+        log.error("family=%s: baseline sim failed: %s", family, e, exc_info=True)
+        elapsed = time.perf_counter() - t0
+        state.mark_family(family, "done", verdict="skipped", best=None)
+        return FamilyResult(
+            family=family,
+            baseline_config=baseline,
+            baseline_metrics=None,
+            best_config=None,
+            best_metrics=None,
+            verdict="skipped",
+            skipped_reason=f"baseline sim failed: {e}",
+            elapsed_sec=elapsed,
+        )
     prog.update_best(baseline_m.opt_max)
     log.info(
-        "family=%s: baseline opt_max=%.4f (cpu=%.4f mem=%.4f) node_hours=%.1f",
-        family, baseline_m.opt_max, baseline_m.opt_cpu, baseline_m.opt_mem, baseline_m.node_hours,
+        "family=%s: baseline opt_max=%.4f (cpu=%.4f mem=%.4f) vcpu_hours=%.1f",
+        family,
+        baseline_m.opt_max,
+        baseline_m.opt_cpu,
+        baseline_m.opt_mem,
+        baseline_m.vcpu_hours,
     )
+    seen_configs.add(canonical_config(baseline))
 
-    best_config = baseline
+    best_cfg = baseline
     best_m = baseline_m
-    winning_restart = 0
-    total_sim_calls = 1
-    total_neighbors_evaluated = 0
+    evaluated_total = 1
+    cache_hits_total = 1 if baseline_hit else 0
+    restarts_run = 0
+
+    # Resume: pull the strongest previously-persisted config as a warm seed so
+    # a prior improvement survives the next launch.
+    prior_cfg, prior_m_loaded, _prior_rid = _load_persisted_best(state, family, catalog)
+    if prior_cfg is not None and prior_m_loaded is not None:
+        prior_key = canonical_config(prior_cfg)
+        try:
+            prior_m, prior_hit = cached_sim(
+                family,
+                prior_cfg,
+                all_jobs,
+                catalog,
+                family_def_names,
+                runner_fleet,
+                sim_flags,
+                csv_sha,
+                src_shas,
+                cache,
+                log,
+                daemonsets=daemonsets,
+            )
+            if prior_key not in seen_configs:
+                seen_configs.add(prior_key)
+                evaluated_total += 1
+            if prior_hit:
+                cache_hits_total += 1
+            if rank_key(prior_m) > rank_key(best_m):
+                log.info("family=%s: resumed with prior best opt_max=%.4f", family, prior_m.opt_max)
+                best_cfg = prior_cfg
+                best_m = prior_m
+                prog.update_best(best_m.opt_max)
+        except Exception as e:
+            log.warning("family=%s: prior best sim failed: %s", family, e, exc_info=True)
+
+    if mode == "exhaustive":
+        cfg, m, evaluated, cache_hits = _search_exhaustive(
+            family,
+            eligible_defs,
+            entries,
+            all_jobs,
+            runner_fleet,
+            sim_flags,
+            csv_sha,
+            src_shas,
+            cache,
+            log,
+            exhaustive_max_configs,
+            prog,
+            best_cfg,
+            best_m,
+            daemonsets,
+            seen_configs,
+        )
+        if cfg is None and m is None:
+            # Exhaustive capped out — fall back to hillclimb.
+            mode = "hillclimb"
+            prog.start_family(family, mode, num_restarts, best_m.opt_max if best_m else 0.0)
+            cfg, m, evaluated, cache_hits, restarts_run = _search_hillclimb(
+                family,
+                eligible_defs,
+                entries,
+                all_jobs,
+                runner_fleet,
+                sim_flags,
+                csv_sha,
+                src_shas,
+                cache,
+                state,
+                log,
+                num_restarts,
+                neutral_move_limit,
+                improvement_threshold_pp,
+                prog,
+                baseline,
+                best_cfg,
+                best_m,
+                daemonsets,
+                seen_configs,
+            )
+        evaluated_total += evaluated
+        if cache_hits > 0:
+            cache_hits_total += cache_hits
+        if cfg is not None and m is not None:
+            best_cfg = cfg
+            best_m = m
+    else:
+        cfg, m, evaluated, cache_hits, restarts_run = _search_hillclimb(
+            family,
+            eligible_defs,
+            entries,
+            all_jobs,
+            runner_fleet,
+            sim_flags,
+            csv_sha,
+            src_shas,
+            cache,
+            state,
+            log,
+            num_restarts,
+            neutral_move_limit,
+            improvement_threshold_pp,
+            prog,
+            baseline,
+            best_cfg,
+            best_m,
+            daemonsets,
+            seen_configs,
+        )
+        evaluated_total += evaluated
+        cache_hits_total += cache_hits
+        if cfg is not None and m is not None:
+            best_cfg = cfg
+            best_m = m
+
     improvement_threshold = improvement_threshold_pp / 100.0
-
-    # Resume path: if a prior run persisted a better-than-baseline config,
-    # materialize it as the starting best so restarts that already improved
-    # don't get thrown away on the next launch.
-    prior_cfg, prior_opt, prior_rid = _load_persisted_best(state, family, elig_only)
-    if prior_cfg is not None and prior_opt is not None:
-        prior_m = _cached_sim(
-            family, prior_cfg, all_jobs, eligible_defs, elig_only, runner_fleet,
-            sim_flags, csv_sha, src_shas, cache, log,
-        )
-        total_sim_calls += 1
-        if _rank_key(prior_m) > _rank_key(best_m):
-            log.info(
-                "family=%s: resumed with prior best opt_max=%.4f from restart %s",
-                family, prior_m.opt_max, prior_rid if prior_rid is not None else "family_state",
-            )
-            best_m = prior_m
-            best_config = prior_cfg
-            if prior_rid is not None:
-                winning_restart = prior_rid
-
-    for restart_id in range(num_restarts):
-        prior_status = state.restart_status(family, restart_id)
-        if prior_status == "done":
-            log.info("family=%s: restart %d already done, skipping", family, restart_id)
-            continue
-
-        seed_int = _restart_seed(family, restart_id)
-        rng = random.Random(seed_int)  # noqa: S311
-        log.info("family=%s restart=%d: seed_int=%d", family, restart_id, seed_int)
-        prog.start_restart(restart_id, phase="seed")
-        if restart_id == 0:
-            cur = dict(baseline)
-        else:
-            cur = _random_config(elig_only, rng)
-
-        cur_m = _cached_sim(
-            family, cur, all_jobs, eligible_defs, elig_only, runner_fleet,
-            sim_flags, csv_sha, src_shas, cache, log,
-        )
-        total_sim_calls += 1
-        log.info(
-            "family=%s restart=%d: seed opt_max=%.4f (cpu=%.4f mem=%.4f)",
-            family, restart_id, cur_m.opt_max, cur_m.opt_cpu, cur_m.opt_mem,
-        )
-        prog.update_best(max(cur_m.opt_max, best_m.opt_max))
-        # Track the per-restart PEAK independently from cur/cur_m so neutral moves
-        # cannot dilute what this restart contributes to the global best.
-        restart_best_m = cur_m
-        restart_best_cfg = cur
-        neutral_budget = neutral_move_limit
-        neighbors_in_restart = 0
-        step = 0
-
-        while True:
-            neighbors = _enumerate_neighbors(cur, elig_only)
-            if not neighbors:
-                break
-            prog.start_step(step, len(neighbors))
-            best_n_m: SimMetrics | None = None
-            best_n_cfg: Config | None = None
-            candidates = 0
-            for n_cfg in neighbors:
-                n_m = _cached_sim(
-                    family, n_cfg, all_jobs, eligible_defs, elig_only, runner_fleet,
-                    sim_flags, csv_sha, src_shas, cache, log,
-                )
-                total_sim_calls += 1
-                neighbors_in_restart += 1
-                total_neighbors_evaluated += 1
-                if best_n_m is None or _rank_key(n_m) > _rank_key(best_n_m):
-                    best_n_m = n_m
-                    best_n_cfg = n_cfg
-                if n_m.opt_max > cur_m.opt_max:
-                    candidates += 1
-                prog.advance(candidates, max(n_m.opt_max, best_m.opt_max))
-            assert best_n_m is not None and best_n_cfg is not None
-
-            delta_pp = (best_n_m.opt_max - cur_m.opt_max) * 100.0
-            if delta_pp > improvement_threshold_pp:
-                log.info(
-                    "family=%s restart=%d step=%d: IMPROVE opt_max %.4f -> %.4f (+%.3fpp)",
-                    family, restart_id, step, cur_m.opt_max, best_n_m.opt_max, delta_pp,
-                )
-                cur = best_n_cfg
-                cur_m = best_n_m
-                if _rank_key(cur_m) > _rank_key(restart_best_m):
-                    restart_best_m = cur_m
-                    restart_best_cfg = cur
-                state.update_restart(family, restart_id, cur, cur_m.opt_max, neighbors_in_restart, "running")
-                prog.end_step("IMPROVE")
-            elif (
-                delta_pp > -improvement_threshold_pp
-                and neutral_budget > 0
-                and _rank_key(best_n_m) > _rank_key(cur_m)
-            ):
-                log.info(
-                    "family=%s restart=%d step=%d: NEUTRAL move opt_max %.4f -> %.4f (%.3fpp; budget=%d)",
-                    family, restart_id, step, cur_m.opt_max, best_n_m.opt_max, delta_pp, neutral_budget - 1,
-                )
-                cur = best_n_cfg
-                cur_m = best_n_m
-                neutral_budget -= 1
-                if _rank_key(cur_m) > _rank_key(restart_best_m):
-                    restart_best_m = cur_m
-                    restart_best_cfg = cur
-                state.update_restart(family, restart_id, cur, cur_m.opt_max, neighbors_in_restart, "running")
-                prog.end_step("NEUTRAL")
-            else:
-                log.info(
-                    "family=%s restart=%d step=%d: STOP best_neighbor delta=%.3fpp <= %.3fpp",
-                    family, restart_id, step, delta_pp, improvement_threshold_pp,
-                )
-                prog.end_step("STOP")
-                break
-            step += 1
-
-        # Compare the restart's PEAK (not its diluted end-state) against the global
-        # best, using the (opt_max, -node_hours) tuple so ties break toward fewer nodes.
-        improved_opt = restart_best_m.opt_max > best_m.opt_max + improvement_threshold
-        is_tie_break_win = (
-            abs(restart_best_m.opt_max - best_m.opt_max) <= improvement_threshold
-            and _rank_key(restart_best_m) > _rank_key(best_m)
-        )
-        if improved_opt or is_tie_break_win:
-            log.info(
-                "family=%s restart=%d: NEW BEST opt_max %.4f -> %.4f (node_hours %.1f -> %.1f)",
-                family, restart_id, best_m.opt_max, restart_best_m.opt_max,
-                best_m.node_hours, restart_best_m.node_hours,
-            )
-            best_m = restart_best_m
-            best_config = restart_best_cfg
-            winning_restart = restart_id
-            prog.update_best(best_m.opt_max)
-        state.update_restart(
-            family, restart_id, restart_best_cfg, restart_best_m.opt_max, neighbors_in_restart, "done",
-        )
-
-    delta_pp = (best_m.opt_max - baseline_m.opt_max) * 100.0
-    verdict = "improved" if delta_pp > improvement_threshold_pp else "no-change"
+    if best_m is None or baseline_m is None:
+        verdict = "no_change"
+        delta_pp = 0.0
+    else:
+        delta = best_m.opt_max - baseline_m.opt_max
+        delta_pp = delta * 100.0
+        verdict = "improved" if delta > improvement_threshold else "no_change"
 
     elapsed = time.perf_counter() - t0
+    cache_hit_rate = (cache_hits_total / evaluated_total) if evaluated_total > 0 else 0.0
     log.info(
-        "family=%s: DONE verdict=%s baseline=%.4f best=%.4f delta=%.3fpp restart=%d sims=%d neighbors=%d elapsed=%.1fs",
-        family, verdict, baseline_m.opt_max, best_m.opt_max, delta_pp,
-        winning_restart, total_sim_calls, total_neighbors_evaluated, elapsed,
+        "family=%s: DONE verdict=%s baseline=%.4f best=%.4f delta=%.3fpp evaluated=%d restarts=%d elapsed=%.1fs",
+        family,
+        verdict,
+        baseline_m.opt_max if baseline_m else 0.0,
+        best_m.opt_max if best_m else 0.0,
+        delta_pp,
+        evaluated_total,
+        restarts_run,
+        elapsed,
     )
     prog.end_family()
     result = FamilyResult(
         family=family,
-        baseline_metrics=baseline_m,
         baseline_config=baseline,
-        best_metrics=best_m,
-        best_config=best_config,
-        delta_pp=delta_pp,
+        baseline_metrics=baseline_m,
+        best_config=best_cfg if best_cfg is not None else baseline,
+        best_metrics=best_m if best_m is not None else baseline_m,
         verdict=verdict,
-        num_restarts=num_restarts,
-        winning_restart=winning_restart,
-        total_sim_calls=total_sim_calls,
-        total_neighbors_evaluated=total_neighbors_evaluated,
-        elapsed_s=elapsed,
+        configs_evaluated=evaluated_total,
+        elapsed_sec=elapsed,
+        restarts_run=restarts_run,
+        cache_hit_rate=cache_hit_rate,
+        mode=mode,
     )
-    state.mark_family(
-        family,
-        "done",
-        verdict=verdict,
-        best={"config": {k: list(v) for k, v in best_config.items()}, "opt_max": best_m.opt_max},
-    )
+    persisted_best = None
+    if result.best_config is not None and result.best_metrics is not None:
+        persisted_best = _persist_best_payload(result.best_config, result.best_metrics)
+    state.mark_family(family, "done", verdict=verdict, best=persisted_best)
     return result
+
+
+# ---------- logging setup ----------
 
 
 def _configure_family_logger(family: str, logs_dir: Path, level: str) -> logging.Logger:
@@ -1712,27 +992,25 @@ def _configure_global_logger(logs_dir: Path, level: str) -> logging.Logger:
     return log
 
 
+# ---------- worker entry (spawn) ----------
+
+
 def _family_worker(kwargs: dict) -> FamilyResult:
-    """multiprocessing entrypoint — kwargs must be picklable."""
+    """Pool entry point — kwargs must be picklable."""
 
     def _sigterm(_signum, _frame):
+        # Cooperative shutdown: workers exit cleanly; SqliteCache/StateStore
+        # writes are atomic per-commit so no state loss beyond in-flight sim.
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _sigterm)
     signal.signal(signal.SIGINT, _sigterm)
 
-    # If parent supplied a progress queue, build a QueueProgressDisplay for this
-    # worker and bump stderr StreamHandlers to WARNING+ so INFO chatter doesn't
-    # interleave into the parent's live panel. File handlers keep full detail.
     queue = kwargs.pop("progress_queue", None)
     family = kwargs["family"]
     prog: QueueProgressDisplay | None = None
     if queue is not None:
         prog = QueueProgressDisplay(family, queue)
-        # Pre-configure loggers here so we can bump their stderr StreamHandlers
-        # before _search_family emits any INFO records. Without this the first
-        # handful of INFO lines from each worker slip through and interleave
-        # into the parent's live panel.
         _configure_family_logger(family, kwargs["logs_dir"], kwargs["log_level"])
         for name in ("global", family):
             lg = logging.getLogger(name)
@@ -1747,120 +1025,202 @@ def _family_worker(kwargs: dict) -> FamilyResult:
     return result
 
 
-def _write_family_report(reports_dir: Path, r: FamilyResult, defs: list[dict]) -> None:
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    path = reports_dir / f"{r.family}.md"
-    if r.skipped_reason:
-        path.write_text(
-            f"# Fleet: {r.family}\n\n"
-            f"## Skipped\n\nreason: {r.skipped_reason}\n\nno data available for this family in the current window.\n"
+def _validation_worker(kwargs: dict) -> tuple[str, str, SimMetrics | None]:
+    """Run a single sim (baseline or best) for a family on the validation
+    dataset. Returns (family, which, metrics) where which in {"baseline","best"}.
+
+    Uses the same SimCache; cache key includes last_days via sim_flags so a
+    validation sim never collides with the search-window sim. Re-runs (resume)
+    hit the cache.
+    """
+
+    def _sigterm(_signum, _frame):
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _sigterm)
+    signal.signal(signal.SIGINT, _sigterm)
+
+    family: str = kwargs["family"]
+    which: str = kwargs["which"]
+    config: Config = kwargs["config"]
+    all_jobs: list[Job] = kwargs["all_jobs"]
+    daemonsets = kwargs["daemonsets"]
+    runner_fleet: FleetSpec = kwargs["runner_fleet"]
+    sim_flags: dict = kwargs["sim_flags"]
+    csv_sha: str = kwargs["csv_sha"]
+    src_shas: dict = kwargs["src_shas"]
+    cache_path: Path = kwargs["cache_path"]
+    logs_dir: Path = kwargs["logs_dir"]
+    log_level: str = kwargs["log_level"]
+
+    log = _configure_family_logger(family, logs_dir, log_level)
+    cache = SimCache(cache_path)
+
+    catalog_full = optimize_catalog.build_eligibility_catalog(families=[family], daemonsets=daemonsets)
+    entries = catalog_full.get(family, [])
+    catalog = build_family_catalog(entries)
+    family_def_names = {e.def_label for e in entries}
+
+    try:
+        m, was_hit = cached_sim(
+            family,
+            config,
+            all_jobs,
+            catalog,
+            family_def_names,
+            runner_fleet,
+            sim_flags,
+            csv_sha,
+            src_shas,
+            cache,
+            log,
+            daemonsets=daemonsets,
         )
-        return
-    baseline_insts = sorted({inst for inst, _ in r.baseline_config.values()})
-    best_insts = sorted({inst for inst, _ in r.best_config.values()})
-    lines = [
-        f"# Fleet: {r.family}",
-        "",
-        "## Baseline (current config)",
-        f"  fleet = {baseline_insts}",
-        f"  opt_max = {r.baseline_metrics.opt_max * 100:.1f}% "
-        f"(cpu {r.baseline_metrics.opt_cpu * 100:.1f}%, mem {r.baseline_metrics.opt_mem * 100:.1f}%)",
-        f"  cal_cpu = {r.baseline_metrics.cal_cpu * 100:.1f}%, cal_mem = {r.baseline_metrics.cal_mem * 100:.1f}%",
-        f"  node_hours ~ {r.baseline_metrics.node_hours:.1f}",
-        "",
-        "## Recommendation",
-        f"  fleet = {best_insts}",
-        f"  opt_max = {r.best_metrics.opt_max * 100:.1f}% "
-        f"(cpu {r.best_metrics.opt_cpu * 100:.1f}%, mem {r.best_metrics.opt_mem * 100:.1f}%)",
-        f"  cal_cpu = {r.best_metrics.cal_cpu * 100:.1f}%, cal_mem = {r.best_metrics.cal_mem * 100:.1f}%",
-        f"  node_hours ~ {r.best_metrics.node_hours:.1f}",
-        f"  delta vs baseline = {r.delta_pp:+.2f}pp",
-        f"  verdict = {r.verdict}",
-        "",
-        "## Def re-mappings",
-    ]
-    for d in defs:
-        name = d["name"]
-        base = r.baseline_config.get(name)
-        best = r.best_config.get(name)
-        if base is None or best is None:
-            continue
-        marker = "" if base == best else "  <-- CHANGED"
-        lines.append(f"  {name}: {base[0]} N={base[1]} -> {best[0]} N={best[1]}{marker}")
-    lines.append("")
-    lines.append("## Convergence")
-    lines.append(
-        f"  restarts={r.num_restarts}, winning_restart={r.winning_restart}, "
-        f"sims={r.total_sim_calls}, neighbors_evaluated={r.total_neighbors_evaluated}, "
-        f"elapsed={r.elapsed_s:.1f}s",
+    except Exception as e:
+        log.warning("family=%s: validation sim (%s) failed: %s", family, which, e, exc_info=True)
+        return family, which, None
+    log.info(
+        "family=%s: validation %s sim done (cache_hit=%s) opt_max=%.4f vcpu_hours=%.0f",
+        family,
+        which,
+        was_hit,
+        m.opt_max,
+        m.vcpu_hours,
     )
-    lines.append("")
-    path.write_text("\n".join(lines) + "\n")
+    return family, which, m
 
 
-def _write_family_patch_stub(reports_dir: Path, r: FamilyResult, defs: list[dict]) -> None:
-    """Placeholder patch — real diff generation is Phase 4."""
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    path = reports_dir / f"{r.family}.patch"
-    if r.skipped_reason:
-        path.write_text(f"# SKIPPED family {r.family}: {r.skipped_reason}\n")
-        return
-    lines = [
-        f"# STUB: would-be changes for family {r.family}.",
-        f"# Verdict: {r.verdict} (delta {r.delta_pp:+.2f}pp)",
-        "# Real unified diff generation is deferred to Phase 4.",
-        "",
-    ]
-    baseline_insts = sorted({inst for inst, _ in r.baseline_config.values()})
-    best_insts = sorted({inst for inst, _ in r.best_config.values()})
-    lines.append(f"# modules/nodepools/defs/{r.family}.yaml instances: {baseline_insts} -> {best_insts}")
-    lines.append("")
-    for d in defs:
-        name = d["name"]
-        base = r.baseline_config.get(name)
-        best = r.best_config.get(name)
-        if base is None or best is None or base == best:
-            continue
-        lines.append(
-            f"# modules/arc-runners/defs/{name}.yaml: instance_type {base[0]} N={base[1]} -> {best[0]} N={best[1]}"
-        )
-    path.write_text("\n".join(lines) + "\n")
-
-
-def _write_global_report(reports_dir: Path, results: list[FamilyResult]) -> None:
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    path = reports_dir / "global.md"
-    lines = [
-        "# Global search summary",
-        "",
-        "| family | baseline opt_max | rec opt_max | delta (pp) | verdict | sims | wall (s) |",
-        "|--------|-----------------:|------------:|-----------:|:--------|-----:|---------:|",
-    ]
-    for r in sorted(results, key=lambda x: x.family):
-        if r.skipped_reason:
-            lines.append(
-                f"| {r.family} | n/a | n/a | n/a | skipped ({r.skipped_reason}) | 0 | {r.elapsed_s:.0f} |"
-            )
-            continue
-        lines.append(
-            f"| {r.family} | {r.baseline_metrics.opt_max * 100:.1f}% | "
-            f"{r.best_metrics.opt_max * 100:.1f}% | {r.delta_pp:+.2f} | "
-            f"{r.verdict} | {r.total_sim_calls} | {r.elapsed_s:.0f} |"
-        )
-    lines.append("")
-    path.write_text("\n".join(lines) + "\n")
+# ---------- signal handling ----------
 
 
 def _install_shutdown_handler(output_dir: Path, log: logging.Logger) -> None:
     def _handler(signum, _frame):
         log.warning(
             "signal %s received — state is checkpointed; resume with: --resume %s",
-            signum, output_dir,
+            signum,
+            output_dir,
         )
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _handler)
     signal.signal(signal.SIGTERM, _handler)
+
+
+# ---------- validation phase ----------
+
+
+def _run_validation_phase(
+    *,
+    results: list[FamilyResult],
+    csv_path: Path,
+    drop_providers: set[str],
+    add_runner_pods: bool,
+    args,
+    daemonsets,
+    runner_fleet: FleetSpec,
+    sim_flags: dict,
+    csv_sha: str,
+    src_shas: dict[str, str],
+    cache_path: Path,
+    logs_dir: Path,
+    workers: int,
+    global_log: logging.Logger,
+) -> None:
+    """Re-run baseline + best on the full dataset (no --last-days filter) for
+    each family whose search produced a comparable pair.
+
+    Attaches (baseline_full_metrics, best_full_metrics, validation_days) to
+    each eligible FamilyResult in place. Skipped families have no baseline to
+    re-run against — they're left untouched. Validation sims run in parallel
+    via a fresh spawn Pool with the same worker count as the search phase.
+    """
+    eligible = [
+        r
+        for r in results
+        if r.verdict in ("improved", "no_change", "kept_prior_best")
+        and r.baseline_config
+        and r.best_config is not None
+        and r.baseline_metrics is not None
+        and r.best_metrics is not None
+    ]
+    if not eligible:
+        global_log.info("validation: no eligible families (all skipped) — nothing to validate")
+        return
+
+    global_log.info("validation: loading full dataset (no --last-days filter) from %s", csv_path)
+    full_jobs = sim_load.load_jobs(
+        csv_path,
+        add_runner_pods=add_runner_pods,
+        runner_pool=args.runner_pool,
+        drop_providers=drop_providers,
+        keep_fraction=args.keep_fraction,
+        keep_seed=args.keep_seed,
+        last_days=None,
+    )
+    global_log.info("validation: loaded %d jobs (vs %s in search window)", len(full_jobs), args.last_days)
+
+    # Sim-cache key includes last_days; overriding sim_flags here lets validation
+    # sims miss the search cache but hit their own cache on resume.
+    val_sim_flags = dict(sim_flags)
+    val_sim_flags["last_days"] = None
+
+    # Compute the validation "days" label from the full dataset for reporting.
+    validation_days: int | None = None
+    if full_jobs:
+        min_s = min(j.start_bucket for j in full_jobs)
+        max_s = max(j.start_bucket for j in full_jobs)
+        span_sec = max(0, max_s - min_s)
+        validation_days = max(1, int(round(span_sec / 86400)))
+
+    tasks: list[dict] = []
+    for r in eligible:
+        for which, cfg in (("baseline", r.baseline_config), ("best", r.best_config)):
+            tasks.append(
+                {
+                    "family": r.family,
+                    "which": which,
+                    "config": cfg,
+                    "all_jobs": full_jobs,
+                    "daemonsets": daemonsets,
+                    "runner_fleet": runner_fleet,
+                    "sim_flags": val_sim_flags,
+                    "csv_sha": csv_sha,
+                    "src_shas": src_shas,
+                    "cache_path": cache_path,
+                    "logs_dir": logs_dir,
+                    "log_level": args.log_level,
+                }
+            )
+
+    global_log.info(
+        "validation: dispatching %d sims (%d families x 2) across %d workers — expect ~60-90s per sim",
+        len(tasks),
+        len(eligible),
+        workers,
+    )
+
+    by_family: dict[str, dict[str, SimMetrics | None]] = {r.family: {} for r in eligible}
+    t0 = time.perf_counter()
+    if workers <= 1:
+        for kw in tasks:
+            fam, which, m = _validation_worker(kw)
+            by_family[fam][which] = m
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=workers, maxtasksperchild=1) as pool:
+            for fam, which, m in pool.imap_unordered(_validation_worker, tasks):
+                by_family[fam][which] = m
+    elapsed = time.perf_counter() - t0
+    global_log.info("validation: done in %.1fs", elapsed)
+
+    for r in eligible:
+        got = by_family.get(r.family, {})
+        r.baseline_full_metrics = got.get("baseline")
+        r.best_full_metrics = got.get("best")
+        r.validation_days = validation_days
+
+
+# ---------- main ----------
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1871,29 +1231,53 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--resume", default=None)
     ap.add_argument("--family", action="append", default=None)
     ap.add_argument("--num-workers", type=int, default=None)
-    ap.add_argument("--num-restarts", type=int, default=DEFAULT_NUM_RESTARTS)
+    ap.add_argument(
+        "--num-restarts",
+        type=int,
+        default=DEFAULT_NUM_RESTARTS,
+        help="number of RANDOM restarts on top of baseline; "
+        f"default {DEFAULT_NUM_RESTARTS} = baseline + {DEFAULT_NUM_RESTARTS} random seeds",
+    )
     ap.add_argument("--improvement-threshold-pp", type=float, default=DEFAULT_IMPROVEMENT_THRESHOLD_PP)
     ap.add_argument("--neutral-move-limit", type=int, default=DEFAULT_NEUTRAL_MOVE_LIMIT)
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument(
-        "--force",
-        action="store_true",
-        help="ignore per-family 'done' status on resume and re-run the family",
-    )
+    ap.add_argument("--force", action="store_true", help="ignore per-family 'done' status on resume and re-run")
     ap.add_argument("--log-level", choices=["debug", "info", "warning"], default="info")
     ap.add_argument("--drop-provider", action="append", default=None)
     ap.add_argument("--keep-fraction", type=float, default=1.0)
     ap.add_argument("--keep-seed", type=int, default=12345)
     ap.add_argument("--no-runner-pods", action="store_true")
     ap.add_argument("--runner-pool", default=RUNNER_POD_POOL)
+    ap.add_argument("--no-progress", action="store_true")
     ap.add_argument(
-        "--no-progress",
+        "--search-mode",
+        choices=["exhaustive", "hillclimb", "auto"],
+        default="auto",
+        help="auto: exhaustive for K<=%d, else hillclimb" % DEFAULT_EXHAUSTIVE_K_CUTOFF,
+    )
+    ap.add_argument(
+        "--exhaustive-max-configs",
+        type=int,
+        default=DEFAULT_EXHAUSTIVE_MAX_CONFIGS,
+        help="cap on enumerated configs before exhaustive falls back to hillclimb",
+    )
+    ap.add_argument(
+        "--rename-threshold-pct",
+        type=float,
+        default=DEFAULT_RENAME_THRESHOLD_PCT,
+        help="cpu/mem adjustment > this %% flags def rename required in patch",
+    )
+    ap.add_argument(
+        "--skip-validation",
         action="store_true",
-        help="disable live terminal progress display even when stderr is a TTY",
+        help="skip the full-dataset validation phase (re-runs baseline + best on --csv "
+        "with last_days=None) — set to speed up iterative dev runs",
     )
     args = ap.parse_args(argv)
 
-    output_dir = Path(args.resume) if args.resume else (Path(args.output_dir) if args.output_dir else _default_output_dir())
+    output_dir = (
+        Path(args.resume) if args.resume else (Path(args.output_dir) if args.output_dir else _default_output_dir())
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     logs_dir = output_dir / "logs"
     reports_dir = output_dir / "reports"
@@ -1910,13 +1294,12 @@ def main(argv: list[str] | None = None) -> int:
             global_log.error("family %r not in scope %s", f, IN_SCOPE_FAMILIES)
             return 2
 
-    defs_by_family = _defs_by_family()
+    defs_by_family = load_defs_by_family()
     families = tuple(f for f in families if defs_by_family.get(f))
 
     if args.dry_run:
         global_log.info("dry-run: invoking optimize_catalog for %s", families)
-        rc = optimize_catalog.main([f"--family={f}" for f in families] + [f"--output={output_dir / 'catalog.json'}"])
-        return rc
+        return optimize_catalog.main([f"--family={f}" for f in families] + [f"--output={output_dir / 'catalog.json'}"])
 
     csv_path = Path(args.csv)
     if not csv_path.is_file():
@@ -1925,7 +1308,7 @@ def main(argv: list[str] | None = None) -> int:
 
     global_log.info("hashing sim source files")
     src_shas = _sim_source_shas()
-    global_log.info("hashing CSV (may take a moment for 60d file)")
+    global_log.info("hashing CSV")
     csv_sha = _sha256_file(csv_path)
 
     global_log.info("loading CSV %s (last_days=%s)", csv_path, args.last_days)
@@ -1945,10 +1328,6 @@ def main(argv: list[str] | None = None) -> int:
     daemonsets = discover_daemonsets(REPO_ROOT)
     runner_fleet = _real_runner_fleet()
 
-    # Base sim flags. PROD_PARITY_SIM_FLAGS (single source of truth shared with
-    # benchmark's calibration run) overrides the sim's defaults for the three
-    # prod-parity keys so the search optimizes under the same accounting the
-    # sim-vs-prod calibration validates.
     sim_flags = {
         "seed": 42,
         "placeholder_max_age": 2,
@@ -1956,7 +1335,7 @@ def main(argv: list[str] | None = None) -> int:
         "warmup_gpu": 2,
         "warmup_baremetal": 3,
         "placeholders_enabled": True,
-        # load_jobs args — must be part of the cache key so a run with different job
+        # load_jobs args — must be part of the cache key so different job
         # filtering does not collide with a prior run's cached sims.
         "last_days": args.last_days,
         "drop_providers": sorted(drop_providers),
@@ -1974,7 +1353,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     state = StateStore(state_path)
-    worker_kwargs = []
+    worker_kwargs: list[dict] = []
+    resumed_results: list[FamilyResult] = []
     for family in families:
         defs = defs_by_family.get(family) or []
         if not defs:
@@ -1982,7 +1362,15 @@ def main(argv: list[str] | None = None) -> int:
             continue
         prior_family_status = state.family_status(family)
         if prior_family_status == "done" and not args.force:
-            global_log.info("skipping family %s (already done)", family)
+            global_log.info("skipping family %s (already done) — loading persisted result", family)
+            resumed = _reconstitute_family_result(state, family, defs, daemonsets)
+            if resumed is not None:
+                resumed_results.append(resumed)
+            else:
+                global_log.warning(
+                    "family %s: state marked done but no persistable result — global report will omit",
+                    family,
+                )
             continue
         worker_kwargs.append(
             {
@@ -2000,11 +1388,14 @@ def main(argv: list[str] | None = None) -> int:
                 "num_restarts": args.num_restarts,
                 "improvement_threshold_pp": args.improvement_threshold_pp,
                 "neutral_move_limit": args.neutral_move_limit,
+                "search_mode": args.search_mode,
+                "exhaustive_max_configs": args.exhaustive_max_configs,
+                "exhaustive_k_cutoff": DEFAULT_EXHAUSTIVE_K_CUTOFF,
                 "log_level": args.log_level,
             }
         )
 
-    if not worker_kwargs:
+    if not worker_kwargs and not resumed_results:
         global_log.warning("no families to run")
         return 0
 
@@ -2012,9 +1403,6 @@ def main(argv: list[str] | None = None) -> int:
     workers = args.num_workers if args.num_workers else max(1, min(len(worker_kwargs), cpu - 2))
     global_log.info("dispatching %d families across %d workers", len(worker_kwargs), workers)
 
-    # Live display: single-worker uses ProgressDisplay; multi-worker uses the
-    # parent-side MultiFamilyProgressDisplay fed by a queue. Both require a TTY
-    # and are opt-out via --no-progress.
     is_tty = sys.stderr.isatty()
     progress_requested = not args.no_progress
     single_worker_progress = progress_requested and is_tty and workers == 1
@@ -2031,7 +1419,7 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             use_rich = False
 
-    results: list[FamilyResult] = []
+    results: list[FamilyResult] = list(resumed_results)
     t0 = time.perf_counter()
 
     if workers == 1:
@@ -2069,17 +1457,51 @@ def main(argv: list[str] | None = None) -> int:
                     total = len(worker_kwargs)
                     remaining = total - done
                     eta = (elapsed / done) * remaining if done else 0.0
-                    global_log.info("heartbeat: %d/%d families done, elapsed=%.0fs, eta=%.0fs", done, total, elapsed, eta)
+                    global_log.info(
+                        "heartbeat: %d/%d families done, elapsed=%.0fs, eta=%.0fs",
+                        done,
+                        total,
+                        elapsed,
+                        eta,
+                    )
         finally:
             if multi_display is not None:
                 multi_display.close()
 
+    if not args.skip_validation:
+        _run_validation_phase(
+            results=results,
+            csv_path=csv_path,
+            drop_providers=drop_providers,
+            add_runner_pods=add_runner_pods,
+            args=args,
+            daemonsets=daemonsets,
+            runner_fleet=runner_fleet,
+            sim_flags=sim_flags,
+            csv_sha=csv_sha,
+            src_shas=src_shas,
+            cache_path=cache_path,
+            logs_dir=logs_dir,
+            workers=workers,
+            global_log=global_log,
+        )
+    else:
+        global_log.info("--skip-validation set — skipping full-dataset validation phase")
+
     for r in results:
         defs = defs_by_family[r.family]
-        eligible_defs = [d for d in defs if d["name"] in r.baseline_config]
-        _write_family_report(reports_dir, r, eligible_defs)
-        _write_family_patch_stub(reports_dir, r, eligible_defs)
-    _write_global_report(reports_dir, results)
+        entries = optimize_catalog.build_eligibility_catalog(families=[r.family], daemonsets=daemonsets).get(
+            r.family, []
+        )
+        optimize_report.write_family_report(reports_dir, r, defs, entries)
+        optimize_report.write_family_patch(
+            reports_dir,
+            r,
+            defs,
+            entries,
+            rename_threshold_pct=args.rename_threshold_pct,
+        )
+    optimize_report.write_global_report(reports_dir, results)
 
     global_log.info("all done. Reports in %s", reports_dir)
     return 0
