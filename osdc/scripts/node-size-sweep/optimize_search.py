@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pyyaml>=6.0"]
+# dependencies = ["pyyaml>=6.0", "rich>=13"]
 # ///
 """Phase 2 of the node-size optimizer: sim-driven per-family hill-climb search.
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import logging
 import multiprocessing as mp
@@ -29,6 +30,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -715,6 +717,259 @@ def _load_persisted_best(
     return best_cfg, best_opt, best_rid
 
 
+class ProgressDisplay:
+    """Single-family live terminal progress. No-op when disabled.
+
+    Rendering is optional: `enabled=False` yields a null object whose methods
+    are safe no-ops. When enabled with `use_rich=True`, updates render via
+    `rich.live.Live`; otherwise fall back to a carriage-return single-line
+    ANSI-free updater. All internal state mutations are guarded by a lock so
+    the background-refresh thread (rich path) never races the search thread.
+
+    Log integration: when `use_rich=True`, the provided loggers have their
+    stderr StreamHandlers swapped for a `rich.logging.RichHandler` bound to
+    the same console the Live view uses, so INFO messages render above the
+    progress panel instead of interleaving into it. When falling back to
+    plain text, stderr StreamHandlers are bumped to WARNING+ instead.
+    """
+
+    _SPINNER_UNICODE = "⠋⠙⠹⠸⠼⠴⠶⠧⠇⠏"
+    _SPINNER_ASCII = "|/-\\"
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        use_rich: bool,
+        loggers: list[logging.Logger] | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self.use_rich = use_rich and enabled
+        self._loggers = loggers or []
+        self._lock = threading.Lock()
+        self._family: str | None = None
+        self._num_restarts: int = 0
+        self._restart_idx: int = 0
+        self._phase: str = ""
+        self._step: int = 0
+        self._neighbors_done: int = 0
+        self._neighbors_total: int = 0
+        self._candidates: int = 0
+        self._best_opt_max: float = 0.0
+        self._spinner_cycle = itertools.cycle(
+            self._SPINNER_UNICODE if self._supports_unicode() else self._SPINNER_ASCII
+        )
+        self._spinner_char = next(self._spinner_cycle)
+
+        self._live = None
+        self._console = None
+        self._rich_handler = None
+        self._saved_stream_handlers: list[tuple[logging.Logger, logging.Handler, int]] = []
+
+        if not self.enabled:
+            return
+        if self.use_rich:
+            self._init_rich()
+        else:
+            self._init_plain()
+
+    @staticmethod
+    def _supports_unicode() -> bool:
+        enc = (sys.stderr.encoding or "").lower()
+        return "utf" in enc
+
+    def _init_rich(self) -> None:
+        try:
+            from rich.console import Console
+            from rich.live import Live
+            from rich.logging import RichHandler
+        except ImportError:
+            self.use_rich = False
+            self._init_plain()
+            return
+
+        self._console = Console(file=sys.stderr, force_terminal=True)
+        self._live = Live(
+            self._render_rich(),
+            console=self._console,
+            refresh_per_second=10,
+            transient=False,
+        )
+        self._live.start()
+
+        self._rich_handler = RichHandler(
+            console=self._console,
+            show_time=True,
+            show_level=True,
+            show_path=False,
+            markup=False,
+            rich_tracebacks=False,
+        )
+        self._rich_handler.setFormatter(logging.Formatter("%(name)s %(message)s"))
+        for lg in self._loggers:
+            for h in list(lg.handlers):
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    self._saved_stream_handlers.append((lg, h, h.level))
+                    lg.removeHandler(h)
+            lg.addHandler(self._rich_handler)
+
+    def _init_plain(self) -> None:
+        # Suppress INFO-level stderr chatter so single-line CR updates aren't
+        # shredded by interleaved log records. File handlers keep full INFO.
+        for lg in self._loggers:
+            for h in lg.handlers:
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    self._saved_stream_handlers.append((lg, h, h.level))
+                    h.setLevel(logging.WARNING)
+
+    def _render_rich(self):
+        from rich.text import Text
+
+        t = Text()
+        if not self._family:
+            t.append("(starting)")
+            return t
+        t.append(f"{self._family}  ", style="bold cyan")
+        if self._num_restarts:
+            t.append(f"restart {self._restart_idx}/{self._num_restarts}  ")
+        if self._phase:
+            t.append(f"{self._phase}  ", style="yellow")
+        if self._neighbors_total:
+            bar = self._bar(self._neighbors_done, self._neighbors_total, width=12)
+            t.append(f"[{bar}]  ", style="green")
+            t.append(f"{self._neighbors_done}/{self._neighbors_total} neighbors  ")
+            t.append(f"{self._candidates} candidates  ", style="magenta")
+        t.append(f"best {self._best_opt_max:.4f}  ", style="bold")
+        t.append(self._spinner_char, style="cyan")
+        return t
+
+    @staticmethod
+    def _bar(done: int, total: int, width: int) -> str:
+        if total <= 0:
+            return " " * width
+        filled = int(width * done / total)
+        if filled >= width:
+            return "=" * width
+        return "=" * filled + ">" + " " * (width - filled - 1)
+
+    def _render_plain_line(self) -> str:
+        parts = []
+        if self._family:
+            parts.append(self._family)
+        if self._num_restarts:
+            parts.append(f"restart {self._restart_idx}/{self._num_restarts}")
+        if self._phase:
+            parts.append(self._phase)
+        if self._neighbors_total:
+            bar = self._bar(self._neighbors_done, self._neighbors_total, width=12)
+            parts.append(f"[{bar}] {self._neighbors_done}/{self._neighbors_total} neighbors")
+            parts.append(f"{self._candidates} cand")
+        parts.append(f"best {self._best_opt_max:.4f}")
+        parts.append(self._spinner_char)
+        return "  ".join(parts)
+
+    def _refresh(self) -> None:
+        if not self.enabled:
+            return
+        if self.use_rich and self._live is not None:
+            self._live.update(self._render_rich())
+        else:
+            line = self._render_plain_line()
+            # \r + K clears the line before rewrite; keeps a single moving line.
+            sys.stderr.write("\r\x1b[K" + line)
+            sys.stderr.flush()
+
+    def start_family(self, family: str, num_restarts: int, best_opt_max: float = 0.0) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._family = family
+            self._num_restarts = num_restarts
+            self._restart_idx = 0
+            self._phase = "baseline"
+            self._step = 0
+            self._neighbors_done = 0
+            self._neighbors_total = 0
+            self._candidates = 0
+            self._best_opt_max = best_opt_max
+            self._spinner_char = next(self._spinner_cycle)
+        self._refresh()
+
+    def update_best(self, best_opt_max: float) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._best_opt_max = best_opt_max
+        self._refresh()
+
+    def start_restart(self, restart_idx: int, phase: str) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._restart_idx = restart_idx + 1
+            self._phase = phase
+            self._step = 0
+            self._neighbors_done = 0
+            self._neighbors_total = 0
+            self._candidates = 0
+        self._refresh()
+
+    def start_step(self, step: int, total_neighbors: int) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._step = step
+            self._phase = f"step {step}"
+            self._neighbors_done = 0
+            self._neighbors_total = total_neighbors
+            self._candidates = 0
+        self._refresh()
+
+    def advance(self, candidates: int, current_best_opt_max: float) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._neighbors_done += 1
+            self._candidates = candidates
+            if current_best_opt_max > self._best_opt_max:
+                self._best_opt_max = current_best_opt_max
+            self._spinner_char = next(self._spinner_cycle)
+        self._refresh()
+
+    def end_step(self, result: str) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._phase = f"step {self._step} {result}"
+        self._refresh()
+
+    def end_family(self) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._phase = "done"
+        self._refresh()
+
+    def close(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            if self.use_rich and self._live is not None:
+                self._live.stop()
+        finally:
+            for lg, handler, level in self._saved_stream_handlers:
+                if self._rich_handler is not None and self._rich_handler in lg.handlers:
+                    lg.removeHandler(self._rich_handler)
+                handler.setLevel(level)
+                if handler not in lg.handlers:
+                    lg.addHandler(handler)
+            self._saved_stream_handlers.clear()
+            if not self.use_rich:
+                # Terminate the CR-updated line so subsequent stderr output starts fresh.
+                sys.stderr.write("\n")
+                sys.stderr.flush()
+
+
 def _search_family(
     family: str,
     defs: list[dict],
@@ -731,10 +986,12 @@ def _search_family(
     improvement_threshold_pp: float,
     neutral_move_limit: int,
     log_level: str,
+    progress: ProgressDisplay | None = None,
 ) -> FamilyResult:
     log = _configure_family_logger(family, logs_dir, log_level)
     cache = SimCache(cache_path)
     state = StateStore(state_path)
+    prog = progress or ProgressDisplay(enabled=False, use_rich=False)
 
     t0 = time.perf_counter()
     log.info("family=%s: building eligibility", family)
@@ -810,10 +1067,12 @@ def _search_family(
 
     baseline = _baseline_config(eligible_defs, elig_only)
     log.info("family=%s: running baseline sim", family)
+    prog.start_family(family, num_restarts)
     baseline_m = _cached_sim(
         family, baseline, all_jobs, eligible_defs, elig_only, runner_fleet,
         sim_flags, csv_sha, src_shas, cache, log,
     )
+    prog.update_best(baseline_m.opt_max)
     log.info(
         "family=%s: baseline opt_max=%.4f (cpu=%.4f mem=%.4f) node_hours=%.1f",
         family, baseline_m.opt_max, baseline_m.opt_cpu, baseline_m.opt_mem, baseline_m.node_hours,
@@ -855,6 +1114,7 @@ def _search_family(
         seed_int = _restart_seed(family, restart_id)
         rng = random.Random(seed_int)  # noqa: S311
         log.info("family=%s restart=%d: seed_int=%d", family, restart_id, seed_int)
+        prog.start_restart(restart_id, phase="seed")
         if restart_id == 0:
             cur = dict(baseline)
         else:
@@ -869,6 +1129,7 @@ def _search_family(
             "family=%s restart=%d: seed opt_max=%.4f (cpu=%.4f mem=%.4f)",
             family, restart_id, cur_m.opt_max, cur_m.opt_cpu, cur_m.opt_mem,
         )
+        prog.update_best(max(cur_m.opt_max, best_m.opt_max))
         # Track the per-restart PEAK independently from cur/cur_m so neutral moves
         # cannot dilute what this restart contributes to the global best.
         restart_best_m = cur_m
@@ -881,8 +1142,10 @@ def _search_family(
             neighbors = _enumerate_neighbors(cur, elig_only)
             if not neighbors:
                 break
+            prog.start_step(step, len(neighbors))
             best_n_m: SimMetrics | None = None
             best_n_cfg: Config | None = None
+            candidates = 0
             for n_cfg in neighbors:
                 n_m = _cached_sim(
                     family, n_cfg, all_jobs, eligible_defs, elig_only, runner_fleet,
@@ -894,6 +1157,9 @@ def _search_family(
                 if best_n_m is None or _rank_key(n_m) > _rank_key(best_n_m):
                     best_n_m = n_m
                     best_n_cfg = n_cfg
+                if n_m.opt_max > cur_m.opt_max:
+                    candidates += 1
+                prog.advance(candidates, max(n_m.opt_max, best_m.opt_max))
             assert best_n_m is not None and best_n_cfg is not None
 
             delta_pp = (best_n_m.opt_max - cur_m.opt_max) * 100.0
@@ -908,6 +1174,7 @@ def _search_family(
                     restart_best_m = cur_m
                     restart_best_cfg = cur
                 state.update_restart(family, restart_id, cur, cur_m.opt_max, neighbors_in_restart, "running")
+                prog.end_step("IMPROVE")
             elif (
                 delta_pp > -improvement_threshold_pp
                 and neutral_budget > 0
@@ -924,11 +1191,13 @@ def _search_family(
                     restart_best_m = cur_m
                     restart_best_cfg = cur
                 state.update_restart(family, restart_id, cur, cur_m.opt_max, neighbors_in_restart, "running")
+                prog.end_step("NEUTRAL")
             else:
                 log.info(
                     "family=%s restart=%d step=%d: STOP best_neighbor delta=%.3fpp <= %.3fpp",
                     family, restart_id, step, delta_pp, improvement_threshold_pp,
                 )
+                prog.end_step("STOP")
                 break
             step += 1
 
@@ -948,6 +1217,7 @@ def _search_family(
             best_m = restart_best_m
             best_config = restart_best_cfg
             winning_restart = restart_id
+            prog.update_best(best_m.opt_max)
         state.update_restart(
             family, restart_id, restart_best_cfg, restart_best_m.opt_max, neighbors_in_restart, "done",
         )
@@ -961,6 +1231,7 @@ def _search_family(
         family, verdict, baseline_m.opt_max, best_m.opt_max, delta_pp,
         winning_restart, total_sim_calls, total_neighbors_evaluated, elapsed,
     )
+    prog.end_family()
     result = FamilyResult(
         family=family,
         baseline_metrics=baseline_m,
@@ -1166,6 +1437,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep-seed", type=int, default=12345)
     ap.add_argument("--no-runner-pods", action="store_true")
     ap.add_argument("--runner-pool", default=RUNNER_POD_POOL)
+    ap.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="disable live terminal progress display even when stderr is a TTY",
+    )
     args = ap.parse_args(argv)
 
     output_dir = Path(args.resume) if args.resume else (Path(args.output_dir) if args.output_dir else _default_output_dir())
@@ -1287,12 +1563,41 @@ def main(argv: list[str] | None = None) -> int:
     workers = args.num_workers if args.num_workers else max(1, min(len(worker_kwargs), cpu - 2))
     global_log.info("dispatching %d families across %d workers", len(worker_kwargs), workers)
 
+    # Live display only makes sense with a single-process search — multiprocessing
+    # workers can't share a terminal cleanly, and non-TTY output would corrupt on
+    # ANSI escapes / carriage returns. --no-progress is an explicit opt-out.
+    is_tty = sys.stderr.isatty()
+    progress_requested = not args.no_progress
+    progress_enabled = progress_requested and is_tty and workers == 1
+    if progress_requested and workers > 1:
+        global_log.warning("live progress disabled with multiple workers")
+    if progress_requested and not is_tty:
+        global_log.info("live progress disabled: stderr is not a TTY")
+
+    use_rich = False
+    if progress_enabled:
+        try:
+            import rich  # noqa: F401
+
+            use_rich = True
+        except ImportError:
+            use_rich = False
+
     results: list[FamilyResult] = []
     t0 = time.perf_counter()
 
     if workers == 1:
         for kw in worker_kwargs:
-            results.append(_family_worker(kw))
+            fam_log = _configure_family_logger(kw["family"], logs_dir, args.log_level)
+            prog = ProgressDisplay(
+                enabled=progress_enabled,
+                use_rich=use_rich,
+                loggers=[global_log, fam_log],
+            )
+            try:
+                results.append(_search_family(progress=prog, **kw))
+            finally:
+                prog.close()
     else:
         ctx = mp.get_context("spawn")
         with ctx.Pool(processes=workers, maxtasksperchild=1) as pool:
