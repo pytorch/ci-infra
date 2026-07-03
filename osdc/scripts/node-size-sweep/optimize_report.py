@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from optimize_catalog import EligibleEntry
     from optimize_engine import Config, FamilyResult
+    from optimize_storage import ClusterValidationResult, SimMetrics
 
 
 def _config_pods_by_sub(config: "Config") -> list[tuple[str, str, list[str]]]:
@@ -36,20 +37,21 @@ def _def_shape_row(
     )
 
 
-def _append_full_dataset_section(lines: list[str], r: "FamilyResult") -> None:
-    """Append the full-dataset validation section to the per-family report.
+def _append_cluster_contribution_section(lines: list[str], r: "FamilyResult") -> None:
+    """Emit the family's SHARE of the full-cluster before/after sim.
 
-    Emits nothing when validation was skipped (either via --skip-validation
-    or because the family itself was skipped).
+    Extracted from the same two cluster sims that produce the global
+    Cluster-wide validation table — pool_filter is
+    baseline: the family's original nodepool names; rec: sub_nodepool_ids
+    from r.best_config for improved families, else the baseline names.
     """
-    if r.baseline_full_metrics is None and r.best_full_metrics is None:
+    bf = r.cluster_baseline_metrics
+    ef = r.cluster_rec_metrics
+    if bf is None and ef is None:
         return
-    days_label = f"{r.validation_days}d" if r.validation_days else "full dataset"
-    lines.append(f"## Full-dataset validation ({days_label})")
-    bf = r.baseline_full_metrics
-    ef = r.best_full_metrics
+    lines.append("## Cluster contribution (this family's share of the full-cluster sim)")
     if bf is not None:
-        lines.append(f"  Baseline (same config, {days_label} data):")
+        lines.append("  Baseline (full cluster):")
         lines.append(
             f"    opt_max = {bf.opt_max * 100:.1f}% "
             f"(cpu {bf.opt_cpu * 100:.1f}%, mem {bf.opt_mem * 100:.1f}%)"
@@ -57,7 +59,7 @@ def _append_full_dataset_section(lines: list[str], r: "FamilyResult") -> None:
         lines.append(f"    cal_cpu = {bf.cal_cpu * 100:.1f}%, cal_mem = {bf.cal_mem * 100:.1f}%")
         lines.append(f"    vcpu_hours ~ {bf.vcpu_hours:,.0f}")
     if ef is not None:
-        lines.append(f"  Recommendation (same config, {days_label} data):")
+        lines.append("  Recommendation (full cluster):")
         if bf is not None:
             delta_pp = (ef.opt_max - bf.opt_max) * 100.0
             lines.append(
@@ -154,7 +156,7 @@ def write_family_report(
         )
     lines.append("")
 
-    _append_full_dataset_section(lines, r)
+    _append_cluster_contribution_section(lines, r)
 
     lines.append("## Convergence")
     lines.append(
@@ -263,7 +265,47 @@ def write_family_patch(
     path.write_text("\n".join(lines) + "\n")
 
 
-def write_global_report(reports_dir: Path, results: list["FamilyResult"]) -> None:
+def _fmt_pp_row(label: str, base: float, rec: float) -> str:
+    """Render a percentage-point row: base%, rec%, delta in pp."""
+    delta_pp = (rec - base) * 100.0
+    return f"| {label} | {base * 100:.1f}% | {rec * 100:.1f}% | {delta_pp:+.1f}pp |"
+
+
+def _fmt_vcpu_row(label: str, base: float, rec: float) -> str:
+    """Render the vcpu_hours row: absolute totals, percent delta."""
+    if base > 0:
+        pct = 100.0 * (rec - base) / base
+        delta = f"{pct:+.1f}%"
+    else:
+        delta = "n/a"
+    return f"| {label} | {base:,.0f} | {rec:,.0f} | {delta} |"
+
+
+def _append_cluster_validation_table(
+    lines: list[str],
+    cluster_validation: "ClusterValidationResult",
+) -> None:
+    days_label = f"{cluster_validation.days}d" if cluster_validation.days else "full dataset"
+    b = cluster_validation.baseline_metrics
+    r = cluster_validation.recommendation_metrics
+    lines.append(f"## Cluster-wide validation ({days_label} full dataset, all families)")
+    lines.append("")
+    lines.append("|                       | Baseline   | Recommendation | Delta       |")
+    lines.append("|:----------------------|:-----------|:---------------|:------------|")
+    lines.append(_fmt_pp_row("opt_max               ", b.opt_max, r.opt_max))
+    lines.append(_fmt_pp_row("cpu util              ", b.opt_cpu, r.opt_cpu))
+    lines.append(_fmt_pp_row("mem util              ", b.opt_mem, r.opt_mem))
+    lines.append(_fmt_pp_row("cal_cpu (prod PromQL) ", b.cal_cpu, r.cal_cpu))
+    lines.append(_fmt_pp_row("cal_mem (prod PromQL) ", b.cal_mem, r.cal_mem))
+    lines.append(_fmt_vcpu_row("vcpu_hours            ", b.vcpu_hours, r.vcpu_hours))
+    lines.append("")
+
+
+def write_global_report(
+    reports_dir: Path,
+    results: list["FamilyResult"],
+    cluster_validation: "ClusterValidationResult | None" = None,
+) -> None:
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / "global.md"
 
@@ -292,43 +334,7 @@ def write_global_report(reports_dir: Path, results: list["FamilyResult"]) -> Non
         )
     lines.append("")
 
-    # Full-dataset validation table — only present when at least one family
-    # has validation results attached. Days label = the validation_days
-    # actually used (all families share one full-dataset window).
-    validated = [r for r in results if r.baseline_full_metrics is not None or r.best_full_metrics is not None]
-    if validated:
-        v_days = next((r.validation_days for r in validated if r.validation_days), None)
-        window_label = f"{v_days}d full dataset" if v_days else "full dataset"
-        lines.append(f"## Full-dataset validation ({window_label})")
-        lines.append("")
-        lines.append(
-            "| family | baseline opt_max | rec opt_max | delta (pp) | "
-            "baseline vcpu_h | rec vcpu_h | vcpu_h delta (%) |"
-        )
-        lines.append(
-            "|--------|-----------------:|------------:|-----------:|"
-            "----------------:|-----------:|-----------------:|"
-        )
-        for r in sorted(results, key=lambda x: x.family):
-            bf = r.baseline_full_metrics
-            ef = r.best_full_metrics
-            if bf is None and ef is None:
-                lines.append(f"| {r.family} | - | - | - | - | - | - |")
-                continue
-            if bf is None or ef is None:
-                base_cell = f"{bf.opt_max * 100:.1f}%" if bf is not None else "-"
-                rec_cell = f"{ef.opt_max * 100:.1f}%" if ef is not None else "-"
-                base_vh = f"{bf.vcpu_hours:,.0f}" if bf is not None else "-"
-                rec_vh = f"{ef.vcpu_hours:,.0f}" if ef is not None else "-"
-                lines.append(
-                    f"| {r.family} | {base_cell} | {rec_cell} | - | {base_vh} | {rec_vh} | - |"
-                )
-                continue
-            delta_pp = (ef.opt_max - bf.opt_max) * 100.0
-            pct = (100.0 * (ef.vcpu_hours - bf.vcpu_hours) / bf.vcpu_hours) if bf.vcpu_hours > 0 else 0.0
-            lines.append(
-                f"| {r.family} | {bf.opt_max * 100:.1f}% | {ef.opt_max * 100:.1f}% | {delta_pp:+.2f} | "
-                f"{bf.vcpu_hours:,.0f} | {ef.vcpu_hours:,.0f} | {pct:+.1f}% |"
-            )
-        lines.append("")
+    if cluster_validation is not None:
+        _append_cluster_validation_table(lines, cluster_validation)
+
     path.write_text("\n".join(lines) + "\n")

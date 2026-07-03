@@ -69,7 +69,7 @@ from optimize_progress import (  # noqa: E402
     ProgressDisplay,
     QueueProgressDisplay,
 )
-from optimize_storage import SimCache, SimMetrics, StateStore  # noqa: E402
+from optimize_storage import ClusterValidationResult, SimCache, SimMetrics, StateStore  # noqa: E402
 from sim_load import RUNNER_POD_POOL  # noqa: E402
 from sim_nodes import ClusterModel, FleetSpec, Job  # noqa: E402
 
@@ -1025,13 +1025,14 @@ def _family_worker(kwargs: dict) -> FamilyResult:
     return result
 
 
-def _validation_worker(kwargs: dict) -> tuple[str, str, SimMetrics | None]:
-    """Run a single sim (baseline or best) for a family on the validation
-    dataset. Returns (family, which, metrics) where which in {"baseline","best"}.
+def _cluster_sim_worker(
+    kwargs: dict,
+) -> tuple[str, "SimMetrics", dict[str, "SimMetrics | None"]]:
+    """Run one full-cluster sim (baseline or recommendation) and extract
+    cluster-wide + per-family contribution metrics in-process.
 
-    Uses the same SimCache; cache key includes last_days via sim_flags so a
-    validation sim never collides with the search-window sim. Re-runs (resume)
-    hit the cache.
+    sim_out is potentially very large; extract in the worker so only the
+    distilled metrics cross the process boundary.
     """
 
     def _sigterm(_signum, _frame):
@@ -1040,54 +1041,34 @@ def _validation_worker(kwargs: dict) -> tuple[str, str, SimMetrics | None]:
     signal.signal(signal.SIGTERM, _sigterm)
     signal.signal(signal.SIGINT, _sigterm)
 
-    family: str = kwargs["family"]
     which: str = kwargs["which"]
-    config: Config = kwargs["config"]
-    all_jobs: list[Job] = kwargs["all_jobs"]
-    daemonsets = kwargs["daemonsets"]
-    runner_fleet: FleetSpec = kwargs["runner_fleet"]
+    jobs: list[Job] = kwargs["jobs"]
+    fleets_extra: dict[str, FleetSpec] | None = kwargs["fleets_extra"]
+    family_pool_map: dict[str, set[str]] = kwargs["family_pool_map"]
     sim_flags: dict = kwargs["sim_flags"]
-    csv_sha: str = kwargs["csv_sha"]
-    src_shas: dict = kwargs["src_shas"]
-    cache_path: Path = kwargs["cache_path"]
     logs_dir: Path = kwargs["logs_dir"]
     log_level: str = kwargs["log_level"]
 
-    log = _configure_family_logger(family, logs_dir, log_level)
-    cache = SimCache(cache_path)
-
-    catalog_full = optimize_catalog.build_eligibility_catalog(families=[family], daemonsets=daemonsets)
-    entries = catalog_full.get(family, [])
-    catalog = build_family_catalog(entries)
-    family_def_names = {e.def_label for e in entries}
-
-    try:
-        m, was_hit = cached_sim(
-            family,
-            config,
-            all_jobs,
-            catalog,
-            family_def_names,
-            runner_fleet,
-            sim_flags,
-            csv_sha,
-            src_shas,
-            cache,
-            log,
-            daemonsets=daemonsets,
-        )
-    except Exception as e:
-        log.warning("family=%s: validation sim (%s) failed: %s", family, which, e, exc_info=True)
-        return family, which, None
+    log = _configure_global_logger(logs_dir, log_level)
+    log.info("cluster sim %s: starting (%d jobs, %d extra fleets)", which, len(jobs), len(fleets_extra or {}))
+    t0 = time.perf_counter()
+    sim_out = optimize_engine.run_cluster_sim(jobs, fleets_extra, sim_flags)
+    cluster_m = optimize_engine.extract_cluster_metrics(sim_out)
+    contribs: dict[str, SimMetrics | None] = {}
+    for family, pools in family_pool_map.items():
+        if not pools:
+            contribs[family] = None
+            continue
+        contribs[family] = optimize_engine.extract_family_contribution_metrics(sim_out, pools)
+    elapsed = time.perf_counter() - t0
     log.info(
-        "family=%s: validation %s sim done (cache_hit=%s) opt_max=%.4f vcpu_hours=%.0f",
-        family,
+        "cluster sim %s: done opt_max=%.4f vcpu_hours=%.0f elapsed=%.1fs",
         which,
-        was_hit,
-        m.opt_max,
-        m.vcpu_hours,
+        cluster_m.opt_max,
+        cluster_m.vcpu_hours,
+        elapsed,
     )
-    return family, which, m
+    return which, cluster_m, contribs
 
 
 # ---------- signal handling ----------
@@ -1109,7 +1090,7 @@ def _install_shutdown_handler(output_dir: Path, log: logging.Logger) -> None:
 # ---------- validation phase ----------
 
 
-def _run_validation_phase(
+def _run_cluster_validation_phase(
     *,
     results: list[FamilyResult],
     csv_path: Path,
@@ -1117,37 +1098,19 @@ def _run_validation_phase(
     add_runner_pods: bool,
     args,
     daemonsets,
-    runner_fleet: FleetSpec,
+    defs_by_family: dict[str, list[dict]],
     sim_flags: dict,
-    csv_sha: str,
-    src_shas: dict[str, str],
-    cache_path: Path,
     logs_dir: Path,
-    workers: int,
     global_log: logging.Logger,
-) -> None:
-    """Re-run baseline + best on the full dataset (no --last-days filter) for
-    each family whose search produced a comparable pair.
+) -> "ClusterValidationResult | None":
+    """One full-cluster before/after: baseline (as-is) + recommendation (all
+    improved families' best_configs merged into the shared fleet set).
 
-    Attaches (baseline_full_metrics, best_full_metrics, validation_days) to
-    each eligible FamilyResult in place. Skipped families have no baseline to
-    re-run against — they're left untouched. Validation sims run in parallel
-    via a fresh spawn Pool with the same worker count as the search phase.
+    Runs two sims in parallel via a spawn Pool (2 workers). Each worker
+    extracts cluster-wide + per-family contribution metrics IN-PROCESS so the
+    large sim_out dict never crosses the queue.
     """
-    eligible = [
-        r
-        for r in results
-        if r.verdict in ("improved", "no_change", "kept_prior_best")
-        and r.baseline_config
-        and r.best_config is not None
-        and r.baseline_metrics is not None
-        and r.best_metrics is not None
-    ]
-    if not eligible:
-        global_log.info("validation: no eligible families (all skipped) — nothing to validate")
-        return
-
-    global_log.info("validation: loading full dataset (no --last-days filter) from %s", csv_path)
+    global_log.info("cluster validation: loading full dataset (no --last-days filter) from %s", csv_path)
     full_jobs = sim_load.load_jobs(
         csv_path,
         add_runner_pods=add_runner_pods,
@@ -1157,67 +1120,134 @@ def _run_validation_phase(
         keep_seed=args.keep_seed,
         last_days=None,
     )
-    global_log.info("validation: loaded %d jobs (vs %s in search window)", len(full_jobs), args.last_days)
+    global_log.info(
+        "cluster validation: loaded %d jobs (vs %s in search window)",
+        len(full_jobs),
+        args.last_days,
+    )
+    if not full_jobs:
+        global_log.warning("cluster validation: no jobs in full dataset — skipping")
+        return None
 
-    # Sim-cache key includes last_days; overriding sim_flags here lets validation
-    # sims miss the search cache but hit their own cache on resume.
-    val_sim_flags = dict(sim_flags)
-    val_sim_flags["last_days"] = None
-
-    # Compute the validation "days" label from the full dataset for reporting.
     validation_days: int | None = None
-    if full_jobs:
-        min_s = min(j.start_bucket for j in full_jobs)
-        max_s = max(j.start_bucket for j in full_jobs)
-        span_sec = max(0, max_s - min_s)
-        validation_days = max(1, int(round(span_sec / 86400)))
+    min_s = min(j.start_bucket for j in full_jobs)
+    max_s = max(j.start_bucket for j in full_jobs)
+    span_sec = max(0, max_s - min_s)
+    validation_days = max(1, int(round(span_sec / 86400)))
 
-    tasks: list[dict] = []
-    for r in eligible:
-        for which, cfg in (("baseline", r.baseline_config), ("best", r.best_config)):
-            tasks.append(
-                {
-                    "family": r.family,
-                    "which": which,
-                    "config": cfg,
-                    "all_jobs": full_jobs,
-                    "daemonsets": daemonsets,
-                    "runner_fleet": runner_fleet,
-                    "sim_flags": val_sim_flags,
-                    "csv_sha": csv_sha,
-                    "src_shas": src_shas,
-                    "cache_path": cache_path,
-                    "logs_dir": logs_dir,
-                    "log_level": args.log_level,
+    overrides: dict[str, dict] = {}
+    for r in results:
+        if r.verdict != "improved" or r.best_config is None:
+            continue
+        catalog_full = optimize_catalog.build_eligibility_catalog(
+            families=[r.family],
+            daemonsets=daemonsets,
+        )
+        entries = catalog_full.get(r.family, [])
+        by_pair = {(e.def_label, e.instance): e for e in entries}
+        for sub_id, spec in r.best_config.items():
+            inst = spec["instance"]
+            for def_label in spec["pods"]:
+                entry = by_pair.get((def_label, inst))
+                if entry is None:
+                    global_log.warning(
+                        "cluster validation: family=%s def=%s inst=%s not in catalog — skipping override",
+                        r.family,
+                        def_label,
+                        inst,
+                    )
+                    continue
+                overrides[def_label] = {
+                    "pool": sub_id,
+                    "cpu_m": entry.slot_cpu_m,
+                    "mem_mi": entry.slot_mem_mi,
+                    "gpu": entry.slot_gpu,
                 }
-            )
+
+    fleets_extra = optimize_engine.build_cluster_fleets_extra(results)
+    rec_jobs = optimize_engine.apply_recommendations_to_jobs(full_jobs, overrides)
+
+    family_pool_map_baseline: dict[str, set[str]] = {}
+    family_pool_map_rec: dict[str, set[str]] = {}
+    for r in results:
+        defs = defs_by_family.get(r.family) or []
+        baseline_pools = {d.get("nodepool") for d in defs if d.get("nodepool")}
+        family_pool_map_baseline[r.family] = baseline_pools
+        if r.verdict == "improved" and r.best_config is not None:
+            family_pool_map_rec[r.family] = set(r.best_config.keys())
+        else:
+            family_pool_map_rec[r.family] = baseline_pools
+
+    tasks: list[dict] = [
+        {
+            "which": "baseline",
+            "jobs": full_jobs,
+            "fleets_extra": None,
+            "family_pool_map": family_pool_map_baseline,
+            "sim_flags": sim_flags,
+            "logs_dir": logs_dir,
+            "log_level": args.log_level,
+        },
+        {
+            "which": "recommendation",
+            "jobs": rec_jobs,
+            "fleets_extra": fleets_extra,
+            "family_pool_map": family_pool_map_rec,
+            "sim_flags": sim_flags,
+            "logs_dir": logs_dir,
+            "log_level": args.log_level,
+        },
+    ]
 
     global_log.info(
-        "validation: dispatching %d sims (%d families x 2) across %d workers — expect ~60-90s per sim",
-        len(tasks),
-        len(eligible),
-        workers,
+        "cluster validation: dispatching 2 sims (baseline + recommendation) across 2 workers",
     )
 
-    by_family: dict[str, dict[str, SimMetrics | None]] = {r.family: {} for r in eligible}
+    by_which: dict[str, tuple[SimMetrics, dict[str, SimMetrics | None]]] = {}
     t0 = time.perf_counter()
-    if workers <= 1:
-        for kw in tasks:
-            fam, which, m = _validation_worker(kw)
-            by_family[fam][which] = m
-    else:
-        ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=workers, maxtasksperchild=1) as pool:
-            for fam, which, m in pool.imap_unordered(_validation_worker, tasks):
-                by_family[fam][which] = m
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=2, maxtasksperchild=1) as pool:
+        for which, cluster_m, contribs in pool.imap_unordered(_cluster_sim_worker, tasks):
+            by_which[which] = (cluster_m, contribs)
     elapsed = time.perf_counter() - t0
-    global_log.info("validation: done in %.1fs", elapsed)
 
-    for r in eligible:
-        got = by_family.get(r.family, {})
-        r.baseline_full_metrics = got.get("baseline")
-        r.best_full_metrics = got.get("best")
-        r.validation_days = validation_days
+    if "baseline" not in by_which or "recommendation" not in by_which:
+        global_log.error(
+            "cluster validation: missing sim result(s) — got keys=%s",
+            sorted(by_which),
+        )
+        return None
+
+    base_m, base_contribs = by_which["baseline"]
+    rec_m, rec_contribs = by_which["recommendation"]
+
+    for r in results:
+        r.cluster_baseline_metrics = base_contribs.get(r.family)
+        r.cluster_rec_metrics = rec_contribs.get(r.family)
+
+    delta_pp = (rec_m.opt_max - base_m.opt_max) * 100.0
+    global_log.info(
+        "cluster validation: baseline opt_max=%.1f%% rec opt_max=%.1f%% delta=%+.2fpp elapsed=%.1fs",
+        base_m.opt_max * 100.0,
+        rec_m.opt_max * 100.0,
+        delta_pp,
+        elapsed,
+    )
+
+    per_family_contrib: dict[str, tuple[SimMetrics | None, SimMetrics | None]] = {}
+    for r in results:
+        per_family_contrib[r.family] = (
+            base_contribs.get(r.family),
+            rec_contribs.get(r.family),
+        )
+
+    return ClusterValidationResult(
+        baseline_metrics=base_m,
+        recommendation_metrics=rec_m,
+        days=validation_days,
+        elapsed_sec=elapsed,
+        per_family_contrib=per_family_contrib,
+    )
 
 
 # ---------- main ----------
@@ -1270,8 +1300,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--skip-validation",
         action="store_true",
-        help="skip the full-dataset validation phase (re-runs baseline + best on --csv "
-        "with last_days=None) — set to speed up iterative dev runs",
+        help="skip the cluster-wide validation phase (two full-dataset sims: baseline "
+        "and combined recommendation) — set to speed up iterative dev runs",
     )
     args = ap.parse_args(argv)
 
@@ -1468,25 +1498,22 @@ def main(argv: list[str] | None = None) -> int:
             if multi_display is not None:
                 multi_display.close()
 
+    cluster_val: ClusterValidationResult | None = None
     if not args.skip_validation:
-        _run_validation_phase(
+        cluster_val = _run_cluster_validation_phase(
             results=results,
             csv_path=csv_path,
             drop_providers=drop_providers,
             add_runner_pods=add_runner_pods,
             args=args,
             daemonsets=daemonsets,
-            runner_fleet=runner_fleet,
+            defs_by_family=defs_by_family,
             sim_flags=sim_flags,
-            csv_sha=csv_sha,
-            src_shas=src_shas,
-            cache_path=cache_path,
             logs_dir=logs_dir,
-            workers=workers,
             global_log=global_log,
         )
     else:
-        global_log.info("--skip-validation set — skipping full-dataset validation phase")
+        global_log.info("--skip-validation set — skipping cluster-wide validation phase")
 
     for r in results:
         defs = defs_by_family[r.family]
@@ -1501,7 +1528,7 @@ def main(argv: list[str] | None = None) -> int:
             entries,
             rename_threshold_pct=args.rename_threshold_pct,
         )
-    optimize_report.write_global_report(reports_dir, results)
+    optimize_report.write_global_report(reports_dir, results, cluster_validation=cluster_val)
 
     global_log.info("all done. Reports in %s", reports_dir)
     return 0

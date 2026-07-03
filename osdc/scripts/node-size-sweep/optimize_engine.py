@@ -609,6 +609,159 @@ def _extract_family_metrics(
     )
 
 
+# ---------- cluster-wide sim helpers ----------
+
+
+def apply_recommendations_to_jobs(
+    jobs: list["Job"],
+    overrides: dict[str, dict],
+) -> list["Job"]:
+    """Rewrite jobs whose label is in `overrides` to the recommended
+    pool/cpu_m/mem_mi/gpu; pass others through unchanged.
+
+    Runner pods and any job whose def label has no override keep their
+    original pool and shape — the cluster sim needs the full workload mix.
+    """
+    from sim_nodes import Job
+
+    out: list["Job"] = []
+    for j in jobs:
+        ov = overrides.get(j.label)
+        if ov is None:
+            out.append(j)
+            continue
+        out.append(
+            Job(
+                label=j.label,
+                pool=ov["pool"],
+                cpu_m=ov["cpu_m"],
+                mem_mi=ov["mem_mi"],
+                gpu=ov["gpu"],
+                start_bucket=j.start_bucket,
+                end_bucket=j.end_bucket,
+            )
+        )
+    return out
+
+
+def build_cluster_fleets_extra(
+    family_results: list,
+) -> dict[str, "FleetSpec"]:
+    """For every improved family, materialize a FleetSpec per sub_nodepool_id
+    in its best_config. Merged INTO the default cluster fleets via
+    ClusterModel(fleets_extra=...) so unchanged fleets keep their YAML shape.
+    """
+    from instance_specs import INSTANCE_SPECS
+    from sim_nodes import FleetSpec
+
+    out: dict[str, "FleetSpec"] = {}
+    for r in family_results:
+        if getattr(r, "verdict", None) != "improved":
+            continue
+        cfg = getattr(r, "best_config", None)
+        if cfg is None:
+            continue
+        for sub_id, spec in cfg.items():
+            inst = spec["instance"]
+            is_gpu = bool(INSTANCE_SPECS.get(inst, {}).get("gpu", 0) > 0)
+            out[sub_id] = FleetSpec(name=sub_id, is_gpu=is_gpu, instances=(inst,))
+    return out
+
+
+def _accumulate_pool_sums(sim_out: dict, pool_filter: set[str] | None) -> SimMetrics:
+    """Aggregate D1 metrics across per-bucket per-pool sums.
+
+    `pool_filter=None` sums every pool (cluster-wide). A non-None set restricts
+    to the named pools (per-family contribution).
+    """
+    sum_workload_cpu = 0
+    sum_workload_mem = 0
+    sum_alloc_cpu = 0
+    sum_alloc_mem = 0
+    sum_cal_used_cpu = 0
+    sum_cal_used_mem = 0
+    sum_cal_alloc_cpu = 0
+    sum_cal_alloc_mem = 0
+
+    for _t, per_pool in sim_out["per_bucket"]:
+        for name, sums in per_pool.items():
+            if pool_filter is not None and name not in pool_filter:
+                continue
+            alloc_cpu = sums["alloc_cpu_m_raw"] + sums["ds_cpu_m"]
+            alloc_mem = sums["alloc_mem_mi_raw"] + sums["ds_mem_mi"]
+            if alloc_cpu <= 0 and alloc_mem <= 0:
+                continue
+            sum_workload_cpu += sums["workload_cpu_m"]
+            sum_workload_mem += sums["workload_mem_mi"]
+            sum_alloc_cpu += alloc_cpu
+            sum_alloc_mem += alloc_mem
+            sum_cal_used_cpu += sums["cpu_used_m"]
+            sum_cal_used_mem += sums["mem_used_mi"]
+            sum_cal_alloc_cpu += sums["cpu_alloc_m"]
+            sum_cal_alloc_mem += sums["mem_alloc_mi"]
+
+    opt_cpu = sum_workload_cpu / sum_alloc_cpu if sum_alloc_cpu > 0 else 0.0
+    opt_mem = sum_workload_mem / sum_alloc_mem if sum_alloc_mem > 0 else 0.0
+    opt_max = max(opt_cpu, opt_mem)
+    cal_cpu = sum_cal_used_cpu / sum_cal_alloc_cpu if sum_cal_alloc_cpu > 0 else 0.0
+    cal_mem = sum_cal_used_mem / sum_cal_alloc_mem if sum_cal_alloc_mem > 0 else 0.0
+    vcpu_hours = sum_alloc_cpu / 1000.0 * (BUCKET_SEC / 3600.0)
+
+    return SimMetrics(
+        opt_max=opt_max,
+        opt_cpu=opt_cpu,
+        opt_mem=opt_mem,
+        cal_cpu=cal_cpu,
+        cal_mem=cal_mem,
+        vcpu_hours=vcpu_hours,
+    )
+
+
+def extract_cluster_metrics(sim_out: dict) -> SimMetrics:
+    """D1 metrics summed across every pool in `sim_out`."""
+    return _accumulate_pool_sums(sim_out, pool_filter=None)
+
+
+def extract_family_contribution_metrics(sim_out: dict, pool_names: set[str]) -> SimMetrics:
+    """D1 metrics restricted to `pool_names` — one family's share of a
+    cluster-wide sim."""
+    return _accumulate_pool_sums(sim_out, pool_filter=pool_names)
+
+
+def run_cluster_sim(
+    jobs: list["Job"],
+    fleets_extra: dict[str, "FleetSpec"] | None,
+    sim_flags: dict,
+) -> dict:
+    """Full-cluster sim: preserves default YAML fleets, merges `fleets_extra`
+    on top, feeds `jobs` to simulate() with the standard sim_flags pattern.
+
+    Returns the raw sim_out dict so the caller can extract cluster-wide AND
+    per-family contribution metrics from a single sim.
+    """
+    import simulate as sim_mod
+    from sim_nodes import ClusterModel
+
+    if not jobs:
+        raise ValueError("run_cluster_sim: empty jobs list — nothing to simulate")
+
+    model = ClusterModel(fleets_extra=fleets_extra)
+    return sim_mod.simulate(
+        jobs,
+        model=model,
+        seed=sim_flags["seed"],
+        empty_ttl_buckets=sim_flags["empty_ttl_buckets"],
+        placeholder_max_age=sim_flags["placeholder_max_age"],
+        warmup_buckets_default=sim_flags["warmup_default"],
+        warmup_buckets_gpu=sim_flags["warmup_gpu"],
+        warmup_buckets_baremetal=sim_flags["warmup_baremetal"],
+        placeholders_enabled=sim_flags["placeholders_enabled"],
+        daemonsets_in_metric=sim_flags["daemonsets_in_metric"],
+        phantom_pods_enabled=sim_flags["phantom_pods_enabled"],
+        progress=False,
+    )
+
+
 def run_sim_for_config(
     family: str,
     config: Config,
@@ -716,8 +869,9 @@ class FamilyResult:
     cache_hit_rate: float = 0.0
     mode: str = ""
     per_def_shapes: dict = field(default_factory=dict)
-    # Full-dataset validation sims (populated by the validation phase after
-    # per-family search completes; see optimize.md D1). None means skipped.
-    baseline_full_metrics: SimMetrics | None = None
-    best_full_metrics: SimMetrics | None = None
-    validation_days: int | None = None
+    # Per-family SHARE of the single cluster-wide before/after sim run in the
+    # cluster validation phase. Extracted by prefix-filtering the cluster sim
+    # outputs (baseline uses the family's original nodepool names; rec uses
+    # the family's sub_nodepool_ids from best_config).
+    cluster_baseline_metrics: SimMetrics | None = None
+    cluster_rec_metrics: SimMetrics | None = None

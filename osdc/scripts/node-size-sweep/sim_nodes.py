@@ -162,6 +162,7 @@ class ClusterModel:
         defs_dirs: list[Path] | None = None,
         upstream_dir: Path = REPO_ROOT,
         fleets_override: dict[str, FleetSpec] | None = None,
+        fleets_extra: dict[str, FleetSpec] | None = None,
     ):
         if fleets_override is not None:
             self.fleets = dict(fleets_override)
@@ -169,6 +170,10 @@ class ClusterModel:
             if defs_dirs is None:
                 defs_dirs = NODEPOOL_DEFS_DIRS
             self.fleets = _load_fleet_specs(defs_dirs)
+        if fleets_extra:
+            # Extras win on collision — caller is explicitly steering a fleet
+            # name to a specific instance for a cluster-wide sim.
+            self.fleets.update(fleets_extra)
         self.daemonsets = discover_daemonsets(upstream_dir)
         self._alloc_cache: dict[tuple[str, str], Allocatable] = {}
         self._ds_cache: dict[tuple[str, str], tuple[int, int, int]] = {}

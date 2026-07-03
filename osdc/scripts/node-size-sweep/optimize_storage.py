@@ -29,6 +29,24 @@ class SimMetrics:
     elapsed_s: float = 0.0
 
 
+@dataclass
+class ClusterValidationResult:
+    """Cluster-wide before/after result from two full-dataset sims (baseline vs
+    combined recommendation). See optimize_search._run_cluster_validation_phase.
+
+    `per_family_contrib` maps family -> (baseline_metrics, recommendation_metrics)
+    computed by prefix-filtering the same two sim outputs; this lets per-family
+    reports show the family's actual contribution to the full-cluster sim without
+    running extra sims.
+    """
+
+    baseline_metrics: SimMetrics
+    recommendation_metrics: SimMetrics
+    days: int | None
+    elapsed_sec: float
+    per_family_contrib: dict[str, tuple[SimMetrics | None, SimMetrics | None]]
+
+
 class SimCache:
     """(cache_key) -> SimMetrics. Insert-idempotent; safe under concurrent writers."""
 
