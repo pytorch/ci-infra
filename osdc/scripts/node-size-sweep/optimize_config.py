@@ -39,20 +39,27 @@ PROD_PARITY_SIM_FLAGS: dict[str, object] = {
 }
 
 
-def def_totals(defrow: dict) -> tuple[int, int, int]:
-    """Pod-total (cpu_m, mem_mi, gpu) for a runner def including hooks tax.
+def def_totals(defrow: dict) -> tuple[int, int, int, int, int]:
+    """Pod-total (cpu_m, mem_mi, gpu, main_vcpu, main_memory_gib) for a runner def including hooks tax.
 
     `build_label_table` gives vcpu (float) and memory_gib (float). Convert to
     the same millicore/MiB accounting the sim uses (int truncation, matches
     sim_load.load_jobs exactly) and add hook overhead read from the same
     shared source so the resulting slot check matches what Karpenter
     schedules against.
+
+    `main_vcpu` is the whole-integer vcpu the operator sets in the def YAML
+    (2, 8, 16, 46, ...). `main_memory_gib` is the whole-integer GiB the
+    operator sets in the def YAML's `memory:` field. Both are operator-tunable
+    knobs; the sidecar (`hooks_cpu` / `hooks_mem`) is fixed and rides on top.
     """
     hooks_cpu, hooks_mem, _, _ = load_runner_overhead()
-    cpu_m = int(defrow["vcpu"] * 1000) + hooks_cpu
+    main_vcpu = int(defrow["vcpu"])
+    main_memory_gib = int(defrow["memory_gib"])
+    cpu_m = main_vcpu * 1000 + hooks_cpu
     mem_mi = int(defrow["memory_gib"] * 1024) + hooks_mem
     gpu = int(defrow["gpu"])
-    return cpu_m, mem_mi, gpu
+    return cpu_m, mem_mi, gpu, main_vcpu, main_memory_gib
 
 
 def load_defs_by_family() -> dict[str, list[dict]]:

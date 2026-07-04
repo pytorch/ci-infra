@@ -60,6 +60,7 @@ from optimize_engine import (  # noqa: E402
     cached_sim,
     enumerate_feasible_configs,
     enumerate_neighbors,
+    is_baseline_feasible,
     is_config_feasible,
     random_feasible_config,
     rank_key,
@@ -684,15 +685,18 @@ def _search_family(
         )
 
     baseline = baseline_config(family, eligible_defs, entries)
-    if not is_config_feasible(baseline, catalog):
-        # Prod's single-instance baseline stranded outside D4 bounds means we
-        # cannot honestly compare recommendations "vs prod" — the baseline is
-        # not what prod is running. Skip loudly instead of substituting a
-        # random per-def baseline and mislabelling it. Operator action: loosen
-        # D4 bounds (or update prod) and re-run.
+    # Baseline uses PROD-REALITY pod shapes (no D4 adjustment) so gating it
+    # against the recommendation catalog (which enforces D4 bounds) is wrong:
+    # a baseline can be perfectly-fine-in-prod yet catalog-infeasible because
+    # its tight-fit adjustment on the family's largest instance overshoots
+    # the D4 upper bound. The correct check is "does the original pod fit?".
+    from sim_nodes import _daemonsets_for_fleet
+
+    scoped_ds = _daemonsets_for_fleet(daemonsets, family)
+    if not is_baseline_feasible(baseline, eligible_defs, scoped_ds):
         log.error(
-            "family=%s: baseline infeasible under D4 bounds — skipping family "
-            "(loosen bounds or update prod config, then re-run)",
+            "family=%s: baseline pods do not physically fit on the biggest in-family "
+            "instance — skipping family (check def yaml vs INSTANCE_SPECS)",
             family,
         )
         elapsed = time.perf_counter() - t0
@@ -704,7 +708,7 @@ def _search_family(
             best_config=None,
             best_metrics=None,
             verdict="skipped",
-            skipped_reason="baseline infeasible under D4 bounds",
+            skipped_reason="baseline pods do not fit on instance",
             elapsed_sec=elapsed,
         )
 
@@ -769,6 +773,7 @@ def _search_family(
             cache,
             log,
             daemonsets=daemonsets,
+            baseline_defs=eligible_defs,
         )
     except Exception as e:
         log.error("family=%s: baseline sim failed: %s", family, e, exc_info=True)

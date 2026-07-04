@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,11 +40,11 @@ from optimize_config import (  # noqa: E402
 )
 from sim_nodes import _daemonsets_for_fleet  # noqa: E402
 
-# D4 tight-fit tolerance constants (see optimize.md § D4). 1 vCPU = 1000 mcpu.
-CPU_LOWER_ABS_M = 1000
-CPU_UPPER_ABS_M = 2000
-CPU_LOWER_PCT = 0.05
-CPU_UPPER_PCT = 0.35
+# D4 tight-fit tolerance constants (see optimize.md § D4).
+# CPU bounds are on the MAIN pod's integer vCPU (the number the operator writes
+# in the def YAML's `vcpu:` field). The runner-container-hooks sidecar's cpu
+# request is fixed and rides on top of the main pod — it is never part of the
+# adjustment axis.
 MEM_LOWER_PCT = 0.95
 
 
@@ -60,6 +61,10 @@ class EligibleEntry:
     orig_cpu_m: int
     orig_mem_mi: int
     orig_gpu: int
+    new_main_vcpu: int
+    orig_main_vcpu: int
+    new_main_memory_gib: int
+    orig_main_memory_gib: int
     adj_cpu_pct: float
     adj_mem_pct: float
 
@@ -75,10 +80,21 @@ def instances_for_family(family: str) -> list[str]:
     return sorted(k for k in INSTANCE_SPECS if k.startswith(prefix) and ".metal" not in k)
 
 
-def _within_cpu_bounds(slot_cpu_m: int, orig_cpu_m: int) -> bool:
-    lo = orig_cpu_m - max(CPU_LOWER_ABS_M, int(orig_cpu_m * CPU_LOWER_PCT))
-    hi = orig_cpu_m + max(CPU_UPPER_ABS_M, int(orig_cpu_m * CPU_UPPER_PCT))
-    return lo <= slot_cpu_m <= hi
+def _main_vcpu_bounds(orig_main_vcpu: int) -> tuple[int, int]:
+    """Return (lo, hi) inclusive integer bounds for a legal `new_main_vcpu`.
+
+    Lower: `min(orig - 1, ceil(orig * 0.95))` — at most 1 vCPU or 5% down,
+    whichever is more generous (so tiny defs like vcpu=2 keep a real range).
+    Upper: `max(orig + 1, ceil(orig * 1.35))` — at least 1 vCPU or 35% up.
+    """
+    lo = min(orig_main_vcpu - 1, math.ceil(orig_main_vcpu * 0.95))
+    hi = max(orig_main_vcpu + 1, math.ceil(orig_main_vcpu * 1.35))
+    return lo, hi
+
+
+def _within_main_vcpu_bounds(new_main_vcpu: int, orig_main_vcpu: int) -> bool:
+    lo, hi = _main_vcpu_bounds(orig_main_vcpu)
+    return lo <= new_main_vcpu <= hi
 
 
 def _within_mem_bounds(slot_mem_mi: int, orig_mem_mi: int) -> bool:
@@ -90,6 +106,8 @@ def eligibility_for_pair(
     orig_cpu_m: int,
     orig_mem_mi: int,
     orig_gpu: int,
+    orig_main_vcpu: int,
+    orig_main_memory_gib: int,
     instance: str,
     scoped_daemonsets: list[DaemonSetOverhead],
 ) -> EligibleEntry | None:
@@ -113,7 +131,16 @@ def eligibility_for_pair(
     if orig_gpu == 0 and alloc_gpu > 0:
         return None
 
-    if orig_cpu_m <= 0 or orig_mem_mi <= 0:
+    if orig_cpu_m <= 0 or orig_mem_mi <= 0 or orig_main_vcpu <= 0 or orig_main_memory_gib <= 0:
+        return None
+
+    # Sidecar CPU/memory is the fixed portion of orig_cpu_m / orig_mem_mi that
+    # is NOT the main pod. main_vcpu and main_memory_gib are the operator-tunable
+    # knobs; the sidecar rides on top at fixed request sizes regardless of main
+    # pod size.
+    sidecar_cpu_m = orig_cpu_m - orig_main_vcpu * 1000
+    sidecar_mem_mi = orig_mem_mi - orig_main_memory_gib * 1024
+    if sidecar_cpu_m < 0 or sidecar_mem_mi < 0:
         return None
 
     n_cpu = alloc_cpu_m // orig_cpu_m
@@ -123,18 +150,25 @@ def eligibility_for_pair(
     if n <= 0:
         return None
 
-    raw_slot_cpu_m = alloc_cpu_m // n
-    raw_slot_mem_mi = alloc_mem_mi // n
-
-    # Runner defs deploy with integer vCPU and integer GiB. Round DOWN so N pods
-    # still fit within allocatable (rounding up could exceed it and break tight-fit).
-    slot_cpu_m = (raw_slot_cpu_m // 1000) * 1000
-    slot_mem_mi = (raw_slot_mem_mi // 1024) * 1024
+    raw_available_per_pod_cpu_m = alloc_cpu_m // n
+    # Subtract the fixed sidecar first, THEN floor to whole vCPU — otherwise
+    # the sidecar's 320m gets lumped into the "rounded to whole vCPU" number
+    # and the resulting slot cannot actually deploy (main_vcpu * 1000 + 320m
+    # would exceed the slot allowance).
+    available_main_cpu_m = raw_available_per_pod_cpu_m - sidecar_cpu_m
+    new_main_vcpu = max(1, available_main_cpu_m // 1000)
+    slot_cpu_m = new_main_vcpu * 1000 + sidecar_cpu_m
+    # Memory: same shape as CPU. Subtract the sidecar first, then floor to
+    # whole GiB so the reported main_memory_gib matches what the operator
+    # writes back into the def YAML. Slot_mem_mi is rebuilt from the whole-GiB
+    # main plus the fixed sidecar so the sim sees the exact deployable total.
+    raw_available_per_pod_mem_mi = alloc_mem_mi // n
+    available_main_mem_mi = raw_available_per_pod_mem_mi - sidecar_mem_mi
+    new_main_memory_gib = max(1, available_main_mem_mi // 1024)
+    slot_mem_mi = new_main_memory_gib * 1024 + sidecar_mem_mi
     slot_gpu = (alloc_gpu // n) if orig_gpu > 0 else 0
 
-    # Bounds must be re-checked AFTER rounding: rounding down can push the slot
-    # below `orig - lower_bound`, making a previously-feasible pair infeasible.
-    if not _within_cpu_bounds(slot_cpu_m, orig_cpu_m):
+    if not _within_main_vcpu_bounds(new_main_vcpu, orig_main_vcpu):
         return None
     if not _within_mem_bounds(slot_mem_mi, orig_mem_mi):
         return None
@@ -142,8 +176,8 @@ def eligibility_for_pair(
     if orig_gpu > 0 and slot_gpu != orig_gpu:
         return None
 
-    adj_cpu_pct = 100.0 * (slot_cpu_m - orig_cpu_m) / orig_cpu_m
-    adj_mem_pct = 100.0 * (slot_mem_mi - orig_mem_mi) / orig_mem_mi
+    adj_cpu_pct = 100.0 * (new_main_vcpu - orig_main_vcpu) / orig_main_vcpu
+    adj_mem_pct = 100.0 * (new_main_memory_gib - orig_main_memory_gib) / orig_main_memory_gib
 
     return EligibleEntry(
         def_label=def_label,
@@ -155,6 +189,10 @@ def eligibility_for_pair(
         orig_cpu_m=int(orig_cpu_m),
         orig_mem_mi=int(orig_mem_mi),
         orig_gpu=int(orig_gpu),
+        new_main_vcpu=int(new_main_vcpu),
+        orig_main_vcpu=int(orig_main_vcpu),
+        new_main_memory_gib=int(new_main_memory_gib),
+        orig_main_memory_gib=int(orig_main_memory_gib),
         adj_cpu_pct=adj_cpu_pct,
         adj_mem_pct=adj_mem_pct,
     )
@@ -193,10 +231,19 @@ def build_eligibility_catalog(
         # on other fleets, this call needs to be lifted per sub-nodepool.
         scoped_ds = _daemonsets_for_fleet(daemonsets, family)
         for d in defs:
-            orig_cpu_m, orig_mem_mi, orig_gpu = def_totals(d)
+            orig_cpu_m, orig_mem_mi, orig_gpu, orig_main_vcpu, orig_main_memory_gib = def_totals(d)
             per_def_count = 0
             for inst in instances:
-                entry = eligibility_for_pair(d["name"], orig_cpu_m, orig_mem_mi, orig_gpu, inst, scoped_ds)
+                entry = eligibility_for_pair(
+                    d["name"],
+                    orig_cpu_m,
+                    orig_mem_mi,
+                    orig_gpu,
+                    orig_main_vcpu,
+                    orig_main_memory_gib,
+                    inst,
+                    scoped_ds,
+                )
                 if entry is not None:
                     entries.append(entry)
                     per_def_count += 1
@@ -248,7 +295,7 @@ def print_family_report(
         name = d["name"]
         elig = by_def.get(name, [])
         if not elig:
-            orig_cpu_m, orig_mem_mi, _ = def_totals(d)
+            orig_cpu_m, orig_mem_mi, _, _, _ = def_totals(d)
             print(
                 f"  {name:<32} {'(no eligible in-family instance)':<20}     "
                 f"orig={_fmt_slot_cpu(orig_cpu_m)}/{_fmt_slot_mem(orig_mem_mi)}"
@@ -257,7 +304,8 @@ def print_family_report(
         for e in elig:
             print(
                 f"  {e.def_label:<32} {e.instance:<20} {e.n:>3}  "
-                f"{_fmt_slot_cpu(e.slot_cpu_m):>8} {_fmt_slot_mem(e.slot_mem_mi):>9} "
+                f"main vcpu {e.orig_main_vcpu}->{e.new_main_vcpu} "
+                f"main mem {e.orig_main_memory_gib}->{e.new_main_memory_gib} Gi "
                 f"{_fmt_pct(e.adj_cpu_pct):>8} {_fmt_pct(e.adj_mem_pct):>8}"
             )
     print()
@@ -315,12 +363,14 @@ def to_json(
 
         defs_out: dict[str, dict] = {}
         for d in defs_by_family.get(family, []):
-            orig_cpu_m, orig_mem_mi, orig_gpu = def_totals(d)
+            orig_cpu_m, orig_mem_mi, orig_gpu, orig_main_vcpu, orig_main_memory_gib = def_totals(d)
             elig = sorted(by_def.get(d["name"], []), key=lambda e: e.instance)
             defs_out[d["name"]] = {
                 "orig_cpu_m": orig_cpu_m,
                 "orig_mem_mi": orig_mem_mi,
                 "orig_gpu": orig_gpu,
+                "orig_main_vcpu": orig_main_vcpu,
+                "orig_main_memory_gib": orig_main_memory_gib,
                 "eligible": [
                     {
                         "instance": e.instance,
@@ -328,6 +378,8 @@ def to_json(
                         "slot_cpu_m": e.slot_cpu_m,
                         "slot_mem_mi": e.slot_mem_mi,
                         "slot_gpu": e.slot_gpu,
+                        "new_main_vcpu": e.new_main_vcpu,
+                        "new_main_memory_gib": e.new_main_memory_gib,
                         "adj_cpu_pct": round(e.adj_cpu_pct, 4),
                         "adj_mem_pct": round(e.adj_mem_pct, 4),
                     }

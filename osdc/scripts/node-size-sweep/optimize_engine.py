@@ -114,30 +114,92 @@ def is_config_feasible(
     return True
 
 
+def is_baseline_feasible(
+    config: Config,
+    defs: list[dict],
+    scoped_daemonsets: list,
+) -> bool:
+    """Baseline uses PROD-REALITY pod shapes (no D4 adjustment), so it must
+    NOT be gated against the recommendation catalog — the recommendation
+    catalog rejects (def, instance) pairs whose tight-fit adjustment falls
+    outside the D4 bounds, but the baseline runs the pod at its ORIGINAL
+    shape with no adjustment. The correct feasibility check for the baseline
+    is: does the def's original pod shape physically fit on the instance
+    (i.e. N >= 1 after subtracting kubelet + daemonset overhead)?
+    """
+    from analyze_node_utilization import compute_allocatable
+
+    from optimize_config import def_totals
+
+    defs_by_name = {d["name"]: d for d in defs}
+    for spec in config.values():
+        inst = spec["instance"]
+        alloc = compute_allocatable(inst, scoped_daemonsets)
+        if alloc is None:
+            return False
+        alloc_cpu_m = alloc["allocatable_cpu_m"]
+        alloc_mem_mi = alloc["allocatable_mem_mi"]
+        alloc_gpu = alloc["allocatable_gpu"]
+        for pod in spec["pods"]:
+            defrow = defs_by_name.get(pod)
+            if defrow is None:
+                return False
+            orig_cpu_m, orig_mem_mi, orig_gpu, _, _ = def_totals(defrow)
+            if orig_cpu_m > alloc_cpu_m or orig_mem_mi > alloc_mem_mi:
+                return False
+            if orig_gpu > 0 and (alloc_gpu == 0 or orig_gpu > alloc_gpu):
+                return False
+            if orig_gpu == 0 and alloc_gpu > 0:
+                return False
+    return True
+
+
 def baseline_config(family: str, defs: list[dict], catalog_entries: list["EligibleEntry"]) -> Config:
-    """Current-prod: all defs share one sub-nodepool using the family's largest
-    in-family instance. Falls back to a def's own instance_type when the largest
-    isn't eligible for that def (should not happen for real prod configs — assert
-    would fire elsewhere), keeping baseline uniquely defined."""
+    """Current-prod baseline: pods routed to the REAL nodepool name (from each
+    def's `nodepool` field, which is `derive_fleet_name(instance_type, node_fleet)`)
+    with the family's largest in-family instance recorded for reference.
+
+    Real nodepool routing is what prod actually does — a single nodepool per
+    family with weighted Karpenter instance selection across sizes. Using the
+    real pool name here keeps per-family baseline sim and cluster-validation
+    baseline sim symmetric (both route to the same real pool). When
+    `run_sim_for_config` sees this baseline config it drops `fleets_override`
+    so `ClusterModel` loads the real weighted fleet from YAML.
+
+    Falls back to a def's own instance_type when the largest isn't eligible for
+    that def (should not happen for real prod configs — assert would fire
+    elsewhere), keeping baseline uniquely defined.
+    """
     if not defs:
         raise ValueError(f"family {family}: no defs, cannot build baseline")
-    # Family's biggest instance = the one every def is currently assigned to in
-    # prod. Read it off the def row instead of guessing from INSTANCE_SPECS.
+
+    from fleet_naming import derive_fleet_name
+
+    # Group defs by their real prod nodepool. A single family typically routes
+    # every def to the same nodepool (the family name), but defs with an
+    # explicit `node_fleet` override may land on a different pool — keep that
+    # routing intact so baseline reflects actual prod placement.
+    by_pool: dict[str, list[dict]] = {}
+    for d in defs:
+        pool = derive_fleet_name(d["instance_type"], d.get("node_fleet"))
+        by_pool.setdefault(pool, []).append(d)
+
     prod_instances = {d["instance_type"] for d in defs}
     if len(prod_instances) == 1:
         inst = next(iter(prod_instances))
     else:
-        # Fall back to the alphabetically-largest instance in the catalog. In
-        # practice all in-scope families ship a single instance today; hitting
-        # this branch means the def table changed shape and the baseline
-        # comparison is a best-effort guess. Log-worthy but not fatal.
         catalog_insts = instances_in_catalog(catalog_entries)
         if not catalog_insts:
             raise ValueError(f"family {family}: catalog empty, cannot build baseline")
         inst = catalog_insts[-1]
-    pods = sorted(d["name"] for d in defs)
-    sub_id = sub_nodepool_id(family, inst)
-    return {sub_id: {"instance": inst, "pods": pods}}
+
+    cfg: Config = {}
+    for pool_name, pool_defs in by_pool.items():
+        cfg[pool_name] = {
+            "instance": inst,
+            "pods": sorted(d["name"] for d in pool_defs),
+        }
+    return cfg
 
 
 # ---------- partition enumeration (exhaustive) ----------
@@ -476,15 +538,24 @@ def rebuild_jobs_for_config(
     all_jobs: list["Job"],
     catalog: dict[tuple[str, str], "EligibleEntry"],
     family_def_names: set[str],
+    baseline_defs: list[dict] | None = None,
 ) -> list["Job"]:
     """Rewrite each family job's pool/shape per its def's config assignment.
 
     Non-family jobs and runner-pod entries are dropped — c7i-runner is
     zero-coupled to workflow-fleet choices (D3) so they are pure sim overhead
     for the family's per-family metric extraction.
+
+    When `baseline_defs` is provided the config is treated as the prod-reality
+    baseline: jobs keep their ORIGINAL (unadjusted) pod shape from
+    def_totals; the catalog is only consulted for pool routing / gpu counts.
+    Baselines must never inherit D4 slot adjustments — those are the
+    recommendation's shape, not prod's.
     """
     from sim_load import RUNNER_POD_LABEL
     from sim_nodes import Job
+
+    from optimize_config import def_totals
 
     # Reverse map: def_label -> (sub_id, instance) — assumes each def is in
     # exactly one sub-nodepool (invariant of the config schema).
@@ -493,6 +564,12 @@ def rebuild_jobs_for_config(
         inst = spec["instance"]
         for pod in spec["pods"]:
             assignment[pod] = (sub_id, inst)
+
+    baseline_shapes: dict[str, tuple[int, int, int]] = {}
+    if baseline_defs is not None:
+        for d in baseline_defs:
+            cpu_m, mem_mi, gpu, _, _ = def_totals(d)
+            baseline_shapes[d["name"]] = (cpu_m, mem_mi, gpu)
 
     out: list["Job"] = []
     for j in all_jobs:
@@ -504,6 +581,23 @@ def rebuild_jobs_for_config(
         if assigned is None:
             continue
         sub_id, inst = assigned
+        if baseline_defs is not None:
+            shape = baseline_shapes.get(j.label)
+            if shape is None:
+                continue
+            cpu_m, mem_mi, gpu = shape
+            out.append(
+                Job(
+                    label=j.label,
+                    pool=sub_id,
+                    cpu_m=cpu_m,
+                    mem_mi=mem_mi,
+                    gpu=gpu,
+                    start_bucket=j.start_bucket,
+                    end_bucket=j.end_bucket,
+                )
+            )
+            continue
         entry = catalog.get((j.label, inst))
         if entry is None:
             continue
@@ -771,16 +865,26 @@ def run_sim_for_config(
     runner_fleet: "FleetSpec",
     sim_flags: dict,
     daemonsets: list | None = None,
+    baseline_defs: list[dict] | None = None,
 ) -> SimMetrics:
     import simulate as sim_mod
     from sim_nodes import ClusterModel
 
-    jobs = rebuild_jobs_for_config(family, config, all_jobs, catalog, family_def_names)
+    jobs = rebuild_jobs_for_config(family, config, all_jobs, catalog, family_def_names, baseline_defs=baseline_defs)
     # simulate() blows up on min(...) over empty arrivals; short-circuit here.
     if not jobs:
         return SimMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, empty=True)
-    fleets_override = build_fleets_override(config, runner_fleet)
-    model = ClusterModel(fleets_override=fleets_override)
+    # Baseline routes to REAL prod nodepool names (see `baseline_config`), so
+    # the sim must load the real weighted YAML fleet — passing a
+    # single-instance override would silently constrain Karpenter's picker to
+    # one size and break parity with prod. Recommendation configs use
+    # synthetic sub-nodepool ids, one instance each, so the override is
+    # required to materialize them.
+    if baseline_defs is not None:
+        model = ClusterModel()
+    else:
+        fleets_override = build_fleets_override(config, runner_fleet)
+        model = ClusterModel(fleets_override=fleets_override)
     t0 = time.perf_counter()
     sim_out = sim_mod.simulate(
         jobs,
@@ -822,10 +926,16 @@ def cached_sim(
     cache: SimCache,
     log: logging.Logger,
     daemonsets: list | None = None,
+    baseline_defs: list[dict] | None = None,
 ) -> tuple[SimMetrics, bool]:
     """Returns (metrics, was_cache_hit). Callers should increment their hit
     counter on the boolean rather than probing cache.get() twice."""
-    key = config_cache_key(family, config, sim_flags, csv_sha, src_shas)
+    # Baseline sims run with pod ORIGINAL shape, not catalog slot shape — they
+    # must not collide with recommendation-cache entries for the same config.
+    cache_flags = dict(sim_flags)
+    if baseline_defs is not None:
+        cache_flags["_baseline_shape"] = True
+    key = config_cache_key(family, config, cache_flags, csv_sha, src_shas)
     hit = cache.get(key)
     if hit is not None:
         log.debug("cache HIT %s: opt_max=%.4f", key[:12], hit.opt_max)
@@ -840,6 +950,7 @@ def cached_sim(
         runner_fleet,
         sim_flags,
         daemonsets=daemonsets,
+        baseline_defs=baseline_defs,
     )
     cache.put(key, canonical_config(config), m)
     log.debug("cache STORE %s: opt_max=%.4f elapsed=%.1fs", key[:12], m.opt_max, m.elapsed_s)

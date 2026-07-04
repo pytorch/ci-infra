@@ -202,38 +202,87 @@ re-optimization phase is required.
 
 ### D4: Pod adjustment rule — deterministic tight-fit with tolerance bounds
 
-Given a def with original request `(orig_cpu, orig_mem)` (and `orig_gpu` if
-applicable) assigned to a sub-nodepool with instance `inst`:
+The runner def YAML has two knobs the operator sets: `vcpu` (an integer,
+e.g. 2, 8, 16, 46 — the MAIN pod's cpu request) and `memory` (Gi, integer
+or Gi-suffixed). The runner-container-hooks sidecar attaches a fixed
+320 mcpu / 522 MiB per pod regardless of the main pod's size — it is not
+part of the adjustment axis. So the total pod request is
+`main_vcpu * 1000 + 320` mcpu of CPU and `memory_mi + 522` MiB of memory.
+
+Given a def with original `(orig_main_vcpu, orig_mem_mi)` (and `orig_gpu`
+if applicable) assigned to a sub-nodepool with instance `inst`:
 
 1. `alloc_cpu_m, alloc_mem_mi, alloc_gpu = compute_allocatable(inst, ds)`.
-2. Derive per-node pod count `N`:
+2. Compute pod count `N` at ORIGINAL size (unadjusted):
    ```
-   n_max_cpu = alloc_cpu_m // orig_cpu
-   n_max_mem = alloc_mem_mi // orig_mem
+   n_max_cpu = alloc_cpu_m // orig_cpu_m       # orig_cpu_m includes sidecar
+   n_max_mem = alloc_mem_mi // orig_mem_mi
    n_max_gpu = (alloc_gpu // orig_gpu) if orig_gpu > 0 else inf
    N = min(n_max_cpu, n_max_mem, n_max_gpu)
    ```
    If `N == 0`, the pair is infeasible on capacity alone.
-3. Derive the tight-fit slot:
+3. Derive the tight-fit MAIN vCPU:
    ```
-   slot_cpu = alloc_cpu_m // N
-   slot_mem = alloc_mem_mi // N
+   raw_available_per_pod_cpu_m = alloc_cpu_m // N
+   available_main_cpu_m = raw_available_per_pod_cpu_m - sidecar_cpu_m
+   new_main_vcpu = max(1, available_main_cpu_m // 1000)
+   slot_cpu_m = new_main_vcpu * 1000 + sidecar_cpu_m
    ```
-   `slot ≥ orig` on each dimension because `N` was floor-divided; any
-   remainder is wasted per-node.
-4. Bounds check (adjusted slot vs original request):
-   - **CPU lower bound**: `slot_cpu ≥ orig_cpu - max(1000, orig_cpu × 0.05)`
-     (max of 1 vCPU or 5%, whichever is larger).
-   - **CPU upper bound**: `slot_cpu ≤ orig_cpu + max(2000, orig_cpu × 0.35)`
-     (max of 2 vCPU or 35%, whichever is larger).
-   - **Memory lower bound**: `slot_mem ≥ orig_mem × 0.95` (5% shrink max).
-   - **Memory upper bound**: none.
-5. If any dimension is out of bounds, the (def, instance) pair is
+   The sidecar's 320 mcpu is subtracted BEFORE flooring to whole vCPU —
+   otherwise the "rounded to whole vCPU" number lumps the sidecar in and the
+   resulting slot cannot actually deploy (`main * 1000 + 320` would exceed
+   the slot allowance).
+4. Derive the tight-fit MAIN memory (in whole GiB):
+   ```
+   raw_available_per_pod_mem_mi = alloc_mem_mi // N
+   available_main_mem_mi = raw_available_per_pod_mem_mi - sidecar_mem_mi
+   new_main_memory_gib = max(1, available_main_mem_mi // 1024)
+   slot_mem_mi = new_main_memory_gib * 1024 + sidecar_mem_mi
+   ```
+   The sidecar's 522 MiB is subtracted BEFORE flooring to whole GiB —
+   otherwise the "rounded to whole GiB" number lumps the sidecar in and the
+   resulting slot cannot actually deploy (`main * 1024 + 522` would exceed
+   the slot allowance). `new_main_memory_gib` is the integer the operator
+   writes into the def YAML's `memory:` field.
+5. Bounds check on the NEW `main_vcpu` (integer vCPU, not total mcpu):
+   ```
+   lo = min(orig_main_vcpu - 1, ceil(orig_main_vcpu * 0.95))
+   hi = max(orig_main_vcpu + 1, ceil(orig_main_vcpu * 1.35))
+   feasible_cpu = lo <= new_main_vcpu <= hi
+   ```
+   Worked examples:
+   - `orig_main_vcpu=2`  → range `[min(1, 2),  max(3, 3)]  = [1, 3]`
+   - `orig_main_vcpu=8`  → range `[min(7, 8),  max(9, 11)] = [7, 11]`
+   - `orig_main_vcpu=16` → range `[min(15, 16), max(17, 22)] = [15, 22]`
+   - `orig_main_vcpu=46` → range `[min(45, 44), max(47, 63)] = [44, 63]`
+
+   Memory bound is on the TOTAL slot (main + sidecar), preserving the prior
+   semantics: `slot_mem_mi >= orig_mem_mi * 0.95` (5% shrink max on total).
+   Memory upper bound: none.
+6. If any dimension is out of bounds, the (def, instance) pair is
    **infeasible** and any config containing it is rejected.
 
-The adjusted slot values `(slot_cpu, slot_mem)` are the pod's cpu/mem
-requests in the simulator run. They are not a search variable — they are a
-function of the (def, instance) pair.
+`(slot_cpu_m, slot_mem_mi)` are the pod's cpu/mem requests fed to the
+simulator. `new_main_vcpu` is the integer the operator writes into the
+def YAML's `vcpu:` field — the ONLY axis this optimizer is allowed to
+adjust on the CPU dimension.
+
+**Scope — GPU defs**: the D4 tight-fit rule applies to ALL in-scope defs,
+including GPU defs in the g5, g6, and g4dn families. The vcpu adjustment
+range (`[min(orig-1, ceil(orig*0.95)), max(orig+1, ceil(orig*1.35))]`) and
+the memory 5% lower bound apply symmetrically to CPU-only and GPU defs.
+The vcpu tolerance is what lets a GPU-heavy pod right-fit onto a GPU
+instance size when the vcpu allocation isn't perfectly divisible — e.g.
+`l-x86iavx512-29-115-t4` (29 vcpu / 1 GPU) on `g4dn.8xlarge` (32 vcpu /
+1 GPU): N=1, vcpu adjusts 29→31 (+7%), within bounds.
+
+**GPU count is strict**: `orig_gpu` is NEVER reshapeable. A def declared
+with 1 GPU must land on an instance size where its per-pod GPU slot is
+exactly 1 (`alloc_gpu // N == orig_gpu`). A def declared with 4 GPUs
+must land on a 4-GPU-per-pod slot exactly. Any pair whose tight-fit
+would silently change the per-pod GPU count is rejected. GPU-typed defs
+cannot land on non-GPU instances and vice versa (filtered before any
+capacity math).
 
 ### D5: Shape represents pod REQUESTS, not real usage
 
@@ -630,24 +679,36 @@ def generate_catalog(family: str, defs: list[DefReq]) -> dict[tuple[str, str], E
             if N == 0:
                 out[(d.label, inst)] = Eligibility(feasible=False, reason="capacity")
                 continue
-            slot_cpu = alloc.cpu_m // N
+            n_cpu = alloc.cpu_m // d.cpu_m
+            n_mem = alloc.mem_mi // d.mem_mi
+            n_gpu = (alloc.gpu // d.gpu) if d.gpu > 0 else 10_000
+            N = min(n_cpu, n_mem, n_gpu)
+            if N == 0:
+                out[(d.label, inst)] = Eligibility(feasible=False, reason="capacity")
+                continue
+            # Sidecar is fixed at hooks_cpu_m regardless of main pod size.
+            sidecar_cpu_m = d.cpu_m - d.main_vcpu * 1000
+            raw_per_pod = alloc.cpu_m // N
+            new_main_vcpu = max(1, (raw_per_pod - sidecar_cpu_m) // 1000)
+            slot_cpu = new_main_vcpu * 1000 + sidecar_cpu_m
             slot_mem = alloc.mem_mi // N
             slot_gpu = alloc.gpu // N if d.gpu > 0 else 0
-            if not within_cpu_bounds(slot_cpu, d.cpu_m) \
+            if not within_main_vcpu_bounds(new_main_vcpu, d.main_vcpu) \
                     or not within_mem_bounds(slot_mem, d.mem_mi):
                 out[(d.label, inst)] = Eligibility(feasible=False, reason="tolerance")
                 continue
             out[(d.label, inst)] = Eligibility(
                 feasible=True, N=N,
                 slot_cpu_m=slot_cpu, slot_mem_mi=slot_mem, slot_gpu=slot_gpu,
+                new_main_vcpu=new_main_vcpu,
                 overhead_frac=1 - (alloc.cpu_m / (INSTANCE_SPECS[inst]["vcpu"] * 1000)),
             )
     return out
 
-def within_cpu_bounds(slot_cpu: int, orig_cpu: int) -> bool:
-    lo = orig_cpu - max(1000, int(orig_cpu * 0.05))
-    hi = orig_cpu + max(2000, int(orig_cpu * 0.35))
-    return lo <= slot_cpu <= hi
+def within_main_vcpu_bounds(new_main_vcpu: int, orig_main_vcpu: int) -> bool:
+    lo = min(orig_main_vcpu - 1, math.ceil(orig_main_vcpu * 0.95))
+    hi = max(orig_main_vcpu + 1, math.ceil(orig_main_vcpu * 1.35))
+    return lo <= new_main_vcpu <= hi
 
 def within_mem_bounds(slot_mem: int, orig_mem: int) -> bool:
     return slot_mem >= int(orig_mem * 0.95)
@@ -884,7 +945,8 @@ runner labels encode the shape. The correct formulation, above, treats the
 search variable as "how do we partition this family's defs across
 sub-nodepools, and which instance size does each sub-nodepool use?" Pod
 adjustment is a mechanical consequence of the (def, instance) pair,
-bounded by the tight tolerances in D4 (≤ +max(2 vCPU, 35%) CPU up,
-≤ max(1 vCPU, 5%) CPU down, ≤ 5% memory down, memory up unbounded). Any
+bounded by the tight tolerances in D4 (integer `new_main_vcpu` bounded by
+`[min(orig - 1, ceil(orig × 0.95)), max(orig + 1, ceil(orig × 1.35))]`
+on CPU, ≤ 5% memory down, memory up unbounded). Any
 (def, instance) pair that would need a larger adjustment is infeasible and
 excluded before the sim ever runs.

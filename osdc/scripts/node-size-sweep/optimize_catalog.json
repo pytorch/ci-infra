@@ -1,0 +1,229 @@
+{
+  "families": {
+    "r7a": {
+      "defs": {
+        "l-x86iavx512-16-128": {
+          "eligible": [
+            {
+              "adj_cpu_pct": 25.0,
+              "adj_mem_pct": 20.3125,
+              "instance": "r7a.16xlarge",
+              "n": 3,
+              "new_main_memory_gib": 154,
+              "new_main_vcpu": 20,
+              "slot_cpu_m": 20320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 158218
+            },
+            {
+              "adj_cpu_pct": 12.5,
+              "adj_mem_pct": 8.5938,
+              "instance": "r7a.24xlarge",
+              "n": 5,
+              "new_main_memory_gib": 139,
+              "new_main_vcpu": 18,
+              "slot_cpu_m": 18320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 142858
+            },
+            {
+              "adj_cpu_pct": 12.5,
+              "adj_mem_pct": 9.375,
+              "instance": "r7a.48xlarge",
+              "n": 10,
+              "new_main_memory_gib": 140,
+              "new_main_vcpu": 18,
+              "slot_cpu_m": 18320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 143882
+            }
+          ],
+          "orig_cpu_m": 16320,
+          "orig_gpu": 0,
+          "orig_main_memory_gib": 128,
+          "orig_main_vcpu": 16,
+          "orig_mem_mi": 131594
+        },
+        "l-x86iavx512-32-256": {
+          "eligible": [
+            {
+              "adj_cpu_pct": 15.625,
+              "adj_mem_pct": 9.7656,
+              "instance": "r7a.48xlarge",
+              "n": 5,
+              "new_main_memory_gib": 281,
+              "new_main_vcpu": 37,
+              "slot_cpu_m": 37320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 288266
+            }
+          ],
+          "orig_cpu_m": 32320,
+          "orig_gpu": 0,
+          "orig_main_memory_gib": 256,
+          "orig_main_vcpu": 32,
+          "orig_mem_mi": 262666
+        },
+        "l-x86iavx512-48-384": {
+          "eligible": [
+            {
+              "adj_cpu_pct": 31.25,
+              "adj_mem_pct": 20.8333,
+              "instance": "r7a.16xlarge",
+              "n": 1,
+              "new_main_memory_gib": 464,
+              "new_main_vcpu": 63,
+              "slot_cpu_m": 63320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 475658
+            },
+            {
+              "adj_cpu_pct": 31.25,
+              "adj_mem_pct": 22.3958,
+              "instance": "r7a.48xlarge",
+              "n": 3,
+              "new_main_memory_gib": 470,
+              "new_main_vcpu": 63,
+              "slot_cpu_m": 63320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 481802
+            }
+          ],
+          "orig_cpu_m": 48320,
+          "orig_gpu": 0,
+          "orig_main_memory_gib": 384,
+          "orig_main_vcpu": 48,
+          "orig_mem_mi": 393738
+        },
+        "l-x86iavx512-8-64": {
+          "eligible": [
+            {
+              "adj_cpu_pct": 12.5,
+              "adj_mem_pct": 7.8125,
+              "instance": "r7a.12xlarge",
+              "n": 5,
+              "new_main_memory_gib": 69,
+              "new_main_vcpu": 9,
+              "slot_cpu_m": 9320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 71178
+            },
+            {
+              "adj_cpu_pct": 0.0,
+              "adj_mem_pct": 1.5625,
+              "instance": "r7a.16xlarge",
+              "n": 7,
+              "new_main_memory_gib": 65,
+              "new_main_vcpu": 8,
+              "slot_cpu_m": 8320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 67082
+            },
+            {
+              "adj_cpu_pct": 12.5,
+              "adj_mem_pct": 7.8125,
+              "instance": "r7a.24xlarge",
+              "n": 10,
+              "new_main_memory_gib": 69,
+              "new_main_vcpu": 9,
+              "slot_cpu_m": 9320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 71178
+            },
+            {
+              "adj_cpu_pct": 0.0,
+              "adj_mem_pct": 3.125,
+              "instance": "r7a.48xlarge",
+              "n": 21,
+              "new_main_memory_gib": 66,
+              "new_main_vcpu": 8,
+              "slot_cpu_m": 8320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 68106
+            },
+            {
+              "adj_cpu_pct": 25.0,
+              "adj_mem_pct": 20.3125,
+              "instance": "r7a.8xlarge",
+              "n": 3,
+              "new_main_memory_gib": 77,
+              "new_main_vcpu": 10,
+              "slot_cpu_m": 10320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 79370
+            }
+          ],
+          "orig_cpu_m": 8320,
+          "orig_gpu": 0,
+          "orig_main_memory_gib": 64,
+          "orig_main_vcpu": 8,
+          "orig_mem_mi": 66058
+        },
+        "rel-l-x86iavx512-8-64": {
+          "eligible": [
+            {
+              "adj_cpu_pct": 12.5,
+              "adj_mem_pct": 7.8125,
+              "instance": "r7a.12xlarge",
+              "n": 5,
+              "new_main_memory_gib": 69,
+              "new_main_vcpu": 9,
+              "slot_cpu_m": 9320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 71178
+            },
+            {
+              "adj_cpu_pct": 0.0,
+              "adj_mem_pct": 1.5625,
+              "instance": "r7a.16xlarge",
+              "n": 7,
+              "new_main_memory_gib": 65,
+              "new_main_vcpu": 8,
+              "slot_cpu_m": 8320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 67082
+            },
+            {
+              "adj_cpu_pct": 12.5,
+              "adj_mem_pct": 7.8125,
+              "instance": "r7a.24xlarge",
+              "n": 10,
+              "new_main_memory_gib": 69,
+              "new_main_vcpu": 9,
+              "slot_cpu_m": 9320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 71178
+            },
+            {
+              "adj_cpu_pct": 0.0,
+              "adj_mem_pct": 3.125,
+              "instance": "r7a.48xlarge",
+              "n": 21,
+              "new_main_memory_gib": 66,
+              "new_main_vcpu": 8,
+              "slot_cpu_m": 8320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 68106
+            },
+            {
+              "adj_cpu_pct": 25.0,
+              "adj_mem_pct": 20.3125,
+              "instance": "r7a.8xlarge",
+              "n": 3,
+              "new_main_memory_gib": 77,
+              "new_main_vcpu": 10,
+              "slot_cpu_m": 10320,
+              "slot_gpu": 0,
+              "slot_mem_mi": 79370
+            }
+          ],
+          "orig_cpu_m": 8320,
+          "orig_gpu": 0,
+          "orig_main_memory_gib": 64,
+          "orig_main_vcpu": 8,
+          "orig_mem_mi": 66058
+        }
+      }
+    }
+  }
+}

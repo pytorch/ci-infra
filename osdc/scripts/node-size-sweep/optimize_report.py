@@ -27,14 +27,30 @@ def _def_shape_row(
     slot_cpu_m: int,
     slot_mem_mi: int,
     n: int,
+    orig_main_vcpu: int | None = None,
+    new_main_vcpu: int | None = None,
+    orig_main_memory_gib: int | None = None,
+    new_main_memory_gib: int | None = None,
 ) -> str:
-    cpu_pct = 100.0 * (slot_cpu_m - orig_cpu_m) / orig_cpu_m if orig_cpu_m else 0.0
-    mem_pct = 100.0 * (slot_mem_mi - orig_mem_mi) / orig_mem_mi if orig_mem_mi else 0.0
-    return (
-        f"    {def_label} "
-        f"(adj: {orig_cpu_m / 1000:.1f}c -> {slot_cpu_m / 1000:.1f}c {cpu_pct:+.1f}%, "
-        f"{orig_mem_mi / 1024:.1f}Gi -> {slot_mem_mi / 1024:.1f}Gi {mem_pct:+.1f}%) N/node={n}"
-    )
+    # main_vcpu / main_memory_gib are the operator-tunable knobs (the integers
+    # in the def YAML's `vcpu:` / `memory:` fields); the sidecar adds a fixed
+    # tax on top. Report them in the same units the operator writes so the
+    # numbers can be copy-pasted back into the def YAML.
+    if orig_main_vcpu is not None and new_main_vcpu is not None:
+        cpu_pct = 100.0 * (new_main_vcpu - orig_main_vcpu) / orig_main_vcpu if orig_main_vcpu else 0.0
+        cpu_part = f"main vcpu: {orig_main_vcpu} -> {new_main_vcpu} ({cpu_pct:+.1f}%)"
+    else:
+        cpu_pct = 100.0 * (slot_cpu_m - orig_cpu_m) / orig_cpu_m if orig_cpu_m else 0.0
+        cpu_part = f"total cpu: {orig_cpu_m / 1000:.1f}c -> {slot_cpu_m / 1000:.1f}c ({cpu_pct:+.1f}%)"
+    if orig_main_memory_gib is not None and new_main_memory_gib is not None:
+        mem_pct = (
+            100.0 * (new_main_memory_gib - orig_main_memory_gib) / orig_main_memory_gib if orig_main_memory_gib else 0.0
+        )
+        mem_part = f"main mem: {orig_main_memory_gib} -> {new_main_memory_gib} Gi ({mem_pct:+.1f}%)"
+    else:
+        mem_pct = 100.0 * (slot_mem_mi - orig_mem_mi) / orig_mem_mi if orig_mem_mi else 0.0
+        mem_part = f"total mem: {orig_mem_mi / 1024:.1f}Gi -> {slot_mem_mi / 1024:.1f}Gi ({mem_pct:+.1f}%)"
+    return f"    {def_label} ({cpu_part}, {mem_part}) N/node={n}"
 
 
 def _append_cluster_contribution_section(lines: list[str], r: "FamilyResult") -> None:
@@ -53,8 +69,7 @@ def _append_cluster_contribution_section(lines: list[str], r: "FamilyResult") ->
     if bf is not None:
         lines.append("  Baseline (full cluster):")
         lines.append(
-            f"    opt_max = {bf.opt_max * 100:.1f}% "
-            f"(cpu {bf.opt_cpu * 100:.1f}%, mem {bf.opt_mem * 100:.1f}%)"
+            f"    opt_max = {bf.opt_max * 100:.1f}% (cpu {bf.opt_cpu * 100:.1f}%, mem {bf.opt_mem * 100:.1f}%)"
         )
         lines.append(f"    cal_cpu = {bf.cal_cpu * 100:.1f}%, cal_mem = {bf.cal_mem * 100:.1f}%")
         lines.append(f"    vcpu_hours ~ {bf.vcpu_hours:,.0f}")
@@ -69,16 +84,13 @@ def _append_cluster_contribution_section(lines: list[str], r: "FamilyResult") ->
             )
         else:
             lines.append(
-                f"    opt_max = {ef.opt_max * 100:.1f}% "
-                f"(cpu {ef.opt_cpu * 100:.1f}%, mem {ef.opt_mem * 100:.1f}%)"
+                f"    opt_max = {ef.opt_max * 100:.1f}% (cpu {ef.opt_cpu * 100:.1f}%, mem {ef.opt_mem * 100:.1f}%)"
             )
         lines.append(f"    cal_cpu = {ef.cal_cpu * 100:.1f}%, cal_mem = {ef.cal_mem * 100:.1f}%")
         if bf is not None and bf.vcpu_hours > 0:
             vh_delta = ef.vcpu_hours - bf.vcpu_hours
             pct = 100.0 * vh_delta / bf.vcpu_hours
-            lines.append(
-                f"    vcpu_hours ~ {ef.vcpu_hours:,.0f} [{vh_delta:+,.0f} vs baseline, {pct:+.1f}%]"
-            )
+            lines.append(f"    vcpu_hours ~ {ef.vcpu_hours:,.0f} [{vh_delta:+,.0f} vs baseline, {pct:+.1f}%]")
         else:
             lines.append(f"    vcpu_hours ~ {ef.vcpu_hours:,.0f}")
     lines.append("")
@@ -136,7 +148,20 @@ def write_family_report(
             if orig is None or entry is None:
                 lines.append(f"    {pod} (no catalog entry — check eligibility)")
                 continue
-            lines.append(_def_shape_row(pod, orig[0], orig[1], entry.slot_cpu_m, entry.slot_mem_mi, entry.n))
+            lines.append(
+                _def_shape_row(
+                    pod,
+                    orig[0],
+                    orig[1],
+                    entry.slot_cpu_m,
+                    entry.slot_mem_mi,
+                    entry.n,
+                    orig_main_vcpu=entry.orig_main_vcpu,
+                    new_main_vcpu=entry.new_main_vcpu,
+                    orig_main_memory_gib=entry.orig_main_memory_gib,
+                    new_main_memory_gib=entry.new_main_memory_gib,
+                )
+            )
     if r.best_metrics is not None:
         delta_pp = (
             (r.best_metrics.opt_max - r.baseline_metrics.opt_max) * 100.0 if r.baseline_metrics is not None else 0.0
@@ -151,8 +176,7 @@ def write_family_report(
         vcpu_hours_delta = r.best_metrics.vcpu_hours - base_vcpu_h
         pct = (100.0 * vcpu_hours_delta / base_vcpu_h) if base_vcpu_h > 0 else 0.0
         lines.append(
-            f"  vcpu_hours ~ {r.best_metrics.vcpu_hours:,.0f} "
-            f"[{vcpu_hours_delta:+,.0f} vs baseline, {pct:+.1f}%]"
+            f"  vcpu_hours ~ {r.best_metrics.vcpu_hours:,.0f} [{vcpu_hours_delta:+,.0f} vs baseline, {pct:+.1f}%]"
         )
     lines.append("")
 
@@ -176,10 +200,18 @@ RENAME_THRESHOLD_PCT_DEFAULT = 10.0
 
 
 def _classify_rename(
-    orig_cpu_m: int, orig_mem_mi: int, slot_cpu_m: int, slot_mem_mi: int, threshold_pct: float
+    orig_main_vcpu: int,
+    orig_main_memory_gib: int,
+    new_main_vcpu: int,
+    new_main_memory_gib: int,
+    threshold_pct: float,
 ) -> bool:
-    cpu_pct = abs(100.0 * (slot_cpu_m - orig_cpu_m) / orig_cpu_m) if orig_cpu_m else 0.0
-    mem_pct = abs(100.0 * (slot_mem_mi - orig_mem_mi) / orig_mem_mi) if orig_mem_mi else 0.0
+    cpu_pct = abs(100.0 * (new_main_vcpu - orig_main_vcpu) / orig_main_vcpu) if orig_main_vcpu else 0.0
+    mem_pct = (
+        abs(100.0 * (new_main_memory_gib - orig_main_memory_gib) / orig_main_memory_gib)
+        if orig_main_memory_gib
+        else 0.0
+    )
     return max(cpu_pct, mem_pct) > threshold_pct
 
 
@@ -242,16 +274,16 @@ def write_family_patch(
             base_sub, base_inst = baseline_assignment.get(pod, ("?", "?"))
             fields = [
                 f"node_fleet: {base_sub} -> {sub_id}",
-                f"vcpu: {entry.orig_cpu_m / 1000:.1f} -> {entry.slot_cpu_m / 1000:.1f}",
-                f"memory_gib: {entry.orig_mem_mi / 1024:.1f} -> {entry.slot_mem_mi / 1024:.1f}",
+                f"vcpu: {entry.orig_main_vcpu} -> {entry.new_main_vcpu}",
+                f"memory: {entry.orig_main_memory_gib}Gi -> {entry.new_main_memory_gib}Gi",
                 f"instance_type: {base_inst} -> {inst}",
             ]
             lines.append(f"#   modules/arc-runners/defs/{pod}.yaml: " + "; ".join(fields))
             if _classify_rename(
-                entry.orig_cpu_m,
-                entry.orig_mem_mi,
-                entry.slot_cpu_m,
-                entry.slot_mem_mi,
+                entry.orig_main_vcpu,
+                entry.orig_main_memory_gib,
+                entry.new_main_vcpu,
+                entry.new_main_memory_gib,
                 rename_threshold_pct,
             ):
                 rename_flags.append((pod, entry.adj_cpu_pct, entry.adj_mem_pct))
