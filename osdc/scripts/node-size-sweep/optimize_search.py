@@ -690,10 +690,11 @@ def _search_family(
     # a baseline can be perfectly-fine-in-prod yet catalog-infeasible because
     # its tight-fit adjustment on the family's largest instance overshoots
     # the D4 upper bound. The correct check is "does the original pod fit?".
-    from sim_nodes import _daemonsets_for_fleet
+    from sim_nodes import ClusterModel, _daemonsets_for_fleet
 
     scoped_ds = _daemonsets_for_fleet(daemonsets, family)
-    if not is_baseline_feasible(baseline, eligible_defs, scoped_ds):
+    real_fleets = ClusterModel().fleets
+    if not is_baseline_feasible(baseline, eligible_defs, scoped_ds, real_fleets):
         log.error(
             "family=%s: baseline pods do not physically fit on the biggest in-family "
             "instance — skipping family (check def yaml vs INSTANCE_SPECS)",

@@ -118,46 +118,66 @@ def is_baseline_feasible(
     config: Config,
     defs: list[dict],
     scoped_daemonsets: list,
+    real_fleets: dict[str, "FleetSpec"],
 ) -> bool:
-    """Baseline uses PROD-REALITY pod shapes (no D4 adjustment), so it must
-    NOT be gated against the recommendation catalog — the recommendation
-    catalog rejects (def, instance) pairs whose tight-fit adjustment falls
-    outside the D4 bounds, but the baseline runs the pod at its ORIGINAL
-    shape with no adjustment. The correct feasibility check for the baseline
-    is: does the def's original pod shape physically fit on the instance
-    (i.e. N >= 1 after subtracting kubelet + daemonset overhead)?
+    """Baseline feasibility: for each def in each sub-nodepool, does AT LEAST
+    ONE instance in the real fleet's YAML fit the def's original pod shape?
+
+    Baseline uses prod-reality routing: pods go to real nodepools (like `g5`),
+    Karpenter picks the right instance per pod from the fleet's weighted list.
+    The `spec["instance"]` field in a baseline config is "for reference only"
+    (the family's biggest instance); actual per-pod placement uses whichever
+    fleet member fits at scheduling time. Baseline uses PROD-REALITY pod
+    shapes (no D4 adjustment), so it must NOT be gated against the
+    recommendation catalog — the correct check is "does the original pod
+    physically fit on at least one fleet member?".
+
+    GPU sign parity is intentionally NOT enforced here: a GPU family's fleet
+    lists GPU-only instances (so a rare 0-GPU def in the same nodepool would
+    never satisfy `alloc_gpu == 0`), and prod already routes such pods
+    correctly via Karpenter. Physical fit is the only invariant.
     """
     from analyze_node_utilization import compute_allocatable
 
     from optimize_config import def_totals
 
     defs_by_name = {d["name"]: d for d in defs}
-    for spec in config.values():
-        inst = spec["instance"]
-        alloc = compute_allocatable(inst, scoped_daemonsets)
-        if alloc is None:
-            return False
-        alloc_cpu_m = alloc["allocatable_cpu_m"]
-        alloc_mem_mi = alloc["allocatable_mem_mi"]
-        alloc_gpu = alloc["allocatable_gpu"]
+    for pool_name, spec in config.items():
+        fleet = real_fleets.get(pool_name)
+        if fleet is None:
+            # Sub-nodepool name isn't in the loaded fleet dict — fall back to
+            # the recorded reference instance so the check still runs against
+            # something meaningful rather than silently passing.
+            fleet_instances: tuple[str, ...] | list[str] = [spec["instance"]]
+        else:
+            fleet_instances = fleet.instances
+
         for pod in spec["pods"]:
             defrow = defs_by_name.get(pod)
             if defrow is None:
                 return False
             orig_cpu_m, orig_mem_mi, orig_gpu, _, _ = def_totals(defrow)
-            if orig_cpu_m > alloc_cpu_m or orig_mem_mi > alloc_mem_mi:
-                return False
-            if orig_gpu > 0 and (alloc_gpu == 0 or orig_gpu > alloc_gpu):
-                return False
-            if orig_gpu == 0 and alloc_gpu > 0:
+
+            fits_any = False
+            for inst in fleet_instances:
+                alloc = compute_allocatable(inst, scoped_daemonsets)
+                if alloc is None:
+                    continue
+                if (
+                    orig_cpu_m <= alloc["allocatable_cpu_m"]
+                    and orig_mem_mi <= alloc["allocatable_mem_mi"]
+                    and orig_gpu <= alloc["allocatable_gpu"]
+                ):
+                    fits_any = True
+                    break
+            if not fits_any:
                 return False
     return True
 
 
 def baseline_config(family: str, defs: list[dict], catalog_entries: list["EligibleEntry"]) -> Config:
     """Current-prod baseline: pods routed to the REAL nodepool name (from each
-    def's `nodepool` field, which is `derive_fleet_name(instance_type, node_fleet)`)
-    with the family's largest in-family instance recorded for reference.
+    def's `nodepool` field, which is `derive_fleet_name(instance_type, node_fleet)`).
 
     Real nodepool routing is what prod actually does — a single nodepool per
     family with weighted Karpenter instance selection across sizes. Using the
@@ -166,14 +186,18 @@ def baseline_config(family: str, defs: list[dict], catalog_entries: list["Eligib
     `run_sim_for_config` sees this baseline config it drops `fleets_override`
     so `ClusterModel` loads the real weighted fleet from YAML.
 
-    Falls back to a def's own instance_type when the largest isn't eligible for
-    that def (should not happen for real prod configs — assert would fire
-    elsewhere), keeping baseline uniquely defined.
+    The `spec["instance"]` field on the returned config is FOR REFERENCE ONLY:
+    it records the largest in-family prod instance so callers displaying the
+    baseline have something meaningful to show. Per-pod feasibility and
+    placement use the real fleet's full weighted instance list (see
+    `is_baseline_feasible` and `ClusterModel.pick_instance`); this field is
+    NOT authoritative for scheduling decisions.
     """
     if not defs:
         raise ValueError(f"family {family}: no defs, cannot build baseline")
 
     from fleet_naming import derive_fleet_name
+    from instance_specs import INSTANCE_SPECS
 
     # Group defs by their real prod nodepool. A single family typically routes
     # every def to the same nodepool (the family name), but defs with an
@@ -188,10 +212,17 @@ def baseline_config(family: str, defs: list[dict], catalog_entries: list["Eligib
     if len(prod_instances) == 1:
         inst = next(iter(prod_instances))
     else:
-        catalog_insts = instances_in_catalog(catalog_entries)
-        if not catalog_insts:
-            raise ValueError(f"family {family}: catalog empty, cannot build baseline")
-        inst = catalog_insts[-1]
+        # Pick the largest instance across ALL defs' prod choices — deterministic
+        # and semantically meaningful ("biggest current-prod instance"). Not used
+        # by feasibility (which iterates the real fleet); recorded for display.
+        known = [i for i in prod_instances if i in INSTANCE_SPECS]
+        if not known:
+            catalog_insts = instances_in_catalog(catalog_entries)
+            if not catalog_insts:
+                raise ValueError(f"family {family}: catalog empty, cannot build baseline")
+            inst = catalog_insts[-1]
+        else:
+            inst = max(known, key=lambda i: INSTANCE_SPECS[i]["vcpu"])
 
     cfg: Config = {}
     for pool_name, pool_defs in by_pool.items():
