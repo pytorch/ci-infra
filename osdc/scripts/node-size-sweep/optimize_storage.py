@@ -11,7 +11,10 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -23,7 +26,7 @@ class SimMetrics:
     cal_mem: float
     # vCPU-hours = allocatable-vcpu-millicores summed across buckets / 1000 / 12
     # (each bucket is 5min = 1/12 hour). Instance-size-invariant WITHIN a family
-    # and proportional to $/hr — 1h × 192 vCPU = 12h × 16 vCPU in raw compute.
+    # and proportional to $/hr — 1h x 192 vCPU = 12h x 16 vCPU in raw compute.
     vcpu_hours: float
     empty: bool = False
     elapsed_s: float = 0.0
@@ -45,6 +48,8 @@ class ClusterValidationResult:
     days: int | None
     elapsed_sec: float
     per_family_contrib: dict[str, tuple[SimMetrics | None, SimMetrics | None]]
+    baseline_cost: dict | None = None
+    recommendation_cost: dict | None = None
 
 
 class SimCache:

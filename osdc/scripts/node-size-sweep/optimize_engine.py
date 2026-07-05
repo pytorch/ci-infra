@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from optimize_catalog import EligibleEntry
     from sim_nodes import FleetSpec, Job
 
+import optimize_cost
 from optimize_storage import SimCache, SimMetrics
 
 # Ranking is `max(opt_cpu, opt_mem)` per family (opt uses workload-only numerator,
@@ -887,24 +888,23 @@ def run_cluster_sim(
     )
 
 
-def run_sim_for_config(
+def _config_sim_out(
     family: str,
     config: Config,
-    all_jobs: list["Job"],
-    catalog: dict[tuple[str, str], "EligibleEntry"],
+    all_jobs: list[Job],
+    catalog: dict[tuple[str, str], EligibleEntry],
     family_def_names: set[str],
-    runner_fleet: "FleetSpec",
+    runner_fleet: FleetSpec,
     sim_flags: dict,
-    daemonsets: list | None = None,
     baseline_defs: list[dict] | None = None,
-) -> SimMetrics:
+) -> dict | None:
     import simulate as sim_mod
     from sim_nodes import ClusterModel
 
     jobs = rebuild_jobs_for_config(family, config, all_jobs, catalog, family_def_names, baseline_defs=baseline_defs)
     # simulate() blows up on min(...) over empty arrivals; short-circuit here.
     if not jobs:
-        return SimMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, empty=True)
+        return None
     # Baseline routes to REAL prod nodepool names (see `baseline_config`), so
     # the sim must load the real weighted YAML fleet — passing a
     # single-instance override would silently constrain Karpenter's picker to
@@ -916,8 +916,7 @@ def run_sim_for_config(
     else:
         fleets_override = build_fleets_override(config, runner_fleet)
         model = ClusterModel(fleets_override=fleets_override)
-    t0 = time.perf_counter()
-    sim_out = sim_mod.simulate(
+    return sim_mod.simulate(
         jobs,
         model=model,
         seed=sim_flags["seed"],
@@ -931,7 +930,33 @@ def run_sim_for_config(
         phantom_pods_enabled=sim_flags["phantom_pods_enabled"],
         progress=False,
     )
+
+
+def run_sim_for_config(
+    family: str,
+    config: Config,
+    all_jobs: list["Job"],
+    catalog: dict[tuple[str, str], "EligibleEntry"],
+    family_def_names: set[str],
+    runner_fleet: "FleetSpec",
+    sim_flags: dict,
+    daemonsets: list | None = None,
+    baseline_defs: list[dict] | None = None,
+) -> SimMetrics:
+    t0 = time.perf_counter()
+    sim_out = _config_sim_out(
+        family,
+        config,
+        all_jobs,
+        catalog,
+        family_def_names,
+        runner_fleet,
+        sim_flags,
+        baseline_defs=baseline_defs,
+    )
     elapsed = time.perf_counter() - t0
+    if sim_out is None:
+        return SimMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, empty=True)
     m = _extract_family_metrics(sim_out, family, config, daemonsets=daemonsets)
     return SimMetrics(
         opt_max=m.opt_max,
@@ -942,6 +967,34 @@ def run_sim_for_config(
         vcpu_hours=m.vcpu_hours,
         elapsed_s=elapsed,
     )
+
+
+def cost_for_config(
+    family: str,
+    config: Config,
+    all_jobs: list[Job],
+    catalog: dict[tuple[str, str], EligibleEntry],
+    family_def_names: set[str],
+    runner_fleet: FleetSpec,
+    sim_flags: dict,
+    daemonsets: list | None = None,
+    baseline_defs: list[dict] | None = None,
+    region: str = "blended",
+    prices: dict | None = None,
+) -> dict | None:
+    sim_out = _config_sim_out(
+        family,
+        config,
+        all_jobs,
+        catalog,
+        family_def_names,
+        runner_fleet,
+        sim_flags,
+        baseline_defs=baseline_defs,
+    )
+    if sim_out is None:
+        return None
+    return optimize_cost.node_hours_and_cost(sim_out, region=region, prices=prices)
 
 
 def cached_sim(
@@ -1017,3 +1070,5 @@ class FamilyResult:
     # the family's sub_nodepool_ids from best_config).
     cluster_baseline_metrics: SimMetrics | None = None
     cluster_rec_metrics: SimMetrics | None = None
+    baseline_cost: dict | None = None
+    rec_cost: dict | None = None

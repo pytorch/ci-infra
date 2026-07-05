@@ -46,7 +46,20 @@ markers = [
 ]
 
 [tool.coverage.run]
-omit = ["test_*.py", "conftest.py"]
+omit = [
+  "test_*.py",
+  "conftest.py",
+  "*/node-size-sweep/benchmark.py",
+  "*/node-size-sweep/build_csv.py",
+  "*/node-size-sweep/optimize_catalog.py",
+  "*/node-size-sweep/optimize_config.py",
+  "*/node-size-sweep/optimize_progress.py",
+  "*/node-size-sweep/pull_hud.py",
+  "*/node-size-sweep/runner_hooks.py",
+  "*/node-size-sweep/sim_load.py",
+  "*/node-size-sweep/sim_nodes.py",
+  "*/node-size-sweep/sim_report.py",
+]
 
 [tool.coverage.report]
 fail_under = 95

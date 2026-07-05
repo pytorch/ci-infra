@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+import optimize_cost
+
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from optimize_catalog import EligibleEntry
     from optimize_engine import Config, FamilyResult
-    from optimize_storage import ClusterValidationResult, SimMetrics
+    from optimize_storage import ClusterValidationResult
 
 
-def _config_pods_by_sub(config: "Config") -> list[tuple[str, str, list[str]]]:
+def _config_pods_by_sub(config: Config) -> list[tuple[str, str, list[str]]]:
     """Return sorted [(sub_id, instance, pods)] rows for stable output."""
     rows: list[tuple[str, str, list[str]]] = []
     for sub_id in sorted(config):
@@ -53,7 +56,7 @@ def _def_shape_row(
     return f"    {def_label} ({cpu_part}, {mem_part}) N/node={n}"
 
 
-def _append_cluster_contribution_section(lines: list[str], r: "FamilyResult") -> None:
+def _append_cluster_contribution_section(lines: list[str], r: FamilyResult) -> None:
     """Emit the family's SHARE of the full-cluster before/after sim.
 
     Extracted from the same two cluster sims that produce the global
@@ -98,9 +101,9 @@ def _append_cluster_contribution_section(lines: list[str], r: "FamilyResult") ->
 
 def write_family_report(
     reports_dir: Path,
-    r: "FamilyResult",
+    r: FamilyResult,
     defs: list[dict],
-    catalog_entries: list["EligibleEntry"],
+    catalog_entries: list[EligibleEntry],
 ) -> None:
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / f"{r.family}.md"
@@ -130,7 +133,8 @@ def write_family_report(
         lines.append(
             f"  cal_cpu = {r.baseline_metrics.cal_cpu * 100:.1f}%, cal_mem = {r.baseline_metrics.cal_mem * 100:.1f}%"
         )
-        lines.append(f"  vcpu_hours ~ {r.baseline_metrics.vcpu_hours:,.0f}")
+        lines.append(f"  vcpu_hours ~ {r.baseline_metrics.vcpu_hours:,.0f} (compute proxy, not cost)")
+        lines.extend(optimize_cost.family_baseline_cost_lines(r.baseline_cost))
     lines.append("")
 
     if r.best_config is None or r.best_metrics is None:
@@ -176,8 +180,10 @@ def write_family_report(
         vcpu_hours_delta = r.best_metrics.vcpu_hours - base_vcpu_h
         pct = (100.0 * vcpu_hours_delta / base_vcpu_h) if base_vcpu_h > 0 else 0.0
         lines.append(
-            f"  vcpu_hours ~ {r.best_metrics.vcpu_hours:,.0f} [{vcpu_hours_delta:+,.0f} vs baseline, {pct:+.1f}%]"
+            f"  vcpu_hours ~ {r.best_metrics.vcpu_hours:,.0f} "
+            f"[{vcpu_hours_delta:+,.0f} vs baseline, {pct:+.1f}%] (compute proxy, not cost)"
         )
+        lines.extend(optimize_cost.family_rec_cost_lines(r.baseline_cost, r.rec_cost))
     lines.append("")
 
     _append_cluster_contribution_section(lines, r)
@@ -217,9 +223,9 @@ def _classify_rename(
 
 def write_family_patch(
     reports_dir: Path,
-    r: "FamilyResult",
+    r: FamilyResult,
     defs: list[dict],
-    catalog_entries: list["EligibleEntry"],
+    catalog_entries: list[EligibleEntry],
     rename_threshold_pct: float = RENAME_THRESHOLD_PCT_DEFAULT,
 ) -> None:
     """Emit a stub patch describing the recommended changes.
@@ -315,7 +321,7 @@ def _fmt_vcpu_row(label: str, base: float, rec: float) -> str:
 
 def _append_cluster_validation_table(
     lines: list[str],
-    cluster_validation: "ClusterValidationResult",
+    cluster_validation: ClusterValidationResult,
 ) -> None:
     days_label = f"{cluster_validation.days}d" if cluster_validation.days else "full dataset"
     b = cluster_validation.baseline_metrics
@@ -329,14 +335,17 @@ def _append_cluster_validation_table(
     lines.append(_fmt_pp_row("mem util              ", b.opt_mem, r.opt_mem))
     lines.append(_fmt_pp_row("cal_cpu (prod PromQL) ", b.cal_cpu, r.cal_cpu))
     lines.append(_fmt_pp_row("cal_mem (prod PromQL) ", b.cal_mem, r.cal_mem))
-    lines.append(_fmt_vcpu_row("vcpu_hours            ", b.vcpu_hours, r.vcpu_hours))
+    lines.append(_fmt_vcpu_row("vcpu_hours (compute proxy)", b.vcpu_hours, r.vcpu_hours))
     lines.append("")
+    lines.extend(
+        optimize_cost.cluster_cost_lines(cluster_validation.baseline_cost, cluster_validation.recommendation_cost)
+    )
 
 
 def write_global_report(
     reports_dir: Path,
-    results: list["FamilyResult"],
-    cluster_validation: "ClusterValidationResult | None" = None,
+    results: list[FamilyResult],
+    cluster_validation: ClusterValidationResult | None = None,
 ) -> None:
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / "global.md"

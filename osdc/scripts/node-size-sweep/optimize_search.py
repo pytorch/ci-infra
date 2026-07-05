@@ -43,8 +43,11 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
 from daemonset_overhead import discover_daemonsets  # noqa: E402
 
 import optimize_catalog  # noqa: E402
+import optimize_cost  # noqa: E402
 import optimize_engine  # noqa: E402
 import optimize_report  # noqa: E402
+import optimize_report_runner  # noqa: E402
+import optimize_runner_fleet  # noqa: E402
 import sim_load  # noqa: E402
 from optimize_config import (  # noqa: E402
     IN_SCOPE_FAMILIES,
@@ -943,6 +946,36 @@ def _search_family(
         elapsed,
     )
     prog.end_family()
+    baseline_cost = None
+    rec_cost = None
+    try:
+        baseline_cost = optimize_engine.cost_for_config(
+            family,
+            baseline,
+            all_jobs,
+            catalog,
+            family_def_names,
+            runner_fleet,
+            sim_flags,
+            daemonsets=daemonsets,
+            baseline_defs=eligible_defs,
+        )
+        final_cfg = best_cfg if best_cfg is not None else baseline
+        if final_cfg == baseline:
+            rec_cost = baseline_cost
+        else:
+            rec_cost = optimize_engine.cost_for_config(
+                family,
+                final_cfg,
+                all_jobs,
+                catalog,
+                family_def_names,
+                runner_fleet,
+                sim_flags,
+                daemonsets=daemonsets,
+            )
+    except Exception as e:
+        log.warning("family=%s: cost computation failed: %s", family, e, exc_info=True)
     result = FamilyResult(
         family=family,
         baseline_config=baseline,
@@ -955,6 +988,8 @@ def _search_family(
         restarts_run=restarts_run,
         cache_hit_rate=cache_hit_rate,
         mode=mode,
+        baseline_cost=baseline_cost,
+        rec_cost=rec_cost,
     )
     persisted_best = None
     if result.best_config is not None and result.best_metrics is not None:
@@ -1033,7 +1068,7 @@ def _family_worker(kwargs: dict) -> FamilyResult:
 
 def _cluster_sim_worker(
     kwargs: dict,
-) -> tuple[str, "SimMetrics", dict[str, "SimMetrics | None"]]:
+) -> tuple[str, "SimMetrics", dict[str, "SimMetrics | None"], dict]:
     """Run one full-cluster sim (baseline or recommendation) and extract
     cluster-wide + per-family contribution metrics in-process.
 
@@ -1066,15 +1101,17 @@ def _cluster_sim_worker(
             contribs[family] = None
             continue
         contribs[family] = optimize_engine.extract_family_contribution_metrics(sim_out, pools)
+    cost = optimize_cost.node_hours_and_cost(sim_out, region="blended")
     elapsed = time.perf_counter() - t0
     log.info(
-        "cluster sim %s: done opt_max=%.4f vcpu_hours=%.0f elapsed=%.1fs",
+        "cluster sim %s: done opt_max=%.4f vcpu_hours=%.0f node_hours=%.0f elapsed=%.1fs",
         which,
         cluster_m.opt_max,
         cluster_m.vcpu_hours,
+        cost["node_hours"],
         elapsed,
     )
-    return which, cluster_m, contribs
+    return which, cluster_m, contribs, cost
 
 
 # ---------- signal handling ----------
@@ -1209,12 +1246,12 @@ def _run_cluster_validation_phase(
         "cluster validation: dispatching 2 sims (baseline + recommendation) across 2 workers",
     )
 
-    by_which: dict[str, tuple[SimMetrics, dict[str, SimMetrics | None]]] = {}
+    by_which: dict[str, tuple[SimMetrics, dict[str, SimMetrics | None], dict]] = {}
     t0 = time.perf_counter()
     ctx = mp.get_context("spawn")
     with ctx.Pool(processes=2, maxtasksperchild=1) as pool:
-        for which, cluster_m, contribs in pool.imap_unordered(_cluster_sim_worker, tasks):
-            by_which[which] = (cluster_m, contribs)
+        for which, cluster_m, contribs, cost in pool.imap_unordered(_cluster_sim_worker, tasks):
+            by_which[which] = (cluster_m, contribs, cost)
     elapsed = time.perf_counter() - t0
 
     if "baseline" not in by_which or "recommendation" not in by_which:
@@ -1224,8 +1261,8 @@ def _run_cluster_validation_phase(
         )
         return None
 
-    base_m, base_contribs = by_which["baseline"]
-    rec_m, rec_contribs = by_which["recommendation"]
+    base_m, base_contribs, base_cost = by_which["baseline"]
+    rec_m, rec_contribs, rec_cost = by_which["recommendation"]
 
     for r in results:
         r.cluster_baseline_metrics = base_contribs.get(r.family)
@@ -1253,6 +1290,8 @@ def _run_cluster_validation_phase(
         days=validation_days,
         elapsed_sec=elapsed,
         per_family_contrib=per_family_contrib,
+        baseline_cost=base_cost,
+        recommendation_cost=rec_cost,
     )
 
 
@@ -1308,6 +1347,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="skip the cluster-wide validation phase (two full-dataset sims: baseline "
         "and combined recommendation) — set to speed up iterative dev runs",
+    )
+    ap.add_argument(
+        "--skip-runner-fleet",
+        action="store_true",
+        help="skip Phase 2.5: the closed-form cheapest-instance search for the c7i-runner "
+        "fleet (fixed 750m/1Gi runner pods)",
+    )
+    ap.add_argument(
+        "--runner-fleet-arch",
+        action="append",
+        choices=["amd64", "arm64"],
+        default=None,
+        help="arch(es) to consider for the runner-fleet host search (repeatable; default: amd64 + arm64)",
     )
     args = ap.parse_args(argv)
 
@@ -1521,6 +1573,27 @@ def main(argv: list[str] | None = None) -> int:
     else:
         global_log.info("--skip-validation set — skipping cluster-wide validation phase")
 
+    runner_fleet_result: optimize_runner_fleet.RunnerFleetResult | None = None
+    if not args.skip_runner_fleet:
+        runner_fleet_arch = tuple(args.runner_fleet_arch) if args.runner_fleet_arch else ("amd64", "arm64")
+        global_log.info("Phase 2.5: runner-fleet host search (arch=%s)", runner_fleet_arch)
+        runner_fleet_result = optimize_runner_fleet.optimize_runner_fleet(
+            all_jobs,
+            runner_fleet_arch,
+            runner_pool=args.runner_pool,
+        )
+        if runner_fleet_result.best_amd64 is not None:
+            global_log.info(
+                "Phase 2.5: best amd64=%s (%s vs baseline); best arm64=%s",
+                runner_fleet_result.best_amd64.instance_type,
+                f"{(runner_fleet_result.best_amd64.cost_ratio - 1.0) * 100:+.1f}%"
+                if runner_fleet_result.best_amd64.cost_ratio is not None
+                else "n/a",
+                runner_fleet_result.best_arm64.instance_type if runner_fleet_result.best_arm64 else "none",
+            )
+    else:
+        global_log.info("--skip-runner-fleet set — skipping Phase 2.5 runner-fleet host search")
+
     for r in results:
         defs = defs_by_family[r.family]
         entries = optimize_catalog.build_eligibility_catalog(families=[r.family], daemonsets=daemonsets).get(
@@ -1535,6 +1608,8 @@ def main(argv: list[str] | None = None) -> int:
             rename_threshold_pct=args.rename_threshold_pct,
         )
     optimize_report.write_global_report(reports_dir, results, cluster_validation=cluster_val)
+    if runner_fleet_result is not None:
+        optimize_report_runner.write_runner_fleet_report(reports_dir, runner_fleet_result)
 
     global_log.info("all done. Reports in %s", reports_dir)
     return 0

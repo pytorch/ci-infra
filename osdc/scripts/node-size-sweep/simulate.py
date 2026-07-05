@@ -54,7 +54,7 @@ from __future__ import annotations
 import argparse
 import random
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -374,6 +374,7 @@ def simulate(
             alloc_cpu_m_raw = sum(n.cpu_allocatable_m for n in ns)
             alloc_mem_mi_raw = sum(n.mem_allocatable_mi for n in ns)
             alloc_gpu_raw = sum(n.gpu_allocatable for n in ns)
+            node_counts_by_type = Counter(n.instance_type for n in ns)
             per_pool[name] = {
                 "cpu_used_m": cpu_used,
                 "cpu_alloc_m": cpu_alloc,
@@ -390,6 +391,7 @@ def simulate(
                 "alloc_cpu_m_raw": alloc_cpu_m_raw,
                 "alloc_mem_mi_raw": alloc_mem_mi_raw,
                 "alloc_gpu_raw": alloc_gpu_raw,
+                "node_counts_by_type": dict(node_counts_by_type),
             }
             if len(ns) > pool_max_nodes[name]:
                 pool_max_nodes[name] = len(ns)
