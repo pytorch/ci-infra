@@ -3,12 +3,17 @@
 # in modules/arc-runners/templates/runner.yaml.tpl. Reads are lazy and cached on
 # NVMe (LRU). Writes go via the GitHub-OIDC refresh path, not this mount.
 #
+# deploy.sh renders this twice: a standard DaemonSet and a "-largegpu" one (via
+# __GPU_OP__) scoped to H100/B200, which gets a larger rclone memory limit. The
+# instance-gpu-name affinity keeps them mutually exclusive (one mount per node).
+#
 # Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
-# __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__
+# __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__ __RCLONE_MEMORY_LIMIT__
+# __DS_NAME__ __GPU_OP__ __LARGE_GPU_NAMES__
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: hf-cache-mount
+  name: __DS_NAME__
   namespace: __NAMESPACE__
   labels:
     osdc.io/module: hf-cache
@@ -17,7 +22,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: hf-cache-mount
+      app: __DS_NAME__
 
   updateStrategy:
     type: RollingUpdate
@@ -27,7 +32,7 @@ spec:
   template:
     metadata:
       labels:
-        app: hf-cache-mount
+        app: __DS_NAME__
         osdc.io/module: hf-cache
     spec:
       serviceAccountName: hf-cache-mount
@@ -38,6 +43,18 @@ spec:
 
       nodeSelector:
         workload-type: github-runner
+
+      # instance-gpu-name is absent on non-GPU nodes; NotIn matches those too, so the
+      # standard DaemonSet still covers CPU + small-GPU nodes while -largegpu takes the
+      # large-GPU names from hf_cache.large_gpu_names.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: karpenter.k8s.aws/instance-gpu-name
+                    operator: __GPU_OP__
+                    values: __LARGE_GPU_NAMES__
 
       # Schedule before the node-init.osdc.io/* taints clear, so the mount precedes
       # runner pods. operator:Exists avoids a deadlock from missing one (cf. cache-enforcer).
@@ -140,15 +157,16 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 3
-          # Provisional — load-test in prod and tune. An OOM-kill drops the mount
-          # node-wide, so the memory limit may need raising or removing.
+          # An rclone OOM drops the mount node-wide, so -largegpu (H100/B200) renders a
+          # raised limit; multi-GB model pulls under --vfs-cache-mode full blow past a
+          # tight cap. Configurable via hf_cache.rclone_memory_limit{,_largegpu}.
           resources:
             requests:
               cpu: 100m
               memory: 256Mi
             limits:
               cpu: "1"
-              memory: 1Gi
+              memory: __RCLONE_MEMORY_LIMIT__
           volumeMounts:
             - name: hf-cache
               mountPath: /mnt/hf_cache
