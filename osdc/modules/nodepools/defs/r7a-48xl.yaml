@@ -1,12 +1,13 @@
-# Karpenter NodePool fleet: r7a
+# Karpenter NodePool fleet: r7a-48xl
 # AMD EPYC (Genoa) — memory-optimized, AVX-512, ~8 GiB/core ratio
+# Sub-nodepool for ideal r7a.48xlarge; largest size, no larger fallback.
 fleet:
-  name: r7a
+  name: r7a-48xl
   arch: amd64
   gpu: false
   exclude_regions:
     - us-west-1
-  release:
+  instances:
     - type: r7a.48xlarge
-      weight: 100
+      weight: 100  # ideal
       node_disk_size: 4800

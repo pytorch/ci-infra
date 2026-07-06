@@ -1,0 +1,11 @@
+# Karpenter NodePool fleet: m7g-16xl
+# AWS Graviton3 — balanced, ARM64, ~4 GiB/core ratio
+# Sub-nodepool for m7g.16xlarge (largest non-metal m7g size; no larger fallback rung).
+fleet:
+  name: m7g-16xl
+  arch: arm64
+  gpu: false
+  instances:
+    - type: m7g.16xlarge
+      weight: 100  # ideal
+      node_disk_size: 1000

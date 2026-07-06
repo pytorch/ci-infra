@@ -1,12 +1,13 @@
 # ARC runner definition: l-x86iavx512-37-68
-# Instance type: c7a.48xlarge (pool: x86-cpu)
-# NOTE: c7a.48xlarge is NOT available in us-west-1 (meta-staging-aws-uw1). Will not schedule there.
+# Instance type: c7a.12xlarge (pool: c7a-12xl)
+# NOTE: c7a.12xlarge is NOT available in us-west-1 (meta-staging-aws-uw1). Will not schedule there.
 runner:
   name: l-x86iavx512-37-68
-  instance_type: c7a.48xlarge
+  instance_type: c7a.12xlarge
+  node_fleet: c7a-12xl
   disk_size: 200
-  vcpu: 37
-  memory: 68Gi
+  vcpu: 47
+  memory: 84Gi
   gpu: 0
   proactive_capacity: 0
   hud_failure_base_capacity: 30

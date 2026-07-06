@@ -1,0 +1,11 @@
+# Karpenter NodePool fleet: m7i-48xl
+# Intel Sapphire Rapids — balanced, AMX/AVX-512, ~4 GiB/core ratio
+# Sub-nodepool for ideal m7i.48xlarge; largest size, no larger fallback.
+fleet:
+  name: m7i-48xl
+  arch: amd64
+  gpu: false
+  instances:
+    - type: m7i.48xlarge
+      weight: 100  # ideal
+      node_disk_size: 4800
