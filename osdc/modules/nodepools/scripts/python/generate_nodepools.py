@@ -517,7 +517,26 @@ def _process_nodepool(nodepool_def, def_file, defs_dir, output_dir, module_name,
     return 1
 
 
-def _fleet_nodepool_name(fleet_name, instance_type, name_suffix=""):
+def _fleet_size_collisions(fleet_data):
+    """Return the ``(size_suffix, name_suffix)`` keys shared by >1 instance family.
+
+    Two instances in one fleet collide when they would generate the same NodePool
+    name — identical fleet name, size suffix, and release/non-release section — but
+    come from different instance families (e.g. ``m7g.12xlarge`` and
+    ``m8g.12xlarge`` in the ``c7i-runner`` fleet). Their names must be
+    family-qualified, or the second silently overwrites the first (same
+    metadata.name and same output filename).
+    """
+    families_by_key = {}
+    for section, name_suffix in (("instances", ""), ("release", "-release")):
+        for inst in fleet_data.get(section, []):
+            instance_type = inst["type"]
+            key = (instance_type.split(".", 1)[1], name_suffix)
+            families_by_key.setdefault(key, set()).add(instance_type.split(".")[0])
+    return {key for key, families in families_by_key.items() if len(families) > 1}
+
+
+def _fleet_nodepool_name(fleet_name, instance_type, name_suffix="", *, qualify_family=False):
     """Compute the NodePool name for a fleet instance entry.
 
     Default: ``<instance>-<size>`` (e.g. ``c7i.48xlarge`` → ``c7i-48xlarge``).
@@ -525,13 +544,17 @@ def _fleet_nodepool_name(fleet_name, instance_type, name_suffix=""):
     ``c7i-runner`` fleet built on ``c7i.*`` instances), the fleet name is used
     in place of the instance family so multiple fleets sharing the same
     instance types still produce unique NodePool names.
+
+    ``qualify_family`` additionally inserts the instance family
+    (``<fleet>-<family>-<size>``); set it only when another family in the same
+    fleet shares this size suffix, so both keep distinct names.
     """
     instance_family = instance_type.split(".")[0]
     if fleet_name == instance_family:
         name = instance_type.replace(".", "-")
     else:
         instance_size = instance_type.split(".", 1)[1].replace(".", "-")
-        name = f"{fleet_name}-{instance_size}"
+        name = f"{fleet_name}-{instance_family}-{instance_size}" if qualify_family else f"{fleet_name}-{instance_size}"
     if name_suffix:
         name = f"{name}{name_suffix}"
     return name
@@ -540,7 +563,9 @@ def _fleet_nodepool_name(fleet_name, instance_type, name_suffix=""):
 def _build_fleet_nodepool_def(fleet_data, inst, name_suffix="", extra_labels=None):
     """Build a nodepool_def dict from a fleet instance entry."""
     instance_type = inst["type"]
-    name = _fleet_nodepool_name(fleet_data["name"], instance_type, name_suffix)
+    collisions = _fleet_size_collisions(fleet_data)
+    qualify_family = (instance_type.split(".", 1)[1], name_suffix) in collisions
+    name = _fleet_nodepool_name(fleet_data["name"], instance_type, name_suffix, qualify_family=qualify_family)
 
     nodepool_def = {
         "name": name,

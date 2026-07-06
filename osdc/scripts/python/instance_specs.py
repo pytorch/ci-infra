@@ -72,6 +72,7 @@ INSTANCE_SPECS: dict[str, dict] = {
     "r7g.16xlarge": {"vcpu": 64, "memory_gib": 512, "memory_mi": 485081, "gpu": 0, "arch": "arm64"},
     "t4g.2xlarge": {"vcpu": 8, "memory_gib": 32, "memory_mi": 30310, "gpu": 0, "arch": "arm64"},
     "m7g.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "arm64"},
+    "m7g.12xlarge": {"vcpu": 48, "memory_gib": 192, "memory_mi": 181862, "gpu": 0, "arch": "arm64"},
     "m7g.metal": {"vcpu": 64, "memory_gib": 256, "memory_mi": 242540, "gpu": 0, "arch": "arm64"},
     # GPU instances — 1-GPU
     "g4dn.8xlarge": {"vcpu": 32, "memory_gib": 128, "memory_mi": 121241, "gpu": 1, "arch": "amd64"},
@@ -162,6 +163,7 @@ ENI_MAX_PODS: dict[str, int] = {
     "r7g.16xlarge": 737,
     "t4g.2xlarge": 58,
     "m7g.8xlarge": 234,
+    "m7g.12xlarge": 234,
     "m7g.metal": 737,
     "g4dn.8xlarge": 58,
     # Fleet fallback sizes — g4dn

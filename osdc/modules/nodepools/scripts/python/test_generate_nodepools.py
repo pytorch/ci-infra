@@ -11,6 +11,7 @@ from generate_nodepools import (
     _build_fleet_nodepool_def,
     _detect_arch,
     _fleet_nodepool_name,
+    _fleet_size_collisions,
     _get_node_disk_size,
     _read_user_data_script,
     _user_data_script_mime_part,
@@ -728,6 +729,71 @@ class TestFleetNodepoolName:
             _fleet_nodepool_name("c7i-runner", "c7i.48xlarge", name_suffix="-release") == "c7i-runner-48xlarge-release"
         )
 
+    def test_qualify_family_inserts_instance_family(self):
+        """When a size collides across families, the family is inserted for uniqueness."""
+        assert _fleet_nodepool_name("c7i-runner", "m7g.12xlarge", qualify_family=True) == "c7i-runner-m7g-12xlarge"
+        assert _fleet_nodepool_name("c7i-runner", "m8g.12xlarge", qualify_family=True) == "c7i-runner-m8g-12xlarge"
+
+    def test_qualify_family_with_release_suffix(self):
+        assert (
+            _fleet_nodepool_name("c7i-runner", "m7g.12xlarge", name_suffix="-release", qualify_family=True)
+            == "c7i-runner-m7g-12xlarge-release"
+        )
+
+    def test_qualify_family_ignored_when_family_matches_fleet(self):
+        """qualify_family never applies to the fleet-name==family branch."""
+        assert _fleet_nodepool_name("m7g", "m7g.12xlarge", qualify_family=True) == "m7g-12xlarge"
+
+
+class TestFleetSizeCollisions:
+    """Tests for _fleet_size_collisions — cross-family same-size detection."""
+
+    def test_no_collision_single_family(self):
+        fleet = {
+            "name": "c7i-large",
+            "instances": [
+                {"type": "c7i.48xlarge", "weight": 100, "node_disk_size": 100},
+                {"type": "c7i.24xlarge", "weight": 80, "node_disk_size": 100},
+            ],
+        }
+        assert _fleet_size_collisions(fleet) == set()
+
+    def test_collision_across_families_same_size(self):
+        fleet = {
+            "name": "c7i-runner",
+            "instances": [
+                {"type": "m7g.12xlarge", "weight": 100, "node_disk_size": 100},
+                {"type": "m8g.12xlarge", "weight": 60, "node_disk_size": 100},
+                {"type": "m7g.8xlarge", "weight": 80, "node_disk_size": 100},
+                {"type": "m8g.8xlarge", "weight": 40, "node_disk_size": 100},
+            ],
+        }
+        assert _fleet_size_collisions(fleet) == {("12xlarge", ""), ("8xlarge", "")}
+
+    def test_same_family_same_size_not_a_collision(self):
+        """Same family + same size can't both exist, but must not be flagged."""
+        fleet = {
+            "name": "m7g",
+            "instances": [
+                {"type": "m7g.12xlarge", "weight": 100, "node_disk_size": 100},
+            ],
+        }
+        assert _fleet_size_collisions(fleet) == set()
+
+    def test_release_section_collision_is_scoped_separately(self):
+        """A size shared across families only in the release section collides only there."""
+        fleet = {
+            "name": "mixed",
+            "instances": [
+                {"type": "m7g.12xlarge", "weight": 100, "node_disk_size": 100},
+            ],
+            "release": [
+                {"type": "m7g.12xlarge", "weight": 100, "node_disk_size": 100},
+                {"type": "m8g.12xlarge", "weight": 60, "node_disk_size": 100},
+            ],
+        }
+        assert _fleet_size_collisions(fleet) == {("12xlarge", "-release")}
+
 
 class TestBuildFleetNodepoolDef:
     """Tests for _build_fleet_nodepool_def helper."""
@@ -1093,6 +1159,86 @@ class TestMain:
         assert result == 0
         generated = sorted(f.name for f in output_dir.glob("*.yaml"))
         assert generated == ["legacy-pool.yaml", "r7a-48xlarge.yaml"]
+
+    def test_fleet_same_size_across_families_gets_distinct_names(self, tmp_path):
+        """A c7i-runner fleet with m7g/m8g at the same size must not collide.
+
+        Without family qualification both m7g.12xlarge and m8g.12xlarge map to
+        c7i-runner-12xlarge — same metadata.name and filename — and the second
+        silently overwrites the first.
+        """
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleet": {
+                "name": "c7i-runner",
+                "arch": "arm64",
+                "gpu": False,
+                "instances": [
+                    {"type": "m7g.12xlarge", "weight": 100, "node_disk_size": 1350},
+                    {"type": "m8g.12xlarge", "weight": 60, "node_disk_size": 1350},
+                ],
+            }
+        }
+        (defs_dir / "c7i-runner.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_MODULE_NAME": "test",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["c7i-runner-m7g-12xlarge.yaml", "c7i-runner-m8g-12xlarge.yaml"]
+
+        # Distinct metadata.name and distinct instance-type taint per file.
+        m7g = parse_all_yaml((output_dir / "c7i-runner-m7g-12xlarge.yaml").read_text())
+        m8g = parse_all_yaml((output_dir / "c7i-runner-m8g-12xlarge.yaml").read_text())
+        assert m7g[0]["metadata"]["name"] == "c7i-runner-m7g-12xlarge"
+        assert m8g[0]["metadata"]["name"] == "c7i-runner-m8g-12xlarge"
+        # Both share the fleet name but carry different instance types.
+        assert m7g[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "c7i-runner"
+        assert m8g[0]["spec"]["template"]["metadata"]["labels"]["node-fleet"] == "c7i-runner"
+        assert m7g[0]["spec"]["template"]["metadata"]["labels"]["instance-type"] == "m7g.12xlarge"
+        assert m8g[0]["spec"]["template"]["metadata"]["labels"]["instance-type"] == "m8g.12xlarge"
+
+    def test_single_family_override_fleet_keeps_unqualified_names(self, tmp_path):
+        """An override fleet with one instance family keeps <fleet>-<size> names.
+
+        No cross-family size collision exists, so the family must NOT be injected —
+        this guards existing fleets (c7i-large, m7g-metal, …) against a rename.
+        """
+        defs_dir = tmp_path / "defs"
+        defs_dir.mkdir()
+        fleet_data = {
+            "fleet": {
+                "name": "foo-large",
+                "arch": "amd64",
+                "gpu": False,
+                "instances": [
+                    {"type": "c7i.48xlarge", "weight": 100, "node_disk_size": 3750},
+                    {"type": "c7i.24xlarge", "weight": 80, "node_disk_size": 1900},
+                ],
+            }
+        }
+        (defs_dir / "foo-large.yaml").write_text(yaml.dump(fleet_data))
+        output_dir = tmp_path / "generated"
+
+        env = {
+            "NODEPOOLS_DEFS_DIR": str(defs_dir),
+            "NODEPOOLS_OUTPUT_DIR": str(output_dir),
+            "NODEPOOLS_MODULE_NAME": "test",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = main()
+
+        assert result == 0
+        generated = sorted(f.name for f in output_dir.glob("*.yaml"))
+        assert generated == ["foo-large-24xlarge.yaml", "foo-large-48xlarge.yaml"]
 
     def test_fleet_missing_name_key(self, tmp_path):
         """Fleet missing required 'name' key fails with descriptive error."""
