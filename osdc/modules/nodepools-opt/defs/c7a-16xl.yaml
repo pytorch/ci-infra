@@ -1,0 +1,19 @@
+# Karpenter NodePool fleet: c7a-16xl
+# AMD EPYC (Genoa) — compute-optimized, AVX-512, ~2 GiB/core ratio
+# Sub-nodepool for ideal c7a.16xlarge; fallback UP to larger c7a sizes (descending weight).
+fleet:
+  name: c7a-16xl
+  arch: amd64
+  gpu: false
+  exclude_regions:
+    - us-west-1
+  instances:
+    - type: c7a.16xlarge
+      weight: 100  # ideal
+      node_disk_size: 1300
+    - type: c7a.24xlarge
+      weight: 85  # fallback
+      node_disk_size: 1900
+    - type: c7a.48xlarge
+      weight: 70  # fallback
+      node_disk_size: 3750

@@ -1,0 +1,13 @@
+# ARC runner definition: l-x86iavx512-48-384
+# Instance type: r7a.16xlarge (pool: r7a-16xl)
+runner:
+  name: l-x86iavx512-48-384
+  instance_type: r7a.16xlarge
+  node_fleet: r7a-16xl
+  disk_size: 600
+  vcpu: 63
+  memory: 464Gi
+  gpu: 0
+  proactive_capacity: 0
+  hud_failure_base_capacity: 30
+  max_burst_capacity: 250

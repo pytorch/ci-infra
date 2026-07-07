@@ -1,0 +1,20 @@
+# Karpenter NodePool fleet: c7i-12xl
+# Intel Sapphire Rapids — compute-optimized, AMX/AVX-512, ~2 GiB/core ratio
+# Sub-nodepool for ideal c7i.12xlarge; fallback UP to larger c7i sizes (descending weight).
+fleet:
+  name: c7i-12xl
+  arch: amd64
+  gpu: false
+  instances:
+    - type: c7i.12xlarge
+      weight: 100  # ideal
+      node_disk_size: 1350
+    - type: c7i.16xlarge
+      weight: 85  # fallback
+      node_disk_size: 1300
+    - type: c7i.24xlarge
+      weight: 70  # fallback
+      node_disk_size: 1900
+    - type: c7i.48xlarge
+      weight: 55  # fallback
+      node_disk_size: 3750

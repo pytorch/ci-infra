@@ -1,0 +1,20 @@
+# Karpenter NodePool fleet: c7i-runner — dedicated pool for ARC runner pods + their placeholders.
+# The node-fleet=c7i-runner taint is load-bearing (runner.yaml.tpl + hooks-warmer nodeSelector key on it);
+# the fleet name is decoupled from the instance family, which is Graviton (arm64) — runner image + hooks are multi-arch.
+fleet:
+  name: c7i-runner
+  arch: arm64
+  gpu: false
+  instances:
+    - type: m7g.12xlarge
+      weight: 100
+      node_disk_size: 1350
+    - type: m7g.8xlarge
+      weight: 80
+      node_disk_size: 650
+    - type: m8g.12xlarge
+      weight: 60
+      node_disk_size: 1350
+    - type: m8g.8xlarge
+      weight: 40
+      node_disk_size: 650
