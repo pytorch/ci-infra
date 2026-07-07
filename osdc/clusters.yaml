@@ -243,7 +243,7 @@ clusters:
       runner_name_prefix: "c-mt-"          # staging/testing prefix — keeps labels distinct from prod's "mt-"
       runner_group: "meta-staging-aws-ue1"
       scheduler_name: bin-pack-scheduler
-      capacity_aware_fresh_multiplier: 0.8
+      capacity_aware_fresh_multiplier: 0.25
     buildkit:
       arm64_instance_type: m7gd.16xlarge
       arm64_pods_per_node: 4
