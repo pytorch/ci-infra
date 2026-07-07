@@ -285,7 +285,7 @@ def test_write_family_report_full(tmp_path):
     # node-hours (from cost lines) + cost ratio / authoritative comparison
     assert "node_hours ~ 100" in text
     assert "node_hours ~ 80" in text
-    assert "authoritative cost" in text
+    assert "node_hours is a size-blind count" in text
     # per-def shape rows: covered def + missing-catalog def
     assert "main vcpu: 16 -> 20" in text
     assert "def-missing (no catalog entry — check eligibility)" in text

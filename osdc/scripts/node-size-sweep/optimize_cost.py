@@ -166,7 +166,9 @@ def family_rec_cost_lines(baseline_cost: dict | None, rec_cost: dict | None, ind
         )
         lines.append(f"{indent}priced-$ change: {_fmt_pct(usd_pct)} — {ABS_USD_CAVEAT}")
         lines.append(f"{indent}approx cost ~ ${rec_cost['usd']:,.0f}/window — {ABS_USD_CAVEAT}")
-        lines.append(f"{indent}(node-hours x price = authoritative cost; vcpu_hours is a compute proxy)")
+        lines.append(
+            f"{indent}(priced-$ tracks vcpu_hours x $/vcpu; node_hours is a size-blind count, not the cost signal)"
+        )
     else:
         lines.append(f"{indent}node_hours ~ {rec_cost['node_hours']:,.0f} ({NODE_HOURS_CAVEAT})")
         lines.append(f"{indent}approx cost ~ ${rec_cost['usd']:,.0f}/window — {ABS_USD_CAVEAT}")

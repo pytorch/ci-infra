@@ -171,7 +171,7 @@ def test_family_rec_cost_lines_with_baseline_shows_change_sign():
     assert oc.ABS_USD_CAVEAT in lines[1]
     assert "approx cost ~ $800/window" in lines[2]
     assert oc.ABS_USD_CAVEAT in lines[2]
-    assert "authoritative cost" in lines[3]
+    assert "node_hours is a size-blind count" in lines[3]
 
 
 def test_family_rec_cost_lines_with_baseline_abs_matches_baseline_format():
