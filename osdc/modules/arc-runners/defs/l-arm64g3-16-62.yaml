@@ -1,12 +1,11 @@
 # ARC runner definition: l-arm64g3-16-62
-# Instance type: m7g.16xlarge (pool: m7g-16xl)
+# Instance type: m7g.8xlarge (pool: m7g) — .8xlarge needed because 62 GiB pod doesn't fit on m7g.4xlarge
 runner:
   name: l-arm64g3-16-62
-  instance_type: m7g.16xlarge
-  node_fleet: m7g-16xl
+  instance_type: m7g.8xlarge
   disk_size: 256
-  vcpu: 20
-  memory: 75Gi
+  vcpu: 16
+  memory: 62Gi
   gpu: 0
   proactive_capacity: 0
   hud_failure_base_capacity: 90

@@ -1,12 +1,11 @@
 # ARC runner definition: l-x86iamx-16-128
-# Instance type: r7i.16xlarge (pool: r7i-16xl)
+# Instance type: r7i.48xlarge (pool: x86-cpu)
 runner:
   name: l-x86iamx-16-128
-  instance_type: r7i.16xlarge
-  node_fleet: r7i-16xl
+  instance_type: r7i.48xlarge
   disk_size: 150
-  vcpu: 20
-  memory: 154Gi
+  vcpu: 16
+  memory: 128Gi
   gpu: 0
   proactive_capacity: 0
   hud_failure_base_capacity: 90

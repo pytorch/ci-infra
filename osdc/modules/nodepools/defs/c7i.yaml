@@ -1,7 +1,7 @@
-# Karpenter NodePool fleet: c7i-runner — dedicated pool for ARC runner pods + their placeholders.
-# Name-only clone of c7i; separation is enforced by the node-fleet=c7i-runner taint.
+# Karpenter NodePool fleet: c7i
+# Intel Sapphire Rapids — compute-optimized, AMX/AVX-512, ~2 GiB/core ratio
 fleet:
-  name: c7i-runner
+  name: c7i
   arch: amd64
   gpu: false
   instances:

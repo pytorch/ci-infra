@@ -1,0 +1,25 @@
+# NUMA note: restricted topology policy may reject mixed GPU packing; monitor for TopologyAffinityError
+# Karpenter NodePool fleet: g4dn (NVIDIA T4)
+# GPU compute — single fleet, scheduling by nvidia.com/gpu resource requests
+fleet:
+  name: g4dn
+  arch: amd64
+  gpu: true
+  instances:
+    - type: g4dn.metal
+      weight: 100
+      node_disk_size: 600
+      has_nvme: true
+      baremetal: true
+    - type: g4dn.12xlarge
+      weight: 90
+      node_disk_size: 600
+      has_nvme: true
+    - type: g4dn.8xlarge
+      weight: 80
+      node_disk_size: 600
+      has_nvme: true
+    - type: g4dn.16xlarge
+      weight: 70
+      node_disk_size: 600
+      has_nvme: true

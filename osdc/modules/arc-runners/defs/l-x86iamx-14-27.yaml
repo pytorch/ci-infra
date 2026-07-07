@@ -1,11 +1,10 @@
 # ARC runner definition: l-x86iamx-14-27
-# Instance type: c7i.12xlarge (pool: c7i-12xl)
+# Instance type: c7i.12xlarge (pool: x86-amx-compute)
 runner:
   name: l-x86iamx-14-27
   instance_type: c7i.12xlarge
-  node_fleet: c7i-12xl
   disk_size: 150
-  vcpu: 15
+  vcpu: 14
   memory: 27Gi
   gpu: 0
   proactive_capacity: 0

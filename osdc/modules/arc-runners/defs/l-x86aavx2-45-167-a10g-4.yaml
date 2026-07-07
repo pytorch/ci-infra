@@ -4,9 +4,8 @@
 runner:
   name: l-x86aavx2-45-167-a10g-4
   instance_type: g5.12xlarge
-  node_fleet: g5-12xl
   disk_size: 150
-  vcpu: 47
+  vcpu: 45
   memory: 167Gi
   gpu: 4
   proactive_capacity: 0

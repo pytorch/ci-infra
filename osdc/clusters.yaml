@@ -425,13 +425,15 @@ clusters:
       runner_group: "meta-prod-aws-ue1"
       capacity_aware_fresh_multiplier: 0.8
       scheduler_name: bin-pack-scheduler
+    arc-runners-opt:
+      capacity_aware_fresh_multiplier: 0.8
     modules:
       - karpenter
       - arc
       - hf-cache              # before nodepools: mount must be up before the node-init gate taint
-      - nodepools
+      - nodepools-opt
       - bin-pack-scheduler
-      - arc-runners
+      - arc-runners-opt
       - keda
       - buildkit
       - zombie-cleanup

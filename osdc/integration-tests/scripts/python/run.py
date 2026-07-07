@@ -79,9 +79,20 @@ def resolve(cfg: dict, dotpath: str, default=None):
     return val if val is not None else default
 
 
+def normalize_modules(modules: list[str]) -> set[str]:
+    """Expand a module list so an `-opt` shim variant also satisfies a base-module
+    requirement (arc-runners-opt also counts as arc-runners, nodepools-opt as nodepools).
+    GPU variants (-h100/-b200) are intentionally NOT aliased — they are distinct capabilities
+    with their own test gating."""
+    result = set(modules)
+    for m in modules:
+        result.add(m.removesuffix("-opt"))
+    return result
+
+
 def has_module(cfg: dict, module_name: str) -> bool:
     """Check if a module is enabled for the cluster."""
-    modules = cfg["cluster"].get("modules", [])
+    modules = normalize_modules(cfg["cluster"].get("modules", []))
     return module_name in modules
 
 
@@ -258,7 +269,7 @@ def main():
         # Resolve ECR tag FIRST — failing fast avoids leaving the cluster drained.
         # Skip when the cluster has no arc-runners module: the test-ecr-pull job is
         # gated on ARC_RUNNERS and stripped from the workflow, so the tag is unused.
-        if "arc-runners" in cluster_modules:
+        if has_module(cfg, "arc-runners"):
             ecr_image_name = args.ecr_pull_image_name
             try:
                 ecr_pull_sha = resolve_ci_docker_hash()
