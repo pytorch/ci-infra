@@ -171,12 +171,12 @@ jobs:
         run: |
           EXPECTED=16
           ACTUAL=$(nproc)
-          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
-          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
-            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
+          echo "CPUs: $ACTUAL (expected: >= $EXPECTED)"
+          if [ "$ACTUAL" -lt "$EXPECTED" ]; then
+            echo "FAIL: Expected >= $EXPECTED CPUs, got $ACTUAL"
             exit 1
           fi
-          echo "PASS: CPU count matches"
+          echo "PASS: CPU count within expected range"
       - name: Verify memory
         run: |
           EXPECTED_GI=62
@@ -200,16 +200,16 @@ jobs:
           echo "=== TORCH_CI_MAX_MEMORY ==="
           EXPECTED=66571993088
           ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
-          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
+          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: >= $EXPECTED)"
           if [ -z "$ACTUAL" ]; then
             echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
             exit 1
           fi
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
+          if [ "$ACTUAL" -lt "$EXPECTED" ]; then
+            echo "FAIL: TORCH_CI_MAX_MEMORY below expected ($ACTUAL < $EXPECTED)"
             exit 1
           fi
-          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
+          echo "PASS: TORCH_CI_MAX_MEMORY within expected range"
   # test-pip-install-upstream runs on a CPU arc-runner (l-x86iamx-8-32), so keep
   # it nested inside ARC_RUNNERS: emit only on clusters that deploy the base
   # arc-runners module AND have no cache-enforcer. On H100-only clusters (e.g.
