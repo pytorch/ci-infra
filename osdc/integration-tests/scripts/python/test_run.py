@@ -21,6 +21,7 @@ from run import (
     gh_api,
     has_module,
     load_cluster_config,
+    normalize_modules,
     parse_args,
     resolve,
     run_cmd_with_retry,
@@ -214,6 +215,39 @@ class TestResolve:
         assert resolve(cfg_staging, "cluster_name") == "meta-staging-aws-uw1"
 
 
+# ── normalize_modules ─────────────────────────────────────────────────────
+
+
+class TestNormalizeModules:
+    def test_opt_variant_adds_base_name(self):
+        assert normalize_modules(["arc-runners-opt"]) == {"arc-runners-opt", "arc-runners"}
+
+    def test_nodepools_opt_adds_base_name(self):
+        assert normalize_modules(["nodepools-opt"]) == {"nodepools-opt", "nodepools"}
+
+    def test_h100_variant_not_stripped(self):
+        assert normalize_modules(["arc-runners-h100"]) == {"arc-runners-h100"}
+
+    def test_b200_variant_not_stripped(self):
+        assert normalize_modules(["arc-runners-b200"]) == {"arc-runners-b200"}
+
+    def test_plain_module_unchanged(self):
+        assert normalize_modules(["arc-runners"]) == {"arc-runners"}
+
+    def test_empty_list(self):
+        assert normalize_modules([]) == set()
+
+    def test_ue1_module_set(self):
+        assert normalize_modules(["arc-runners-opt", "nodepools-opt", "hf-cache", "buildkit"]) == {
+            "arc-runners-opt",
+            "arc-runners",
+            "nodepools-opt",
+            "nodepools",
+            "hf-cache",
+            "buildkit",
+        }
+
+
 # ── has_module ────────────────────────────────────────────────────────────
 
 
@@ -227,6 +261,26 @@ class TestHasModule:
     def test_b200_present(self, cfg_production):
         assert has_module(cfg_production, "nodepools-b200") is True
         assert has_module(cfg_production, "arc-runners-b200") is True
+
+    def test_opt_variant_satisfies_base_arc_runners(self):
+        cfg = {"cluster": {"modules": ["arc-runners-opt"]}, "defaults": {}}
+        assert has_module(cfg, "arc-runners") is True
+
+    def test_opt_variant_satisfies_base_nodepools(self):
+        cfg = {"cluster": {"modules": ["nodepools-opt"]}, "defaults": {}}
+        assert has_module(cfg, "nodepools") is True
+
+    def test_opt_variant_still_matches_itself(self):
+        cfg = {"cluster": {"modules": ["arc-runners-opt"]}, "defaults": {}}
+        assert has_module(cfg, "arc-runners-opt") is True
+
+    def test_h100_variant_not_aliased_to_base(self):
+        cfg = {"cluster": {"modules": ["arc-runners-h100"]}, "defaults": {}}
+        assert has_module(cfg, "arc-runners") is False
+
+    def test_b200_variant_not_aliased_to_base(self):
+        cfg = {"cluster": {"modules": ["arc-runners-b200"]}, "defaults": {}}
+        assert has_module(cfg, "arc-runners") is False
 
 
 # ── generate_workflow ─────────────────────────────────────────────────────
@@ -334,6 +388,31 @@ class TestGenerateWorkflow:
         assert "no-cache-enforcer-job" not in result
         assert "BEGIN_NO_CACHE_ENFORCER" not in result
         assert "arc-job" not in result
+
+    def test_opt_variants_keep_arc_runner_jobs(self, workflow_template):
+        # meta-prod-aws-ue1 runs the -opt shim modules. arc-runners-opt / nodepools-opt
+        # must satisfy the base arc-runners / nodepools gates so the runner jobs survive
+        # instead of degrading to a no-op. B200 stays stripped: no -b200 module is present
+        # and removesuffix("-opt") never produces one.
+        result = generate_workflow(
+            workflow_template,
+            "mt",
+            "meta-prod-aws-ue1",
+            "meta-prod-aws-ue1",
+            cluster_modules=["arc-runners-opt", "nodepools-opt", "hf-cache", "buildkit"],
+        )
+        assert "arc-job" in result
+        assert "gpu-t4-job" in result
+        assert "buildkit-job" in result
+        assert "release-job" in result
+        assert "BEGIN_ARC_RUNNERS" not in result
+        assert "BEGIN_GPU_T4" not in result
+        assert "BEGIN_BUILDKIT" not in result
+        assert "BEGIN_RELEASE" not in result
+        assert "b200-job" not in result
+        assert "BEGIN_B200" not in result
+        assert "pypi-job" not in result
+        assert "  cache-enforcer-job:" not in result
 
     def test_no_cache_enforcer_stripped_when_cache_enforcer_present(self, workflow_template):
         result = generate_workflow(

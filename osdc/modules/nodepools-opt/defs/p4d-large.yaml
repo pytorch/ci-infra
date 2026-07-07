@@ -1,0 +1,22 @@
+# Karpenter NodePool fleet: p4d-large — dedicated pool for the 8-GPU A100 runner
+# (l-bx86iavx512-88-1000-a100-8). Name-only subset of p4d-24xlarge; separation is
+# enforced by the node-fleet=p4d-large taint.
+#
+# Topology: this pool must NOT use single-numa-node. p4d.24xlarge is a 2-NUMA-node
+# box with its 8 A100s split 4-per-node, so an all-8-GPU pod spans both NUMA nodes
+# and is rejected with TopologyAffinityError under single-numa-node — the runner
+# (and its listener placeholder) then hangs forever, pinning a node idle. We leave
+# topologyManagerPolicy at the generator default (best-effort), matching g5-large
+# and p5-large. Do NOT add single-numa-node here.
+fleet:
+  name: p4d-large
+  arch: amd64
+  gpu: true
+  exclude_regions:
+    - us-west-1
+  instances:
+    - type: p4d.24xlarge
+      weight: 100
+      node_disk_size: 1000
+      has_nvme: true
+      baremetal: true

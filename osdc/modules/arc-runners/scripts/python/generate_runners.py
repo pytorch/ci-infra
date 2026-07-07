@@ -122,15 +122,20 @@ def compute_cluster_sharding(clusters_yaml, cluster_id, module_name, runner_name
     must shard the queue. The index is the cluster's position in the
     alphabetically-sorted peer list; the count is the size of that list.
 
+    An "-opt" module variant shards together with its base module (its "-opt"
+    suffix is stripped on both sides of the comparison), so a pilot cluster
+    shares the base cluster's HUD queue split rather than forming its own group.
+
     A cluster that is not its own peer (configuration drift, called with a
     module/prefix combination it does not actually deploy) returns (0, 1) so
     the listener degrades to single-cluster behavior instead of mis-sharding.
     """
     target_prefix = runner_name_prefix or ""
+    base_module = module_name.removesuffix("-opt")
     peers = sorted(
         cid
         for cid, cfg in (clusters_yaml.get("clusters") or {}).items()
-        if module_name in (cfg.get("modules") or [])
+        if any(m.removesuffix("-opt") == base_module for m in (cfg.get("modules") or []))
         and (((cfg.get("arc-runners") or {}).get("runner_name_prefix")) or "") == target_prefix
     )
     if cluster_id not in peers:
