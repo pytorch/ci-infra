@@ -13,7 +13,7 @@ resource "aws_lambda_function" "callback" {
 
   timeout                        = 60
   memory_size                    = 512
-  reserved_concurrent_executions = 50
+  reserved_concurrent_executions = 100
   tags                           = local.tags
 
   environment {
