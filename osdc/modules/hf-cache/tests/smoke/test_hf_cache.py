@@ -166,12 +166,12 @@ class TestHfCacheLargeGpuSplit:
         return rclone.get("resources", {}).get("limits", {}).get("memory", "")
 
     def test_largegpu_daemonset_targets_h100_b200(self, all_daemonsets: dict) -> None:
-        op, values = self._gpu_affinity_op(self._pod_spec(all_daemonsets, MOUNT_DS_LARGEGPU))
+        op, values = _gpu_affinity_op(self._pod_spec(all_daemonsets, MOUNT_DS_LARGEGPU))
         assert values == LARGE_GPU_VALUES, f"{MOUNT_DS_LARGEGPU} must target {LARGE_GPU_VALUES}; got {values}."
         assert op == "In", f"{MOUNT_DS_LARGEGPU} must use In affinity to select large-GPU nodes; got op={op}."
 
     def test_standard_daemonset_excludes_h100_b200(self, all_daemonsets: dict) -> None:
-        op, values = self._gpu_affinity_op(self._pod_spec(all_daemonsets, MOUNT_DS))
+        op, values = _gpu_affinity_op(self._pod_spec(all_daemonsets, MOUNT_DS))
         assert values == LARGE_GPU_VALUES, f"{MOUNT_DS} affinity must reference {LARGE_GPU_VALUES}; got {values}."
         assert op == "NotIn", (
             f"{MOUNT_DS} must use NotIn affinity so it doesn't double-mount large-GPU nodes; got op={op}."
