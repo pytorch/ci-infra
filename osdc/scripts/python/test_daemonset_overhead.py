@@ -8,6 +8,7 @@ import yaml
 from daemonset_overhead import (
     EKS_ADDON_DAEMONSETS,
     HELM_DAEMONSETS,
+    _daemonset_name,
     _discover_from_yaml,
     _extract_container_resources,
     _is_gpu_only,
@@ -310,6 +311,60 @@ class TestDiscoverFromYaml:
         assert len(results) == 1
         assert results[0].name == "nested-ds"
 
+    def test_discovers_yaml_tpl_with_placeholder_name(self, tmp_path):
+        """.yaml.tpl templates are scanned; placeholder names derive from module dir."""
+        tpl_dir = tmp_path / "modules" / "hf-cache" / "kubernetes"
+        tpl_dir.mkdir(parents=True)
+        manifest = {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {"name": "__DS_NAME__"},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "rclone",
+                                "resources": {"requests": {"cpu": "100m", "memory": "256Mi"}},
+                            },
+                            {
+                                "name": "taint-remover",
+                                "resources": {"requests": {"cpu": "10m", "memory": "32Mi"}},
+                            },
+                        ]
+                    }
+                }
+            },
+        }
+        (tpl_dir / "mount-daemonset.yaml.tpl").write_text(yaml.dump(manifest))
+
+        results = _discover_from_yaml([tmp_path])
+        assert len(results) == 1
+        assert results[0].name == "hf-cache"
+        assert results[0].cpu_millicores == 110
+        assert results[0].memory_mib == 288
+        assert results[0].gpu_only is False
+
+
+# ---------------------------------------------------------------------------
+# _daemonset_name
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonsetName:
+    def test_concrete_name_passes_through(self):
+        doc = {"metadata": {"name": "real-ds"}}
+        assert _daemonset_name(doc, Path("modules/foo/kubernetes/ds.yaml")) == "real-ds"
+
+    def test_placeholder_under_modules_uses_module_dir(self):
+        doc = {"metadata": {"name": "__DS_NAME__"}}
+        yaml_file = Path("/repo/modules/foo/kubernetes/mount.yaml.tpl")
+        assert _daemonset_name(doc, yaml_file) == "foo"
+
+    def test_placeholder_outside_modules_falls_back_to_stem(self):
+        doc = {"metadata": {"name": "__DS_NAME__"}}
+        assert _daemonset_name(doc, Path("/repo/base/kubernetes/thing.yaml")) == "thing"
+
 
 # ---------------------------------------------------------------------------
 # discover_daemonsets (integration)
@@ -504,6 +559,37 @@ class TestRealManifests:
         # hooks-warmer: 10m CPU, 32Mi
         assert by_name["runner-hooks-warmer"].cpu_millicores == 10
         assert by_name["runner-hooks-warmer"].memory_mib == 32
+
+    def test_discovers_hf_cache_from_template(self, upstream_dir):
+        """hf-cache lives in a .yaml.tpl with a placeholder name; verify discovery."""
+        results = discover_daemonsets(upstream_dir)
+        by_name = {ds.name: ds for ds in results}
+
+        # rclone 100m/256Mi + taint-remover 10m/32Mi = 110m/288Mi.
+        assert "hf-cache" in by_name
+        assert by_name["hf-cache"].cpu_millicores == 110
+        assert by_name["hf-cache"].memory_mib == 288
+        # workload-type/instance-gpu-name affinity, not nvidia.com/gpu.
+        assert by_name["hf-cache"].gpu_only is False
+
+
+# ---------------------------------------------------------------------------
+# Constants pinning (Helm + EKS addon overhead)
+# ---------------------------------------------------------------------------
+
+
+class TestConstants:
+    def test_helm_constant_values(self):
+        by_name = {ds.name: ds for ds in HELM_DAEMONSETS}
+        assert (by_name["alloy-logging"].cpu_millicores, by_name["alloy-logging"].memory_mib) == (510, 1074)
+        assert (by_name["node-exporter"].cpu_millicores, by_name["node-exporter"].memory_mib) == (0, 0)
+
+    def test_eks_addon_constant_values(self):
+        by_name = {ds.name: ds for ds in EKS_ADDON_DAEMONSETS}
+        assert (by_name["kube-proxy"].cpu_millicores, by_name["kube-proxy"].memory_mib) == (100, 0)
+        assert (by_name["vpc-cni"].cpu_millicores, by_name["vpc-cni"].memory_mib) == (50, 0)
+        assert (by_name["ebs-csi-node"].cpu_millicores, by_name["ebs-csi-node"].memory_mib) == (30, 104)
+        assert (by_name["efs-csi-node"].cpu_millicores, by_name["efs-csi-node"].memory_mib) == (0, 0)
 
 
 # ---------------------------------------------------------------------------

@@ -39,19 +39,24 @@ class DaemonSetOverhead:
 
 # Helm-deployed DaemonSets — values from their respective Helm charts
 HELM_DAEMONSETS: list[DaemonSetOverhead] = [
-    # kube-prometheus-stack node-exporter (chart defaults)
-    # Values from modules/monitoring/helm/values.yaml
-    DaemonSetOverhead("node-exporter", 15, 32, False, "constant:helm:kube-prometheus-stack"),
-    # Alloy logging DaemonSet
-    # Values from modules/logging/helm/alloy-logging-values.yaml
-    DaemonSetOverhead("alloy-logging", 100, 256, False, "constant:helm:alloy-logging"),
+    # kube-prometheus-stack renders node-exporter with resources: {} by default;
+    # modules/monitoring/helm/values.yaml sets no override, so no requests.
+    DaemonSetOverhead("node-exporter", 0, 0, False, "constant:helm:kube-prometheus-stack"),
+    # alloy 500m/1Gi (modules/logging/helm/alloy-logging-values.yaml) + config-reloader
+    # sidecar 10m/50Mi (chart default); 1074Mi = 1024 (1Gi) + 50.
+    DaemonSetOverhead("alloy-logging", 510, 1074, False, "constant:helm:alloy-logging"),
 ]
 
 # EKS-managed addon DaemonSets — not in our manifests at all
 EKS_ADDON_DAEMONSETS: list[DaemonSetOverhead] = [
-    DaemonSetOverhead("kube-proxy", 50, 80, False, "constant:eks-addon"),
-    DaemonSetOverhead("vpc-cni", 50, 128, False, "constant:eks-addon"),
-    DaemonSetOverhead("ebs-csi-node", 10, 50, False, "constant:eks-addon"),
+    # AWS managed addon sets 100m cpu, no memory request.
+    DaemonSetOverhead("kube-proxy", 100, 0, False, "constant:eks-addon"),
+    # aws-node 25m + aws-eks-nodeagent sidecar 25m = 50m; no memory request.
+    DaemonSetOverhead("vpc-cni", 50, 0, False, "constant:eks-addon"),
+    # ebs-plugin 10m/40Mi + node-driver-registrar 10m/32Mi + liveness-probe 10m/32Mi.
+    DaemonSetOverhead("ebs-csi-node", 30, 104, False, "constant:eks-addon"),
+    # pypi-cache installs the efs-csi addon; best-effort QoS, no requests.
+    DaemonSetOverhead("efs-csi-node", 0, 0, False, "constant:eks-addon"),
 ]
 
 
@@ -140,13 +145,31 @@ def _extract_container_resources(containers: list[dict]) -> tuple[int, int]:
     return total_cpu, total_mem
 
 
+def _daemonset_name(doc: dict, yaml_file: Path) -> str:
+    """Return a stable, readable name for a discovered DaemonSet.
+
+    Template manifests (.yaml.tpl) carry placeholder names such as
+    "__DS_NAME__" that are substituted only at deploy time. Derive the name
+    from the owning module directory so templated DaemonSets get unique keys
+    instead of all colliding on the shared placeholder.
+    """
+    name = doc.get("metadata", {}).get("name", "")
+    if name and "__" not in name:
+        return name
+    parts = yaml_file.parts
+    if "modules" in parts:
+        return parts[parts.index("modules") + 1]
+    return yaml_file.stem
+
+
 def _discover_from_yaml(search_dirs: list[Path]) -> list[DaemonSetOverhead]:
     """Scan directories for YAML files containing DaemonSet documents."""
     results: list[DaemonSetOverhead] = []
     for search_dir in search_dirs:
         if not search_dir.exists():
             continue
-        for yaml_file in sorted(search_dir.rglob("*.yaml")):
+        files = sorted([*search_dir.rglob("*.yaml"), *search_dir.rglob("*.yaml.tpl")])
+        for yaml_file in files:
             try:
                 with open(yaml_file) as fh:
                     docs = list(yaml.safe_load_all(fh))
@@ -159,7 +182,7 @@ def _discover_from_yaml(search_dirs: list[Path]) -> list[DaemonSetOverhead]:
                 if doc.get("kind") != "DaemonSet":
                     continue
 
-                name = doc.get("metadata", {}).get("name", yaml_file.stem)
+                name = _daemonset_name(doc, yaml_file)
                 pod_spec = doc.get("spec", {}).get("template", {}).get("spec", {})
 
                 # Sum requests from regular containers only (not initContainers)

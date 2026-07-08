@@ -48,7 +48,7 @@ def _controlled_prices() -> dict:
 
 def test_slots_math_known_instances():
     m = _model()
-    assert rf.runner_slots(m, rf.RUNNER_POD_POOL, "c7i.2xlarge", RUNNER_CPU_M, RUNNER_MEM_MI) == 10
+    assert rf.runner_slots(m, rf.RUNNER_POD_POOL, "c7i.2xlarge", RUNNER_CPU_M, RUNNER_MEM_MI) == 9
     assert rf.runner_slots(m, rf.RUNNER_POD_POOL, "c7i.8xlarge", RUNNER_CPU_M, RUNNER_MEM_MI) == 41
     assert rf.runner_slots(m, rf.RUNNER_POD_POOL, "c7i.48xlarge", RUNNER_CPU_M, RUNNER_MEM_MI) == 254
 
