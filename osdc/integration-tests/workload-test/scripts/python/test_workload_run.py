@@ -367,6 +367,55 @@ class TestMain:
     @patch("workload_run.run_cmd")
     @patch("workload_run.resolve")
     @patch("workload_run.load_cluster_config")
+    def test_cluster_with_arc_runners_opt_passes_gate(
+        self,
+        mock_load_cfg,
+        mock_resolve,
+        mock_run_cmd,
+        mock_cleanup,
+        mock_ensure_canary,
+        mock_ensure_pytorch,
+        mock_mirror,
+        mock_instrument,
+        mock_create_pr,
+        mock_monitor,
+        mock_report,
+        mock_close_pr,
+    ):
+        """arc-runners-opt shim satisfies the arc-runners gate (real has_module runs)."""
+        mock_load_cfg.return_value = {"cluster": {"cluster_name": "test-cluster", "modules": ["arc-runners-opt"]}, "defaults": {}}
+        mock_resolve.side_effect = lambda cfg, key, *args: {
+            "cluster_name": "pytorch-test",
+            "arc-runners.runner_name_prefix": "mt-",
+        }.get(key, args[0] if args else None)
+        mock_ensure_canary.return_value = Path("/tmp/canary")
+        mock_ensure_pytorch.return_value = Path("/tmp/pytorch")
+        mock_run_cmd.return_value = MagicMock(returncode=0)
+        mock_create_pr.return_value = 42
+        mock_monitor.return_value = [{"run_id": 1, "jobs": [{"name": "lint", "conclusion": "success"}]}]
+        mock_report.return_value = True
+
+        with patch("sys.argv", self._base_argv()):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 0
+
+        # Gate passed end-to-end: pipeline ran instead of exiting 1 at the arc-runners check.
+        mock_cleanup.assert_called_once()
+        mock_create_pr.assert_called_once()
+
+    @patch("workload_run.close_pr")
+    @patch("workload_run.print_workload_report")
+    @patch("workload_run.monitor_workflows")
+    @patch("workload_run.create_workload_pr")
+    @patch("workload_run.instrument_workflows")
+    @patch("workload_run.mirror_content")
+    @patch("workload_run.ensure_pytorch_repo")
+    @patch("workload_run.ensure_canary_repo")
+    @patch("workload_run.cleanup_stale_prs")
+    @patch("workload_run.run_cmd")
+    @patch("workload_run.resolve")
+    @patch("workload_run.load_cluster_config")
     def test_dry_run_exits_early(
         self,
         mock_load_cfg,

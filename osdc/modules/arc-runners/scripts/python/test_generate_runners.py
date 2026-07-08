@@ -3025,3 +3025,29 @@ class TestComputeClusterSharding:
         )
         assert compute_cluster_sharding(yml, "x", "arc-runners", "") == (0, 2)
         assert compute_cluster_sharding(yml, "y", "arc-runners", "") == (1, 2)
+
+    def test_opt_variant_shards_with_base_module(self):
+        yml = self._yaml(
+            {
+                "meta-prod-aws-ue1": {
+                    "modules": ["arc-runners-opt"],
+                    "arc-runners": {"runner_name_prefix": "mt-"},
+                },
+                "meta-prod-aws-ue2": {
+                    "modules": ["arc-runners"],
+                    "arc-runners": {"runner_name_prefix": "mt-"},
+                },
+            }
+        )
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners-opt", "mt-") == (0, 2)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue2", "arc-runners", "mt-") == (1, 2)
+
+    def test_non_opt_suffix_is_separate_shard(self):
+        yml = self._yaml(
+            {
+                "meta-prod-aws-ue1": {"modules": ["arc-runners"], "arc-runners": {"runner_name_prefix": "mt-"}},
+                "meta-prod-aws-uw2": {"modules": ["arc-runners-h100"], "arc-runners": {"runner_name_prefix": "mt-"}},
+            }
+        )
+        assert compute_cluster_sharding(yml, "meta-prod-aws-ue1", "arc-runners", "mt-") == (0, 1)
+        assert compute_cluster_sharding(yml, "meta-prod-aws-uw2", "arc-runners-h100", "mt-") == (0, 1)

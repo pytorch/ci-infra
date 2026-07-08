@@ -22,6 +22,7 @@ from nodepool_defs import is_excluded_for_region
 from run import (
     CANARY_REPO,
     PR_TITLE_PREFIX,
+    normalize_modules,
     run_cmd,
     safe_json_loads,
 )
@@ -311,7 +312,7 @@ def generate_workflow(
     if leftover:
         raise RuntimeError(f"Unsubstituted template placeholders remain: {sorted(set(leftover))}")
 
-    modules_set = set(cluster_modules)
+    modules_set = normalize_modules(cluster_modules)
     for tag, required in TAG_REQUIREMENTS.items():
         keep = all(m in modules_set for m in required)
         content = strip_conditional_block(content, tag, keep=keep)

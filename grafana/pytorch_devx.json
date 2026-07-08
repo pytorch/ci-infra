@@ -677,6 +677,284 @@
           "version": "13.1.0-25668120414"
         }
       }
+    },
+    "panel-8": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "WITH per_name AS (\n    SELECT\n        toStartOfDay(workflow.created_at) AS day,\n        lower(workflow.name) AS name,\n        quantileExact(0.5)(DATE_DIFF('second', workflow.created_at, workflow.updated_at)) AS p50_sec\n    FROM default.workflow_run workflow FINAL\n    WHERE\n        workflow.conclusion = 'success'\n        AND workflow.run_attempt = 1\n        AND lower(workflow.name) IN ('pull', 'trunk', 'docs-build')\n        AND workflow.repository.full_name = '$repository'\n        AND $__timeFilter(workflow.created_at)\n        AND workflow.id IN (\n            SELECT id FROM materialized_views.workflow_run_by_created_at\n            WHERE created_at >= $__fromTime AND created_at <= $__toTime\n        )\n    GROUP BY day, name\n),\ndaily AS (\n    SELECT day, max(p50_sec) AS pull_trunk_docs_tts\n    FROM per_name\n    GROUP BY day\n)\nSELECT\n    day AS time,\n    pull_trunk_docs_tts,\n    avg(pull_trunk_docs_tts) OVER (\n        ORDER BY toUnixTimestamp(day) ASC\n        RANGE BETWEEN 6 * 86400 PRECEDING AND CURRENT ROW\n    ) AS trend_7d_avg\nFROM daily\nORDER BY day ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Daily p50 TTS = max of the per-workflow p50s (pull, trunk, docs-build) over successful attempt-1 runs — HUD's 'p50 pull, trunk, docs-build TTS' bucketed by day. Blue = 7d avg. Thresholds: amber = target 3h, red = 4.5h. Repo-scoped, so reads higher than HUD's headline (which pools executorch + tokenizers).",
+        "id": 8,
+        "links": [],
+        "title": "p50 pull, trunk, docs-build TTS [repository]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds",
+                  "seriesBy": "last"
+                },
+                "min": 0,
+                "unit": "s",
+                "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 15,
+                  "gradientMode": "scheme",
+                  "lineInterpolation": "linear",
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "showPoints": "never",
+                  "thresholdsStyle": {
+                    "mode": "dashed"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 10800
+                    },
+                    {
+                      "color": "red",
+                      "value": 16200
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "trend_7d_avg",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.lineInterpolation",
+                      "value": "smooth"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
+    },
+    "panel-9": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorType": "sql",
+                      "format": 0,
+                      "meta": {
+                        "builderOptions": {
+                          "columns": [],
+                          "database": "",
+                          "limit": 1000,
+                          "mode": "list",
+                          "queryType": "table",
+                          "table": ""
+                        }
+                      },
+                      "pluginVersion": "4.17.0",
+                      "queryType": "timeseries",
+                      "rawSql": "SELECT\n    day AS time,\n    pull_tts,\n    avg(pull_tts) OVER (\n        ORDER BY toUnixTimestamp(day) ASC\n        RANGE BETWEEN 6 * 86400 PRECEDING AND CURRENT ROW\n    ) AS trend_7d_avg\nFROM (\n    SELECT\n        toStartOfDay(workflow.created_at) AS day,\n        quantileExact(0.5)(DATE_DIFF('second', workflow.created_at, workflow.updated_at)) AS pull_tts\n    FROM default.workflow_run workflow FINAL\n    WHERE\n        workflow.conclusion = 'success'\n        AND workflow.run_attempt = 1\n        AND lower(workflow.name) = 'pull'\n        AND workflow.repository.full_name = '$repository'\n        AND $__timeFilter(workflow.created_at)\n        AND workflow.id IN (\n            SELECT id FROM materialized_views.workflow_run_by_created_at\n            WHERE created_at >= $__fromTime AND created_at <= $__toTime\n        )\n    GROUP BY day\n)\nORDER BY day ASC"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Daily p50 TTS of the pull workflow over successful attempt-1 runs — HUD's 'p50 pull TTS' bucketed by day. Blue = 7d avg. Thresholds: amber = target 90m, red = 2.75h. Repo-scoped, so reads higher than HUD's headline (which pools executorch).",
+        "id": 9,
+        "links": [],
+        "title": "p50 pull TTS [repository]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds",
+                  "seriesBy": "last"
+                },
+                "min": 0,
+                "unit": "s",
+                "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 15,
+                  "gradientMode": "scheme",
+                  "lineInterpolation": "linear",
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "showPoints": "never",
+                  "thresholdsStyle": {
+                    "mode": "dashed"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 5400
+                    },
+                    {
+                      "color": "red",
+                      "value": 9900
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "trend_7d_avg",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.lineInterpolation",
+                      "value": "smooth"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                      }
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
     }
   },
   "layout": {
@@ -733,6 +1011,32 @@
             "width": 8,
             "x": 8,
             "y": 0
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-8"
+            },
+            "height": 10,
+            "width": 8,
+            "x": 8,
+            "y": 10
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-9"
+            },
+            "height": 10,
+            "width": 8,
+            "x": 16,
+            "y": 10
           }
         }
       ]

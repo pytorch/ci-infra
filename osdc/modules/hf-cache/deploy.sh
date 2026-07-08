@@ -30,6 +30,14 @@ RCLONE_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_image "rclone/rclone:1.6
 TAINT_REMOVER_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.taint_remover_image \
   "public.ecr.aws/amazonlinux/amazonlinux:2023")
 VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size "75%")
+# Only large-GPU nodes pull multi-GB models and OOM rclone, so only the -largegpu
+# DaemonSet gets the raised limit; standard nodes keep the modest default. Which GPUs
+# count as "large" is the instance-gpu-name set below (comma-separated in config).
+RCLONE_MEMORY_LIMIT=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_memory_limit "1Gi")
+RCLONE_MEMORY_LIMIT_LARGEGPU=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_memory_limit_largegpu "4Gi")
+# h100,b200 -> ["h100","b200"] for the node-affinity values list.
+LARGE_GPU_NAMES=$(uv run "$CFG" "$CLUSTER" hf_cache.large_gpu_names "h100,b200")
+LARGE_GPU_VALUES="[\"${LARGE_GPU_NAMES//,/\",\"}\"]"
 BUCKET_CFG=$(uv run "$CFG" "$CLUSTER" state_bucket)
 # Bucket is in the cluster's region, so rclone's S3 region is the cluster region.
 BUCKET_REGION="$REGION"
@@ -68,23 +76,39 @@ kubectl create configmap node-taint-remover-lib \
   -n "$NAMESPACE" --dry-run=client -o yaml \
   | kubectl_apply_if_changed -f -
 
-# --- Render + apply the mount DaemonSet ---
-echo "[hf-cache] Applying mount DaemonSet..."
-sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
-  -e "s|__BUCKET__|${BUCKET}|g" \
-  -e "s|__REGION__|${BUCKET_REGION}|g" \
-  -e "s|__RCLONE_IMAGE__|${RCLONE_IMAGE}|g" \
-  -e "s|__VFS_CACHE_MAX_SIZE__|${VFS_CACHE_MAX_SIZE}|g" \
-  -e "s|__TAINT_REMOVER_IMAGE__|${TAINT_REMOVER_IMAGE}|g" \
-  "$MODULE_DIR/kubernetes/mount-daemonset.yaml.tpl" \
-  | kubectl_apply_if_changed -f -
-
-echo "[hf-cache] Waiting for mount DaemonSet rollout..."
-kubectl rollout status daemonset hf-cache-mount \
-  -n "$NAMESPACE" --timeout=300s || {
-  echo "[hf-cache] WARNING: mount DaemonSet rollout did not complete within timeout"
-  echo "[hf-cache] Check: kubectl get pods -n $NAMESPACE -l app=hf-cache-mount"
+# --- Render + apply the mount DaemonSet(s) ---
+# One template, two DaemonSets (standard + -largegpu); the __GPU_OP__ affinity keeps
+# them mutually exclusive so exactly one rclone mount runs per node.
+render_mount_ds() {
+  # $1 = DaemonSet name, $2 = gpu affinity operator, $3 = rclone memory limit
+  sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
+    -e "s|__BUCKET__|${BUCKET}|g" \
+    -e "s|__REGION__|${BUCKET_REGION}|g" \
+    -e "s|__RCLONE_IMAGE__|${RCLONE_IMAGE}|g" \
+    -e "s|__VFS_CACHE_MAX_SIZE__|${VFS_CACHE_MAX_SIZE}|g" \
+    -e "s|__TAINT_REMOVER_IMAGE__|${TAINT_REMOVER_IMAGE}|g" \
+    -e "s|__DS_NAME__|${1}|g" \
+    -e "s|__GPU_OP__|${2}|g" \
+    -e "s|__RCLONE_MEMORY_LIMIT__|${3}|g" \
+    -e "s|__LARGE_GPU_NAMES__|${LARGE_GPU_VALUES}|g" \
+    "$MODULE_DIR/kubernetes/mount-daemonset.yaml.tpl"
 }
+
+echo "[hf-cache] Applying mount DaemonSets (standard + large-GPU)..."
+{
+  render_mount_ds "hf-cache-mount" "NotIn" "${RCLONE_MEMORY_LIMIT}"
+  echo "---"
+  render_mount_ds "hf-cache-mount-largegpu" "In" "${RCLONE_MEMORY_LIMIT_LARGEGPU}"
+} | kubectl_apply_if_changed -f -
+
+echo "[hf-cache] Waiting for mount DaemonSet rollouts..."
+for DS in hf-cache-mount hf-cache-mount-largegpu; do
+  kubectl rollout status daemonset "$DS" \
+    -n "$NAMESPACE" --timeout=300s || {
+    echo "[hf-cache] WARNING: $DS rollout did not complete within timeout"
+    echo "[hf-cache] Check: kubectl get pods -n $NAMESPACE -l app=$DS"
+  }
+done
 
 echo "[hf-cache] Deployed — rclone read-only mount serving /mnt/hf_cache on runner nodes."
 echo "[hf-cache] Cache is populated by ci-refresh-hf-cache runs (GitHub OIDC write role)."

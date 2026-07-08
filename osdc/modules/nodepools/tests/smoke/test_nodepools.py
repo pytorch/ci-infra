@@ -19,7 +19,7 @@ import yaml
 _GEN_DIR = Path(__file__).resolve().parents[2] / "scripts" / "python"
 if str(_GEN_DIR) not in sys.path:
     sys.path.insert(0, str(_GEN_DIR))
-from generate_nodepools import _fleet_nodepool_name, _is_excluded_for_region  # noqa: E402
+from generate_nodepools import _build_fleet_nodepool_def, _is_excluded_for_region  # noqa: E402
 
 pytestmark = [pytest.mark.live]
 
@@ -74,28 +74,23 @@ def _load_all_defs(upstream_dir: Path, region: str | None = None) -> list[dict]:
 
 
 def _expand_fleet(fleet_data: dict) -> list[dict]:
-    """Expand a fleet definition into individual nodepool-like dicts for validation."""
+    """Expand a fleet definition into individual nodepool-like dicts for validation.
+
+    Delegates naming to the generator's ``_build_fleet_nodepool_def`` so the smoke
+    expected-name set matches what the generator actually renders — including
+    collision-aware family qualification when two families share a size suffix.
+    """
     result = []
-    fleet_name = fleet_data["name"]
     for inst in fleet_data.get("instances", []):
-        result.append(
-            {
-                "name": _fleet_nodepool_name(fleet_name, inst["type"]),
-                "instance_type": inst["type"],
-                "arch": fleet_data["arch"],
-                "gpu": fleet_data.get("gpu", False),
-                "node_disk_size": inst["node_disk_size"],
-            }
-        )
+        result.append(_build_fleet_nodepool_def(fleet_data, inst))
     for inst in fleet_data.get("release", []):
         result.append(
-            {
-                "name": _fleet_nodepool_name(fleet_name, inst["type"], name_suffix="-release"),
-                "instance_type": inst["type"],
-                "arch": fleet_data["arch"],
-                "gpu": fleet_data.get("gpu", False),
-                "node_disk_size": inst["node_disk_size"],
-            }
+            _build_fleet_nodepool_def(
+                fleet_data,
+                inst,
+                name_suffix="-release",
+                extra_labels={"osdc.io/runner-class": "release"},
+            )
         )
     return result
 
