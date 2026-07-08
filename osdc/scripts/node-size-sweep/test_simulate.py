@@ -610,3 +610,36 @@ def test_main_returns_one_when_no_jobs(monkeypatch, tmp_path, capsys):
     rc = _run_main(monkeypatch, [str(empty_csv), "--no-progress"])
     assert rc == 1
     assert "no jobs" in capsys.readouterr().err
+
+
+def test_daemonset_totals_includes_hf_cache_gpu_topup():
+    """daemonset_totals mirrors compute_allocatable's daemonset basis so that
+    mem_allocatable_mi + daemonset_mem_mi reconstructs a node's true memory
+    capacity (memory_mi - kubelet_mem) on GPU nodes."""
+    from analyze_node_utilization import compute_daemonset_overhead, kubelet_reserved
+    from daemonset_overhead import hf_cache_gpu_topup_mib
+    from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
+    from sim_nodes import _daemonsets_for_fleet
+
+    gpu_model = ClusterModel(fleets_override={"g5": FleetSpec(name="g5", is_gpu=True, instances=("g5.12xlarge",))})
+    cpu_model = ClusterModel(fleets_override={"cpu": FleetSpec(name="cpu", is_gpu=False, instances=("c7i.8xlarge",))})
+
+    # GPU node (gpu=4): daemonset memory includes the per-GPU-count top-up.
+    scoped_gpu = _daemonsets_for_fleet(gpu_model.daemonsets, "g5")
+    _, base_gpu_mem = compute_daemonset_overhead(scoped_gpu, is_gpu=True)
+    _, ds_mem_gpu, _ = gpu_model.daemonset_totals("g5", "g5.12xlarge")
+    assert hf_cache_gpu_topup_mib(4) > 0
+    assert ds_mem_gpu == base_gpu_mem + hf_cache_gpu_topup_mib(4)
+
+    # Non-GPU node (gpu=0): no top-up, so daemonset memory equals the base overhead.
+    scoped_cpu = _daemonsets_for_fleet(cpu_model.daemonsets, "cpu")
+    _, base_cpu_mem = compute_daemonset_overhead(scoped_cpu, is_gpu=False)
+    _, ds_mem_cpu, _ = cpu_model.daemonset_totals("cpu", "c7i.8xlarge")
+    assert ds_mem_cpu == base_cpu_mem
+
+    # Reconstruction invariant: allocatable + daemonset == capacity net of kubelet only.
+    spec = INSTANCE_SPECS["g5.12xlarge"]
+    max_pods = ENI_MAX_PODS.get("g5.12xlarge", spec["vcpu"])
+    _, kube_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"], max_pods)
+    alloc = gpu_model.allocatable("g5", "g5.12xlarge")
+    assert alloc.mem_mi + ds_mem_gpu == spec["memory_mi"] - kube_mem

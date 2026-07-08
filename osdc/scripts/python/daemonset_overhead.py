@@ -60,19 +60,33 @@ EKS_ADDON_DAEMONSETS: list[DaemonSetOverhead] = [
 ]
 
 # .tpl-rendered DaemonSets the raw-YAML scan can't see (unresolved __PLACEHOLDER__s).
-# hf-cache's memory is tiered by GPU count (deploy.sh MOUNT_TIERS); this base is the
-# CPU/catch-all tier counted on every node, and GPU nodes add hf_cache_gpu_topup_mib().
-HF_CACHE_BASE_MIB = 256
+# hf-cache has two containers: rclone (memory tiered by GPU count via deploy.sh
+# MOUNT_TIERS) and a taint-remover sidecar (fixed 10m/32Mi, never exits). The flat
+# base below is rclone's CPU/catch-all tier + taint-remover, counted on every runner
+# node; GPU nodes add rclone's per-GPU-count top-up via hf_cache_gpu_topup_mib().
+HF_CACHE_BASE_MIB = 256  # rclone base (CPU / catch-all) memory tier
+HF_CACHE_TAINT_REMOVER_CPU_M = 10
+HF_CACHE_TAINT_REMOVER_MIB = 32
 TEMPLATED_DAEMONSETS: list[DaemonSetOverhead] = [
-    DaemonSetOverhead("hf-cache-mount", 100, HF_CACHE_BASE_MIB, False, "constant:tpl:modules/hf-cache"),
+    DaemonSetOverhead(
+        "hf-cache-mount",
+        100 + HF_CACHE_TAINT_REMOVER_CPU_M,
+        HF_CACHE_BASE_MIB + HF_CACHE_TAINT_REMOVER_MIB,
+        False,
+        "constant:tpl:modules/hf-cache",
+    ),
 ]
 
-# Reserved hf-cache memory (MiB) by GPU count (MOUNT_TIERS); other counts + CPU get the base.
+# Reserved rclone memory (MiB) by GPU count (MOUNT_TIERS); other counts + CPU get the base.
 HF_CACHE_TIER_MIB = {1: 512, 2: 1024, 4: 2048, 8: 4096}
 
 
 def hf_cache_gpu_topup_mib(gpu_count: int) -> int:
-    """hf-cache memory (MiB) a GPU node reserves beyond the base tier."""
+    """Extra hf-cache rclone memory (MiB) a GPU node reserves beyond the base tier.
+
+    Only rclone's memory is tiered by GPU count; the taint-remover sidecar is flat
+    and already included in the base, so it is excluded from the top-up.
+    """
     return HF_CACHE_TIER_MIB.get(gpu_count, HF_CACHE_BASE_MIB) - HF_CACHE_BASE_MIB
 
 

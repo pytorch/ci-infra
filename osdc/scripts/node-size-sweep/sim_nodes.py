@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "python"))
 
 from analyze_node_utilization import compute_allocatable, compute_daemonset_overhead  # noqa: E402
-from daemonset_overhead import DaemonSetOverhead, discover_daemonsets  # noqa: E402
+from daemonset_overhead import DaemonSetOverhead, discover_daemonsets, hf_cache_gpu_topup_mib  # noqa: E402
 from fleet_naming import derive_fleet_name  # noqa: E402
 from instance_specs import INSTANCE_SPECS  # noqa: E402
 
@@ -202,6 +202,8 @@ class ClusterModel:
         is_gpu = bool(spec and spec.get("gpu", 0) > 0)
         scoped_ds = _daemonsets_for_fleet(self.daemonsets, fleet)
         ds_cpu, ds_mem = compute_daemonset_overhead(scoped_ds, is_gpu=is_gpu)
+        # match compute_allocatable: per-GPU-count hf-cache reserve
+        ds_mem += hf_cache_gpu_topup_mib(spec.get("gpu", 0)) if spec else 0
         totals = (ds_cpu, ds_mem, 0)
         self._ds_cache[key] = totals
         return totals

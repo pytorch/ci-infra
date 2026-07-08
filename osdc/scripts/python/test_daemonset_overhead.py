@@ -507,20 +507,22 @@ class TestRealManifests:
         assert by_name["runner-hooks-warmer"].memory_mib == 32
 
     def test_hf_cache_templated_overhead(self, upstream_dir):
-        """hf-cache is a .tpl DaemonSet (invisible to the YAML scan), added as a 256Mi
-        base on all nodes; GPU nodes reserve more per GPU count via the top-up helper."""
+        """hf-cache is a .tpl DaemonSet (invisible to the YAML scan): rclone + taint-remover
+        counted on every node, plus a per-GPU-count rclone memory top-up on GPU nodes."""
         by_name = {ds.name: ds for ds in discover_daemonsets(upstream_dir)}
 
         base = by_name["hf-cache-mount"]
         assert base.gpu_only is False
-        assert base.memory_mib == 256  # CPU / catch-all tier
+        # rclone 100m/256Mi + taint-remover 10m/32Mi, flat on every runner node
+        assert base.cpu_millicores == 110
+        assert base.memory_mib == 288
 
-        # base + top-up == the reserved memory tier for each GPU count (MOUNT_TIERS)
-        assert base.memory_mib + hf_cache_gpu_topup_mib(1) == 512
-        assert base.memory_mib + hf_cache_gpu_topup_mib(2) == 1024
-        assert base.memory_mib + hf_cache_gpu_topup_mib(4) == 2048
-        assert base.memory_mib + hf_cache_gpu_topup_mib(8) == 4096
-        # CPU and unclassified GPU counts stay at the 256Mi base (no top-up)
+        # rclone memory is tiered by GPU count; the 32Mi taint-remover stays flat in the base
+        assert base.memory_mib + hf_cache_gpu_topup_mib(1) == 512 + 32
+        assert base.memory_mib + hf_cache_gpu_topup_mib(2) == 1024 + 32
+        assert base.memory_mib + hf_cache_gpu_topup_mib(4) == 2048 + 32
+        assert base.memory_mib + hf_cache_gpu_topup_mib(8) == 4096 + 32
+        # CPU and unclassified GPU counts stay at the base (no top-up)
         assert hf_cache_gpu_topup_mib(0) == 0
         assert hf_cache_gpu_topup_mib(16) == 0
 
