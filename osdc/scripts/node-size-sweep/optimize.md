@@ -18,6 +18,21 @@ Skip fleets that are already right-sized or out of scope: `p4d`, `p5`,
 reserved-capacity fleets, `-large` variants (whole-node-per-pod by design), and
 `c7i-runner`.
 
+## Running
+
+Canonical invocation (run from the `osdc/` root). `--drop-provider lf` excludes
+the Linux Foundation cluster; `--last-days` sets the HUD workload window
+(35 here; use 21 for a shorter window); `--keep-fraction 0.5` is the arrival
+downsample (CLI default is 1.0 — pass 0.5 explicitly to match the canonical
+before/after reports):
+
+```bash
+rm -rf scripts/node-size-sweep/output ; uv run scripts/node-size-sweep/optimize_search.py \
+    --last-days 35 --drop-provider lf --keep-fraction 0.5 \
+    --num-workers $(sysctl -n hw.ncpu) --num-restarts 20 \
+    --search-mode auto
+```
+
 ## Why this is the right optimization target
 
 Two failure modes we're steering between:
