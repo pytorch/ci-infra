@@ -59,6 +59,22 @@ EKS_ADDON_DAEMONSETS: list[DaemonSetOverhead] = [
     DaemonSetOverhead("efs-csi-node", 0, 0, False, "constant:eks-addon"),
 ]
 
+# .tpl-rendered DaemonSets the raw-YAML scan can't see (unresolved __PLACEHOLDER__s).
+# hf-cache's memory is tiered by GPU count (deploy.sh MOUNT_TIERS); this base is the
+# CPU/catch-all tier counted on every node, and GPU nodes add hf_cache_gpu_topup_mib().
+HF_CACHE_BASE_MIB = 256
+TEMPLATED_DAEMONSETS: list[DaemonSetOverhead] = [
+    DaemonSetOverhead("hf-cache-mount", 100, HF_CACHE_BASE_MIB, False, "constant:tpl:modules/hf-cache"),
+]
+
+# Reserved hf-cache memory (MiB) by GPU count (MOUNT_TIERS); other counts + CPU get the base.
+HF_CACHE_TIER_MIB = {1: 512, 2: 1024, 4: 2048, 8: 4096}
+
+
+def hf_cache_gpu_topup_mib(gpu_count: int) -> int:
+    """hf-cache memory (MiB) a GPU node reserves beyond the base tier."""
+    return HF_CACHE_TIER_MIB.get(gpu_count, HF_CACHE_BASE_MIB) - HF_CACHE_BASE_MIB
+
 
 # ---------------------------------------------------------------------------
 # Parsing helpers
@@ -145,31 +161,13 @@ def _extract_container_resources(containers: list[dict]) -> tuple[int, int]:
     return total_cpu, total_mem
 
 
-def _daemonset_name(doc: dict, yaml_file: Path) -> str:
-    """Return a stable, readable name for a discovered DaemonSet.
-
-    Template manifests (.yaml.tpl) carry placeholder names such as
-    "__DS_NAME__" that are substituted only at deploy time. Derive the name
-    from the owning module directory so templated DaemonSets get unique keys
-    instead of all colliding on the shared placeholder.
-    """
-    name = doc.get("metadata", {}).get("name", "")
-    if name and "__" not in name:
-        return name
-    parts = yaml_file.parts
-    if "modules" in parts:
-        return parts[parts.index("modules") + 1]
-    return yaml_file.stem
-
-
 def _discover_from_yaml(search_dirs: list[Path]) -> list[DaemonSetOverhead]:
     """Scan directories for YAML files containing DaemonSet documents."""
     results: list[DaemonSetOverhead] = []
     for search_dir in search_dirs:
         if not search_dir.exists():
             continue
-        files = sorted([*search_dir.rglob("*.yaml"), *search_dir.rglob("*.yaml.tpl")])
-        for yaml_file in files:
+        for yaml_file in sorted(search_dir.rglob("*.yaml")):
             try:
                 with open(yaml_file) as fh:
                     docs = list(yaml.safe_load_all(fh))
@@ -182,7 +180,7 @@ def _discover_from_yaml(search_dirs: list[Path]) -> list[DaemonSetOverhead]:
                 if doc.get("kind") != "DaemonSet":
                     continue
 
-                name = _daemonset_name(doc, yaml_file)
+                name = doc.get("metadata", {}).get("name", yaml_file.stem)
                 pod_spec = doc.get("spec", {}).get("template", {}).get("spec", {})
 
                 # Sum requests from regular containers only (not initContainers)
@@ -232,6 +230,9 @@ def discover_daemonsets(
 
     # Discover from YAML manifests
     discovered = _discover_from_yaml(search_dirs)
+
+    # .tpl-rendered DaemonSets the YAML scan can't see (always part of the project)
+    discovered.extend(TEMPLATED_DAEMONSETS)
 
     # Add constants
     if include_helm:

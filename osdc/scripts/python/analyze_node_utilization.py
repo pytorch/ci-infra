@@ -25,7 +25,7 @@ from pathlib import Path
 
 import yaml
 from cli_colors import BOLD, CYAN, DIM, GREEN, NC, RED, YELLOW
-from daemonset_overhead import DaemonSetOverhead, discover_daemonsets
+from daemonset_overhead import DaemonSetOverhead, discover_daemonsets, hf_cache_gpu_topup_mib
 from instance_specs import ENI_MAX_PODS, INSTANCE_SPECS
 
 # ARC container-hooks overhead: injected containers added to the workflow
@@ -158,6 +158,7 @@ def compute_allocatable(
     max_pods = ENI_MAX_PODS.get(instance_type, spec["vcpu"])  # fallback to vcpu if unknown
     kube_cpu, kube_mem = kubelet_reserved(spec["vcpu"], spec["memory_gib"], max_pods)
     ds_cpu, ds_mem = compute_daemonset_overhead(daemonsets, is_gpu)
+    ds_mem += hf_cache_gpu_topup_mib(spec["gpu"])  # per-GPU-count hf-cache reserve
 
     total_cpu_m = spec["vcpu"] * 1000
     total_mem_mi = spec["memory_mi"]

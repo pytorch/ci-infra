@@ -8,11 +8,11 @@ import yaml
 from daemonset_overhead import (
     EKS_ADDON_DAEMONSETS,
     HELM_DAEMONSETS,
-    _daemonset_name,
     _discover_from_yaml,
     _extract_container_resources,
     _is_gpu_only,
     discover_daemonsets,
+    hf_cache_gpu_topup_mib,
     main,
     parse_cpu_millicores,
     parse_memory_mib,
@@ -311,60 +311,6 @@ class TestDiscoverFromYaml:
         assert len(results) == 1
         assert results[0].name == "nested-ds"
 
-    def test_discovers_yaml_tpl_with_placeholder_name(self, tmp_path):
-        """.yaml.tpl templates are scanned; placeholder names derive from module dir."""
-        tpl_dir = tmp_path / "modules" / "hf-cache" / "kubernetes"
-        tpl_dir.mkdir(parents=True)
-        manifest = {
-            "apiVersion": "apps/v1",
-            "kind": "DaemonSet",
-            "metadata": {"name": "__DS_NAME__"},
-            "spec": {
-                "template": {
-                    "spec": {
-                        "containers": [
-                            {
-                                "name": "rclone",
-                                "resources": {"requests": {"cpu": "100m", "memory": "256Mi"}},
-                            },
-                            {
-                                "name": "taint-remover",
-                                "resources": {"requests": {"cpu": "10m", "memory": "32Mi"}},
-                            },
-                        ]
-                    }
-                }
-            },
-        }
-        (tpl_dir / "mount-daemonset.yaml.tpl").write_text(yaml.dump(manifest))
-
-        results = _discover_from_yaml([tmp_path])
-        assert len(results) == 1
-        assert results[0].name == "hf-cache"
-        assert results[0].cpu_millicores == 110
-        assert results[0].memory_mib == 288
-        assert results[0].gpu_only is False
-
-
-# ---------------------------------------------------------------------------
-# _daemonset_name
-# ---------------------------------------------------------------------------
-
-
-class TestDaemonsetName:
-    def test_concrete_name_passes_through(self):
-        doc = {"metadata": {"name": "real-ds"}}
-        assert _daemonset_name(doc, Path("modules/foo/kubernetes/ds.yaml")) == "real-ds"
-
-    def test_placeholder_under_modules_uses_module_dir(self):
-        doc = {"metadata": {"name": "__DS_NAME__"}}
-        yaml_file = Path("/repo/modules/foo/kubernetes/mount.yaml.tpl")
-        assert _daemonset_name(doc, yaml_file) == "foo"
-
-    def test_placeholder_outside_modules_falls_back_to_stem(self):
-        doc = {"metadata": {"name": "__DS_NAME__"}}
-        assert _daemonset_name(doc, Path("/repo/base/kubernetes/thing.yaml")) == "thing"
-
 
 # ---------------------------------------------------------------------------
 # discover_daemonsets (integration)
@@ -560,17 +506,23 @@ class TestRealManifests:
         assert by_name["runner-hooks-warmer"].cpu_millicores == 10
         assert by_name["runner-hooks-warmer"].memory_mib == 32
 
-    def test_discovers_hf_cache_from_template(self, upstream_dir):
-        """hf-cache lives in a .yaml.tpl with a placeholder name; verify discovery."""
-        results = discover_daemonsets(upstream_dir)
-        by_name = {ds.name: ds for ds in results}
+    def test_hf_cache_templated_overhead(self, upstream_dir):
+        """hf-cache is a .tpl DaemonSet (invisible to the YAML scan), added as a 256Mi
+        base on all nodes; GPU nodes reserve more per GPU count via the top-up helper."""
+        by_name = {ds.name: ds for ds in discover_daemonsets(upstream_dir)}
 
-        # rclone 100m/256Mi + taint-remover 10m/32Mi = 110m/288Mi.
-        assert "hf-cache" in by_name
-        assert by_name["hf-cache"].cpu_millicores == 110
-        assert by_name["hf-cache"].memory_mib == 288
-        # workload-type/instance-gpu-name affinity, not nvidia.com/gpu.
-        assert by_name["hf-cache"].gpu_only is False
+        base = by_name["hf-cache-mount"]
+        assert base.gpu_only is False
+        assert base.memory_mib == 256  # CPU / catch-all tier
+
+        # base + top-up == the reserved memory tier for each GPU count (MOUNT_TIERS)
+        assert base.memory_mib + hf_cache_gpu_topup_mib(1) == 512
+        assert base.memory_mib + hf_cache_gpu_topup_mib(2) == 1024
+        assert base.memory_mib + hf_cache_gpu_topup_mib(4) == 2048
+        assert base.memory_mib + hf_cache_gpu_topup_mib(8) == 4096
+        # CPU and unclassified GPU counts stay at the 256Mi base (no top-up)
+        assert hf_cache_gpu_topup_mib(0) == 0
+        assert hf_cache_gpu_topup_mib(16) == 0
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,11 @@ cold node only pulls the models its jobs touch. Job pods (ARC kubernetes mode)
 get the path bind-mounted read-only via the gated `# BEGIN_HF_CACHE` block in
 `modules/arc-runners/templates/runner.yaml.tpl`.
 
+rclone's memory is **reserved** (`request == limit`) and **tiered by GPU count**
+(`karpenter.k8s.aws/instance-gpu-count`), since RSS scales with job concurrency:
+`deploy.sh` renders one DaemonSet per tier — 8-GPU → 4Gi, 4-GPU → 2Gi, 2-GPU → 1Gi,
+1-GPU → 512Mi, and the CPU catch-all → 256Mi. See `MOUNT_TIERS` in `deploy.sh`.
+
 **Writes are gated by GitHub OIDC, not by the mount.** Job pods can't write the
 cache (read-only mount, read-only IRSA). On `ci-refresh-hf-cache` runs, the
 pytorch/pytorch workflow assumes a GitHub-OIDC role
@@ -30,7 +35,7 @@ follows symlinks, so the S3 layout is symlink-free and portable.
 |-----------|--------------|
 | `terraform/` | Per-cluster private bucket + read-only IRSA role (`hf-cache-mount` SA) |
 | `kubernetes/mount-daemonset.yaml.tpl` | rclone read-only FUSE mount → `/mnt/hf_cache` on every runner/workflow node |
-| `deploy.sh` | Annotates the SA with the role and rolls out the DaemonSet |
+| `deploy.sh` | Annotates the SA with the role and rolls out the per-GPU-count mount DaemonSets (`MOUNT_TIERS`) |
 | (pytorch-gha-infra) | `gha_workflow_hf-cache-write` OIDC role — the only writer |
 
 ## Runner consumption

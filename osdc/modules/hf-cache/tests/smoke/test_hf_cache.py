@@ -13,13 +13,21 @@ from helpers import assert_daemonset_healthy, filter_daemonsets, run_kubectl
 pytestmark = [pytest.mark.live]
 
 NAMESPACE = "hf-cache"
-MOUNT_DS = "hf-cache-mount"
-MOUNT_DS_LARGEGPU = "hf-cache-mount-largegpu"
+MOUNT_DS = "hf-cache-mount"  # the CPU/catch-all tier; also the pod-spec fixture DS
 MOUNT_SA = "hf-cache-mount"
 IRSA_KEY = "eks.amazonaws.com/role-arn"
 MOUNT_PATH = "/mnt/hf_cache"
-GPU_NAME_LABEL = "karpenter.k8s.aws/instance-gpu-name"
-LARGE_GPU_VALUES = {"h100", "b200"}
+GPU_COUNT_LABEL = "karpenter.k8s.aws/instance-gpu-count"
+# rclone memory is tiered by GPU count; each tier is its own DaemonSet and reserves
+# (request == limit). ds name -> (affinity op, gpu-count values, memory). Must match
+# deploy.sh MOUNT_TIERS.
+MOUNT_TIERS = {
+    "hf-cache-mount": ("NotIn", {"1", "2", "4", "8"}, "256Mi"),
+    "hf-cache-mount-gpu1": ("In", {"1"}, "512Mi"),
+    "hf-cache-mount-gpu2": ("In", {"2"}, "1Gi"),
+    "hf-cache-mount-gpu4": ("In", {"4"}, "2Gi"),
+    "hf-cache-mount-gpu8": ("In", {"8"}, "4Gi"),
+}
 RUNNER_NODE_SELECTOR = {"workload-type": ["github-runner"]}
 
 
@@ -136,7 +144,7 @@ class TestHfCacheMountDaemonSet:
 
 
 def _gpu_affinity_op(pod_spec: dict) -> tuple[str, set]:
-    """Return (operator, values) of the instance-gpu-name node-affinity requirement."""
+    """Return (operator, values) of the instance-gpu-count node-affinity requirement."""
     terms = (
         pod_spec.get("affinity", {})
         .get("nodeAffinity", {})
@@ -145,15 +153,15 @@ def _gpu_affinity_op(pod_spec: dict) -> tuple[str, set]:
     )
     for term in terms:
         for expr in term.get("matchExpressions", []):
-            if expr.get("key") == GPU_NAME_LABEL:
+            if expr.get("key") == GPU_COUNT_LABEL:
                 return expr.get("operator", ""), set(expr.get("values", []))
     return "", set()
 
 
-class TestHfCacheLargeGpuSplit:
-    """The mount runs as two DaemonSets: standard (CPU + small GPU) and -largegpu
-    (H100/B200, raised rclone memory). They must be mutually exclusive so exactly
-    one rclone mount runs per node, and only the large-GPU one carries the big limit.
+class TestHfCacheGpuTiers:
+    """The mount is rendered as one DaemonSet per gpu-count tier, memory scaled to
+    concurrency and reserved (request == limit). Tiers are mutually exclusive (via the
+    instance-gpu-count affinity) so exactly one rclone mount runs per node.
     """
 
     def _pod_spec(self, all_daemonsets: dict, name: str) -> dict:
@@ -161,32 +169,25 @@ class TestHfCacheLargeGpuSplit:
         assert ds, f"DaemonSet '{name}' not found in {NAMESPACE}."
         return ds[0]["spec"]["template"]["spec"]
 
-    def _rclone_mem(self, pod_spec: dict) -> str:
+    def _rclone_res(self, pod_spec: dict) -> tuple[str, str]:
         rclone = next(c for c in pod_spec["containers"] if c.get("name") == "rclone")
-        return rclone.get("resources", {}).get("limits", {}).get("memory", "")
+        res = rclone.get("resources", {})
+        return res.get("requests", {}).get("memory", ""), res.get("limits", {}).get("memory", "")
 
-    def test_largegpu_daemonset_targets_h100_b200(self, all_daemonsets: dict) -> None:
-        op, values = _gpu_affinity_op(self._pod_spec(all_daemonsets, MOUNT_DS_LARGEGPU))
-        assert values == LARGE_GPU_VALUES, f"{MOUNT_DS_LARGEGPU} must target {LARGE_GPU_VALUES}; got {values}."
-        assert op == "In", f"{MOUNT_DS_LARGEGPU} must use In affinity to select large-GPU nodes; got op={op}."
-
-    def test_standard_daemonset_excludes_h100_b200(self, all_daemonsets: dict) -> None:
-        op, values = _gpu_affinity_op(self._pod_spec(all_daemonsets, MOUNT_DS))
-        assert values == LARGE_GPU_VALUES, f"{MOUNT_DS} affinity must reference {LARGE_GPU_VALUES}; got {values}."
-        assert op == "NotIn", (
-            f"{MOUNT_DS} must use NotIn affinity so it doesn't double-mount large-GPU nodes; got op={op}."
-        )
-
-    def test_largegpu_has_more_memory(self, all_daemonsets: dict) -> None:
-        std = self._rclone_mem(self._pod_spec(all_daemonsets, MOUNT_DS))
-        big = self._rclone_mem(self._pod_spec(all_daemonsets, MOUNT_DS_LARGEGPU))
-
-        def gib(v: str) -> float:
-            return float(v[:-2]) if v.endswith("Gi") else float(v[:-2]) / 1024 if v.endswith("Mi") else float(v)
-
-        assert gib(big) > gib(std), (
-            f"{MOUNT_DS_LARGEGPU} rclone memory limit ({big}) must exceed the standard one ({std})."
-        )
+    @pytest.mark.parametrize(
+        ("ds_name", "op", "values", "mem"),
+        [(name, *spec) for name, spec in MOUNT_TIERS.items()],
+    )
+    def test_tier_affinity_and_reserved_memory(
+        self, all_daemonsets: dict, ds_name: str, op: str, values: set, mem: str
+    ) -> None:
+        pod_spec = self._pod_spec(all_daemonsets, ds_name)
+        aff_op, aff_values = _gpu_affinity_op(pod_spec)
+        assert aff_op == op, f"{ds_name}: expected affinity op {op!r}, got {aff_op!r}."
+        assert aff_values == values, f"{ds_name}: expected gpu-count values {values}, got {aff_values}."
+        req, lim = self._rclone_res(pod_spec)
+        assert lim == mem, f"{ds_name}: expected rclone memory limit {mem}, got {lim}."
+        assert req == lim, f"{ds_name}: request must == limit to reserve memory; got {req} vs {lim}."
 
 
 class TestHfCacheTaintGate:
