@@ -30,14 +30,20 @@ RCLONE_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_image "rclone/rclone:1.6
 TAINT_REMOVER_IMAGE=$(uv run "$CFG" "$CLUSTER" hf_cache.taint_remover_image \
   "public.ecr.aws/amazonlinux/amazonlinux:2023")
 VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size "75%")
-# Only large-GPU nodes pull multi-GB models and OOM rclone, so only the -largegpu
-# DaemonSet gets the raised limit; standard nodes keep the modest default. Which GPUs
-# count as "large" is the instance-gpu-name set below (comma-separated in config).
-RCLONE_MEMORY_LIMIT=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_memory_limit "1Gi")
-RCLONE_MEMORY_LIMIT_LARGEGPU=$(uv run "$CFG" "$CLUSTER" hf_cache.rclone_memory_limit_largegpu "4Gi")
-# h100,b200 -> ["h100","b200"] for the node-affinity values list.
-LARGE_GPU_NAMES=$(uv run "$CFG" "$CLUSTER" hf_cache.large_gpu_names "h100,b200")
-LARGE_GPU_VALUES="[\"${LARGE_GPU_NAMES//,/\",\"}\"]"
+# rclone RSS scales with job concurrency ~ GPU count, so memory is tiered by
+# instance-gpu-count and reserved (request == limit). One DaemonSet per tier; the
+# affinity keeps them exclusive. Fields: <ds-name> <affinity-op> <gpu-count-csv> <memory>.
+# The "hf-cache-mount" NotIn catch-all covers CPU + any unclassified count, so every
+# node gets a mount to clear the startup taint.
+# FOLLOW-UP: the GPU-only PR drops CPU (nvidia.com/gpu nodeSelector); then collapse the
+# first two rows into "hf-cache-mount NotIn 2,4,8 512Mi" (1-GPU + rest).
+MOUNT_TIERS=(
+  "hf-cache-mount NotIn 1,2,4,8 256Mi"
+  "hf-cache-mount-gpu1 In 1 512Mi"
+  "hf-cache-mount-gpu2 In 2 1Gi"
+  "hf-cache-mount-gpu4 In 4 2Gi"
+  "hf-cache-mount-gpu8 In 8 4Gi"
+)
 BUCKET_CFG=$(uv run "$CFG" "$CLUSTER" state_bucket)
 # Bucket is in the cluster's region, so rclone's S3 region is the cluster region.
 BUCKET_REGION="$REGION"
@@ -76,11 +82,11 @@ kubectl create configmap node-taint-remover-lib \
   -n "$NAMESPACE" --dry-run=client -o yaml \
   | kubectl_apply_if_changed -f -
 
-# --- Render + apply the mount DaemonSet(s) ---
-# One template, two DaemonSets (standard + -largegpu); the __GPU_OP__ affinity keeps
-# them mutually exclusive so exactly one rclone mount runs per node.
+# --- Render + apply the mount DaemonSets (one per GPU-count tier) ---
 render_mount_ds() {
-  # $1 = DaemonSet name, $2 = gpu affinity operator, $3 = rclone memory limit
+  # $1 = DaemonSet name, $2 = affinity operator, $3 = gpu-count CSV,
+  # $4 = rclone memory (rendered as both request and limit → reserved)
+  local values="[\"${3//,/\",\"}\"]"
   sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
     -e "s|__BUCKET__|${BUCKET}|g" \
     -e "s|__REGION__|${BUCKET_REGION}|g" \
@@ -89,24 +95,33 @@ render_mount_ds() {
     -e "s|__TAINT_REMOVER_IMAGE__|${TAINT_REMOVER_IMAGE}|g" \
     -e "s|__DS_NAME__|${1}|g" \
     -e "s|__GPU_OP__|${2}|g" \
-    -e "s|__RCLONE_MEMORY_LIMIT__|${3}|g" \
-    -e "s|__LARGE_GPU_NAMES__|${LARGE_GPU_VALUES}|g" \
+    -e "s|__MULTI_GPU_COUNTS__|${values}|g" \
+    -e "s|__RCLONE_MEMORY_LIMIT__|${4}|g" \
     "$MODULE_DIR/kubernetes/mount-daemonset.yaml.tpl"
 }
 
-echo "[hf-cache] Applying mount DaemonSets (standard + large-GPU)..."
+# Retire the pre-tier -largegpu DaemonSet first: the gpu8 tier supersedes it and
+# both would otherwise select 8-GPU nodes and double-mount /mnt/hf_cache.
+kubectl delete daemonset hf-cache-mount-largegpu -n "$NAMESPACE" --ignore-not-found
+
+echo "[hf-cache] Applying mount DaemonSets (per GPU-count tier)..."
 {
-  render_mount_ds "hf-cache-mount" "NotIn" "${RCLONE_MEMORY_LIMIT}"
-  echo "---"
-  render_mount_ds "hf-cache-mount-largegpu" "In" "${RCLONE_MEMORY_LIMIT_LARGEGPU}"
+  first=1
+  for tier in "${MOUNT_TIERS[@]}"; do
+    read -r _name _op _counts _mem <<<"$tier"
+    [ "$first" = 1 ] || echo "---"
+    first=0
+    render_mount_ds "$_name" "$_op" "$_counts" "$_mem"
+  done
 } | kubectl_apply_if_changed -f -
 
 echo "[hf-cache] Waiting for mount DaemonSet rollouts..."
-for DS in hf-cache-mount hf-cache-mount-largegpu; do
-  kubectl rollout status daemonset "$DS" \
+for tier in "${MOUNT_TIERS[@]}"; do
+  read -r _name _rest <<<"$tier"
+  kubectl rollout status daemonset "$_name" \
     -n "$NAMESPACE" --timeout=300s || {
-    echo "[hf-cache] WARNING: $DS rollout did not complete within timeout"
-    echo "[hf-cache] Check: kubectl get pods -n $NAMESPACE -l app=$DS"
+    echo "[hf-cache] WARNING: $_name rollout did not complete within timeout"
+    echo "[hf-cache] Check: kubectl get pods -n $NAMESPACE -l app=$_name"
   }
 done
 

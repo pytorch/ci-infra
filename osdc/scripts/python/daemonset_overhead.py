@@ -54,6 +54,22 @@ EKS_ADDON_DAEMONSETS: list[DaemonSetOverhead] = [
     DaemonSetOverhead("ebs-csi-node", 10, 50, False, "constant:eks-addon"),
 ]
 
+# .tpl-rendered DaemonSets the raw-YAML scan can't see (unresolved __PLACEHOLDER__s).
+# hf-cache's memory is tiered by GPU count (deploy.sh MOUNT_TIERS); this base is the
+# CPU/catch-all tier counted on every node, and GPU nodes add hf_cache_gpu_topup_mib().
+HF_CACHE_BASE_MIB = 256
+TEMPLATED_DAEMONSETS: list[DaemonSetOverhead] = [
+    DaemonSetOverhead("hf-cache-mount", 100, HF_CACHE_BASE_MIB, False, "constant:tpl:modules/hf-cache"),
+]
+
+# Reserved hf-cache memory (MiB) by GPU count (MOUNT_TIERS); other counts + CPU get the base.
+HF_CACHE_TIER_MIB = {1: 512, 2: 1024, 4: 2048, 8: 4096}
+
+
+def hf_cache_gpu_topup_mib(gpu_count: int) -> int:
+    """hf-cache memory (MiB) a GPU node reserves beyond the base tier."""
+    return HF_CACHE_TIER_MIB.get(gpu_count, HF_CACHE_BASE_MIB) - HF_CACHE_BASE_MIB
+
 
 # ---------------------------------------------------------------------------
 # Parsing helpers
@@ -209,6 +225,9 @@ def discover_daemonsets(
 
     # Discover from YAML manifests
     discovered = _discover_from_yaml(search_dirs)
+
+    # .tpl-rendered DaemonSets the YAML scan can't see (always part of the project)
+    discovered.extend(TEMPLATED_DAEMONSETS)
 
     # Add constants
     if include_helm:
