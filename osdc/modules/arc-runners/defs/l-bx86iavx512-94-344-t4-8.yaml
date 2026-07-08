@@ -1,13 +1,13 @@
 # ARC runner definition: l-bx86iavx512-94-344-t4-8
 # Instance type: g4dn.metal — 8-GPU T4, 96c/384Gi node
-# Actual K8s capacity ~355.2Gi. Max job memory after all overhead: 344Gi.
+# Actual K8s capacity ~355.2Gi. Job 340Gi after overhead incl. hf-cache 4Gi reserve; label keeps -344-.
 runner:
   name: l-bx86iavx512-94-344-t4-8
   instance_type: g4dn.metal
   node_fleet: g4dn-metal
   disk_size: 150
   vcpu: 94
-  memory: 344Gi
+  memory: 340Gi
   gpu: 8
   proactive_capacity: 0
   hud_failure_base_capacity: 15
