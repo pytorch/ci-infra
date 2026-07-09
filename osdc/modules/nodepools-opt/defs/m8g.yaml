@@ -1,7 +1,7 @@
 # Karpenter NodePool fleet: m8g
 # AWS Graviton4 — balanced, ARM64, ~4 GiB/core ratio
 # Release-only fleet: intentionally has no packing instances (m8g packing lives
-# in m8g-16xl.yaml). The release: block backs the rel- runner's release NodePool.
+# in m8g-8xl.yaml and m8g-large.yaml). The release: block backs the rel- runner's release NodePool.
 fleet:
   name: m8g
   arch: arm64

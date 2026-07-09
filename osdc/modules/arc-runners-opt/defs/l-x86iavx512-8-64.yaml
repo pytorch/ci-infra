@@ -5,8 +5,8 @@ runner:
   instance_type: r7a.8xlarge
   node_fleet: r7a-8xl
   disk_size: 200
-  vcpu: 10
-  memory: 77Gi
+  vcpu: 9
+  memory: 76Gi
   gpu: 0
   proactive_capacity: 0
   hud_failure_base_capacity: 90
