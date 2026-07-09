@@ -1913,14 +1913,19 @@ jobs:
 
   # BEGIN_RELEASE
   # ── Release Runner Tests ───────────────────────────────────────────────
+  # Validate each release build runner end-to-end: correct CPU spec, then a
+  # real from-scratch PyTorch CPU wheel build (USE_CUDA=0) from source. This is
+  # the release lane's actual job — it exercises the full toolchain, all cores,
+  # disk, and egress. (Long-running: ~30-50 min per arch; see timeout-minutes.)
   test-release-arm64:
-    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-l-arm64g4-16-62"] }
+    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-l-arm64g3-44-340"] }
+    timeout-minutes: 180
     container:
-      image: ghcr.io/actions/actions-runner:latest
+      image: python:3.12-slim
     steps:
       - name: Verify CPU count
         run: |
-          EXPECTED={{VCPU__REL_L_ARM64G4_16_62}}
+          EXPECTED={{VCPU__REL_L_ARM64G3_44_340}}
           ACTUAL=$(nproc)
           echo "CPUs: $ACTUAL (expected: $EXPECTED)"
           if [ "$ACTUAL" -ne "$EXPECTED" ]; then
@@ -1928,23 +1933,57 @@ jobs:
             exit 1
           fi
           echo "PASS: CPU count matches"
-      - name: Verify ghcr.io access
+      - name: Install build toolchain
         run: |
-          echo "=== Release Runner: ghcr.io Access ==="
-          HTTP_CODE=$(curl --connect-timeout 5 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://ghcr.io/v2/" 2>/dev/null || echo "000")
-          if [ "$HTTP_CODE" = "000" ]; then
-            echo "FAIL: ghcr.io is unreachable"
+          apt-get update
+          apt-get install -y --no-install-recommends git build-essential cmake ninja-build libopenblas-dev
+          pip install --no-cache-dir --upgrade pip setuptools wheel
+      - name: Build PyTorch CPU wheel from source
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/pytorch/pytorch /tmp/pytorch
+          cd /tmp/pytorch
+          pip install --no-cache-dir -r requirements.txt
+          export USE_CUDA=0 USE_ROCM=0 USE_XPU=0 BUILD_TEST=0 MAX_JOBS="$(nproc)"
+          python setup.py bdist_wheel
+          WHL=$(ls dist/torch-*.whl 2>/dev/null | head -1)
+          if [ -z "$WHL" ]; then
+            echo "FAIL: no torch wheel produced"
             exit 1
           fi
-          echo "PASS: ghcr.io is reachable (HTTP $HTTP_CODE)"
-      - name: Verify pypi.org access
+          echo "PASS: built $(basename "$WHL")"
+  test-release-x86:
+    runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-l-x86iavx512-44-340"] }
+    timeout-minutes: 180
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Verify CPU count
         run: |
-          echo "=== Release Runner: pypi.org Access ==="
-          HTTP_CODE=$(curl --connect-timeout 5 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://pypi.org/simple/" 2>/dev/null || echo "000")
-          if [ "$HTTP_CODE" = "000" ]; then
-            echo "FAIL: pypi.org is unreachable"
+          EXPECTED={{VCPU__REL_L_X86IAVX512_44_340}}
+          ACTUAL=$(nproc)
+          echo "CPUs: $ACTUAL (expected: $EXPECTED)"
+          if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "FAIL: Expected $EXPECTED CPUs, got $ACTUAL"
             exit 1
           fi
-          echo "PASS: pypi.org is reachable (HTTP $HTTP_CODE)"
+          echo "PASS: CPU count matches"
+      - name: Install build toolchain
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git build-essential cmake ninja-build libopenblas-dev
+          pip install --no-cache-dir --upgrade pip setuptools wheel
+      - name: Build PyTorch CPU wheel from source
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/pytorch/pytorch /tmp/pytorch
+          cd /tmp/pytorch
+          pip install --no-cache-dir -r requirements.txt
+          export USE_CUDA=0 USE_ROCM=0 USE_XPU=0 BUILD_TEST=0 MAX_JOBS="$(nproc)"
+          python setup.py bdist_wheel
+          WHL=$(ls dist/torch-*.whl 2>/dev/null | head -1)
+          if [ -z "$WHL" ]; then
+            echo "FAIL: no torch wheel produced"
+            exit 1
+          fi
+          echo "PASS: built $(basename "$WHL")"
   # END_RELEASE
 

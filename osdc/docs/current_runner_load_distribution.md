@@ -8,7 +8,7 @@ Job counts and peak concurrency by runner type over the last 30 days. Source: `d
 > - H100 runners (`l-x86iamx-22-225-h100`, `…-2`, `…-4`, `…-8` on `nodepools-h100/p5-48xlarge`, added 2026-05-01).
 > - A100 runners (`l-x86iavx512-11-125-a100`, `…-2`, `…-4`, `l-bx86iavx512-88-1000-a100-8` on `nodepools/p4d-24xlarge`, added 2026-05-06).
 > - The `c7i-runner` Karpenter NodePool (proactive-capacity PoC; isolated from the shared `c7i` pool by the `node-fleet=c7i-runner` taint).
-> - Release runners (`rel-l-arm64g4-16-62`, `rel-l-x86iavx512-8-64`) on `m8g-48xlarge-release` / `r7a-48xlarge-release` nodepools — they have `proactive_capacity: 30` and consume real fleet capacity but are not modelled because they don't run pytorch/pytorch jobs.
+> - Release wheel-build runners (`rel-l-arm64g3-44-340`, `rel-l-x86iavx512-44-340`) on `r7g-12xlarge-release` / `r7a-12xlarge-release` nodepools — `runner_class: release`, isolated from CI, `proactive_capacity: 0` (scale on demand). Not modelled here because they serve release (not pytorch/pytorch CI) jobs.
 > - ARM64 silicon refinement (PR #591): `l-arm64g2-6-32` re-pointed from `m8g.48xlarge` to `t4g.2xlarge` (Graviton2), `l-arm64g3-16-62` to `m7g.8xlarge` (Graviton3), and `linux.arm64.m7g.metal` re-mapped from `l-barm64g4-62-226` to the new `l-barm64g3-62-226` backed by `m7g.metal` (true Graviton3 bare-metal). The snapshot rows below still reference the pre-refinement label / backings.
 >
 > When this doc is refreshed, `scripts/python/pytorch_workload_data.py` (`PEAK_CONCURRENT` and `OLD_TO_NEW_LABEL`) must be updated in lockstep — the simulator reads from this doc.
@@ -159,7 +159,7 @@ Estimated node count and resource usage when all runners hit their peak concurre
 
 > **Stale snapshot.** The fleet sizing below predates the H100 (`nodepools-h100/p5-48xlarge`, 8x H100 reserved-capacity nodes), A100 (`nodepools/p4d-24xlarge`, on-demand), and `c7i-runner` nodepools. Reserved-capacity GPU nodes don't terminate during low-load periods — they sit warm — so the daily-churn model below also no longer holds for the GPU portion of the fleet. Re-run `just simulate-cluster` after the next load-data refresh.
 >
-> **Release runners excluded.** `rel-l-arm64g4-16-62` (m8g.48xlarge-release) and `rel-l-x86iavx512-8-64` (r7a.48xlarge-release) are in the fleet but `runner_class: release` and serve no pytorch/pytorch jobs; their `proactive_capacity: 30` floor still consumes nodes that are not represented in the totals below.
+> **Release runners excluded.** `rel-l-arm64g3-44-340` (r7g.12xlarge-release) and `rel-l-x86iavx512-44-340` (r7a.12xlarge-release) are in the fleet but `runner_class: release` and serve release wheel builds, not pytorch/pytorch CI jobs; with `proactive_capacity: 0` they scale on demand and are not represented in the totals below.
 
 ### Nodes by instance type
 

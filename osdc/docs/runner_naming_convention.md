@@ -45,8 +45,8 @@ Defs live in `modules/arc-runners/defs/` (CPU runners + A100 GPU + release defs)
 | `mt-l-arm64g3-16-62` | Meta, Linux, ARM64 Graviton 3, 16 vCPU, 62 GiB |
 | `nv-l-x86aavx2-48-192-a10g-4` | NVIDIA, Linux, x86 AMD AVX2, 48 vCPU, 192 GiB, 4x A10G GPUs |
 | `c-mt-l-x86iavx512-8-16` | **Canary**, Meta, Linux, x86 Intel AVX-512, 8 vCPU, 16 GiB |
-| `mt-rel-l-arm64g4-16-62` | Meta, **Release**, Linux, ARM64 Graviton 4, 16 vCPU, 62 GiB |
-| `mt-rel-l-x86iavx512-8-64` | Meta, **Release**, Linux, x86 Intel AVX-512, 8 vCPU, 64 GiB |
+| `mt-rel-l-arm64g3-44-340` | Meta, **Release**, Linux, ARM64 Graviton 3, 44 vCPU, 340 GiB |
+| `mt-rel-l-x86iavx512-44-340` | Meta, **Release**, Linux, x86 Intel AVX-512, 44 vCPU, 340 GiB |
 | `l-x86iamx-14-27` | Linux, x86 Intel AMX, 14 vCPU, 27 GiB |
 
 ## Old Label → New Label Mapping

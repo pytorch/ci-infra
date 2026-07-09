@@ -4,6 +4,7 @@ import pytest
 from fleet_naming import (
     RESERVED_NODE_FLEET_NAMES,
     derive_fleet_name,
+    derive_release_runner_group,
     validate_node_fleet,
 )
 
@@ -54,6 +55,25 @@ class TestDeriveFleetName:
     def test_override_reserved_raises(self):
         with pytest.raises(ValueError, match="reserved"):
             derive_fleet_name("c7i.24xlarge", override="c7i-runner")
+
+
+# ============================================================================
+# derive_release_runner_group
+# ============================================================================
+
+
+class TestDeriveReleaseRunnerGroup:
+    def test_cluster_group_gets_release_suffix(self):
+        assert derive_release_runner_group("meta-prod-aws-ue1") == "meta-prod-aws-ue1-release-runners"
+
+    def test_staging_group_gets_release_suffix(self):
+        assert derive_release_runner_group("meta-staging-aws-ue1") == "meta-staging-aws-ue1-release-runners"
+
+    @pytest.mark.parametrize("empty", [None, ""])
+    def test_no_cluster_group_falls_back_to_default(self, empty):
+        # A group-less cluster must not become "-release-runners" (invalid) nor
+        # double-suffix; it falls back to the "default" GitHub group.
+        assert derive_release_runner_group(empty) == "default"
 
 
 # ============================================================================

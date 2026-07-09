@@ -205,7 +205,7 @@ The only way to push these above 85% is to use instances where `N × runner_size
 4. Kept r5-24xlarge nodepool def for RE (Release Engineering) job-assigner workloads (cpu-44, cpu-85); no ARC runners use it
 5. Updated r7g-16xlarge node_disk_size from 2660 to 700 (now serves only 1 runner; current value is 1200 after later tuning)
 
-**Not covered by this analysis** (added later): the dedicated **release runner class** (`rel-l-x86iavx512-8-64`, `rel-l-arm64g4-16-62`) introduced in commit `903d1d4`, and the A100 / H100 GPU runners (see GPU Nodepools table for instance details).
+**Not covered by this analysis** (added later): the dedicated **release runner class** (`rel-l-x86iavx512-44-340` on r7a.12xlarge-release, `rel-l-arm64g3-44-340` on r7g.12xlarge-release), and the A100 / H100 GPU runners (see GPU Nodepools table for instance details).
 
 **ARM64 silicon refinement** (post-snapshot, PR #591): the Phase 2 decision to run all small ARM64 runners on `m8g.48xlarge` silently substituted Graviton4 for the Graviton2/3 silicon the EC2 labels promised, and the bare-metal `l-barm64g4-62-226` runs on a virtualized `m8g.16xlarge` dedicated node rather than true AWS bare-metal (see pytorch/pytorch#184284). Backings were corrected to match the EC2-promised silicon:
 - `l-arm64g2-6-32` → `t4g.2xlarge` (Graviton2, 1 pod/node)

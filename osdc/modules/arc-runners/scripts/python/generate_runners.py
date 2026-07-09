@@ -31,7 +31,7 @@ if _scripts_python not in sys.path:
     sys.path.insert(0, _scripts_python)
 
 from conditional_blocks import strip_conditional_block  # noqa: E402
-from fleet_naming import derive_fleet_name  # noqa: E402
+from fleet_naming import derive_fleet_name, derive_release_runner_group  # noqa: E402
 from nodepool_defs import load_excluded_instance_types  # noqa: E402
 from runner_fleet_validator import validate_cluster_runner_fleets  # noqa: E402
 
@@ -327,6 +327,13 @@ def generate_runner(
     cluster_runner_group = cluster_config.get("runner_group")
     if cluster_runner_group:
         runner_group = cluster_runner_group
+
+    # Release-class runners land in a dedicated per-region group so release wheel
+    # builds are a separate GitHub runner group from CI (e.g.
+    # meta-prod-aws-ue1 -> meta-prod-aws-ue1-release-runners). Derived through the
+    # shared helper so the integration-test harness (run.py) can't drift from this.
+    if runner_class == "release":
+        runner_group = derive_release_runner_group(cluster_runner_group)
 
     # Runner groups are an org-level GitHub concept. Repo-scoped githubConfigUrl
     # (e.g. github.com/org/repo) can't resolve runner groups — force "default".

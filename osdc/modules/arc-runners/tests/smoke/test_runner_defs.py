@@ -60,24 +60,26 @@ class TestDefForListenerPod:
     def test_disambiguates_rel_vs_non_rel_suffix_collision(self):
         """rel-* defs share suffixes with their non-rel siblings.
 
-        e.g. rel-l-arm64g4-16-62 ends with l-arm64g4-16-62. A naive
-        endswith() lookup grabs the wrong def when both have placeholders;
-        exact-match against the prefix-stripped scale-set name must NOT.
+        e.g. a rel-X def's name ends with a hypothetical non-rel X def's name
+        (rel-l-arm64g3-44-340 ends with l-arm64g3-44-340). A naive endswith()
+        lookup would grab the wrong def; exact-match against the prefix-stripped
+        scale-set name must NOT. (No such collision pair ships today — release
+        defs use distinct sizes — but the lookup must stay exact-match regardless.)
         """
         defs = {
-            "l-arm64g4-16-62": {"name": "l-arm64g4-16-62", "proactive_capacity": 30},
-            "rel-l-arm64g4-16-62": {"name": "rel-l-arm64g4-16-62", "proactive_capacity": 30},
+            "l-arm64g3-44-340": {"name": "l-arm64g3-44-340", "proactive_capacity": 30},
+            "rel-l-arm64g3-44-340": {"name": "rel-l-arm64g3-44-340", "proactive_capacity": 30},
         }
 
-        rel_pod = {"metadata": {"labels": {"actions.github.com/scale-set-name": "c-mt-rel-l-arm64g4-16-62"}}}
+        rel_pod = {"metadata": {"labels": {"actions.github.com/scale-set-name": "c-mt-rel-l-arm64g3-44-340"}}}
         rel_name, rel_def = def_for_listener_pod(rel_pod, defs, "c-mt-")
-        assert rel_name == "rel-l-arm64g4-16-62"
-        assert rel_def is defs["rel-l-arm64g4-16-62"]
+        assert rel_name == "rel-l-arm64g3-44-340"
+        assert rel_def is defs["rel-l-arm64g3-44-340"]
 
-        non_rel_pod = {"metadata": {"labels": {"actions.github.com/scale-set-name": "c-mt-l-arm64g4-16-62"}}}
+        non_rel_pod = {"metadata": {"labels": {"actions.github.com/scale-set-name": "c-mt-l-arm64g3-44-340"}}}
         non_rel_name, non_rel_def = def_for_listener_pod(non_rel_pod, defs, "c-mt-")
-        assert non_rel_name == "l-arm64g4-16-62"
-        assert non_rel_def is defs["l-arm64g4-16-62"]
+        assert non_rel_name == "l-arm64g3-44-340"
+        assert non_rel_def is defs["l-arm64g3-44-340"]
 
 
 class TestListenerEnvFromGeneratedYaml:

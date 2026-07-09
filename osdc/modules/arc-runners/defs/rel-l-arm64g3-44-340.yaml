@@ -1,0 +1,20 @@
+# ARC runner definition: rel-l-arm64g3-44-340
+# Release wheel-build runner (aarch64) — dedicated runner group + node isolation.
+# Instance type: r7g.12xlarge — 48c/384Gi node (pool: r7g-12xlarge-release),
+# matching the manywheel aarch64 build (linux.arm64.r7g.12xlarge.memory). One
+# runner per node; vCPU/memory lowered from the raw 48c/384Gi to leave room for
+# kubelet + DaemonSets (~460m/1158Mi) + hooks (320m/522Mi) + eviction margin.
+runner:
+  name: rel-l-arm64g3-44-340
+  instance_type: r7g.12xlarge
+  disk_size: 600
+  vcpu: 44
+  memory: 340Gi
+  gpu: 0
+  runner_class: release
+  # No runner_group here: release-class runners always land in the per-region
+  # group {cluster_group}-release-runners, derived by generate_runners.py from
+  # the cluster config (a def-level runner_group would be ignored for them).
+  proactive_capacity: 0
+  hud_failure_base_capacity: 0    # release builds aren't in the HUD queue; scale on demand
+  max_burst_capacity: 50
