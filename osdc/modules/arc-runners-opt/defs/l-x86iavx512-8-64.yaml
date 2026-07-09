@@ -1,12 +1,12 @@
 # ARC runner definition: l-x86iavx512-8-64
-# Instance type: r7a.8xlarge (pool: r7a-8xl)
+# Instance type: r7a.16xlarge (pool: r7a-16xl)
 runner:
   name: l-x86iavx512-8-64
-  instance_type: r7a.8xlarge
-  node_fleet: r7a-8xl
+  instance_type: r7a.16xlarge
+  node_fleet: r7a-16xl
   disk_size: 200
-  vcpu: 9
-  memory: 76Gi
+  vcpu: 8
+  memory: 64Gi
   gpu: 0
   proactive_capacity: 0
   hud_failure_base_capacity: 90
