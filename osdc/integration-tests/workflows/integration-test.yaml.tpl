@@ -39,7 +39,7 @@ jobs:
           fi
       - name: Verify CPU count
         run: |
-          EXPECTED=8
+          EXPECTED={{VCPU__L_X86IAMX_8_32}}
           ACTUAL=$(nproc)
           echo "CPUs: $ACTUAL (expected: $EXPECTED)"
           if [ "$ACTUAL" -ne "$EXPECTED" ]; then
@@ -49,7 +49,7 @@ jobs:
           echo "PASS: CPU count matches"
       - name: Verify memory
         run: |
-          EXPECTED_GI=32
+          EXPECTED_GI={{MEMGI__L_X86IAMX_8_32}}
           if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
             BYTES=$(cat /sys/fs/cgroup/memory.max)
           elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
@@ -68,7 +68,7 @@ jobs:
       - name: Verify TORCH_CI_MAX_MEMORY
         run: |
           echo "=== TORCH_CI_MAX_MEMORY ==="
-          EXPECTED=34359738368
+          EXPECTED={{TORCHMEM__L_X86IAMX_8_32}}
           ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
           echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
           if [ -z "$ACTUAL" ]; then
@@ -110,7 +110,7 @@ jobs:
           fi
       - name: Verify CPU count
         run: |
-          EXPECTED=8
+          EXPECTED={{VCPU__L_X86IAMX_8_32}}
           ACTUAL=$(nproc)
           echo "CPUs: $ACTUAL (expected: $EXPECTED)"
           if [ "$ACTUAL" -ne "$EXPECTED" ]; then
@@ -120,7 +120,7 @@ jobs:
           echo "PASS: CPU count matches"
       - name: Verify memory
         run: |
-          EXPECTED_GI=32
+          EXPECTED_GI={{MEMGI__L_X86IAMX_8_32}}
           if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
             BYTES=$(cat /sys/fs/cgroup/memory.max)
           elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
@@ -139,7 +139,7 @@ jobs:
       - name: Verify TORCH_CI_MAX_MEMORY
         run: |
           echo "=== TORCH_CI_MAX_MEMORY ==="
-          EXPECTED=34359738368
+          EXPECTED={{TORCHMEM__L_X86IAMX_8_32}}
           ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
           echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
           if [ -z "$ACTUAL" ]; then
@@ -169,7 +169,7 @@ jobs:
           echo "PASS: Architecture is $ARCH"
       - name: Verify CPU count
         run: |
-          EXPECTED=16
+          EXPECTED={{VCPU__L_ARM64G3_16_62}}
           ACTUAL=$(nproc)
           echo "CPUs: $ACTUAL (expected: >= $EXPECTED)"
           if [ "$ACTUAL" -lt "$EXPECTED" ]; then
@@ -179,7 +179,7 @@ jobs:
           echo "PASS: CPU count within expected range"
       - name: Verify memory
         run: |
-          EXPECTED_GI=62
+          EXPECTED_GI={{MEMGI__L_ARM64G3_16_62}}
           if [ -f /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
             BYTES=$(cat /sys/fs/cgroup/memory.max)
           elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
@@ -198,7 +198,7 @@ jobs:
       - name: Verify TORCH_CI_MAX_MEMORY
         run: |
           echo "=== TORCH_CI_MAX_MEMORY ==="
-          EXPECTED=66571993088
+          EXPECTED={{TORCHMEM__L_ARM64G3_16_62}}
           ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
           echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: >= $EXPECTED)"
           if [ -z "$ACTUAL" ]; then
@@ -1650,7 +1650,7 @@ jobs:
           nvidia-smi
           echo ""
           GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-          if [ "$GPU_COUNT" -lt 1 ]; then
+          if [ "$GPU_COUNT" -lt {{GPU__L_X86IAVX512_29_115_T4}} ]; then
             echo "FAIL: Expected at least 1 GPU, found $GPU_COUNT"
             exit 1
           fi
@@ -1673,7 +1673,7 @@ jobs:
       - name: Verify TORCH_CI_MAX_MEMORY
         run: |
           echo "=== TORCH_CI_MAX_MEMORY ==="
-          EXPECTED=123480309760
+          EXPECTED={{TORCHMEM__L_X86IAVX512_29_115_T4}}
           ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
           echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
           if [ -z "$ACTUAL" ]; then
@@ -1697,7 +1697,7 @@ jobs:
           nvidia-smi
           echo ""
           GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-          if [ "$GPU_COUNT" -ne 4 ]; then
+          if [ "$GPU_COUNT" -ne {{GPU__L_X86IAVX512_45_172_T4_4}} ]; then
             echo "FAIL: Expected 4 GPUs, found $GPU_COUNT"
             exit 1
           fi
@@ -1709,7 +1709,7 @@ jobs:
       - name: Verify TORCH_CI_MAX_MEMORY
         run: |
           echo "=== TORCH_CI_MAX_MEMORY ==="
-          EXPECTED=182536110080  # 170Gi = l-x86iavx512-45-172-t4-4 memory; keep in sync with the runner def
+          EXPECTED={{TORCHMEM__L_X86IAVX512_45_172_T4_4}}
           ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
           echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
           if [ -z "$ACTUAL" ]; then
@@ -1735,7 +1735,7 @@ jobs:
           nvidia-smi
           echo ""
           GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-          if [ "$GPU_COUNT" -ne 2 ]; then
+          if [ "$GPU_COUNT" -ne {{GPU__L_X86IAMX_44_450_B200_2}} ]; then
             echo "FAIL: Expected 2 GPUs, found $GPU_COUNT"
             exit 1
           fi
@@ -1743,7 +1743,7 @@ jobs:
       - name: Verify TORCH_CI_MAX_MEMORY
         run: |
           echo "=== TORCH_CI_MAX_MEMORY ==="
-          EXPECTED=483183820800
+          EXPECTED={{TORCHMEM__L_X86IAMX_44_450_B200_2}}
           ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
           echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
           if [ -z "$ACTUAL" ]; then
@@ -1920,7 +1920,7 @@ jobs:
     steps:
       - name: Verify CPU count
         run: |
-          EXPECTED=16
+          EXPECTED={{VCPU__REL_L_ARM64G4_16_62}}
           ACTUAL=$(nproc)
           echo "CPUs: $ACTUAL (expected: $EXPECTED)"
           if [ "$ACTUAL" -ne "$EXPECTED" ]; then
