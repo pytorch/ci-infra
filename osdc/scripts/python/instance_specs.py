@@ -29,6 +29,7 @@ INSTANCE_SPECS: dict[str, dict] = {
     # x86 CPU — compute-optimized (~2 GiB/core)
     # Fleet fallback sizes
     "c7a.2xlarge": {"vcpu": 8, "memory_gib": 16, "memory_mi": 15155, "gpu": 0, "arch": "amd64"},
+    "c7a.4xlarge": {"vcpu": 16, "memory_gib": 32, "memory_mi": 30310, "gpu": 0, "arch": "amd64"},
     "c7a.8xlarge": {"vcpu": 32, "memory_gib": 64, "memory_mi": 60620, "gpu": 0, "arch": "amd64"},
     "c7a.12xlarge": {"vcpu": 48, "memory_gib": 96, "memory_mi": 90931, "gpu": 0, "arch": "amd64"},
     "c7a.16xlarge": {"vcpu": 64, "memory_gib": 128, "memory_mi": 121241, "gpu": 0, "arch": "amd64"},
@@ -122,6 +123,7 @@ ENI_MAX_PODS: dict[str, int] = {
     # Runner node instance types
     # Fleet fallback sizes — c7a
     "c7a.2xlarge": 58,
+    "c7a.4xlarge": 234,
     "c7a.8xlarge": 234,
     "c7a.12xlarge": 234,
     "c7a.16xlarge": 737,

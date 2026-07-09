@@ -1,9 +1,9 @@
 # ARC runner definition: l-x86iamx-8-32
-# Instance type: m7i.48xlarge (pool: m7i-48xl)
+# Instance type: m7i.12xlarge (pool: m7i-12xl)
 runner:
   name: l-x86iamx-8-32
-  instance_type: m7i.48xlarge
-  node_fleet: m7i-48xl
+  instance_type: m7i.12xlarge
+  node_fleet: m7i-12xl
   disk_size: 200
   vcpu: 8
   memory: 32Gi

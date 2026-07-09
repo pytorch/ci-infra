@@ -1,13 +1,12 @@
 # ARC runner definition: l-x86aavx2-45-172-l4-4
 # Instance type: g6.12xlarge — 4-GPU L4, 48c/192Gi node
-# Actual K8s capacity ~177.6Gi. Job 171Gi after overhead incl. hf-cache 2Gi reserve; label keeps -172-.
+# Actual K8s capacity ~177.6Gi. Job 170Gi after overhead incl. hf-cache 2Gi reserve; label keeps -172-.
 runner:
   name: l-x86aavx2-45-172-l4-4
   instance_type: g6.12xlarge
-  node_fleet: g6-12xl
   disk_size: 150
-  vcpu: 47
-  memory: 171Gi
+  vcpu: 45
+  memory: 170Gi
   gpu: 4
   proactive_capacity: 0
   hud_failure_base_capacity: 15

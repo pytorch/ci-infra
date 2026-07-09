@@ -1,12 +1,12 @@
 # ARC runner definition: l-x86iavx2-8-32
-# Instance type: m7i.8xlarge (pool: m7i-8xl)
+# Instance type: m7i.12xlarge (pool: m7i-12xl)
 runner:
   name: l-x86iavx2-8-32
-  instance_type: m7i.8xlarge
-  node_fleet: m7i-8xl
+  instance_type: m7i.12xlarge
+  node_fleet: m7i-12xl
   disk_size: 200
-  vcpu: 10
-  memory: 37Gi
+  vcpu: 8
+  memory: 32Gi
   gpu: 0
   proactive_capacity: 0
   hud_failure_base_capacity: 90

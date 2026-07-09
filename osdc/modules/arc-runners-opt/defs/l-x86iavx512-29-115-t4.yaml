@@ -6,9 +6,8 @@
 runner:
   name: l-x86iavx512-29-115-t4
   instance_type: g4dn.8xlarge
-  node_fleet: g4dn-8xl
   disk_size: 150
-  vcpu: 31
+  vcpu: 29
   memory: 115Gi
   gpu: 1
   proactive_capacity: 0

@@ -1,0 +1,23 @@
+# Karpenter NodePool fleet: m8g-8xl
+# AWS Graviton4 — balanced, ARM64, ~4 GiB/core ratio
+# Sub-nodepool for ideal m8g.8xlarge; fallback UP to larger m8g sizes (descending weight).
+fleet:
+  name: m8g-8xl
+  arch: arm64
+  gpu: false
+  instances:
+    - type: m8g.8xlarge
+      weight: 100  # ideal
+      node_disk_size: 650
+    - type: m8g.12xlarge
+      weight: 85  # fallback
+      node_disk_size: 1350
+    - type: m8g.16xlarge
+      weight: 70  # fallback
+      node_disk_size: 1000
+    - type: m8g.24xlarge
+      weight: 55  # fallback
+      node_disk_size: 3500
+    - type: m8g.48xlarge
+      weight: 40  # fallback
+      node_disk_size: 7000
