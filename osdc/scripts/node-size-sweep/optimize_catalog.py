@@ -45,7 +45,7 @@ from sim_nodes import _daemonsets_for_fleet  # noqa: E402
 # in the def YAML's `vcpu:` field). The runner-container-hooks sidecar's cpu
 # request is fixed and rides on top of the main pod — it is never part of the
 # adjustment axis.
-MEM_LOWER_PCT = 0.95
+MEM_LOWER_PCT = 0.90
 
 
 @dataclass(frozen=True)
@@ -80,14 +80,23 @@ def instances_for_family(family: str) -> list[str]:
     return sorted(k for k in INSTANCE_SPECS if k.startswith(prefix) and ".metal" not in k)
 
 
+def _floor_main_vcpu(orig_main_vcpu: int) -> int:
+    """Lowest legal main vCPU: 1 vCPU or 10% down, whichever is more generous,
+    never below 1. Single source for the CPU down-floor used both to pack pods
+    (N computed as if every pod shrinks to this floor) and to gate the filled-
+    back slot in `_main_vcpu_bounds`.
+    """
+    return max(1, min(orig_main_vcpu - 1, math.ceil(orig_main_vcpu * 0.90)))
+
+
 def _main_vcpu_bounds(orig_main_vcpu: int) -> tuple[int, int]:
     """Return (lo, hi) inclusive integer bounds for a legal `new_main_vcpu`.
 
-    Lower: `min(orig - 1, ceil(orig * 0.95))` — at most 1 vCPU or 5% down,
-    whichever is more generous (so tiny defs like vcpu=2 keep a real range).
+    Lower: 1 vCPU or 10% down, whichever is more generous (so tiny defs like
+    vcpu=2 keep a real range).
     Upper: `max(orig + 1, ceil(orig * 1.35))` — at least 1 vCPU or 35% up.
     """
-    lo = min(orig_main_vcpu - 1, math.ceil(orig_main_vcpu * 0.95))
+    lo = _floor_main_vcpu(orig_main_vcpu)
     hi = max(orig_main_vcpu + 1, math.ceil(orig_main_vcpu * 1.35))
     return lo, hi
 
@@ -143,8 +152,15 @@ def eligibility_for_pair(
     if sidecar_cpu_m < 0 or sidecar_mem_mi < 0:
         return None
 
-    n_cpu = alloc_cpu_m // orig_cpu_m
-    n_mem = alloc_mem_mi // orig_mem_mi
+    # Pack pods as if every main pod shrinks to its down-floor: N is computed
+    # against the smallest legal slot so a pod may shrink just enough to cross
+    # an integer packing boundary (fit one MORE per node). The slot is filled
+    # back up afterward, capped at the operator's original size.
+    floor_main_vcpu = _floor_main_vcpu(orig_main_vcpu)
+    floor_cpu_m = floor_main_vcpu * 1000 + sidecar_cpu_m
+    floor_mem_mi = int(orig_mem_mi * MEM_LOWER_PCT)
+    n_cpu = alloc_cpu_m // floor_cpu_m
+    n_mem = alloc_mem_mi // floor_mem_mi
     n_gpu = (alloc_gpu // orig_gpu) if orig_gpu > 0 else n_cpu
     n = min(n_cpu, n_mem, n_gpu)
     if n <= 0:
@@ -157,6 +173,9 @@ def eligibility_for_pair(
     # would exceed the slot allowance).
     available_main_cpu_m = raw_available_per_pod_cpu_m - sidecar_cpu_m
     new_main_vcpu = max(1, available_main_cpu_m // 1000)
+    # Never hand back more than the operator set: the fill-back only returns
+    # headroom that the shrink freed up, it does not grow the pod.
+    new_main_vcpu = min(new_main_vcpu, orig_main_vcpu)
     slot_cpu_m = new_main_vcpu * 1000 + sidecar_cpu_m
     # Memory: same shape as CPU. Subtract the sidecar first, then floor to
     # whole GiB so the reported main_memory_gib matches what the operator
@@ -165,6 +184,7 @@ def eligibility_for_pair(
     raw_available_per_pod_mem_mi = alloc_mem_mi // n
     available_main_mem_mi = raw_available_per_pod_mem_mi - sidecar_mem_mi
     new_main_memory_gib = max(1, available_main_mem_mi // 1024)
+    new_main_memory_gib = min(new_main_memory_gib, orig_main_memory_gib)
     slot_mem_mi = new_main_memory_gib * 1024 + sidecar_mem_mi
     slot_gpu = (alloc_gpu // n) if orig_gpu > 0 else 0
 

@@ -10,9 +10,10 @@ the family's runner defs into sub-nodepools, plus per-partition instance
 assignment. Pod (cpu_m, mem_mi) requests are derived deterministically from the
 (def, instance) pair via the D4 tight-fit rule — never a search variable.
 
-Ranking metric is `max(opt_cpu, opt_mem)` on the family's virtual sub-fleets.
-Sim results are memoized in SQLite; per-family / per-restart search state is
-checkpointed so crashes and SIGINT resume without redoing work.
+Ranking minimizes total physical vCPU-minutes on the family's virtual
+sub-fleets, tie-broken by fewest peak concurrent nodes (see optimize_engine
+rank_key). Sim results are memoized in SQLite; per-family / per-restart search
+state is checkpointed so crashes and SIGINT resume without redoing work.
 
 Family independence (D3) means each family runs as its own subprocess via
 multiprocessing.Pool. c7i-runner is kept in the injected fleets so runner-pod
@@ -63,8 +64,10 @@ from optimize_engine import (  # noqa: E402
     cached_sim,
     enumerate_feasible_configs,
     enumerate_neighbors,
+    improvement_pp,
     is_baseline_feasible,
     is_config_feasible,
+    primary,
     random_feasible_config,
     rank_key,
 )
@@ -196,10 +199,10 @@ def _config_from_persisted_json(raw: str, catalog) -> Config | None:
 def _metrics_from_persisted(payload: dict | None) -> SimMetrics | None:
     """Rehydrate a full SimMetrics from a persisted best payload.
 
-    Older state DBs (pre-vcpu_hours rename) are not migrated — the schema
-    break invalidates cached sims anyway. Fall back to zero for missing keys
-    so resume does not crash; a stale prior best loses tie-breaks (vcpu_hours=0
-    reads as "unknown / worst") until the next sim recomputes it.
+    Missing keys fall back to zero so resume does not crash on payloads written
+    before a field existed; a prior best whose objective (total_vcpu_minutes)
+    reads back as 0 ranks worst (rank_key treats a non-positive objective as
+    degenerate) until the next sim recomputes it.
     """
     if not isinstance(payload, dict):
         return None
@@ -213,6 +216,8 @@ def _metrics_from_persisted(payload: dict | None) -> SimMetrics | None:
                 cal_cpu=float(md["cal_cpu"]),
                 cal_mem=float(md["cal_mem"]),
                 vcpu_hours=float(md.get("vcpu_hours", 0.0)),
+                total_vcpu_minutes=float(md.get("total_vcpu_minutes", 0.0)),
+                peak_nodes=int(md.get("peak_nodes", 0)),
             )
         except (TypeError, ValueError, KeyError):
             return None
@@ -242,6 +247,8 @@ def _persist_best_payload(cfg: Config, m: SimMetrics) -> dict:
             "cal_cpu": m.cal_cpu,
             "cal_mem": m.cal_mem,
             "vcpu_hours": m.vcpu_hours,
+            "total_vcpu_minutes": m.total_vcpu_minutes,
+            "peak_nodes": m.peak_nodes,
         },
     }
 
@@ -253,8 +260,8 @@ def _load_persisted_best(
 ) -> tuple[Config | None, SimMetrics | None, int | None]:
     """Recover the best (config, full metrics) across family_state and restart_state rows.
 
-    Uses rank_key ordering (opt_max primary, -vcpu_hours tie-breaker) so the
-    resume-time choice matches the live search's ordering.
+    Uses rank_key ordering (fewest total vCPU-minutes primary, fewest peak nodes
+    tie-break) so the resume-time choice matches the live search's ordering.
     """
     best_cfg: Config | None = None
     best_m: SimMetrics | None = None
@@ -271,22 +278,23 @@ def _load_persisted_best(
             if cfg is not None and m is not None:
                 best_cfg = cfg
                 best_m = m
-    for restart_id, cfg_json, opt_max, _status in state.restart_rows(family):
-        if opt_max is None:
+    for restart_id, cfg_json, best_objective, _status in state.restart_rows(family):
+        if best_objective is None:
             continue
         cfg = _config_from_persisted_json(cfg_json, catalog)
         if cfg is None:
             continue
-        # restart_state only persists opt_max, so tie-break via family-level
-        # metrics when the restart row wins; otherwise treat vcpu_hours=0
-        # (unknown), which just makes the restart row lose ties.
+        # restart_state persists only the objective scalar (total_vcpu_minutes),
+        # so peak_nodes is unknown (0) here; a restart row can win on the primary
+        # axis but loses the peak-nodes tie-break against a fully-hydrated row.
         rm = SimMetrics(
-            opt_max=float(opt_max),
+            opt_max=0.0,
             opt_cpu=0.0,
             opt_mem=0.0,
             cal_cpu=0.0,
             cal_mem=0.0,
             vcpu_hours=0.0,
+            total_vcpu_minutes=float(best_objective),
         )
         if best_m is None or rank_key(rm) > rank_key(best_m):
             best_m = rm
@@ -402,7 +410,7 @@ def _search_exhaustive(
             )
         except Exception as e:
             log.warning("family=%s: sim failed for config %s: %s", family, cfg_key[:60], e, exc_info=True)
-            prog.advance(best_m.opt_max if best_m is not None else None)
+            prog.advance(primary(best_m) if best_m is not None else None)
             continue
         # Dedupe evaluation counter across baseline / prior-best / enumeration.
         if cfg_key not in seen_configs:
@@ -413,8 +421,16 @@ def _search_exhaustive(
         if best_m is None or rank_key(m) > rank_key(best_m):
             best_cfg = cfg
             best_m = m
-            log.info("family=%s: new best opt_max=%.4f (%d/%d)", family, m.opt_max, evaluated, len(configs))
-        prog.advance(best_m.opt_max if best_m is not None else None)
+            log.info(
+                "family=%s: new best vcpu_min=%.1f peak_nodes=%d util=%.4f (%d/%d)",
+                family,
+                m.total_vcpu_minutes,
+                m.peak_nodes,
+                m.opt_max,
+                evaluated,
+                len(configs),
+            )
+        prog.advance(primary(best_m) if best_m is not None else None)
     prog.end_phase("done")
     return best_cfg, best_m, evaluated, cache_hits
 
@@ -454,7 +470,6 @@ def _search_hillclimb(
     evaluated = 0
     cache_hits = 0
     restarts_run = 0
-    improvement_threshold = improvement_threshold_pp / 100.0
 
     def _sim(cfg: Config) -> tuple[SimMetrics | None, bool]:
         cfg_key = canonical_config(cfg)
@@ -516,7 +531,7 @@ def _search_hillclimb(
             for n_cfg in neighbors:
                 n_m, n_was_hit = _sim(n_cfg)
                 if n_m is None:
-                    prog.advance(best_m.opt_max if best_m else 0.0)
+                    prog.advance(primary(best_m) if best_m else None)
                     continue
                 n_key = canonical_config(n_cfg)
                 if n_key not in seen_configs:
@@ -527,21 +542,21 @@ def _search_hillclimb(
                 if best_n_m is None or rank_key(n_m) > rank_key(best_n_m):
                     best_n_m = n_m
                     best_n_cfg = n_cfg
-                prog.advance(max(n_m.opt_max, best_m.opt_max if best_m else 0.0))
+                prog.advance(min(primary(n_m), primary(best_m)) if best_m else primary(n_m))
             if best_n_m is None or best_n_cfg is None:
                 # All neighbors failed to sim — cannot make progress on this restart.
                 prog.end_phase("STOP")
                 break
 
-            delta_pp = (best_n_m.opt_max - cur_m.opt_max) * 100.0
+            delta_pp = improvement_pp(cur_m, best_n_m)
             if delta_pp > improvement_threshold_pp:
                 log.info(
-                    "family=%s restart=%d step=%d: IMPROVE %.4f -> %.4f (+%.3fpp)",
+                    "family=%s restart=%d step=%d: IMPROVE %.1f -> %.1f vcpu_min (+%.3fpp)",
                     family,
                     restart_id,
                     step,
-                    cur_m.opt_max,
-                    best_n_m.opt_max,
+                    cur_m.total_vcpu_minutes,
+                    best_n_m.total_vcpu_minutes,
                     delta_pp,
                 )
                 cur = best_n_cfg
@@ -553,7 +568,7 @@ def _search_hillclimb(
                     family,
                     restart_id,
                     canonical_config(restart_best_cfg),
-                    restart_best_m.opt_max,
+                    primary(restart_best_m),
                     evaluated,
                     "running",
                 )
@@ -562,12 +577,12 @@ def _search_hillclimb(
                 abs(delta_pp) < improvement_threshold_pp and neutral_budget > 0 and rank_key(best_n_m) > rank_key(cur_m)
             ):
                 log.info(
-                    "family=%s restart=%d step=%d: NEUTRAL %.4f -> %.4f (%.3fpp; budget=%d)",
+                    "family=%s restart=%d step=%d: NEUTRAL %.1f -> %.1f vcpu_min (%.3fpp; budget=%d)",
                     family,
                     restart_id,
                     step,
-                    cur_m.opt_max,
-                    best_n_m.opt_max,
+                    cur_m.total_vcpu_minutes,
+                    best_n_m.total_vcpu_minutes,
                     delta_pp,
                     neutral_budget - 1,
                 )
@@ -581,7 +596,7 @@ def _search_hillclimb(
                     family,
                     restart_id,
                     canonical_config(restart_best_cfg),
-                    restart_best_m.opt_max,
+                    primary(restart_best_m),
                     evaluated,
                     "running",
                 )
@@ -600,22 +615,23 @@ def _search_hillclimb(
 
         # Update global best from the restart PEAK, not from the walked end-state.
         if best_m is None or rank_key(restart_best_m) > rank_key(best_m):
-            improved = best_m is None or restart_best_m.opt_max > best_m.opt_max + improvement_threshold
+            improved = best_m is None or improvement_pp(best_m, restart_best_m) > improvement_threshold_pp
             log.info(
-                "family=%s restart=%d: NEW BEST opt_max=%.4f (improved=%s)",
+                "family=%s restart=%d: NEW BEST vcpu_min=%.1f peak_nodes=%d (improved=%s)",
                 family,
                 restart_id,
-                restart_best_m.opt_max,
+                restart_best_m.total_vcpu_minutes,
+                restart_best_m.peak_nodes,
                 improved,
             )
             best_m = restart_best_m
             best_cfg = restart_best_cfg
-            prog.update_best(best_m.opt_max)
+            prog.update_best(primary(best_m))
         state.update_restart(
             family,
             restart_id,
             canonical_config(restart_best_cfg),
-            restart_best_m.opt_max,
+            primary(restart_best_m),
             evaluated,
             "done",
         )
@@ -793,10 +809,12 @@ def _search_family(
             skipped_reason=f"baseline sim failed: {e}",
             elapsed_sec=elapsed,
         )
-    prog.update_best(baseline_m.opt_max)
+    prog.update_best(primary(baseline_m))
     log.info(
-        "family=%s: baseline opt_max=%.4f (cpu=%.4f mem=%.4f) vcpu_hours=%.1f",
+        "family=%s: baseline vcpu_min=%.1f peak_nodes=%d util=%.4f (cpu=%.4f mem=%.4f) vcpu_hours=%.1f",
         family,
+        baseline_m.total_vcpu_minutes,
+        baseline_m.peak_nodes,
         baseline_m.opt_max,
         baseline_m.opt_cpu,
         baseline_m.opt_mem,
@@ -836,10 +854,10 @@ def _search_family(
             if prior_hit:
                 cache_hits_total += 1
             if rank_key(prior_m) > rank_key(best_m):
-                log.info("family=%s: resumed with prior best opt_max=%.4f", family, prior_m.opt_max)
+                log.info("family=%s: resumed with prior best vcpu_min=%.1f", family, prior_m.total_vcpu_minutes)
                 best_cfg = prior_cfg
                 best_m = prior_m
-                prog.update_best(best_m.opt_max)
+                prog.update_best(primary(best_m))
         except Exception as e:
             log.warning("family=%s: prior best sim failed: %s", family, e, exc_info=True)
 
@@ -865,7 +883,7 @@ def _search_family(
         if cfg is None and m is None:
             # Exhaustive capped out — fall back to hillclimb.
             mode = "hillclimb"
-            prog.start_family(family, mode, num_restarts, best_m.opt_max if best_m else 0.0)
+            prog.start_family(family, mode, num_restarts, primary(best_m) if best_m else 0.0)
             cfg, m, evaluated, cache_hits, restarts_run = _search_hillclimb(
                 family,
                 eligible_defs,
@@ -923,23 +941,22 @@ def _search_family(
             best_cfg = cfg
             best_m = m
 
-    improvement_threshold = improvement_threshold_pp / 100.0
     if best_m is None or baseline_m is None:
         verdict = "no_change"
         delta_pp = 0.0
     else:
-        delta = best_m.opt_max - baseline_m.opt_max
-        delta_pp = delta * 100.0
-        verdict = "improved" if delta > improvement_threshold else "no_change"
+        delta_pp = improvement_pp(baseline_m, best_m)
+        verdict = "improved" if delta_pp > improvement_threshold_pp else "no_change"
 
     elapsed = time.perf_counter() - t0
     cache_hit_rate = (cache_hits_total / evaluated_total) if evaluated_total > 0 else 0.0
     log.info(
-        "family=%s: DONE verdict=%s baseline=%.4f best=%.4f delta=%.3fpp evaluated=%d restarts=%d elapsed=%.1fs",
+        "family=%s: DONE verdict=%s baseline_vcpu_min=%.1f best_vcpu_min=%.1f delta=%.3fpp "
+        "evaluated=%d restarts=%d elapsed=%.1fs",
         family,
         verdict,
-        baseline_m.opt_max if baseline_m else 0.0,
-        best_m.opt_max if best_m else 0.0,
+        baseline_m.total_vcpu_minutes if baseline_m else 0.0,
+        best_m.total_vcpu_minutes if best_m else 0.0,
         delta_pp,
         evaluated_total,
         restarts_run,
@@ -1104,8 +1121,10 @@ def _cluster_sim_worker(
     cost = optimize_cost.node_hours_and_cost(sim_out, region="blended")
     elapsed = time.perf_counter() - t0
     log.info(
-        "cluster sim %s: done opt_max=%.4f vcpu_hours=%.0f node_hours=%.0f elapsed=%.1fs",
+        "cluster sim %s: done vcpu_min=%.0f peak_nodes=%d util=%.4f vcpu_hours=%.0f node_hours=%.0f elapsed=%.1fs",
         which,
+        cluster_m.total_vcpu_minutes,
+        cluster_m.peak_nodes,
         cluster_m.opt_max,
         cluster_m.vcpu_hours,
         cost["node_hours"],
@@ -1268,12 +1287,15 @@ def _run_cluster_validation_phase(
         r.cluster_baseline_metrics = base_contribs.get(r.family)
         r.cluster_rec_metrics = rec_contribs.get(r.family)
 
-    delta_pp = (rec_m.opt_max - base_m.opt_max) * 100.0
+    delta_pp = improvement_pp(base_m, rec_m)
     global_log.info(
-        "cluster validation: baseline opt_max=%.1f%% rec opt_max=%.1f%% delta=%+.2fpp elapsed=%.1fs",
+        "cluster validation: baseline vcpu_min=%.0f rec vcpu_min=%.0f delta=%+.2fpp "
+        "(baseline util=%.1f%% rec util=%.1f%%) elapsed=%.1fs",
+        base_m.total_vcpu_minutes,
+        rec_m.total_vcpu_minutes,
+        delta_pp,
         base_m.opt_max * 100.0,
         rec_m.opt_max * 100.0,
-        delta_pp,
         elapsed,
     )
 

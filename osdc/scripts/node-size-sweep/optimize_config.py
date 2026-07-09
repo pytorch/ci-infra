@@ -12,8 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_csv import build_label_table  # noqa: E402
 from runner_hooks import load_runner_overhead  # noqa: E402
 
-IN_SCOPE_FAMILIES = ("r7a", "c7i", "c7a", "m7i", "m8g", "m7g", "m6i", "r7i", "g5", "g6", "g4dn")
-EXCLUDED_FAMILIES = ("p4d", "p5", "p6-b200")
+IN_SCOPE_FAMILIES = ("r7a", "c7i", "c7a", "m7i", "m8g", "m7g", "m6i", "r7i")
+EXCLUDED_FAMILIES = ("p4d", "p5", "p6-b200", "g5", "g6", "g4dn")
 EXCLUDED_FLEETS = frozenset(
     {
         "p4d-large",

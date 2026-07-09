@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import math
 import multiprocessing as mp
 import sys
 import threading
@@ -47,6 +48,18 @@ def _bar(done: int, total: int, width: int) -> str:
     return "=" * filled + ">" + " " * (width - filled - 1)
 
 
+def _fmt_objective(value: float) -> str:
+    """Render the search objective (total physical vCPU-minutes, lower better).
+
+    The "no best yet" sentinel is +inf (so any real value beats it under the
+    minimize comparison); it must never surface as the literal "inf" in a
+    live display, so render it as an em dash.
+    """
+    if value is None or math.isinf(value) or math.isnan(value):
+        return "—"
+    return f"{value:,.0f} vcpu-min"
+
+
 class ProgressDisplay:
     """Single-family live terminal progress. No-op when disabled."""
 
@@ -69,7 +82,7 @@ class ProgressDisplay:
         self._step: int = 0
         self._evaluated: int = 0
         self._total: int = 0
-        self._best_opt_max: float = 0.0
+        self._best_objective: float = float("inf")
         self._spinner_cycle = _spinner_cycle()
         self._spinner_char = next(self._spinner_cycle)
 
@@ -145,7 +158,7 @@ class ProgressDisplay:
             bar = _bar(self._evaluated, self._total, width=12)
             t.append(f"[{bar}]  ", style="green")
             t.append(f"{self._evaluated}/{self._total}  ")
-        t.append(f"best {self._best_opt_max:.4f}  ", style="bold")
+        t.append(f"best {_fmt_objective(self._best_objective)}  ", style="bold")
         t.append(self._spinner_char, style="cyan")
         return t
 
@@ -160,7 +173,7 @@ class ProgressDisplay:
         if self._total:
             bar = _bar(self._evaluated, self._total, width=12)
             parts.append(f"[{bar}] {self._evaluated}/{self._total}")
-        parts.append(f"best {self._best_opt_max:.4f}")
+        parts.append(f"best {_fmt_objective(self._best_objective)}")
         parts.append(self._spinner_char)
         return "  ".join(p for p in parts if p)
 
@@ -173,7 +186,7 @@ class ProgressDisplay:
             sys.stderr.write("\r\x1b[K" + self._render_plain_line())
             sys.stderr.flush()
 
-    def start_family(self, family: str, mode: str, num_restarts: int, best_opt_max: float = 0.0) -> None:
+    def start_family(self, family: str, mode: str, num_restarts: int, best_objective: float = float("inf")) -> None:
         if not self.enabled:
             return
         with self._lock:
@@ -185,16 +198,16 @@ class ProgressDisplay:
             self._step = 0
             self._evaluated = 0
             self._total = 0
-            self._best_opt_max = best_opt_max
+            self._best_objective = best_objective
             self._spinner_char = next(self._spinner_cycle)
         self._refresh()
 
-    def update_best(self, best_opt_max: float) -> None:
+    def update_best(self, best_objective: float) -> None:
         if not self.enabled:
             return
         with self._lock:
-            if best_opt_max > self._best_opt_max:
-                self._best_opt_max = best_opt_max
+            if best_objective < self._best_objective:
+                self._best_objective = best_objective
         self._refresh()
 
     def start_restart(self, restart_idx: int, phase: str) -> None:
@@ -217,13 +230,13 @@ class ProgressDisplay:
             self._total = total
         self._refresh()
 
-    def advance(self, current_best_opt_max: float | None = None) -> None:
+    def advance(self, current_best_objective: float | None = None) -> None:
         if not self.enabled:
             return
         with self._lock:
             self._evaluated += 1
-            if current_best_opt_max is not None and current_best_opt_max > self._best_opt_max:
-                self._best_opt_max = current_best_opt_max
+            if current_best_objective is not None and current_best_objective < self._best_objective:
+                self._best_objective = current_best_objective
             self._spinner_char = next(self._spinner_cycle)
         self._refresh()
 
@@ -273,7 +286,7 @@ class QueueProgressDisplay:
         self._queue = queue
         self._num_restarts = 0
         self._restart_idx = 0
-        self._best_opt_max = 0.0
+        self._best_objective = float("inf")
 
     def _try_put(self, msg: dict) -> None:
         try:
@@ -281,27 +294,27 @@ class QueueProgressDisplay:
         except Exception:
             pass
 
-    def start_family(self, family: str, mode: str, num_restarts: int, best_opt_max: float = 0.0) -> None:
+    def start_family(self, family: str, mode: str, num_restarts: int, best_objective: float = float("inf")) -> None:
         self._num_restarts = num_restarts
-        self._best_opt_max = best_opt_max
+        self._best_objective = best_objective
         self._try_put(
             {
                 "kind": "family_start",
                 "family": family,
                 "mode": mode,
                 "num_restarts": num_restarts,
-                "best_opt_max": best_opt_max,
+                "best_objective": best_objective,
             }
         )
 
-    def update_best(self, best_opt_max: float) -> None:
-        if best_opt_max > self._best_opt_max:
-            self._best_opt_max = best_opt_max
+    def update_best(self, best_objective: float) -> None:
+        if best_objective < self._best_objective:
+            self._best_objective = best_objective
         self._try_put(
             {
                 "kind": "best_update",
                 "family": self._family,
-                "best_opt_max": self._best_opt_max,
+                "best_objective": self._best_objective,
             }
         )
 
@@ -327,14 +340,14 @@ class QueueProgressDisplay:
             }
         )
 
-    def advance(self, current_best_opt_max: float | None = None) -> None:
-        if current_best_opt_max is not None and current_best_opt_max > self._best_opt_max:
-            self._best_opt_max = current_best_opt_max
+    def advance(self, current_best_objective: float | None = None) -> None:
+        if current_best_objective is not None and current_best_objective < self._best_objective:
+            self._best_objective = current_best_objective
         self._try_put(
             {
                 "kind": "phase_advance",
                 "family": self._family,
-                "current_best": self._best_opt_max,
+                "current_best": self._best_objective,
             }
         )
 
@@ -354,16 +367,20 @@ class QueueProgressDisplay:
         pass
 
     def report_final(self, result: "FamilyResult") -> None:
+        best = result.best_metrics
+        base = result.baseline_metrics
+        best_obj = best.total_vcpu_minutes if best else 0.0
+        base_obj = base.total_vcpu_minutes if base else 0.0
+        reduction_pct = ((base_obj - best_obj) / base_obj * 100.0) if base and base_obj > 0 else 0.0
         msg = {
             "kind": "family_end",
             "family": result.family,
-            "opt_max": result.best_metrics.opt_max if result.best_metrics else 0.0,
-            "baseline_opt_max": result.baseline_metrics.opt_max if result.baseline_metrics else 0.0,
-            "delta_pp": (
-                (result.best_metrics.opt_max - result.baseline_metrics.opt_max) * 100.0
-                if result.best_metrics and result.baseline_metrics
-                else 0.0
-            ),
+            "objective": best_obj,
+            "baseline_objective": base_obj,
+            "reduction_pct": reduction_pct,
+            "peak_nodes": best.peak_nodes if best else 0,
+            "baseline_peak_nodes": base.peak_nodes if base else 0,
+            "opt_max": best.opt_max if best else 0.0,
             "verdict": result.verdict,
             "skipped_reason": result.skipped_reason,
         }
@@ -429,9 +446,12 @@ class MultiFamilyProgressDisplay:
             "phase": "",
             "evaluated": 0,
             "total": 0,
-            "best": 0.0,
-            "baseline": 0.0,
-            "delta_pp": 0.0,
+            "best": float("inf"),
+            "baseline": float("inf"),
+            "reduction_pct": 0.0,
+            "peak_nodes": 0,
+            "baseline_peak_nodes": 0,
+            "opt_max": 0.0,
             "verdict": "",
             "skipped_reason": None,
             "last_update": time.monotonic(),
@@ -516,10 +536,10 @@ class MultiFamilyProgressDisplay:
                 row["status"] = "running"
                 row["mode"] = str(msg.get("mode", ""))
                 row["total_restarts"] = int(msg.get("num_restarts", 0))
-                row["best"] = float(msg.get("best_opt_max", 0.0))
+                row["best"] = float(msg.get("best_objective", float("inf")))
                 row["phase"] = "baseline"
             elif kind == "best_update":
-                row["best"] = max(row["best"], float(msg.get("best_opt_max", 0.0)))
+                row["best"] = min(row["best"], float(msg.get("best_objective", float("inf"))))
             elif kind == "restart_start":
                 row["status"] = "running"
                 row["restart"] = int(msg.get("restart", 0))
@@ -533,14 +553,17 @@ class MultiFamilyProgressDisplay:
                 row["total"] = int(msg.get("total", 0))
             elif kind == "phase_advance":
                 row["evaluated"] += 1
-                row["best"] = max(row["best"], float(msg.get("current_best", row["best"])))
+                row["best"] = min(row["best"], float(msg.get("current_best", row["best"])))
             elif kind == "phase_end":
                 row["phase"] = f"{row['phase']} {msg.get('result', '')}"
             elif kind == "family_end":
                 row["status"] = "done"
-                row["best"] = float(msg.get("opt_max", row["best"]))
-                row["baseline"] = float(msg.get("baseline_opt_max", 0.0))
-                row["delta_pp"] = float(msg.get("delta_pp", 0.0))
+                row["best"] = float(msg.get("objective", row["best"]))
+                row["baseline"] = float(msg.get("baseline_objective", float("inf")))
+                row["reduction_pct"] = float(msg.get("reduction_pct", 0.0))
+                row["peak_nodes"] = int(msg.get("peak_nodes", 0))
+                row["baseline_peak_nodes"] = int(msg.get("baseline_peak_nodes", 0))
+                row["opt_max"] = float(msg.get("opt_max", 0.0))
                 row["verdict"] = str(msg.get("verdict", ""))
                 row["skipped_reason"] = msg.get("skipped_reason")
 
@@ -588,12 +611,15 @@ class MultiFamilyProgressDisplay:
                 t.append(f"DONE     skipped ({row['skipped_reason']})", style="dim")
                 return t
             t.append("DONE     ", style="bold green")
-            t.append(f"opt_max {row['best']:.4f} ")
-            if row["baseline"] > 0:
+            t.append(f"{_fmt_objective(row['best'])} ")
+            if math.isfinite(row["baseline"]) and row["baseline"] > 0:
                 t.append(
-                    f"(baseline {row['baseline']:.4f}, {row['delta_pp']:+.1f}pp)",
-                    style="green" if row["delta_pp"] > 0 else "yellow",
+                    f"(baseline {_fmt_objective(row['baseline'])}, {row['reduction_pct']:+.1f}% reduction)",
+                    style="green" if row["reduction_pct"] > 0 else "yellow",
                 )
+            t.append(f" peak {row['peak_nodes']}", style="dim")
+            if row["opt_max"] > 0:
+                t.append(f" util {row['opt_max'] * 100:.1f}%", style="dim")
             t.append(f"  [{row['verdict']}]", style="dim")
             return t
         # running
@@ -609,7 +635,7 @@ class MultiFamilyProgressDisplay:
             t.append(f"{row['evaluated']:>4}/{row['total']:<4}  ")
         else:
             t.append(f"[{' ' * 12}]  0/0     ", style="dim")
-        t.append(f"best {row['best']:.4f}  ", style="bold")
+        t.append(f"best {_fmt_objective(row['best'])}  ", style="bold")
         t.append(self._spinner_char, style="cyan")
         return t
 

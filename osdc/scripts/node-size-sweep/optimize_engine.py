@@ -37,8 +37,10 @@ if TYPE_CHECKING:
 import optimize_cost
 from optimize_storage import SimCache, SimMetrics
 
-# Ranking is `max(opt_cpu, opt_mem)` per family (opt uses workload-only numerator,
-# alloc+DS denominator — see optimize.md D1). vCPU-hours breaks ties (lower wins).
+# The search minimizes total physical vCPU-minutes (instance vCPU x minutes
+# alive); peak concurrent node count breaks ties. opt_max/opt_cpu/opt_mem/cal_*/
+# vcpu_hours are retained as reported-only metrics — they are NOT the objective,
+# despite the utilization-flavored names. See rank_key / primary.
 
 BUCKET_SEC = 300
 
@@ -671,8 +673,9 @@ def _extract_family_metrics(
     config: Config,
     daemonsets: list | None = None,
 ) -> SimMetrics:
-    """opt_cpu/opt_mem/opt_max/cal_cpu/cal_mem/vcpu_hours restricted to
-    the family's virtual sub-pools (those matching `<family>__` prefix).
+    """opt_cpu/opt_mem/opt_max/cal_cpu/cal_mem/vcpu_hours plus the objective
+    metrics (total_vcpu_minutes, peak_nodes) restricted to the family's virtual
+    sub-pools (those matching `<family>__` prefix).
 
     Per spec D1: opt/cal metrics are allocatable-weighted (sum numerator /
     sum denominator across buckets), NOT per-bucket ratio means. `opt_max`
@@ -682,11 +685,20 @@ def _extract_family_metrics(
     millicores across buckets, converted to vCPU-hours. Instance-size-invariant
     WITHIN a family and roughly proportional to $/hr — 1h × 192 vCPU on a
     r7a.48xl equals 12h × 16 vCPU on a r7a.4xl in raw compute AND in cost.
+
+    total_vcpu_minutes is the search objective: physical instance vCPU x minutes
+    alive, summed over every live node. peak_nodes is the tie-break: the max over
+    buckets of simultaneously-live nodes in the filtered pools (a per-bucket sum
+    across pools, since per-pool peaks occur in different buckets and can't be
+    summed). Both count all provisioned nodes; nodes with no known instance type
+    (warming/placeholder) count toward peak but contribute 0 vCPU-minutes.
     """
     # BUCKET_SEC / 3600 = 1/12; converts allocatable-vcpu-millicores per bucket
     # to vcpu-hours. daemonsets kept in signature for interface stability with
     # callers that still pass it; the value is not needed for vcpu-hour math.
     del daemonsets
+
+    from instance_specs import INSTANCE_SPECS
 
     prefix = f"{family}__"
     sub_ids = set(config.keys())
@@ -699,11 +711,20 @@ def _extract_family_metrics(
     sum_cal_used_mem = 0
     sum_cal_alloc_cpu = 0
     sum_cal_alloc_mem = 0
+    total_vcpu_minutes = 0.0
+    peak_nodes = 0
+    bucket_min = BUCKET_SEC / 60.0
 
     for _t, per_pool in sim_out["per_bucket"]:
+        bucket_nodes = 0
         for name, sums in per_pool.items():
             if name not in sub_ids and not name.startswith(prefix):
                 continue
+            for itype, cnt in (sums.get("node_counts_by_type") or {}).items():
+                bucket_nodes += cnt
+                spec = INSTANCE_SPECS.get(itype)
+                if spec is not None:
+                    total_vcpu_minutes += cnt * spec["vcpu"] * bucket_min
             alloc_cpu = sums["alloc_cpu_m_raw"] + sums["ds_cpu_m"]
             alloc_mem = sums["alloc_mem_mi_raw"] + sums["ds_mem_mi"]
             if alloc_cpu <= 0 and alloc_mem <= 0:
@@ -716,6 +737,8 @@ def _extract_family_metrics(
             sum_cal_used_mem += sums["mem_used_mi"]
             sum_cal_alloc_cpu += sums["cpu_alloc_m"]
             sum_cal_alloc_mem += sums["mem_alloc_mi"]
+        if bucket_nodes > peak_nodes:
+            peak_nodes = bucket_nodes
 
     opt_cpu = sum_workload_cpu / sum_alloc_cpu if sum_alloc_cpu > 0 else 0.0
     opt_mem = sum_workload_mem / sum_alloc_mem if sum_alloc_mem > 0 else 0.0
@@ -732,6 +755,8 @@ def _extract_family_metrics(
         cal_cpu=cal_cpu,
         cal_mem=cal_mem,
         vcpu_hours=vcpu_hours,
+        total_vcpu_minutes=total_vcpu_minutes,
+        peak_nodes=peak_nodes,
     )
 
 
@@ -800,6 +825,8 @@ def _accumulate_pool_sums(sim_out: dict, pool_filter: set[str] | None) -> SimMet
     `pool_filter=None` sums every pool (cluster-wide). A non-None set restricts
     to the named pools (per-family contribution).
     """
+    from instance_specs import INSTANCE_SPECS
+
     sum_workload_cpu = 0
     sum_workload_mem = 0
     sum_alloc_cpu = 0
@@ -808,11 +835,20 @@ def _accumulate_pool_sums(sim_out: dict, pool_filter: set[str] | None) -> SimMet
     sum_cal_used_mem = 0
     sum_cal_alloc_cpu = 0
     sum_cal_alloc_mem = 0
+    total_vcpu_minutes = 0.0
+    peak_nodes = 0
+    bucket_min = BUCKET_SEC / 60.0
 
     for _t, per_pool in sim_out["per_bucket"]:
+        bucket_nodes = 0
         for name, sums in per_pool.items():
             if pool_filter is not None and name not in pool_filter:
                 continue
+            for itype, cnt in (sums.get("node_counts_by_type") or {}).items():
+                bucket_nodes += cnt
+                spec = INSTANCE_SPECS.get(itype)
+                if spec is not None:
+                    total_vcpu_minutes += cnt * spec["vcpu"] * bucket_min
             alloc_cpu = sums["alloc_cpu_m_raw"] + sums["ds_cpu_m"]
             alloc_mem = sums["alloc_mem_mi_raw"] + sums["ds_mem_mi"]
             if alloc_cpu <= 0 and alloc_mem <= 0:
@@ -825,6 +861,8 @@ def _accumulate_pool_sums(sim_out: dict, pool_filter: set[str] | None) -> SimMet
             sum_cal_used_mem += sums["mem_used_mi"]
             sum_cal_alloc_cpu += sums["cpu_alloc_m"]
             sum_cal_alloc_mem += sums["mem_alloc_mi"]
+        if bucket_nodes > peak_nodes:
+            peak_nodes = bucket_nodes
 
     opt_cpu = sum_workload_cpu / sum_alloc_cpu if sum_alloc_cpu > 0 else 0.0
     opt_mem = sum_workload_mem / sum_alloc_mem if sum_alloc_mem > 0 else 0.0
@@ -840,6 +878,8 @@ def _accumulate_pool_sums(sim_out: dict, pool_filter: set[str] | None) -> SimMet
         cal_cpu=cal_cpu,
         cal_mem=cal_mem,
         vcpu_hours=vcpu_hours,
+        total_vcpu_minutes=total_vcpu_minutes,
+        peak_nodes=peak_nodes,
     )
 
 
@@ -965,6 +1005,8 @@ def run_sim_for_config(
         cal_cpu=m.cal_cpu,
         cal_mem=m.cal_mem,
         vcpu_hours=m.vcpu_hours,
+        total_vcpu_minutes=m.total_vcpu_minutes,
+        peak_nodes=m.peak_nodes,
         elapsed_s=elapsed,
     )
 
@@ -1041,9 +1083,28 @@ def cached_sim(
     return m, False
 
 
+def primary(m: SimMetrics) -> float:
+    """The objective value: total physical vCPU-minutes. Single source of truth
+    for which SimMetrics field is the optimization target."""
+    return m.total_vcpu_minutes
+
+
 def rank_key(m: SimMetrics) -> tuple[float, float]:
-    """Ranking: (opt_max, -vcpu_hours). Lower vCPU-hours wins ties."""
-    return (m.opt_max, -m.vcpu_hours)
+    """Higher is better. Primary: fewer total physical vCPU-minutes.
+    Tie-break: fewer peak concurrent nodes. Empty/degenerate configs rank worst."""
+    if m.empty or primary(m) <= 0:
+        return (float("-inf"), float("-inf"))
+    return (-primary(m), -m.peak_nodes)
+
+
+def improvement_pp(baseline: SimMetrics, candidate: SimMetrics) -> float:
+    """Percent reduction in the objective (total vCPU-minutes) from baseline to
+    candidate. POSITIVE = candidate is better (fewer vCPU-minutes). Convergence
+    thresholds are expressed in these percentage points."""
+    base = primary(baseline)
+    if base <= 0:
+        return 0.0
+    return (base - primary(candidate)) / base * 100.0
 
 
 # ---------- result dataclass ----------

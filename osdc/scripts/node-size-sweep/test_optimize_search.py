@@ -343,14 +343,14 @@ def test_load_persisted_best_restart_rows_tiebreak(tmp_path, daemonsets):
     catalog = build_family_catalog(entries)
     inst = entries[0].instance
     cfg_json = json.dumps({f"m7g__{inst}": {"instance": inst, "pods": ["l-arm64g3-16-62"]}})
-    # opt_max None -> skipped; infeasible cfg -> skipped; valid high opt_max -> wins.
+    # best_objective None -> skipped; infeasible cfg -> skipped; lowest vcpu-min -> wins.
     state.update_restart("m7g", 0, cfg_json, None, 1, "running")
     state.update_restart("m7g", 1, json.dumps({"s": {"instance": inst, "pods": ["ghost"]}}), 0.9, 1, "done")
     state.update_restart("m7g", 2, cfg_json, 0.8, 3, "done")
     got_cfg, got_m, rid = osrch._load_persisted_best(state, "m7g", catalog)
     assert got_cfg is not None
     assert got_m is not None
-    assert got_m.opt_max == pytest.approx(0.8)
+    assert got_m.total_vcpu_minutes == pytest.approx(0.8)
     assert rid == 2
 
 
@@ -1150,14 +1150,14 @@ def _run_hillclimb(defs, entries, baseline, seed_m, log, cache, state, prog, dae
 def test_hillclimb_improve_then_stop(tmp_path, daemonsets, defs_by_family, runner_fleet, monkeypatch):
     entries, defs, baseline, log, cache, state, prog = _r7i_setup(daemonsets, defs_by_family, tmp_path, "hc-improve")
     bl_key = canonical_config(baseline)
-    seed = SimMetrics(0.30, 0.30, 0.20, 0.2, 0.2, 50.0)
-    # Baseline low; every neighbor a clear improvement -> IMPROVE, then STOP.
-    stub = _StubSim({bl_key: seed}, default=SimMetrics(0.50, 0.50, 0.20, 0.2, 0.2, 40.0))
+    seed = SimMetrics(0.30, 0.30, 0.20, 0.2, 0.2, 50.0, total_vcpu_minutes=1000.0, peak_nodes=10)
+    # Every neighbor a clear improvement (fewer vcpu-min) -> IMPROVE, then STOP.
+    stub = _StubSim({bl_key: seed}, default=SimMetrics(0.50, 0.50, 0.20, 0.2, 0.2, 40.0, total_vcpu_minutes=800.0, peak_nodes=8))
     monkeypatch.setattr(osrch, "cached_sim", stub)
     best_cfg, best_m, _evaluated, _hits, restarts_run = _run_hillclimb(
         defs, entries, baseline, seed, log, cache, state, prog, daemonsets, runner_fleet
     )
-    assert best_m.opt_max == pytest.approx(0.50)
+    assert best_m.total_vcpu_minutes == pytest.approx(800.0)
     assert best_cfg is not None
     assert restarts_run == 1
 
@@ -1199,22 +1199,21 @@ def test_hillclimb_neutral_move(tmp_path, daemonsets, defs_by_family, runner_fle
     bl_key = canonical_config(baseline)
     neighbors = enumerate_neighbors("r7i", baseline, defs, entries)
     neutral_key = canonical_config(neighbors[0])
-    seed = SimMetrics(0.30, 0.30, 0.20, 0.2, 0.2, 50.0)
-    # One neighbor: same opt_max but lower vcpu_hours (rank_key wins) -> NEUTRAL.
-    # All other neighbors strictly worse so the walk stops after the neutral move.
+    seed = SimMetrics(0.30, 0.30, 0.20, 0.2, 0.2, 50.0, total_vcpu_minutes=1000.0, peak_nodes=10)
+    # One neighbor: same total_vcpu_minutes but fewer peak_nodes (rank_key wins, ~0 improvement_pp) -> NEUTRAL.
     stub = _StubSim(
         {
             bl_key: seed,
-            neutral_key: SimMetrics(0.30, 0.30, 0.20, 0.2, 0.2, 40.0),
+            neutral_key: SimMetrics(0.30, 0.30, 0.20, 0.2, 0.2, 40.0, total_vcpu_minutes=1000.0, peak_nodes=8),
         },
-        default=SimMetrics(0.20, 0.20, 0.10, 0.1, 0.1, 60.0),
+        default=SimMetrics(0.20, 0.20, 0.10, 0.1, 0.1, 60.0, total_vcpu_minutes=1200.0, peak_nodes=12),
     )
     monkeypatch.setattr(osrch, "cached_sim", stub)
     _best_cfg, best_m, _evaluated, _hits, _restarts = _run_hillclimb(
         defs, entries, baseline, seed, log, cache, state, prog, daemonsets, runner_fleet
     )
-    assert best_m.opt_max == pytest.approx(0.30)
-    assert best_m.vcpu_hours == pytest.approx(40.0)
+    assert best_m.total_vcpu_minutes == pytest.approx(1000.0)
+    assert best_m.peak_nodes == 8
 
 
 def test_hillclimb_immediate_stop(tmp_path, daemonsets, defs_by_family, runner_fleet, monkeypatch):

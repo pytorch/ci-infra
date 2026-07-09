@@ -18,9 +18,18 @@ def _sm(
     cal_cpu: float = 0.70,
     cal_mem: float = 0.72,
     vcpu_hours: float = 800.0,
+    total_vcpu_minutes: float = 0.0,
+    peak_nodes: int = 0,
 ) -> SimMetrics:
     return SimMetrics(
-        opt_max=opt_max, opt_cpu=opt_cpu, opt_mem=opt_mem, cal_cpu=cal_cpu, cal_mem=cal_mem, vcpu_hours=vcpu_hours
+        opt_max=opt_max,
+        opt_cpu=opt_cpu,
+        opt_mem=opt_mem,
+        cal_cpu=cal_cpu,
+        cal_mem=cal_mem,
+        vcpu_hours=vcpu_hours,
+        total_vcpu_minutes=total_vcpu_minutes,
+        peak_nodes=peak_nodes,
     )
 
 
@@ -394,9 +403,9 @@ def test_write_global_report_all_row_kinds_no_cluster(tmp_path):
         _family(family="nof", baseline_metrics=None, best_metrics=None, verdict="unchanged", configs_evaluated=3),
         _family(
             family="okf",
-            baseline_metrics=_sm(opt_max=0.60),
+            baseline_metrics=_sm(opt_max=0.60, total_vcpu_minutes=1000.0, peak_nodes=10),
             best_config={"okf__i": {"instance": "i", "pods": ["p"]}},
-            best_metrics=_sm(opt_max=0.75),
+            best_metrics=_sm(opt_max=0.75, total_vcpu_minutes=850.0, peak_nodes=8),
             verdict="improved",
             configs_evaluated=10,
             elapsed_sec=2.0,
@@ -405,9 +414,9 @@ def test_write_global_report_all_row_kinds_no_cluster(tmp_path):
     rep.write_global_report(tmp_path, results, cluster_validation=None)
     text = (tmp_path / "global.md").read_text()
     assert "# Global search summary" in text
-    assert "| skf | n/a | n/a | n/a | skipped (no data) | 0 | 1 |" in text
-    assert "| nof | n/a | n/a | n/a | unchanged | 3 | 0 |" in text
-    assert "| okf | 60.0% | 75.0% | +15.00 | improved | 10 | 2 |" in text
+    assert "| skf | n/a | n/a | n/a | n/a | n/a | skipped (no data) | 0 | 1 |" in text
+    assert "| nof | n/a | n/a | n/a | n/a | n/a | unchanged | 3 | 0 |" in text
+    assert "| okf | 1,000 | 850 | +15.0% | 10 -> 8 | 75.0% | improved | 10 | 2 |" in text
     assert "Cluster-wide validation" not in text
 
 

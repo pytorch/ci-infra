@@ -30,6 +30,11 @@ class SimMetrics:
     vcpu_hours: float
     empty: bool = False
     elapsed_s: float = 0.0
+    # Physical vCPU-minutes: sum over live nodes of INSTANCE_SPECS[itype].vcpu x
+    # minutes alive. This is real hardware provisioned, distinct from vcpu_hours
+    # above (which counts post-kubelet/post-DS allocatable millicores).
+    total_vcpu_minutes: float = 0.0
+    peak_nodes: int = 0
 
 
 @dataclass
@@ -70,6 +75,8 @@ class SimCache:
                     cal_cpu     REAL NOT NULL,
                     cal_mem     REAL NOT NULL,
                     vcpu_hours  REAL NOT NULL,
+                    total_vcpu_minutes REAL NOT NULL,
+                    peak_nodes  REAL NOT NULL,
                     empty       INTEGER NOT NULL,
                     elapsed_s   REAL NOT NULL,
                     computed_at INTEGER NOT NULL
@@ -86,7 +93,8 @@ class SimCache:
     def get(self, key: str) -> SimMetrics | None:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT opt_max, opt_cpu, opt_mem, cal_cpu, cal_mem, vcpu_hours, empty, elapsed_s "
+                "SELECT opt_max, opt_cpu, opt_mem, cal_cpu, cal_mem, vcpu_hours, "
+                "total_vcpu_minutes, peak_nodes, empty, elapsed_s "
                 "FROM sim_cache WHERE key=?",
                 (key,),
             ).fetchone()
@@ -99,8 +107,10 @@ class SimCache:
             cal_cpu=row[3],
             cal_mem=row[4],
             vcpu_hours=row[5],
-            empty=bool(row[6]),
-            elapsed_s=row[7],
+            total_vcpu_minutes=row[6],
+            peak_nodes=int(row[7]),
+            empty=bool(row[8]),
+            elapsed_s=row[9],
         )
 
     def put(self, key: str, config_json: str, m: SimMetrics) -> None:
@@ -108,7 +118,8 @@ class SimCache:
             conn.execute(
                 "INSERT OR REPLACE INTO sim_cache "
                 "(key, config_json, opt_max, opt_cpu, opt_mem, cal_cpu, cal_mem, vcpu_hours, "
-                " empty, elapsed_s, computed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " total_vcpu_minutes, peak_nodes, empty, elapsed_s, computed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     key,
                     config_json,
@@ -118,6 +129,8 @@ class SimCache:
                     m.cal_cpu,
                     m.cal_mem,
                     m.vcpu_hours,
+                    m.total_vcpu_minutes,
+                    m.peak_nodes,
                     int(m.empty),
                     m.elapsed_s,
                     int(time.time()),
@@ -149,7 +162,7 @@ class StateStore:
                     family              TEXT NOT NULL,
                     restart_id          INTEGER NOT NULL,
                     restart_best_json   TEXT NOT NULL,
-                    best_opt_max        REAL,
+                    best_objective      REAL,
                     neighbors_evaluated INTEGER NOT NULL,
                     status              TEXT NOT NULL,
                     updated_at          INTEGER NOT NULL,
@@ -205,7 +218,7 @@ class StateStore:
         family: str,
         restart_id: int,
         restart_best_json: str,
-        best_opt_max: float,
+        best_objective: float,
         neighbors_evaluated: int,
         status: str,
     ) -> None:
@@ -216,7 +229,7 @@ class StateStore:
                     family,
                     restart_id,
                     restart_best_json,
-                    best_opt_max,
+                    best_objective,
                     neighbors_evaluated,
                     status,
                     int(time.time()),
@@ -224,11 +237,14 @@ class StateStore:
             )
 
     def restart_rows(self, family: str) -> list[tuple[int, str, float | None, str]]:
-        """(restart_id, restart_best_json, best_opt_max, status) rows for a family."""
+        """(restart_id, restart_best_json, best_objective, status) rows for a family.
+
+        best_objective is total physical vCPU-minutes (the search objective,
+        lower is better)."""
         with self._conn() as conn:
             return list(
                 conn.execute(
-                    "SELECT restart_id, restart_best_json, best_opt_max, status FROM restart_state "
+                    "SELECT restart_id, restart_best_json, best_objective, status FROM restart_state "
                     "WHERE family=? ORDER BY restart_id",
                     (family,),
                 ).fetchall()

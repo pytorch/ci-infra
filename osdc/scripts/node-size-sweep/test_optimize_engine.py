@@ -679,19 +679,28 @@ def test_apply_recommendations_rewrites_matched_and_passes_through():
 # ---------- ranking ----------
 
 
-def _metrics(opt_max: float, vcpu_hours: float) -> SimMetrics:
-    return SimMetrics(opt_max=opt_max, opt_cpu=0.0, opt_mem=0.0, cal_cpu=0.0, cal_mem=0.0, vcpu_hours=vcpu_hours)
+def _metrics(total_vcpu_minutes: float, peak_nodes: int = 0) -> SimMetrics:
+    return SimMetrics(
+        opt_max=0.0, opt_cpu=0.0, opt_mem=0.0, cal_cpu=0.0, cal_mem=0.0,
+        vcpu_hours=0.0, total_vcpu_minutes=total_vcpu_minutes, peak_nodes=peak_nodes,
+    )
 
 
-def test_rank_key_higher_opt_max_wins():
-    assert eng.rank_key(_metrics(0.5, 10)) < eng.rank_key(_metrics(0.6, 10))
+def test_rank_key_fewer_vcpu_minutes_wins():
+    assert eng.rank_key(_metrics(900.0)) > eng.rank_key(_metrics(1000.0))
 
 
-def test_rank_key_tie_broken_by_lower_vcpu_hours():
-    lo = _metrics(0.6, 50)
-    hi = _metrics(0.6, 999)
+def test_rank_key_tie_broken_by_fewer_peak_nodes():
+    lo = _metrics(500.0, peak_nodes=5)
+    hi = _metrics(500.0, peak_nodes=9)
     assert eng.rank_key(lo) > eng.rank_key(hi)
     assert max([hi, lo], key=eng.rank_key) is lo
+
+
+def test_rank_key_degenerate_ranks_worst():
+    real = _metrics(1000.0, peak_nodes=50)
+    assert eng.rank_key(_metrics(0.0)) < eng.rank_key(real)
+    assert eng.rank_key(SimMetrics(0, 0, 0, 0, 0, 0, empty=True)) < eng.rank_key(real)
 
 
 # ---------- real-sim wrappers ----------

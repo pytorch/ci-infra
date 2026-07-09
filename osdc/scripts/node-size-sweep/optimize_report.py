@@ -56,6 +56,25 @@ def _def_shape_row(
     return f"    {def_label} ({cpu_part}, {mem_part}) N/node={n}"
 
 
+def _reduction_pct(base: float, rec: float) -> float | None:
+    """Percent reduction of a minimized metric: positive = improvement.
+    None when base is non-positive (no meaningful ratio)."""
+    if base <= 0:
+        return None
+    return (base - rec) / base * 100.0
+
+
+def _fmt_reduction(base: float, rec: float) -> str:
+    """Prose for the minimized objective: `1,000 -> 850 (-150, +15.0% reduction)`.
+    Positive percent = improvement; the raw delta is signed (negative = fewer).
+    Drops the percent when base is non-positive."""
+    delta = rec - base
+    pct = _reduction_pct(base, rec)
+    if pct is None:
+        return f"{base:,.0f} -> {rec:,.0f}"
+    return f"{base:,.0f} -> {rec:,.0f} ({delta:+,.0f}, {pct:+.1f}% reduction)"
+
+
 def _append_cluster_contribution_section(lines: list[str], r: FamilyResult) -> None:
     """Emit the family's SHARE of the full-cluster before/after sim.
 
@@ -71,23 +90,29 @@ def _append_cluster_contribution_section(lines: list[str], r: FamilyResult) -> N
     lines.append("## Cluster contribution (this family's share of the full-cluster sim)")
     if bf is not None:
         lines.append("  Baseline (full cluster):")
+        lines.append(f"    total vcpu-min = {bf.total_vcpu_minutes:,.0f} (objective), peak_nodes = {bf.peak_nodes}")
         lines.append(
-            f"    opt_max = {bf.opt_max * 100:.1f}% (cpu {bf.opt_cpu * 100:.1f}%, mem {bf.opt_mem * 100:.1f}%)"
+            f"    util opt_max = {bf.opt_max * 100:.1f}% (cpu {bf.opt_cpu * 100:.1f}%, mem {bf.opt_mem * 100:.1f}%)"
         )
         lines.append(f"    cal_cpu = {bf.cal_cpu * 100:.1f}%, cal_mem = {bf.cal_mem * 100:.1f}%")
         lines.append(f"    vcpu_hours ~ {bf.vcpu_hours:,.0f}")
     if ef is not None:
         lines.append("  Recommendation (full cluster):")
         if bf is not None:
+            lines.append(f"    total vcpu-min = {_fmt_reduction(bf.total_vcpu_minutes, ef.total_vcpu_minutes)}")
+            lines.append(f"    peak_nodes = {bf.peak_nodes} -> {ef.peak_nodes}")
+        else:
+            lines.append(f"    total vcpu-min = {ef.total_vcpu_minutes:,.0f}, peak_nodes = {ef.peak_nodes}")
+        if bf is not None:
             delta_pp = (ef.opt_max - bf.opt_max) * 100.0
             lines.append(
-                f"    opt_max = {ef.opt_max * 100:.1f}% "
+                f"    util opt_max = {ef.opt_max * 100:.1f}% "
                 f"(cpu {ef.opt_cpu * 100:.1f}%, mem {ef.opt_mem * 100:.1f}%) "
                 f"[{delta_pp:+.2f}pp vs baseline]"
             )
         else:
             lines.append(
-                f"    opt_max = {ef.opt_max * 100:.1f}% (cpu {ef.opt_cpu * 100:.1f}%, mem {ef.opt_mem * 100:.1f}%)"
+                f"    util opt_max = {ef.opt_max * 100:.1f}% (cpu {ef.opt_cpu * 100:.1f}%, mem {ef.opt_mem * 100:.1f}%)"
             )
         lines.append(f"    cal_cpu = {ef.cal_cpu * 100:.1f}%, cal_mem = {ef.cal_mem * 100:.1f}%")
         if bf is not None and bf.vcpu_hours > 0:
@@ -127,7 +152,11 @@ def write_family_report(
         lines.append(f"    pods: {', '.join(pods)}")
     if r.baseline_metrics is not None:
         lines.append(
-            f"  opt_max = {r.baseline_metrics.opt_max * 100:.1f}% "
+            f"  total vcpu-min = {r.baseline_metrics.total_vcpu_minutes:,.0f} (objective), "
+            f"peak_nodes = {r.baseline_metrics.peak_nodes}"
+        )
+        lines.append(
+            f"  util opt_max = {r.baseline_metrics.opt_max * 100:.1f}% "
             f"(cpu {r.baseline_metrics.opt_cpu * 100:.1f}%, mem {r.baseline_metrics.opt_mem * 100:.1f}%)"
         )
         lines.append(
@@ -167,11 +196,15 @@ def write_family_report(
                 )
             )
     if r.best_metrics is not None:
+        base_obj = r.baseline_metrics.total_vcpu_minutes if r.baseline_metrics is not None else 0.0
+        lines.append(f"  total vcpu-min = {_fmt_reduction(base_obj, r.best_metrics.total_vcpu_minutes)} (objective)")
+        base_peak = r.baseline_metrics.peak_nodes if r.baseline_metrics is not None else 0
+        lines.append(f"  peak_nodes = {base_peak} -> {r.best_metrics.peak_nodes}")
         delta_pp = (
             (r.best_metrics.opt_max - r.baseline_metrics.opt_max) * 100.0 if r.baseline_metrics is not None else 0.0
         )
         lines.append(
-            f"  opt_max = {r.best_metrics.opt_max * 100:.1f}% "
+            f"  util opt_max = {r.best_metrics.opt_max * 100:.1f}% "
             f"(cpu {r.best_metrics.opt_cpu * 100:.1f}%, mem {r.best_metrics.opt_mem * 100:.1f}%) "
             f"[{delta_pp:+.2f}pp vs baseline]"
         )
@@ -319,6 +352,19 @@ def _fmt_vcpu_row(label: str, base: float, rec: float) -> str:
     return f"| {label} | {base:,.0f} | {rec:,.0f} | {delta} |"
 
 
+def _fmt_reduction_row(label: str, base: float, rec: float) -> str:
+    """Render a minimized-objective row: absolute totals, percent REDUCTION
+    (positive = improvement, opposite sign from _fmt_vcpu_row's raw delta)."""
+    pct = _reduction_pct(base, rec)
+    delta = f"{pct:+.1f}%" if pct is not None else "n/a"
+    return f"| {label} | {base:,.0f} | {rec:,.0f} | {delta} |"
+
+
+def _fmt_int_row(label: str, base: int, rec: int) -> str:
+    """Render an integer count row (e.g. peak_nodes): base, rec, signed delta."""
+    return f"| {label} | {base:,d} | {rec:,d} | {rec - base:+,d} |"
+
+
 def _append_cluster_validation_table(
     lines: list[str],
     cluster_validation: ClusterValidationResult,
@@ -330,7 +376,9 @@ def _append_cluster_validation_table(
     lines.append("")
     lines.append("|                       | Baseline   | Recommendation | Delta       |")
     lines.append("|:----------------------|:-----------|:---------------|:------------|")
-    lines.append(_fmt_pp_row("opt_max               ", b.opt_max, r.opt_max))
+    lines.append(_fmt_reduction_row("total vcpu-min (obj)  ", b.total_vcpu_minutes, r.total_vcpu_minutes))
+    lines.append(_fmt_int_row("peak_nodes            ", b.peak_nodes, r.peak_nodes))
+    lines.append(_fmt_pp_row("opt_max (util)        ", b.opt_max, r.opt_max))
     lines.append(_fmt_pp_row("cpu util              ", b.opt_cpu, r.opt_cpu))
     lines.append(_fmt_pp_row("mem util              ", b.opt_mem, r.opt_mem))
     lines.append(_fmt_pp_row("cal_cpu (prod PromQL) ", b.cal_cpu, r.cal_cpu))
@@ -355,22 +403,34 @@ def write_global_report(
         "",
         "## Search window",
         "",
-        "| family | baseline opt_max | rec opt_max | delta (pp) | verdict | configs | wall (s) |",
-        "|--------|-----------------:|------------:|-----------:|:--------|--------:|---------:|",
+        "(objective = total physical vCPU-minutes, lower better; reduction % positive = improvement. "
+        "opt_max util is a secondary proxy, not the objective.)",
+        "",
+        "| family | baseline vcpu-min | rec vcpu-min | reduction % | peak (base->rec) | "
+        "util opt_max | verdict | configs | wall (s) |",
+        "|--------|------------------:|------------:|------------:|:-----------------|"
+        "-------------:|:--------|--------:|---------:|",
     ]
     for r in sorted(results, key=lambda x: x.family):
         if r.skipped_reason:
-            lines.append(f"| {r.family} | n/a | n/a | n/a | skipped ({r.skipped_reason}) | 0 | {r.elapsed_sec:.0f} |")
+            lines.append(
+                f"| {r.family} | n/a | n/a | n/a | n/a | n/a | skipped ({r.skipped_reason}) | 0 | {r.elapsed_sec:.0f} |"
+            )
             continue
         if r.best_metrics is None or r.baseline_metrics is None:
             lines.append(
-                f"| {r.family} | n/a | n/a | n/a | {r.verdict} | {r.configs_evaluated} | {r.elapsed_sec:.0f} |"
+                f"| {r.family} | n/a | n/a | n/a | n/a | n/a | "
+                f"{r.verdict} | {r.configs_evaluated} | {r.elapsed_sec:.0f} |"
             )
             continue
-        delta_pp = (r.best_metrics.opt_max - r.baseline_metrics.opt_max) * 100.0
+        base_obj = r.baseline_metrics.total_vcpu_minutes
+        rec_obj = r.best_metrics.total_vcpu_minutes
+        pct = _reduction_pct(base_obj, rec_obj)
+        reduction = f"{pct:+.1f}%" if pct is not None else "n/a"
+        peak = f"{r.baseline_metrics.peak_nodes} -> {r.best_metrics.peak_nodes}"
         lines.append(
-            f"| {r.family} | {r.baseline_metrics.opt_max * 100:.1f}% | "
-            f"{r.best_metrics.opt_max * 100:.1f}% | {delta_pp:+.2f} | "
+            f"| {r.family} | {base_obj:,.0f} | {rec_obj:,.0f} | {reduction} | {peak} | "
+            f"{r.best_metrics.opt_max * 100:.1f}% | "
             f"{r.verdict} | {r.configs_evaluated} | {r.elapsed_sec:.0f} |"
         )
     lines.append("")
