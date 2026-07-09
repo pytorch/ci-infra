@@ -60,10 +60,14 @@ class TestRunnerDefs:
             missing = REQUIRED_FIELDS - set(d.keys())
             assert not missing, f"Runner '{d.get('name', '?')}' missing fields: {missing}"
 
-    def test_names_are_unique(self, upstream_dir: Path) -> None:
-        """No duplicate runner names."""
-        defs = _load_all_defs(upstream_dir)
-        names = [d["name"] for d in defs]
+    def test_names_are_unique(self, upstream_dir: Path, enabled_modules: list[str]) -> None:
+        """No duplicate runner names among the arc-runners* modules enabled on this
+        cluster. arc-runners and arc-runners-opt are mutually-exclusive alternatives
+        (never co-enabled) that share names by design, so scope to what's enabled —
+        like test_configmaps_for_all_defs — instead of the union of all variants.
+        """
+        enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
+        names = [d["name"] for d in _load_all_defs(upstream_dir, enabled_arc)]
         dupes = [n for n in names if names.count(n) > 1]
         assert not dupes, f"Duplicate runner names: {set(dupes)}"
 
