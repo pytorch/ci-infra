@@ -516,7 +516,7 @@ class TestRealManifests:
         assert base.memory_mib == 256  # CPU / catch-all tier
 
         # base + top-up == the reserved memory tier for each GPU count (MOUNT_TIERS)
-        assert base.memory_mib + hf_cache_gpu_topup_mib(1) == 512
+        assert base.memory_mib + hf_cache_gpu_topup_mib(1) == 1024  # 1-GPU floored at 1Gi
         assert base.memory_mib + hf_cache_gpu_topup_mib(2) == 1024
         assert base.memory_mib + hf_cache_gpu_topup_mib(4) == 2048
         assert base.memory_mib + hf_cache_gpu_topup_mib(8) == 4096

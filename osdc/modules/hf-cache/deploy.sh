@@ -35,11 +35,15 @@ VFS_CACHE_MAX_SIZE=$(uv run "$CFG" "$CLUSTER" hf_cache.vfs_cache_max_size "75%")
 # affinity keeps them exclusive. Fields: <ds-name> <affinity-op> <gpu-count-csv> <memory>.
 # The "hf-cache-mount" NotIn catch-all covers CPU + any unclassified count, so every
 # node gets a mount to clear the startup taint.
+# The 1-GPU tier is floored at 1Gi, not 512Mi: rclone RSS is driven by model-file reads
+# (not GPU count), so a single-GPU inductor job OOM'd rclone at 512Mi, dropping the mount
+# node-wide (dead FUSE → job-pod CreateContainerError). Observed on a g5.8xlarge a10g:
+# https://github.com/pytorch/pytorch/actions/runs/29042231396/job/86206746830
 # FOLLOW-UP: the GPU-only PR drops CPU (nvidia.com/gpu nodeSelector); then collapse the
-# first two rows into "hf-cache-mount NotIn 2,4,8 512Mi" (1-GPU + rest).
+# first two rows into "hf-cache-mount NotIn 2,4,8 1Gi" (1-GPU + rest).
 MOUNT_TIERS=(
   "hf-cache-mount NotIn 1,2,4,8 256Mi"
-  "hf-cache-mount-gpu1 In 1 512Mi"
+  "hf-cache-mount-gpu1 In 1 1Gi"
   "hf-cache-mount-gpu2 In 2 1Gi"
   "hf-cache-mount-gpu4 In 4 2Gi"
   "hf-cache-mount-gpu8 In 8 4Gi"

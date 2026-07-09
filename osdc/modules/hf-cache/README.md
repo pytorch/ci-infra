@@ -15,8 +15,10 @@ get the path bind-mounted read-only via the gated `# BEGIN_HF_CACHE` block in
 
 rclone's memory is **reserved** (`request == limit`) and **tiered by GPU count**
 (`karpenter.k8s.aws/instance-gpu-count`), since RSS scales with job concurrency:
-`deploy.sh` renders one DaemonSet per tier — 8-GPU → 4Gi, 4-GPU → 2Gi, 2-GPU → 1Gi,
-1-GPU → 512Mi, and the CPU catch-all → 256Mi. See `MOUNT_TIERS` in `deploy.sh`.
+`deploy.sh` renders one DaemonSet per tier — 8-GPU → 4Gi, 4-GPU → 2Gi, 2-GPU / 1-GPU → 1Gi,
+and the CPU catch-all → 256Mi. See `MOUNT_TIERS` in `deploy.sh`. The 1-GPU floor is 1Gi,
+not smaller: rclone RSS is driven by model-file reads (not GPU count), and 512Mi OOM'd a
+single-GPU node (dead FUSE → job-pod `CreateContainerError`).
 
 **Writes are gated by GitHub OIDC, not by the mount.** Job pods can't write the
 cache (read-only mount, read-only IRSA). On `ci-refresh-hf-cache` runs, the
