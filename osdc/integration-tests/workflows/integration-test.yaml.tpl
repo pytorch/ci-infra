@@ -1709,7 +1709,7 @@ jobs:
       - name: Verify TORCH_CI_MAX_MEMORY
         run: |
           echo "=== TORCH_CI_MAX_MEMORY ==="
-          EXPECTED=184683593728
+          EXPECTED=182536110080  # 170Gi = l-x86iavx512-45-172-t4-4 memory; keep in sync with the runner def
           ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
           echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
           if [ -z "$ACTUAL" ]; then
