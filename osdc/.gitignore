@@ -24,3 +24,10 @@ modules/*/generated/
 .DS_Store
 .env
 
+# node-size-sweep: large HUD data + local backups (never commit)
+scripts/node-size-sweep/*.csv
+scripts/node-size-sweep/raw/
+scripts/node-size-sweep/*.bkp
+scripts/node-size-sweep/*.bkp.*
+scripts/node-size-sweep/raw.bkp/
+

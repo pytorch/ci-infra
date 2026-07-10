@@ -39,35 +39,54 @@ class DaemonSetOverhead:
 
 # Helm-deployed DaemonSets — values from their respective Helm charts
 HELM_DAEMONSETS: list[DaemonSetOverhead] = [
-    # kube-prometheus-stack node-exporter (chart defaults)
-    # Values from modules/monitoring/helm/values.yaml
-    DaemonSetOverhead("node-exporter", 15, 32, False, "constant:helm:kube-prometheus-stack"),
-    # Alloy logging DaemonSet
-    # Values from modules/logging/helm/alloy-logging-values.yaml
-    DaemonSetOverhead("alloy-logging", 100, 256, False, "constant:helm:alloy-logging"),
+    # kube-prometheus-stack renders node-exporter with resources: {} by default;
+    # modules/monitoring/helm/values.yaml sets no override, so no requests.
+    DaemonSetOverhead("node-exporter", 0, 0, False, "constant:helm:kube-prometheus-stack"),
+    # alloy 500m/1Gi (modules/logging/helm/alloy-logging-values.yaml) + config-reloader
+    # sidecar 10m/50Mi (chart default); 1074Mi = 1024 (1Gi) + 50.
+    DaemonSetOverhead("alloy-logging", 510, 1074, False, "constant:helm:alloy-logging"),
 ]
 
 # EKS-managed addon DaemonSets — not in our manifests at all
 EKS_ADDON_DAEMONSETS: list[DaemonSetOverhead] = [
-    DaemonSetOverhead("kube-proxy", 50, 80, False, "constant:eks-addon"),
-    DaemonSetOverhead("vpc-cni", 50, 128, False, "constant:eks-addon"),
-    DaemonSetOverhead("ebs-csi-node", 10, 50, False, "constant:eks-addon"),
+    # AWS managed addon sets 100m cpu, no memory request.
+    DaemonSetOverhead("kube-proxy", 100, 0, False, "constant:eks-addon"),
+    # aws-node 25m + aws-eks-nodeagent sidecar 25m = 50m; no memory request.
+    DaemonSetOverhead("vpc-cni", 50, 0, False, "constant:eks-addon"),
+    # ebs-plugin 10m/40Mi + node-driver-registrar 10m/32Mi + liveness-probe 10m/32Mi.
+    DaemonSetOverhead("ebs-csi-node", 30, 104, False, "constant:eks-addon"),
+    # pypi-cache installs the efs-csi addon; best-effort QoS, no requests.
+    DaemonSetOverhead("efs-csi-node", 0, 0, False, "constant:eks-addon"),
 ]
 
 # .tpl-rendered DaemonSets the raw-YAML scan can't see (unresolved __PLACEHOLDER__s).
-# hf-cache's memory is tiered by GPU count (deploy.sh MOUNT_TIERS); this base is the
-# CPU/catch-all tier counted on every node, and GPU nodes add hf_cache_gpu_topup_mib().
-HF_CACHE_BASE_MIB = 256
+# hf-cache has two containers: rclone (memory tiered by GPU count via deploy.sh
+# MOUNT_TIERS) and a taint-remover sidecar (fixed 10m/32Mi, never exits). The flat
+# base below is rclone's CPU/catch-all tier + taint-remover, counted on every runner
+# node; GPU nodes add rclone's per-GPU-count top-up via hf_cache_gpu_topup_mib().
+HF_CACHE_BASE_MIB = 256  # rclone base (CPU / catch-all) memory tier
+HF_CACHE_TAINT_REMOVER_CPU_M = 10
+HF_CACHE_TAINT_REMOVER_MIB = 32
 TEMPLATED_DAEMONSETS: list[DaemonSetOverhead] = [
-    DaemonSetOverhead("hf-cache-mount", 100, HF_CACHE_BASE_MIB, False, "constant:tpl:modules/hf-cache"),
+    DaemonSetOverhead(
+        "hf-cache-mount",
+        100 + HF_CACHE_TAINT_REMOVER_CPU_M,
+        HF_CACHE_BASE_MIB + HF_CACHE_TAINT_REMOVER_MIB,
+        False,
+        "constant:tpl:modules/hf-cache",
+    ),
 ]
 
-# Reserved hf-cache memory (MiB) by GPU count (MOUNT_TIERS); other counts + CPU get the base.
+# Reserved rclone memory (MiB) by GPU count (MOUNT_TIERS); other counts + CPU get the base.
 HF_CACHE_TIER_MIB = {1: 512, 2: 1024, 4: 2048, 8: 4096}
 
 
 def hf_cache_gpu_topup_mib(gpu_count: int) -> int:
-    """hf-cache memory (MiB) a GPU node reserves beyond the base tier."""
+    """Extra hf-cache rclone memory (MiB) a GPU node reserves beyond the base tier.
+
+    Only rclone's memory is tiered by GPU count; the taint-remover sidecar is flat
+    and already included in the base, so it is excluded from the top-up.
+    """
     return HF_CACHE_TIER_MIB.get(gpu_count, HF_CACHE_BASE_MIB) - HF_CACHE_BASE_MIB
 
 
