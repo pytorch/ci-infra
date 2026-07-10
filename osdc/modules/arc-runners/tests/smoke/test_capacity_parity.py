@@ -300,11 +300,11 @@ class TestPlaceholderSchedulingParity:
             pytest.skip("no scale sets with proactive_capacity > 0")
 
         # Per-cluster prefix that ARC strips off the scale-set-name label
-        # (e.g. "c-mt-" → label "c-mt-l-arm64g4-16-62" maps to def
-        # "l-arm64g4-16-62"). We MUST use exact match against the stripped
-        # name — endswith() collides on rel-* defs whose names share a
-        # suffix with their non-rel siblings (rel-l-arm64g4-16-62 ↔
-        # l-arm64g4-16-62), causing placeholders to be attributed to the
+        # (e.g. "c-mt-" → label "c-mt-l-arm64g3-61-463" maps to def
+        # "l-arm64g3-61-463"). We MUST use exact match against the stripped
+        # name — endswith() would collide if a rel-* def's name shared a
+        # suffix with a non-rel def (rel-X ↔ X), causing placeholders to be
+        # attributed to the
         # wrong def and silently breaking parity attribution.
         runner_name_prefix = resolve_config("arc-runners.runner_name_prefix", "")
 

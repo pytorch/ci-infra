@@ -22,7 +22,10 @@ fleet:
     - type: r7a.8xlarge
       weight: 20
       node_disk_size: 800
+  # Release wheel-build runners (rel-l-x86iavx512-44-340). Generates the
+  # r7a-12xlarge-release NodePool with osdc.io/runner-class: release. r7a.12xlarge
+  # (48c/384Gi) matches the manywheel x86 build spec (linux.12xlarge.memory).
   release:
-    - type: r7a.48xlarge
+    - type: r7a.12xlarge
       weight: 100
-      node_disk_size: 4800
+      node_disk_size: 900

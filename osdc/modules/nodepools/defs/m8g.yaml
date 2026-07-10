@@ -20,7 +20,3 @@ fleet:
     - type: m8g.8xlarge
       weight: 10
       node_disk_size: 500
-  release:
-    - type: m8g.48xlarge
-      weight: 100
-      node_disk_size: 7000

@@ -23,6 +23,9 @@ import yaml
 
 # Add pypi-cache module to path for cuda_slug import (single source of truth)
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "pypi-cache" / "scripts" / "python"))
+# Add repo-root scripts/python for the shared release-runner-group derivation.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
+from fleet_naming import derive_release_runner_group  # noqa: E402
 from generate_manifests import cuda_slug  # noqa: E402
 from resolve_pytorch_image import resolve_ci_docker_hash
 
@@ -232,7 +235,7 @@ def main():
     prefix = resolve(cfg, "arc-runners.runner_name_prefix", "")
     cluster_runner_group = resolve(cfg, "arc-runners.runner_group")
     runner_group = cluster_runner_group or "default"
-    release_runner_group = cluster_runner_group or "release-runners"
+    release_runner_group = derive_release_runner_group(cluster_runner_group)
     cluster_modules = cfg["cluster"].get("modules", [])
 
     # Build pypi-cache slug list: always "cpu", plus one per configured CUDA version

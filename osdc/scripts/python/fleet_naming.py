@@ -40,6 +40,17 @@ def validate_node_fleet(value):
     return True, None
 
 
+def derive_release_runner_group(cluster_runner_group):
+    """GitHub runner group a release-class runner registers in.
+
+    Release wheel builds are kept in a per-region group separate from CI. Given
+    the cluster's base group, append the ``-release-runners`` suffix; a group-less
+    cluster falls back to ``default``. Both the runner generator and the
+    integration-test harness derive the group through here so they can't drift.
+    """
+    return f"{cluster_runner_group}-release-runners" if cluster_runner_group else "default"
+
+
 def derive_fleet_name(instance_type, override=None):
     """Derive the node-fleet name from an instance type, or honor an explicit override.
 

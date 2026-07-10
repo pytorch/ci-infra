@@ -8,3 +8,11 @@ fleet:
     - type: r7g.16xlarge
       weight: 100
       node_disk_size: 1200
+  # Release wheel-build runners (rel-l-arm64g3-44-340). Generates the
+  # r7g-12xlarge-release NodePool with osdc.io/runner-class: release so release
+  # build pods are isolated from CI onto separate nodes. r7g.12xlarge (48c/384Gi)
+  # matches the manywheel aarch64 build spec (linux.arm64.r7g.12xlarge.memory).
+  release:
+    - type: r7g.12xlarge
+      weight: 100
+      node_disk_size: 900

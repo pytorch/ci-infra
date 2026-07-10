@@ -1665,6 +1665,60 @@ class TestGenerateRunner:
         docs = list(yaml.safe_load_all((output_dir / "ovr-repo.yaml").read_text()))
         assert docs[0]["runnerGroup"] == "default"
 
+    def test_release_runner_group_gets_per_region_suffix(self, tmp_path):
+        """A release-class runner lands in the cluster's per-region release group
+        ({cluster_group}-release-runners), not the shared CI group."""
+        def_file = make_def_file(
+            tmp_path, "rel-suffix", "r7a.48xlarge", 8, 64, runner_group="default", runner_class="release"
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "runner_group": "meta-staging-aws-ue1",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "rel-suffix.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "meta-staging-aws-ue1-release-runners"
+
+    def test_release_runner_group_no_cluster_group_is_default(self, tmp_path):
+        """A release runner on a group-less cluster falls back to 'default' — no
+        '-release-runners' with nothing in front, no double-suffix."""
+        def_file = make_def_file(
+            tmp_path, "rel-nogrp", "r7a.48xlarge", 8, 64, runner_group="default", runner_class="release"
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "rel-nogrp.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "default"
+
+    def test_non_release_runner_keeps_cluster_group_unchanged(self, tmp_path):
+        """CI (non-release) runners stay in the cluster's base group — the release
+        suffix must not leak onto them."""
+        def_file = make_def_file(tmp_path, "ci-runner", "m6i.32xlarge", 4, 16)
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        cluster_config = {
+            "github_config_url": "https://github.com/pytorch",
+            "github_secret_name": "secret",
+            "runner_name_prefix": "",
+            "runner_group": "meta-staging-aws-ue1",
+        }
+
+        generate_runner(def_file, MINIMAL_TEMPLATE, cluster_config, output_dir, "arc-runners")
+        docs = list(yaml.safe_load_all((output_dir / "ci-runner.yaml").read_text()))
+        assert docs[0]["runnerGroup"] == "meta-staging-aws-ue1"
+
     def test_runner_class_release(self, tmp_path):
         """Release runners get required runner-class affinity on the workflow pod;
         runner-class isolation does not apply to the runner pod (it lives on the
