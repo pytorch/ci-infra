@@ -8,7 +8,7 @@
 # the tiers mutually exclusive (exactly one mount per node).
 #
 # Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
-# __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__ __RCLONE_MEMORY_LIMIT__
+# __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__ __RCLONE_MEMORY_LIMIT__ __GOMEMLIMIT__
 # __DS_NAME__ __GPU_OP__ __MULTI_GPU_COUNTS__
 apiVersion: apps/v1
 kind: DaemonSet
@@ -85,6 +85,13 @@ spec:
           # FUSE + Bidirectional propagation need privileged.
           securityContext:
             privileged: true
+          env:
+            # rclone (Go) OOMs from lazy GC, not a real memory need: cap the heap below the
+            # cgroup limit so the GC runs before the kernel OOM-kills the mount node-wide.
+            # deploy.sh derives this from the tier's memory (~90%, in Go's MiB/GiB format —
+            # not k8s Mi/Gi), so it tracks __RCLONE_MEMORY_LIMIT__ without runtime arithmetic.
+            - name: GOMEMLIMIT
+              value: "__GOMEMLIMIT__"
           command:
             - /bin/sh
             - -c
@@ -157,7 +164,8 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 3
           # An rclone OOM drops the mount node-wide. Memory is tiered by GPU count and
-          # reserved (request == limit) — see deploy.sh MOUNT_TIERS.
+          # reserved (request == limit) — see deploy.sh MOUNT_TIERS. GOMEMLIMIT (env above)
+          # is derived from this limit so the Go GC caps the heap first.
           resources:
             requests:
               cpu: 100m

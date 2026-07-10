@@ -87,6 +87,17 @@ render_mount_ds() {
   # $1 = DaemonSet name, $2 = affinity operator, $3 = gpu-count CSV,
   # $4 = rclone memory (rendered as both request and limit → reserved)
   local values="[\"${3//,/\",\"}\"]"
+  # GOMEMLIMIT ~= 90% of the reserved limit, in Go's byte-suffix format (MiB/GiB — Go
+  # rejects k8s's Mi/Gi). rclone is a Go binary that OOMs from lazy GC, not real need;
+  # a soft heap ceiling below the cgroup limit makes the GC run before the kernel kills
+  # the mount. Computed here (bash) so it renders to a literal — no runtime arithmetic.
+  local mib
+  case "$4" in
+    *Gi) mib=$((${4%Gi} * 1024)) ;;
+    *Mi) mib=${4%Mi} ;;
+    *) mib=0 ;;
+  esac
+  local gomemlimit="$((mib * 90 / 100))MiB"
   sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
     -e "s|__BUCKET__|${BUCKET}|g" \
     -e "s|__REGION__|${BUCKET_REGION}|g" \
@@ -97,6 +108,7 @@ render_mount_ds() {
     -e "s|__GPU_OP__|${2}|g" \
     -e "s|__MULTI_GPU_COUNTS__|${values}|g" \
     -e "s|__RCLONE_MEMORY_LIMIT__|${4}|g" \
+    -e "s|__GOMEMLIMIT__|${gomemlimit}|g" \
     "$MODULE_DIR/kubernetes/mount-daemonset.yaml.tpl"
 }
 

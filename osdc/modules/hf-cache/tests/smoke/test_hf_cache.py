@@ -84,6 +84,23 @@ class TestHfCacheMountDaemonSet:
         cmd = " ".join(mount_pod_spec["containers"][0].get("command", []))
         assert "--read-only" in cmd, "rclone mount must be --read-only — job pods must not write the shared cache."
 
+    def test_gomemlimit_below_container_limit(self, mount_pod_spec: dict) -> None:
+        """deploy.sh renders GOMEMLIMIT from the tier's memory limit (~90%, in Go's MiB
+        format) so the Go GC caps the heap before the kernel OOM-kills the mount. It must be
+        set and sit below the container limit (headroom for non-heap memory)."""
+        rclone = mount_pod_spec["containers"][0]
+        gomemlimit = next((e.get("value") for e in rclone.get("env", []) if e["name"] == "GOMEMLIMIT"), None)
+        assert gomemlimit is not None, "rclone must set a literal GOMEMLIMIT env."
+        assert gomemlimit.endswith("MiB"), f"GOMEMLIMIT must be Go MiB format (not k8s Mi); got {gomemlimit!r}."
+        gml_mib = int(gomemlimit[:-3])
+
+        limit = rclone.get("resources", {}).get("limits", {}).get("memory", "")
+        limit_mib = int(limit[:-2]) * (1024 if limit.endswith("Gi") else 1)
+        assert 0 < gml_mib < limit_mib, (
+            f"GOMEMLIMIT ({gml_mib}MiB) must be >0 and below the container limit ({limit}) — "
+            "a soft ceiling with headroom, not the hard cap."
+        )
+
     def test_hostpath_bidirectional(self, mount_pod_spec: dict) -> None:
         mounts = mount_pod_spec["containers"][0].get("volumeMounts", [])
         hf = [m for m in mounts if m.get("mountPath") == MOUNT_PATH]

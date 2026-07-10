@@ -349,7 +349,7 @@ jobs:
             echo "FAIL: $MODEL not in the cache ($CACHE_DIR missing) — seed it with scripts/hf-cache-seed.py"
             exit 1
           fi
-          pip install --no-cache-dir torch  # default CUDA build for the GPU runner
+          pip install --no-cache-dir torch==2.12.1  # default CUDA build for the GPU runner
           pip install --no-cache-dir 'transformers>=4.45' 'huggingface_hub>=0.24' accelerate
           # device_map='cuda' loads weights to VRAM (see runs-on note); greedy decode.
           MODEL="$MODEL" python3 -c "
@@ -452,7 +452,7 @@ jobs:
     steps:
       - name: Install deps (torch, transformers, hub, awscli)
         run: |
-          pip install --no-cache-dir torch  # default build; runs on CPU for a tiny model
+          pip install --no-cache-dir torch==2.12.1  # default build; runs on CPU for a tiny model
           # transformers <5: bert-tiny's config.json has no model_type key (5.x rejects
           # it; 4.x infers "bert"). hf_hub <1 stays compatible with transformers 4.x.
           pip install --no-cache-dir 'transformers>=4.45,<5' 'huggingface_hub>=0.24,<1' awscli
@@ -716,7 +716,7 @@ jobs:
       - name: Verify torch CPU install (pip)
         run: |
           echo "=== Torch CPU Install (pip) ==="
-          pip install --no-cache-dir torch==2.11.0
+          pip install --no-cache-dir torch==2.12.1
           python3 -c "
           import torch, sys
           cuda = torch.version.cuda
@@ -731,7 +731,7 @@ jobs:
         run: |
           echo "=== Torch CPU Install (uv) ==="
           pip uninstall -y torch >/dev/null 2>&1 || true
-          uv pip install --system --no-cache torch==2.11.0
+          uv pip install --system --no-cache torch==2.12.1
           python3 -c "
           import torch, sys
           cuda = torch.version.cuda
@@ -1076,7 +1076,7 @@ jobs:
       - name: Verify torch CPU install (pip)
         run: |
           echo "=== Torch CPU Install (pip) ==="
-          pip install --no-cache-dir torch==2.11.0
+          pip install --no-cache-dir torch==2.12.1
           python3 -c "
           import torch, sys
           cuda = torch.version.cuda
@@ -1091,7 +1091,7 @@ jobs:
         run: |
           echo "=== Torch CPU Install (uv) ==="
           pip uninstall -y torch >/dev/null 2>&1 || true
-          uv pip install --system --no-cache torch==2.11.0
+          uv pip install --system --no-cache torch==2.12.1
           python3 -c "
           import torch, sys
           cuda = torch.version.cuda
@@ -1467,7 +1467,7 @@ jobs:
       - name: Verify torch CUDA install (pip)
         run: |
           echo "=== Torch CUDA Install (pip) ==="
-          pip install --no-cache-dir torch==2.11.0
+          pip install --no-cache-dir torch==2.12.1
           python3 -c "
           import torch, sys
           cuda = torch.version.cuda
@@ -1482,7 +1482,7 @@ jobs:
         run: |
           echo "=== Torch CUDA Install (uv) ==="
           pip uninstall -y torch >/dev/null 2>&1 || true
-          uv pip install --system --no-cache torch==2.11.0
+          uv pip install --system --no-cache torch==2.12.1
           python3 -c "
           import torch, sys
           cuda = torch.version.cuda
