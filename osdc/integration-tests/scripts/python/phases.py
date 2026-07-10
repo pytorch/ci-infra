@@ -16,8 +16,10 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "python"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "modules" / "arc-runners" / "scripts" / "python"))
 
 from conditional_blocks import strip_conditional_block
+from generate_runners import parse_memory_bytes
 from nodepool_defs import is_excluded_for_region
 from run import (
     CANARY_REPO,
@@ -279,6 +281,42 @@ def _replace_jobs_with_noop(content: str) -> str:
     return "\n".join(out) + suffix
 
 
+def resource_placeholders(upstream_dir: Path, cluster_modules: list[str]) -> dict[str, str]:
+    """Build resource-assertion placeholders from the cluster's arc-runners defs.
+
+    For every runner def in each enabled arc-runners* module's defs/ dir, emit
+    four placeholders keyed by the def name uppercased with hyphens as underscores
+    (VCPU__/MEMGI__/TORCHMEM__/GPU__<KEY>). These feed the integration-test
+    template's hardcoded CPU/memory/GPU assertions so they track the deployed
+    runner spec instead of drifting.
+
+    Base module defs are processed first, then specialized variants (-opt/-b200/
+    -h100), so a variant that redefines a shared label wins.
+    """
+    base = [m for m in cluster_modules if m == "arc-runners"]
+    specialized = sorted(m for m in cluster_modules if m.startswith("arc-runners") and m != "arc-runners")
+    placeholders: dict[str, str] = {}
+    for module in base + specialized:
+        defs_dir = upstream_dir / "modules" / module / "defs"
+        if not defs_dir.is_dir():
+            continue
+        for def_path in sorted(defs_dir.glob("*.yaml")):
+            data = yaml.safe_load(def_path.read_text()) or {}
+            runner = data.get("runner")
+            if not runner:
+                continue
+            name = runner.get("name")
+            if not name:
+                continue
+            key = name.upper().replace("-", "_")
+            memory_bytes = parse_memory_bytes(runner["memory"])
+            placeholders[f"{{{{VCPU__{key}}}}}"] = str(runner["vcpu"])
+            placeholders[f"{{{{MEMGI__{key}}}}}"] = str(memory_bytes // (1024**3))
+            placeholders[f"{{{{TORCHMEM__{key}}}}}"] = str(memory_bytes)
+            placeholders[f"{{{{GPU__{key}}}}}"] = str(runner.get("gpu", 0))
+    return placeholders
+
+
 def generate_workflow(
     upstream_dir: Path,
     prefix: str,
@@ -307,6 +345,9 @@ def generate_workflow(
     content = content.replace("{{ECR_PULL_RESOLVED_TAG}}", ecr_pull_resolved_tag)
     content = content.replace("{{ECR_PULL_SHA}}", ecr_pull_sha)
 
+    for placeholder, value in resource_placeholders(upstream_dir, cluster_modules).items():
+        content = content.replace(placeholder, value)
+
     # Guard: any "{{...}}" left after substitution is a template/code drift bug.
     leftover = re.findall(r"\{\{[A-Z_]+\}\}", content)
     if leftover:
@@ -327,6 +368,13 @@ def generate_workflow(
     excluded_blocks = region_excluded_blocks(upstream_dir, region)
     for tag in REGION_GATED_BLOCKS:
         content = strip_conditional_block(content, tag, keep=tag not in excluded_blocks)
+
+    # Resource-assertion guard (after stripping, so placeholders inside a removed
+    # job — e.g. b200 on a non-b200 cluster — are already gone). A surviving
+    # resource placeholder means a running job's runner def wasn't found: a real bug.
+    leftover_res = re.findall(r"\{\{(?:VCPU|MEMGI|TORCHMEM|GPU)__[A-Z0-9_]+\}\}", content)
+    if leftover_res:
+        raise RuntimeError(f"Unresolved resource placeholders: {sorted(set(leftover_res))}")
 
     if not _has_any_job(content):
         content = _replace_jobs_with_noop(content)
