@@ -43,7 +43,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum(rate(gha_started_jobs_total{cluster=~\"$cluster\", pod=~\"(mt-)?($runner)-[a-z0-9]+-listener\"}[5m])) * 300",
+                      "expr": "sum(rate(gha_started_jobs_total{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"}[5m])) * 300",
                       "legendFormat": "total jobs",
                       "range": true
                     },
@@ -165,7 +165,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum(gha_running_jobs{cluster=~\"$cluster\", pod=~\"(mt-)?($runner)-[a-z0-9]+-listener\"})",
+                      "expr": "sum(gha_running_jobs{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"})",
                       "legendFormat": "running jobs",
                       "range": true
                     },
@@ -288,7 +288,7 @@
                       "meta": {
                         "timezone": "browser"
                       },
-                      "rawSql": "WITH\n  $__fromTime AS window_start,\n  $__toTime AS window_end,\n  base AS (\n    SELECT\n      toDateTime(ts) AS time_bucket,\n      floor(dateDiff('minute', started_at, toDateTime(ts)) / 5) * 5 AS age_bucket_minutes,\n      count() AS running_jobs\n    FROM workflow_job\n    ARRAY JOIN range(\n      toUInt32(toUnixTimestamp(greatest(window_start, toStartOfInterval(started_at, INTERVAL 5 MINUTE)))),\n      toUInt32(toUnixTimestamp(least(window_end, if(completed_at > toDateTime64('2000-01-01', 9), completed_at, now())))) + 1,\n      300\n    ) AS ts\n    WHERE runner_group_name IN (${cluster:sqlstring})\n      AND started_at BETWEEN window_start - INTERVAL 24 HOUR AND window_end\n      AND started_at > toDateTime64('2000-01-01', 9)\n      AND status IN ('in_progress', 'completed')\n      AND dateDiff('minute',\n                   started_at,\n                   if(completed_at > toDateTime64('2000-01-01', 9), completed_at, now())\n                  ) <= 360\n      AND toDateTime(ts) >= window_start\n      AND toDateTime(ts) <= window_end\n      AND (\n        '${runner:regex}' = '' OR\n        arrayExists(x -> match(x, '^mt-(${runner:regex})$'), labels)\n      )\n    GROUP BY time_bucket, age_bucket_minutes\n    HAVING age_bucket_minutes >= 0\n  )\nSELECT\n  time_bucket AS time,\n  sumIf(running_jobs, age_bucket_minutes = 0) AS `005m`,\n  sumIf(running_jobs, age_bucket_minutes = 5) AS `010m`,\n  sumIf(running_jobs, age_bucket_minutes = 10) AS `015m`,\n  sumIf(running_jobs, age_bucket_minutes = 15) AS `020m`,\n  sumIf(running_jobs, age_bucket_minutes = 20) AS `025m`,\n  sumIf(running_jobs, age_bucket_minutes = 25) AS `030m`,\n  sumIf(running_jobs, age_bucket_minutes >= 30 AND age_bucket_minutes < 45) AS `045m`,\n  sumIf(running_jobs, age_bucket_minutes >= 45 AND age_bucket_minutes < 60) AS `060m`,\n  sumIf(running_jobs, age_bucket_minutes >= 60 AND age_bucket_minutes < 90) AS `090m`,\n  sumIf(running_jobs, age_bucket_minutes >= 90 AND age_bucket_minutes < 120) AS `120m`,\n  sumIf(running_jobs, age_bucket_minutes >= 120 AND age_bucket_minutes < 150) AS `150m`,\n  sumIf(running_jobs, age_bucket_minutes >= 150 AND age_bucket_minutes < 180) AS `180m`,\n  sumIf(running_jobs, age_bucket_minutes >= 180 AND age_bucket_minutes < 210) AS `210m`,\n  sumIf(running_jobs, age_bucket_minutes >= 210 AND age_bucket_minutes < 240) AS `240m`,\n  sumIf(running_jobs, age_bucket_minutes >= 240 AND age_bucket_minutes < 300) AS `300m`,\n  sumIf(running_jobs, age_bucket_minutes >= 300 AND age_bucket_minutes < 360) AS `360m`,\n  sumIf(running_jobs, age_bucket_minutes >= 360 AND age_bucket_minutes < 420) AS `420m`,\n  sumIf(running_jobs, age_bucket_minutes >= 420) AS `999m`\nFROM base\nGROUP BY time\nORDER BY time"
+                      "rawSql": "WITH\n  $__fromTime AS window_start,\n  $__toTime AS window_end,\n  base AS (\n    SELECT\n      toDateTime(ts) AS time_bucket,\n      floor(dateDiff('minute', started_at, toDateTime(ts)) / 5) * 5 AS age_bucket_minutes,\n      count() AS running_jobs\n    FROM workflow_job\n    ARRAY JOIN range(\n      toUInt32(toUnixTimestamp(greatest(window_start, toStartOfInterval(started_at, INTERVAL 5 MINUTE)))),\n      toUInt32(toUnixTimestamp(least(window_end, if(completed_at > toDateTime64('2000-01-01', 9), completed_at, now())))) + 1,\n      300\n    ) AS ts\n    WHERE runner_group_name IN (${cluster:sqlstring})\n      AND started_at BETWEEN window_start - INTERVAL 24 HOUR AND window_end\n      AND started_at > toDateTime64('2000-01-01', 9)\n      AND status IN ('in_progress', 'completed')\n      AND dateDiff('minute',\n                   started_at,\n                   if(completed_at > toDateTime64('2000-01-01', 9), completed_at, now())\n                  ) <= 360\n      AND toDateTime(ts) >= window_start\n      AND toDateTime(ts) <= window_end\n      AND (\n        '${runner:regex}' = '' OR\n        arrayExists(x -> match(x, '^(mt|lf)-(${runner:regex})$'), labels)\n      )\n    GROUP BY time_bucket, age_bucket_minutes\n    HAVING age_bucket_minutes >= 0\n  )\nSELECT\n  time_bucket AS time,\n  sumIf(running_jobs, age_bucket_minutes = 0) AS `005m`,\n  sumIf(running_jobs, age_bucket_minutes = 5) AS `010m`,\n  sumIf(running_jobs, age_bucket_minutes = 10) AS `015m`,\n  sumIf(running_jobs, age_bucket_minutes = 15) AS `020m`,\n  sumIf(running_jobs, age_bucket_minutes = 20) AS `025m`,\n  sumIf(running_jobs, age_bucket_minutes = 25) AS `030m`,\n  sumIf(running_jobs, age_bucket_minutes >= 30 AND age_bucket_minutes < 45) AS `045m`,\n  sumIf(running_jobs, age_bucket_minutes >= 45 AND age_bucket_minutes < 60) AS `060m`,\n  sumIf(running_jobs, age_bucket_minutes >= 60 AND age_bucket_minutes < 90) AS `090m`,\n  sumIf(running_jobs, age_bucket_minutes >= 90 AND age_bucket_minutes < 120) AS `120m`,\n  sumIf(running_jobs, age_bucket_minutes >= 120 AND age_bucket_minutes < 150) AS `150m`,\n  sumIf(running_jobs, age_bucket_minutes >= 150 AND age_bucket_minutes < 180) AS `180m`,\n  sumIf(running_jobs, age_bucket_minutes >= 180 AND age_bucket_minutes < 210) AS `210m`,\n  sumIf(running_jobs, age_bucket_minutes >= 210 AND age_bucket_minutes < 240) AS `240m`,\n  sumIf(running_jobs, age_bucket_minutes >= 240 AND age_bucket_minutes < 300) AS `300m`,\n  sumIf(running_jobs, age_bucket_minutes >= 300 AND age_bucket_minutes < 360) AS `360m`,\n  sumIf(running_jobs, age_bucket_minutes >= 360 AND age_bucket_minutes < 420) AS `420m`,\n  sumIf(running_jobs, age_bucket_minutes >= 420) AS `999m`\nFROM base\nGROUP BY time\nORDER BY time"
                     },
                     "version": "v0"
                   },
@@ -2058,7 +2058,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum_over_time( (sum by (cluster) (kube_node_status_capacity{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))[1h:1m] )\n/\nsum_over_time( (sum by (cluster) (gha_running_jobs{cluster=~\"$cluster\", pod=~\"(mt-)?($runner)-[a-z0-9]+-listener\"}))[1h:1m] )",
+                      "expr": "sum_over_time( (sum by (cluster) (kube_node_status_capacity{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))[1h:1m] )\n/\nsum_over_time( (sum by (cluster) (gha_running_jobs{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"}))[1h:1m] )",
                       "interval": "1h",
                       "legendFormat": "{{cluster}}",
                       "range": true
@@ -2181,7 +2181,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum_over_time( (sum by (cluster) (kube_node_status_capacity{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))[$__range:1m] )\n/\nsum_over_time( (sum by (cluster) (gha_running_jobs{cluster=~\"$cluster\", pod=~\"(mt-)?($runner)-[a-z0-9]+-listener\"}))[$__range:1m] )",
+                      "expr": "sum_over_time( (sum by (cluster) (kube_node_status_capacity{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))[$__range:1m] )\n/\nsum_over_time( (sum by (cluster) (gha_running_jobs{cluster=~\"$cluster\", pod=~\"((mt|lf)-)?($runner)-[a-z0-9]+-listener\"}))[$__range:1m] )",
                       "instant": true,
                       "legendFormat": "{{cluster}}",
                       "range": false
@@ -2634,7 +2634,7 @@
           "version": "v0"
         },
         "refresh": "onTimeRangeChanged",
-        "regex": "/pod=\"mt-(.+?)-[a-z0-9]+-runner-/",
+        "regex": "/pod=\"(?:mt|lf)-(.+?)-[a-z0-9]+-runner-/",
         "regexApplyTo": "value",
         "skipUrlSync": false,
         "sort": "alphabeticalAsc"
