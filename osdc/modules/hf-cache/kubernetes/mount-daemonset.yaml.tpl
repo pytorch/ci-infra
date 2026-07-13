@@ -3,9 +3,10 @@
 # in modules/arc-runners/templates/runner.yaml.tpl. Reads are lazy and cached on
 # NVMe (LRU). Writes go via the GitHub-OIDC refresh path, not this mount.
 #
-# deploy.sh renders this once per GPU-count tier (via __GPU_OP__/__MULTI_GPU_COUNTS__),
-# each with a memory limit scaled to that tier. The instance-gpu-count affinity keeps
-# the tiers mutually exclusive (exactly one mount per node).
+# The mount runs on GPU nodes only (nvidia.com/gpu nodeSelector) — CPU runners don't
+# pull models. deploy.sh renders this once per GPU-count tier (via __GPU_OP__/
+# __MULTI_GPU_COUNTS__), each with a memory limit scaled to that tier. The
+# instance-gpu-count affinity keeps the tiers mutually exclusive (exactly one mount per node).
 #
 # Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
 # __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__ __RCLONE_MEMORY_LIMIT__ __GOMEMLIMIT__
@@ -43,9 +44,14 @@ spec:
 
       nodeSelector:
         workload-type: github-runner
+        # GPU-only: CPU runners don't pull models. This is also why the nodepools
+        # hf-cache startup taint is gpu-gated — a CPU node with the taint and no
+        # DaemonSet to clear it would strand.
+        nvidia.com/gpu: "true"
 
-      # Per-tier selector (deploy.sh renders one DaemonSet per gpu-count). instance-gpu-count
-      # is absent on non-GPU nodes, so the NotIn "rest" tier also covers CPU.
+      # Per-tier selector (deploy.sh renders one DaemonSet per gpu-count). The nodeSelector
+      # already limits to GPU nodes; instance-gpu-count then splits them into tiers. The
+      # NotIn "rest" tier is a no-op on CPU (excluded above) — it catches unclassified GPU counts.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

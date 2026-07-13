@@ -65,12 +65,14 @@ STARTUP_TAINTS: list[dict] = [
     },
     {
         # Gates runner pods until the rclone FUSE is mounted (a pod that starts
-        # first binds the empty dir and never sees the cache). No applies_when: the
-        # mount DS runs on, and clears it from, every workload-type=github-runner node.
+        # first binds the empty dir and never sees the cache). The mount DS is
+        # GPU-only (nvidia.com/gpu nodeSelector), so skip the taint on CPU nodepools
+        # — otherwise the node would be tainted with nothing to clear it.
         "module": "hf-cache",
         "key": "node-init.osdc.io/hf-cache",
         "value": "true",
         "effect": "NoSchedule",
+        "applies_when": lambda d: d.get("gpu", False),
     },
     {
         "module": None,

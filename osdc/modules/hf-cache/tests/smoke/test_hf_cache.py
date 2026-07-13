@@ -13,7 +13,7 @@ from helpers import assert_daemonset_healthy, filter_daemonsets, run_kubectl
 pytestmark = [pytest.mark.live]
 
 NAMESPACE = "hf-cache"
-MOUNT_DS = "hf-cache-mount"  # the CPU/catch-all tier; also the pod-spec fixture DS
+MOUNT_DS = "hf-cache-mount"  # the catch-all tier; also the pod-spec fixture DS
 MOUNT_SA = "hf-cache-mount"
 IRSA_KEY = "eks.amazonaws.com/role-arn"
 MOUNT_PATH = "/mnt/hf_cache"
@@ -28,7 +28,8 @@ MOUNT_TIERS = {
     "hf-cache-mount-gpu4": ("In", {"4"}, "2Gi"),
     "hf-cache-mount-gpu8": ("In", {"8"}, "4Gi"),
 }
-RUNNER_NODE_SELECTOR = {"workload-type": ["github-runner"]}
+# hf-cache is GPU-only, so the mount targets GPU runner nodes.
+RUNNER_NODE_SELECTOR = {"workload-type": ["github-runner"], "nvidia.com/gpu": ["true"]}
 
 
 class TestHfCacheNamespace:
@@ -74,6 +75,10 @@ class TestHfCacheMountDaemonSet:
         sel = mount_pod_spec.get("nodeSelector", {})
         assert sel.get("workload-type") == "github-runner", (
             "mount DaemonSet must target workload-type=github-runner nodes (where job pods land)."
+        )
+        assert sel.get("nvidia.com/gpu") == "true", (
+            "mount DaemonSet must be GPU-only (nvidia.com/gpu=true) — CPU runners don't need the cache "
+            "and would strand on the gpu-gated startup taint."
         )
 
     def test_container_privileged(self, mount_pod_spec: dict) -> None:

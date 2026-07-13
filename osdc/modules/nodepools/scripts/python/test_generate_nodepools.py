@@ -1637,19 +1637,25 @@ class TestModuleStartupTaints:
         keys = [t["key"] for t in startup_taints]
         assert "test.osdc.io/base" in keys
 
-    def test_hf_cache_taint_gated_on_module(self, monkeypatch):
-        """The real hf-cache entry: emitted on runner nodepools iff hf-cache is enabled.
+    def test_hf_cache_taint_gated_on_gpu_and_module(self, monkeypatch):
+        """The real hf-cache entry: emitted only on GPU runner nodepools when enabled.
 
-        The hf-cache-mount DaemonSet runs on every workload-type=github-runner
-        node and tolerates all taints, so the taint has no applies_when guard.
+        The hf-cache-mount DaemonSet is GPU-only (nvidia.com/gpu nodeSelector), so a
+        CPU nodepool tainted with it would strand (nothing clears the taint).
         """
+        gpu_def = _make_nodepool_def(gpu=True, instance_type="g4dn.12xlarge", arch="amd64")
+
         monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "hf-cache arc-runners nodepools")
-        np = self._np_doc(generate_nodepool_yaml(_make_nodepool_def(), "nodepools"))
+        np = self._np_doc(generate_nodepool_yaml(gpu_def, "nodepools"))
         keys = [t["key"] for t in np["spec"]["template"]["spec"]["startupTaints"]]
         assert "node-init.osdc.io/hf-cache" in keys
 
-        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "arc-runners nodepools")
+        # CPU nodepool: no taint even with the module enabled (DS won't run there).
         assert "node-init.osdc.io/hf-cache" not in generate_nodepool_yaml(_make_nodepool_def(), "nodepools")
+
+        # Module disabled: no taint even on GPU.
+        monkeypatch.setenv("NODEPOOLS_ENABLED_MODULES", "arc-runners nodepools")
+        assert "node-init.osdc.io/hf-cache" not in generate_nodepool_yaml(gpu_def, "nodepools")
 
     def test_base_taint_emitted_alongside_module_gated(self, monkeypatch):
         """Both module=None and module=<enabled-name> entries are emitted."""

@@ -9,9 +9,11 @@ Each cluster has its own private S3 bucket (`pytorch-hf-model-cache-<cluster_id>
 in the cluster's region), provisioned by the module's terraform. A privileged
 per-node **rclone FUSE mount** (`mount-daemonset`) exposes it **read-only** at
 host `/mnt/hf_cache`; reads are lazy and cached on node-local NVMe (LRU), so a
-cold node only pulls the models its jobs touch. Job pods (ARC kubernetes mode)
-get the path bind-mounted read-only via the gated `# BEGIN_HF_CACHE` block in
-`modules/arc-runners/templates/runner.yaml.tpl`.
+cold node only pulls the models its jobs touch. The mount runs on **GPU runner
+nodes only** (`nvidia.com/gpu` nodeSelector) — CPU runners don't pull models —
+and the `node-init.osdc.io/hf-cache` startup taint is gpu-gated to match. Job pods
+(ARC kubernetes mode) get the path bind-mounted read-only via the gated
+`# BEGIN_HF_CACHE` block in `modules/arc-runners/templates/runner.yaml.tpl`.
 
 rclone's memory is **reserved** (`request == limit`) and **tiered by GPU count**
 (`karpenter.k8s.aws/instance-gpu-count`), since RSS scales with job concurrency:
@@ -34,7 +36,7 @@ follows symlinks, so the S3 layout is symlink-free and portable.
 | Component | What it does |
 |-----------|--------------|
 | `terraform/` | Per-cluster private bucket + read-only IRSA role (`hf-cache-mount` SA) |
-| `kubernetes/mount-daemonset.yaml.tpl` | rclone read-only FUSE mount → `/mnt/hf_cache` on every runner/workflow node |
+| `kubernetes/mount-daemonset.yaml.tpl` | rclone read-only FUSE mount → `/mnt/hf_cache` on every **GPU** runner/workflow node (`nvidia.com/gpu` nodeSelector) |
 | `deploy.sh` | Annotates the SA with the role and rolls out the per-GPU-count mount DaemonSets (`MOUNT_TIERS`) |
 | (pytorch-gha-infra) | `gha_workflow_hf-cache-write` OIDC role — the only writer |
 

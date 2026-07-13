@@ -55,14 +55,15 @@ EKS_ADDON_DAEMONSETS: list[DaemonSetOverhead] = [
 ]
 
 # .tpl-rendered DaemonSets the raw-YAML scan can't see (unresolved __PLACEHOLDER__s).
-# hf-cache's memory is tiered by GPU count (deploy.sh MOUNT_TIERS); this base is the
-# CPU/catch-all tier counted on every node, and GPU nodes add hf_cache_gpu_topup_mib().
+# hf-cache is GPU-only (nvidia.com/gpu nodeSelector) — CPU nodes get no mount, hence
+# gpu_only=True. Its memory is tiered by GPU count (deploy.sh MOUNT_TIERS); this base is
+# the smallest-tier reserve every GPU node counts, and higher counts add hf_cache_gpu_topup_mib().
 HF_CACHE_BASE_MIB = 256
 TEMPLATED_DAEMONSETS: list[DaemonSetOverhead] = [
-    DaemonSetOverhead("hf-cache-mount", 100, HF_CACHE_BASE_MIB, False, "constant:tpl:modules/hf-cache"),
+    DaemonSetOverhead("hf-cache-mount", 100, HF_CACHE_BASE_MIB, True, "constant:tpl:modules/hf-cache"),
 ]
 
-# Reserved hf-cache memory (MiB) by GPU count (MOUNT_TIERS); other counts + CPU get the base.
+# Reserved hf-cache memory (MiB) by GPU count (MOUNT_TIERS); unclassified GPU counts get the base.
 HF_CACHE_TIER_MIB = {1: 512, 2: 1024, 4: 2048, 8: 4096}
 
 
