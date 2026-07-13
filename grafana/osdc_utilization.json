@@ -2038,6 +2038,224 @@
           "version": "13.2.0-28666480772"
         }
       }
+    },
+    "panel-16": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorMode": "code",
+                      "expr": "sum_over_time( (sum by (cluster) (kube_node_status_capacity{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))[1h:1m] )\n/\nsum_over_time( (sum by (cluster) (gha_running_jobs{cluster=~\"$cluster\", pod=~\"(mt-)?($runner)-[a-z0-9]+-listener\"}))[1h:1m] )",
+                      "interval": "1h",
+                      "legendFormat": "{{cluster}}",
+                      "range": true
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Total provisioned vCPU-hours divided by CI-hours per cluster, in 1h buckets. Numerator (a): sum_over_time of total provisioned (node capacity) vCPU on OSDC nodes sampled at 1m over each 1h window; respects $cluster and $fleet. Denominator (b): sum_over_time of concurrently running jobs sampled at 1m over the same window; respects $cluster and $runner. Integrating instantaneous concurrency at 1m attributes each job to every hour bucket it overlaps, so a job spanning several hours contributes its true per-hour share to each bucket instead of being counted only in its start hour. The ratio is the average provisioned vCPU per concurrently running CI job; higher means more idle provisioned capacity per unit of CI work. The 1-minute sampling factor cancels between numerator and denominator.",
+        "id": 16,
+        "links": [],
+        "title": "Provisioned vCPU-hours / CI-hours per cluster [cluster, fleet, runner]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic-by-name"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 5,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "min": 0,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                },
+                "unit": "suffix:vCPU·h/CI·h"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [
+                  "mean"
+                ],
+                "displayMode": "table",
+                "enableFacetedFilter": false,
+                "overflow": "ellipsis",
+                "placement": "right",
+                "showLegend": false,
+                "sortBy": "Mean",
+                "sortDesc": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "desc"
+              }
+            }
+          },
+          "version": "13.2.0-28666480772"
+        }
+      }
+    },
+    "panel-17": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "${datasource}"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorMode": "code",
+                      "expr": "sum_over_time( (sum by (cluster) (kube_node_status_capacity{resource=\"cpu\"} and on(cluster, node) node_compactor_node_utilization_ratio{resource=\"cpu\",cluster=~\"$cluster\",nodepool=~\"($fleet)(-[0-9]+xlarge|-metal)?\"}))[$__range:1m] )\n/\nsum_over_time( (sum by (cluster) (gha_running_jobs{cluster=~\"$cluster\", pod=~\"(mt-)?($runner)-[a-z0-9]+-listener\"}))[$__range:1m] )",
+                      "instant": true,
+                      "legendFormat": "{{cluster}}",
+                      "range": false
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Range-weighted mean of total provisioned vCPU-hours / CI-hours per cluster over the selected window: sum_over_time(total provisioned node-capacity vCPU) / sum_over_time(concurrently running jobs), both sampled at 1m. One bar per cluster. Respects $cluster, $fleet (capacity side) and $cluster, $runner (CI side). Companion to the time-series panel above, giving the at-a-glance mean per cluster.",
+        "id": 17,
+        "links": [],
+        "title": "Mean provisioned vCPU-hours / CI-hours (range) [cluster, fleet, runner]",
+        "vizConfig": {
+          "group": "bargauge",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic-by-name"
+                },
+                "min": 0,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                },
+                "unit": "suffix:vCPU·h/CI·h"
+              },
+              "overrides": []
+            },
+            "options": {
+              "displayMode": "gradient",
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "overflow": "ellipsis",
+                "placement": "bottom",
+                "showLegend": false
+              },
+              "maxVizHeight": 300,
+              "minVizHeight": 16,
+              "minVizWidth": 8,
+              "namePlacement": "auto",
+              "orientation": "horizontal",
+              "reduceOptions": {
+                "calcs": [
+                  "lastNotNull"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showUnfilled": true,
+              "sizing": "auto",
+              "text": {
+                "titleSize": 10,
+                "valueSize": 15
+              },
+              "valueMode": "color"
+            }
+          },
+          "version": "13.2.0-28666480772"
+        }
+      }
     }
   },
   "layout": {
@@ -2132,7 +2350,7 @@
             "height": 9,
             "width": 24,
             "x": 0,
-            "y": 16
+            "y": 25
           }
         },
         {
@@ -2145,7 +2363,7 @@
             "height": 9,
             "width": 24,
             "x": 0,
-            "y": 25
+            "y": 34
           }
         },
         {
@@ -2158,7 +2376,7 @@
             "height": 9,
             "width": 24,
             "x": 0,
-            "y": 34
+            "y": 43
           }
         },
         {
@@ -2171,7 +2389,7 @@
             "height": 9,
             "width": 24,
             "x": 0,
-            "y": 43
+            "y": 52
           }
         },
         {
@@ -2184,7 +2402,7 @@
             "height": 9,
             "width": 12,
             "x": 0,
-            "y": 52
+            "y": 61
           }
         },
         {
@@ -2197,7 +2415,7 @@
             "height": 9,
             "width": 12,
             "x": 12,
-            "y": 52
+            "y": 61
           }
         },
         {
@@ -2210,7 +2428,7 @@
             "height": 11,
             "width": 12,
             "x": 0,
-            "y": 61
+            "y": 70
           }
         },
         {
@@ -2223,7 +2441,33 @@
             "height": 11,
             "width": 12,
             "x": 12,
-            "y": 61
+            "y": 70
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-16"
+            },
+            "height": 9,
+            "width": 20,
+            "x": 0,
+            "y": 16
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-17"
+            },
+            "height": 9,
+            "width": 4,
+            "x": 20,
+            "y": 16
           }
         }
       ]
