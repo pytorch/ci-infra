@@ -1,8 +1,9 @@
 # ARC runner definition: l-x86iavx2-40-160
-# Instance type: m7i.48xlarge (pool: x86-cpu)
+# Instance type: m7i.12xlarge (pool: m7i-12xl)
 runner:
   name: l-x86iavx2-40-160
-  instance_type: m7i.48xlarge
+  instance_type: m7i.12xlarge
+  node_fleet: m7i-12xl
   disk_size: 200
   vcpu: 40
   memory: 160Gi
