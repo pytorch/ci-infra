@@ -390,9 +390,9 @@ class TestGenerateWorkflow:
         assert "arc-job" not in result
 
     def test_opt_variants_keep_arc_runner_jobs(self, workflow_template):
-        # meta-prod-aws-ue1 runs the -opt shim modules. arc-runners-opt / nodepools-opt
-        # must satisfy the base arc-runners / nodepools gates so the runner jobs survive
-        # instead of degrading to a no-op. B200 stays stripped: no -b200 module is present
+        # The -opt shim modules (arc-runners-opt / nodepools-opt) must satisfy the
+        # base arc-runners / nodepools gates so the runner jobs survive instead of
+        # degrading to a no-op. B200 stays stripped: no -b200 module is present
         # and removesuffix("-opt") never produces one.
         result = generate_workflow(
             workflow_template,
