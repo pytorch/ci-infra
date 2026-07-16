@@ -20,6 +20,7 @@ from run import (
     format_duration,
     gh_api,
     has_module,
+    is_prod_cluster,
     load_cluster_config,
     normalize_modules,
     parse_args,
@@ -283,6 +284,32 @@ class TestHasModule:
         assert has_module(cfg, "arc-runners") is False
 
 
+# ── is_prod_cluster ───────────────────────────────────────────────────────
+
+
+class TestIsProdCluster:
+    @pytest.mark.parametrize(
+        "cluster_id",
+        ["meta-prod-aws-uw1", "meta-prod-aws-ue1", "meta-prod-aws-ue2", "lf-prod-aws-ue1", "lf-prod-aws-ue2"],
+    )
+    def test_prod_clusters(self, cluster_id):
+        assert is_prod_cluster(cluster_id) is True
+
+    @pytest.mark.parametrize(
+        "cluster_id",
+        ["meta-staging-aws-uw1", "meta-staging-aws-ue1", "meta-staging-aws-ue2"],
+    )
+    def test_staging_clusters(self, cluster_id):
+        assert is_prod_cluster(cluster_id) is False
+
+    def test_env_segment_not_substring(self):
+        # "prod" must be the environment segment, not merely present elsewhere.
+        assert is_prod_cluster("meta-staging-prodlike-uw1") is False
+
+    def test_single_segment_id(self):
+        assert is_prod_cluster("x") is False
+
+
 # ── generate_workflow ─────────────────────────────────────────────────────
 
 
@@ -306,11 +333,13 @@ class TestGenerateWorkflow:
         assert "{{CLUSTER_NAME}}" not in result
 
     def test_all_tags_kept_with_full_modules(self, workflow_template):
+        # Staging cluster: the RELEASE block is only kept off prod (see
+        # PROD_EXCLUDED_BLOCKS), so "all tags kept" is a non-prod assertion.
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             cluster_modules=ALL_MODULES,
         )
         for job in (
@@ -390,10 +419,11 @@ class TestGenerateWorkflow:
         assert "arc-job" not in result
 
     def test_opt_variants_keep_arc_runner_jobs(self, workflow_template):
-        # The -opt shim modules (arc-runners-opt / nodepools-opt) must satisfy the
-        # base arc-runners / nodepools gates so the runner jobs survive instead of
-        # degrading to a no-op. B200 stays stripped: no -b200 module is present
-        # and removesuffix("-opt") never produces one.
+        # meta-prod-aws-ue1 runs the -opt shim modules. arc-runners-opt / nodepools-opt
+        # must satisfy the base arc-runners / nodepools gates so the runner jobs survive
+        # instead of degrading to a no-op. B200 stays stripped: no -b200 module is present
+        # and removesuffix("-opt") never produces one. RELEASE is stripped too — this is
+        # a prod cluster, and prod never runs the release-runner builds.
         result = generate_workflow(
             workflow_template,
             "mt",
@@ -404,7 +434,7 @@ class TestGenerateWorkflow:
         assert "arc-job" in result
         assert "gpu-t4-job" in result
         assert "buildkit-job" in result
-        assert "release-job" in result
+        assert "release-job" not in result
         assert "BEGIN_ARC_RUNNERS" not in result
         assert "BEGIN_GPU_T4" not in result
         assert "BEGIN_BUILDKIT" not in result
@@ -450,7 +480,8 @@ class TestGenerateWorkflow:
         assert "gpu-t4-job" not in result
         assert "BEGIN_GPU_T4" not in result
         assert "arc-job" in result
-        assert "release-job" in result
+        # meta-prod-aws-ue2 is prod → release-runner tests stripped.
+        assert "release-job" not in result
 
     def test_pypi_cache_requires_pypi_cache_module(self, workflow_template):
         result = generate_workflow(
@@ -465,11 +496,12 @@ class TestGenerateWorkflow:
         assert "arc-job" in result
 
     def test_release_kept_with_arc_runners(self, workflow_template):
+        # Non-prod cluster with arc-runners keeps the release-runner tests.
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             cluster_modules=["arc-runners"],
         )
         assert "release-job" in result
@@ -480,11 +512,38 @@ class TestGenerateWorkflow:
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             cluster_modules=["nodepools"],
         )
         assert "release-job" not in result
+        assert "BEGIN_RELEASE" not in result
+
+    def test_release_stripped_on_prod_cluster(self, workflow_template):
+        # Prod cluster with arc-runners: module gating would keep RELEASE, but the
+        # prod environment gate strips it so long release builds stay off prod.
+        result = generate_workflow(
+            workflow_template,
+            "mt",
+            "meta-prod-aws-ue2",
+            "meta-prod-aws-ue2",
+            cluster_modules=["arc-runners"],
+        )
+        assert "release-job" not in result
+        assert "BEGIN_RELEASE" not in result
+        assert "END_RELEASE" not in result
+        # Other arc-runners jobs are unaffected by the prod gate.
+        assert "arc-job" in result
+
+    def test_release_kept_on_staging_cluster(self, workflow_template):
+        result = generate_workflow(
+            workflow_template,
+            "c-mt",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
+            cluster_modules=["arc-runners"],
+        )
+        assert "release-job" in result
         assert "BEGIN_RELEASE" not in result
 
     def test_pypi_slugs_substituted(self, workflow_template):
@@ -555,11 +614,13 @@ class TestGenerateWorkflow:
         assert "{{RUNNER_GROUP}}" not in result
 
     def test_release_runner_group_substituted(self, workflow_template):
+        # Staging cluster: the release-runner job (which carries RELEASE_RUNNER_GROUP)
+        # is only kept off prod.
         result = generate_workflow(
             workflow_template,
             "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
+            "meta-staging-aws-uw1",
+            "meta-staging-aws-uw1",
             cluster_modules=ALL_MODULES,
             runner_group="default",
             release_runner_group="rel-rg",
