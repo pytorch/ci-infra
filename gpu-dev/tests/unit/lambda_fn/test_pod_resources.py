@@ -30,9 +30,13 @@ class TestFullGpuLimits:
         assert lim == {"nvidia.com/gpu": "1", "cpu": "36", "memory": "256Gi"}
 
     def test_h100_full_node_limits_cpu_capped(self):
-        # ratio 1.0: fractional_cpu*1.5 = 288 but capped at config cpus (192)
+        # ratio 1.0: fractional_cpu*1.5 = 288 but capped at config cpus (192).
+        # Whole-host h100 also gets EFA (efa_count>0, gpu==max_gpus), even single-node.
         lim = index.get_pod_resource_limits(8, "h100")
-        assert lim == {"nvidia.com/gpu": "8", "cpu": "192", "memory": "2048Gi"}
+        assert lim == {
+            "nvidia.com/gpu": "8", "cpu": "192", "memory": "2048Gi",
+            "vpc.amazonaws.com/efa": "32", "hugepages-2Mi": "5120Mi",
+        }
         # The 1.5x boost must NOT exceed the node's physical cpu count.
         assert int(lim["cpu"]) == 192
 
@@ -59,9 +63,13 @@ class TestFullGpuRequests:
         assert req == {"nvidia.com/gpu": "1", "cpu": "21", "memory": "230Gi"}
 
     def test_h100_full_node_requests(self):
-        # ratio 1.0: cpu=int(192*0.9)=172, mem=int(2048*0.9)=1843
+        # ratio 1.0: cpu=int(192*0.9)=172, mem=int(2048*0.9)=1843.
+        # Whole-host h100 also carries the EFA + hugepages requests.
         req = index.get_pod_resource_requests(8, "h100")
-        assert req == {"nvidia.com/gpu": "8", "cpu": "172", "memory": "1843Gi"}
+        assert req == {
+            "nvidia.com/gpu": "8", "cpu": "172", "memory": "1843Gi",
+            "vpc.amazonaws.com/efa": "32", "hugepages-2Mi": "5120Mi",
+        }
 
     def test_requests_below_limits(self):
         # requests (0.9x) must be <= limits for the same allocation.
@@ -184,7 +192,8 @@ class TestDecimalCoercion:
 
 
 # --------------------------------------------------------------------------- #
-# EFA gating: only multinode + full-node, never t4-small / MIG / cpu
+# EFA gating: whole-host (all GPUs on the node) on EFA-capable SKUs, single-node
+# or multinode; never partial-node ("subhost") / t4-small / MIG / cpu.
 # --------------------------------------------------------------------------- #
 class TestEfaGating:
     def test_efa_added_for_full_node_multinode_limits(self):
@@ -197,41 +206,44 @@ class TestEfaGating:
         assert req["vpc.amazonaws.com/efa"] == "32"
         assert req["hugepages-2Mi"] == "5120Mi"
 
-    def test_no_efa_when_not_multinode(self):
+    def test_efa_added_for_whole_host_single_node(self):
+        # Whole-host single-node reservation (8/8, not multinode) now gets EFA:
+        # the pod owns the node, so hostNetwork + sshd:2222 stays conflict-free.
         lim = index.get_pod_resource_limits(8, "h100", is_multinode=False)
-        assert "vpc.amazonaws.com/efa" not in lim
+        req = index.get_pod_resource_requests(8, "h100", is_multinode=False)
+        assert lim["vpc.amazonaws.com/efa"] == "32"
+        assert lim["hugepages-2Mi"] == "5120Mi"
+        assert req["vpc.amazonaws.com/efa"] == "32"
 
     def test_no_efa_for_partial_node(self):
-        # multinode but not the whole node (4 of 8) => no EFA.
-        lim = index.get_pod_resource_limits(4, "h100", is_multinode=True)
-        assert "vpc.amazonaws.com/efa" not in lim
-        assert "hugepages-2Mi" not in lim
+        # Subhost (4 of 8) never gets EFA — even multinode.
+        assert "vpc.amazonaws.com/efa" not in index.get_pod_resource_limits(4, "h100", is_multinode=True)
+        assert "vpc.amazonaws.com/efa" not in index.get_pod_resource_limits(4, "h100", is_multinode=False)
+        assert "hugepages-2Mi" not in index.get_pod_resource_limits(4, "h100", is_multinode=False)
 
-    def test_t4_small_excluded_even_when_full_multinode(self):
-        # t4-small max_gpus==1, so gpu_count==max_gpus is satisfied, but the
-        # explicit t4-small exclusion still blocks EFA.
+    def test_t4_small_excluded_even_when_full(self):
+        # t4-small max_gpus==1 so gpu_count==max_gpus holds, but efa_count==0 blocks EFA.
         lim = index.get_pod_resource_limits(1, "t4-small", is_multinode=True)
         assert "vpc.amazonaws.com/efa" not in lim
 
-    def test_mig_full_node_multinode_no_efa(self):
-        # mig-2g max_gpus==8; full + multinode but MIG is excluded.
+    def test_mig_full_node_no_efa(self):
+        # mig-2g max_gpus==8; full node but efa_count==0 excludes MIG.
         lim = index.get_pod_resource_limits(8, "h100-mig-2g", is_multinode=True)
         assert "vpc.amazonaws.com/efa" not in lim
 
     def test_efa_count_per_gpu_type(self):
-        # a100 efa_count=4, b300 efa_count=8 — value pulled from GPU_CONFIG.
-        a100 = index.get_pod_resource_limits(8, "a100", is_multinode=True)
-        b300 = index.get_pod_resource_limits(8, "b300", is_multinode=True)
-        assert a100["vpc.amazonaws.com/efa"] == "4"
-        assert b300["vpc.amazonaws.com/efa"] == "8"
+        # value pulled from GPU_CONFIG: a100=4, b200=8, b300=8.
+        assert index.get_pod_resource_limits(8, "a100")["vpc.amazonaws.com/efa"] == "4"
+        assert index.get_pod_resource_limits(8, "b200")["vpc.amazonaws.com/efa"] == "8"
+        assert index.get_pod_resource_limits(8, "b300")["vpc.amazonaws.com/efa"] == "8"
 
     def test_pod_uses_efa_helper_agreement(self):
-        # _pod_uses_efa should agree with the presence of the efa key in limits,
-        # except it omits the MIG/cpu guards present in the limits function.
+        # _pod_uses_efa gates on efa_count>0 and whole-host, independent of multinode.
         assert index._pod_uses_efa(8, "h100", is_multinode=True) is True
-        assert index._pod_uses_efa(8, "h100", is_multinode=False) is False
-        assert index._pod_uses_efa(4, "h100", is_multinode=True) is False
+        assert index._pod_uses_efa(8, "h100", is_multinode=False) is True
+        assert index._pod_uses_efa(4, "h100", is_multinode=False) is False
         assert index._pod_uses_efa(1, "t4-small", is_multinode=True) is False
+        assert index._pod_uses_efa(0, "cpu-x86", is_multinode=True) is False
 
 
 # --------------------------------------------------------------------------- #

@@ -233,7 +233,7 @@ GPU_CONFIG = {
     "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152, "efa_count": 4},
     "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
     "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
-    "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 32},
+    "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 8},  # p6-b200.48xlarge advertises 8 EFA network cards (see main.tf efa_network_cards)
     "b300": {"instance_type": "p6-b300.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048, "efa_count": 8},
     "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
     "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64, "efa_count": 0},
@@ -4790,22 +4790,15 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
                 "memory": f"{proportional_memory_limit}Gi"
             })
 
-    # EFA optimization: Only use EFA for full-node multinode deployments (skip MIG slices)
-    use_efa = (
-        gpu_type != "t4-small" and
-        not gpu_type.startswith("cpu-") and
-        "mig" not in gpu_type and
-        is_multinode and
-        gpu_count == max_gpus
-    )
-
-    if use_efa:
-        efa_count = config.get("efa_count", 1)
+    # EFA is attached to whole-host reservations (all GPUs on the node) for any
+    # EFA-capable SKU — single-node or multinode. See _pod_uses_efa.
+    if _pod_uses_efa(gpu_count, gpu_type):
+        efa_count = config["efa_count"]
         limits["vpc.amazonaws.com/efa"] = str(efa_count)
         limits["hugepages-2Mi"] = "5120Mi"
-        logger.info(f"Using EFA ({efa_count} interfaces) for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
+        logger.info(f"Using EFA ({efa_count} interfaces) for whole-host deployment: {gpu_count}/{max_gpus} GPUs of {gpu_type}")
     else:
-        logger.info(f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
+        logger.info(f"Skipping EFA: gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
 
     return limits
 
@@ -4845,16 +4838,9 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
                 "memory": f"{proportional_memory_request}Gi"
             })
 
-    # EFA: Only for full-node multinode deployments (skip MIG slices)
-    use_efa = (
-        gpu_type != "t4-small" and
-        not gpu_type.startswith("cpu-") and
-        "mig" not in gpu_type and
-        is_multinode and
-        gpu_count == max_gpus
-    )
-    if use_efa:
-        efa_count = config.get("efa_count", 1)
+    # EFA: whole-host reservations on EFA-capable SKUs (see _pod_uses_efa).
+    if _pod_uses_efa(gpu_count, gpu_type):
+        efa_count = config["efa_count"]
         requests["vpc.amazonaws.com/efa"] = str(efa_count)
         requests["hugepages-2Mi"] = "5120Mi"
 
@@ -4862,13 +4848,21 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
 
 
 def _pod_uses_efa(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> bool:
-    """Check if pod will use EFA based on configuration"""
+    """Whether the pod should get EFA interfaces.
+
+    EFA is attached to whole-host reservations — the pod takes every GPU on the
+    node (gpu_count == max_gpus) on an EFA-capable instance type (efa_count > 0).
+    This covers both single-node whole-host and multinode (each node is a whole
+    host) deployments. Partial-node ("subhost") pods, and MIG / CPU / t4 SKUs
+    (efa_count == 0), never get EFA. Because a whole-host pod owns the node it
+    can keep hostNetwork + sshd on 2222 with no co-tenant port conflict.
+
+    is_multinode is accepted for call-site compatibility but no longer gates the
+    decision.
+    """
     config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
-    return (
-        gpu_type != "t4-small" and
-        is_multinode and
-        gpu_count == config["max_gpus"]
-    )
+    max_gpus = config["max_gpus"]
+    return config.get("efa_count", 0) > 0 and max_gpus > 0 and int(gpu_count) == max_gpus
 
 
 def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:

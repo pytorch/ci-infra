@@ -237,9 +237,11 @@ def test_limits_full_gpu_multinode_gets_efa(lambda_index):
     assert lim["hugepages-2Mi"] == "5120Mi"
 
 
-def test_limits_full_gpu_singlenode_no_efa(lambda_index):
+def test_limits_full_gpu_singlenode_gets_efa(lambda_index):
+    # Whole-host single-node (8/8, not multinode) now gets EFA too.
     lim = lambda_index.get_pod_resource_limits(8, "h100", is_multinode=False)
-    assert "vpc.amazonaws.com/efa" not in lim
+    assert lim["vpc.amazonaws.com/efa"] == "32"
+    assert lim["hugepages-2Mi"] == "5120Mi"
 
 
 def test_requests_full_gpu_multinode_gets_efa(lambda_index):
@@ -263,8 +265,9 @@ def test_pod_uses_efa_false_partial(lambda_index):
     assert lambda_index._pod_uses_efa(4, "h100", is_multinode=True) is False
 
 
-def test_pod_uses_efa_false_singlenode(lambda_index):
-    assert lambda_index._pod_uses_efa(8, "h100", is_multinode=False) is False
+def test_pod_uses_efa_true_singlenode_whole_host(lambda_index):
+    # Whole-host single-node reservation qualifies for EFA regardless of multinode.
+    assert lambda_index._pod_uses_efa(8, "h100", is_multinode=False) is True
 
 
 def test_pod_uses_efa_t4_small_excluded(lambda_index):
