@@ -99,6 +99,13 @@ def has_module(cfg: dict, module_name: str) -> bool:
     return module_name in modules
 
 
+def is_prod_cluster(cluster_id: str) -> bool:
+    """True for prod clusters, keyed off the env segment of the
+    `<org>-<env>-<cloud>-<region>` id (meta-prod-aws-uw1, lf-prod-aws-ue1)."""
+    parts = cluster_id.split("-")
+    return len(parts) >= 2 and parts[1] == "prod"
+
+
 # ── Subprocess helpers ──────────────────────────────────────────────────
 
 
