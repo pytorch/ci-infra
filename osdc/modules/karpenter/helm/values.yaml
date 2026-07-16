@@ -33,6 +33,13 @@ settings:
   # env entries that break `helm upgrade` strategic-merge patches.
   batchMaxDuration: 45s
   batchIdleDuration: 45s
+  # Memory overhead subtracted from each instance type's advertised RAM during
+  # scheduling simulation. The chart default (0.075) overshoots the real overhead
+  # measured across this fleet (1.7-5.3%, worst case g6/L4 at 5.3%), modeling
+  # large-memory nodes (g5/r7a .48xlarge) as too small for full-node runners and
+  # provisioning zero capacity for them. 0.06 stays above the g6 worst case (never
+  # overcommits) while leaving modeled headroom for full-node runners to fit.
+  vmMemoryOverheadPercent: 0.06
   # Feature gates
   featureGates:
     spotToSpotConsolidation: true

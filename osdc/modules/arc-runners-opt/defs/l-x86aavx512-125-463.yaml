@@ -1,13 +1,15 @@
 # ARC runner definition: l-x86aavx512-125-463
 # Instance type: m6i.32xlarge — 128c/512Gi node
-# memory is sized below node capacity to leave headroom for Karpenter's
-# schedule-time overhead model (VM reserve + kube-reserved + counted DaemonSets); raising it toward node capacity makes Karpenter model the node as too small and provision zero nodes.
+# memory is sized ~11Gi below Karpenter's modeled node allocatable (advertised
+# 512Gi x (1 - vmMemoryOverheadPercent) - kube-reserved - counted DaemonSets) so
+# the schedule-time simulation still models the pod as fitting; sizing it up to
+# the modeled ceiling makes Karpenter provision zero nodes.
 runner:
   name: l-x86aavx512-125-463
   instance_type: m6i.32xlarge
   disk_size: 200
   vcpu: 125
-  memory: 448Gi
+  memory: 460Gi
   gpu: 0
   proactive_capacity: 0
   hud_failure_base_capacity: 15
