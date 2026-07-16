@@ -1917,6 +1917,8 @@ jobs:
   # real from-scratch PyTorch CPU wheel build (USE_CUDA=0) from source. This is
   # the release lane's actual job — it exercises the full toolchain, all cores,
   # disk, and egress. (Long-running: ~30-50 min per arch; see timeout-minutes.)
+  # Skipped on prod: prod release runner groups are restricted to selected
+  # pytorch workflows, so the canary PR can't schedule on them (see phases.py).
   test-release-arm64:
     runs-on: { group: "{{RELEASE_RUNNER_GROUP}}", labels: ["{{PREFIX}}rel-l-arm64g3-44-340"] }
     timeout-minutes: 180
