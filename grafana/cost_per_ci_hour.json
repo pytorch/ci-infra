@@ -21,7 +21,7 @@
     }
   ],
   "cursorSync": "Crosshair",
-  "description": "Weekly real AWS account cost (CloudWatch EstimatedCharges), meta-fleet CI hours for pytorch/pytorch, and AWS cost per CI-hour.",
+  "description": "Weekly real EC2 cost (CloudWatch EstimatedCharges, ServiceName=AmazonEC2), meta-fleet CI hours for pytorch/pytorch, and EC2 cost per CI-hour.",
   "editable": true,
   "elements": {
     "panel-1": {
@@ -43,6 +43,9 @@
                     "kind": "DataQuery",
                     "spec": {
                       "dimensions": {
+                        "ServiceName": [
+                          "AmazonEC2"
+                        ],
                         "Currency": [
                           "USD"
                         ]
@@ -131,10 +134,10 @@
             ]
           }
         },
-        "description": "Real AWS account spend from CloudWatch EstimatedCharges (AWS/Billing, Currency=USD) for the whole fbossci account. Cash-basis / unblended list price — NOT net-amortized (does not spread RI/Savings Plan amortization or apply credits). EstimatedCharges is cumulative month-to-date and resets to 0 at each month boundary; daily spend is reset-handled via IF(DIFF(m1) < 0, m1, DIFF(m1)). Daily values are bucketed to ISO weeks (Monday-start, UTC).",
+        "description": "Real EC2 spend from CloudWatch EstimatedCharges (AWS/Billing, ServiceName=AmazonEC2, Currency=USD) for the fbossci account. Cash-basis / unblended list price — NOT net-amortized (does not spread RI/Savings Plan amortization or apply credits). EstimatedCharges is cumulative month-to-date and resets to 0 at each month boundary; daily spend is reset-handled via IF(DIFF(m1) < 0, m1, DIFF(m1)). Daily values are bucketed to ISO weeks (Monday-start, UTC).",
         "id": 1,
         "links": [],
-        "title": "Total AWS Cost — fbossci (weekly)",
+        "title": "Total EC2 Cost — fbossci (weekly)",
         "vizConfig": {
           "group": "barchart",
           "kind": "VizConfig",
@@ -283,6 +286,9 @@
                     "kind": "DataQuery",
                     "spec": {
                       "dimensions": {
+                        "ServiceName": [
+                          "AmazonEC2"
+                        ],
                         "Currency": [
                           "USD"
                         ]
@@ -446,10 +452,10 @@
             ]
           }
         },
-        "description": "Weekly real AWS account cost (CloudWatch EstimatedCharges, reset-handled) divided by meta-fleet CI hours for pytorch/pytorch. CloudWatch daily cost and ClickHouse daily CI-hours are outer-joined on the shared midnight-UTC day, bucketed to ISO weeks, then divided per week. The numerator is the whole fbossci AWS account (cash-basis / unblended), so this is account-wide cost amortized over meta-fleet CI-hours, not a per-runner unit cost.",
+        "description": "Weekly real EC2 cost (CloudWatch EstimatedCharges, ServiceName=AmazonEC2, reset-handled) divided by meta-fleet CI hours for pytorch/pytorch. CloudWatch daily EC2 cost and ClickHouse daily CI-hours are outer-joined on the shared midnight-UTC day, bucketed to ISO weeks, then divided per week. The numerator is fbossci EC2 spend only (cash-basis / unblended), so this is EC2 cost amortized over meta-fleet CI-hours, not a full per-runner unit cost.",
         "id": 3,
         "links": [],
-        "title": "AWS Cost per CI-Hour (weekly)",
+        "title": "EC2 Cost per CI-Hour (weekly)",
         "vizConfig": {
           "group": "barchart",
           "kind": "VizConfig",
