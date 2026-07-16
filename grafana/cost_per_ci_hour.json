@@ -1,0 +1,562 @@
+{
+  "annotations": [
+    {
+      "kind": "AnnotationQuery",
+      "spec": {
+        "builtIn": true,
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "query": {
+          "datasource": {
+            "name": "-- Grafana --"
+          },
+          "group": "grafana",
+          "kind": "DataQuery",
+          "spec": {},
+          "version": "v0"
+        }
+      }
+    }
+  ],
+  "cursorSync": "Crosshair",
+  "description": "Weekly real AWS account cost (CloudWatch EstimatedCharges), meta-fleet CI hours for pytorch/pytorch, and AWS cost per CI-hour.",
+  "editable": true,
+  "elements": {
+    "panel-1": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": true,
+                  "query": {
+                    "datasource": {
+                      "name": "ffsb48gx9ph4wb"
+                    },
+                    "group": "cloudwatch",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "dimensions": {
+                        "Currency": [
+                          "USD"
+                        ]
+                      },
+                      "expression": "",
+                      "id": "m1",
+                      "matchExact": true,
+                      "metricEditorMode": 0,
+                      "metricName": "EstimatedCharges",
+                      "metricQueryType": 0,
+                      "namespace": "AWS/Billing",
+                      "period": "86400",
+                      "queryMode": "Metrics",
+                      "region": "us-east-1",
+                      "statistic": "Maximum"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ffsb48gx9ph4wb"
+                    },
+                    "group": "cloudwatch",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "dimensions": {},
+                      "expression": "IF(DIFF(m1) < 0, m1, DIFF(m1))",
+                      "id": "e1",
+                      "label": "cost",
+                      "matchExact": true,
+                      "metricEditorMode": 1,
+                      "metricName": "",
+                      "metricQueryType": 0,
+                      "namespace": "",
+                      "period": "",
+                      "queryMode": "Metrics",
+                      "region": "us-east-1",
+                      "statistic": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": [
+              {
+                "kind": "formatTime",
+                "spec": {
+                  "id": "formatTime",
+                  "options": {
+                    "outputFormat": "GGGG-[W]WW",
+                    "timeField": "Time",
+                    "timezone": "utc"
+                  }
+                }
+              },
+              {
+                "kind": "groupBy",
+                "spec": {
+                  "id": "groupBy",
+                  "options": {
+                    "fields": {
+                      "Time": {
+                        "aggregations": [],
+                        "operation": "groupby"
+                      },
+                      "cost": {
+                        "aggregations": [
+                          "sum"
+                        ],
+                        "operation": "aggregate"
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "description": "Real AWS account spend from CloudWatch EstimatedCharges (AWS/Billing, Currency=USD) for the whole fbossci account. Cash-basis / unblended list price — NOT net-amortized (does not spread RI/Savings Plan amortization or apply credits). EstimatedCharges is cumulative month-to-date and resets to 0 at each month boundary; daily spend is reset-handled via IF(DIFF(m1) < 0, m1, DIFF(m1)). Daily values are bucketed to ISO weeks (Monday-start, UTC).",
+        "id": 1,
+        "links": [],
+        "title": "Total AWS Cost — fbossci (weekly)",
+        "vizConfig": {
+          "group": "barchart",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "unit": "currencyUSD"
+              },
+              "overrides": []
+            },
+            "options": {
+              "barWidth": 0.97,
+              "groupWidth": 0.7,
+              "legend": {
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "orientation": "vertical",
+              "showValue": "auto",
+              "stacking": "none",
+              "xTickLabelRotation": -45
+            }
+          },
+          "version": ""
+        }
+      }
+    },
+    "panel-2": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "format": 2,
+                      "rawSql": "SELECT toStartOfDay(started_at) AS Time, sum(dateDiff('second', started_at, completed_at))/3600 AS ci_hours FROM default.workflow_job WHERE repository_full_name = 'pytorch/pytorch' AND status = 'completed' AND completed_at > started_at AND started_at >= $__fromTime AND started_at <= $__toTime AND arrayExists(x -> startsWith(x, 'mt-') OR startsWith(x, 'linux.') OR startsWith(x, 'windows.'), labels) GROUP BY Time ORDER BY Time"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": [
+              {
+                "kind": "formatTime",
+                "spec": {
+                  "id": "formatTime",
+                  "options": {
+                    "outputFormat": "GGGG-[W]WW",
+                    "timeField": "Time",
+                    "timezone": "utc"
+                  }
+                }
+              },
+              {
+                "kind": "groupBy",
+                "spec": {
+                  "id": "groupBy",
+                  "options": {
+                    "fields": {
+                      "Time": {
+                        "aggregations": [],
+                        "operation": "groupby"
+                      },
+                      "ci_hours": {
+                        "aggregations": [
+                          "sum"
+                        ],
+                        "operation": "aggregate"
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "description": "Weekly CI hours for pytorch/pytorch on the meta fleet (runner labels prefixed mt-, linux., or windows.; excludes lf- / lf. LF runners and GitHub-hosted). Sum of completed-job durations (dateDiff started_at -> completed_at). Daily values are bucketed to ISO weeks (Monday-start, UTC).",
+        "id": 2,
+        "links": [],
+        "title": "Total CI Hours — pytorch/pytorch meta fleet (weekly)",
+        "vizConfig": {
+          "group": "barchart",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "unit": "h"
+              },
+              "overrides": []
+            },
+            "options": {
+              "barWidth": 0.97,
+              "groupWidth": 0.7,
+              "legend": {
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "orientation": "vertical",
+              "showValue": "auto",
+              "stacking": "none",
+              "xTickLabelRotation": -45
+            }
+          },
+          "version": ""
+        }
+      }
+    },
+    "panel-3": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": true,
+                  "query": {
+                    "datasource": {
+                      "name": "ffsb48gx9ph4wb"
+                    },
+                    "group": "cloudwatch",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "dimensions": {
+                        "Currency": [
+                          "USD"
+                        ]
+                      },
+                      "expression": "",
+                      "id": "m1",
+                      "matchExact": true,
+                      "metricEditorMode": 0,
+                      "metricName": "EstimatedCharges",
+                      "metricQueryType": 0,
+                      "namespace": "AWS/Billing",
+                      "period": "86400",
+                      "queryMode": "Metrics",
+                      "region": "us-east-1",
+                      "statistic": "Maximum"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ffsb48gx9ph4wb"
+                    },
+                    "group": "cloudwatch",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "dimensions": {},
+                      "expression": "IF(DIFF(m1) < 0, m1, DIFF(m1))",
+                      "id": "e1",
+                      "label": "cost",
+                      "matchExact": true,
+                      "metricEditorMode": 1,
+                      "metricName": "",
+                      "metricQueryType": 0,
+                      "namespace": "",
+                      "period": "",
+                      "queryMode": "Metrics",
+                      "region": "us-east-1",
+                      "statistic": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "ceczcsck1b20wb"
+                    },
+                    "group": "grafana-clickhouse-datasource",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "format": 2,
+                      "rawSql": "SELECT toStartOfDay(started_at) AS Time, sum(dateDiff('second', started_at, completed_at))/3600 AS ci_hours FROM default.workflow_job WHERE repository_full_name = 'pytorch/pytorch' AND status = 'completed' AND completed_at > started_at AND started_at >= $__fromTime AND started_at <= $__toTime AND arrayExists(x -> startsWith(x, 'mt-') OR startsWith(x, 'linux.') OR startsWith(x, 'windows.'), labels) GROUP BY Time ORDER BY Time"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "C"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": [
+              {
+                "kind": "joinByField",
+                "spec": {
+                  "id": "joinByField",
+                  "options": {
+                    "byField": "Time",
+                    "mode": "outer"
+                  }
+                }
+              },
+              {
+                "kind": "renameByRegex",
+                "spec": {
+                  "id": "renameByRegex",
+                  "options": {
+                    "regex": "^ci_hours.*$",
+                    "renamePattern": "ci_hours"
+                  }
+                }
+              },
+              {
+                "kind": "formatTime",
+                "spec": {
+                  "id": "formatTime",
+                  "options": {
+                    "outputFormat": "GGGG-[W]WW",
+                    "timeField": "Time",
+                    "timezone": "utc"
+                  }
+                }
+              },
+              {
+                "kind": "groupBy",
+                "spec": {
+                  "id": "groupBy",
+                  "options": {
+                    "fields": {
+                      "Time": {
+                        "aggregations": [],
+                        "operation": "groupby"
+                      },
+                      "ci_hours": {
+                        "aggregations": [
+                          "sum"
+                        ],
+                        "operation": "aggregate"
+                      },
+                      "cost": {
+                        "aggregations": [
+                          "sum"
+                        ],
+                        "operation": "aggregate"
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "kind": "calculateField",
+                "spec": {
+                  "id": "calculateField",
+                  "options": {
+                    "alias": "cost_per_ci_hour",
+                    "binary": {
+                      "left": "cost (sum)",
+                      "operator": "/",
+                      "right": "ci_hours (sum)"
+                    },
+                    "mode": "binary",
+                    "replaceFields": false
+                  }
+                }
+              },
+              {
+                "kind": "filterFieldsByName",
+                "spec": {
+                  "id": "filterFieldsByName",
+                  "options": {
+                    "include": {
+                      "names": [
+                        "Time",
+                        "cost_per_ci_hour"
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "description": "Weekly real AWS account cost (CloudWatch EstimatedCharges, reset-handled) divided by meta-fleet CI hours for pytorch/pytorch. CloudWatch daily cost and ClickHouse daily CI-hours are outer-joined on the shared midnight-UTC day, bucketed to ISO weeks, then divided per week. The numerator is the whole fbossci AWS account (cash-basis / unblended), so this is account-wide cost amortized over meta-fleet CI-hours, not a per-runner unit cost.",
+        "id": 3,
+        "links": [],
+        "title": "AWS Cost per CI-Hour (weekly)",
+        "vizConfig": {
+          "group": "barchart",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "unit": "currencyUSD"
+              },
+              "overrides": []
+            },
+            "options": {
+              "barWidth": 0.97,
+              "groupWidth": 0.7,
+              "legend": {
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "orientation": "vertical",
+              "showValue": "auto",
+              "stacking": "none",
+              "xTickLabelRotation": -45
+            }
+          },
+          "version": ""
+        }
+      }
+    }
+  },
+  "layout": {
+    "kind": "GridLayout",
+    "spec": {
+      "items": [
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-1"
+            },
+            "height": 9,
+            "width": 24,
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-2"
+            },
+            "height": 9,
+            "width": 24,
+            "x": 0,
+            "y": 9
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-3"
+            },
+            "height": 9,
+            "width": 24,
+            "x": 0,
+            "y": 18
+          }
+        }
+      ]
+    }
+  },
+  "links": [],
+  "liveNow": false,
+  "preload": false,
+  "tags": [
+    "ci",
+    "cost",
+    "ci-hours",
+    "osdc"
+  ],
+  "timeSettings": {
+    "autoRefresh": "30m",
+    "autoRefreshIntervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ],
+    "fiscalYearStartMonth": 0,
+    "from": "now-90d",
+    "hideTimepicker": false,
+    "timezone": "browser",
+    "to": "now"
+  },
+  "title": "Cost per CI-Hour",
+  "variables": []
+}
