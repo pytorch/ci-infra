@@ -24,6 +24,7 @@ from nodepool_defs import is_excluded_for_region
 from run import (
     CANARY_REPO,
     PR_TITLE_PREFIX,
+    is_prod_cluster,
     normalize_modules,
     run_cmd,
     safe_json_loads,
@@ -48,6 +49,11 @@ TAG_REQUIREMENTS: dict[str, list[str]] = {
 INVERSE_TAG_EXCLUSIONS: dict[str, list[str]] = {
     "NO_CACHE_ENFORCER": ["cache-enforcer"],
 }
+
+# Blocks stripped on prod clusters. Prod release runner groups are restricted to
+# selected pytorch workflows, so the canary integration-test PR can't schedule on
+# them — the release tests run on staging only.
+PROD_EXCLUDED_BLOCKS: set[str] = {"RELEASE"}
 
 # Conditional blocks whose job targets a runner backed by a region-restricted
 # GPU fleet. Module gating can't catch this — the fleet exists as a module but is
@@ -352,6 +358,12 @@ def generate_workflow(
     leftover = re.findall(r"\{\{[A-Z_]+\}\}", content)
     if leftover:
         raise RuntimeError(f"Unsubstituted template placeholders remain: {sorted(set(leftover))}")
+
+    # Before module gating: these tags also live in TAG_REQUIREMENTS, whose loop
+    # consumes their markers. On non-prod, leave them for module/region gating.
+    if is_prod_cluster(cluster_id):
+        for tag in PROD_EXCLUDED_BLOCKS:
+            content = strip_conditional_block(content, tag, keep=False)
 
     modules_set = normalize_modules(cluster_modules)
     for tag, required in TAG_REQUIREMENTS.items():
