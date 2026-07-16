@@ -18,6 +18,14 @@ rclone's memory is **reserved** (`request == limit`) and **tiered by GPU count**
 `deploy.sh` renders one DaemonSet per tier — 8-GPU → 4Gi, 4-GPU → 2Gi, 2-GPU → 1Gi,
 1-GPU → 512Mi, and the CPU catch-all → 256Mi. See `MOUNT_TIERS` in `deploy.sh`.
 
+To keep RSS inside those reserves the mount runs with `--buffer-size 4M` (a 4x cut
+from rclone's 16Mi-per-open-file default read-ahead — the dominant RSS driver when
+a model opens many shards; kept non-zero so cold reads retain some prefetch, with
+`--vfs-cache-mode full` serving the rest from the on-disk cache) and `--use-mmap`
+(frees buffers back to the OS). Without them, concurrent large-model (safetensors)
+reads OOM-kill rclone, and the dead FUSE mount surfaces as a spurious
+`LocalEntryNotFoundError` in the job.
+
 **Writes are gated by GitHub OIDC, not by the mount.** Job pods can't write the
 cache (read-only mount, read-only IRSA). On `ci-refresh-hf-cache` runs, the
 pytorch/pytorch workflow assumes a GitHub-OIDC role
