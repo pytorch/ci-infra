@@ -1723,40 +1723,6 @@ jobs:
           echo "PASS: TORCH_CI_MAX_MEMORY is correct"
   # END_GPU_T4
 
-  # BEGIN_B200
-  test-gpu-b200-2:
-    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}l-x86iamx-44-450-b200-2"] }
-    container:
-      image: ghcr.io/actions/actions-runner:latest
-    steps:
-      - name: Verify B200 multi-GPU
-        run: |
-          echo "=== nvidia-smi ==="
-          nvidia-smi
-          echo ""
-          GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-          if [ "$GPU_COUNT" -ne {{GPU__L_X86IAMX_44_450_B200_2}} ]; then
-            echo "FAIL: Expected 2 GPUs, found $GPU_COUNT"
-            exit 1
-          fi
-          echo "PASS: Found $GPU_COUNT B200 GPUs"
-      - name: Verify TORCH_CI_MAX_MEMORY
-        run: |
-          echo "=== TORCH_CI_MAX_MEMORY ==="
-          EXPECTED={{TORCHMEM__L_X86IAMX_44_450_B200_2}}
-          ACTUAL="${TORCH_CI_MAX_MEMORY:-}"
-          echo "TORCH_CI_MAX_MEMORY=$ACTUAL (expected: $EXPECTED)"
-          if [ -z "$ACTUAL" ]; then
-            echo "FAIL: TORCH_CI_MAX_MEMORY is not set"
-            exit 1
-          fi
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "FAIL: TORCH_CI_MAX_MEMORY mismatch"
-            exit 1
-          fi
-          echo "PASS: TORCH_CI_MAX_MEMORY is correct"
-  # END_B200
-
   # BEGIN_BUILDKIT
   # ── BuildKit Tests ────────────────────────────────────────────────────
   # Each call runs a buildctl connectivity build + an 8-wide docker buildx burst

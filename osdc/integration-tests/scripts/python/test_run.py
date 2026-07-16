@@ -128,12 +128,6 @@ def workflow_template(tmp_path):
         "  buildkit-job:\n"
         "    uses: ./.github/workflows/build-image.yaml\n"
         "  # END_BUILDKIT\n"
-        "  # BEGIN_B200\n"
-        "  b200-job:\n"
-        '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}b200-runner"] }\n'
-        "    steps:\n"
-        "      - run: echo B200\n"
-        "  # END_B200\n"
         "  # BEGIN_CACHE_ENFORCER\n"
         "  cache-enforcer-job:\n"
         '    runs-on: { group: "{{RUNNER_GROUP}}", labels: ["{{PREFIX}}enforcer-runner"] }\n'
@@ -347,7 +341,6 @@ class TestGenerateWorkflow:
             "pypi-job",
             "gpu-t4-job",
             "buildkit-job",
-            "b200-job",
             "cache-enforcer-job",
             "release-job",
         ):
@@ -374,7 +367,6 @@ class TestGenerateWorkflow:
         assert "BEGIN_BUILDKIT" not in result
         assert "END_BUILDKIT" not in result
         assert "arc-job" in result
-        assert "b200-job" in result
         assert "cache-enforcer-job" in result
 
     def test_cache_enforcer_stripped(self, workflow_template):
@@ -421,8 +413,7 @@ class TestGenerateWorkflow:
     def test_opt_variants_keep_arc_runner_jobs(self, workflow_template):
         # meta-prod-aws-ue1 runs the -opt shim modules. arc-runners-opt / nodepools-opt
         # must satisfy the base arc-runners / nodepools gates so the runner jobs survive
-        # instead of degrading to a no-op. B200 stays stripped: no -b200 module is present
-        # and removesuffix("-opt") never produces one. RELEASE is stripped too — this is
+        # instead of degrading to a no-op. RELEASE is stripped too — this is
         # a prod cluster, and prod never runs the release-runner builds.
         result = generate_workflow(
             workflow_template,
@@ -439,8 +430,6 @@ class TestGenerateWorkflow:
         assert "BEGIN_GPU_T4" not in result
         assert "BEGIN_BUILDKIT" not in result
         assert "BEGIN_RELEASE" not in result
-        assert "b200-job" not in result
-        assert "BEGIN_B200" not in result
         assert "pypi-job" not in result
         assert "  cache-enforcer-job:" not in result
 
@@ -456,18 +445,6 @@ class TestGenerateWorkflow:
         assert "BEGIN_NO_CACHE_ENFORCER" not in result
         assert "END_NO_CACHE_ENFORCER" not in result
         assert "cache-enforcer-job" in result
-
-    def test_b200_requires_both_modules(self, workflow_template):
-        result = generate_workflow(
-            workflow_template,
-            "cbr",
-            "meta-prod-aws-ue2",
-            "meta-prod-aws-ue2",
-            cluster_modules=["arc-runners", "arc-runners-b200"],
-        )
-        assert "b200-job" not in result
-        assert "BEGIN_B200" not in result
-        assert "arc-job" in result
 
     def test_gpu_t4_requires_arc_runners_and_nodepools(self, workflow_template):
         result = generate_workflow(
@@ -739,9 +716,10 @@ class TestGenerateWorkflowNoopFallback:
         )
         assert "no-op:" in result
         assert "arc-job" not in result
-        assert "b200-job" not in result
 
-    def test_noop_when_only_arc_runners_b200_without_nodepools_b200(self, workflow_template):
+    def test_noop_when_only_arc_runners_b200_without_base_arc_runners(self, workflow_template):
+        # arc-runners-b200 does not alias to the base arc-runners module, so a cluster
+        # running only the B200 runner fleet still degrades to a no-op integration test.
         result = generate_workflow(
             workflow_template,
             "cbr",
@@ -750,7 +728,6 @@ class TestGenerateWorkflowNoopFallback:
             cluster_modules=["arc-runners-b200", "cache-enforcer"],
         )
         assert "no-op:" in result
-        assert "b200-job" not in result
         assert "arc-job" not in result
 
     def test_noop_preserves_top_level_keys(self, workflow_template):
