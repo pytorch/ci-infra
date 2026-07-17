@@ -836,6 +836,69 @@ plan cluster:
             -var="cluster_id=${CLUSTER}"
     done
 
+# Force-release a stuck OpenTofu state lock for a cluster's base or module state.
+# slot = "base" (modules/eks/terraform) or a module name (modules/<slot>/terraform).
+# lock-id is the UUID from tofu's "Lock Info" block (the ID: field), NOT the DynamoDB key.
+# tofu prompts for confirmation before releasing the lock.
+# DANGER: confirm no deploy is in progress first — force-unlocking a live apply corrupts state.
+force-unlock cluster slot lock_id:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{UPSTREAM}}/scripts/mise-activate.sh"
+    source "{{UPSTREAM}}/scripts/state-config.sh"
+    : "${STATE_REGION:?state-config.sh did not export STATE_REGION}"
+    export OSDC_ROOT="{{ROOT}}"
+    export OSDC_UPSTREAM="{{UPSTREAM}}"
+    export CLUSTERS_YAML="{{CLUSTERS_YAML}}"
+    CLUSTER="{{cluster}}"
+    SLOT="{{slot}}"
+    LOCK_ID="{{lock_id}}"
+
+    if [[ -z "$CLUSTER" ]] || [[ -z "$SLOT" ]] || [[ -z "$LOCK_ID" ]]; then
+        echo "Usage: just force-unlock <cluster> <base|module> <lock-id>" >&2
+        exit 2
+    fi
+
+    # Base state lives under slot 'base' even though its code is in modules/eks/terraform.
+    # Reject 'eks' so an operator doesn't clear a phantom <cluster>/eks lock and leave the
+    # real <cluster>/base lock held.
+    if [[ "$SLOT" == "eks" ]]; then
+        echo "Error: base state uses slot 'base', not 'eks'. Run: just force-unlock $CLUSTER base $LOCK_ID" >&2
+        exit 2
+    fi
+
+    # Resolve the terraform root for this state slot (consumer modules override upstream).
+    if [[ "$SLOT" == "base" ]]; then
+        TF_DIR="{{UPSTREAM}}/modules/eks/terraform"
+    elif [[ -d "{{ROOT}}/modules/$SLOT/terraform" ]]; then
+        TF_DIR="{{ROOT}}/modules/$SLOT/terraform"
+    elif [[ -d "{{UPSTREAM}}/modules/$SLOT/terraform" ]]; then
+        TF_DIR="{{UPSTREAM}}/modules/$SLOT/terraform"
+    else
+        echo "Error: no terraform root for slot '$SLOT' (expected 'base' or a module with terraform/)." >&2
+        exit 1
+    fi
+
+    BUCKET=$(uv run {{CFG}} "$CLUSTER" state_bucket)
+    if ! aws s3api head-bucket --bucket "${BUCKET}" --region "${STATE_REGION}" 2>/dev/null; then
+        echo "ERROR: State bucket '${BUCKET}' does not exist. Run: just bootstrap ${CLUSTER}" >&2
+        exit 1
+    fi
+
+    echo "━━━ FORCE-UNLOCK: ${CLUSTER}/${SLOT} ━━━"
+    echo "  Bucket:   ${BUCKET}"
+    echo "  Key:      ${CLUSTER}/${SLOT}/terraform.tfstate"
+    echo "  Lock ID:  ${LOCK_ID}"
+    echo ""
+
+    cd "$TF_DIR"
+    tofu init -reconfigure \
+        -backend-config="bucket=${BUCKET}" \
+        -backend-config="key=${CLUSTER}/${SLOT}/terraform.tfstate" \
+        -backend-config="region=${STATE_REGION}" \
+        -backend-config="dynamodb_table=ciforge-terraform-locks"
+    tofu force-unlock "${LOCK_ID}"
+
 # Terminate all Karpenter-managed nodes (they will be reprovisioned on demand)
 recycle-nodes cluster:
     #!/usr/bin/env bash
