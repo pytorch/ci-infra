@@ -127,8 +127,6 @@ spec:
               #     model opens many shards at once. Kept non-zero so cold reads
               #     retain some prefetch (vfs-cache-mode full serves the rest from
               #     the on-disk cache).
-              #   --use-mmap        returns freed buffers to the OS instead of Go
-              #     retaining them as process RSS.
               rclone mount \
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
@@ -142,7 +140,6 @@ spec:
                 --vfs-cache-max-age 24h \
                 --vfs-read-chunk-size 128M \
                 --buffer-size 4M \
-                --use-mmap \
                 --cache-dir "$CACHE" \
                 --no-modtime \
                 --umask 022 \
