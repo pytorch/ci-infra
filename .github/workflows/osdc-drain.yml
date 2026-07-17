@@ -95,9 +95,9 @@ jobs:
           OSDC_TAINT_NODES: "no"
 
       - name: Sleep 180s for nodes to settle after drain
-        if: ${{ inputs.run_drain_runners && inputs.run_taint_nodes }}
+        if: ${{ !cancelled() && inputs.run_drain_runners && inputs.run_taint_nodes }}
         run: sleep 180
 
       - name: Taint runner nodes (NoSchedule)
-        if: ${{ inputs.run_taint_nodes }}
+        if: ${{ !cancelled() && inputs.run_taint_nodes }}
         run: just taint-nodes "${{ inputs.cluster }}"

@@ -1192,8 +1192,12 @@ resume-runners cluster:
     fi
 
     echo ""
-    echo "Removing refresh taint from runner nodes..."
-    just untaint-nodes "$CLUSTER"
+    if [ "${OSDC_UNTAINT_NODES:-yes}" = "yes" ]; then
+        echo "Removing refresh taint from runner nodes..."
+        just untaint-nodes "$CLUSTER"
+    else
+        echo "Skipping untaint step (OSDC_UNTAINT_NODES=${OSDC_UNTAINT_NODES})."
+    fi
 
     echo ""
     echo "Summary: ${RESTORED} restored, ${WARNINGS} warnings, ${RES_FAILED} failures."

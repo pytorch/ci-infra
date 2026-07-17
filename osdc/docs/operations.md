@@ -176,6 +176,7 @@ Set these to suppress the interactive prompts in `just deploy` — required for 
 | `OSDC_TAINT_NODES` | `yes` / `no` / `ask` | `ask` | Taint ARC runner nodes after the deploy completes (skipped when nodes are being recycled). |
 | `OSDC_SMOKE` | `yes` / `no` / `ask` | `ask` | Run `just smoke <cluster>` after the deploy. |
 | `OSDC_DRAIN_TIMEOUT_SECS` | seconds | `3600` | How long `just drain-runners` waits for in-flight runner pods before listing stragglers. |
+| `OSDC_UNTAINT_NODES` | `yes` / `no` | `yes` | Remove the refresh taint from runner nodes at the end of `just resume-runners`. Set `no` to leave the taint for a separate untaint step. |
 
 ## Adding a new cluster
 
