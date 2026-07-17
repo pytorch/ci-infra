@@ -9,7 +9,7 @@
 #
 # Placeholders (deploy.sh): __NAMESPACE__ __BUCKET__ __REGION__ __RCLONE_IMAGE__
 # __VFS_CACHE_MAX_SIZE__ __TAINT_REMOVER_IMAGE__ __RCLONE_MEMORY_LIMIT__ __GOMEMLIMIT__
-# __DS_NAME__ __GPU_OP__ __MULTI_GPU_COUNTS__
+# __DS_NAME__ __GPU_OP__ __MULTI_GPU_COUNTS__ __BUFFER_SIZE__
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -120,13 +120,18 @@ spec:
               # taint-remover waits on that rather than inspecting the host, which
               # keeps it unprivileged. Creds via IRSA (env_auth).
               #
-              # RSS control (keeps rclone under the per-tier reserve; large
-              # safetensors reads OOM-killed the mount on the small 1-GPU tier):
-              #   --buffer-size 4M  shrinks the per-open-file in-RAM read-ahead
-              #     4x from rclone's 16Mi default — the dominant RSS driver when a
-              #     model opens many shards at once. Kept non-zero so cold reads
-              #     retain some prefetch (vfs-cache-mode full serves the rest from
-              #     the on-disk cache).
+              # RSS control (keeps rclone under the per-tier reserve). Per-open-file
+              # in-RAM read-ahead is the dominant RSS driver when a model opens many
+              # shards at once, and peak concurrent opens scale with node pod-density,
+              # so --buffer-size is set per tier by deploy.sh (__BUFFER_SIZE__):
+              #   CPU catch-all (640Mi, packed 48xl/metal nodes) → 0: read-ahead off,
+              #     served from the vfs-cache-mode full on-disk cache. High pod density
+              #     means many concurrent readers on one mount, so any non-zero buffer
+              #     OOMs the small reserve.
+              #   1-GPU tier (640Mi) → 0: like CPU. rclone RAM ~= buffer-size x concurrent
+              #     open files, so even 1M x ~146 shards (~146MB) eats headroom the rclone
+              #     heap/metadata needs at 512Mi; read-ahead off, served from the disk cache.
+              #   multi-GPU tiers (1-4Gi) → 4M: roomier reserve, so keep more prefetch.
               rclone mount \
                 ":s3,provider=AWS,env_auth=true,region=__REGION__:__BUCKET__" \
                 "$MOUNT" \
@@ -139,7 +144,7 @@ spec:
                 --vfs-cache-max-size "$VFS_MAX" \
                 --vfs-cache-max-age 24h \
                 --vfs-read-chunk-size 128M \
-                --buffer-size 4M \
+                --buffer-size __BUFFER_SIZE__ \
                 --cache-dir "$CACHE" \
                 --no-modtime \
                 --umask 022 \
