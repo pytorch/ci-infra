@@ -1,9 +1,0 @@
-# ARC runner definition: l-x86iavx512-22-250-a100-2 (2x NVIDIA A100 40GB)
-# Scheduled on NodePool: p4d-24xlarge (from nodepools module)
-runner:
-  name: l-x86iavx512-22-250-a100-2
-  instance_type: p4d.24xlarge
-  disk_size: 200
-  vcpu: 22
-  memory: 250Gi
-  gpu: 2
