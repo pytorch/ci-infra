@@ -21,7 +21,7 @@
     }
   ],
   "cursorSync": "Crosshair",
-  "description": "Weekly real EC2 cost (CloudWatch EstimatedCharges, ServiceName=AmazonEC2), meta-fleet CI hours for pytorch/pytorch, and EC2 cost per CI-hour.",
+  "description": "Weekly real cost for the selected AWS scope (dropdown; default All = whole fbossci account) from CloudWatch EstimatedCharges, meta-fleet CI hours for the pytorch and meta-pytorch orgs, and that scope's cost per CI-hour. Select a specific service to filter to it.",
   "editable": true,
   "elements": {
     "panel-1": {
@@ -42,25 +42,18 @@
                     "group": "cloudwatch",
                     "kind": "DataQuery",
                     "spec": {
-                      "dimensions": {
-                        "ServiceName": [
-                          "AmazonEC2"
-                        ],
-                        "Currency": [
-                          "USD"
-                        ]
-                      },
-                      "expression": "",
+                      "dimensions": {},
+                      "expression": "SUM(SEARCH('${service}', 'Maximum', 86400))",
                       "id": "m1",
                       "matchExact": true,
-                      "metricEditorMode": 0,
-                      "metricName": "EstimatedCharges",
+                      "metricEditorMode": 1,
+                      "metricName": "",
                       "metricQueryType": 0,
-                      "namespace": "AWS/Billing",
-                      "period": "86400",
+                      "namespace": "",
+                      "period": "",
                       "queryMode": "Metrics",
                       "region": "us-east-1",
-                      "statistic": "Maximum"
+                      "statistic": ""
                     },
                     "version": "v0"
                   },
@@ -130,14 +123,40 @@
                     }
                   }
                 }
+              },
+              {
+                "kind": "convertFieldType",
+                "spec": {
+                  "id": "convertFieldType",
+                  "options": {
+                    "conversions": [
+                      {
+                        "targetField": "Time",
+                        "destinationType": "time",
+                        "dateFormat": "GGGG-[W]WW"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "kind": "formatTime",
+                "spec": {
+                  "id": "formatTime",
+                  "options": {
+                    "outputFormat": "YY-MM-DD",
+                    "timeField": "Time",
+                    "timezone": "browser"
+                  }
+                }
               }
             ]
           }
         },
-        "description": "Real EC2 spend from CloudWatch EstimatedCharges (AWS/Billing, ServiceName=AmazonEC2, Currency=USD) for the fbossci account. Cash-basis / unblended list price — NOT net-amortized (does not spread RI/Savings Plan amortization or apply credits). EstimatedCharges is cumulative month-to-date and resets to 0 at each month boundary; daily spend is reset-handled via IF(DIFF(m1) < 0, m1, DIFF(m1)). Daily values are bucketed to ISO weeks (Monday-start, UTC).",
+        "description": "Real spend for the selected AWS scope (dropdown; default All = whole fbossci account) from CloudWatch EstimatedCharges (AWS/Billing). 'All' is the true whole-account total (EstimatedCharges with no ServiceName dimension, Currency only); selecting a specific service filters to that service (adds the ServiceName dimension). Cash-basis / unblended list price — NOT net-amortized (does not spread RI/Savings Plan amortization or apply credits). EstimatedCharges is cumulative month-to-date and resets to 0 at each month boundary; daily spend is reset-handled via IF(DIFF(m1) < 0, m1, DIFF(m1)). Daily values are bucketed to ISO weeks (Monday-start, UTC).",
         "id": 1,
         "links": [],
-        "title": "Total EC2 Cost — fbossci (weekly)",
+        "title": "Total AWS Cost — fbossci (weekly) [service]",
         "vizConfig": {
           "group": "barchart",
           "kind": "VizConfig",
@@ -188,7 +207,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "format": 2,
-                      "rawSql": "SELECT toStartOfDay(started_at) AS Time, sum(dateDiff('second', started_at, completed_at))/3600 AS ci_hours FROM default.workflow_job WHERE repository_full_name = 'pytorch/pytorch' AND status = 'completed' AND completed_at > started_at AND started_at >= $__fromTime AND started_at <= $__toTime AND arrayExists(x -> startsWith(x, 'mt-') OR startsWith(x, 'linux.') OR startsWith(x, 'windows.'), labels) GROUP BY Time ORDER BY Time"
+                      "rawSql": "SELECT toStartOfDay(started_at) AS Time, sum(dateDiff('second', started_at, completed_at))/3600 AS ci_hours FROM default.workflow_job WHERE (startsWith(repository_full_name, 'pytorch/') OR startsWith(repository_full_name, 'meta-pytorch/')) AND status = 'completed' AND completed_at > started_at AND started_at >= $__fromTime AND started_at <= $__toTime AND arrayExists(x -> startsWith(x, 'mt-') OR startsWith(x, 'linux.') OR startsWith(x, 'windows.'), labels) GROUP BY Time ORDER BY Time"
                     },
                     "version": "v0"
                   },
@@ -228,14 +247,40 @@
                     }
                   }
                 }
+              },
+              {
+                "kind": "convertFieldType",
+                "spec": {
+                  "id": "convertFieldType",
+                  "options": {
+                    "conversions": [
+                      {
+                        "targetField": "Time",
+                        "destinationType": "time",
+                        "dateFormat": "GGGG-[W]WW"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "kind": "formatTime",
+                "spec": {
+                  "id": "formatTime",
+                  "options": {
+                    "outputFormat": "YY-MM-DD",
+                    "timeField": "Time",
+                    "timezone": "browser"
+                  }
+                }
               }
             ]
           }
         },
-        "description": "Weekly CI hours for pytorch/pytorch on the meta fleet (runner labels prefixed mt-, linux., or windows.; excludes lf- / lf. LF runners and GitHub-hosted). Sum of completed-job durations (dateDiff started_at -> completed_at). Daily values are bucketed to ISO weeks (Monday-start, UTC).",
+        "description": "Weekly CI hours for the pytorch and meta-pytorch orgs (repository_full_name starting with pytorch/ or meta-pytorch/) on the meta fleet (runner labels prefixed mt-, linux., or windows.; excludes lf- / lf. LF runners and GitHub-hosted). Sum of completed-job durations (dateDiff started_at -> completed_at). Daily values are bucketed to ISO weeks (Monday-start, UTC).",
         "id": 2,
         "links": [],
-        "title": "Total CI Hours — pytorch/pytorch meta fleet (weekly)",
+        "title": "Total CI Hours — pytorch + meta-pytorch meta fleet (weekly)",
         "vizConfig": {
           "group": "barchart",
           "kind": "VizConfig",
@@ -285,25 +330,18 @@
                     "group": "cloudwatch",
                     "kind": "DataQuery",
                     "spec": {
-                      "dimensions": {
-                        "ServiceName": [
-                          "AmazonEC2"
-                        ],
-                        "Currency": [
-                          "USD"
-                        ]
-                      },
-                      "expression": "",
+                      "dimensions": {},
+                      "expression": "SUM(SEARCH('${service}', 'Maximum', 86400))",
                       "id": "m1",
                       "matchExact": true,
-                      "metricEditorMode": 0,
-                      "metricName": "EstimatedCharges",
+                      "metricEditorMode": 1,
+                      "metricName": "",
                       "metricQueryType": 0,
-                      "namespace": "AWS/Billing",
-                      "period": "86400",
+                      "namespace": "",
+                      "period": "",
                       "queryMode": "Metrics",
                       "region": "us-east-1",
-                      "statistic": "Maximum"
+                      "statistic": ""
                     },
                     "version": "v0"
                   },
@@ -352,7 +390,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "format": 2,
-                      "rawSql": "SELECT toStartOfDay(started_at) AS Time, sum(dateDiff('second', started_at, completed_at))/3600 AS ci_hours FROM default.workflow_job WHERE repository_full_name = 'pytorch/pytorch' AND status = 'completed' AND completed_at > started_at AND started_at >= $__fromTime AND started_at <= $__toTime AND arrayExists(x -> startsWith(x, 'mt-') OR startsWith(x, 'linux.') OR startsWith(x, 'windows.'), labels) GROUP BY Time ORDER BY Time"
+                      "rawSql": "SELECT toStartOfDay(started_at) AS Time, sum(dateDiff('second', started_at, completed_at))/3600 AS ci_hours FROM default.workflow_job WHERE (startsWith(repository_full_name, 'pytorch/') OR startsWith(repository_full_name, 'meta-pytorch/')) AND status = 'completed' AND completed_at > started_at AND started_at >= $__fromTime AND started_at <= $__toTime AND arrayExists(x -> startsWith(x, 'mt-') OR startsWith(x, 'linux.') OR startsWith(x, 'windows.'), labels) GROUP BY Time ORDER BY Time"
                     },
                     "version": "v0"
                   },
@@ -379,6 +417,16 @@
                   "options": {
                     "regex": "^ci_hours.*$",
                     "renamePattern": "ci_hours"
+                  }
+                }
+              },
+              {
+                "kind": "renameByRegex",
+                "spec": {
+                  "id": "renameByRegex",
+                  "options": {
+                    "regex": "^cost.*$",
+                    "renamePattern": "cost"
                   }
                 }
               },
@@ -420,6 +468,32 @@
                 }
               },
               {
+                "kind": "convertFieldType",
+                "spec": {
+                  "id": "convertFieldType",
+                  "options": {
+                    "conversions": [
+                      {
+                        "targetField": "Time",
+                        "destinationType": "time",
+                        "dateFormat": "GGGG-[W]WW"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "kind": "formatTime",
+                "spec": {
+                  "id": "formatTime",
+                  "options": {
+                    "outputFormat": "YY-MM-DD",
+                    "timeField": "Time",
+                    "timezone": "browser"
+                  }
+                }
+              },
+              {
                 "kind": "calculateField",
                 "spec": {
                   "id": "calculateField",
@@ -452,10 +526,10 @@
             ]
           }
         },
-        "description": "Weekly real EC2 cost (CloudWatch EstimatedCharges, ServiceName=AmazonEC2, reset-handled) divided by meta-fleet CI hours for pytorch/pytorch. CloudWatch daily EC2 cost and ClickHouse daily CI-hours are outer-joined on the shared midnight-UTC day, bucketed to ISO weeks, then divided per week. The numerator is fbossci EC2 spend only (cash-basis / unblended), so this is EC2 cost amortized over meta-fleet CI-hours, not a full per-runner unit cost.",
+        "description": "Weekly real cost for the selected AWS scope (dropdown; default All = whole fbossci account) from CloudWatch EstimatedCharges (reset-handled) divided by meta-fleet CI hours for the pytorch and meta-pytorch orgs. 'All' uses the true whole-account total (no ServiceName dimension); selecting a specific service filters the numerator to that service. CloudWatch daily cost and ClickHouse daily CI-hours are outer-joined on the shared midnight-UTC day, bucketed to ISO weeks, then divided per week. The numerator is fbossci spend (cash-basis / unblended, NOT net-amortized) for the selected scope, amortized over meta-fleet CI-hours — not a full per-runner unit cost.",
         "id": 3,
         "links": [],
-        "title": "EC2 Cost per CI-Hour (weekly)",
+        "title": "AWS Cost per CI-Hour (weekly) [service]",
         "vizConfig": {
           "group": "barchart",
           "kind": "VizConfig",
@@ -564,5 +638,25 @@
     "to": "now"
   },
   "title": "Cost per CI-Hour",
-  "variables": []
+  "variables": [
+    {
+      "kind": "CustomVariable",
+      "spec": {
+        "allowCustomValue": true,
+        "current": {
+          "text": "All",
+          "value": "{AWS/Billing,Currency} MetricName=\"EstimatedCharges\""
+        },
+        "hide": "dontHide",
+        "includeAll": false,
+        "label": "AWS Service",
+        "multi": false,
+        "name": "service",
+        "options": [],
+        "query": "[{\"text\":\"All\",\"value\":\"{AWS/Billing,Currency} MetricName=\\\"EstimatedCharges\\\"\"},{\"text\":\"AWSAmplify\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSAmplify\\\"\"},{\"text\":\"AWSAppRunner\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSAppRunner\\\"\"},{\"text\":\"AWSCloudTrail\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSCloudTrail\\\"\"},{\"text\":\"AWSConfig\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSConfig\\\"\"},{\"text\":\"AWSCostExplorer\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSCostExplorer\\\"\"},{\"text\":\"AWSDataTransfer\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSDataTransfer\\\"\"},{\"text\":\"AWSDeviceFarm\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSDeviceFarm\\\"\"},{\"text\":\"AWSELB\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSELB\\\"\"},{\"text\":\"AWSEvents\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSEvents\\\"\"},{\"text\":\"AWSGlue\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSGlue\\\"\"},{\"text\":\"AWSIAMAccessAnalyzer\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSIAMAccessAnalyzer\\\"\"},{\"text\":\"AWSLambda\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSLambda\\\"\"},{\"text\":\"AWSMarketplace\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSMarketplace\\\"\"},{\"text\":\"AWSQueueService\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSQueueService\\\"\"},{\"text\":\"AWSSecretsManager\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSSecretsManager\\\"\"},{\"text\":\"AWSSystemsManager\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AWSSystemsManager\\\"\"},{\"text\":\"AmazonApiGateway\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonApiGateway\\\"\"},{\"text\":\"AmazonCloudFront\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonCloudFront\\\"\"},{\"text\":\"AmazonCloudWatch\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonCloudWatch\\\"\"},{\"text\":\"AmazonDynamoDB\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonDynamoDB\\\"\"},{\"text\":\"AmazonEC2\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonEC2\\\"\"},{\"text\":\"AmazonECR\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonECR\\\"\"},{\"text\":\"AmazonECRPublic\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonECRPublic\\\"\"},{\"text\":\"AmazonECS\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonECS\\\"\"},{\"text\":\"AmazonEFS\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonEFS\\\"\"},{\"text\":\"AmazonEKS\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonEKS\\\"\"},{\"text\":\"AmazonElastiCache\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonElastiCache\\\"\"},{\"text\":\"AmazonFSx\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonFSx\\\"\"},{\"text\":\"AmazonGrafana\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonGrafana\\\"\"},{\"text\":\"AmazonGuardDuty\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonGuardDuty\\\"\"},{\"text\":\"AmazonKinesis\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonKinesis\\\"\"},{\"text\":\"AmazonKinesisFirehose\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonKinesisFirehose\\\"\"},{\"text\":\"AmazonMedicalImaging\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonMedicalImaging\\\"\"},{\"text\":\"AmazonOpenSearchService\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonOpenSearchService\\\"\"},{\"text\":\"AmazonQuickSight\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonQuickSight\\\"\"},{\"text\":\"AmazonRDS\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonRDS\\\"\"},{\"text\":\"AmazonRoute53\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonRoute53\\\"\"},{\"text\":\"AmazonS3\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonS3\\\"\"},{\"text\":\"AmazonSNS\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonSNS\\\"\"},{\"text\":\"AmazonVPC\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"AmazonVPC\\\"\"},{\"text\":\"awskms\",\"value\":\"{AWS/Billing,Currency,ServiceName} MetricName=\\\"EstimatedCharges\\\" ServiceName=\\\"awskms\\\"\"}]",
+        "skipUrlSync": false,
+        "valuesFormat": "json"
+      }
+    }
+  ]
 }
