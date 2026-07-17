@@ -21,10 +21,10 @@ rclone's memory is **reserved** (`request == limit`) and **tiered by GPU count**
 To keep RSS inside those reserves the mount runs with `--buffer-size 4M` (a 4x cut
 from rclone's 16Mi-per-open-file default read-ahead — the dominant RSS driver when
 a model opens many shards; kept non-zero so cold reads retain some prefetch, with
-`--vfs-cache-mode full` serving the rest from the on-disk cache). Together with the
-per-tier `GOMEMLIMIT` (see `deploy.sh`), this keeps concurrent large-model
-(safetensors) reads from OOM-killing rclone; a dead FUSE mount otherwise surfaces as
-a spurious `LocalEntryNotFoundError` in the job.
+`--vfs-cache-mode full` serving the rest from the on-disk cache) and `--use-mmap`
+(frees buffers back to the OS). Without them, concurrent large-model (safetensors)
+reads OOM-kill rclone, and the dead FUSE mount surfaces as a spurious
+`LocalEntryNotFoundError` in the job.
 
 **Writes are gated by GitHub OIDC, not by the mount.** Job pods can't write the
 cache (read-only mount, read-only IRSA). On `ci-refresh-hf-cache` runs, the
