@@ -17,6 +17,9 @@ MOUNT_DS = "hf-cache-mount"  # the CPU/catch-all tier; also the pod-spec fixture
 MOUNT_SA = "hf-cache-mount"
 IRSA_KEY = "eks.amazonaws.com/role-arn"
 MOUNT_PATH = "/mnt/hf_cache"
+# rclone Bidirectional-mounts the parent (not MOUNT_PATH) so a dead FUSE can't wedge
+# container creation; the FUSE itself still lands at MOUNT_PATH.
+MOUNT_PARENT = "/mnt"
 GPU_COUNT_LABEL = "karpenter.k8s.aws/instance-gpu-count"
 # rclone memory is tiered by GPU count; each tier is its own DaemonSet and reserves
 # (request == limit). ds name -> (affinity op, gpu-count values, memory). Must match
@@ -102,14 +105,21 @@ class TestHfCacheMountDaemonSet:
         )
 
     def test_hostpath_bidirectional(self, mount_pod_spec: dict) -> None:
+        # rclone mounts the parent /mnt (not /mnt/hf_cache) so a dead FUSE can't block
+        # container creation — see the self-heal rationale in mount-daemonset.yaml.tpl.
         mounts = mount_pod_spec["containers"][0].get("volumeMounts", [])
-        hf = [m for m in mounts if m.get("mountPath") == MOUNT_PATH]
-        assert hf, f"rclone container missing {MOUNT_PATH} volume mount."
-        assert hf[0].get("mountPropagation") == "Bidirectional", (
-            f"{MOUNT_PATH} must use Bidirectional propagation so job pods see the FUSE mount."
+        parent = [m for m in mounts if m.get("mountPath") == MOUNT_PARENT]
+        assert parent, f"rclone container must mount the parent {MOUNT_PARENT} (self-heal across a dead FUSE)."
+        assert parent[0].get("mountPropagation") == "Bidirectional", (
+            f"{MOUNT_PARENT} must use Bidirectional propagation so job pods see the FUSE mount."
         )
-        host_vols = [v for v in mount_pod_spec.get("volumes", []) if v.get("hostPath", {}).get("path") == MOUNT_PATH]
-        assert host_vols, f"mount DaemonSet must hostPath-mount {MOUNT_PATH}."
+        assert not [m for m in mounts if m.get("mountPath") == MOUNT_PATH], (
+            f"rclone must NOT mount {MOUNT_PATH} directly — a dead FUSE there wedges container creation."
+        )
+        host_vols = [v for v in mount_pod_spec.get("volumes", []) if v.get("hostPath", {}).get("path") == MOUNT_PARENT]
+        assert host_vols, f"mount DaemonSet must hostPath-mount the parent {MOUNT_PARENT}."
+        cmd = " ".join(mount_pod_spec["containers"][0].get("command", []))
+        assert MOUNT_PATH in cmd, f"rclone command must mount the FUSE at {MOUNT_PATH}."
 
     def test_liveness_probe(self, mount_pod_spec: dict) -> None:
         probe = mount_pod_spec["containers"][0].get("livenessProbe")
