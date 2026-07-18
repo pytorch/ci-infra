@@ -94,5 +94,7 @@ jobs:
         run: just untaint-nodes "${{ inputs.cluster }}"
 
       - name: Resume runners (restore maxRunners from def files)
-        if: ${{ inputs.run_resume_runners }}
+        if: ${{ !cancelled() && inputs.run_resume_runners }}
         run: just resume-runners "${{ inputs.cluster }}"
+        env:
+          OSDC_UNTAINT_NODES: "no"
