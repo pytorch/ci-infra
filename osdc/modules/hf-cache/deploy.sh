@@ -138,19 +138,26 @@ echo "[hf-cache] Applying mount DaemonSets (per GPU-count tier)..."
 wait_ds_rollout() {
   local name="$1" ns="$2" timeout="${3:-300}"
   local deadline=$((SECONDS + timeout))
-  local gen obs desired updated out
+  local gen obs desired updated out num='^[0-9]+$'
   while :; do
     out=$(kubectl get daemonset "$name" -n "$ns" \
       -o jsonpath='{.metadata.generation} {.status.observedGeneration} {.status.desiredNumberScheduled} {.status.updatedNumberScheduled}' \
       2>/dev/null) || out=""
     read -r gen obs desired updated <<<"$out" || true
-    # Empty generation means the query failed (a live DaemonSet always has
-    # metadata.generation >= 1); keep polling rather than misreading it as done.
-    if [[ -n "$gen" ]]; then
-      obs=${obs:-0}
-      desired=${desired:-0}
-      updated=${updated:-0}
-      if [[ "$obs" -ge "$gen" && "$updated" -ge "$desired" ]]; then
+    # observedGeneration and updatedNumberScheduled are omitempty — absent from the JSON
+    # (so read as empty) when 0 — hence the defaults; desiredNumberScheduled is always
+    # serialized. gen is left undefaulted: a failed query leaves it empty, which fails the
+    # numeric check below, so the rollout is never misread as done (a live DaemonSet has
+    # generation >= 1).
+    obs=${obs:-0}
+    desired=${desired:-0}
+    updated=${updated:-0}
+    # Compare only once all four are plain integers. (( )) evaluates its operands in
+    # arithmetic context, where a non-numeric token — stray stdout, or a field-shifted
+    # read — is treated as a variable name and aborts the script under `set -u`,
+    # uncatchable by the caller's `||`. Anything non-numeric ⇒ keep polling.
+    if [[ "$gen" =~ $num && "$obs" =~ $num && "$desired" =~ $num && "$updated" =~ $num ]]; then
+      if ((obs >= gen && updated >= desired)); then
         echo "[hf-cache] $name rollout applied ($updated/$desired nodes on current spec)"
         return 0
       fi
