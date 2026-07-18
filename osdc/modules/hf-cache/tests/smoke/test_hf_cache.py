@@ -22,8 +22,8 @@ GPU_COUNT_LABEL = "karpenter.k8s.aws/instance-gpu-count"
 # (request == limit). ds name -> (affinity op, gpu-count values, memory). Must match
 # deploy.sh MOUNT_TIERS.
 MOUNT_TIERS = {
-    "hf-cache-mount": ("NotIn", {"1", "2", "4", "8"}, "256Mi"),
-    "hf-cache-mount-gpu1": ("In", {"1"}, "512Mi"),
+    "hf-cache-mount": ("NotIn", {"1", "2", "4", "8"}, "640Mi"),
+    "hf-cache-mount-gpu1": ("In", {"1"}, "640Mi"),
     "hf-cache-mount-gpu2": ("In", {"2"}, "1Gi"),
     "hf-cache-mount-gpu4": ("In", {"4"}, "2Gi"),
     "hf-cache-mount-gpu8": ("In", {"8"}, "4Gi"),
