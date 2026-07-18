@@ -16,15 +16,18 @@ get the path bind-mounted read-only via the gated `# BEGIN_HF_CACHE` block in
 rclone's memory is **reserved** (`request == limit`) and **tiered by GPU count**
 (`karpenter.k8s.aws/instance-gpu-count`), since RSS scales with job concurrency:
 `deploy.sh` renders one DaemonSet per tier — 8-GPU → 4Gi, 4-GPU → 2Gi, 2-GPU → 1Gi,
-1-GPU → 512Mi, and the CPU catch-all → 256Mi. See `MOUNT_TIERS` in `deploy.sh`.
+1-GPU → 640Mi, and the CPU catch-all → 640Mi. See `MOUNT_TIERS` in `deploy.sh`.
 
-To keep RSS inside those reserves the mount runs with `--buffer-size 4M` (a 4x cut
-from rclone's 16Mi-per-open-file default read-ahead — the dominant RSS driver when
-a model opens many shards; kept non-zero so cold reads retain some prefetch, with
-`--vfs-cache-mode full` serving the rest from the on-disk cache). Together with the
-per-tier `GOMEMLIMIT` (see `deploy.sh`), this keeps concurrent large-model
-(safetensors) reads from OOM-killing rclone; a dead FUSE mount otherwise surfaces as
-a spurious `LocalEntryNotFoundError` in the job.
+To keep RSS inside those reserves, `--buffer-size` (rclone's per-open-file read-ahead
+— the dominant RSS driver when a model opens many shards) is set **per tier** in
+`deploy.sh`, because peak concurrent opens scale with a node's pod density, not its GPU
+count: the packed CPU catch-all (big 48xl/metal nodes, many runner pods sharing one
+mount) runs `--buffer-size 0` (read-ahead off; reads served from the `--vfs-cache-mode
+full` on-disk cache), the tight 640Mi 1-GPU tier also uses `0`, and the roomier multi-GPU
+tiers keep `4M`.
+Together with the per-tier `GOMEMLIMIT`, this keeps concurrent large-model (safetensors)
+reads from OOM-killing rclone; a dead FUSE mount otherwise surfaces as a spurious
+`LocalEntryNotFoundError` in the job.
 
 **Writes are gated by GitHub OIDC, not by the mount.** Job pods can't write the
 cache (read-only mount, read-only IRSA). On `ci-refresh-hf-cache` runs, the

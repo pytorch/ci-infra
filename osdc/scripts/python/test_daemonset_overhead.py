@@ -507,16 +507,16 @@ class TestRealManifests:
         assert by_name["runner-hooks-warmer"].memory_mib == 32
 
     def test_hf_cache_templated_overhead(self, upstream_dir):
-        """hf-cache is a .tpl DaemonSet (invisible to the YAML scan), added as a 256Mi
+        """hf-cache is a .tpl DaemonSet (invisible to the YAML scan), added as a 640Mi
         base on all nodes; GPU nodes reserve more per GPU count via the top-up helper."""
         by_name = {ds.name: ds for ds in discover_daemonsets(upstream_dir)}
 
         base = by_name["hf-cache-mount"]
         assert base.gpu_only is False
-        assert base.memory_mib == 256  # CPU / catch-all tier
+        assert base.memory_mib == 640  # CPU / catch-all tier
 
         # base + top-up == the reserved memory tier for each GPU count (MOUNT_TIERS)
-        assert base.memory_mib + hf_cache_gpu_topup_mib(1) == 512
+        assert base.memory_mib + hf_cache_gpu_topup_mib(1) == 640
         assert base.memory_mib + hf_cache_gpu_topup_mib(2) == 1024
         assert base.memory_mib + hf_cache_gpu_topup_mib(4) == 2048
         assert base.memory_mib + hf_cache_gpu_topup_mib(8) == 4096
