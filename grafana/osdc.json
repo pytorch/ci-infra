@@ -1455,7 +1455,7 @@
                     "group": "prometheus",
                     "kind": "DataQuery",
                     "spec": {
-                      "expr": "count by(cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1)",
+                      "expr": "count by(cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or vector(0)",
                       "instant": false,
                       "legendFormat": "{{cluster}}",
                       "queryType": "range",
@@ -1481,11 +1481,13 @@
           "spec": {
             "fieldConfig": {
               "defaults": {
+                "decimals": 0,
                 "color": {
                   "mode": "palette-classic-by-name",
                   "seriesBy": "max"
                 },
                 "custom": {
+                  "axisSoftMax": 5,
                   "axisBorderShow": false,
                   "axisCenteredZero": false,
                   "axisColorMode": "text",
@@ -1519,7 +1521,7 @@
                     "mode": "none"
                   },
                   "thresholdsStyle": {
-                    "mode": "off"
+                    "mode": "line+area"
                   }
                 },
                 "thresholds": {
@@ -1528,6 +1530,10 @@
                     {
                       "color": "green",
                       "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
                     }
                   ]
                 }
