@@ -127,12 +127,53 @@ echo "[hf-cache] Applying mount DaemonSets (per GPU-count tier)..."
   done
 } | kubectl_apply_if_changed -f -
 
+# Gate on the rollout being *applied* to every targeted node, not on every pod being
+# Available. `kubectl rollout status` waits for numberAvailable == desiredNumberScheduled;
+# these DaemonSets run on the github-runner fleet, where nodes churn continuously and each
+# fresh node's pod needs ~30-60s to warm its rclone mount, so numberAvailable trails desired
+# indefinitely and the status command rides its full timeout on every deploy. Once
+# updatedNumberScheduled == desiredNumberScheduled (controller having observed the current
+# generation), the current pod template is on every node it targets — that is the rollout
+# done; not-yet-Ready pods on brand-new nodes are normal steady-state churn.
+wait_ds_rollout() {
+  local name="$1" ns="$2" timeout="${3:-300}"
+  local deadline=$((SECONDS + timeout))
+  local gen obs desired updated out num='^[0-9]+$'
+  while :; do
+    out=$(kubectl get daemonset "$name" -n "$ns" \
+      -o jsonpath='{.metadata.generation} {.status.observedGeneration} {.status.desiredNumberScheduled} {.status.updatedNumberScheduled}' \
+      2>/dev/null) || out=""
+    read -r gen obs desired updated <<<"$out" || true
+    # observedGeneration and updatedNumberScheduled are omitempty — absent from the JSON
+    # (so read as empty) when 0 — hence the defaults; desiredNumberScheduled is always
+    # serialized. gen is left undefaulted: a failed query leaves it empty, which fails the
+    # numeric check below, so the rollout is never misread as done (a live DaemonSet has
+    # generation >= 1).
+    obs=${obs:-0}
+    desired=${desired:-0}
+    updated=${updated:-0}
+    # Compare only once all four are plain integers. (( )) evaluates its operands in
+    # arithmetic context, where a non-numeric token — stray stdout, or a field-shifted
+    # read — is treated as a variable name and aborts the script under `set -u`,
+    # uncatchable by the caller's `||`. Anything non-numeric ⇒ keep polling.
+    if [[ "$gen" =~ $num && "$obs" =~ $num && "$desired" =~ $num && "$updated" =~ $num ]]; then
+      if ((obs >= gen && updated >= desired)); then
+        echo "[hf-cache] $name rollout applied ($updated/$desired nodes on current spec)"
+        return 0
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "[hf-cache] WARNING: $name rollout not fully applied within ${timeout}s (${updated:-?}/${desired:-?} on current spec)"
+      return 1
+    fi
+    sleep 5
+  done
+}
+
 echo "[hf-cache] Waiting for mount DaemonSet rollouts..."
 for tier in "${MOUNT_TIERS[@]}"; do
   read -r _name _rest <<<"$tier"
-  kubectl rollout status daemonset "$_name" \
-    -n "$NAMESPACE" --timeout=300s || {
-    echo "[hf-cache] WARNING: $_name rollout did not complete within timeout"
+  wait_ds_rollout "$_name" "$NAMESPACE" 300 || {
     echo "[hf-cache] Check: kubectl get pods -n $NAMESPACE -l app=$_name"
   }
 done
