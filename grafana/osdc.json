@@ -1436,6 +1436,131 @@
           }
         }
       }
+    },
+    "panel-12": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "grafanacloud-prom"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "count by(cluster) (kube_pod_container_status_last_terminated_reason{cluster=~\"$cluster\", namespace=\"hf-cache\", container=\"rclone\", reason=\"OOMKilled\"} == 1) or vector(0)",
+                      "instant": false,
+                      "legendFormat": "{{cluster}}",
+                      "queryType": "range",
+                      "range": true
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "Count of hf-cache rclone mounts whose container's LAST termination was OOMKilled (kube_pod_container_status_last_terminated_reason). This is a sticky signal: it stays set after the pod recovers and only clears when the pod is replaced (node recycle / rollout) — so it counts mounts that OOM'd recently, INCLUDING ones already back to Running. It is an upper bound / early-warning indicator, NOT a live 'currently broken' count (that would need a per-pod not-ready or waiting-reason metric, which is not currently shipped to Mimir for the hf-cache namespace). A sustained rise still means the small-tier OOM is active and jobs on those nodes can fail to start.",
+        "id": 12,
+        "links": [],
+        "title": "hf-cache Mounts OOM-killed — recent, incl. recovered [cluster]",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "decimals": 0,
+                "color": {
+                  "mode": "palette-classic-by-name",
+                  "seriesBy": "max"
+                },
+                "custom": {
+                  "axisSoftMax": 5,
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.9,
+                  "drawStyle": "line",
+                  "fillOpacity": 0,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineStyle": {
+                    "fill": "solid"
+                  },
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "auto",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "line+area"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "single",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0-25668120414"
+        }
+      }
     }
   },
   "layout": {
@@ -1583,6 +1708,19 @@
             "width": 12,
             "x": 12,
             "y": 40
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-12"
+            },
+            "height": 8,
+            "width": 24,
+            "x": 0,
+            "y": 48
           }
         }
       ]
