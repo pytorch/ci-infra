@@ -281,7 +281,7 @@ Standalone PDB manifests are applied by `_deploy-harbor` after the Helm install 
 **ARC controller:**
 ```yaml
 arc:
-  chart_version: "0.14.1-jeanschmidt.16"   # Must match controller + runner charts (minor mismatch deletes ARS). Fork chart from jeanschmidt/actions-runner-controller. Check clusters.yaml for the current value.
+  chart_version: "0.14.1-jeanschmidt.17"   # Must match controller + runner charts (minor mismatch deletes ARS). Fork chart from jeanschmidt/actions-runner-controller. Check clusters.yaml for the current value.
   runner_image_tag: "2.334.0"
   replica_count: 4
   log_level: info
