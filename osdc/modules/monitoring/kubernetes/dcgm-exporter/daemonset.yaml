@@ -56,7 +56,7 @@ spec:
             - name: DCGM_EXPORTER_LISTEN
               value: ":9400"
             - name: GOMEMLIMIT
-              value: "450MiB"
+              value: "410MiB"
           resources:
             requests:
               cpu: 100m
