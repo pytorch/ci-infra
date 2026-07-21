@@ -10,7 +10,7 @@ metadata:
     osdc.io/module: bin-pack-scheduler
     app: bin-pack-scheduler
 spec:
-  replicas: 2  # HA via leader election; only one schedules at a time
+  replicas: 3  # default; set per-cluster by deploy.sh. HA via leader election (only one active).
   selector:
     matchLabels:
       app: bin-pack-scheduler
@@ -30,7 +30,7 @@ spec:
           operator: Equal
           value: "true"
           effect: NoSchedule
-      # Spread the 2 replicas across nodes so a single node loss keeps a leader.
+      # Spread replicas across nodes so a single node loss keeps a leader.
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -52,8 +52,8 @@ spec:
               containerPort: 10259
               protocol: TCP
           resources:
-            requests: {cpu: 200m, memory: 256Mi}
-            limits: {cpu: 500m, memory: 512Mi}
+            requests: {cpu: 3, memory: 6Gi}
+            limits: {cpu: 3, memory: 6Gi}
           livenessProbe:
             httpGet: {path: /healthz, port: 10259, scheme: HTTPS}
             initialDelaySeconds: 15
