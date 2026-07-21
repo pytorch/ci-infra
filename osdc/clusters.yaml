@@ -66,6 +66,8 @@ defaults:
     max_uptime_hours: 48
     min_nodes: 1
     dry_run: false
+  bin_pack_scheduler:
+    replicas: 3
   nodepools:
     gpu_consolidate_after: "10m"
     cpu_consolidate_after: "5m"
@@ -156,6 +158,8 @@ clusters:
       controller_memory_limit: "1Gi"
     node_compactor:
       dry_run: true
+    bin_pack_scheduler:
+      replicas: 1
     nodepools:
       gpu_consolidate_after: "10s"
       cpu_consolidate_after: "10s"
@@ -231,6 +235,8 @@ clusters:
       controller_memory_limit: "1Gi"
     node_compactor:
       dry_run: true
+    bin_pack_scheduler:
+      replicas: 1
     nodepools:
       gpu_consolidate_after: "10s"
       cpu_consolidate_after: "10s"
@@ -308,6 +314,8 @@ clusters:
       controller_memory_limit: "1Gi"
     node_compactor:
       dry_run: true
+    bin_pack_scheduler:
+      replicas: 1
     nodepools:
       gpu_consolidate_after: "10s"
       cpu_consolidate_after: "10s"

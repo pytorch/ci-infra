@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 _OSDC_ROOT = Path(__file__).resolve().parents[4]
-_DEPLOYMENT = _OSDC_ROOT / "modules" / "bin-pack-scheduler" / "kubernetes" / "deployment.yaml"
+_DEPLOYMENT = _OSDC_ROOT / "modules" / "bin-pack-scheduler" / "kubernetes" / "base" / "deployment.yaml"
 _CLUSTERS = _OSDC_ROOT / "clusters.yaml"
 
 
