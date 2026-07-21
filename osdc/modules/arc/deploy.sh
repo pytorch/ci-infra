@@ -81,7 +81,7 @@ kubectl apply -f "$MODULE_DIR/kubernetes/priority-classes.yaml"
 kubectl apply -f "$MODULE_DIR/kubernetes/capacity-monitor-rbac.yaml"
 
 # Read per-installation ARC config (with defaults)
-ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.1-jeanschmidt.16)
+ARC_CHART_VERSION=$(uv run "$CFG" "$CLUSTER" arc.chart_version 0.14.1-jeanschmidt.17)
 ARC_REPLICAS=$(uv run "$CFG" "$CLUSTER" arc.replica_count 2)
 ARC_LOG_LEVEL=$(uv run "$CFG" "$CLUSTER" arc.log_level info)
 ARC_CPU_REQ=$(uv run "$CFG" "$CLUSTER" arc.controller_cpu_request 1)
