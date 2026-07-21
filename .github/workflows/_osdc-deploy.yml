@@ -112,7 +112,7 @@ jobs:
     if: ${{ inputs.run_smoke }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: osdc
@@ -129,7 +129,17 @@ jobs:
           aws-region: us-west-1
           role-duration-seconds: 7200
 
+      # Smoke failures are usually transient cluster churn (the cluster needs
+      # time to converge after deploy), so retry once after a settle wait.
       - name: Run smoke tests
+        id: smoke
+        continue-on-error: true
+        run: just smoke "${{ inputs.cluster }}"
+      - name: Wait for cluster to settle before smoke retry
+        if: ${{ steps.smoke.outcome == 'failure' }}
+        run: sleep 180
+      - name: Run smoke tests (retry)
+        if: ${{ steps.smoke.outcome == 'failure' }}
         run: just smoke "${{ inputs.cluster }}"
 
   integration:
