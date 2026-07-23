@@ -3277,6 +3277,14 @@ def get_available_gpus_on_node(v1_api, node, gpu_type: str = None) -> int:
         used_gpus = 0
         for pod in pods.items:
             if pod.status.phase in ["Running", "Pending"]:
+                # Idle warm-ready pods hold a slice but are disposable: a 2/4/8-GPU
+                # (or full-MIG-node) request frees them via _evict_warm_for_capacity
+                # before placement, so count them as available here. This mirrors
+                # availability_updater.get_available_gpus_on_node and keeps the
+                # placement gate consistent with advertised availability.
+                labels = pod.metadata.labels or {}
+                if labels.get("app") == "gpu-dev-warm" and labels.get("warm-state") == "ready":
+                    continue
                 if pod.spec.containers:
                     for container in pod.spec.containers:
                         if container.resources and container.resources.requests:
