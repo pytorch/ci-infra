@@ -29,7 +29,7 @@ crcr/
 ├── scripts/
 │   └── terrafile_lambdas.py        # Downloads Terraform modules and Lambda ZIP assets
 ├── modules/
-│   ├── backend-file/               # S3 backend configuration templates
+│   ├── backend-file/               # S3 backend configuration templates for terraform init
 │   │   ├── backend-state.tf
 │   │   └── backend.tf
 │   └── backend-state/              # Symlink to ../../modules/backend-state
@@ -41,11 +41,13 @@ crcr/
     ├── locals.tf                   # Computed values (secret ARN, AZs, tags)
     ├── outputs.tf                  # Outputs (webhook URL, Redis endpoint)
     ├── vpc.tf                      # VPC and subnets
+    ├── security.tf                 # VPC security groups (Lambda ↔ Redis ↔ internet)
     ├── iam.tf                      # Lambda execution role and policies
     ├── secrets.tf                  # Secrets Manager secret and version
     ├── elasticache.tf              # Redis replication group
-    ├── callback.tf                 # Result callback lambda function and public function URL
-    └── webhook.tf                  # Webhook lambda function and public function URL
+    ├── callback.tf                 # Result callback Lambda and public function URL
+    ├── webhook.tf                  # Webhook receiver Lambda and public function URL
+    └── sweeper.tf                  # EventBridge scheduled trigger for zombie-job cleanup
 ```
 
 ## Prerequisites
@@ -90,6 +92,7 @@ aws dynamodb create-table \
 | `hud_api_url` | `N/A` | URL for sending callback data to HUD |
 | `hud_bot_key` | `N/A` | Key to access to HUD (sensitive) |
 | `crcr_status_ttl` | `259200` | CRCR workflow run status TTL in Redis (seconds) |
+| `sweeper_interval_minutes` | `10` | How often EventBridge triggers the callback Lambda to reap timed-out zombie jobs (minutes, >= 2) |
 
 **Note:**
 
@@ -160,6 +163,6 @@ CRCR follows a four-level progression system. Each level adds more integration b
 | Level | Name | Status | Description |
 |---|---|---|---|
 | **L1** | Events Only | running | Webhook events are forwarded to downstream repos. No feedback to upstream PRs. Downstream repos receive `repository_dispatch` and run CI independently. |
-| **L2** | HUD Visibility | **Current**  | Downstream CI results are written to ClickHouse and displayed on a dedicated HUD page (`hud.pytorch.org/crcr/[org]/[repo]`). Upstream PRs still show no check status. |
-| **L3** | Label-Triggered PR Checks | developing | A non-blocking Check Run appears on upstream PRs when a `ciflow/crcr/<name>` label is added. This is the recommended long-term target for most downstream repos. |
+| **L2** | HUD Visibility | completed | Downstream CI results are written to ClickHouse and displayed on a dedicated HUD page (`hud.pytorch.org/crcr/[org]/[repo]`). Upstream PRs still show no check status. |
+| **L3** | Label-Triggered PR Checks | **Current** | A non-blocking Check Run appears on upstream PRs when a `ciflow/crcr/<name>` label is added. This is the recommended long-term target for most downstream repos. |
 | **L4** | Always-On Blocking Checks | developing | Blocking Check Run auto-triggered for every PR. Reserved for critical accelerators only. Merge is blocked on failure. |
