@@ -251,6 +251,7 @@ def generate_runner(
     max_burst_capacity = runner.get("max_burst_capacity", 0)
     hud_failure_base_capacity = runner.get("hud_failure_base_capacity", 0)
     node_fleet_override = runner.get("node_fleet")
+    imex_channels = runner.get("imex_channels")
     proactive_cap = cluster_config.get("proactive_capacity_max")
     if proactive_cap is not None:
         proactive_capacity = min(proactive_capacity, proactive_cap)
@@ -377,6 +378,14 @@ def generate_runner(
         gpu_request = ""
         gpu_limit = ""
 
+    # Optional NVIDIA_IMEX_CHANNELS env on the workflow job container. Trails the
+    # preceding env value line inline so an unset field leaves that line — and the
+    # whole rendered runner — byte-identical to output without this feature.
+    if imex_channels is not None:
+        imex_env = f'\n            - name: NVIDIA_IMEX_CHANNELS\n              value: "{imex_channels}"'
+    else:
+        imex_env = ""
+
     # Runner class isolation snippets (workflow pod only)
     # Release runners: required affinity to target release nodes
     # Regular runners: required affinity to avoid release nodes (DoesNotExist)
@@ -442,6 +451,7 @@ def generate_runner(
         "{{GPU_NODE_SELECTOR_AFFINITY}}": gpu_node_selector_affinity,
         "{{GPU_REQUEST}}": gpu_request,
         "{{GPU_LIMIT}}": gpu_limit,
+        "{{IMEX_ENV}}": imex_env,
         "{{MODULE_NAME}}": module_name,
         "{{RUNNER_IMAGE}}": runner_image,
         # HF cache write target (used by the ci-refresh-hf-cache workflow's OIDC

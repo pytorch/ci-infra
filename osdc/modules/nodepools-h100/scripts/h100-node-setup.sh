@@ -119,8 +119,8 @@ systemctl enable cpu-performance.service
 # Enable GPU persistence mode for consistent performance
 nvidia-smi -pm 1 || true
 
-# ---- Fabric Manager / IMEX: do nothing here ----
-# Background for future maintainers:
+# ---- Fabric Manager / IMEX ----
+# Fabric Manager daemon: deliberately left untouched here.
 #  * The AMI (amazon-eks-node-al2023-x86_64-nvidia-*) already installs and
 #    enables nvidia-fabricmanager and nvidia-persistenced. systemd brings FM
 #    up later in boot, after the GPU-resident "local FM" instances have
@@ -131,15 +131,81 @@ nvidia-smi -pm 1 || true
 #    NVLink Inband. During cloud-init they are usually not ready yet, so FM
 #    exits with "config error type 8 / not all local fabric manager
 #    instances finished their configuration", taking the whole node out.
-#  * IMEX support on this AMI is compiled into nvidia.ko (char device class
-#    nvidia-caps-imex-channels, major 242). There is no separate
-#    nvidia-caps-imex-channels.ko; `modprobe nvidia-caps-imex-channels`
-#    will always fail.
-#  * Single-node NVLS multicast on p5 does not require an IMEX channel
-#    device - NCCL uses POSIX FD handles intranode. IMEX channels are only
-#    needed for multi-node NVLink (MNNVL / GB200 UltraServers).
-# If a fresh provision ever shows FM failing on the normal boot path (not
-# cloud-init), prefer a systemd drop-in with After=nvidia-persistenced.service
-# and Restart=on-failure over taking control of FM here.
+#    If a fresh provision ever shows FM failing on the normal boot path (not
+#    cloud-init), prefer a systemd drop-in with After=nvidia-persistenced.service
+#    and Restart=on-failure over taking control of FM here.
+#
+# IMEX channel device: created below, for the current boot and (via an enabled
+# oneshot) across reboots.
+#  * IMEX is compiled into nvidia.ko (char device class
+#    nvidia-caps-imex-channels; its char major is assigned dynamically, so it
+#    is read from /proc/devices rather than hardcoded). There is no separate
+#    nvidia-caps-imex-channels.ko - `modprobe nvidia-caps-imex-channels` always
+#    fails.
+#  * The driver does not auto-create the channel node, yet a single-node CUDA
+#    VMM fabric handle (CU_MEM_HANDLE_TYPE_FABRIC) - used by PyTorch
+#    expandable-segments IPC - needs /dev/nvidia-caps-imex-channels/channel0 to
+#    exist even on one host. NCCL's intra-node path uses POSIX FD handles and
+#    does not need a channel; the CUDA VMM fabric-handle path does, even on a
+#    single host. Fabric Manager is not required for this - the channel node
+#    plus the driver's single-node fabric are sufficient.
+#
+# The creation logic is written to a helper so the current boot and the oneshot
+# share one implementation. It cannot be an inline ExecStart=/bin/bash -c with
+# awk: systemd expands every unescaped `$` in ExecStart itself (undefined ->
+# empty), so awk field refs and `$(...)` would be mangled. A plain script path
+# has nothing for systemd to expand.
+IMEX_HELPER=/usr/local/sbin/nvidia-imex-channel.sh
+cat >"$IMEX_HELPER" <<'EOFHELPER'
+#!/bin/bash
+CHANNEL=/dev/nvidia-caps-imex-channels/channel0
+if [ -e "$CHANNEL" ]; then
+  echo "[h100-node-setup] IMEX $CHANNEL already present"
+  exit 0
+fi
+MAJOR=$(awk '$2=="nvidia-caps-imex-channels"{print $1}' /proc/devices)
+if [ -z "$MAJOR" ]; then
+  echo "ERROR: [h100-node-setup] char class nvidia-caps-imex-channels absent from /proc/devices; cannot create $CHANNEL" >&2
+  exit 1
+fi
+if mkdir -p /dev/nvidia-caps-imex-channels \
+  && mknod "$CHANNEL" c "$MAJOR" 0 \
+  && chmod 0666 "$CHANNEL"; then
+  echo "[h100-node-setup] created IMEX $CHANNEL (char major $MAJOR)"
+else
+  echo "ERROR: [h100-node-setup] failed to create IMEX $CHANNEL (char major $MAJOR)" >&2
+  exit 1
+fi
+EOFHELPER
+chmod 0755 "$IMEX_HELPER"
+
+# Create the channel for the current boot now. Run under `if` so a creation
+# failure logs but never trips `set -e`: a node without fabric handles is
+# recoverable, a failed cloud-init is not.
+if ! "$IMEX_HELPER"; then
+  echo "ERROR: [h100-node-setup] IMEX channel not created for the current boot (see above); continuing" >&2
+fi
+
+cat >/etc/systemd/system/nvidia-imex-channel.service <<EOFUNIT
+[Unit]
+Description=Create NVIDIA IMEX channel0 device for CUDA fabric handles
+After=nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+ExecStart=$IMEX_HELPER
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOFUNIT
+
+# daemon-reload + enable only — do NOT 'systemctl start' here, for the same
+# cloud-init/multi-user.target deadlock reason documented on cpu-performance
+# above. The channel is already created for this boot directly; the oneshot
+# re-creates it on later boots. After=nvidia-persistenced.service ensures the
+# driver is loaded (char major present) before it runs.
+systemctl daemon-reload
+systemctl enable nvidia-imex-channel.service
 
 echo "Performance configuration complete for p5.48xlarge"
