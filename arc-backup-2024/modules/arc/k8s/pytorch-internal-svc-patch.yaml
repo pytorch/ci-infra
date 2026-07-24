@@ -1,5 +1,0 @@
-spec:
-  ports:
-    - name: https-443
-      port: 443
-      targetPort: 5000

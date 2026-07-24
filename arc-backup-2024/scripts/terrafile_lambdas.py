@@ -1,1 +1,0 @@
-../../scripts/terrafile_lambdas.py
