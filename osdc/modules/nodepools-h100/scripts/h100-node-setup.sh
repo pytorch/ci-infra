@@ -163,9 +163,21 @@ if [ -e "$CHANNEL" ]; then
   echo "[h100-node-setup] IMEX $CHANNEL already present"
   exit 0
 fi
-MAJOR=$(awk '$2=="nvidia-caps-imex-channels"{print $1}' /proc/devices)
+# nvidia.ko may not have registered the nvidia-caps-imex-channels char class in
+# /proc/devices yet on first boot; retry until it appears.
+IMEX_MAJOR_RETRIES=5
+IMEX_MAJOR_RETRY_SLEEP=2
+MAJOR=""
+for attempt in $(seq 1 "$IMEX_MAJOR_RETRIES"); do
+  MAJOR=$(awk '$2=="nvidia-caps-imex-channels"{print $1}' /proc/devices)
+  if [ -n "$MAJOR" ]; then
+    break
+  fi
+  echo "[h100-node-setup] nvidia-caps-imex-channels not yet in /proc/devices (attempt ${attempt}/${IMEX_MAJOR_RETRIES}); retrying in ${IMEX_MAJOR_RETRY_SLEEP}s" >&2
+  sleep "$IMEX_MAJOR_RETRY_SLEEP"
+done
 if [ -z "$MAJOR" ]; then
-  echo "ERROR: [h100-node-setup] char class nvidia-caps-imex-channels absent from /proc/devices; cannot create $CHANNEL" >&2
+  echo "ERROR: [h100-node-setup] char class nvidia-caps-imex-channels absent from /proc/devices after retries; cannot create $CHANNEL" >&2
   exit 1
 fi
 if mkdir -p /dev/nvidia-caps-imex-channels \
