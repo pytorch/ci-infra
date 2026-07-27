@@ -1,0 +1,60 @@
+name: h100-fabric-verify
+
+on:
+  pull_request:
+
+jobs:
+  fabric:
+    runs-on:
+      group: meta-prod-aws-uw1
+      labels: [mt-l-x86iamx-22-225-h100-fab]
+    container:
+      image: nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04
+    timeout-minutes: 30
+    steps:
+      - name: GPU present + driver
+        run: |
+          set -euxo pipefail
+          nvidia-smi
+          nvidia-smi -q | grep -iA6 'Fabric' || true
+          drv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | cut -d. -f1)
+          test "$drv" -ge 580
+      - name: IMEX channel + env injected into job pod
+        run: |
+          set -euxo pipefail
+          ls -l /dev/nvidia-caps-imex-channels/
+          test -c /dev/nvidia-caps-imex-channels/channel0
+          test "$(printenv NVIDIA_IMEX_CHANNELS)" = "0"
+      - name: CUDA fabric-handle probe
+        timeout-minutes: 5
+        run: |
+          set -euxo pipefail
+          cat > probe.cu <<'EOF'
+          #include <cuda.h>
+          #include <stdio.h>
+          #include <string.h>
+          #define CK(x) do{CUresult r=(x); if(r!=CUDA_SUCCESS){const char*s; cuGetErrorString(r,&s); fprintf(stderr,"FABRIC_PROBE: FAIL %s -> %s\n",#x,s); return 1;}}while(0)
+          int main(void){
+            CK(cuInit(0));
+            CUdevice d; CK(cuDeviceGet(&d,0));
+            CUcontext ctx; CK(cuCtxCreate(&ctx,0,d));
+            CUmemAllocationProp p; memset(&p,0,sizeof(p));
+            p.type=CU_MEM_ALLOCATION_TYPE_PINNED;
+            p.location.type=CU_MEM_LOCATION_TYPE_DEVICE;
+            p.location.id=(int)d;
+            p.requestedHandleTypes=CU_MEM_HANDLE_TYPE_FABRIC;
+            size_t gran=0, sz=2u<<20;
+            CK(cuMemGetAllocationGranularity(&gran,&p,CU_MEM_ALLOC_GRANULARITY_MINIMUM));
+            sz=((sz+gran-1)/gran)*gran;
+            CUmemGenericAllocationHandle h; CK(cuMemCreate(&h,sz,&p,0));
+            CUmemFabricHandle fh; CK(cuMemExportToShareableHandle(&fh,h,CU_MEM_HANDLE_TYPE_FABRIC,0));
+            CUmemGenericAllocationHandle h2; CK(cuMemImportFromShareableHandle(&h2,&fh,CU_MEM_HANDLE_TYPE_FABRIC));
+            CK(cuMemRelease(h2));
+            CK(cuMemRelease(h));
+            printf("FABRIC_PROBE: PASS\n");
+            return 0;
+          }
+          EOF
+          nvcc probe.cu -o probe -L/usr/local/cuda/lib64/stubs -lcuda
+          ./probe | tee probe.out
+          grep -q 'FABRIC_PROBE: PASS' probe.out
