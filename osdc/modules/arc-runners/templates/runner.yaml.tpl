@@ -461,7 +461,7 @@ data:
               value: "{{HF_CACHE_REGION}}"
             # END_HF_CACHE
             - name: TORCH_CI_MAX_MEMORY
-              value: "{{MEMORY_BYTES}}"
+              value: "{{MEMORY_BYTES}}"{{IMEX_ENV}}
           # Workflow container gets the actual compute resources
           resources:
             requests:
