@@ -1,0 +1,18 @@
+# mise.toml - Tool version management for multi-tenant B200 provisioning
+# https://mise.jdx.dev/
+
+[tools]
+python = "3.12"
+uv = "latest"
+awscli = "2"
+jq = "latest"
+
+[env]
+PROJECT_NAME = "multi-tenant"
+AWS_REGION = "us-east-1"
+
+VIRTUAL_ENV = "{{config_root}}/.venv"
+PATH = "{{config_root}}/.venv/bin:{{env.PATH}}"
+
+[settings]
+auto_install = true

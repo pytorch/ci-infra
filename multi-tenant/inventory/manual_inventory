@@ -1,0 +1,20 @@
+[b200_1]
+dgxb200-03 ansible_host=10.184.169.52
+dgxb200-04 ansible_host=10.184.169.53
+dgxb200-05 ansible_host=10.184.169.54
+[b200_1:vars]
+num_users=8
+instance_label=linux.dgx.b200
+
+[b200_4]
+[b200_4:vars]
+num_users=2
+instance_label=linux.dgx.b200.4
+
+[b200_8]
+dgxb200-06 ansible_host=10.184.169.55
+dgxb200-07 ansible_host=10.184.169.56
+dgxb200-08 ansible_host=10.184.169.57
+[b200_8:vars]
+num_users=1
+instance_label=linux.dgx.b200.8

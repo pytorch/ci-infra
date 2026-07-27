@@ -1,0 +1,82 @@
+# justfile - Provisioning for multi-tenant B200 GitHub Actions runners
+# https://just.systems/
+#
+# Provisions on-prem DGX B200 hosts as multi-tenant PyTorch self-hosted runners.
+# Ansible creates per-GPU users + cgroup slices, installs rootless Docker +
+# nvidia toolkit, and runs the ghad-manager service that keeps one ephemeral
+# runner container alive per user.
+#
+# Working directory: multi-tenant/
+#
+# Tooling is managed by mise (mise.toml) + uv (pyproject.toml). Run `just setup`
+# once to sync the Python environment into .venv.
+#
+# Secrets are loaded from secrets.env (see the runbook). Required:
+#   GH_APP_PK, ECR_READONLY_AWS_CREDENTIALS, INSTANCE_LABELS
+#
+# Usage:
+#   just setup                    # sync the Python env (uv sync)
+#   just image-tag                # pin the runner image tag from ECR
+#   just setup-host               # provision all B200 hosts
+#   just setup-host dgxb200-03    # provision a single host / group
+#   just restart-services         # restart docker + ghad-manager
+#   just restart-ghad             # restart only the ghad-manager service
+
+set dotenv-load
+set dotenv-filename := "secrets.env"
+set dotenv-required := false
+set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
+
+INVENTORY := "inventory/manual_inventory"
+DOCKER_REPO := "308535385114.dkr.ecr.us-east-1.amazonaws.com/multi-tenant-gpu"
+
+# B200 fleet defaults: all B200 groups, login as the pytorch user
+LIMIT := "b200_1,b200_8"
+LOGIN_USER := "pytorch"
+
+# Show available recipes
+default:
+    @just --list
+
+# Sync the Python environment (ansible, boto3, ...) into .venv
+setup:
+    uv sync
+
+# Pin the runner image tag from ECR into temp/multi-tenant-gpu-tag
+image-tag:
+    mkdir -p temp
+    aws ecr describe-images --repository-name multi-tenant-gpu \
+        | jq '[.imageDetails[] | (.imageTags // [])[] | select(. != "latest") | select(test("^[0-9]+$")) | tonumber] | max' \
+        | tee temp/multi-tenant-gpu-tag
+
+# Verify the required secrets are present in the environment
+check-env:
+    : "${GH_APP_PK:?Please set GH_APP_PK environment variable}"
+    : "${INSTANCE_LABELS:?Please set INSTANCE_LABELS environment variable}"
+
+# Provision B200 host(s) (default: all; pass a host or group to limit) — prompts for the sudo password
+setup-host limit=LIMIT: setup image-tag check-env
+    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} -K playbooks/setup-host.yml -vv
+
+# Restart docker + ghad-manager on B200 host(s)
+restart-services limit=LIMIT: setup
+    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} -K playbooks/restart-services.yml -vv
+
+# Restart only the ghad-manager service on B200 host(s)
+restart-ghad limit=LIMIT: setup
+    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} -K playbooks/restart-ghad-service.yml -vv
+
+# Build and push the multi-tenant-gpu runner image to ECR
+docker-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    date_tag="$(date +'%Y%m%d%H%M%S')"
+    docker build -t multi-tenant-gpu images/multi-tenant-gpu
+    for tag in latest "${date_tag}"; do
+        docker tag multi-tenant-gpu:latest "{{ DOCKER_REPO }}:${tag}"
+        docker push "{{ DOCKER_REPO }}:${tag}"
+    done
+
+# Remove the .venv and generated artifacts
+clean:
+    rm -rf .venv temp
