@@ -76,6 +76,21 @@ alloy:
           target_label  = "__keep_cp__"
           replacement   = "true"
         }
+        // Also keep restarts_total for the bin-pack-scheduler pods specifically.
+        // The secondary scheduler in kube-system OOMKills (exit 137) under memory
+        // pressure; retaining its restart counter lets us count OOM events over
+        // time (increase() over the counter) instead of only seeing the current
+        // pod's last-termination reason gauge, which resets on every redeploy.
+        // Scoped to the pod-name prefix so we do NOT retain restart series for
+        // every per-node kube-system DaemonSet pod (that would be a cardinality /
+        // billing blowup — the whole reason kube-system is excluded above).
+        rule {
+          action        = "replace"
+          source_labels = ["__name__", "namespace", "pod"]
+          regex         = "kube_pod_container_status_restarts_total;kube-system;bin-pack-scheduler-.*"
+          target_label  = "__keep_cp__"
+          replacement   = "true"
+        }
         rule {
           action        = "drop"
           source_labels = ["__name__", "__keep_cp__"]
