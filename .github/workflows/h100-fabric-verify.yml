@@ -5,9 +5,7 @@ on:
 
 jobs:
   fabric:
-    runs-on:
-      group: meta-prod-aws-uw1
-      labels: [mt-l-x86iamx-22-225-h100-fab]
+    runs-on: mt-l-x86iamx-22-225-h100-fab
     container:
       image: nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04
     timeout-minutes: 30
