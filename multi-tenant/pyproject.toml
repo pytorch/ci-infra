@@ -1,0 +1,11 @@
+[project]
+name = "multi-tenant"
+version = "0.0.0"
+description = "Provisioning for multi-tenant B200 GitHub Actions runners"
+requires-python = ">=3.12"
+dependencies = [
+  "ansible",
+  "boto3",
+  "paramiko",
+  "PyGithub",
+]
