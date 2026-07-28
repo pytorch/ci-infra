@@ -46,12 +46,15 @@ default:
 setup:
     uv sync
 
-# Pin the runner image tag from ECR into temp/multi-tenant-gpu-tag
+# Refresh temp/multi-tenant-gpu-tag with the newest numeric image tag from ECR
 image-tag:
     mkdir -p temp
-    aws ecr describe-images --repository-name multi-tenant-gpu \
-        | jq '[.imageDetails[] | (.imageTags // [])[] | select(. != "latest") | select(test("^[0-9]+$")) | tonumber] | max' \
-        | tee temp/multi-tenant-gpu-tag
+    # setup-host prerequisite, so every run re-pins the latest image. jq -e +
+    # write-on-success => a failed/empty query fails loudly instead of writing a
+    # bogus tag or clobbering the previous one.
+    tag="$(aws ecr describe-images --repository-name multi-tenant-gpu \
+        | jq -e '[.imageDetails[] | (.imageTags // [])[] | select(. != "latest") | select(test("^[0-9]+$")) | tonumber] | max')" \
+        && printf '%s\n' "$tag" | tee temp/multi-tenant-gpu-tag
 
 # Verify the required secrets are present in the environment
 check-env:
