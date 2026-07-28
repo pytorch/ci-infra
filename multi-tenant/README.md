@@ -23,8 +23,9 @@ Secrets are loaded automatically from `secrets.env` (git-ignored). It must expor
 just setup-host                 # all B200 hosts
 just setup-host dgxb200-03      # a single host / group
 ```
-Both prompt for the `pytorch` sudo password (`-K`). See `just --list` for the
-full set of recipes.
+The fleet uses SSH password auth for the `pytorch` user (no keys), so the
+recipes prompt for both the SSH password (`-k`) and the sudo password (`-K`) —
+the same value on this fleet. See `just --list` for the full set of recipes.
 
 ## Inventory
 The ansible inventory is manually managed and can be found on `inventory/manual_inventory`, please make sure to keep it up to date.

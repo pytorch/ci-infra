@@ -34,6 +34,10 @@ DOCKER_REPO := "308535385114.dkr.ecr.us-east-1.amazonaws.com/multi-tenant-gpu"
 LIMIT := "b200_1,b200_8"
 LOGIN_USER := "pytorch"
 
+# The fleet uses SSH password auth for the pytorch user (no keys): -k prompts for
+# the SSH password and -K for the sudo password (same value on this fleet).
+CONNECT := "-k -K"
+
 # Show available recipes
 default:
     @just --list
@@ -54,17 +58,17 @@ check-env:
     : "${GH_APP_PK:?Please set GH_APP_PK environment variable}"
     : "${INSTANCE_LABELS:?Please set INSTANCE_LABELS environment variable}"
 
-# Provision B200 host(s) (default: all; pass a host or group to limit) — prompts for the sudo password
+# Provision B200 host(s) (default: all; pass a host or group to limit) — prompts for the SSH + sudo password
 setup-host limit=LIMIT: setup image-tag check-env
-    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} -K playbooks/setup-host.yml -vv
+    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} {{ CONNECT }} playbooks/setup-host.yml -vv
 
 # Restart docker + ghad-manager on B200 host(s)
 restart-services limit=LIMIT: setup
-    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} -K playbooks/restart-services.yml -vv
+    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} {{ CONNECT }} playbooks/restart-services.yml -vv
 
 # Restart only the ghad-manager service on B200 host(s)
 restart-ghad limit=LIMIT: setup
-    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} -K playbooks/restart-ghad-service.yml -vv
+    uv run ansible-playbook -i {{ INVENTORY }} --limit '{{ limit }}' -u {{ LOGIN_USER }} {{ CONNECT }} playbooks/restart-ghad-service.yml -vv
 
 # Build and push the multi-tenant-gpu runner image to ECR
 docker-build:
