@@ -11,6 +11,11 @@ jq = "latest"
 PROJECT_NAME = "multi-tenant"
 AWS_REGION = "us-east-1"
 
+# Raise the Ansible connection/become-prompt timeout (default ~10s). The B200s
+# are live GPU runners behind the VPN, so sudo can be slow to prompt under load
+# and trip "Timeout waiting for privilege escalation prompt".
+ANSIBLE_TIMEOUT = "60"
+
 VIRTUAL_ENV = "{{config_root}}/.venv"
 PATH = "{{config_root}}/.venv/bin:{{env.PATH}}"
 
