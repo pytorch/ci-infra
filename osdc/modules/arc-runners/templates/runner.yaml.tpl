@@ -387,6 +387,13 @@ metadata:
 data:
   job-pod.yaml: |
     metadata:
+      labels:
+        # Lets the capacity monitor scope job pods to this scale set with a
+        # single labeled List (job pods otherwise carry no scale-set label).
+        # Value matches runnerScaleSetName / the ARC scale-set label on runner
+        # and placeholder pods. Custom key (not actions.github.com/*) to avoid
+        # colliding with ARC's own selectors.
+        osdc.io/scale-set-name: "{{RUNNER_NAME_PREFIX}}{{RUNNER_NAME}}"
       annotations:
         karpenter.sh/do-not-disrupt: "true"
     spec:

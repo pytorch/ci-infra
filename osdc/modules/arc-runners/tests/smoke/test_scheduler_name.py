@@ -97,6 +97,50 @@ class TestSchedulerName:
 
         assert not problems, "Generated workflow pod schedulerName mismatches:\n" + "\n".join(problems)
 
+    def test_generated_workflow_pod_has_scale_set_label(
+        self,
+        upstream_dir: Path,
+        enabled_modules: list[str],
+    ) -> None:
+        # The capacity monitor scopes job pods to a scale set via this label
+        # (job pods carry no ARC scale-set label). It must equal the scale set's
+        # runnerScaleSetName so it matches the runner/placeholder pods.
+        if "arc-runners" not in enabled_modules:
+            pytest.skip("arc-runners module not enabled")
+
+        enabled_arc = arc_runners_module_names(upstream_dir) & set(enabled_modules)
+        modules_dir = upstream_dir / "modules"
+        generated_files = []
+        for module in sorted(enabled_arc):
+            generated_files.extend(sorted((modules_dir / module / "generated").glob("*.yaml")))
+        assert generated_files, f"No generated YAMLs found for arc-runners modules: {sorted(enabled_arc)}"
+
+        problems: list[str] = []
+        for yaml_file in generated_files:
+            docs = list(yaml.safe_load_all(yaml_file.read_text()))
+            scale_set_name = next(
+                (d.get("runnerScaleSetName") for d in docs if isinstance(d, dict) and d.get("runnerScaleSetName")),
+                None,
+            )
+            cm_doc = next(
+                (d for d in docs if isinstance(d, dict) and d.get("kind") == "ConfigMap"),
+                None,
+            )
+            if scale_set_name is None or cm_doc is None:
+                problems.append(f"{yaml_file.name}: missing runnerScaleSetName or ConfigMap")
+                continue
+            pod = _workflow_pod_from_cm_data(cm_doc.get("data", {}) or {})
+            if pod is None:
+                problems.append(f"{yaml_file.name}: ConfigMap has no parseable job-pod.yaml")
+                continue
+            got = pod.get("metadata", {}).get("labels", {}).get("osdc.io/scale-set-name", "")
+            if got != scale_set_name:
+                problems.append(
+                    f"{yaml_file.name}: job-pod osdc.io/scale-set-name={got!r}, expected {scale_set_name!r}"
+                )
+
+        assert not problems, "Generated job pod scale-set label mismatches:\n" + "\n".join(problems)
+
     def test_deployed_hook_configmap_matches_generated(
         self,
         upstream_dir: Path,
