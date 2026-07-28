@@ -1912,7 +1912,7 @@ jobs:
           cd /tmp/pytorch
           pip install --no-cache-dir -r requirements.txt
           export USE_CUDA=0 USE_ROCM=0 USE_XPU=0 BUILD_TEST=0 MAX_JOBS="$(nproc)"
-          python setup.py bdist_wheel
+          python -m build --wheel --no-isolation
           WHL=$(ls dist/torch-*.whl 2>/dev/null | head -1)
           if [ -z "$WHL" ]; then
             echo "FAIL: no torch wheel produced"
@@ -1946,7 +1946,7 @@ jobs:
           cd /tmp/pytorch
           pip install --no-cache-dir -r requirements.txt
           export USE_CUDA=0 USE_ROCM=0 USE_XPU=0 BUILD_TEST=0 MAX_JOBS="$(nproc)"
-          python setup.py bdist_wheel
+          python -m build --wheel --no-isolation
           WHL=$(ls dist/torch-*.whl 2>/dev/null | head -1)
           if [ -z "$WHL" ]; then
             echo "FAIL: no torch wheel produced"
