@@ -89,7 +89,8 @@ defaults:
   zombie_cleanup:
     enabled: true
     pending_max_age_hours: 24
-    running_max_age_hours: 12
+    running_max_age_hours: 24
+    busy_max_age_hours: 48
     dry_run: false
   pypi_cache:
     instance_type: r5d.12xlarge

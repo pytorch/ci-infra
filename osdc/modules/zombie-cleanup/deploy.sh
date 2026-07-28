@@ -45,14 +45,15 @@ fi
 
 # --- Read cluster-specific config ---
 PENDING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pending_max_age_hours "24")
-RUNNING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.running_max_age_hours "12")
+RUNNING_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.running_max_age_hours "24")
+BUSY_MAX_AGE=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.busy_max_age_hours "48")
 DRY_RUN=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.dry_run "false")
 PUSHGATEWAY_URL=$(uv run "$CFG" "$CLUSTER" zombie_cleanup.pushgateway_url "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091")
 
 # --- Compute content-based image tag ---
 TAG=$(find "$MODULE_DIR/docker" "$MODULE_DIR/scripts/python" \
   \( -name '*.py' -o -name 'Dockerfile' -o -name 'pyproject.toml' \) \
-  ! -name 'test_*' -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)
+  ! -name 'test_*' ! -name 'conftest.py' -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)
 
 IMAGE="harbor:30002/osdc/zombie-cleanup"
 
@@ -107,8 +108,9 @@ else
   cp "$MODULE_DIR/docker/Dockerfile" "$BUILD_CONTEXT/"
   cp "$MODULE_DIR/docker/pyproject.toml" "$BUILD_CONTEXT/"
   cp "$MODULE_DIR/scripts/python/"*.py "$BUILD_CONTEXT/"
-  # Exclude test files from the build context
+  # Exclude test files and pytest fixtures from the build context
   rm -f "$BUILD_CONTEXT/test_"*.py
+  rm -f "$BUILD_CONTEXT/conftest.py"
 
   docker build --platform linux/amd64 \
     -t "zombie-cleanup:${TAG}" \
@@ -138,6 +140,7 @@ sed \
   -e "s|ZOMBIE_CLEANUP_IMAGE_PLACEHOLDER|${IMAGE}:${TAG}|" \
   -e "s|PENDING_MAX_AGE_PLACEHOLDER|${PENDING_MAX_AGE}|" \
   -e "s|RUNNING_MAX_AGE_PLACEHOLDER|${RUNNING_MAX_AGE}|" \
+  -e "s|BUSY_MAX_AGE_PLACEHOLDER|${BUSY_MAX_AGE}|" \
   -e "s|DRY_RUN_PLACEHOLDER|${DRY_RUN}|" \
   -e "s|PUSHGATEWAY_URL_PLACEHOLDER|${PUSHGATEWAY_URL}|" \
   "$MODULE_DIR/kubernetes/cronjob.yaml" | kubectl_apply_if_changed -f -

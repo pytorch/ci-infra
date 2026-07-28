@@ -47,6 +47,8 @@ spec:
                   value: "PENDING_MAX_AGE_PLACEHOLDER"
                 - name: RUNNING_MAX_AGE_HOURS
                   value: "RUNNING_MAX_AGE_PLACEHOLDER"
+                - name: BUSY_MAX_AGE_HOURS
+                  value: "BUSY_MAX_AGE_PLACEHOLDER"
                 - name: DRY_RUN
                   value: "DRY_RUN_PLACEHOLDER"
                 - name: PUSHGATEWAY_URL

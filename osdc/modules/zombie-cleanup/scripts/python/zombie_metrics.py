@@ -30,6 +30,31 @@ oldest_zombie_age_hours = Gauge(
     "Age of oldest zombie in hours",
     registry=registry,
 )
+runner_pods_busy_skipped = Gauge(
+    "zombie_cleanup_runner_pods_busy_skipped",
+    "Runner pods skipped because they are actively running a job",
+    registry=registry,
+)
+job_pods_protected = Gauge(
+    "zombie_cleanup_job_pods_protected",
+    "Workflow/step job pods skipped because their owning runner is still live",
+    registry=registry,
+)
+ephemeralrunner_read_errors = Gauge(
+    "zombie_cleanup_ephemeralrunner_read_errors",
+    "1 if listing EphemeralRunners failed this run (fail-safe engaged), else 0",
+    registry=registry,
+)
+recheck_skipped = Gauge(
+    "zombie_cleanup_recheck_skipped",
+    "Delete candidates skipped at the pre-delete recheck (became busy or protected)",
+    registry=registry,
+)
+busy_hardcap_deletions_total = Counter(
+    "zombie_cleanup_busy_hardcap_deletions_total",
+    "Live runner or workflow/step pods deleted after exceeding the busy hard-cap age (presumed hung)",
+    registry=registry,
+)
 
 
 def push_metrics(pushgateway_url: str) -> None:
