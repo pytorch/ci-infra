@@ -150,6 +150,7 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
+      chart_version: "0.14.1-jeanschmidt.18"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -227,6 +228,7 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
+      chart_version: "0.14.1-jeanschmidt.18"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -306,6 +308,7 @@ clusters:
       pdb_enabled: false
       pdb_min_available: 0
     arc:
+      chart_version: "0.14.1-jeanschmidt.18"
       replica_count: 1
       log_level: debug
       controller_cpu_request: "500m"
@@ -411,6 +414,8 @@ clusters:
         - osdc_gha_prod
     base:
       vpc_cidr: "10.4.0.0/16"
+    arc:
+      chart_version: "0.14.1-jeanschmidt.18"
     node_compactor:
       min_node_age_seconds: 300
     buildkit:
