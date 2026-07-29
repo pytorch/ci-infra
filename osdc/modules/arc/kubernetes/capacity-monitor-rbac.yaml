@@ -1,15 +1,20 @@
-# RBAC for the capacity monitor running in listener pods.
-# Grants pod management permissions in the arc-runners namespace to listener
-# service accounts (in arc-systems) so they can create/delete placeholder pods.
+# RBAC for the capacity monitor running in listener pods. It needs two
+# permission scopes: a namespaced Role in arc-runners and a cluster-scoped
+# ClusterRole for nodes.
 #
-# Scope: namespaced (arc-runners) rather than cluster-wide. Listener SAs live
-# in arc-systems but the placeholder pods they manage are created in arc-runners,
-# so a Role in arc-runners with a RoleBinding to the arc-systems SA group is the
-# correct cross-namespace pattern.
+# Namespaced (arc-runners): grants pod and configmap management. The listener
+# service accounts live in arc-systems, but the placeholder pods and configmaps
+# the monitor manages are created in arc-runners. A Role in arc-runners with a
+# RoleBinding to the arc-systems SA group is the correct cross-namespace pattern.
 #
-# We bind to the system:serviceaccounts:arc-systems group rather than a specific
-# SA because there are multiple listener SAs (one per scale set), dynamically
-# created by the ARC controller.
+# Cluster-scoped (nodes): grants node read. The node-schedulability check lists
+# and watches nodes so it can discard placeholders on cordoned or disruption-
+# tainted nodes when counting usable capacity. Nodes are cluster-scoped, so a
+# namespaced Role cannot grant this.
+#
+# Both bind to the system:serviceaccounts:arc-systems group rather than a named
+# SA because listener SAs are created dynamically, one per scale set, by the ARC
+# controller.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -36,6 +41,32 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: arc-capacity-monitor
+subjects:
+  - kind: Group
+    name: system:serviceaccounts:arc-systems
+    apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: arc-capacity-monitor-nodes
+  labels:
+    app.kubernetes.io/part-of: actions-runner-controller
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: arc-capacity-monitor-nodes
+  labels:
+    app.kubernetes.io/part-of: actions-runner-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: arc-capacity-monitor-nodes
 subjects:
   - kind: Group
     name: system:serviceaccounts:arc-systems
