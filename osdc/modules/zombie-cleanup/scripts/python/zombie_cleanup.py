@@ -121,6 +121,7 @@ def find_zombie_pods(client: Client, config: dict) -> list[Pod]:
     managed_count = 0
     busy_skipped = 0
     job_protected = 0
+    failsafe_protected = 0
     max_age = 0.0
 
     for pod in pods:
@@ -155,6 +156,8 @@ def find_zombie_pods(client: Client, config: dict) -> list[Pod]:
             busy_skipped += 1
         elif decision is Decision.JOBPOD_PROTECT:
             job_protected += 1
+        elif decision is Decision.FAIL_SAFE_PROTECT:
+            failsafe_protected += 1
 
     m.pods_total.set(total_count)
     m.pods_managed_skipped.set(managed_count)
@@ -162,6 +165,7 @@ def find_zombie_pods(client: Client, config: dict) -> list[Pod]:
     m.oldest_zombie_age_hours.set(max_age)
     m.runner_pods_busy_skipped.set(busy_skipped)
     m.job_pods_protected.set(job_protected)
+    m.failsafe_protected.set(failsafe_protected)
     m.ephemeralrunner_read_errors.set(1 if state.er_read_failed else 0)
 
     return zombies

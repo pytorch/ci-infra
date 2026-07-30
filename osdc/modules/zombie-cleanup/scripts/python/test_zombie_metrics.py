@@ -27,6 +27,7 @@ class TestMetricRegistration:
         "zombie_cleanup_oldest_zombie_age_hours",
         "zombie_cleanup_runner_pods_busy_skipped",
         "zombie_cleanup_job_pods_protected",
+        "zombie_cleanup_failsafe_protected",
         "zombie_cleanup_ephemeralrunner_read_errors",
         "zombie_cleanup_recheck_skipped",
         "zombie_cleanup_busy_hardcap_deletions",

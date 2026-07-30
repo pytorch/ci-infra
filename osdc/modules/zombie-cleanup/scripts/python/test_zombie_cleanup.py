@@ -33,6 +33,7 @@ def _reset_metrics():
         m.oldest_zombie_age_hours,
         m.runner_pods_busy_skipped,
         m.job_pods_protected,
+        m.failsafe_protected,
         m.ephemeralrunner_read_errors,
         m.recheck_skipped,
     ):
@@ -337,6 +338,36 @@ class TestFindZombiePods:
         zombies = find_zombie_pods(client, _config())
         assert [z.metadata.name for z in zombies] == ["bare-zombie"]
         assert m.registry.get_sample_value("zombie_cleanup_ephemeralrunner_read_errors") == 1
+        assert m.registry.get_sample_value("zombie_cleanup_failsafe_protected") == 1
+
+    def test_failsafe_protected_counts_every_runner_pod(self, make_pod, set_list):
+        """On ER-read failure, failsafe_protected equals the number of over-age runner pods protected."""
+        client = MagicMock()
+        set_list(
+            client,
+            pods=[
+                make_pod("arc-runner-a", age_hours=100, owner_kind="EphemeralRunner"),
+                make_pod("arc-runner-b", age_hours=100, owner_kind="EphemeralRunner"),
+                make_pod("bare-zombie", age_hours=100),
+            ],
+            er_error=Exception("api down"),
+        )
+        zombies = find_zombie_pods(client, _config())
+        assert [z.metadata.name for z in zombies] == ["bare-zombie"]
+        assert m.registry.get_sample_value("zombie_cleanup_failsafe_protected") == 2
+        assert m.registry.get_sample_value("zombie_cleanup_ephemeralrunner_read_errors") == 1
+
+    def test_failsafe_protected_zero_without_read_failure(self, make_pod, make_er, set_list):
+        """A healthy run with no ER-read failure leaves failsafe_protected at 0."""
+        client = MagicMock()
+        set_list(
+            client,
+            pods=[make_pod("idle-old-runner", age_hours=30, owner_kind="EphemeralRunner")],
+            ers=[make_er("idle-old-runner", job_id="")],
+        )
+        find_zombie_pods(client, _config())
+        assert m.registry.get_sample_value("zombie_cleanup_failsafe_protected") == 0
+        assert m.registry.get_sample_value("zombie_cleanup_ephemeralrunner_read_errors") == 0
 
     def test_job_pod_protected_when_runner_live(self, make_pod, make_er, set_list):
         """A bare workflow/step pod under the hard cap is protected while its owning runner pod exists."""
@@ -434,6 +465,7 @@ class TestFindZombiePods:
         assert [z.metadata.name for z in zombies] == ["idle-old-runner"]
         assert m.registry.get_sample_value("zombie_cleanup_runner_pods_busy_skipped") == 1
         assert m.registry.get_sample_value("zombie_cleanup_job_pods_protected") == 1
+        assert m.registry.get_sample_value("zombie_cleanup_failsafe_protected") == 0
         assert m.registry.get_sample_value("zombie_cleanup_ephemeralrunner_read_errors") == 0
         assert m.registry.get_sample_value("zombie_cleanup_busy_hardcap_deletions_total") == 0
 

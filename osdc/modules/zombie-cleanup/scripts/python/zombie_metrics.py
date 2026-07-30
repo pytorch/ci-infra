@@ -40,6 +40,11 @@ job_pods_protected = Gauge(
     "Workflow/step job pods skipped because their owning runner is still live",
     registry=registry,
 )
+failsafe_protected = Gauge(
+    "zombie_cleanup_failsafe_protected",
+    "Runner pods protected this run because the EphemeralRunner read failed (fail-safe)",
+    registry=registry,
+)
 ephemeralrunner_read_errors = Gauge(
     "zombie_cleanup_ephemeralrunner_read_errors",
     "1 if listing EphemeralRunners failed this run (fail-safe engaged), else 0",
