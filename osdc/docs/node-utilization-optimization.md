@@ -214,6 +214,8 @@ The only way to push these above 85% is to use instances where `N × runner_size
 
 This trades the heavy `m8g.48xlarge` bin-packing for honest silicon — per-pod cost on `l-arm64g3-16-62` rises ~30-50% at peak burst, and the standing bare-metal pool carries a fixed cost. See PR #591 for the full rationale.
 
+The same correction was later applied to the Graviton4 perf runner: `l-barm64g4-94-344` was introduced (PR #810) on a virtualized `m8g.24xlarge` in the `m8g-large` fleet as a stand-in for `m8g.metal-24xl`, and has since been re-pointed to the real `m8g.metal-24xl` on a new dedicated `m8g-metal` fleet. Advertised specs are identical (96c/384Gi), so the 94c/344Gi request is unchanged; the dedicated fleet taint is what guarantees no virtualized `m8g` node is substituted in for a perf benchmark. The pool sets `exclude_regions: [us-west-1]` by choice rather than by necessity — `m8g.metal-24xl` is offered in both us-west-1 AZs available to the account — to keep a bare-metal type out of the smallest region; this auto-zeroes the runner's capacity on `meta-staging-aws-uw1`, so the runner has no staging-uw1 coverage.
+
 ### Phase 3: Retire Old Nodepools (DONE — merged into Phase 2)
 No ARC runners use r5.24xlarge anymore. The nodepool is retained solely for RE job-assigner workloads. r7g.16xlarge kept for the single memory-heavy ARM64 runner. Karpenter will drain underutilized r5 nodes naturally after redeployment.
 
