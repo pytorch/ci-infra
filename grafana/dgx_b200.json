@@ -951,7 +951,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-1"
+              "name": "panel-5"
             },
             "height": 8,
             "width": 24,
@@ -964,7 +964,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-2"
+              "name": "panel-6"
             },
             "height": 8,
             "width": 24,
@@ -977,7 +977,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-3"
+              "name": "panel-7"
             },
             "height": 8,
             "width": 24,
@@ -990,7 +990,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-4"
+              "name": "panel-1"
             },
             "height": 8,
             "width": 24,
@@ -1003,7 +1003,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-5"
+              "name": "panel-2"
             },
             "height": 8,
             "width": 24,
@@ -1016,7 +1016,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-6"
+              "name": "panel-3"
             },
             "height": 8,
             "width": 24,
@@ -1029,7 +1029,7 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
-              "name": "panel-7"
+              "name": "panel-4"
             },
             "height": 8,
             "width": 24,
