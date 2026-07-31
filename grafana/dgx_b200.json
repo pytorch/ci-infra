@@ -591,7 +591,7 @@
             "transformations": []
           }
         },
-        "description": "Registered self-hosted runners carrying each B200 label, from misc.runner_fleet_count (sampled every 30 min). Daily peak.",
+        "description": "Registered self-hosted runners carrying each B200 label, from misc.runner_fleet_count (sampled every 30 min). Daily peak. The dashed line is the expected count from multi-tenant/inventory/manual_inventory: 24 for linux.dgx.b200 (3 hosts x num_users=8) and 3 for linux.dgx.b200.8 (3 hosts x num_users=1).",
         "id": 5,
         "links": [],
         "title": "Total runners [view]",
@@ -641,20 +641,96 @@
                     "mode": "none"
                   },
                   "thresholdsStyle": {
-                    "mode": "off"
+                    "mode": "dashed"
                   }
                 },
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "green",
+                      "color": "rgba(255, 255, 255, 0)",
                       "value": 0
                     }
                   ]
                 }
               },
-              "overrides": []
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "linux.dgx.b200",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "thresholds",
+                      "value": {
+                        "mode": "absolute",
+                        "steps": [
+                          {
+                            "color": "rgba(255, 255, 255, 0)",
+                            "value": 0
+                          },
+                          {
+                            "color": "#EAB839",
+                            "value": 24
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "linux.dgx.b200.8",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "thresholds",
+                      "value": {
+                        "mode": "absolute",
+                        "steps": [
+                          {
+                            "color": "rgba(255, 255, 255, 0)",
+                            "value": 0
+                          },
+                          {
+                            "color": "#EAB839",
+                            "value": 3
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "b200 (aggregated)",
+                    "scope": "series"
+                  },
+                  "properties": [
+                    {
+                      "id": "thresholds",
+                      "value": {
+                        "mode": "absolute",
+                        "steps": [
+                          {
+                            "color": "rgba(255, 255, 255, 0)",
+                            "value": 0
+                          },
+                          {
+                            "color": "#EAB839",
+                            "value": 27
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
             },
             "options": {
               "annotations": {
