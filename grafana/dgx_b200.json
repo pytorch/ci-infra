@@ -579,7 +579,7 @@
                       },
                       "pluginVersion": "4.17.0",
                       "queryType": "timeseries",
-                      "rawSql": "SELECT\n  toStartOfDay(ts) AS time,\n  series,\n  max(runners) AS runners\nFROM (\n  SELECT ts, series, sum(runners) AS runners\n  FROM (\n    SELECT\n      time_stamp AS ts,\n      label,\n      if('$view' = 'aggregated', 'b200 (aggregated)', label) AS series,\n      max(total_count) AS runners\n    FROM misc.runner_fleet_count\n    WHERE $__timeFilter(time_stamp)\n      AND org = 'pytorch'\n      AND label IN ('linux.dgx.b200','linux.dgx.b200.8')\n      AND ('$view' IN ('aggregated','all') OR label = '$view')\n    GROUP BY ts, label, series\n  )\n  GROUP BY ts, series\n)\nGROUP BY time, series\nORDER BY time, series"
+                      "rawSql": "WITH samples AS (\n  SELECT\n    time_stamp AS ts,\n    label,\n    if('$view' = 'aggregated', 'b200 (aggregated)', label) AS series,\n    max(total_count) AS runners,\n    multiIf(label = 'linux.dgx.b200', 24, label = 'linux.dgx.b200.8', 3, 0) AS expected\n  FROM misc.runner_fleet_count\n  WHERE $__timeFilter(time_stamp)\n    AND org = 'pytorch'\n    AND label IN ('linux.dgx.b200','linux.dgx.b200.8')\n    AND ('$view' IN ('aggregated','all') OR label = '$view')\n  GROUP BY ts, label, series, expected\n),\nper_sample AS (\n  SELECT ts, series, sum(runners) AS runners, sum(expected) AS expected\n  FROM samples\n  GROUP BY ts, series\n)\nSELECT * FROM (\n  SELECT toStartOfDay(ts) AS time, series, max(runners) AS runners\n  FROM per_sample\n  GROUP BY time, series\n  UNION ALL\n  SELECT toStartOfDay(ts) AS time, concat(series, ' expected') AS series, max(expected) AS runners\n  FROM per_sample\n  GROUP BY time, series\n)\nORDER BY time, series"
                     },
                     "version": "v0"
                   },
@@ -641,14 +641,14 @@
                     "mode": "none"
                   },
                   "thresholdsStyle": {
-                    "mode": "dashed"
+                    "mode": "off"
                   }
                 },
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "rgba(255, 255, 255, 0)",
+                      "color": "green",
                       "value": 0
                     }
                   ]
@@ -658,24 +658,41 @@
                 {
                   "matcher": {
                     "id": "byName",
-                    "options": "linux.dgx.b200",
+                    "options": "linux.dgx.b200 expected",
                     "scope": "series"
                   },
                   "properties": [
                     {
-                      "id": "thresholds",
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineStyle",
                       "value": {
-                        "mode": "absolute",
-                        "steps": [
-                          {
-                            "color": "rgba(255, 255, 255, 0)",
-                            "value": 0
-                          },
-                          {
-                            "color": "#EAB839",
-                            "value": 24
-                          }
+                        "fill": "dash",
+                        "dash": [
+                          10,
+                          10
                         ]
+                      }
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "#EAB839",
+                        "mode": "fixed"
                       }
                     }
                   ]
@@ -683,24 +700,41 @@
                 {
                   "matcher": {
                     "id": "byName",
-                    "options": "linux.dgx.b200.8",
+                    "options": "linux.dgx.b200.8 expected",
                     "scope": "series"
                   },
                   "properties": [
                     {
-                      "id": "thresholds",
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineStyle",
                       "value": {
-                        "mode": "absolute",
-                        "steps": [
-                          {
-                            "color": "rgba(255, 255, 255, 0)",
-                            "value": 0
-                          },
-                          {
-                            "color": "#EAB839",
-                            "value": 3
-                          }
+                        "fill": "dash",
+                        "dash": [
+                          10,
+                          10
                         ]
+                      }
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "#EAB839",
+                        "mode": "fixed"
                       }
                     }
                   ]
@@ -708,24 +742,41 @@
                 {
                   "matcher": {
                     "id": "byName",
-                    "options": "b200 (aggregated)",
+                    "options": "b200 (aggregated) expected",
                     "scope": "series"
                   },
                   "properties": [
                     {
-                      "id": "thresholds",
+                      "id": "custom.drawStyle",
+                      "value": "line"
+                    },
+                    {
+                      "id": "custom.lineStyle",
                       "value": {
-                        "mode": "absolute",
-                        "steps": [
-                          {
-                            "color": "rgba(255, 255, 255, 0)",
-                            "value": 0
-                          },
-                          {
-                            "color": "#EAB839",
-                            "value": 27
-                          }
+                        "fill": "dash",
+                        "dash": [
+                          10,
+                          10
                         ]
+                      }
+                    },
+                    {
+                      "id": "custom.lineWidth",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.fillOpacity",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.showPoints",
+                      "value": "never"
+                    },
+                    {
+                      "id": "color",
+                      "value": {
+                        "fixedColor": "#EAB839",
+                        "mode": "fixed"
                       }
                     }
                   ]
